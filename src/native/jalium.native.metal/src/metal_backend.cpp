@@ -1,5 +1,6 @@
 #include "metal_backend.h"
 #include "metal_internal.h"
+#include "metal_shader_compiler.h"
 #include "jalium_string_util.h"
 
 #include <algorithm>
@@ -22,6 +23,8 @@
 namespace jalium {
 
 namespace {
+
+std::atomic<uint64_t> gMetalTextFormatId{1};
 
 uint32_t NormalizeSpread(uint32_t value) noexcept
 {
@@ -99,20 +102,39 @@ constexpr const char* kInkShaderSource = R"METAL(
 #include <metal_stdlib>
 using namespace metal;
 struct StrokePoint { float2 position; float pressure; float pad; };
+struct InkVertexOut {
+    float4 position [[position]];
+    float2 pixel [[user(locn0)]];
+};
+vertex InkVertexOut jalium_ink_vertex(constant uchar* rawConstants [[buffer(0)]],
+    uint vid [[vertex_id]])
+{
+    constant float* f = reinterpret_cast<constant float*>(rawConstants);
+    float2 viewport=max(float2(f[16],f[17]),float2(1.0));
+    float2 positions[3]={float2(-1.0,1.0),float2(3.0,1.0),float2(-1.0,-3.0)};
+    float2 pixels[3]={float2(0.0),float2(viewport.x*2.0,0.0),
+        float2(0.0,viewport.y*2.0)};
+    InkVertexOut output;output.position=float4(positions[vid],0.0,1.0);
+    output.pixel=pixels[vid];return output;
+}
 kernel void jalium_ink(
     texture2d<float, access::read_write> target [[texture(0)]],
     const device StrokePoint* points [[buffer(0)]],
     constant uchar* rawConstants [[buffer(1)]],
     constant uint& blendMode [[buffer(2)]],
-    uint2 gid [[thread_position_in_grid]])
+    uint2 localGid [[thread_position_in_grid]])
 {
-    if (gid.x >= target.get_width() || gid.y >= target.get_height()) return;
     constant float* f = reinterpret_cast<constant float*>(rawConstants);
+    uint2 bboxMin = uint2(max(floor(float2(f[8],f[9])),float2(0.0)));
+    uint2 bboxMax = uint2(max(ceil(float2(f[10],f[11])),float2(bboxMin)));
+    uint2 gid = localGid + bboxMin;
+    if (gid.x >= target.get_width() || gid.y >= target.get_height()) return;
+    if (gid.x >= bboxMax.x || gid.y >= bboxMax.y) return;
     constant uint* u = reinterpret_cast<constant uint*>(rawConstants);
     float4 color = float4(f[0], f[1], f[2], f[3]);
     float width = max(f[4], 0.25);
     uint count = u[12];
-    bool ignorePressure = u[18] != 0u;
+    bool ignorePressure = u[14] != 0u;
     if (count == 0u) return;
     float2 pixel = float2(gid) + 0.5;
     float coverage = 0.0;
@@ -179,6 +201,8 @@ struct MetalTextFormat::Impl {
     float lineSpacing = 0;
     float lineSpacingBaseline = 0;
     uint32_t maxLines = 0;
+    uint64_t cacheId = gMetalTextFormatId.fetch_add(1,std::memory_order_relaxed);
+    std::atomic<uint64_t> generation{1};
 
 #ifdef __APPLE__
     CTParagraphStyleRef CreateParagraphStyle() const
@@ -273,17 +297,21 @@ bool MetalTextFormat::IsValid() const
 #endif
 }
 
-void MetalTextFormat::SetAlignment(int32_t value) { impl_->alignment = value; }
-void MetalTextFormat::SetParagraphAlignment(int32_t value) { impl_->paragraphAlignment = value; }
-void MetalTextFormat::SetTrimming(int32_t value) { impl_->trimming = value; }
-void MetalTextFormat::SetWordWrapping(int32_t value) { impl_->wrapping = value; }
+void MetalTextFormat::SetAlignment(int32_t value) { impl_->alignment = value;impl_->generation.fetch_add(1); }
+void MetalTextFormat::SetParagraphAlignment(int32_t value) { impl_->paragraphAlignment = value;impl_->generation.fetch_add(1); }
+void MetalTextFormat::SetTrimming(int32_t value) { impl_->trimming = value;impl_->generation.fetch_add(1); }
+void MetalTextFormat::SetWordWrapping(int32_t value) { impl_->wrapping = value;impl_->generation.fetch_add(1); }
 void MetalTextFormat::SetLineSpacing(int32_t method, float spacing, float baseline)
 {
     impl_->lineSpacingMethod = method;
     impl_->lineSpacing = spacing;
     impl_->lineSpacingBaseline = baseline;
+    impl_->generation.fetch_add(1);
 }
-void MetalTextFormat::SetMaxLines(uint32_t value) { impl_->maxLines = value; }
+void MetalTextFormat::SetMaxLines(uint32_t value) { impl_->maxLines = value;impl_->generation.fetch_add(1); }
+
+uint64_t MetalTextFormat::CacheIdentity() const
+{return impl_->cacheId^(impl_->generation.load(std::memory_order_acquire)*0x9e3779b97f4a7c15ull);}
 
 JaliumResult MetalTextFormat::MeasureText(const wchar_t* text,
     uint32_t textLength, float maxWidth, float maxHeight,
@@ -420,19 +448,38 @@ JaliumResult MetalTextFormat::HitTestTextPosition(const wchar_t* text,
 #ifdef __APPLE__
     CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength);
     if (!attributed) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
-    CTLineRef line = CTLineCreateWithAttributedString(attributed);
+    CTFramesetterRef setter=CTFramesetterCreateWithAttributedString(attributed);
+    CGFloat width=maxWidth>0?maxWidth:1000000.0;
+    CGFloat height=maxHeight>0?maxHeight:1000000.0;
+    CGPathRef path=CGPathCreateWithRect(CGRectMake(0,0,width,height),nullptr);
+    CTFrameRef frame=CTFramesetterCreateFrame(setter,CFRangeMake(0,0),path,nullptr);
+    CFArrayRef lines=CTFrameGetLines(frame);CFIndex lineCount=CFArrayGetCount(lines);
+    if(impl_->maxLines>0)lineCount=std::min<CFIndex>(lineCount,impl_->maxLines);
+    if(lineCount==0){ReleaseCF(frame);ReleaseCF(path);ReleaseCF(setter);
+        ReleaseCF(attributed);return JALIUM_OK;}
+    std::vector<CGPoint> origins(static_cast<size_t>(lineCount));
+    CTFrameGetLineOrigins(frame,CFRangeMake(0,lineCount),origins.data());
     CFIndex index = WideIndexToUtf16(text, textLength, textPosition);
+    CFIndex selected=lineCount-1;
+    for(CFIndex i=0;i<lineCount;++i){CTLineRef candidate=static_cast<CTLineRef>(
+            const_cast<void*>(CFArrayGetValueAtIndex(lines,i)));
+        CFRange range=CTLineGetStringRange(candidate);
+        if(index>=range.location&&index<=range.location+range.length){selected=i;break;}}
+    CTLineRef line=static_cast<CTLineRef>(const_cast<void*>(
+        CFArrayGetValueAtIndex(lines,selected)));
     CGFloat secondary = 0;
     CGFloat primary = CTLineGetOffsetForStringIndex(line, index, &secondary);
+    CGFloat ascent=0,descent=0,leading=0;
+    CTLineGetTypographicBounds(line,&ascent,&descent,&leading);
     result->textPosition = textPosition;
     result->isTrailingHit = isTrailingHit != 0;
     result->isInside = 1;
-    result->x = static_cast<float>(isTrailingHit ? std::max(primary, secondary) : primary);
-    result->y = 0;
+    result->x = static_cast<float>(origins[selected].x+
+        (isTrailingHit ? std::max(primary, secondary) : primary));
+    result->y = static_cast<float>(height-origins[selected].y-ascent);
     result->width = std::max(1.0f, static_cast<float>(std::abs(secondary - primary)));
-    result->height = impl_->size * 1.2f;
-    ReleaseCF(line); ReleaseCF(attributed);
-    (void)maxWidth; (void)maxHeight;
+    result->height = static_cast<float>(ascent+descent+leading);
+    ReleaseCF(frame);ReleaseCF(path);ReleaseCF(setter);ReleaseCF(attributed);
     return JALIUM_OK;
 #else
     (void)maxWidth; (void)maxHeight; (void)isTrailingHit;
@@ -485,6 +532,8 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
     CGRect textBounds = CGRectNull;
     CFArrayRef lines = CTFrameGetLines(frame);
     CFIndex lineCount = lines ? CFArrayGetCount(lines) : 0;
+    if (impl_->maxLines > 0)
+        lineCount = std::min<CFIndex>(lineCount, impl_->maxLines);
     std::vector<CGPoint> lineOrigins(static_cast<size_t>(lineCount));
     if (lineCount > 0) {
         CTFrameGetLineOrigins(frame, CFRangeMake(0, lineCount), lineOrigins.data());
@@ -510,6 +559,17 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
         ReleaseCF(attributed); ReleaseCF(color);
         return false;
     }
+
+    // CoreText lays frames from the top. DirectWrite paragraph alignment is a
+    // vertical alignment contract (Near/Far/Center), so translate the selected
+    // line set inside the requested layout height before computing device
+    // bounds and drawing it.
+    double verticalOffset = 0.0;
+    double availableVertical = std::max(0.0,
+        static_cast<double>(height) - static_cast<double>(textBounds.size.height));
+    if (impl_->paragraphAlignment == 1) verticalOffset = -availableVertical;
+    else if (impl_->paragraphAlignment == 2) verticalOffset = -availableVertical * 0.5;
+    textBounds.origin.y += verticalOffset;
 
     const float m11 = deviceTransform[0], m12 = deviceTransform[1];
     const float m21 = deviceTransform[2], m22 = deviceTransform[3];
@@ -597,7 +657,13 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
         m12 * x + m22 * (y + height) + dy - rasterTop);
     CGContextConcatCTM(context, textToBitmap);
     CGContextSetTextMatrix(context, CGAffineTransformIdentity);
-    CTFrameDraw(frame, context);
+    for(CFIndex index=0;index<lineCount;++index){
+        CTLineRef line=static_cast<CTLineRef>(const_cast<void*>(
+            CFArrayGetValueAtIndex(lines,index)));
+        CGPoint origin=lineOrigins[static_cast<size_t>(index)];
+        CGContextSetTextPosition(context,origin.x,origin.y+verticalOffset);
+        CTLineDraw(line,context);
+    }
     deviceX = static_cast<float>(rasterLeft);
     deviceY = static_cast<float>(rasterTop);
     ReleaseCF(context); ReleaseCF(colorSpace); ReleaseCF(frame); ReleaseCF(path);
@@ -641,14 +707,32 @@ void* MetalBitmap::EnsureTexture(void* deviceHandle)
         if (!device || impl_->pixels.empty()) return nullptr;
         MTLTextureDescriptor* descriptor = [MTLTextureDescriptor
             texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-            width:impl_->width height:impl_->height mipmapped:NO];
+            width:impl_->width height:impl_->height mipmapped:YES];
         descriptor.storageMode = MTLStorageModeShared;
         descriptor.usage = MTLTextureUsageShaderRead;
         impl_->texture = [device newTextureWithDescriptor:descriptor];
         if (impl_->texture) {
-            [impl_->texture replaceRegion:MTLRegionMake2D(0, 0, impl_->width,
-                impl_->height) mipmapLevel:0 withBytes:impl_->pixels.data()
-                bytesPerRow:impl_->width * 4];
+            uint32_t levelWidth=impl_->width,levelHeight=impl_->height;
+            std::vector<uint8_t> level=impl_->pixels;
+            for(NSUInteger mip=0;mip<impl_->texture.mipmapLevelCount;++mip){
+                [impl_->texture replaceRegion:MTLRegionMake2D(0,0,levelWidth,levelHeight)
+                    mipmapLevel:mip withBytes:level.data() bytesPerRow:levelWidth*4];
+                if(levelWidth==1&&levelHeight==1)break;
+                uint32_t nextWidth=std::max(1u,levelWidth/2);
+                uint32_t nextHeight=std::max(1u,levelHeight/2);
+                std::vector<uint8_t> next(static_cast<size_t>(nextWidth)*nextHeight*4);
+                for(uint32_t y=0;y<nextHeight;++y)for(uint32_t x=0;x<nextWidth;++x){
+                    uint32_t sums[4]={};uint32_t samples=0;
+                    for(uint32_t oy=0;oy<2;++oy)for(uint32_t ox=0;ox<2;++ox){
+                        uint32_t sx=std::min(x*2+ox,levelWidth-1);
+                        uint32_t sy=std::min(y*2+oy,levelHeight-1);
+                        const uint8_t* pixel=level.data()+(static_cast<size_t>(sy)*levelWidth+sx)*4;
+                        for(int c=0;c<4;++c)sums[c]+=pixel[c];++samples;}
+                    uint8_t* output=next.data()+(static_cast<size_t>(y)*nextWidth+x)*4;
+                    for(int c=0;c<4;++c)output[c]=static_cast<uint8_t>((sums[c]+samples/2)/samples);
+                }
+                level=std::move(next);levelWidth=nextWidth;levelHeight=nextHeight;
+            }
         }
     }
     return (__bridge void*)impl_->texture;
@@ -666,7 +750,10 @@ struct MetalVideoSurface::Impl {
     uint32_t stride = 0;
     std::vector<uint8_t> staging;
     bool locked = false;
+    bool videoRange = false;
+    uint32_t yuvMatrix = 1; // 0=BT.601, 1=BT.709, 2=BT.2020
     void* lifetimeContext = nullptr;
+    void (*lifetimeRetain)(void*) = nullptr;
     void (*lifetimeRelease)(void*) = nullptr;
 #ifdef __APPLE__
     id<MTLTexture> texture = nil;
@@ -674,6 +761,8 @@ struct MetalVideoSurface::Impl {
     id<MTLTexture> planeUV = nil;
     CVPixelBufferRef pixelBuffer = nullptr;
     CVMetalTextureCacheRef textureCache = nullptr;
+    CVMetalTextureRef cvTexture0 = nullptr;
+    CVMetalTextureRef cvTexture1 = nullptr;
     IOSurfaceRef ioSurface = nullptr;
 #endif
 };
@@ -711,6 +800,7 @@ MetalVideoSurface::MetalVideoSurface(void* deviceHandle,
             static_cast<uintptr_t>(descriptor.lifetime_retain_callback));
         impl_->lifetimeContext = reinterpret_cast<void*>(
             static_cast<uintptr_t>(descriptor.lifetime_context));
+        impl_->lifetimeRetain = retain;
         impl_->lifetimeRelease = reinterpret_cast<void(*)(void*)>(
             static_cast<uintptr_t>(descriptor.lifetime_release_callback));
         retain(impl_->lifetimeContext);
@@ -728,6 +818,12 @@ MetalVideoSurface::MetalVideoSurface(void* deviceHandle,
         if (impl_->pixelBuffer && CVMetalTextureCacheCreate(kCFAllocatorDefault,
             nullptr, device, nullptr, &impl_->textureCache) == kCVReturnSuccess) {
             OSType pixelFormat = CVPixelBufferGetPixelFormatType(impl_->pixelBuffer);
+            impl_->videoRange = pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+                pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
+            CFTypeRef matrix=CVBufferGetAttachment(impl_->pixelBuffer,
+                kCVImageBufferYCbCrMatrixKey,nullptr);
+            if(matrix==kCVImageBufferYCbCrMatrix_ITU_R_601_4)impl_->yuvMatrix=0;
+            else if(matrix==kCVImageBufferYCbCrMatrix_ITU_R_2020)impl_->yuvMatrix=2;
             if (pixelFormat == kCVPixelFormatType_32BGRA) {
                 CVMetalTextureRef cvTexture = nullptr;
                 if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault,
@@ -735,7 +831,7 @@ MetalVideoSurface::MetalVideoSurface(void* deviceHandle,
                     MTLPixelFormatBGRA8Unorm, descriptor.width, descriptor.height,
                     0, &cvTexture) == kCVReturnSuccess && cvTexture) {
                     impl_->texture = CVMetalTextureGetTexture(cvTexture);
-                    CFRelease(cvTexture);
+                    impl_->cvTexture0 = cvTexture;
                 }
             } else if (pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
                        pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
@@ -748,8 +844,8 @@ MetalVideoSurface::MetalVideoSurface(void* deviceHandle,
                     impl_->textureCache, impl_->pixelBuffer, nullptr,
                     MTLPixelFormatRG8Unorm, descriptor.width / 2,
                     descriptor.height / 2, 1, &uv);
-                if (y) { impl_->planeY = CVMetalTextureGetTexture(y); CFRelease(y); }
-                if (uv) { impl_->planeUV = CVMetalTextureGetTexture(uv); CFRelease(uv); }
+                if (y) { impl_->planeY = CVMetalTextureGetTexture(y);impl_->cvTexture0=y; }
+                if (uv) { impl_->planeUV = CVMetalTextureGetTexture(uv);impl_->cvTexture1=uv; }
             } else if (pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
                        pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange) {
                 CVMetalTextureRef y = nullptr, uv = nullptr;
@@ -761,8 +857,8 @@ MetalVideoSurface::MetalVideoSurface(void* deviceHandle,
                     impl_->textureCache, impl_->pixelBuffer, nullptr,
                     MTLPixelFormatRG16Unorm, descriptor.width / 2,
                     descriptor.height / 2, 1, &uv);
-                if (y) { impl_->planeY = CVMetalTextureGetTexture(y); CFRelease(y); }
-                if (uv) { impl_->planeUV = CVMetalTextureGetTexture(uv); CFRelease(uv); }
+                if (y) { impl_->planeY = CVMetalTextureGetTexture(y);impl_->cvTexture0=y; }
+                if (uv) { impl_->planeUV = CVMetalTextureGetTexture(uv);impl_->cvTexture1=uv; }
                 impl_->format = JALIUM_VS_FORMAT_P010;
             }
         }
@@ -785,8 +881,10 @@ MetalVideoSurface::MetalVideoSurface(void* deviceHandle,
 MetalVideoSurface::~MetalVideoSurface()
 {
 #ifdef __APPLE__
-    if (impl_->pixelBuffer) CFRelease(impl_->pixelBuffer);
+    if (impl_->cvTexture0) CFRelease(impl_->cvTexture0);
+    if (impl_->cvTexture1) CFRelease(impl_->cvTexture1);
     if (impl_->textureCache) CFRelease(impl_->textureCache);
+    if (impl_->pixelBuffer) CFRelease(impl_->pixelBuffer);
     if (impl_->ioSurface) CFRelease(impl_->ioSurface);
 #endif
     if (impl_->lifetimeRelease && impl_->lifetimeContext)
@@ -813,6 +911,35 @@ void* MetalVideoSurface::TextureHandle(uint32_t plane) const
 #else
     (void)plane;
     return nullptr;
+#endif
+}
+uint32_t MetalVideoSurface::YuvMatrix() const{return impl_?impl_->yuvMatrix:1;}
+bool MetalVideoSurface::IsVideoRange() const{return impl_&&impl_->videoRange;}
+
+void MetalVideoSurface::RetainForCommandBuffer(void* commandBufferHandle) const
+{
+#ifdef __APPLE__
+    id<MTLCommandBuffer> command = (__bridge id<MTLCommandBuffer>)commandBufferHandle;
+    if (!command || !impl_) return;
+    void* context = impl_->lifetimeContext;
+    auto retain = impl_->lifetimeRetain;
+    auto release = impl_->lifetimeRelease;
+    if (context && retain && release) {
+        retain(context);
+        [command addCompletedHandler:^(id<MTLCommandBuffer>) { release(context); }];
+    }
+    CVPixelBufferRef pixelBuffer = impl_->pixelBuffer;
+    if (pixelBuffer) {
+        CFRetain(pixelBuffer);
+        [command addCompletedHandler:^(id<MTLCommandBuffer>) { CFRelease(pixelBuffer); }];
+    }
+    IOSurfaceRef ioSurface = impl_->ioSurface;
+    if (ioSurface) {
+        CFRetain(ioSurface);
+        [command addCompletedHandler:^(id<MTLCommandBuffer>) { CFRelease(ioSurface); }];
+    }
+#else
+    (void)commandBufferHandle;
 #endif
 }
 bool MetalVideoSurface::Lock(uint8_t** outPtr, uint32_t* outStride)
@@ -1143,17 +1270,35 @@ void* MetalBackend::CreateBrushShader(const char* key, const char* source,
 #ifdef __APPLE__
     if (!Initialize() || !key || !source || blendMode < 0 || blendMode > 2) return nullptr;
     NSError* error = nil;
-    id<MTLLibrary> library = [impl_->device newLibraryWithSource:
+    id<MTLLibrary> supportLibrary = [impl_->device newLibraryWithSource:
         [NSString stringWithUTF8String:kInkShaderSource] options:nil error:&error];
-    if (!library) return nullptr;
-    id<MTLFunction> function = [library newFunctionWithName:@"jalium_ink"];
-    if (!function) return nullptr;
-    id<MTLComputePipelineState> pipeline =
-        [impl_->device newComputePipelineStateWithFunction:function error:&error];
-    if (!pipeline) return nullptr;
+    if (!supportLibrary) return nullptr;
     auto result = std::make_unique<MetalBrushShader>();
     result->key = key; result->source = source; result->blendMode = blendMode;
-    result->pipeline = pipeline;
+    std::string msl,entry,diagnostics;
+    if(CompileMetalBrushShader(source,msl,entry,diagnostics)){
+        id<MTLLibrary> fragmentLibrary=[impl_->device newLibraryWithSource:
+            [NSString stringWithUTF8String:msl.c_str()] options:nil error:&error];
+        id<MTLFunction> vertex=[supportLibrary newFunctionWithName:@"jalium_ink_vertex"];
+        id<MTLFunction> fragment=fragmentLibrary?[fragmentLibrary newFunctionWithName:
+            [NSString stringWithUTF8String:entry.c_str()]]:nil;
+        if(vertex&&fragment){MTLRenderPipelineDescriptor* descriptor=[MTLRenderPipelineDescriptor new];
+            descriptor.vertexFunction=vertex;descriptor.fragmentFunction=fragment;
+            auto* color=descriptor.colorAttachments[0];color.pixelFormat=MTLPixelFormatBGRA8Unorm;
+            color.blendingEnabled=YES;color.rgbBlendOperation=MTLBlendOperationAdd;
+            color.alphaBlendOperation=MTLBlendOperationAdd;
+            color.sourceRGBBlendFactor=blendMode==2?MTLBlendFactorZero:MTLBlendFactorOne;
+            color.sourceAlphaBlendFactor=blendMode==2?MTLBlendFactorZero:MTLBlendFactorOne;
+            color.destinationRGBBlendFactor=blendMode==1?MTLBlendFactorOne:
+                MTLBlendFactorOneMinusSourceAlpha;
+            color.destinationAlphaBlendFactor=blendMode==1?MTLBlendFactorOne:
+                MTLBlendFactorOneMinusSourceAlpha;
+            result->pipeline=[impl_->device newRenderPipelineStateWithDescriptor:descriptor error:&error];}
+    }
+    if(!result->pipeline){id<MTLFunction> fallback=[supportLibrary newFunctionWithName:@"jalium_ink"];
+        if(fallback)result->fallbackPipeline=[impl_->device
+            newComputePipelineStateWithFunction:fallback error:&error];}
+    if(!result->pipeline&&!result->fallbackPipeline)return nullptr;
     return result.release();
 #else
     (void)key; (void)source; (void)blendMode;
@@ -1171,7 +1316,9 @@ int32_t MetalBackend::DispatchBrush(void* bitmap, void* shader,
     auto* layer = static_cast<MetalInkLayer*>(bitmap);
     auto* brush = static_cast<MetalBrushShader*>(shader);
     if (!layer || !brush || !strokePoints || pointCount == 0 || !constants ||
-        !layer->texture || !brush->pipeline) return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
+        !layer->texture || (!brush->pipeline&&!brush->fallbackPipeline))
+        return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
+    std::scoped_lock layerLock(layer->mutex);
     std::array<uint8_t, 80> patched{};
     std::memcpy(patched.data(), constants, 80);
     auto* values = reinterpret_cast<float*>(patched.data());
@@ -1180,21 +1327,58 @@ int32_t MetalBackend::DispatchBrush(void* bitmap, void* shader,
     values[16] = static_cast<float>(layer->width);
     values[17] = static_cast<float>(layer->height);
     id<MTLCommandBuffer> command = [impl_->queue commandBuffer];
-    id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-    if (!command || !encoder) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
-    [encoder setComputePipelineState:brush->pipeline];
-    [encoder setTexture:layer->texture atIndex:0];
-    [encoder setBytes:strokePoints length:static_cast<NSUInteger>(pointCount) * 16 atIndex:0];
-    [encoder setBytes:patched.data() length:patched.size() atIndex:1];
-    uint32_t blend = static_cast<uint32_t>(brush->blendMode);
-    [encoder setBytes:&blend length:sizeof(blend) atIndex:2];
-    MTLSize threads = MTLSizeMake(8, 8, 1);
-    MTLSize groups = MTLSizeMake((layer->width + 7) / 8,
-        (layer->height + 7) / 8, 1);
-    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
-    [encoder endEncoding];
+    if (!command) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+    uint32_t minX=static_cast<uint32_t>(std::clamp(std::floor(values[8]),0.0f,
+        static_cast<float>(layer->width)));
+    uint32_t minY=static_cast<uint32_t>(std::clamp(std::floor(values[9]),0.0f,
+        static_cast<float>(layer->height)));
+    uint32_t maxX=static_cast<uint32_t>(std::clamp(std::ceil(values[10]),
+        static_cast<float>(minX),static_cast<float>(layer->width)));
+    uint32_t maxY=static_cast<uint32_t>(std::clamp(std::ceil(values[11]),
+        static_cast<float>(minY),static_cast<float>(layer->height)));
+    if(maxX==minX||maxY==minY)return JALIUM_INK_DISPATCH_OK;
+    if(brush->pipeline){
+        id<MTLBuffer> pointBuffer=[impl_->device newBufferWithBytes:strokePoints
+            length:static_cast<NSUInteger>(pointCount)*16 options:MTLResourceStorageModeShared];
+        if(!pointBuffer)return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        MTLRenderPassDescriptor* pass=[MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture=layer->texture;
+        pass.colorAttachments[0].loadAction=MTLLoadActionLoad;
+        pass.colorAttachments[0].storeAction=MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> encoder=[command renderCommandEncoderWithDescriptor:pass];
+        if(!encoder)return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        [encoder setRenderPipelineState:brush->pipeline];
+        MTLViewport viewport{0,0,(double)layer->width,(double)layer->height,0,1};
+        MTLScissorRect scissor{minX,minY,maxX-minX,maxY-minY};
+        [encoder setViewport:viewport];[encoder setScissorRect:scissor];
+        [encoder setVertexBytes:patched.data() length:patched.size() atIndex:0];
+        [encoder setFragmentBytes:patched.data() length:patched.size() atIndex:0];
+        std::array<uint8_t,16> emptyParams{};
+        if(extraParams&&extraParamsSize<=4096){std::vector<uint8_t> padded(
+                std::max<uint32_t>(extraParamsSize,16));
+            std::memcpy(padded.data(),extraParams,extraParamsSize);
+            [encoder setFragmentBytes:padded.data() length:padded.size() atIndex:1];}
+        else if(extraParams&&extraParamsSize){id<MTLBuffer> extras=[impl_->device
+                newBufferWithBytes:extraParams length:extraParamsSize
+                options:MTLResourceStorageModeShared];[encoder setFragmentBuffer:extras offset:0 atIndex:1];}
+        else [encoder setFragmentBytes:emptyParams.data() length:emptyParams.size() atIndex:1];
+        [encoder setFragmentBuffer:pointBuffer offset:0 atIndex:2];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [encoder endEncoding];
+    }else{
+        id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+        if(!encoder)return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        [encoder setComputePipelineState:brush->fallbackPipeline];
+        [encoder setTexture:layer->texture atIndex:0];
+        [encoder setBytes:strokePoints length:static_cast<NSUInteger>(pointCount)*16 atIndex:0];
+        [encoder setBytes:patched.data() length:patched.size() atIndex:1];
+        uint32_t blend=static_cast<uint32_t>(brush->blendMode);
+        [encoder setBytes:&blend length:sizeof(blend) atIndex:2];
+        MTLSize groups=MTLSizeMake((maxX-minX+7)/8,(maxY-minY+7)/8,1);
+        [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(8,8,1)];
+        [encoder endEncoding];
+    }
     [command commit];
-    (void)extraParams; (void)extraParamsSize;
     return JALIUM_INK_DISPATCH_OK;
 #else
     (void)bitmap; (void)shader; (void)strokePoints; (void)pointCount;

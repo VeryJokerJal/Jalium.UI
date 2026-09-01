@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.28)
 project(JaliumNative VERSION 0.1.0 LANGUAGES CXX)
 
+# Apple backends contain Objective-C++ translation units (and the Metal
+# backend deliberately keeps its portable source files with a .cpp suffix so
+# the checked-in Visual Studio project can still compile the non-Apple stubs).
+# Setting a source's LANGUAGE property is not enough: CMake must first load the
+# Objective-C++ compiler, otherwise Xcode generation fails before the first
+# target is built.
+if(APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

@@ -25,15 +25,31 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 native_root="$repo_root/src/native"
 build_dir="$native_root/out/build/$preset"
 slice_dir="$native_root/artifacts/apple/slices/$rid/$configuration"
+deps_root="${JALIUM_APPLE_DEPS_ROOT:-$native_root/out/apple-deps}"
+compiler_env="$deps_root/slices/$rid/$configuration/jalium-shader-toolchain.env"
 
-cmake --preset "$preset" -S "$native_root"
+"$repo_root/eng/apple/prepare-shader-toolchain.sh" "$target" "$configuration"
+# The file is generated exclusively by prepare-shader-toolchain.sh and contains
+# shell-escaped absolute paths, not user input.
+# shellcheck disable=SC1090
+source "$compiler_env"
+
+cmake_compiler_args=(
+  -D "JALIUM_DXC_INCLUDE_DIR=$JALIUM_DXC_INCLUDE_DIR"
+  -D "JALIUM_DXC_LIBRARY=$JALIUM_DXC_LIBRARY"
+  -D "JALIUM_SPIRV_CROSS_INCLUDE_DIR=$JALIUM_SPIRV_CROSS_INCLUDE_DIR"
+  -D "JALIUM_SPIRV_CROSS_LIBRARIES=$JALIUM_SPIRV_CROSS_LIBRARIES"
+)
+
+cmake --preset "$preset" -S "$native_root" "${cmake_compiler_args[@]}"
+"$repo_root/eng/apple/generate-metal-shaders.sh" "$target" "$configuration"
 if [[ "$target" == macos ]]; then
   cmake --build "$build_dir" --config "$configuration" --target jalium.native.package.complete
-  ctest --test-dir "$build_dir" -C "$configuration" --output-on-failure
+  JALIUM_METALLIB_DIR="$native_root/artifacts/apple/slices/$rid/$configuration" \
+    ctest --test-dir "$build_dir" -C "$configuration" --output-on-failure
 else
   cmake --build "$build_dir" --config "$configuration" --target jalium.native.aot
 fi
-"$repo_root/eng/apple/generate-metal-shaders.sh" "$target" "$configuration"
 
 if [[ "$target" == macos ]]; then
   echo "Apple macOS dynamic payload ready: $native_root/bin/native/$rid/$configuration"
@@ -45,6 +61,12 @@ find "$build_dir" -type f -name '*.a' -path "*/$configuration/*" -exec cp -f {} 
 if ! find "$slice_dir" -maxdepth 1 -name '*.a' -print -quit | grep -q .; then
   find "$build_dir" -type f -name '*.a' -exec cp -f {} "$slice_dir/" \;
 fi
+# Static libraries do not recursively contain their private link dependencies.
+# Include the compiler archive in the slice so package-xcframework.sh folds it
+# into libJaliumNative.a and SourceHlsl remains available after ForceLoad/AOT.
+cp -f "$JALIUM_DXC_LIBRARY" "$slice_dir/"
+IFS=';' read -r -a spvc_archives <<< "$JALIUM_SPIRV_CROSS_LIBRARIES"
+for archive in "${spvc_archives[@]}"; do cp -f "$archive" "$slice_dir/"; done
 if ! find "$slice_dir" -maxdepth 1 -name '*.a' -print -quit | grep -q .; then
   echo "no static archives were produced for $rid" >&2
   exit 3

@@ -2,7 +2,7 @@
   "version": 6,
   "cmakeMinimumRequired": {
     "major": 3,
-    "minor": 25,
+    "minor": 28,
     "patch": 0
   },
   "configurePresets": [
@@ -114,7 +114,8 @@
       "cacheVariables": {
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": "NO",
-        "JALIUM_BUILD_DEMOS": false
+        "JALIUM_BUILD_DEMOS": false,
+        "JALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER": true
       }
     },
     {

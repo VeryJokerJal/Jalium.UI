@@ -17,3 +17,10 @@ The authoritative baseline is checkpoint `91c3242d` on
 Run `python tools/metal_parity_check.py` on every backend-interface change.
 The only allow-listed omissions are Windows HANDLE pacing and the two
 D3D12-specific leaked-command-list/Vello-orphan race injectors.
+
+The exhaustive generated method table lives in
+`docs/metal-d3d12-capabilities.generated.md`. The gate also checks concrete
+implementation markers for the frame ring/shared event, heap retirement,
+memoryless MSAA/stencil, damage preservation, both path engines, text cache,
+mipmaps, effects, dynamic HLSL, Ink and zero-copy video; declaration-only
+overrides therefore do not satisfy the gate.

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <pthread.h>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,9 @@ struct JaliumTimer {
     JaliumTimerCallback callback = nullptr;
     void* userData = nullptr;
     std::atomic<bool> alive{true};
+    std::atomic<bool> signalPending{false};
+    CADisplayLink* displayLink = nil;
+    id displayLinkTarget = nil;
 };
 
 @class JaliumAppleView;
@@ -47,6 +51,7 @@ struct JaliumPlatformWindow {
     JaliumAppleWindowDelegate* delegate = nil;
 #else
     UIWindow* window = nil;
+    __weak UIView* sceneRoot = nil;
 #endif
     JaliumAppleView* view = nil;
     JaliumEventCallback callback = nullptr;
@@ -62,6 +67,10 @@ struct JaliumPlatformWindow {
     float scale = 1.0f;
     uint64_t dragSession = 0;
     uint32_t dragEffect = JALIUM_DRAG_EFFECT_NONE;
+    std::atomic<bool> dragRunning{false};
+    JaliumDragFeedbackCallback dragFeedback = nullptr;
+    JaliumDragQueryContinueCallback dragQuery = nullptr;
+    void* dragUserData = nullptr;
 };
 
 namespace {
@@ -71,6 +80,10 @@ std::vector<JaliumPlatformWindow*> g_windows;
 std::atomic<int32_t> g_exitCode{0};
 std::atomic<bool> g_quit{false};
 __weak id g_rootView = nil;
+#if !TARGET_OS_OSX
+struct SceneRoot { std::string id; __weak UIView* view=nil; uint32_t claims=0; };
+std::vector<SceneRoot> g_sceneRoots;
+#endif
 
 void RetainDispatcher(JaliumDispatcher* dispatcher)
 { dispatcher->refs.fetch_add(1, std::memory_order_relaxed); }
@@ -81,6 +94,16 @@ int64_t MonotonicMillis()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void FireTimer(JaliumTimer* timer)
+{
+    if(!timer||!timer->alive.load(std::memory_order_acquire))return;
+    if(!timer->signalPending.exchange(true,std::memory_order_acq_rel))
+        dispatch_semaphore_signal(timer->fired);
+    JaliumTimerCallback callback=nullptr;void* data=nullptr;
+    {std::scoped_lock lock(timer->mutex);callback=timer->callback;data=timer->userData;}
+    if(callback)callback(data);
 }
 
 NSString* StringFromUtf16(const JaliumUtf16Char* value)
@@ -149,9 +172,82 @@ int32_t VirtualKeyFromCharacter(unichar c)
     }
 }
 
-#if !TARGET_OS_OSX
-UIView* FindRootView()
+#if TARGET_OS_OSX
+uint32_t EffectsFromOperation(NSDragOperation operation)
 {
+    uint32_t result=JALIUM_DRAG_EFFECT_NONE;
+    if(operation&NSDragOperationCopy)result|=JALIUM_DRAG_EFFECT_COPY;
+    if(operation&NSDragOperationMove)result|=JALIUM_DRAG_EFFECT_MOVE;
+    if(operation&NSDragOperationLink)result|=JALIUM_DRAG_EFFECT_LINK;
+    return result;
+}
+
+NSDragOperation OperationFromEffects(uint32_t effects)
+{
+    NSDragOperation result=NSDragOperationNone;
+    if(effects&JALIUM_DRAG_EFFECT_COPY)result|=NSDragOperationCopy;
+    if(effects&JALIUM_DRAG_EFFECT_MOVE)result|=NSDragOperationMove;
+    if(effects&JALIUM_DRAG_EFFECT_LINK)result|=NSDragOperationLink;
+    return result;
+}
+
+std::string PasteboardTypesUtf8(NSPasteboard* pasteboard)
+{
+    std::string result;
+    for(NSPasteboardType type in pasteboard.types){if(!result.empty())result.push_back('\n');
+        NSString* mapped=type;
+        if([type isEqualToString:NSPasteboardTypeString])mapped=@"text/plain;charset=utf-8";
+        else if([type isEqualToString:NSPasteboardTypeURL]||
+                [type isEqualToString:NSPasteboardTypeFileURL])mapped=@"text/uri-list";
+        else if([type isEqualToString:NSPasteboardTypePNG])mapped=@"image/png";
+        else if([type isEqualToString:NSPasteboardTypeTIFF])mapped=@"image/tiff";
+        const char* utf8=mapped.UTF8String;if(utf8)result+=utf8;}
+    return result;
+}
+
+NSPasteboardType PasteboardTypeFromMime(const char* mime)
+{
+    if(!mime)return nil;NSString* value=[NSString stringWithUTF8String:mime];
+    if([value hasPrefix:@"text/plain"])return NSPasteboardTypeString;
+    if([value isEqualToString:@"text/uri-list"])return NSPasteboardTypeURL;
+    if([value isEqualToString:@"image/png"])return NSPasteboardTypePNG;
+    if([value isEqualToString:@"image/tiff"])return NSPasteboardTypeTIFF;
+    return value;
+}
+
+const char* MimeForPasteboardType(NSPasteboardType type,std::string& storage)
+{
+    if([type isEqualToString:NSPasteboardTypeString])storage="text/plain;charset=utf-8";
+    else if([type isEqualToString:NSPasteboardTypeURL]||
+            [type isEqualToString:NSPasteboardTypeFileURL])storage="text/uri-list";
+    else if([type isEqualToString:NSPasteboardTypePNG])storage="image/png";
+    else if([type isEqualToString:NSPasteboardTypeTIFF])storage="image/tiff";
+    else storage=type.UTF8String?:"";return storage.c_str();
+}
+
+void DispatchDragEvent(JaliumPlatformWindow* window,id<NSDraggingInfo> info,
+    JaliumEventType type,const char* dataMime=nullptr,const uint8_t* data=nullptr,
+    uint32_t dataSize=0)
+{
+    if(!window)return;
+    NSPoint point=[window->view convertPoint:info.draggingLocation fromView:nil];
+    std::string types=PasteboardTypesUtf8(info.draggingPasteboard);
+    window->dragSession=static_cast<uint64_t>(info.draggingSequenceNumber);
+    if(type==JALIUM_EVENT_DRAG_ENTER)window->dragEffect=JALIUM_DRAG_EFFECT_NONE;
+    JaliumPlatformEvent event{};event.type=type;
+    event.drag.x=point.x*window->scale;event.drag.y=point.y*window->scale;
+    event.drag.allowedEffects=EffectsFromOperation(info.draggingSourceOperationMask);
+    event.drag.sessionId=window->dragSession;event.drag.mimeTypes=types.c_str();
+    event.drag.dataMimeType=dataMime;event.drag.data=data;event.drag.dataSize=dataSize;
+    DispatchWindowEvent(window,event);
+}
+#endif
+
+#if !TARGET_OS_OSX
+UIView* AcquireRootView()
+{
+    {std::scoped_lock lock(g_windowsMutex);
+        for(auto& root:g_sceneRoots)if(root.view&&root.claims==0){++root.claims;return root.view;}}
     if (g_rootView && [g_rootView isKindOfClass:[UIView class]]) return g_rootView;
     for (UIScene* scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
@@ -162,13 +258,27 @@ UIView* FindRootView()
     }
     return nil;
 }
+
+void ReleaseRootView(UIView* view)
+{
+    if(!view)return;std::scoped_lock lock(g_windowsMutex);
+    for(auto& root:g_sceneRoots)if(root.view==view&&root.claims){--root.claims;break;}
+}
 #endif
 
 } // namespace
 
+@interface JaliumDisplayLinkTarget : NSObject
+@property(nonatomic,assign) JaliumTimer* timer;
+- (void)displayLinkTick:(CADisplayLink*)link;
+@end
+@implementation JaliumDisplayLinkTarget
+- (void)displayLinkTick:(CADisplayLink*)link { FireTimer(_timer); (void)link; }
+@end
+
 #if TARGET_OS_OSX
 
-@interface JaliumAppleView : NSView <NSTextInputClient>
+@interface JaliumAppleView : NSView <NSTextInputClient,NSDraggingDestination,NSDraggingSource>
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
 @property(nonatomic, strong) NSMutableAttributedString* markedText;
 @property(nonatomic) NSRange selectionRange;
@@ -177,6 +287,9 @@ UIView* FindRootView()
 
 @implementation JaliumAppleView
 + (Class)layerClass { return [CAMetalLayer class]; }
+- (instancetype)initWithFrame:(NSRect)frame {self=[super initWithFrame:frame];if(self){
+    [self registerForDraggedTypes:@[NSPasteboardTypeString,NSPasteboardTypeURL,
+        NSPasteboardTypeFileURL,NSPasteboardTypePNG,NSPasteboardTypeTIFF]];}return self;}
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)becomeFirstResponder { DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_GAINED); return YES; }
@@ -274,6 +387,14 @@ UIView* FindRootView()
 - (void)doCommandBySelector:(SEL)selector {if(selector==@selector(deleteBackward:)){
     JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEY_DOWN;e.key.keyCode=0x08;DispatchWindowEvent(_jaliumOwner,e);}}
 - (NSInteger)conversationIdentifier{return (NSInteger)(__bridge void*)self;}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {DispatchDragEvent(_jaliumOwner,sender,JALIUM_EVENT_DRAG_ENTER);return OperationFromEffects(_jaliumOwner->dragEffect);}
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {DispatchDragEvent(_jaliumOwner,sender,JALIUM_EVENT_DRAG_OVER);return OperationFromEffects(_jaliumOwner->dragEffect);}
+- (void)draggingExited:(id<NSDraggingInfo>)sender {DispatchDragEvent(_jaliumOwner,sender,JALIUM_EVENT_DRAG_LEAVE);_jaliumOwner->dragSession=0;}
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {NSPasteboard* pasteboard=sender.draggingPasteboard;NSPasteboardType selected=nil;NSData* payload=nil;for(NSPasteboardType type in pasteboard.types){if([type isEqualToString:NSPasteboardTypeString]||[type isEqualToString:NSPasteboardTypeURL]||[type isEqualToString:NSPasteboardTypeFileURL]){NSString* value=[pasteboard stringForType:type];payload=[value dataUsingEncoding:NSUTF8StringEncoding];}else payload=[pasteboard dataForType:type];if(payload){selected=type;break;}}std::string mimeStorage;const char* mime=MimeForPasteboardType(selected,mimeStorage);DispatchDragEvent(_jaliumOwner,sender,JALIUM_EVENT_DROP,mime,(const uint8_t*)payload.bytes,(uint32_t)payload.length);BOOL accepted=_jaliumOwner->dragEffect!=JALIUM_DRAG_EFFECT_NONE;_jaliumOwner->dragSession=0;return accepted;}
+- (NSDragOperation)draggingSession:(NSDraggingSession*)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {(void)session;(void)context;return OperationFromEffects(_jaliumOwner->dragEffect);}
+- (void)draggingSession:(NSDraggingSession*)session movedToPoint:(NSPoint)screenPoint {if(_jaliumOwner->dragQuery){NSEvent* event=NSApp.currentEvent;uint32_t keys=0;if(event.modifierFlags&NSEventModifierFlagControl)keys|=0x08;if(event.modifierFlags&NSEventModifierFlagShift)keys|=0x04;if(event.modifierFlags&NSEventModifierFlagOption)keys|=0x20;JaliumDragContinueAction action=_jaliumOwner->dragQuery(keys,0,_jaliumOwner->dragUserData);if(action==JALIUM_DRAG_CANCEL)[session cancelDragging];}if(_jaliumOwner->dragFeedback)_jaliumOwner->dragFeedback(_jaliumOwner->dragEffect,_jaliumOwner->dragUserData);(void)screenPoint;}
+- (void)draggingSession:(NSDraggingSession*)session endedAtPoint:(NSPoint)screenPoint operation:(NSDragOperation)operation {_jaliumOwner->dragEffect=EffectsFromOperation(operation);_jaliumOwner->dragRunning.store(false);JaliumPlatformEvent event{};event.type=JALIUM_EVENT_DRAG_FINISHED;event.drag.allowedEffects=_jaliumOwner->dragEffect;DispatchWindowEvent(_jaliumOwner,event);(void)session;(void)screenPoint;}
+- (BOOL)ignoreModifierKeysForDraggingSession:(NSDraggingSession*)session {(void)session;return NO;}
 @end
 
 @interface JaliumAppleWindowDelegate : NSObject <NSWindowDelegate>
@@ -292,25 +413,50 @@ UIView* FindRootView()
 
 #else
 
+#if TARGET_OS_TV
 @interface JaliumAppleView : UIView <UIKeyInput>
+#else
+@interface JaliumAppleView : UIView <UIKeyInput,UIDropInteractionDelegate>
+#endif
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
 @property(nonatomic, strong) UITextInputAssistantItem* jaliumAssistant;
+@property(nonatomic) NSInteger lastOrientation;
 @end
 @implementation JaliumAppleView
 + (Class)layerClass{return [CAMetalLayer class];}
+- (instancetype)initWithFrame:(CGRect)frame {self=[super initWithFrame:frame];if(self){_lastOrientation=-1;NSNotificationCenter* center=NSNotificationCenter.defaultCenter;[center addObserver:self selector:@selector(keyboardFrameChanged:) name:UIKeyboardWillChangeFrameNotification object:nil];[center addObserver:self selector:@selector(keyboardHidden:) name:UIKeyboardWillHideNotification object:nil];
+#if !TARGET_OS_TV
+    [self addInteraction:[[UIDropInteraction alloc]initWithDelegate:self]];
+#endif
+    }return self;}
+- (void)dealloc {[NSNotificationCenter.defaultCenter removeObserver:self];}
 - (BOOL)canBecomeFirstResponder{return YES;}
 - (BOOL)hasText{return YES;}
 - (void)insertText:(NSString*)text {for(NSUInteger i=0;i<text.length;){unichar hi=[text characterAtIndex:i++];uint32_t cp=hi;if(hi>=0xd800&&hi<=0xdbff&&i<text.length){unichar lo=[text characterAtIndex:i];if(lo>=0xdc00&&lo<=0xdfff){++i;cp=0x10000+((hi-0xd800)<<10)+(lo-0xdc00);}}JaliumPlatformEvent e{};e.type=JALIUM_EVENT_CHAR_INPUT;e.character.codepoint=cp;DispatchWindowEvent(_jaliumOwner,e);}}
 - (void)deleteBackward {JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEY_DOWN;e.key.keyCode=0x08;DispatchWindowEvent(_jaliumOwner,e);}
-- (void)layoutSubviews {[super layoutSubviews];CGFloat scale=self.contentScaleFactor;_jaliumOwner->scale=scale;_jaliumOwner->width=lround(self.bounds.size.width*scale);_jaliumOwner->height=lround(self.bounds.size.height*scale);JaliumPlatformEvent e{};e.type=JALIUM_EVENT_RESIZE;e.resize.width=_jaliumOwner->width;e.resize.height=_jaliumOwner->height;DispatchWindowEvent(_jaliumOwner,e);}
-- (void)safeAreaInsetsDidChange {[super safeAreaInsetsDidChange];UIEdgeInsets i=self.safeAreaInsets;JaliumPlatformEvent e{};e.type=JALIUM_EVENT_SAFE_AREA_CHANGED;e.safeArea.top=i.top;e.safeArea.bottom=i.bottom;e.safeArea.left=i.left;e.safeArea.right=i.right;DispatchWindowEvent(_jaliumOwner,e);}
-- (void)dispatchTouches:(NSSet<UITouch*>*)touches type:(JaliumEventType)type {for(UITouch* touch in touches){CGPoint p=[touch locationInView:self];JaliumPlatformEvent e{};e.type=type;e.pointer.pointerId=(uint32_t)((uintptr_t)(__bridge void*)touch&0xffffffffu);e.pointer.x=p.x*self.contentScaleFactor;e.pointer.y=p.y*self.contentScaleFactor;e.pointer.pressure=touch.maximumPossibleForce>0?touch.force/touch.maximumPossibleForce:1;e.pointer.pointerType=touch.type==UITouchTypePencil?JALIUM_POINTER_PEN:JALIUM_POINTER_TOUCH;e.pointer.flags=JALIUM_POINTER_FLAG_IN_RANGE|(type==JALIUM_EVENT_POINTER_UP||type==JALIUM_EVENT_POINTER_CANCEL?0:JALIUM_POINTER_FLAG_IN_CONTACT);e.pointer.toolType=touch.type==UITouchTypePencil?JALIUM_POINTER_TOOL_PENCIL:JALIUM_POINTER_TOOL_UNKNOWN;e.pointer.buttons=type==JALIUM_EVENT_POINTER_UP?0:JALIUM_POINTER_BUTTON_PRIMARY;e.pointer.timestampMillis=MonotonicMillis();if(touch.type==UITouchTypePencil){e.pointer.tiltX=cos(touch.azimuthAngleInView)*touch.altitudeAngle*180/M_PI;e.pointer.tiltY=sin(touch.azimuthAngleInView)*touch.altitudeAngle*180/M_PI;}DispatchWindowEvent(_jaliumOwner,e);}}
-- (void)touchesBegan:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t type:JALIUM_EVENT_POINTER_DOWN];}
-- (void)touchesMoved:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t type:JALIUM_EVENT_POINTER_MOVE];}
-- (void)touchesEnded:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t type:JALIUM_EVENT_POINTER_UP];}
-- (void)touchesCancelled:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t type:JALIUM_EVENT_POINTER_CANCEL];}
-- (void)pressesBegan:(NSSet<UIPress*>*)presses withEvent:(UIPressesEvent*)event {for(UIPress* press in presses){UIKey* key=press.key;if(!key)continue;JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEY_DOWN;NSString* chars=key.charactersIgnoringModifiers;e.key.keyCode=VirtualKeyFromCharacter(chars.length?[chars characterAtIndex:0]:0);e.key.scanCode=(int32_t)key.keyCode;e.key.modifiers=ModifiersFromFlags(key.modifierFlags);DispatchWindowEvent(_jaliumOwner,e);} [super pressesBegan:presses withEvent:event];}
-- (void)pressesEnded:(NSSet<UIPress*>*)presses withEvent:(UIPressesEvent*)event {for(UIPress* press in presses){UIKey* key=press.key;if(!key)continue;JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEY_UP;NSString* chars=key.charactersIgnoringModifiers;e.key.keyCode=VirtualKeyFromCharacter(chars.length?[chars characterAtIndex:0]:0);e.key.scanCode=(int32_t)key.keyCode;e.key.modifiers=ModifiersFromFlags(key.modifierFlags);DispatchWindowEvent(_jaliumOwner,e);} [super pressesEnded:presses withEvent:event];}
+- (void)layoutSubviews {[super layoutSubviews];if(!_jaliumOwner)return;CGFloat scale=self.contentScaleFactor;_jaliumOwner->scale=scale;_jaliumOwner->width=lround(self.bounds.size.width*scale);_jaliumOwner->height=lround(self.bounds.size.height*scale);JaliumPlatformEvent e{};e.type=JALIUM_EVENT_RESIZE;e.resize.width=_jaliumOwner->width;e.resize.height=_jaliumOwner->height;DispatchWindowEvent(_jaliumOwner,e);UIInterfaceOrientation native=self.window.windowScene.interfaceOrientation;NSInteger orientation=(native==UIInterfaceOrientationLandscapeLeft?1:native==UIInterfaceOrientationPortraitUpsideDown?2:native==UIInterfaceOrientationLandscapeRight?3:0);if(orientation!=self.lastOrientation){self.lastOrientation=orientation;JaliumPlatformEvent changed{};changed.type=JALIUM_EVENT_ORIENTATION_CHANGED;changed.orientationChanged.orientation=(int32_t)orientation;DispatchWindowEvent(_jaliumOwner,changed);}}
+- (void)safeAreaInsetsDidChange {[super safeAreaInsetsDidChange];if(!_jaliumOwner)return;UIEdgeInsets i=self.safeAreaInsets;CGFloat scale=self.contentScaleFactor;JaliumPlatformEvent e{};e.type=JALIUM_EVENT_SAFE_AREA_CHANGED;e.safeArea.top=i.top*scale;e.safeArea.bottom=i.bottom*scale;e.safeArea.left=i.left*scale;e.safeArea.right=i.right*scale;DispatchWindowEvent(_jaliumOwner,e);}
+- (void)keyboardFrameChanged:(NSNotification*)notification {if(!_jaliumOwner||!self.window)return;CGRect screen=[notification.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];CGRect local=[self convertRect:screen fromView:nil];CGRect overlap=CGRectIntersection(self.bounds,local);JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEYBOARD_CHANGED;e.keyboard.visible=!CGRectIsNull(overlap)&&overlap.size.height>0.5;e.keyboard.heightPx=e.keyboard.visible?(int32_t)lround(overlap.size.height*self.contentScaleFactor):0;DispatchWindowEvent(_jaliumOwner,e);}
+- (void)keyboardHidden:(NSNotification*)notification {if(!_jaliumOwner)return;JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEYBOARD_CHANGED;e.keyboard.visible=0;e.keyboard.heightPx=0;DispatchWindowEvent(_jaliumOwner,e);(void)notification;}
+- (void)dispatchTouchSample:(UITouch*)touch type:(JaliumEventType)type flags:(uint32_t)sampleFlags primary:(BOOL)primary {CGPoint p=[touch locationInView:self];JaliumPlatformEvent e{};e.type=type;e.pointer.pointerId=(uint32_t)((uintptr_t)(__bridge void*)touch&0xffffffffu);e.pointer.x=p.x*self.contentScaleFactor;e.pointer.y=p.y*self.contentScaleFactor;e.pointer.pressure=touch.maximumPossibleForce>0?touch.force/touch.maximumPossibleForce:1;e.pointer.pointerType=touch.type==UITouchTypePencil?JALIUM_POINTER_PEN:JALIUM_POINTER_TOUCH;e.pointer.flags=JALIUM_POINTER_FLAG_IN_RANGE|sampleFlags|(primary?JALIUM_POINTER_FLAG_PRIMARY:0)|(type==JALIUM_EVENT_POINTER_UP||type==JALIUM_EVENT_POINTER_CANCEL?0:JALIUM_POINTER_FLAG_IN_CONTACT);e.pointer.toolType=touch.type==UITouchTypePencil?JALIUM_POINTER_TOOL_PENCIL:JALIUM_POINTER_TOOL_UNKNOWN;e.pointer.buttons=type==JALIUM_EVENT_POINTER_UP?0:JALIUM_POINTER_BUTTON_PRIMARY;e.pointer.timestampMillis=(int64_t)llround(touch.timestamp*1000.0);if(touch.type==UITouchTypePencil){CGFloat azimuth=[touch azimuthAngleInView:self];CGFloat tilt=(M_PI_2-touch.altitudeAngle)*180.0/M_PI;e.pointer.tiltX=cos(azimuth)*tilt;e.pointer.tiltY=sin(azimuth)*tilt;e.pointer.twist=azimuth*180.0/M_PI;}DispatchWindowEvent(_jaliumOwner,e);}
+- (void)dispatchTouches:(NSSet<UITouch*>*)touches event:(UIEvent*)event type:(JaliumEventType)type {UITouch* primary=event.allTouches.anyObject;for(UITouch* touch in touches){BOOL isPrimary=touch==primary;if(type==JALIUM_EVENT_POINTER_MOVE){NSArray<UITouch*>* coalesced=[event coalescedTouchesForTouch:touch];for(UITouch* sample in coalesced)[self dispatchTouchSample:sample type:type flags:JALIUM_POINTER_FLAG_COALESCED primary:isPrimary];NSArray<UITouch*>* predicted=[event predictedTouchesForTouch:touch];for(UITouch* sample in predicted)[self dispatchTouchSample:sample type:type flags:JALIUM_POINTER_FLAG_PREDICTED primary:isPrimary];if(coalesced.count==0)[self dispatchTouchSample:touch type:type flags:0 primary:isPrimary];}else [self dispatchTouchSample:touch type:type flags:0 primary:isPrimary];}}
+- (void)touchesBegan:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t event:e type:JALIUM_EVENT_POINTER_DOWN];}
+- (void)touchesMoved:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t event:e type:JALIUM_EVENT_POINTER_MOVE];}
+- (void)touchesEnded:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t event:e type:JALIUM_EVENT_POINTER_UP];}
+- (void)touchesCancelled:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t event:e type:JALIUM_EVENT_POINTER_CANCEL];}
+- (int32_t)virtualKeyForPress:(UIPress*)press {UIKey* key=press.key;if(key){NSString* chars=key.charactersIgnoringModifiers;return VirtualKeyFromCharacter(chars.length?[chars characterAtIndex:0]:0);}switch(press.type){case UIPressTypeUpArrow:return 0x26;case UIPressTypeDownArrow:return 0x28;case UIPressTypeLeftArrow:return 0x25;case UIPressTypeRightArrow:return 0x27;case UIPressTypeSelect:return 0x0d;case UIPressTypeMenu:return 0x1b;case UIPressTypePlayPause:return 0xb3;default:return 0;}}
+- (void)dispatchPresses:(NSSet<UIPress*>*)presses type:(JaliumEventType)type {for(UIPress* press in presses){int32_t virtualKey=[self virtualKeyForPress:press];if(!virtualKey)continue;UIKey* key=press.key;JaliumPlatformEvent e{};e.type=type;e.key.keyCode=virtualKey;e.key.scanCode=key?(int32_t)key.keyCode:(int32_t)press.type;e.key.modifiers=key?ModifiersFromFlags(key.modifierFlags):0;DispatchWindowEvent(_jaliumOwner,e);}}
+- (void)pressesBegan:(NSSet<UIPress*>*)presses withEvent:(UIPressesEvent*)event {[self dispatchPresses:presses type:JALIUM_EVENT_KEY_DOWN];[super pressesBegan:presses withEvent:event];}
+- (void)pressesEnded:(NSSet<UIPress*>*)presses withEvent:(UIPressesEvent*)event {[self dispatchPresses:presses type:JALIUM_EVENT_KEY_UP];[super pressesEnded:presses withEvent:event];}
+#if !TARGET_OS_TV
+- (std::string)dropTypes:(id<UIDropSession>)session {std::string result;for(UIDragItem* item in session.items)for(NSString* type in item.itemProvider.registeredTypeIdentifiers){const char* utf8=type.UTF8String;if(!utf8)continue;if(!result.empty())result.push_back('\n');result+=utf8;}return result;}
+- (void)dispatchDropSession:(id<UIDropSession>)session type:(JaliumEventType)type mime:(const char*)mime data:(const uint8_t*)data size:(uint32_t)size {if(!_jaliumOwner)return;CGPoint point=[session locationInView:self];std::string types=[self dropTypes:session];uint64_t identifier=(uint64_t)(__bridge void*)session;_jaliumOwner->dragSession=identifier;if(type==JALIUM_EVENT_DRAG_ENTER)_jaliumOwner->dragEffect=JALIUM_DRAG_EFFECT_NONE;JaliumPlatformEvent event{};event.type=type;event.drag.x=point.x*self.contentScaleFactor;event.drag.y=point.y*self.contentScaleFactor;event.drag.allowedEffects=JALIUM_DRAG_EFFECT_COPY|JALIUM_DRAG_EFFECT_MOVE;event.drag.sessionId=identifier;event.drag.mimeTypes=types.c_str();event.drag.dataMimeType=mime;event.drag.data=data;event.drag.dataSize=size;DispatchWindowEvent(_jaliumOwner,event);}
+- (BOOL)dropInteraction:(UIDropInteraction*)interaction canHandleSession:(id<UIDropSession>)session {(void)interaction;return session.items.count>0;}
+- (void)dropInteraction:(UIDropInteraction*)interaction sessionDidEnter:(id<UIDropSession>)session {(void)interaction;[self dispatchDropSession:session type:JALIUM_EVENT_DRAG_ENTER mime:nullptr data:nullptr size:0];}
+- (UIDropProposal*)dropInteraction:(UIDropInteraction*)interaction sessionDidUpdate:(id<UIDropSession>)session {(void)interaction;[self dispatchDropSession:session type:JALIUM_EVENT_DRAG_OVER mime:nullptr data:nullptr size:0];UIDropOperation operation=UIDropOperationCancel;if(_jaliumOwner->dragEffect&JALIUM_DRAG_EFFECT_MOVE)operation=UIDropOperationMove;else if(_jaliumOwner->dragEffect&JALIUM_DRAG_EFFECT_COPY)operation=UIDropOperationCopy;return [[UIDropProposal alloc]initWithDropOperation:operation];}
+- (void)dropInteraction:(UIDropInteraction*)interaction sessionDidExit:(id<UIDropSession>)session {(void)interaction;[self dispatchDropSession:session type:JALIUM_EVENT_DRAG_LEAVE mime:nullptr data:nullptr size:0];_jaliumOwner->dragSession=0;}
+- (void)dropInteraction:(UIDropInteraction*)interaction performDrop:(id<UIDropSession>)session {(void)interaction;UIDragItem* item=session.items.firstObject;NSString* type=item.itemProvider.registeredTypeIdentifiers.firstObject;if(!type){[self dispatchDropSession:session type:JALIUM_EVENT_DROP mime:nullptr data:nullptr size:0];return;}__weak JaliumAppleView* weakSelf=self;[item.itemProvider loadDataRepresentationForTypeIdentifier:type completionHandler:^(NSData* data,NSError*){dispatch_async(dispatch_get_main_queue(),^{JaliumAppleView* strongSelf=weakSelf;if(!strongSelf)return;[strongSelf dispatchDropSession:session type:JALIUM_EVENT_DROP mime:type.UTF8String data:(const uint8_t*)data.bytes size:(uint32_t)data.length];strongSelf.jaliumOwner->dragSession=0;});}];}
+#endif
 @end
 
 #endif
@@ -338,6 +484,31 @@ JaliumPlatform jalium_platform_get_current_impl()
 
 void jalium_apple_set_root_view(intptr_t nativeView)
 {g_rootView=nativeView?(__bridge id)(void*)nativeView:nil;}
+void jalium_apple_register_scene_root(const char* sceneId,intptr_t nativeView)
+{
+#if TARGET_OS_OSX
+    (void)sceneId;(void)nativeView;
+#else
+    if(!sceneId||!*sceneId||!nativeView)return;UIView* view=(__bridge UIView*)(void*)nativeView;
+    std::scoped_lock lock(g_windowsMutex);auto it=std::find_if(g_sceneRoots.begin(),g_sceneRoots.end(),
+        [&](const SceneRoot& root){return root.id==sceneId;});
+    if(it==g_sceneRoots.end())g_sceneRoots.push_back({sceneId,view,0});else it->view=view;
+    g_rootView=view;
+#endif
+}
+void jalium_apple_unregister_scene_root(const char* sceneId)
+{
+#if TARGET_OS_OSX
+    (void)sceneId;
+#else
+    if(!sceneId)return;std::vector<JaliumPlatformWindow*> affected;
+    {std::scoped_lock lock(g_windowsMutex);auto it=std::find_if(g_sceneRoots.begin(),g_sceneRoots.end(),
+        [&](const SceneRoot& root){return root.id==sceneId;});if(it==g_sceneRoots.end())return;
+        UIView* view=it->view;for(auto* window:g_windows)if(window->sceneRoot==view)affected.push_back(window);
+        g_sceneRoots.erase(it);}
+    for(auto* window:affected)DispatchSimple(window,JALIUM_EVENT_CLOSE_REQUESTED);
+#endif
+}
 void jalium_apple_notify_lifecycle(int32_t eventType)
 {
     JaliumEventType type=(JaliumEventType)eventType;
@@ -376,7 +547,8 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     if(params->style&JALIUM_WINDOW_STYLE_TOPMOST)result->window.level=NSFloatingWindowLevel;
     result->scale=result->window.backingScaleFactor;
 #else
-    UIView* root=FindRootView();if(!root)return nullptr;
+    UIView* root=AcquireRootView();if(!root)return nullptr;
+    result->sceneRoot=root;
     result->view=[[JaliumAppleView alloc]initWithFrame:root.bounds];
     result->view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
     result->view.jaliumOwner=result.get();result->view.contentScaleFactor=UIScreen.mainScreen.scale;
@@ -395,6 +567,7 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
 #if TARGET_OS_OSX
     window->window.delegate=nil;[window->window orderOut:nil];[window->window close];
 #else
+    ReleaseRootView(window->sceneRoot);
     [window->view removeFromSuperview];
 #endif
     DispatchSimple(window,JALIUM_EVENT_DESTROYED);delete window;
@@ -491,14 +664,27 @@ void jalium_dispatcher_destroy(JaliumDispatcher* d){if(!d)return;d->alive.store(
 void jalium_dispatcher_set_callback(JaliumDispatcher* d,JaliumDispatcherCallback cb,void* data){if(!d)return;std::scoped_lock lock(d->mutex);d->callback=cb;d->userData=data;}
 void jalium_dispatcher_wake(JaliumDispatcher* d){if(!d||!d->alive.load()||d->queued.exchange(true))return;RetainDispatcher(d);dispatch_async(dispatch_get_main_queue(),^{if(d->alive.load()){d->queued.store(false);JaliumDispatcherCallback cb=nullptr;void* data=nullptr;{std::scoped_lock lock(d->mutex);cb=d->callback;data=d->userData;}if(cb)cb(data);}ReleaseDispatcher(d);});}
 
-JaliumResult jalium_timer_create(JaliumTimer** out){if(!out)return JALIUM_ERROR_INVALID_ARGUMENT;auto* t=new JaliumTimer();t->fired=dispatch_semaphore_create(0);t->source=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0));if(!t->source){delete t;return JALIUM_ERROR_RESOURCE_CREATION_FAILED;}dispatch_source_set_event_handler(t->source,^{if(!t->alive.load())return;dispatch_semaphore_signal(t->fired);JaliumTimerCallback cb=nullptr;void* data=nullptr;{std::scoped_lock lock(t->mutex);cb=t->callback;data=t->userData;}if(cb)cb(data);});dispatch_source_set_cancel_handler(t->source,^{delete t;});dispatch_resume(t->source);*out=t;return JALIUM_OK;}
-void jalium_timer_destroy(JaliumTimer* t){if(!t)return;t->alive.store(false);dispatch_source_cancel(t->source);}
-static void ArmTimer(JaliumTimer* t,int64_t us,bool repeat){if(!t||us<0)return;uint64_t ns=(uint64_t)us*1000;dispatch_source_set_timer(t->source,dispatch_time(DISPATCH_TIME_NOW,ns),repeat?ns:DISPATCH_TIME_FOREVER,std::min<uint64_t>(ns/20,1000000));}
+JaliumResult jalium_timer_create(JaliumTimer** out){if(!out)return JALIUM_ERROR_INVALID_ARGUMENT;auto* t=new JaliumTimer();t->fired=dispatch_semaphore_create(0);t->source=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0));if(!t->source){delete t;return JALIUM_ERROR_RESOURCE_CREATION_FAILED;}dispatch_source_set_event_handler(t->source,^{FireTimer(t);});dispatch_source_set_cancel_handler(t->source,^{delete t;});dispatch_resume(t->source);*out=t;return JALIUM_OK;}
+static void StopDisplayLink(JaliumTimer* t){if(!t||(!t->displayLink&&!t->displayLinkTarget))return;auto stop=^{[t->displayLink invalidate];t->displayLink=nil;((JaliumDisplayLinkTarget*)t->displayLinkTarget).timer=nullptr;t->displayLinkTarget=nil;};if(pthread_main_np())stop();else dispatch_sync(dispatch_get_main_queue(),stop);}
+void jalium_timer_destroy(JaliumTimer* t){if(!t)return;t->alive.store(false);StopDisplayLink(t);dispatch_source_cancel(t->source);}
+static void ArmTimer(JaliumTimer* t,int64_t us,bool repeat){if(!t||us<0)return;
+    // CompositionTarget's repeating 60/120 Hz timer is synchronized to the
+    // display. Longer/general-purpose timers keep dispatch_source semantics.
+    if(repeat&&us>0&&us<=25000){dispatch_source_set_timer(t->source,DISPATCH_TIME_FOREVER,DISPATCH_TIME_FOREVER,0);
+        auto start=^{StopDisplayLink(t);auto* target=[JaliumDisplayLinkTarget new];target.timer=t;
+            CADisplayLink* link=[CADisplayLink displayLinkWithTarget:target selector:@selector(displayLinkTick:)];
+            float hz=std::clamp(1000000.0f/static_cast<float>(us),30.0f,240.0f);
+            link.preferredFrameRateRange=CAFrameRateRangeMake(30.0f,hz,hz);
+            [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+            t->displayLinkTarget=target;t->displayLink=link;};
+        if(pthread_main_np())start();else dispatch_sync(dispatch_get_main_queue(),start);return;}
+    StopDisplayLink(t);uint64_t ns=(uint64_t)us*1000;
+    dispatch_source_set_timer(t->source,dispatch_time(DISPATCH_TIME_NOW,ns),repeat?ns:DISPATCH_TIME_FOREVER,std::min<uint64_t>(ns/20,1000000));}
 void jalium_timer_arm(JaliumTimer* t,int64_t us){ArmTimer(t,us,false);}
 void jalium_timer_arm_repeating(JaliumTimer* t,int64_t us){ArmTimer(t,us,true);}
-void jalium_timer_disarm(JaliumTimer* t){if(t)dispatch_source_set_timer(t->source,DISPATCH_TIME_FOREVER,DISPATCH_TIME_FOREVER,0);}
+void jalium_timer_disarm(JaliumTimer* t){if(t){StopDisplayLink(t);dispatch_source_set_timer(t->source,DISPATCH_TIME_FOREVER,DISPATCH_TIME_FOREVER,0);t->signalPending.store(false);}}
 void jalium_timer_set_callback(JaliumTimer* t,JaliumTimerCallback cb,void* data){if(!t)return;std::scoped_lock lock(t->mutex);t->callback=cb;t->userData=data;}
-int32_t jalium_timer_wait(JaliumTimer* t,uint32_t ms){if(!t)return 0;dispatch_time_t timeout=ms?dispatch_time(DISPATCH_TIME_NOW,(int64_t)ms*NSEC_PER_MSEC):DISPATCH_TIME_FOREVER;return dispatch_semaphore_wait(t->fired,timeout)==0?1:0;}
+int32_t jalium_timer_wait(JaliumTimer* t,uint32_t ms){if(!t)return 0;dispatch_time_t timeout=ms?dispatch_time(DISPATCH_TIME_NOW,(int64_t)ms*NSEC_PER_MSEC):DISPATCH_TIME_FOREVER;int success=dispatch_semaphore_wait(t->fired,timeout)==0?1:0;if(success)t->signalPending.store(false,std::memory_order_release);return success;}
 
 float jalium_platform_get_system_dpi_scale(void){
 #if TARGET_OS_OSX
@@ -606,7 +792,19 @@ int32_t jalium_window_update_ime_context(JaliumPlatformWindow* w,int32_t enabled
     if(enabled)[w->view becomeFirstResponder];else [w->view resignFirstResponder];
 #endif
     return JALIUM_OK;}
-int16_t jalium_input_get_key_state(int32_t){return 0;}
+int16_t jalium_input_get_key_state(int32_t keyCode){
+#if TARGET_OS_OSX
+    NSEventModifierFlags flags=NSEvent.modifierFlags;
+    bool down=(keyCode==0x10&&(flags&NSEventModifierFlagShift))||
+        (keyCode==0x11&&(flags&NSEventModifierFlagControl))||
+        (keyCode==0x12&&(flags&NSEventModifierFlagOption))||
+        ((keyCode==0x5b||keyCode==0x5c)&&(flags&NSEventModifierFlagCommand));
+    if(keyCode==0x14)return (flags&NSEventModifierFlagCapsLock)?1:0;
+    return down?static_cast<int16_t>(0x8000):0;
+#else
+    (void)keyCode;return 0;
+#endif
+}
 JaliumResult jalium_input_get_touch_capabilities(int32_t* present,int32_t* contacts){if(!present||!contacts)return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
     *present=0;*contacts=0;
@@ -625,7 +823,61 @@ JaliumResult jalium_input_get_cursor_pos(float* x,float* y){if(!x||!y)return JAL
 void jalium_drag_set_effect(JaliumPlatformWindow* w,uint64_t id,uint32_t effect){if(w&&w->dragSession==id)w->dragEffect=effect;}
 JaliumResult jalium_drag_begin(JaliumPlatformWindow* w,const JaliumDragDataItem* i,uint32_t c,uint32_t a,uint32_t* p){return jalium_drag_begin_with_image(w,i,c,a,nullptr,nullptr,nullptr,nullptr,p);}
 JaliumResult jalium_drag_begin_ex(JaliumPlatformWindow* w,const JaliumDragDataItem* i,uint32_t c,uint32_t a,JaliumDragFeedbackCallback f,JaliumDragQueryContinueCallback q,void* u,uint32_t* p){return jalium_drag_begin_with_image(w,i,c,a,f,q,u,nullptr,p);}
-JaliumResult jalium_drag_begin_with_image(JaliumPlatformWindow*,const JaliumDragDataItem*,uint32_t,uint32_t,JaliumDragFeedbackCallback,JaliumDragQueryContinueCallback,void*,const JaliumDragImage*,uint32_t* performed){if(performed)*performed=JALIUM_DRAG_EFFECT_NONE;return JALIUM_ERROR_NOT_SUPPORTED;}
+JaliumResult jalium_drag_begin_with_image(JaliumPlatformWindow* window,
+    const JaliumDragDataItem* items,uint32_t count,uint32_t allowed,
+    JaliumDragFeedbackCallback feedback,JaliumDragQueryContinueCallback query,
+    void* user,const JaliumDragImage* dragImage,uint32_t* performed)
+{
+    if(performed)*performed=JALIUM_DRAG_EFFECT_NONE;
+    if(!window||!items||count==0||allowed==JALIUM_DRAG_EFFECT_NONE)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+#if TARGET_OS_OSX
+    if(!pthread_main_np()||!NSApp.currentEvent)return JALIUM_ERROR_INVALID_STATE;
+    NSPasteboardItem* pasteboard=[NSPasteboardItem new];
+    for(uint32_t index=0;index<count;++index){if(!items[index].mimeType)continue;
+        NSString* type=PasteboardTypeFromMime(items[index].mimeType);
+        NSData* data=[NSData dataWithBytes:items[index].data length:items[index].dataSize];
+        if(type&&data){if([type isEqualToString:NSPasteboardTypeString]||
+            [type isEqualToString:NSPasteboardTypeURL]){NSString* value=[[NSString alloc]
+                initWithData:data encoding:NSUTF8StringEncoding];if(value)[pasteboard setString:value forType:type];}
+            else [pasteboard setData:data forType:type];}}
+    NSDraggingItem* draggingItem=[[NSDraggingItem alloc]initWithPasteboardWriter:pasteboard];
+    NSImage* image=nil;NSSize imageSize=NSMakeSize(32,32);NSPoint hotspot=NSMakePoint(0,0);
+    if(dragImage&&dragImage->bgraPixels&&dragImage->width&&dragImage->height&&
+       dragImage->stride>=dragImage->width*4){
+        NSBitmapImageRep* representation=[[NSBitmapImageRep alloc]
+            initWithBitmapDataPlanes:nil pixelsWide:dragImage->width pixelsHigh:dragImage->height
+            bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+            colorSpaceName:NSDeviceRGBColorSpace
+            bitmapFormat:NSBitmapFormatAlphaFirst|NSBitmapFormatThirtyTwoBitLittleEndian
+            bytesPerRow:dragImage->width*4 bitsPerPixel:32];
+        for(uint32_t y=0;y<dragImage->height;++y)std::memcpy(
+            representation.bitmapData+static_cast<size_t>(y)*representation.bytesPerRow,
+            dragImage->bgraPixels+static_cast<size_t>(y)*dragImage->stride,
+            static_cast<size_t>(dragImage->width)*4);
+        image=[[NSImage alloc]initWithSize:NSMakeSize(dragImage->width,dragImage->height)];
+        [image addRepresentation:representation];imageSize=image.size;
+        hotspot=NSMakePoint(dragImage->hotspotX,dragImage->hotspotY);
+    }else image=[NSImage imageWithSystemSymbolName:@"doc" accessibilityDescription:nil];
+    NSPoint point=[window->view convertPoint:NSApp.currentEvent.locationInWindow fromView:nil];
+    [draggingItem setDraggingFrame:NSMakeRect(point.x-hotspot.x,point.y-hotspot.y,
+        imageSize.width,imageSize.height) contents:image];
+    window->dragEffect=allowed;window->dragFeedback=feedback;window->dragQuery=query;
+    window->dragUserData=user;window->dragRunning.store(true);
+    NSDraggingSession* session=[window->view beginDraggingSessionWithItems:@[draggingItem]
+        event:NSApp.currentEvent source:window->view];
+    session.draggingFormation=NSDraggingFormationNone;
+    while(window->dragRunning.load())
+        [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
+            beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    if(performed)*performed=window->dragEffect;
+    window->dragFeedback=nullptr;window->dragQuery=nullptr;window->dragUserData=nullptr;
+    return JALIUM_OK;
+#else
+    (void)feedback;(void)query;(void)user;(void)dragImage;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
 
 JaliumResult jalium_clipboard_get_formats(char** out){if(!out)return JALIUM_ERROR_INVALID_ARGUMENT;*out=nullptr;
 #if TARGET_OS_OSX

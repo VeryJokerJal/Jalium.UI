@@ -15,14 +15,14 @@ public abstract class JaliumIOSApplicationDelegate : UIApplicationDelegate
 
     protected abstract JaliumApp CreateHostedApp();
 
-    internal void ConnectRootView(UIView view)
+    internal void ConnectRootView(string sceneId, UIView view)
     {
         if (!_registered)
         {
             AppleNativeBridge.RegisterAllBackends();
             _registered = true;
         }
-        AppleNativeBridge.SetRootView(view.Handle);
+        AppleNativeBridge.RegisterSceneRoot(sceneId, view.Handle);
         if (_hostedApp != null) return;
         _hostedApp = CreateHostedApp()
             ?? throw new InvalidOperationException("CreateHostedApp returned null.");
@@ -75,9 +75,13 @@ public class JaliumIOSSceneDelegate : UIResponder, IUIWindowSceneDelegate
         Window = new UIWindow(windowScene) { RootViewController = controller };
         Window.MakeKeyAndVisible();
         if (UIApplication.SharedApplication.Delegate is JaliumIOSApplicationDelegate app)
-            app.ConnectRootView(controller.View);
+            app.ConnectRootView(session.PersistentIdentifier, controller.View);
     }
 
     [Export("sceneDidDisconnect:")]
-    public virtual void DidDisconnect(UIScene scene) => AppleNativeBridge.SetRootView(nint.Zero);
+    public virtual void DidDisconnect(UIScene scene)
+    {
+        AppleNativeBridge.UnregisterSceneRoot(scene.Session.PersistentIdentifier);
+        Window = null;
+    }
 }

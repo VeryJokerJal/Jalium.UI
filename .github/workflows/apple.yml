@@ -8,7 +8,7 @@ on:
 jobs:
   native-and-packages:
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - name: Select pinned Xcode
@@ -16,6 +16,11 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.300
+      - name: Cache pinned Apple shader compiler slices
+        uses: actions/cache@v4
+        with:
+          path: src/native/out/apple-deps
+          key: apple-shader-toolchain-${{ runner.os }}-xcode-26.6-${{ hashFiles('eng/apple/dependencies.lock.json', 'eng/apple/prepare-shader-toolchain.sh') }}
       - name: Install pinned Apple workloads
         run: dotnet workload install ios tvos macos --version 10.0.300.2
       - name: Build Apple native slices

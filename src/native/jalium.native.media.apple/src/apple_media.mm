@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -42,7 +43,17 @@ struct jalium_camera_source {
     std::vector<uint8_t> pixels;
     jalium_pixel_format_t format = JALIUM_PF_BGRA8;
 };
-struct jalium_microphone_source {};
+struct jalium_microphone_source {
+    AVAudioEngine* engine = nil;
+    AVAudioInputNode* input = nil;
+    dispatch_semaphore_t ready = nullptr;
+    std::mutex mutex;
+    std::vector<float> samples;
+    uint32_t sampleRate = 0;
+    uint32_t channels = 0;
+    uint32_t frameCount = 0;
+    int64_t ptsMicroseconds = 0;
+};
 struct jalium_subtitle_decoder {};
 
 namespace {
@@ -64,7 +75,22 @@ jalium_media_status_t DecodeImage(CGImageSourceRef source, size_t index,
 {
     if (!source || !out || (format != JALIUM_PF_BGRA8 && format != JALIUM_PF_RGBA8))
         return JALIUM_MEDIA_E_INVALID_ARG;
-    CGImageRef image = CGImageSourceCreateImageAtIndex(source, index, nullptr);
+    CFDictionaryRef sourceProperties=CGImageSourceCopyPropertiesAtIndex(source,index,nullptr);
+    int sourceWidth=0,sourceHeight=0;
+    if(sourceProperties){CFNumberRef widthValue=(CFNumberRef)CFDictionaryGetValue(
+            sourceProperties,kCGImagePropertyPixelWidth);CFNumberRef heightValue=(CFNumberRef)
+            CFDictionaryGetValue(sourceProperties,kCGImagePropertyPixelHeight);
+        if(widthValue)CFNumberGetValue(widthValue,kCFNumberIntType,&sourceWidth);
+        if(heightValue)CFNumberGetValue(heightValue,kCFNumberIntType,&sourceHeight);}
+    int maxDimension=std::max(sourceWidth,sourceHeight);
+    NSDictionary* thumbnailOptions=maxDimension>0?@{
+        (NSString*)kCGImageSourceCreateThumbnailFromImageAlways:@YES,
+        (NSString*)kCGImageSourceCreateThumbnailWithTransform:@YES,
+        (NSString*)kCGImageSourceThumbnailMaxPixelSize:@(maxDimension)}:nil;
+    CGImageRef image=thumbnailOptions?CGImageSourceCreateThumbnailAtIndex(source,index,
+        (__bridge CFDictionaryRef)thumbnailOptions):nullptr;
+    if(!image)image=CGImageSourceCreateImageAtIndex(source,index,nullptr);
+    if(sourceProperties)CFRelease(sourceProperties);
     if (!image) return JALIUM_MEDIA_E_DECODE_FAILED;
     size_t width = CGImageGetWidth(image), height = CGImageGetHeight(image);
     jalium_media_status_t validation = ValidateDimensions(width, height);
@@ -242,7 +268,7 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_image_read_frame_count(
 JALIUM_MEDIA_API jalium_media_status_t jalium_image_decode_frame(
     const uint8_t* data,size_t size,uint32_t index,jalium_pixel_format_t format,
     jalium_image_t* out,uint32_t* delay)
-{if(delay)*delay=0;CGImageSourceRef s=ImageSourceFromMemory(data,size);if(!s)return JALIUM_MEDIA_E_UNSUPPORTED_FORMAT;if(index>=CGImageSourceGetCount(s)){CFRelease(s);return JALIUM_MEDIA_E_INVALID_ARG;}auto r=DecodeImage(s,index,format,out);CFRelease(s);return r;}
+{if(delay)*delay=0;CGImageSourceRef s=ImageSourceFromMemory(data,size);if(!s)return JALIUM_MEDIA_E_UNSUPPORTED_FORMAT;if(index>=CGImageSourceGetCount(s)){CFRelease(s);return JALIUM_MEDIA_E_INVALID_ARG;}if(delay){CFDictionaryRef properties=CGImageSourceCopyPropertiesAtIndex(s,index,nullptr);double seconds=0;if(properties){CFDictionaryRef gif=(CFDictionaryRef)CFDictionaryGetValue(properties,kCGImagePropertyGIFDictionary);if(gif){CFNumberRef value=(CFNumberRef)CFDictionaryGetValue(gif,kCGImagePropertyGIFUnclampedDelayTime);if(!value)value=(CFNumberRef)CFDictionaryGetValue(gif,kCGImagePropertyGIFDelayTime);if(value)CFNumberGetValue(value,kCFNumberDoubleType,&seconds);}CFDictionaryRef png=(CFDictionaryRef)CFDictionaryGetValue(properties,CFSTR("{PNG}"));if(png&&seconds<=0){CFNumberRef value=(CFNumberRef)CFDictionaryGetValue(png,CFSTR("UnclampedDelayTime"));if(!value)value=(CFNumberRef)CFDictionaryGetValue(png,CFSTR("DelayTime"));if(value)CFNumberGetValue(value,kCFNumberDoubleType,&seconds);}CFRelease(properties);}if(seconds>0)*delay=(uint32_t)std::clamp<int64_t>(llround(seconds*1000.0),1,600000);}auto r=DecodeImage(s,index,format,out);CFRelease(s);return r;}
 JALIUM_MEDIA_API void jalium_image_free(jalium_image_t* image)
 {if(!image)return;jalium_media_aligned_free(image->pixels);*image={};}
 
@@ -327,11 +353,96 @@ JALIUM_MEDIA_API void jalium_camera_close(jalium_camera_source_t* source){if(!so
 JALIUM_MEDIA_API uint32_t jalium_linux_media_capabilities(void){return 0;}
 JALIUM_MEDIA_API jalium_media_status_t jalium_media_discover_tracks(const char*,jalium_media_track_info_t** tracks,uint32_t* count){if(tracks)*tracks=nullptr;if(count)*count=0;return JALIUM_MEDIA_E_NOT_IMPLEMENTED;}
 JALIUM_MEDIA_API void jalium_media_tracks_free(jalium_media_track_info_t* tracks,uint32_t){free(tracks);}
-JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_enumerate(jalium_microphone_device_t** d,uint32_t* c){if(d)*d=nullptr;if(c)*c=0;return JALIUM_MEDIA_E_NOT_IMPLEMENTED;}
-JALIUM_MEDIA_API void jalium_microphone_devices_free(jalium_microphone_device_t* d,uint32_t){free(d);}
-JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_open(const char*,uint32_t,uint32_t,jalium_microphone_source_t** out){if(out)*out=nullptr;return JALIUM_MEDIA_E_NOT_IMPLEMENTED;}
-JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_read_frame(jalium_microphone_source_t*,jalium_audio_capture_frame_t*){return JALIUM_MEDIA_E_NOT_IMPLEMENTED;}
-JALIUM_MEDIA_API void jalium_microphone_close(jalium_microphone_source_t* source){delete source;}
+JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_enumerate(
+    jalium_microphone_device_t** devices,uint32_t* count)
+{
+    if(!devices||!count)return JALIUM_MEDIA_E_INVALID_ARG;*devices=nullptr;*count=0;
+#if TARGET_OS_TV
+    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+#else
+    AVAudioEngine* probe=[AVAudioEngine new];AVAudioFormat* format=
+        [probe.inputNode inputFormatForBus:0];
+    if(!format||format.channelCount==0)return JALIUM_MEDIA_OK;
+    auto* result=(jalium_microphone_device_t*)calloc(1,sizeof(*result));
+    if(!result)return JALIUM_MEDIA_E_OUT_OF_MEMORY;
+    result->id=strdup("default");
+#if TARGET_OS_OSX
+    result->friendly_name=strdup("Default CoreAudio Input");
+#else
+    NSString* name=AVAudioSession.sharedInstance.currentRoute.inputs.firstObject.portName
+        ?: @"Default Audio Input";
+    result->friendly_name=strdup(name.UTF8String?:"Default Audio Input");
+#endif
+    *devices=result;*count=1;return JALIUM_MEDIA_OK;
+#endif
+}
+JALIUM_MEDIA_API void jalium_microphone_devices_free(jalium_microphone_device_t* devices,uint32_t count){if(!devices)return;for(uint32_t i=0;i<count;++i){free((void*)devices[i].id);free((void*)devices[i].friendly_name);}free(devices);}
+JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_open(const char* deviceId,
+    uint32_t requestedRate,uint32_t requestedChannels,jalium_microphone_source_t** out)
+{
+    if(!out||requestedChannels==0||requestedChannels>8)return JALIUM_MEDIA_E_INVALID_ARG;
+    *out=nullptr;(void)deviceId;
+#if TARGET_OS_TV
+    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+#else
+    AVAuthorizationStatus authorization=[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+    if(authorization==AVAuthorizationStatusDenied||authorization==AVAuthorizationStatusRestricted)
+        return JALIUM_MEDIA_E_PERMISSION_DENIED;
+    auto source=std::make_unique<jalium_microphone_source>();
+    source->engine=[AVAudioEngine new];source->input=source->engine.inputNode;
+    AVAudioFormat* inputFormat=[source->input inputFormatForBus:0];
+    if(!inputFormat||inputFormat.channelCount==0)return JALIUM_MEDIA_E_NO_DEVICE;
+    source->sampleRate=requestedRate?requestedRate:(uint32_t)llround(inputFormat.sampleRate);
+    source->channels=requestedChannels;source->ready=dispatch_semaphore_create(0);
+    jalium_microphone_source* raw=source.get();
+    [source->input installTapOnBus:0 bufferSize:1024 format:inputFormat
+        block:^(AVAudioPCMBuffer* buffer,AVAudioTime*){
+        if(!raw||!buffer.floatChannelData)return;
+        uint32_t sourceFrames=buffer.frameLength;
+        uint32_t sourceChannels=buffer.format.channelCount;
+        double ratio=raw->sampleRate/std::max(buffer.format.sampleRate,1.0);
+        uint32_t destinationFrames=std::max(1u,(uint32_t)llround(sourceFrames*ratio));
+        std::vector<float> converted(static_cast<size_t>(destinationFrames)*raw->channels);
+        for(uint32_t frame=0;frame<destinationFrames;++frame){
+            double position=frame/std::max(ratio,1e-9);uint32_t a=(uint32_t)std::min<double>(
+                std::floor(position),sourceFrames?sourceFrames-1:0);uint32_t b=std::min(a+1,
+                sourceFrames?sourceFrames-1:0);float t=(float)(position-a);
+            for(uint32_t channel=0;channel<raw->channels;++channel){uint32_t sc=
+                std::min(channel,sourceChannels-1);float va=buffer.floatChannelData[sc][a];
+                float vb=buffer.floatChannelData[sc][b];converted[(size_t)frame*raw->channels+channel]=
+                    va+(vb-va)*t;}}
+        auto now=std::chrono::steady_clock::now().time_since_epoch();
+        int64_t pts=std::chrono::duration_cast<std::chrono::microseconds>(now).count();
+        {std::scoped_lock lock(raw->mutex);raw->samples=std::move(converted);
+            raw->frameCount=destinationFrames;raw->ptsMicroseconds=pts;}
+        dispatch_semaphore_signal(raw->ready);
+    }];
+    NSError* error=nil;[source->engine prepare];
+    if(![source->engine startAndReturnError:&error]){[source->input removeTapOnBus:0];
+        return JALIUM_MEDIA_E_PLATFORM;}
+    *out=source.release();return JALIUM_MEDIA_OK;
+#endif
+}
+JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_read_frame(
+    jalium_microphone_source_t* source,jalium_audio_capture_frame_t* out)
+{
+    if(!source||!out)return JALIUM_MEDIA_E_INVALID_ARG;
+#if TARGET_OS_TV
+    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+#else
+    if(dispatch_semaphore_wait(source->ready,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC))!=0)
+        return JALIUM_MEDIA_E_END_OF_STREAM;
+    std::scoped_lock lock(source->mutex);out->samples=source->samples.data();
+    out->frame_count=source->frameCount;out->sample_rate=source->sampleRate;
+    out->channels=source->channels;out->pts_microseconds=source->ptsMicroseconds;
+    return JALIUM_MEDIA_OK;
+#endif
+}
+JALIUM_MEDIA_API void jalium_microphone_close(jalium_microphone_source_t* source){if(!source)return;
+#if !TARGET_OS_TV
+    [source->input removeTapOnBus:0];[source->engine stop];
+#endif
+    delete source;}
 JALIUM_MEDIA_API jalium_media_status_t jalium_linux_audio_decoder_open_track(const char*,uint32_t,struct jalium_audio_decoder** out){if(out)*out=nullptr;return JALIUM_MEDIA_E_NOT_IMPLEMENTED;}
 JALIUM_MEDIA_API jalium_media_status_t jalium_subtitle_decoder_open(const char*,uint32_t,jalium_subtitle_decoder_t** out){if(out)*out=nullptr;return JALIUM_MEDIA_E_NOT_IMPLEMENTED;}
 JALIUM_MEDIA_API jalium_media_status_t jalium_subtitle_decoder_read_cue(jalium_subtitle_decoder_t*,jalium_subtitle_cue_t*){return JALIUM_MEDIA_E_NOT_IMPLEMENTED;}

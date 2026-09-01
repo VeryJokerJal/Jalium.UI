@@ -1,17 +1,24 @@
 #include "metal_shader_compiler.h"
+#include "jalium_brush_shader_source.h"
+
+#include <cstring>
 
 #ifdef JALIUM_HAS_DXC_SPIRV_CROSS
 #include <dxc/dxcapi.h>
 #include <spirv_cross_c.h>
 
 #include <cstdint>
+#include <mutex>
 #include <vector>
 #endif
 
 namespace jalium {
 
-bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
-    std::string& entryPoint, std::string& error)
+namespace {
+
+bool CompileMetalFragmentInternal(const char* hlsl,const wchar_t* dxcEntry,
+    const char* spirvEntry,const char* metalEntry,bool brushResources,
+    std::string& msl,std::string& entryPoint,std::string& error)
 {
     msl.clear(); entryPoint.clear(); error.clear();
     if (!hlsl || !*hlsl) { error = "empty HLSL source"; return false; }
@@ -19,6 +26,8 @@ bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
     error = "DXC/SPIRV-Cross compiler archive is not linked";
     return false;
 #else
+    static std::mutex compilerMutex;
+    std::scoped_lock compilerLock(compilerMutex);
     IDxcUtils* utils = nullptr;
     IDxcCompiler3* compiler = nullptr;
     IDxcResult* result = nullptr;
@@ -36,10 +45,10 @@ bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
         error = "DxcCreateInstance failed"; releaseAll(); return false;
     }
     const wchar_t* args[] = {
-        L"-E", L"main", L"-T", L"ps_6_0", L"-spirv", L"-O3",
-        L"-fvk-use-dx-layout", L"-fvk-b-shift", L"0", L"all",
-        L"-fvk-t-shift", L"16", L"all", L"-fvk-s-shift", L"32", L"all",
-        L"-fvk-u-shift", L"48", L"all"
+        L"-E", dxcEntry, L"-T", L"ps_6_0", L"-spirv", L"-O3",
+        L"-fvk-use-dx-layout", L"-Zpc", L"-fvk-b-shift", L"0", L"0",
+        L"-fvk-t-shift", L"16", L"0", L"-fvk-s-shift", L"32", L"0",
+        L"-fvk-u-shift", L"48", L"0"
     };
     DxcBuffer source{};
     source.Ptr = hlsl; source.Size = std::char_traits<char>::length(hlsl);
@@ -79,6 +88,8 @@ bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
     spvc_compiler_options_set_bool(options,
         SPVC_COMPILER_OPTION_MSL_ENABLE_DECORATION_BINDING, SPVC_TRUE);
     spvc_compiler_install_compiler_options(mslCompiler, options);
+    spvc_compiler_rename_entry_point(mslCompiler, spirvEntry,
+        metalEntry, SpvExecutionModelFragment);
 
     // The framework shader contract is b0/t0/s0. DXC's binding shifts above
     // keep register classes disjoint in SPIR-V; remap them to Metal's separate
@@ -87,12 +98,21 @@ bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
     binding.stage = SpvExecutionModelFragment; binding.desc_set = 0;
     binding.binding = 0; binding.msl_buffer = 0;
     spvc_compiler_msl_add_resource_binding(mslCompiler, &binding);
-    binding = {}; binding.stage = SpvExecutionModelFragment; binding.desc_set = 0;
-    binding.binding = 16; binding.msl_texture = 0;
-    spvc_compiler_msl_add_resource_binding(mslCompiler, &binding);
-    binding = {}; binding.stage = SpvExecutionModelFragment; binding.desc_set = 0;
-    binding.binding = 32; binding.msl_sampler = 0;
-    spvc_compiler_msl_add_resource_binding(mslCompiler, &binding);
+    if(brushResources){
+        binding={};binding.stage=SpvExecutionModelFragment;binding.desc_set=0;
+        binding.binding=1;binding.msl_buffer=1;
+        spvc_compiler_msl_add_resource_binding(mslCompiler,&binding);
+        binding={};binding.stage=SpvExecutionModelFragment;binding.desc_set=0;
+        binding.binding=16;binding.msl_buffer=2;
+        spvc_compiler_msl_add_resource_binding(mslCompiler,&binding);
+    }else{
+        binding = {}; binding.stage = SpvExecutionModelFragment; binding.desc_set = 0;
+        binding.binding = 16; binding.msl_texture = 0;
+        spvc_compiler_msl_add_resource_binding(mslCompiler, &binding);
+        binding = {}; binding.stage = SpvExecutionModelFragment; binding.desc_set = 0;
+        binding.binding = 32; binding.msl_sampler = 0;
+        spvc_compiler_msl_add_resource_binding(mslCompiler, &binding);
+    }
 
     const char* generated = nullptr;
     if (spvc_compiler_compile(mslCompiler, &generated) != SPVC_SUCCESS || !generated) {
@@ -100,11 +120,32 @@ bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
         spvc_context_destroy(context); releaseAll(); return false;
     }
     msl = generated;
-    // SPIRV-Cross consistently legalizes an HLSL main entry to main0 for MSL.
-    entryPoint = "main0";
+    entryPoint = metalEntry;
     spvc_context_destroy(context); releaseAll();
     return true;
 #endif
+}
+
+} // namespace
+
+bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
+    std::string& entryPoint, std::string& error)
+{
+    return CompileMetalFragmentInternal(hlsl,L"main","main",
+        "jalium_custom_fragment",false,msl,entryPoint,error);
+}
+
+bool CompileMetalBrushShader(const char* brushMainHlsl,std::string& msl,
+    std::string& entryPoint,std::string& error)
+{
+    if(!brushMainHlsl||!*brushMainHlsl){error="empty BrushMain HLSL";return false;}
+    std::string source;source.reserve(std::char_traits<char>::length(
+        kSharedBrushPixelPreamble)+std::strlen(brushMainHlsl)+
+        std::char_traits<char>::length(kSharedBrushPixelEntry)+2);
+    source.append(kSharedBrushPixelPreamble);source.push_back('\n');
+    source.append(brushMainHlsl);source.push_back('\n');source.append(kSharedBrushPixelEntry);
+    return CompileMetalFragmentInternal(source.c_str(),L"BrushPsMain","BrushPsMain",
+        "jalium_brush_fragment",true,msl,entryPoint,error);
 }
 
 } // namespace jalium

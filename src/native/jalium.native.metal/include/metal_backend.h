@@ -73,6 +73,8 @@ private:
         float r, float g, float b, float a,
         std::vector<uint8_t>& pixels, uint32_t& pixelWidth,
         uint32_t& pixelHeight, float& deviceX, float& deviceY) const;
+    uint64_t CacheIdentity() const;
+    uint64_t CacheIdentity() const;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     friend class MetalRenderTarget;
@@ -107,6 +109,9 @@ public:
 
 private:
     void* TextureHandle(uint32_t plane = 0) const;
+    uint32_t YuvMatrix() const;
+    bool IsVideoRange() const;
+    void RetainForCommandBuffer(void* commandBuffer) const;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     friend class MetalRenderTarget;

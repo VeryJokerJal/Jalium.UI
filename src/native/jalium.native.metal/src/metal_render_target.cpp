@@ -12,12 +12,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <limits>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,6 +29,7 @@
 #if TARGET_OS_OSX
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 #else
 #import <UIKit/UIKit.h>
 #endif
@@ -38,6 +41,10 @@ namespace {
 constexpr uint32_t kFrameCount = 3;
 constexpr size_t kInitialVertexBytes = 4u * 1024u * 1024u;
 constexpr float kPi = 3.14159265358979323846f;
+constexpr size_t kClipCountParam = 208;
+constexpr size_t kClipBaseParam = 212;
+constexpr size_t kClipParamStride = 16;
+constexpr size_t kMaxShaderClips = 18;
 
 struct Matrix3x2 {
     float m11 = 1, m12 = 0, m21 = 0, m22 = 1, dx = 0, dy = 0;
@@ -106,13 +113,23 @@ uint64_t NowNs()
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+uint64_t Fnv1a64(const void* bytes, size_t size, uint64_t seed = 1469598103934665603ull)
+{
+    const auto* data = static_cast<const uint8_t*>(bytes);
+    uint64_t value = seed;
+    for (size_t i = 0; i < size; ++i) { value ^= data[i]; value *= 1099511628211ull; }
+    return value;
+}
+
 struct StrokeVertex {
     float x, y;
     float r, g, b, a;
 };
 
 struct ClipState {
+    RectF localRect;
     RectF deviceRect;
+    Matrix3x2 deviceToLocal;
     float radii[4] = {};
     bool rounded = false;
     bool exclude = false;
@@ -126,6 +143,7 @@ struct CapturedTexture {
 
 struct MetalRetainedLayer {
     id<MTLTexture> texture = nil;
+    id<MTLHeap> heap = nil;
     RectF bounds;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -157,6 +175,23 @@ void ConfigurePremultipliedBlend(MTLRenderPipelineColorAttachmentDescriptor* col
     color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 }
 
+NSString* FindMetallib(NSString* name)
+{
+    NSString* bundled = [NSBundle.mainBundle pathForResource:name ofType:@"metallib"];
+    if (bundled.length != 0) return bundled;
+    const char* overrideDirectory = std::getenv("JALIUM_METALLIB_DIR");
+    if (overrideDirectory && *overrideDirectory) {
+        NSString* directory = [NSString stringWithUTF8String:overrideDirectory];
+        NSString* candidate = [directory stringByAppendingPathComponent:
+            [name stringByAppendingPathExtension:@"metallib"]];
+        if ([NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
+    }
+    NSString* executableDirectory = NSBundle.mainBundle.executablePath.stringByDeletingLastPathComponent;
+    NSString* sibling = [executableDirectory stringByAppendingPathComponent:
+        [name stringByAppendingPathExtension:@"metallib"]];
+    return [NSFileManager.defaultManager fileExistsAtPath:sibling] ? sibling : nil;
+}
+
 } // namespace
 
 struct MetalRenderTarget::Impl {
@@ -176,6 +211,7 @@ struct MetalRenderTarget::Impl {
     float dpiX = 96.0f;
     float dpiY = 96.0f;
     uint32_t pathMsaa = 4;
+    uint32_t pendingPathMsaa = 4;
     int shapeType = 0;
     float shapeExponent = 4.0f;
     float opacity = 1.0f;
@@ -189,22 +225,37 @@ struct MetalRenderTarget::Impl {
         size_t capacity = 0;
         size_t offset = 0;
         NSMutableArray<id<MTLBuffer>>* retiredBuffers = nil;
+        NSMutableArray* transientHeaps = nil;
+        NSMutableArray* transientResources = nil;
+        NSMutableArray* gpuRetainedObjects = nil;
     } frames[kFrameCount];
     dispatch_semaphore_t inFlight = nullptr;
+    id<MTLSharedEvent> completionEvent = nil;
+    std::atomic<uint64_t> submittedEventValue{0};
+    std::atomic<uint64_t> completedEventValue{0};
 
     id<MTLLibrary> library = nil;
     id<MTLRenderPipelineState> shapePipeline = nil;
     id<MTLRenderPipelineState> shapeReplacePipeline = nil;
     id<MTLRenderPipelineState> texturePipeline = nil;
     id<MTLRenderPipelineState> textureReplacePipeline = nil;
+    id<MTLRenderPipelineState> presentPipeline = nil;
     id<MTLRenderPipelineState> yuvPipeline = nil;
     id<MTLRenderPipelineState> effectPipeline = nil;
+    id<MTLRenderPipelineState> transitionPipeline = nil;
+    id<MTLRenderPipelineState> clipPipeline = nil;
     id<MTLComputePipelineState> blurPipeline = nil;
+    id<MTLDepthStencilState> contentStencilState = nil;
+    id<MTLDepthStencilState> clipStencilState = nil;
     NSMutableDictionary<NSNumber*, id<MTLRenderPipelineState>>* customPipelines = nil;
     id<MTLSamplerState> linearSampler = nil;
     id<MTLSamplerState> nearestSampler = nil;
+    id<MTLSamplerState> highQualitySampler = nil;
 
     id<MTLTexture> sceneTexture = nil;
+    id<MTLTexture> msaaTexture = nil;
+    id<MTLTexture> msaaBaselineTexture = nil;
+    id<MTLTexture> stencilTexture = nil;
     id<MTLTexture> currentTarget = nil;
     id<MTLCommandBuffer> commandBuffer = nil;
     id<MTLRenderCommandEncoder> encoder = nil;
@@ -215,6 +266,7 @@ struct MetalRenderTarget::Impl {
     std::vector<ClipState> clips;
     std::vector<RectF> dirtyRects;
     std::vector<std::pair<id<MTLTexture>, CapturedTexture>> captureStack;
+    std::vector<CapturedTexture> activeEffectCaptures;
     CapturedTexture effectCapture;
     CapturedTexture transitionSlots[2];
     CapturedTexture desktopCapture;
@@ -234,26 +286,122 @@ struct MetalRenderTarget::Impl {
     std::atomic<uint64_t> framesSubmitted{0};
     std::atomic<uint64_t> retainedOrphaned{0};
     std::atomic<uint64_t> retainedGraveyard{0};
+    NSMutableArray* persistentHeaps = nil;
+    NSMutableArray<id<MTLCommandBuffer>>* retirementCommands = nil;
+
+    struct TextCacheEntry {
+        id<MTLTexture> texture=nil;
+        float x=0,y=0,width=0,height=0;
+        uint64_t lastUse=0;
+        size_t bytes=0;
+    };
+    std::unordered_map<uint64_t,TextCacheEntry> textCache;
+    size_t textCacheBytes=0;
+    uint64_t textCacheClock=0;
+
+    void TrimTextCache()
+    {
+        constexpr size_t maxEntries=2048;
+        constexpr size_t maxBytes=64u*1024u*1024u;
+        while(textCache.size()>maxEntries||textCacheBytes>maxBytes){
+            auto victim=textCache.end();
+            for(auto it=textCache.begin();it!=textCache.end();++it)
+                if(victim==textCache.end()||it->second.lastUse<victim->second.lastUse)victim=it;
+            if(victim==textCache.end())break;textCacheBytes-=victim->second.bytes;
+            textCache.erase(victim);
+        }
+    }
+
+    id<MTLTexture> NewHeapTexture(NSMutableArray* heaps,
+        NSMutableArray* resources, uint32_t width, uint32_t height,
+        MTLPixelFormat format = MTLPixelFormatBGRA8Unorm)
+    {
+        if (!device || !heaps || width == 0 || height == 0) return nil;
+        MTLTextureDescriptor* descriptor = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:format width:width height:height
+            mipmapped:NO];
+        descriptor.storageMode = MTLStorageModePrivate;
+        descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead |
+            MTLTextureUsageShaderWrite;
+        for (id value in heaps) {
+            id<MTLHeap> heap = (id<MTLHeap>)value;
+            id<MTLTexture> texture = [heap newTextureWithDescriptor:descriptor];
+            if (texture) {
+                if (resources) [resources addObject:texture];
+                return texture;
+            }
+        }
+        MTLSizeAndAlign requirement = [device heapTextureSizeAndAlignWithDescriptor:descriptor];
+        NSUInteger alignment = std::max<NSUInteger>(requirement.align, 1);
+        NSUInteger requested = (requirement.size + alignment - 1) & ~(alignment - 1);
+        NSUInteger heapSize = std::max<NSUInteger>(requested * 4,
+            16u * 1024u * 1024u);
+        MTLHeapDescriptor* heapDescriptor = [MTLHeapDescriptor new];
+        heapDescriptor.size = heapSize;
+        heapDescriptor.storageMode = MTLStorageModePrivate;
+        heapDescriptor.hazardTrackingMode = MTLHazardTrackingModeTracked;
+        heapDescriptor.type = MTLHeapTypeAutomatic;
+        id<MTLHeap> heap = [device newHeapWithDescriptor:heapDescriptor];
+        if (!heap) return nil;
+        [heaps addObject:heap];
+        id<MTLTexture> texture = [heap newTextureWithDescriptor:descriptor];
+        if (texture && resources) [resources addObject:texture];
+        return texture;
+    }
+
+    id<MTLTexture> NewTransientTexture(uint32_t width, uint32_t height,
+        MTLPixelFormat format = MTLPixelFormatBGRA8Unorm)
+    {
+        if (!frame) return CreateTexture(device, width, height, format);
+        return NewHeapTexture(frame->transientHeaps, frame->transientResources,
+            width, height, format);
+    }
+
+    id<MTLTexture> NewPersistentTexture(uint32_t width, uint32_t height,
+        id<MTLHeap>* heapOut)
+    {
+        if (!persistentHeaps) persistentHeaps = [NSMutableArray array];
+        id<MTLTexture> texture = NewHeapTexture(persistentHeaps, nil, width, height);
+        if (heapOut) *heapOut = texture ? texture.heap : nil;
+        return texture;
+    }
 
     bool InitializePipelines()
     {
         NSError* error = nil;
-        library = [device newLibraryWithSource:[NSString stringWithUTF8String:kMetalCoreShaderSource]
-            options:nil error:&error];
+        NSString* corePath = FindMetallib(@"jalium_core");
+        if (corePath) {
+            library = [device newLibraryWithURL:[NSURL fileURLWithPath:corePath]
+                error:&error];
+        }
+        // Source trees and debugger-hosted native tests remain self-contained.
+        // Formal packages always carry jalium_core.metallib and therefore do
+        // not pay this runtime compilation cost.
+        if (!library) {
+            library = [device newLibraryWithSource:
+                [NSString stringWithUTF8String:kMetalCoreShaderSource]
+                options:nil error:&error];
+        }
         if (!library) return false;
         id<MTLFunction> vertex = [library newFunctionWithName:@"jalium_vertex"];
         id<MTLFunction> shape = [library newFunctionWithName:@"jalium_shape_fragment"];
         id<MTLFunction> texture = [library newFunctionWithName:@"jalium_texture_fragment"];
         id<MTLFunction> yuv = [library newFunctionWithName:@"jalium_yuv_fragment"];
         id<MTLFunction> effect = [library newFunctionWithName:@"jalium_effect_fragment"];
+        id<MTLFunction> transition=[library newFunctionWithName:@"jalium_transition_fragment"];
+        id<MTLFunction> clip = [library newFunctionWithName:@"jalium_clip_stencil_fragment"];
         id<MTLFunction> blur = [library newFunctionWithName:@"jalium_blur"];
-        if (!vertex || !shape || !texture || !yuv || !effect || !blur) return false;
+        if (!vertex || !shape || !texture || !yuv || !effect || !transition || !clip || !blur) return false;
 
-        auto createRenderPipeline = [&](id<MTLFunction> fragment, bool blending) {
+        auto createRenderPipeline = [&](id<MTLFunction> fragment, bool blending,
+                                        bool usesStencil = true) {
             MTLRenderPipelineDescriptor* descriptor = [MTLRenderPipelineDescriptor new];
             descriptor.vertexFunction = vertex;
             descriptor.fragmentFunction = fragment;
             descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+            descriptor.rasterSampleCount = usesStencil ? pathMsaa : 1;
+            if (usesStencil)
+                descriptor.stencilAttachmentPixelFormat = MTLPixelFormatStencil8;
             if (blending) ConfigurePremultipliedBlend(descriptor.colorAttachments[0]);
             return [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
         };
@@ -261,9 +409,41 @@ struct MetalRenderTarget::Impl {
         shapeReplacePipeline = createRenderPipeline(shape, false);
         texturePipeline = createRenderPipeline(texture, true);
         textureReplacePipeline = createRenderPipeline(texture, false);
+        presentPipeline = createRenderPipeline(texture, false, false);
         yuvPipeline = createRenderPipeline(yuv, true);
         effectPipeline = createRenderPipeline(effect, true);
+        transitionPipeline=createRenderPipeline(transition,true);
+        {
+            MTLRenderPipelineDescriptor* descriptor = [MTLRenderPipelineDescriptor new];
+            descriptor.vertexFunction = vertex;
+            descriptor.fragmentFunction = clip;
+            descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+            descriptor.colorAttachments[0].writeMask = MTLColorWriteMaskNone;
+            descriptor.stencilAttachmentPixelFormat = MTLPixelFormatStencil8;
+            descriptor.rasterSampleCount = pathMsaa;
+            clipPipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+        }
         blurPipeline = [device newComputePipelineStateWithFunction:blur error:&error];
+
+        MTLStencilDescriptor* contentStencil = [MTLStencilDescriptor new];
+        contentStencil.stencilCompareFunction = MTLCompareFunctionEqual;
+        contentStencil.stencilFailureOperation = MTLStencilOperationKeep;
+        contentStencil.depthFailureOperation = MTLStencilOperationKeep;
+        contentStencil.depthStencilPassOperation = MTLStencilOperationKeep;
+        MTLDepthStencilDescriptor* contentDepth = [MTLDepthStencilDescriptor new];
+        contentDepth.frontFaceStencil = contentStencil;
+        contentDepth.backFaceStencil = contentStencil;
+        contentStencilState = [device newDepthStencilStateWithDescriptor:contentDepth];
+
+        MTLStencilDescriptor* clipStencil = [MTLStencilDescriptor new];
+        clipStencil.stencilCompareFunction = MTLCompareFunctionEqual;
+        clipStencil.stencilFailureOperation = MTLStencilOperationKeep;
+        clipStencil.depthFailureOperation = MTLStencilOperationKeep;
+        clipStencil.depthStencilPassOperation = MTLStencilOperationIncrementClamp;
+        MTLDepthStencilDescriptor* clipDepth = [MTLDepthStencilDescriptor new];
+        clipDepth.frontFaceStencil = clipStencil;
+        clipDepth.backFaceStencil = clipStencil;
+        clipStencilState = [device newDepthStencilStateWithDescriptor:clipDepth];
 
         MTLSamplerDescriptor* sampler = [MTLSamplerDescriptor new];
         sampler.minFilter = MTLSamplerMinMagFilterLinear;
@@ -274,22 +454,61 @@ struct MetalRenderTarget::Impl {
         sampler.minFilter = MTLSamplerMinMagFilterNearest;
         sampler.magFilter = MTLSamplerMinMagFilterNearest;
         nearestSampler = [device newSamplerStateWithDescriptor:sampler];
+        sampler.minFilter = MTLSamplerMinMagFilterLinear;
+        sampler.magFilter = MTLSamplerMinMagFilterLinear;
+        sampler.mipFilter = MTLSamplerMipFilterLinear;
+        sampler.maxAnisotropy = 8;
+        highQualitySampler = [device newSamplerStateWithDescriptor:sampler];
         customPipelines = [NSMutableDictionary dictionary];
+        if(!persistentHeaps)persistentHeaps = [NSMutableArray array];
+        if(!retirementCommands)retirementCommands = [NSMutableArray array];
         return shapePipeline && shapeReplacePipeline && texturePipeline &&
-            textureReplacePipeline && yuvPipeline && effectPipeline && blurPipeline &&
-            linearSampler && nearestSampler;
+            textureReplacePipeline && presentPipeline && yuvPipeline && effectPipeline && transitionPipeline &&
+            clipPipeline && blurPipeline && contentStencilState && clipStencilState &&
+            linearSampler && nearestSampler && highQualitySampler;
     }
 
     id<MTLRenderPipelineState> CustomPipeline(const char* hlsl)
     {
         if(!hlsl||!*hlsl)return nil;
-        size_t hash=std::hash<std::string>{}(hlsl);NSNumber* key=@(hash);
+        uint64_t hash=Fnv1a64(hlsl,std::strlen(hlsl));
+#ifdef JALIUM_METAL_SHADER_CACHE_ABI
+        constexpr const char* cacheAbi=JALIUM_METAL_SHADER_CACHE_ABI;
+#else
+        constexpr const char* cacheAbi="source-only-msl30000-v1";
+#endif
+        hash=Fnv1a64(cacheAbi,std::strlen(cacheAbi),hash);
+        uint64_t registryId=device.registryID;hash=Fnv1a64(&registryId,sizeof(registryId),hash);
+        const char* deviceName=device.name.UTF8String;if(deviceName)
+            hash=Fnv1a64(deviceName,std::strlen(deviceName),hash);
+        NSNumber* key=@(hash);
         id<MTLRenderPipelineState> cached=customPipelines[key];if(cached)return cached;
         std::string msl,entry,errorText;
-        if(!CompileMetalPixelShader(hlsl,msl,entry,errorText))return nil;
-        NSError* error=nil;id<MTLLibrary> custom=[device newLibraryWithSource:
-            [NSString stringWithUTF8String:msl.c_str()] options:nil error:&error];
+        NSString* cacheDirectory=nil;NSArray<NSString*>* roots=NSSearchPathForDirectoriesInDomains(
+            NSCachesDirectory,NSUserDomainMask,YES);
+        if(roots.count){cacheDirectory=[roots[0] stringByAppendingPathComponent:
+            @"Jalium/MetalShaders"];
+            [NSFileManager.defaultManager createDirectoryAtPath:cacheDirectory
+                withIntermediateDirectories:YES attributes:nil error:nil];}
+        NSString* cachePath=cacheDirectory?[cacheDirectory stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%016llx.metal",(unsigned long long)hash]]:nil;
+        bool loadedFromDisk=false;
+        if(cachePath){NSString* cachedSource=[NSString stringWithContentsOfFile:cachePath
+                encoding:NSUTF8StringEncoding error:nil];
+            if(cachedSource.length){msl=cachedSource.UTF8String;entry="jalium_custom_fragment";
+                loadedFromDisk=true;}}
+        if(msl.empty()&&!CompileMetalPixelShader(hlsl,msl,entry,errorText))return nil;
+        NSError* error=nil;
+        auto makeLibrary=[&](){return [device newLibraryWithSource:
+            [NSString stringWithUTF8String:msl.c_str()] options:nil error:&error];};
+        id<MTLLibrary> custom=makeLibrary();
+        if(!custom&&loadedFromDisk){[NSFileManager.defaultManager removeItemAtPath:cachePath error:nil];
+            msl.clear();entry.clear();errorText.clear();
+            if(!CompileMetalPixelShader(hlsl,msl,entry,errorText))return nil;
+            error=nil;custom=makeLibrary();loadedFromDisk=false;}
         if(!custom)return nil;
+        if(cachePath&&!loadedFromDisk&&!msl.empty())[[NSString stringWithUTF8String:msl.c_str()]
+            writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
         id<MTLFunction> fragment=[custom newFunctionWithName:
             [NSString stringWithUTF8String:entry.c_str()]];
         id<MTLFunction> vertex=[library newFunctionWithName:@"jalium_vertex"];
@@ -297,6 +516,8 @@ struct MetalRenderTarget::Impl {
         MTLRenderPipelineDescriptor* descriptor=[MTLRenderPipelineDescriptor new];
         descriptor.vertexFunction=vertex;descriptor.fragmentFunction=fragment;
         descriptor.colorAttachments[0].pixelFormat=MTLPixelFormatBGRA8Unorm;
+        descriptor.stencilAttachmentPixelFormat=MTLPixelFormatStencil8;
+        descriptor.rasterSampleCount=pathMsaa;
         ConfigurePremultipliedBlend(descriptor.colorAttachments[0]);
         id<MTLRenderPipelineState> pipeline=[device newRenderPipelineStateWithDescriptor:descriptor error:&error];
         if(pipeline)customPipelines[key]=pipeline;return pipeline;
@@ -313,15 +534,100 @@ struct MetalRenderTarget::Impl {
     bool EnsureSceneTexture()
     {
         if (sceneTexture && sceneTexture.width == pixelWidth &&
-            sceneTexture.height == pixelHeight) return true;
+            sceneTexture.height == pixelHeight && stencilTexture &&
+            stencilTexture.width == pixelWidth && stencilTexture.height == pixelHeight &&
+            stencilTexture.sampleCount == pathMsaa &&
+            (pathMsaa == 1 || (msaaTexture && msaaTexture.width == pixelWidth &&
+                msaaTexture.height == pixelHeight && msaaTexture.sampleCount == pathMsaa &&
+                msaaBaselineTexture && msaaBaselineTexture.width == pixelWidth &&
+                msaaBaselineTexture.height == pixelHeight)))
+            return true;
         sceneTexture = CreateTexture(device, pixelWidth, pixelHeight);
+        if(pathMsaa>1){MTLTextureDescriptor* multisample=[MTLTextureDescriptor new];
+            multisample.textureType=MTLTextureType2DMultisample;
+            multisample.pixelFormat=MTLPixelFormatBGRA8Unorm;
+            multisample.width=pixelWidth;multisample.height=pixelHeight;
+            multisample.sampleCount=pathMsaa;multisample.usage=MTLTextureUsageRenderTarget;
+#if TARGET_OS_OSX
+            multisample.storageMode=MTLStorageModePrivate;
+#else
+            multisample.storageMode=MTLStorageModeMemoryless;
+#endif
+            msaaTexture=[device newTextureWithDescriptor:multisample];
+            msaaBaselineTexture=CreateTexture(device,pixelWidth,pixelHeight);
+        }else{msaaTexture=nil;msaaBaselineTexture=nil;}
+        MTLTextureDescriptor* stencil = [MTLTextureDescriptor new];
+        stencil.textureType=pathMsaa>1?MTLTextureType2DMultisample:MTLTextureType2D;
+        stencil.pixelFormat=MTLPixelFormatStencil8;stencil.width=pixelWidth;
+        stencil.height=pixelHeight;stencil.sampleCount=pathMsaa;
+        stencil.usage = MTLTextureUsageRenderTarget;
+#if TARGET_OS_OSX
+        stencil.storageMode = MTLStorageModePrivate;
+#else
+        // The complete clip stack is rebuilt whenever a render encoder starts,
+        // so tile-local stencil never needs to leave on-chip memory.
+        stencil.storageMode = MTLStorageModeMemoryless;
+#endif
+        stencilTexture = [device newTextureWithDescriptor:stencil];
         fullInvalidation = true;
-        return sceneTexture != nil;
+        return sceneTexture != nil && stencilTexture != nil &&
+            (pathMsaa==1||(msaaTexture!=nil&&msaaBaselineTexture!=nil));
     }
 
     void EndEncoder()
     {
         if (encoder) { [encoder endEncoding]; encoder = nil; }
+    }
+
+    void EncodeStencilStack(id<MTLRenderCommandEncoder> targetEncoder)
+    {
+        if (!targetEncoder || clips.empty() || !clipPipeline || !clipStencilState)
+            return;
+        for (size_t i = 0; i < clips.size() && i < 255; ++i) {
+            const ClipState& clip = clips[i];
+            MetalShaderParams p{};
+            p[0] = static_cast<float>(pixelWidth);
+            p[1] = static_cast<float>(pixelHeight);
+            p[kClipCountParam] = 1.0f;
+            const size_t base = kClipBaseParam;
+            p[base + 0] = clip.deviceToLocal.m11;
+            p[base + 1] = clip.deviceToLocal.m12;
+            p[base + 2] = clip.deviceToLocal.m21;
+            p[base + 3] = clip.deviceToLocal.m22;
+            p[base + 4] = clip.deviceToLocal.dx;
+            p[base + 5] = clip.deviceToLocal.dy;
+            p[base + 6] = clip.localRect.x;
+            p[base + 7] = clip.localRect.y;
+            p[base + 8] = clip.localRect.width;
+            p[base + 9] = clip.localRect.height;
+            p[base + 10] = clip.radii[0];
+            p[base + 11] = clip.radii[1];
+            p[base + 12] = clip.radii[2];
+            p[base + 13] = clip.radii[3];
+            p[base + 14] = static_cast<float>(1u |
+                (clip.exclude ? 2u : 0u) | (clip.aliased ? 4u : 0u));
+
+            std::vector<MetalVertex> vertices;
+            if (clip.exclude) {
+                vertices = DeviceQuad(0, 0, static_cast<float>(pixelWidth),
+                    static_cast<float>(pixelHeight));
+            } else {
+                constexpr float edge = 2.0f;
+                vertices = DeviceQuad(clip.deviceRect.x - edge,
+                    clip.deviceRect.y - edge, clip.deviceRect.width + edge * 2,
+                    clip.deviceRect.height + edge * 2);
+            }
+            NSUInteger offset = 0;
+            if (!UploadVertices(vertices.data(), vertices.size(), offset)) return;
+            [targetEncoder setRenderPipelineState:clipPipeline];
+            [targetEncoder setDepthStencilState:clipStencilState];
+            [targetEncoder setStencilReferenceValue:static_cast<uint32_t>(i)];
+            [targetEncoder setVertexBuffer:frame->vertices offset:offset atIndex:0];
+            [targetEncoder setVertexBytes:p.data() length:p.size()*sizeof(float) atIndex:1];
+            [targetEncoder setFragmentBytes:p.data() length:p.size()*sizeof(float) atIndex:0];
+            [targetEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
+                vertexCount:static_cast<NSUInteger>(vertices.size())];
+        }
     }
 
     MTLScissorRect CurrentScissor() const
@@ -364,17 +670,54 @@ struct MetalRenderTarget::Impl {
         if (encoder && !clear) return encoder;
         EndEncoder();
         if (!commandBuffer || !currentTarget) return nil;
+        if(pathMsaa>1&&!clear){
+            id<MTLBlitCommandEncoder> baselineBlit=[commandBuffer blitCommandEncoder];
+            if(!baselineBlit)return nil;
+            [baselineBlit copyFromTexture:currentTarget sourceSlice:0 sourceLevel:0
+                sourceOrigin:MTLOriginMake(0,0,0)
+                sourceSize:MTLSizeMake(pixelWidth,pixelHeight,1)
+                toTexture:msaaBaselineTexture destinationSlice:0 destinationLevel:0
+                destinationOrigin:MTLOriginMake(0,0,0)];
+            [baselineBlit endEncoding];
+        }
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture = currentTarget;
-        pass.colorAttachments[0].loadAction = clear ? MTLLoadActionClear : MTLLoadActionLoad;
-        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        pass.colorAttachments[0].texture = pathMsaa>1?msaaTexture:currentTarget;
+        pass.colorAttachments[0].resolveTexture = pathMsaa>1?currentTarget:nil;
+        pass.colorAttachments[0].loadAction = pathMsaa>1?MTLLoadActionClear:
+            (clear ? MTLLoadActionClear : MTLLoadActionLoad);
+        pass.colorAttachments[0].storeAction = pathMsaa>1?
+            MTLStoreActionMultisampleResolve:MTLStoreActionStore;
         pass.colorAttachments[0].clearColor = color;
+        pass.stencilAttachment.texture = stencilTexture;
+        pass.stencilAttachment.loadAction = MTLLoadActionClear;
+        pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+        pass.stencilAttachment.clearStencil = 0;
         encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
         if (encoder) {
             encoder.label = @"Jalium Metal 2D";
+            if(pathMsaa>1&&!clear){
+                MTLScissorRect full{0,0,pixelWidth,pixelHeight};[encoder setScissorRect:full];
+                MetalShaderParams baseline{};baseline[0]=(float)pixelWidth;
+                baseline[1]=(float)pixelHeight;baseline[17]=1;
+                auto vertices=DeviceQuad(0,0,(float)pixelWidth,(float)pixelHeight);
+                NSUInteger offset=0;if(UploadVertices(vertices.data(),vertices.size(),offset)){
+                    [encoder setRenderPipelineState:textureReplacePipeline];
+                    [encoder setVertexBuffer:frame->vertices offset:offset atIndex:0];
+                    [encoder setVertexBytes:baseline.data() length:baseline.size()*sizeof(float) atIndex:1];
+                    [encoder setFragmentBytes:baseline.data() length:baseline.size()*sizeof(float) atIndex:0];
+                    [encoder setFragmentTexture:msaaBaselineTexture atIndex:0];
+                    [encoder setFragmentSamplerState:nearestSampler atIndex:0];
+                    if(frame&&frame->gpuRetainedObjects)[frame->gpuRetainedObjects addObject:msaaBaselineTexture];
+                    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+                }
+            }
             MTLScissorRect scissor = CurrentScissor();
             if (scissor.width > 0 && scissor.height > 0)
                 [encoder setScissorRect:scissor];
+            EncodeStencilStack(encoder);
+            [encoder setDepthStencilState:contentStencilState];
+            [encoder setStencilReferenceValue:static_cast<uint32_t>(
+                std::min<size_t>(clips.size(), 255))];
         }
         return encoder;
     }
@@ -449,13 +792,32 @@ struct MetalRenderTarget::Impl {
         if (!Invert(DeviceTransform(), inverse)) inverse = {};
         p[20] = inverse.m11; p[21] = inverse.m12; p[22] = inverse.m21;
         p[23] = inverse.m22; p[24] = inverse.dx; p[25] = inverse.dy;
-        if (!clips.empty() && clips.back().rounded) {
-            const ClipState& clip = clips.back();
-            p[26] = clip.deviceRect.x; p[27] = clip.deviceRect.y;
-            p[28] = clip.deviceRect.width; p[29] = clip.deviceRect.height;
-            p[30] = clip.radii[0]; p[31] = clip.radii[1];
-            p[32] = clip.radii[2]; p[33] = clip.radii[3];
-            p[34] = clip.exclude ? 2.0f : 1.0f;
+        const size_t clipCount = std::min(clips.size(), kMaxShaderClips);
+        p[kClipCountParam] = static_cast<float>(clipCount);
+        // Keep the innermost clips when an adversarial tree exceeds the shader
+        // fast-path depth. The stencil fallback handles the complete stack;
+        // these constants supply the antialiased edge coverage.
+        const size_t first = clips.size() - clipCount;
+        for (size_t i = 0; i < clipCount; ++i) {
+            const ClipState& clip = clips[first + i];
+            const size_t base = kClipBaseParam + i * kClipParamStride;
+            p[base + 0] = clip.deviceToLocal.m11;
+            p[base + 1] = clip.deviceToLocal.m12;
+            p[base + 2] = clip.deviceToLocal.m21;
+            p[base + 3] = clip.deviceToLocal.m22;
+            p[base + 4] = clip.deviceToLocal.dx;
+            p[base + 5] = clip.deviceToLocal.dy;
+            p[base + 6] = clip.localRect.x;
+            p[base + 7] = clip.localRect.y;
+            p[base + 8] = clip.localRect.width;
+            p[base + 9] = clip.localRect.height;
+            p[base + 10] = clip.radii[0];
+            p[base + 11] = clip.radii[1];
+            p[base + 12] = clip.radii[2];
+            p[base + 13] = clip.radii[3];
+            uint32_t mode = 1u | (clip.exclude ? 2u : 0u) |
+                (clip.aliased ? 4u : 0u);
+            p[base + 14] = static_cast<float>(mode);
         }
         PopulateBrush(p, brush);
         return p;
@@ -471,10 +833,16 @@ struct MetalRenderTarget::Impl {
         NSUInteger offset = 0;
         if (!UploadVertices(vertices.data(), vertices.size(), offset)) return false;
         [e setRenderPipelineState:pipeline];
+        [e setDepthStencilState:contentStencilState];
+        [e setStencilReferenceValue:static_cast<uint32_t>(
+            std::min<size_t>(clips.size(), 255))];
         [e setVertexBuffer:frame->vertices offset:offset atIndex:0];
         [e setVertexBytes:params.data() length:params.size() * sizeof(float) atIndex:1];
         [e setFragmentBytes:params.data() length:params.size() * sizeof(float) atIndex:0];
-        if (texture) [e setFragmentTexture:texture atIndex:0];
+        if (texture) {
+            [e setFragmentTexture:texture atIndex:0];
+            if(frame&&frame->gpuRetainedObjects)[frame->gpuRetainedObjects addObject:texture];
+        }
         if (sampler) [e setFragmentSamplerState:sampler atIndex:0];
         [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
             vertexCount:static_cast<NSUInteger>(vertices.size())];
@@ -519,6 +887,8 @@ struct MetalRenderTarget::Impl {
         bool replace = false, bool tint = false, const float* tintColor = nullptr)
     {
         if (!texture || w <= 0 || h <= 0) return;
+        if (frame && frame->gpuRetainedObjects)
+            [frame->gpuRetainedObjects addObject:texture];
         float u0 = source.width > 0 ? source.x / texture.width : 0;
         float v0 = source.height > 0 ? source.y / texture.height : 0;
         float u1 = source.width > 0 ? (source.x + source.width) / texture.width : 1;
@@ -529,9 +899,10 @@ struct MetalRenderTarget::Impl {
             p[4] = tintColor[0]; p[5] = tintColor[1]; p[6] = tintColor[2];
             p[7] = tintColor[3]; p[179] = 1;
         }
+        id<MTLSamplerState> sampler = scalingMode == 3 ? nearestSampler :
+            ((scalingMode == 0 || scalingMode == 2) ? highQualitySampler : linearSampler);
         Draw(Quad(x, y, w, h, u0, v0, u1, v1),
-            replace ? textureReplacePipeline : texturePipeline, p, texture,
-            scalingMode == 1 ? nearestSampler : linearSampler);
+            replace ? textureReplacePipeline : texturePipeline, p, texture, sampler);
     }
 
     EngineBrushData EngineBrush(Brush* brush) const
@@ -596,17 +967,26 @@ struct MetalRenderTarget::Impl {
         Draw(DeviceQuad(x, y, w, h), texturePipeline, p, texture, nearestSampler);
     }
 
-    id<MTLTexture> Blur(id<MTLTexture> source, float radius)
+    id<MTLTexture> Blur(id<MTLTexture> source, float radius,
+        float requestedSigma = 0.0f, uint32_t blurType = JALIUM_BACKDROP_BLUR_GAUSSIAN)
     {
         if (!source || radius <= 0.01f || !commandBuffer) return source;
         EndEncoder();
-        id<MTLTexture> temp = CreateTexture(device,
+        id<MTLTexture> temp = NewTransientTexture(
             static_cast<uint32_t>(source.width), static_cast<uint32_t>(source.height));
-        id<MTLTexture> output = CreateTexture(device,
+        id<MTLTexture> output = NewTransientTexture(
             static_cast<uint32_t>(source.width), static_cast<uint32_t>(source.height));
         if (!temp || !output) return source;
-        float params[4] = {std::min(radius, 32.0f), 1.0f,
-            std::max(radius / 3.0f, 0.5f), 0};
+        float sigma = requestedSigma > 0.0f ? requestedSigma :
+            (blurType == JALIUM_BACKDROP_BLUR_BOX
+                ? radius / std::sqrt(3.0f) : radius / 3.0f);
+        uint32_t passes=std::clamp<uint32_t>(static_cast<uint32_t>(
+            std::ceil((radius/32.0f)*(radius/32.0f))),1,16);
+        float passRadius=std::min(radius/std::sqrt(static_cast<float>(passes)),32.0f);
+        float params[8] = {passRadius, 1.0f,
+            std::max(sigma/std::sqrt(static_cast<float>(passes)), 0.5f),
+            blurType == JALIUM_BACKDROP_BLUR_FROSTED ? 1.0f : 0.0f,
+            static_cast<float>(blurType),0,0,0};
         auto dispatch = [&](id<MTLTexture> input, id<MTLTexture> destination) {
             id<MTLComputeCommandEncoder> compute = [commandBuffer computeCommandEncoder];
             [compute setComputePipelineState:blurPipeline];
@@ -618,7 +998,9 @@ struct MetalRenderTarget::Impl {
             [compute dispatchThreadgroups:groups threadsPerThreadgroup:threads];
             [compute endEncoding];
         };
-        dispatch(source, temp); params[1] = 0; dispatch(temp, output);
+        id<MTLTexture> input=source;
+        for(uint32_t pass=0;pass<passes;++pass){params[1]=1;dispatch(input,temp);
+            params[1]=0;dispatch(temp,output);input=output;}
         return output;
     }
 
@@ -628,7 +1010,7 @@ struct MetalRenderTarget::Impl {
         if (!currentTarget || !commandBuffer) return result;
         FlushVello();
         EndEncoder();
-        result.texture = CreateTexture(device, pixelWidth, pixelHeight);
+        result.texture = NewTransientTexture(pixelWidth, pixelHeight);
         result.bounds = bounds;
         if (!result.texture) return {};
         id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
@@ -639,6 +1021,15 @@ struct MetalRenderTarget::Impl {
             destinationOrigin:MTLOriginMake(0, 0, 0)];
         [blit endEncoding];
         return result;
+    }
+
+    RectF EffectSource(float x,float y,float w,float h,float uvOffsetX,
+        float uvOffsetY) const
+    {
+        RectF output=TransformBounds(DeviceTransform(),x,y,w,h);
+        return {effectCapture.bounds.x+uvOffsetX*dpiX/96.0f,
+            effectCapture.bounds.y+uvOffsetY*dpiY/96.0f,
+            output.width,output.height};
     }
 };
 
@@ -660,6 +1051,8 @@ MetalRenderTarget::~MetalRenderTarget()
         if (impl_->inFlight)
             dispatch_semaphore_wait(impl_->inFlight, DISPATCH_TIME_FOREVER);
     }
+    for(id<MTLCommandBuffer> command in impl_->retirementCommands)
+        [command waitUntilCompleted];
 }
 
 bool MetalRenderTarget::Initialize(void* nativeHandle)
@@ -715,17 +1108,29 @@ bool MetalRenderTarget::Initialize(const JaliumSurfaceDescriptor* surface)
     impl_->layer.framebufferOnly = YES;
     impl_->layer.opaque = !impl_->composition;
     impl_->layer.maximumDrawableCount = kFrameCount;
+    impl_->layer.allowsNextDrawableTimeout = YES;
+    impl_->layer.presentsWithTransaction = NO;
+    CGColorSpaceRef srgb=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    impl_->layer.colorspace=srgb;if(srgb)CGColorSpaceRelease(srgb);
 #if TARGET_OS_OSX
     impl_->layer.displaySyncEnabled = YES;
 #endif
     impl_->inFlight = dispatch_semaphore_create(kFrameCount);
+    impl_->completionEvent = [impl_->device newSharedEvent];
+    impl_->completionEvent.label = @"Jalium frame retirement";
     for (auto& frame : impl_->frames) {
         frame.vertices = [impl_->device newBufferWithLength:kInitialVertexBytes
             options:MTLResourceStorageModeShared];
         frame.capacity = frame.vertices ? kInitialVertexBytes : 0;
         frame.retiredBuffers = [NSMutableArray array];
+        frame.transientHeaps = [NSMutableArray array];
+        frame.transientResources = [NSMutableArray array];
+        frame.gpuRetainedObjects = [NSMutableArray array];
         if (!frame.vertices) return false;
     }
+    while(impl_->pathMsaa>1&&![impl_->device supportsTextureSampleCount:impl_->pathMsaa])
+        impl_->pathMsaa/=2;
+    impl_->pendingPathMsaa=impl_->pathMsaa;
     if (!impl_->InitializePipelines()) return false;
     impl_->vello=std::make_unique<MetalVelloPipeline>(impl_->device);
     (void)impl_->vello->Initialize();
@@ -746,6 +1151,9 @@ JaliumResult MetalRenderTarget::Resize(int32_t width, int32_t height)
     impl_->layer.frame = ((UIView*)impl_->hostView).bounds;
 #endif
     impl_->sceneTexture = nil;
+    impl_->msaaTexture = nil;
+    impl_->msaaBaselineTexture = nil;
+    impl_->stencilTexture = nil;
     impl_->currentTarget = nil;
     impl_->fullInvalidation = true;
     return impl_->EnsureSceneTexture() ? JALIUM_OK : JALIUM_ERROR_RESOURCE_CREATION_FAILED;
@@ -756,11 +1164,25 @@ JaliumResult MetalRenderTarget::BeginDraw()
     if (impl_->drawing) return JALIUM_ERROR_INVALID_STATE;
     if (impl_->simulatedDeviceLost || impl_->backend->CheckDeviceStatus() != JALIUM_OK)
         return JALIUM_ERROR_DEVICE_LOST;
+    uint32_t supportedMsaa=impl_->pendingPathMsaa;
+    while(supportedMsaa>1&&![impl_->device supportsTextureSampleCount:supportedMsaa])
+        supportedMsaa/=2;
+    if(impl_->pathMsaa!=supportedMsaa){impl_->pathMsaa=supportedMsaa;
+        impl_->sceneTexture=nil;impl_->msaaTexture=nil;impl_->msaaBaselineTexture=nil;
+        impl_->stencilTexture=nil;
+        if(!impl_->InitializePipelines())return JALIUM_ERROR_RESOURCE_CREATION_FAILED;}
     if (!impl_->EnsureSceneTexture()) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     dispatch_semaphore_wait(impl_->inFlight, DISPATCH_TIME_FOREVER);
     impl_->frame = &impl_->frames[impl_->frameIndex++ % kFrameCount];
+    NSIndexSet* completedRetirements=[impl_->retirementCommands indexesOfObjectsPassingTest:
+        ^BOOL(id<MTLCommandBuffer> command,NSUInteger,BOOL*){
+            return command.status==MTLCommandBufferStatusCompleted||
+                command.status==MTLCommandBufferStatusError; }];
+    [impl_->retirementCommands removeObjectsAtIndexes:completedRetirements];
     impl_->frame->offset = 0;
     [impl_->frame->retiredBuffers removeAllObjects];
+    [impl_->frame->transientResources removeAllObjects];
+    [impl_->frame->gpuRetainedObjects removeAllObjects];
     impl_->commandBuffer = [impl_->queue commandBuffer];
     if (!impl_->commandBuffer) {
         dispatch_semaphore_signal(impl_->inFlight);
@@ -828,7 +1250,7 @@ JaliumResult MetalRenderTarget::EndDraw()
             {0,static_cast<float>(impl_->pixelHeight),0,1}};
         NSUInteger offset = 0;
         if (impl_->UploadVertices(quad.data(), quad.size(), offset)) {
-            [present setRenderPipelineState:impl_->textureReplacePipeline];
+            [present setRenderPipelineState:impl_->presentPipeline];
             [present setVertexBuffer:impl_->frame->vertices offset:offset atIndex:0];
             [present setVertexBytes:p.data() length:p.size() * sizeof(float) atIndex:1];
             [present setFragmentBytes:p.data() length:p.size() * sizeof(float) atIndex:0];
@@ -840,15 +1262,21 @@ JaliumResult MetalRenderTarget::EndDraw()
         [impl_->commandBuffer presentDrawable:drawable];
     }
 
+    const uint64_t eventValue = impl_->submittedEventValue.fetch_add(1,
+        std::memory_order_acq_rel) + 1;
+    if (impl_->completionEvent)
+        [impl_->commandBuffer encodeSignalEvent:impl_->completionEvent value:eventValue];
     MetalBackend* backend = impl_->backend;
     dispatch_semaphore_t semaphore = impl_->inFlight;
     std::atomic<int64_t>* gpuNs = &impl_->lastGpuNs;
+    std::atomic<uint64_t>* completedValue = &impl_->completedEventValue;
     [impl_->commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         if (completed.status == MTLCommandBufferStatusError)
             backend->NoteDeviceError(static_cast<int64_t>(completed.error.code));
         if (completed.GPUEndTime >= completed.GPUStartTime)
             gpuNs->store(static_cast<int64_t>((completed.GPUEndTime - completed.GPUStartTime) * 1e9),
                 std::memory_order_release);
+        completedValue->store(eventValue, std::memory_order_release);
         dispatch_semaphore_signal(semaphore);
     }];
     [impl_->commandBuffer commit];
@@ -864,7 +1292,28 @@ JaliumResult MetalRenderTarget::EndDraw()
 void MetalRenderTarget::Clear(float r, float g, float b, float a)
 {
     if (!impl_->drawing) return;
-    impl_->EnsureEncoder(true, MTLClearColorMake(r * a, g * a, b * a, a));
+    if (impl_->fullInvalidation || impl_->currentTarget != impl_->sceneTexture ||
+        impl_->dirtyRects.empty()) {
+        impl_->EnsureEncoder(true, MTLClearColorMake(r * a, g * a, b * a, a));
+        return;
+    }
+
+    // A loadAction clear is attachment-wide and ignores the damage scissor.
+    // On a partial frame it would erase the persistent scene outside the dirty
+    // region. Clear damage with a replace-blended GPU quad instead.
+    MetalSolidBrush clearBrush(r, g, b, a);
+    MetalShaderParams p = impl_->Params(&clearBrush, 0);
+    for (const RectF& dirty : impl_->dirtyRects) {
+        RectF clipped{
+            std::max(dirty.x, 0.0f), std::max(dirty.y, 0.0f),
+            std::min(dirty.x + dirty.width, static_cast<float>(impl_->pixelWidth)) -
+                std::max(dirty.x, 0.0f),
+            std::min(dirty.y + dirty.height, static_cast<float>(impl_->pixelHeight)) -
+                std::max(dirty.y, 0.0f)};
+        if (clipped.width <= 0 || clipped.height <= 0) continue;
+        impl_->Draw(Impl::DeviceQuad(clipped.x, clipped.y, clipped.width,
+            clipped.height), impl_->shapeReplacePipeline, p);
+    }
 }
 
 void MetalRenderTarget::FillRectangle(float x, float y, float w, float h,
@@ -1149,13 +1598,32 @@ void MetalRenderTarget::RenderText(const wchar_t* text, uint32_t textLength,
         transform.m22, transform.dx, transform.dy};
     MTLScissorRect scissor = impl_->CurrentScissor();
     if (scissor.width == 0 || scissor.height == 0) return;
+    uint64_t cacheKey=Fnv1a64(text,static_cast<size_t>(textLength)*sizeof(wchar_t));
+    auto mix=[&](const void* value,size_t bytes){cacheKey=Fnv1a64(value,bytes,cacheKey);};
+    uint64_t formatIdentity=metalFormat->CacheIdentity();mix(&formatIdentity,sizeof(formatIdentity));
+    float layout[]={x,y,w,h,r,g,b,a};mix(layout,sizeof(layout));mix(matrix,sizeof(matrix));
+    NSUInteger clipValues[]={scissor.x,scissor.y,scissor.width,scissor.height};
+    mix(clipValues,sizeof(clipValues));
+    if(auto cached=impl_->textCache.find(cacheKey);cached!=impl_->textCache.end()){
+        cached->second.lastUse=++impl_->textCacheClock;
+        impl_->DrawDeviceTexture(cached->second.texture,cached->second.x,cached->second.y,
+            cached->second.width,cached->second.height,1.0f);return;
+    }
     if (!metalFormat->Rasterize(text, textLength, x, y, w, h, matrix,
         static_cast<float>(scissor.x), static_cast<float>(scissor.y),
         static_cast<float>(scissor.width), static_cast<float>(scissor.height),
         r, g, b, a, pixels, pixelWidth, pixelHeight, deviceX, deviceY)) return;
-    MetalBitmap bitmap(pixelWidth, pixelHeight, std::move(pixels));
-    id<MTLTexture> texture = (__bridge id<MTLTexture>)bitmap.EnsureTexture(
-        impl_->backend->DeviceHandle());
+    MTLTextureDescriptor* descriptor=[MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+        width:pixelWidth height:pixelHeight mipmapped:NO];
+    descriptor.storageMode=MTLStorageModeShared;descriptor.usage=MTLTextureUsageShaderRead;
+    id<MTLTexture> texture=[impl_->device newTextureWithDescriptor:descriptor];
+    if(!texture)return;[texture replaceRegion:MTLRegionMake2D(0,0,pixelWidth,pixelHeight)
+        mipmapLevel:0 withBytes:pixels.data() bytesPerRow:pixelWidth*4];
+    Impl::TextCacheEntry entry{texture,deviceX,deviceY,static_cast<float>(pixelWidth),
+        static_cast<float>(pixelHeight),++impl_->textCacheClock,pixels.size()};
+    impl_->textCacheBytes+=entry.bytes;impl_->textCache[cacheKey]=entry;
+    impl_->TrimTextCache();
     impl_->DrawDeviceTexture(texture, deviceX, deviceY,
         static_cast<float>(pixelWidth), static_cast<float>(pixelHeight), 1.0f);
 }
@@ -1172,8 +1640,12 @@ void MetalRenderTarget::PopTransform()
 void MetalRenderTarget::PushClip(float x, float y, float w, float h)
 {
     impl_->FlushVello();
+    impl_->EndEncoder();
     ClipState clip;
-    clip.deviceRect = TransformBounds(impl_->DeviceTransform(), x, y, w, h);
+    Matrix3x2 transform = impl_->DeviceTransform();
+    clip.localRect = {x,y,w,h};
+    clip.deviceRect = TransformBounds(transform, x, y, w, h);
+    if (!Invert(transform, clip.deviceToLocal)) clip.deviceToLocal = {};
     impl_->clips.push_back(clip);
     MTLScissorRect velloScissor=impl_->CurrentScissor();
     impl_->velloEncoder.SetScissor((float)velloScissor.x,(float)velloScissor.y,
@@ -1195,11 +1667,14 @@ void MetalRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float w,
     float h, float tl, float tr, float br, float bl)
 {
     impl_->FlushVello();
+    impl_->EndEncoder();
     ClipState clip;
-    clip.deviceRect = TransformBounds(impl_->DeviceTransform(), x,y,w,h);
-    float scale = std::max(impl_->dpiX,impl_->dpiY)/96.0f;
-    clip.radii[0]=tl*scale; clip.radii[1]=tr*scale;
-    clip.radii[2]=br*scale; clip.radii[3]=bl*scale; clip.rounded=true;
+    Matrix3x2 transform = impl_->DeviceTransform();
+    clip.localRect = {x,y,w,h};
+    clip.deviceRect = TransformBounds(transform, x,y,w,h);
+    if (!Invert(transform, clip.deviceToLocal)) clip.deviceToLocal = {};
+    clip.radii[0]=tl; clip.radii[1]=tr;
+    clip.radii[2]=br; clip.radii[3]=bl; clip.rounded=true;
     impl_->clips.push_back(clip);
     MTLScissorRect velloScissor=impl_->CurrentScissor();
     impl_->velloEncoder.SetScissor((float)velloScissor.x,(float)velloScissor.y,
@@ -1216,6 +1691,7 @@ void MetalRenderTarget::PopClip()
 {
     if (impl_->clips.empty()) return;
     impl_->FlushVello();
+    impl_->EndEncoder();
     impl_->clips.pop_back();
     if(impl_->clips.empty())impl_->velloEncoder.ClearScissor();
     else{MTLScissorRect velloScissor=impl_->CurrentScissor();impl_->velloEncoder.SetScissor(
@@ -1247,7 +1723,7 @@ void MetalRenderTarget::SetVSyncEnabled(bool enabled)
 void MetalRenderTarget::SetExternalPresentPacing(bool enabled)
 { impl_->externalPacing=enabled; }
 void MetalRenderTarget::SetPathMsaaSampleCount(uint32_t count)
-{ if(count==1||count==2||count==4||count==8)impl_->pathMsaa=count; }
+{ if(count==1||count==2||count==4||count==8)impl_->pendingPathMsaa=count; }
 void MetalRenderTarget::SetDpi(float x,float y)
 {
     if(!(x>0)||!(y>0))return; impl_->dpiX=x;impl_->dpiY=y;
@@ -1278,10 +1754,13 @@ void MetalRenderTarget::DrawVideoSurface(VideoSurface* surface,float x,float y,
     float w,float h,float opacity,int scalingMode)
 {
     auto* metal=dynamic_cast<MetalVideoSurface*>(surface);if(!metal)return;
+    metal->RetainForCommandBuffer((__bridge void*)impl_->commandBuffer);
     id<MTLTexture> texture=(__bridge id<MTLTexture>)metal->TextureHandle(0);
     id<MTLTexture> chroma=(__bridge id<MTLTexture>)metal->TextureHandle(1);
     if(chroma){
         MetalShaderParams p=impl_->Params(nullptr,0);p[17]=impl_->opacity*opacity;
+        p[300]=metal->IsVideoRange()?1.0f:0.0f;
+        p[301]=static_cast<float>(metal->YuvMatrix());
         auto quad=impl_->Quad(x,y,w,h);id<MTLRenderCommandEncoder> encoder=impl_->EnsureEncoder();
         NSUInteger offset=0;if(!encoder||!impl_->UploadVertices(quad.data(),quad.size(),offset))return;
         [encoder setRenderPipelineState:impl_->yuvPipeline];
@@ -1289,7 +1768,9 @@ void MetalRenderTarget::DrawVideoSurface(VideoSurface* surface,float x,float y,
         [encoder setVertexBytes:p.data() length:p.size()*sizeof(float) atIndex:1];
         [encoder setFragmentBytes:p.data() length:p.size()*sizeof(float) atIndex:0];
         [encoder setFragmentTexture:texture atIndex:0];[encoder setFragmentTexture:chroma atIndex:1];
-        [encoder setFragmentSamplerState:scalingMode==1?impl_->nearestSampler:impl_->linearSampler atIndex:0];
+        id<MTLSamplerState> sampler=scalingMode==3?impl_->nearestSampler:
+            ((scalingMode==0||scalingMode==2)?impl_->highQualitySampler:impl_->linearSampler);
+        [encoder setFragmentSamplerState:sampler atIndex:0];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     }else impl_->DrawTexture(texture,x,y,w,h,opacity,scalingMode,
         {0,0,static_cast<float>(metal->GetWidth()),static_cast<float>(metal->GetHeight())});
@@ -1314,8 +1795,8 @@ void* MetalRenderTarget::RealizeLayerBegin(void* existingLayer, float x,
     if (!layer) layer = new MetalRetainedLayer();
     if (!layer->texture || layer->width != impl_->pixelWidth ||
         layer->height != impl_->pixelHeight) {
-        layer->texture = CreateTexture(impl_->device, impl_->pixelWidth,
-            impl_->pixelHeight);
+        layer->texture = impl_->NewPersistentTexture(impl_->pixelWidth,
+            impl_->pixelHeight, &layer->heap);
         layer->width = impl_->pixelWidth; layer->height = impl_->pixelHeight;
         ++layer->generation;
     }
@@ -1343,6 +1824,10 @@ void MetalRenderTarget::CompositeLayer(void* layerHandle, float x, float y,
 {
     auto* layer = static_cast<MetalRetainedLayer*>(layerHandle);
     if (!layer || !layer->texture) return;
+    if (impl_->frame && impl_->frame->gpuRetainedObjects) {
+        [impl_->frame->gpuRetainedObjects addObject:layer->texture];
+        if (layer->heap) [impl_->frame->gpuRetainedObjects addObject:layer->heap];
+    }
     impl_->DrawTexture(layer->texture, x, y, w, h, opacity, 0, layer->bounds);
 }
 
@@ -1350,9 +1835,18 @@ void MetalRenderTarget::DestroyRetainedLayer(void* layerHandle)
 {
     auto* layer = static_cast<MetalRetainedLayer*>(layerHandle);
     if (!layer) return;
-    if (impl_->simulatedDeviceLost) impl_->retainedOrphaned.fetch_add(1);
-    else impl_->retainedGraveyard.fetch_add(1);
-    delete layer;
+    id<MTLCommandBuffer> retirement=[impl_->queue commandBuffer];
+    if(!retirement){impl_->retainedOrphaned.fetch_add(1);delete layer;return;}
+    std::atomic<uint64_t>* orphaned=&impl_->retainedOrphaned;
+    std::atomic<uint64_t>* graveyard=&impl_->retainedGraveyard;
+    bool deviceLost=impl_->simulatedDeviceLost;
+    [retirement addCompletedHandler:^(id<MTLCommandBuffer> command){
+        if(deviceLost||command.status==MTLCommandBufferStatusError)
+            orphaned->fetch_add(1,std::memory_order_relaxed);
+        else graveyard->fetch_add(1,std::memory_order_relaxed);
+        delete layer;
+    }];
+    [impl_->retirementCommands addObject:retirement];[retirement commit];
 }
 
 void MetalRenderTarget::DrawBackdropFilter(float x,float y,float w,float h,
@@ -1368,14 +1862,6 @@ void MetalRenderTarget::DrawBackdropFilterEx(float x,float y,float w,float h,
     float noiseIntensity,float saturation,float luminosity,float tl,float tr,
     float br,float bl)
 {
-    if (!impl_->drawing || w <= 0 || h <= 0) return;
-    RectF deviceBounds=TransformBounds(impl_->DeviceTransform(),x,y,w,h);
-    CapturedTexture snapshot=impl_->Snapshot(deviceBounds);
-    id<MTLTexture> blurred=impl_->Blur(snapshot.texture,
-        blurRadius*std::max(impl_->dpiX,impl_->dpiY)/96.0f);
-    PushPerCornerRoundedRectClip(x,y,w,h,tl,tr,br,bl);
-    impl_->DrawTexture(blurred,x,y,w,h,1,0,deviceBounds);
-    PopClip();
     float rr=0.5f,gg=0.5f,bb=0.5f;
     if(tint&&tint[0]=='#'){
         unsigned value=0;
@@ -1383,10 +1869,19 @@ void MetalRenderTarget::DrawBackdropFilterEx(float x,float y,float w,float h,
             rr=((value>>16)&255)/255.0f;gg=((value>>8)&255)/255.0f;bb=(value&255)/255.0f;
         }
     }
-    MetalSolidBrush overlay(rr*luminosity,gg*luminosity,bb*luminosity,
-        std::clamp(tintOpacity,0.0f,1.0f));
-    FillPerCornerRoundedRectangle(x,y,w,h,tl,tr,br,bl,&overlay);
-    (void)noiseIntensity;(void)saturation;
+    JaliumBackdropMaterialDesc descriptor{};
+    descriptor.structSize=sizeof(descriptor);
+    descriptor.blurType=JALIUM_BACKDROP_BLUR_GAUSSIAN;
+    descriptor.x=x;descriptor.y=y;descriptor.width=w;descriptor.height=h;
+    descriptor.blurRadius=blurRadius;descriptor.blurSigma=0;
+    descriptor.noiseIntensity=noiseIntensity;
+    descriptor.tintR=rr;descriptor.tintG=gg;descriptor.tintB=bb;
+    descriptor.tintA=tintOpacity;descriptor.saturation=saturation;
+    descriptor.luminosity=luminosity;descriptor.brightness=1;
+    descriptor.contrast=1;descriptor.opacity=1;
+    descriptor.cornerRadiusTL=tl;descriptor.cornerRadiusTR=tr;
+    descriptor.cornerRadiusBR=br;descriptor.cornerRadiusBL=bl;
+    DrawBackdropMaterial(descriptor);
 }
 
 void MetalRenderTarget::DrawBackdropMaterial(const JaliumBackdropMaterialDesc& d)
@@ -1394,39 +1889,31 @@ void MetalRenderTarget::DrawBackdropMaterial(const JaliumBackdropMaterialDesc& d
     if (!impl_->drawing || d.width <= 0 || d.height <= 0) return;
     RectF bounds=TransformBounds(impl_->DeviceTransform(),d.x,d.y,d.width,d.height);
     CapturedTexture snapshot=impl_->Snapshot(bounds);
-    id<MTLTexture> blurred=impl_->Blur(snapshot.texture,
-        d.blurRadius*std::max(impl_->dpiX,impl_->dpiY)/96.0f);
+    float scale=std::max(impl_->dpiX,impl_->dpiY)/96.0f;
+    id<MTLTexture> blurred=impl_->Blur(snapshot.texture,d.blurRadius*scale,
+        d.blurSigma*scale,d.blurType);
     PushPerCornerRoundedRectClip(d.x,d.y,d.width,d.height,d.cornerRadiusTL,
         d.cornerRadiusTR,d.cornerRadiusBR,d.cornerRadiusBL);
 
-    // Apply the shared color pipeline as a 4x5 matrix. Hue/sepia/invert are
-    // folded into a conservative affine approximation; the same constants are
-    // exercised by the parity harness rather than silently dropped.
-    MetalShaderParams p=impl_->Params(nullptr,0);p[17]=std::clamp(d.opacity,0.0f,1.0f);
-    p[180]=1;
-    float s=std::max(d.saturation,0.0f),c=std::max(d.contrast,0.0f),
-        brightness=std::max(d.brightness,0.0f)*std::max(d.luminosity,0.0f);
-    const float lr=0.2126f,lg=0.7152f,lb=0.0722f;
-    float invS=1-s;
-    float m[16]={
-        (invS*lr+s)*c,invS*lg*c,invS*lb*c,0,
-        invS*lr*c,(invS*lg+s)*c,invS*lb*c,0,
-        invS*lr*c,invS*lg*c,(invS*lb+s)*c,0,
-        0,0,0,1};
-    for(int i=0;i<16;++i)p[181+i]=m[i]*brightness;
-    float bias=(1-c)*0.5f;
-    p[197]=bias;p[198]=bias;p[199]=bias;p[200]=0;
+    MetalShaderParams p=impl_->Params(nullptr,0);p[180]=3;
+    p[320]=std::max(d.brightness,0.0f);
+    p[321]=std::max(d.contrast,0.0f);
+    p[322]=std::max(d.saturation,0.0f);
+    p[323]=d.hueRotation;
+    p[324]=std::clamp(d.grayscale,0.0f,1.0f);
+    p[325]=std::clamp(d.sepia,0.0f,1.0f);
+    p[326]=std::clamp(d.invert,0.0f,1.0f);
+    p[327]=std::max(d.luminosity,0.0f);
+    p[328]=d.tintR;p[329]=d.tintG;p[330]=d.tintB;
+    p[331]=std::clamp(d.tintA,0.0f,1.0f);
+    p[332]=std::max(d.noiseIntensity,0.0f);
+    p[333]=std::clamp(d.opacity,0.0f,1.0f);
     impl_->Draw(impl_->Quad(d.x,d.y,d.width,d.height,
         bounds.x/blurred.width,bounds.y/blurred.height,
         (bounds.x+bounds.width)/blurred.width,
         (bounds.y+bounds.height)/blurred.height),impl_->effectPipeline,p,
         blurred,impl_->linearSampler);
     PopClip();
-    MetalSolidBrush tint(d.tintR,d.tintG,d.tintB,d.tintA*d.opacity);
-    FillPerCornerRoundedRectangle(d.x,d.y,d.width,d.height,d.cornerRadiusTL,
-        d.cornerRadiusTR,d.cornerRadiusBR,d.cornerRadiusBL,&tint);
-    (void)d.blurType;(void)d.blurSigma;(void)d.noiseIntensity;
-    (void)d.hueRotation;(void)d.grayscale;(void)d.sepia;(void)d.invert;
 }
 
 void MetalRenderTarget::DrawGlowingBorderHighlight(float x,float y,float w,
@@ -1470,11 +1957,30 @@ void MetalRenderTarget::CaptureDesktopArea(int32_t screenX,int32_t screenY,
 {
 #if TARGET_OS_OSX
     if(width<=0||height<=0)return;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    CGImageRef image=CGWindowListCreateImage(CGRectMake(screenX,screenY,width,height),
-        kCGWindowListOptionOnScreenOnly,kCGNullWindowID,kCGWindowImageBoundsIgnoreFraming);
-#pragma clang diagnostic pop
+    __block CGImageRef image=nullptr;
+    dispatch_semaphore_t finished=dispatch_semaphore_create(0);
+    [SCShareableContent getShareableContentExcludingDesktopWindows:NO
+        onScreenWindowsOnly:YES completionHandler:^(SCShareableContent* content,NSError* error){
+        if(error||content.displays.count==0){dispatch_semaphore_signal(finished);return;}
+        CGRect requested=CGRectMake(screenX,screenY,width,height);
+        SCDisplay* selected=content.displays.firstObject;
+        for(SCDisplay* display in content.displays){
+            if(CGRectIntersectsRect(display.frame,requested)){selected=display;break;}}
+        SCContentFilter* filter=[[SCContentFilter alloc]initWithDisplay:selected
+            excludingWindows:@[]];
+        SCStreamConfiguration* configuration=[SCStreamConfiguration new];
+        configuration.width=width;configuration.height=height;
+        configuration.showsCursor=NO;configuration.capturesAudio=NO;
+        configuration.sourceRect=CGRectMake(screenX-selected.frame.origin.x,
+            screenY-selected.frame.origin.y,width,height);
+        [SCScreenshotManager captureImageWithFilter:filter configuration:configuration
+            completionHandler:^(CGImageRef captured,NSError*){
+                if(captured)image=CGImageRetain(captured);
+                dispatch_semaphore_signal(finished);
+            }];
+    }];
+    if(dispatch_semaphore_wait(finished,dispatch_time(DISPATCH_TIME_NOW,
+        2*NSEC_PER_SEC))!=0)return;
     if(!image)return;
     std::vector<uint8_t> pixels(static_cast<size_t>(width)*height*4);
     CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -1497,9 +2003,16 @@ void MetalRenderTarget::DrawDesktopBackdrop(float x,float y,float w,float h,
     CapturedTexture source=impl_->desktopCapture.texture?impl_->desktopCapture:
         impl_->Snapshot(TransformBounds(impl_->DeviceTransform(),x,y,w,h));
     id<MTLTexture> blurred=impl_->Blur(source.texture,blur);
-    impl_->DrawTexture(blurred,x,y,w,h,1,0,source.bounds);
-    MetalSolidBrush overlay(r,g,b,tint);FillRectangle(x,y,w,h,&overlay);
-    (void)noise;(void)saturation;
+    if(!blurred)return;
+    MetalShaderParams p=impl_->Params(nullptr,0);p[180]=3;
+    p[320]=1;p[321]=1;p[322]=std::max(saturation,0.0f);p[323]=0;
+    p[324]=p[325]=p[326]=0;p[327]=1;
+    p[328]=r;p[329]=g;p[330]=b;p[331]=std::clamp(tint,0.0f,1.0f);
+    p[332]=std::max(noise,0.0f);p[333]=1;
+    RectF s=source.bounds;
+    impl_->Draw(impl_->Quad(x,y,w,h,s.x/blurred.width,s.y/blurred.height,
+        (s.x+s.width)/blurred.width,(s.y+s.height)/blurred.height),
+        impl_->effectPipeline,p,blurred,impl_->linearSampler);
 }
 
 void MetalRenderTarget::BeginTransitionCapture(int slot,float x,float y,float w,float h)
@@ -1507,7 +2020,7 @@ void MetalRenderTarget::BeginTransitionCapture(int slot,float x,float y,float w,
     if(slot<0||slot>1||!impl_->drawing)return;
     impl_->FlushVello();
     impl_->EndEncoder();
-    CapturedTexture capture{CreateTexture(impl_->device,impl_->pixelWidth,impl_->pixelHeight),
+    CapturedTexture capture{impl_->NewTransientTexture(impl_->pixelWidth,impl_->pixelHeight),
         TransformBounds(impl_->DeviceTransform(),x,y,w,h)};
     if(!capture.texture)return;
     impl_->captureStack.push_back({impl_->currentTarget,capture});
@@ -1525,16 +2038,29 @@ void MetalRenderTarget::DrawTransitionShader(float x,float y,float w,float h,
     float progress,int mode,float cornerRadius)
 {
     progress=std::clamp(progress,0.0f,1.0f);
+    auto& from=impl_->transitionSlots[0];auto& to=impl_->transitionSlots[1];
+    if(!from.texture||!to.texture)return;
     PushRoundedRectClip(x,y,w,h,cornerRadius,cornerRadius);
-    if(impl_->transitionSlots[0].texture)
-        impl_->DrawTexture(impl_->transitionSlots[0].texture,x,y,w,h,1-progress,0,
-            impl_->transitionSlots[0].bounds);
-    if(impl_->transitionSlots[1].texture){
-        if(mode==1){PushClip(x,y,w*progress,h);impl_->DrawTexture(
-            impl_->transitionSlots[1].texture,x,y,w,h,1,0,impl_->transitionSlots[1].bounds);PopClip();}
-        else impl_->DrawTexture(impl_->transitionSlots[1].texture,x,y,w,h,progress,0,
-            impl_->transitionSlots[1].bounds);
-    }
+    MetalShaderParams p=impl_->Params(nullptr,0);p[400]=progress;
+    p[401]=static_cast<float>(std::clamp(mode,0,9));p[402]=1.0f;
+    p[404]=from.bounds.x/from.texture.width;p[405]=from.bounds.y/from.texture.height;
+    p[406]=from.bounds.width/from.texture.width;p[407]=from.bounds.height/from.texture.height;
+    p[408]=to.bounds.x/to.texture.width;p[409]=to.bounds.y/to.texture.height;
+    p[410]=to.bounds.width/to.texture.width;p[411]=to.bounds.height/to.texture.height;
+    auto vertices=impl_->Quad(x,y,w,h);id<MTLRenderCommandEncoder> encoder=impl_->EnsureEncoder();
+    NSUInteger offset=0;if(encoder&&impl_->UploadVertices(vertices.data(),vertices.size(),offset)){
+        [encoder setRenderPipelineState:impl_->transitionPipeline];
+        [encoder setDepthStencilState:impl_->contentStencilState];
+        [encoder setStencilReferenceValue:static_cast<uint32_t>(std::min<size_t>(impl_->clips.size(),255))];
+        [encoder setVertexBuffer:impl_->frame->vertices offset:offset atIndex:0];
+        [encoder setVertexBytes:p.data() length:p.size()*sizeof(float) atIndex:1];
+        [encoder setFragmentBytes:p.data() length:p.size()*sizeof(float) atIndex:0];
+        [encoder setFragmentTexture:from.texture atIndex:0];
+        [encoder setFragmentTexture:to.texture atIndex:1];
+        [encoder setFragmentSamplerState:impl_->linearSampler atIndex:0];
+        [impl_->frame->gpuRetainedObjects addObject:from.texture];
+        [impl_->frame->gpuRetainedObjects addObject:to.texture];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];}
     PopClip();
 }
 void MetalRenderTarget::DrawCapturedTransition(int slot,float x,float y,float w,
@@ -1545,54 +2071,81 @@ void MetalRenderTarget::DrawCapturedTransition(int slot,float x,float y,float w,
 void MetalRenderTarget::BeginEffectCapture(float x,float y,float w,float h)
 {
     if(!impl_->drawing)return;impl_->FlushVello();impl_->EndEncoder();
-    CapturedTexture capture{CreateTexture(impl_->device,impl_->pixelWidth,impl_->pixelHeight),
+    CapturedTexture capture{impl_->NewTransientTexture(impl_->pixelWidth,impl_->pixelHeight),
         TransformBounds(impl_->DeviceTransform(),x,y,w,h)};
     if(!capture.texture)return;
     impl_->captureStack.push_back({impl_->currentTarget,capture});
-    impl_->currentTarget=capture.texture;impl_->effectCapture=capture;
+    impl_->currentTarget=capture.texture;impl_->activeEffectCaptures.push_back(capture);
     impl_->inEffectCapture=true;impl_->EnsureEncoder(true,MTLClearColorMake(0,0,0,0));
 }
 void MetalRenderTarget::EndEffectCapture()
 {
-    if(!impl_->inEffectCapture||impl_->captureStack.empty())return;
+    if(!impl_->inEffectCapture||impl_->captureStack.empty()||
+        impl_->activeEffectCaptures.empty())return;
     impl_->EndEncoder();impl_->currentTarget=impl_->captureStack.back().first;
-    impl_->captureStack.pop_back();impl_->inEffectCapture=false;
+    impl_->captureStack.pop_back();impl_->effectCapture=impl_->activeEffectCaptures.back();
+    impl_->activeEffectCaptures.pop_back();
+    impl_->inEffectCapture=!impl_->activeEffectCaptures.empty();
 }
 void MetalRenderTarget::DrawBlurEffect(float x,float y,float w,float h,
-    float radius,float,float)
+    float radius,float uvOffsetX,float uvOffsetY)
 {
     id<MTLTexture> blurred=impl_->Blur(impl_->effectCapture.texture,radius);
-    impl_->DrawTexture(blurred,x,y,w,h,1,0,impl_->effectCapture.bounds);
+    impl_->DrawTexture(blurred,x,y,w,h,1,0,
+        impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY));
 }
 
 void MetalRenderTarget::DrawDropShadowEffect(float x,float y,float w,float h,
-    float radius,float ox,float oy,float r,float g,float b,float a,float,float,
-    float,float,float,float)
+    float radius,float ox,float oy,float r,float g,float b,float a,float uvOffsetX,
+    float uvOffsetY,float,float,float,float)
 {
     id<MTLTexture> blurred=impl_->Blur(impl_->effectCapture.texture,radius);
     float tint[4]={r,g,b,a};
-    impl_->DrawTexture(blurred,x+ox,y+oy,w,h,1,0,impl_->effectCapture.bounds,
+    RectF source=impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
+    RectF shadowSource=source;shadowSource.x-=radius*impl_->dpiX/96.0f;
+    shadowSource.y-=radius*impl_->dpiY/96.0f;
+    shadowSource.width+=radius*2*impl_->dpiX/96.0f;
+    shadowSource.height+=radius*2*impl_->dpiY/96.0f;
+    impl_->DrawTexture(blurred,x+ox-radius,y+oy-radius,w+radius*2,h+radius*2,1,0,shadowSource,
         false,true,tint);
-    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,impl_->effectCapture.bounds);
+    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,source);
 }
 void MetalRenderTarget::DrawOuterGlowEffect(float x,float y,float w,float h,
-    float size,float r,float g,float b,float a,float intensity,float,float,float,
-    float,float,float)
+    float size,float r,float g,float b,float a,float intensity,float uvOffsetX,
+    float uvOffsetY,float,float,float,float)
 {
     id<MTLTexture> blurred=impl_->Blur(impl_->effectCapture.texture,size);
     float tint[4]={r,g,b,std::clamp(a*intensity,0.0f,1.0f)};
-    impl_->DrawTexture(blurred,x,y,w,h,1,0,impl_->effectCapture.bounds,false,true,tint);
-    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,impl_->effectCapture.bounds);
+    RectF source=impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
+    RectF glowSource=source;glowSource.x-=size*impl_->dpiX/96.0f;
+    glowSource.y-=size*impl_->dpiY/96.0f;
+    glowSource.width+=size*2*impl_->dpiX/96.0f;
+    glowSource.height+=size*2*impl_->dpiY/96.0f;
+    impl_->DrawTexture(blurred,x-size,y-size,w+size*2,h+size*2,1,0,glowSource,
+        false,true,tint);
+    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,source);
 }
 void MetalRenderTarget::DrawInnerShadowEffect(float x,float y,float w,float h,
-    float radius,float ox,float oy,float r,float g,float b,float a,float,float,
+    float radius,float ox,float oy,float r,float g,float b,float a,float uvOffsetX,
+    float uvOffsetY,
     float tl,float tr,float br,float bl)
 {
+    RectF source=impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
+    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,source);
+    if(a<=0.004f||w<=1||h<=1)return;
     PushPerCornerRoundedRectClip(x,y,w,h,tl,tr,br,bl);
-    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,impl_->effectCapture.bounds);
-    id<MTLTexture> blurred=impl_->Blur(impl_->effectCapture.texture,radius);
-    float tint[4]={r,g,b,a};
-    impl_->DrawTexture(blurred,x+ox,y+oy,w,h,1,0,impl_->effectCapture.bounds,false,true,tint);
+    constexpr int layers=5;float blur=std::max(radius,1.0f);
+    float strokeWidth=std::max(1.5f,blur*0.7f);
+    MetalSolidBrush shadow(r,g,b,1);
+    for(int i=1;i<=layers;++i){float t=static_cast<float>(i)/layers;
+        float inset=blur*(t-1.0f/layers);float alpha=a*(1-t)*0.65f;
+        float sw=w-inset*2,sh=h-inset*2;if(sw<=1||sh<=1)break;
+        if(alpha<=0.004f)continue;shadow.a=alpha;
+        DrawPerCornerRoundedRectangle(x+ox+inset,y+oy+inset,sw,sh,
+            std::max(0.0f,tl-inset),std::max(0.0f,tr-inset),
+            std::max(0.0f,br-inset),std::max(0.0f,bl-inset),
+            &shadow,strokeWidth);
+    }
     PopClip();
 }
 
@@ -1601,8 +2154,7 @@ void MetalRenderTarget::DrawColorMatrixEffect(float x,float y,float w,float h,
 {
     if(!matrix||!impl_->effectCapture.texture)return;
     MetalShaderParams p=impl_->Params(nullptr,0);p[180]=1;
-    for(int i=0;i<16;++i)p[181+i]=matrix[(i/4)*5+(i%4)];
-    p[197]=matrix[4];p[198]=matrix[9];p[199]=matrix[14];p[200]=matrix[19];
+    for(int i=0;i<20;++i)p[181+i]=matrix[i];
     RectF s=impl_->effectCapture.bounds;
     impl_->Draw(impl_->Quad(x,y,w,h,s.x/impl_->effectCapture.texture.width,
         s.y/impl_->effectCapture.texture.height,(s.x+s.width)/impl_->effectCapture.texture.width,
@@ -1614,9 +2166,9 @@ void MetalRenderTarget::DrawEmbossEffect(float x,float y,float w,float h,
 {
     if(!impl_->effectCapture.texture)return;
     MetalShaderParams p=impl_->Params(nullptr,0);p[180]=2;
-    p[181]=lightX/std::max<float>(impl_->effectCapture.texture.width,1);
-    p[182]=lightY/std::max<float>(impl_->effectCapture.texture.height,1);
-    p[183]=amount*relief;
+    p[181]=lightX*relief/std::max<float>(impl_->effectCapture.texture.width,1);
+    p[182]=lightY*relief/std::max<float>(impl_->effectCapture.texture.height,1);
+    p[183]=amount;
     RectF s=impl_->effectCapture.bounds;
     impl_->Draw(impl_->Quad(x,y,w,h,s.x/impl_->effectCapture.texture.width,
         s.y/impl_->effectCapture.texture.height,(s.x+s.width)/impl_->effectCapture.texture.width,
@@ -1645,31 +2197,55 @@ void MetalRenderTarget::DrawShaderEffectFromSource(float x,float y,float w,float
     id<MTLRenderCommandEncoder> encoder=impl_->EnsureEncoder();NSUInteger offset=0;
     if(!encoder||!impl_->UploadVertices(vertices.data(),vertices.size(),offset))return;
     MetalShaderParams vertexParams=impl_->Params(nullptr,0);
-    std::vector<float> zeroConstants(std::max<uint32_t>(constantCount,4),0);
+    uint32_t valueCount=std::max<uint32_t>(constantCount,4);
+    std::vector<float> zeroConstants(valueCount,0);
     const float* values=constants?constants:zeroConstants.data();
     [encoder setRenderPipelineState:pipeline];
+    [encoder setDepthStencilState:impl_->contentStencilState];
+    [encoder setStencilReferenceValue:static_cast<uint32_t>(
+        std::min<size_t>(impl_->clips.size(),255))];
     [encoder setVertexBuffer:impl_->frame->vertices offset:offset atIndex:0];
     [encoder setVertexBytes:vertexParams.data() length:vertexParams.size()*sizeof(float) atIndex:1];
-    [encoder setFragmentBytes:values length:std::max<uint32_t>(constantCount,4)*sizeof(float) atIndex:0];
+    NSUInteger constantBytes=static_cast<NSUInteger>(valueCount)*sizeof(float);
+    if(constantBytes<=4096)[encoder setFragmentBytes:values length:constantBytes atIndex:0];
+    else{id<MTLBuffer> constantBuffer=[impl_->device newBufferWithBytes:values
+            length:constantBytes options:MTLResourceStorageModeShared];
+        if(!constantBuffer)return;[impl_->frame->gpuRetainedObjects addObject:constantBuffer];
+        [encoder setFragmentBuffer:constantBuffer offset:0 atIndex:0];}
     [encoder setFragmentTexture:impl_->effectCapture.texture atIndex:0];
+    [impl_->frame->gpuRetainedObjects addObject:impl_->effectCapture.texture];
     [encoder setFragmentSamplerState:impl_->linearSampler atIndex:0];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
 void MetalRenderTarget::DrawLiquidGlass(float x,float y,float w,float h,
     float corner,float blur,float refraction,float chromatic,float r,float g,
     float b,float tint,float lightX,float lightY,float highlight,int shape,
-    float exponent,int neighbors,float fusion,const float*)
+    float exponent,int neighbors,float fusion,const float* neighborData)
 {
-    RectF bounds=TransformBounds(impl_->DeviceTransform(),x,y,w,h);
-    CapturedTexture snap=impl_->Snapshot(bounds);id<MTLTexture> blurred=impl_->Blur(snap.texture,blur);
-    PushRoundedRectClip(x,y,w,h,corner,corner);
-    impl_->DrawTexture(blurred,x,y,w,h,1,0,bounds);
-    MetalSolidBrush overlay(r,g,b,tint);FillRoundedRectangle(x,y,w,h,corner,corner,&overlay);
-    MetalSolidBrush rim(1,1,1,std::clamp(highlight,0.0f,1.0f));
-    DrawRoundedRectangle(x,y,w,h,corner,corner,&rim,std::max(1.0f,highlight*2));
-    PopClip();
-    (void)refraction;(void)chromatic;(void)lightX;(void)lightY;(void)shape;
-    (void)exponent;(void)neighbors;(void)fusion;
+    if(!impl_->drawing||w<=0||h<=0)return;
+    constexpr float padding=32.0f;
+    RectF captureBounds=TransformBounds(impl_->DeviceTransform(),x-padding,
+        y-padding,w+padding*2,h+padding*2);
+    CapturedTexture snap=impl_->Snapshot(captureBounds);
+    id<MTLTexture> blurred=impl_->Blur(snap.texture,blur);
+    if(!blurred)return;
+    MetalShaderParams p=impl_->Params(nullptr,0);p[180]=4;
+    p[340]=std::max(refraction,0.0f);p[341]=std::max(chromatic,0.0f);
+    p[342]=lightX;p[343]=lightY;p[344]=std::clamp(highlight,0.0f,1.0f);
+    p[345]=r;p[346]=g;p[347]=b;p[348]=std::clamp(tint,0.0f,1.0f);
+    p[349]=shape==1?1.0f:0.0f;p[350]=std::max(exponent,1.0f);
+    p[351]=x;p[352]=y;p[353]=w;p[354]=h;p[355]=std::max(corner,0.0f);
+    p[356]=static_cast<float>(blurred.width);p[357]=static_cast<float>(blurred.height);
+    p[358]=impl_->dpiX/96.0f;p[359]=impl_->dpiY/96.0f;
+    int count=std::clamp(neighbors,0,4);p[360]=static_cast<float>(count);
+    p[361]=std::max(fusion,0.0f);
+    if(neighborData)for(int i=0;i<count;++i)for(int j=0;j<5;++j)
+        p[365+i*5+j]=neighborData[i*5+j];
+
+    auto vertices=impl_->Quad(x-padding,y-padding,w+padding*2,h+padding*2);
+    for(auto& vertex:vertices){vertex.u=vertex.x/std::max<float>(blurred.width,1);
+        vertex.v=vertex.y/std::max<float>(blurred.height,1);}
+    impl_->Draw(vertices,impl_->effectPipeline,p,blurred,impl_->linearSampler);
 }
 
 JaliumResult MetalRenderTarget::CreateWebViewVisual(void** visualOut)
@@ -1727,11 +2303,31 @@ JaliumResult MetalRenderTarget::DestroyAnimProbe(void* visual)
 JaliumResult MetalRenderTarget::QueryGpuStats(JaliumGpuStats* out) const
 {
     if(!out)return JALIUM_ERROR_INVALID_ARGUMENT;*out={};
+    out->glyphSlotsUsed=static_cast<int32_t>(std::min<size_t>(impl_->textCache.size(),
+        static_cast<size_t>(std::numeric_limits<int32_t>::max())));
+    out->glyphSlotsTotal=2048;out->glyphBytes=static_cast<int64_t>(impl_->textCacheBytes);
     int textures=impl_->sceneTexture?1:0;
+    if(impl_->msaaTexture)++textures;if(impl_->msaaBaselineTexture)++textures;
+    if(impl_->stencilTexture)++textures;
+    int64_t heapBytes=0;
+    for(const auto& frame:impl_->frames){
+        textures+=static_cast<int>(frame.transientResources.count);
+        for(id value in frame.transientHeaps)
+            heapBytes+=static_cast<int64_t>(((id<MTLHeap>)value).currentAllocatedSize);
+    }
+    for(id value in impl_->persistentHeaps)
+        heapBytes+=static_cast<int64_t>(((id<MTLHeap>)value).currentAllocatedSize);
     for(const auto& slot:impl_->transitionSlots)if(slot.texture)++textures;
     if(impl_->effectCapture.texture)++textures;if(impl_->desktopCapture.texture)++textures;
     out->textureCount=textures;
-    out->textureBytes=static_cast<int64_t>(textures)*impl_->pixelWidth*impl_->pixelHeight*4;
+    const int64_t sceneBytes=impl_->sceneTexture?
+        static_cast<int64_t>(impl_->pixelWidth)*impl_->pixelHeight*4:0;
+    int64_t attachmentBytes=sceneBytes;
+    if(impl_->msaaTexture)attachmentBytes+=sceneBytes*impl_->pathMsaa;
+    if(impl_->msaaBaselineTexture)attachmentBytes+=sceneBytes;
+    if(impl_->stencilTexture)attachmentBytes+=
+        static_cast<int64_t>(impl_->pixelWidth)*impl_->pixelHeight*impl_->pathMsaa;
+    out->textureBytes=attachmentBytes+heapBytes;
     out->swapBufferCount=kFrameCount;
     out->lastFramePresentToReadyNs=impl_->lastGpuNs.load(std::memory_order_acquire);
     out->presentBlockNs=0;out->frameGpuWaitNs=0;out->frameWaitableWaitNs=0;
@@ -1770,10 +2366,28 @@ JaliumResult MetalRenderTarget::SetRenderingEngine(JaliumRenderingEngine engine)
 JaliumResult MetalRenderTarget::ReclaimIdleResources()
 {
     if(impl_->drawing)return JALIUM_ERROR_INVALID_STATE;
+    // Acquire every present credit to establish that no command buffer still
+    // references frame-local heaps, then restore the semaphore depth.
+    for(uint32_t i=0;i<kFrameCount;++i)
+        dispatch_semaphore_wait(impl_->inFlight,DISPATCH_TIME_FOREVER);
+    for(id<MTLCommandBuffer> command in impl_->retirementCommands)
+        [command waitUntilCompleted];
+    [impl_->retirementCommands removeAllObjects];
     impl_->effectCapture={};impl_->desktopCapture={};
+    impl_->activeEffectCaptures.clear();
+    impl_->textCache.clear();impl_->textCacheBytes=0;
     impl_->transitionSlots[0]={};impl_->transitionSlots[1]={};
     if(impl_->vello)impl_->vello->ReclaimIdleResources();
-    for(auto& frame:impl_->frames)[frame.retiredBuffers removeAllObjects];
+    for(auto& frame:impl_->frames){
+        [frame.retiredBuffers removeAllObjects];
+        [frame.transientResources removeAllObjects];
+        [frame.gpuRetainedObjects removeAllObjects];
+        [frame.transientHeaps removeAllObjects];
+    }
+    NSIndexSet* emptyPersistent=[impl_->persistentHeaps indexesOfObjectsPassingTest:
+        ^BOOL(id value,NSUInteger,BOOL*){return ((id<MTLHeap>)value).currentAllocatedSize==0;}];
+    [impl_->persistentHeaps removeObjectsAtIndexes:emptyPersistent];
+    for(uint32_t i=0;i<kFrameCount;++i)dispatch_semaphore_signal(impl_->inFlight);
     return JALIUM_OK;
 }
 JaliumResult MetalRenderTarget::RequestReadback()

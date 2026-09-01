@@ -26,8 +26,8 @@
                      Kind="Framework" ForceLoad="true" IsCxx="true"
                      Frameworks="Metal QuartzCore CoreGraphics CoreText CoreVideo ImageIO IOSurface AVFoundation VideoToolbox CoreMedia AudioToolbox UIKit WebKit" />
   </ItemGroup>
-  <ItemGroup Condition="Exists('$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_vello.metallib')">
-    <BundleResource Include="$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_vello.metallib"
-                    LogicalName="jalium_vello.metallib" />
+  <ItemGroup Condition="Exists('$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_core.metallib')">
+    <BundleResource Include="$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_*.metallib" />
+    <BundleResource Include="$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_metal_manifest.json" />
   </ItemGroup>
 </Project>

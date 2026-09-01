@@ -12,6 +12,12 @@ internal static partial class TvNativeBridge
     internal static partial void RegisterAllBackends();
     [LibraryImport("__Internal", EntryPoint = "jalium_apple_set_root_view")]
     internal static partial void SetRootView(nint view);
+    [LibraryImport("__Internal", EntryPoint = "jalium_apple_register_scene_root",
+        StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial void RegisterSceneRoot(string sceneId, nint view);
+    [LibraryImport("__Internal", EntryPoint = "jalium_apple_unregister_scene_root",
+        StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial void UnregisterSceneRoot(string sceneId);
     [LibraryImport("__Internal", EntryPoint = "jalium_apple_notify_lifecycle")]
     internal static partial void NotifyLifecycle(int eventType);
 }
@@ -23,10 +29,10 @@ public abstract class JaliumTVApplicationDelegate : UIApplicationDelegate
     private JaliumApp? _app;
     protected abstract JaliumApp CreateHostedApp();
 
-    internal void Connect(UIView view)
+    internal void Connect(string sceneId, UIView view)
     {
         TvNativeBridge.RegisterAllBackends();
-        TvNativeBridge.SetRootView(view.Handle);
+        TvNativeBridge.RegisterSceneRoot(sceneId, view.Handle);
         if (_app != null) return;
         _app = CreateHostedApp();
         _app.StartHosted();
@@ -66,6 +72,13 @@ public class JaliumTVSceneDelegate : UIResponder, IUIWindowSceneDelegate
         Window = new UIWindow(windowScene) { RootViewController = controller };
         Window.MakeKeyAndVisible();
         if (UIApplication.SharedApplication.Delegate is JaliumTVApplicationDelegate app)
-            app.Connect(controller.View!);
+            app.Connect(session.PersistentIdentifier, controller.View!);
+    }
+
+    [Export("sceneDidDisconnect:")]
+    public virtual void DidDisconnect(UIScene scene)
+    {
+        TvNativeBridge.UnregisterSceneRoot(scene.Session.PersistentIdentifier);
+        Window = null;
     }
 }

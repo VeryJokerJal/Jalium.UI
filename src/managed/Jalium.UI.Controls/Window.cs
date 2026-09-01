@@ -4872,6 +4872,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         const uint PointerFlagEraser = 1u << 3;
         const uint PointerFlagInverted = 1u << 4;
         const uint PointerFlagBarrel = 1u << 5;
+        const uint PointerFlagCoalesced = 1u << 6;
+        const uint PointerFlagPredicted = 1u << 7;
         const uint PointerButtonPrimary = 1u << 0;
         const uint PointerButtonSecondary = 1u << 1;
         const uint PointerButtonTertiary = 1u << 2;
@@ -4918,6 +4920,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             IsBarrelButtonPressed = barrelButton,
             IsEraser = eraser,
             IsInverted = (evt.PointerFlags & PointerFlagInverted) != 0,
+            IsCoalesced = (evt.PointerFlags & PointerFlagCoalesced) != 0,
+            IsPredicted = (evt.PointerFlags & PointerFlagPredicted) != 0,
             Pressure = pressure,
             XTilt = evt.TiltX,
             YTilt = evt.TiltY,
@@ -5666,7 +5670,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return [RenderBackend.D3D12, RenderBackend.Vulkan, RenderBackend.Software];
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        if (PlatformFactory.IsApple)
             return [RenderBackend.Metal, RenderBackend.Vulkan, RenderBackend.Software];
         return [RenderBackend.Vulkan, RenderBackend.Software];
     }

@@ -17,7 +17,9 @@ internal static class RenderBackendSelector
         bool? isWindows = null,
         bool? isMacOS = null,
         bool? isLinux = null,
-        bool? isAndroid = null)
+        bool? isAndroid = null,
+        bool? isIOS = null,
+        bool? isTvOS = null)
     {
         isAvailable ??= backend => NativeMethods.IsBackendAvailable(backend) != 0;
         backendOverride ??= Environment.GetEnvironmentVariable(BackendOverrideEnvironmentVariable)?.Trim();
@@ -25,6 +27,8 @@ internal static class RenderBackendSelector
         isMacOS ??= RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
         isLinux ??= RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
         isAndroid ??= IsAndroidPlatform();
+        isIOS ??= OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst();
+        isTvOS ??= OperatingSystem.IsTvOS();
 
         if (TryParseBackend(backendOverride, out var requestedBackend) &&
             requestedBackend != RenderBackend.Auto &&
@@ -33,7 +37,8 @@ internal static class RenderBackendSelector
             return requestedBackend;
         }
 
-        foreach (var backend in GetPreferredOrder(isWindows.Value, isMacOS.Value, isLinux.Value, isAndroid.Value))
+        foreach (var backend in GetPreferredOrder(isWindows.Value, isMacOS.Value,
+                     isLinux.Value, isAndroid.Value, isIOS.Value, isTvOS.Value))
         {
             if (isAvailable(backend))
             {
@@ -118,7 +123,8 @@ internal static class RenderBackendSelector
             _ => null,
         };
 
-    private static RenderBackend[] GetPreferredOrder(bool isWindows, bool isMacOS, bool isLinux, bool isAndroid = false)
+    private static RenderBackend[] GetPreferredOrder(bool isWindows, bool isMacOS,
+        bool isLinux, bool isAndroid = false, bool isIOS = false, bool isTvOS = false)
     {
         // Platform GPU backend first, then the secondary GPU backend, then the
         // software rasterizer. Mirrors the native preferred order inside
@@ -129,7 +135,7 @@ internal static class RenderBackendSelector
             return [RenderBackend.D3D12, RenderBackend.Vulkan, RenderBackend.Software];
         }
 
-        if (isMacOS)
+        if (isMacOS || isIOS || isTvOS)
         {
             return [RenderBackend.Metal, RenderBackend.Vulkan, RenderBackend.Software];
         }

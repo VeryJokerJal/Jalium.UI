@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -74,25 +75,44 @@ struct MetalVelloPipeline::Impl {
     id<MTLSamplerState> sampler=nil;
     id<MTLTexture> output=nil;
     id<MTLTexture> dummy=nil;
+    NSMutableArray* textureHeaps=nil;
     VelloRenderRegion region{};
     bool ready=false;
 
-    struct Buffer { id<MTLBuffer> object=nil; NSUInteger capacity=0; };
+    struct Buffer { id<MTLBuffer> object=nil; id<MTLHeap> heap=nil; NSUInteger capacity=0; };
     struct Slot {
         std::array<Buffer,(size_t)Res::Count> buffers;
         NSMutableArray* retained=nil;
+        NSMutableArray* heaps=nil;
     } slots[3];
 
     explicit Impl(id<MTLDevice> d):device(d)
-    {for(auto& slot:slots)slot.retained=[NSMutableArray array];}
+    {textureHeaps=[NSMutableArray array];for(auto& slot:slots){
+        slot.retained=[NSMutableArray array];slot.heaps=[NSMutableArray array];}}
 
-    bool Ensure(Buffer& buffer, NSUInteger bytes)
+    bool Ensure(Slot& slot, Buffer& buffer, NSUInteger bytes)
     {
         if(buffer.object&&buffer.capacity>=bytes)return true;
         NSUInteger capacity=256;while(capacity<bytes&&capacity<=NSUIntegerMax/2)capacity*=2;
-        id<MTLBuffer> candidate=[device newBufferWithLength:capacity
-            options:MTLResourceStorageModePrivate];
-        if(!candidate)return false;buffer.object=candidate;buffer.capacity=capacity;return true;
+        id<MTLBuffer> candidate=nil;id<MTLHeap> selected=nil;
+        for(id value in slot.heaps){id<MTLHeap> heap=(id<MTLHeap>)value;
+            candidate=[heap newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
+            if(candidate){selected=heap;break;}}
+        if(!candidate){MTLSizeAndAlign need=[device heapBufferSizeAndAlignWithLength:capacity
+                options:MTLResourceStorageModePrivate];
+            NSUInteger align=std::max<NSUInteger>(need.align,1);
+            NSUInteger required=(need.size+align-1)&~(align-1);
+            MTLHeapDescriptor* descriptor=[MTLHeapDescriptor new];
+            descriptor.size=std::max<NSUInteger>(required*8,16u*1024u*1024u);
+            descriptor.storageMode=MTLStorageModePrivate;
+            descriptor.hazardTrackingMode=MTLHazardTrackingModeTracked;
+            selected=[device newHeapWithDescriptor:descriptor];
+            if(selected){[slot.heaps addObject:selected];candidate=[selected
+                newBufferWithLength:capacity options:MTLResourceStorageModePrivate];}}
+        if(!candidate)return false;
+        if(buffer.object)[slot.retained addObject:buffer.object];
+        if(buffer.heap)[slot.retained addObject:buffer.heap];
+        buffer.object=candidate;buffer.heap=selected;buffer.capacity=capacity;return true;
     }
     id<MTLTexture> Texture(uint32_t width,uint32_t height,MTLPixelFormat format,
         MTLStorageMode storage=MTLStorageModePrivate)
@@ -100,7 +120,17 @@ struct MetalVelloPipeline::Impl {
         MTLTextureDescriptor* d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
             width:width height:height mipmapped:NO];d.storageMode=storage;
         d.usage=MTLTextureUsageShaderRead|MTLTextureUsageShaderWrite|MTLTextureUsageRenderTarget;
-        return [device newTextureWithDescriptor:d];
+        if(storage!=MTLStorageModePrivate)return [device newTextureWithDescriptor:d];
+        for(id value in textureHeaps){id<MTLHeap> heap=(id<MTLHeap>)value;
+            id<MTLTexture> texture=[heap newTextureWithDescriptor:d];if(texture)return texture;}
+        MTLSizeAndAlign need=[device heapTextureSizeAndAlignWithDescriptor:d];
+        NSUInteger align=std::max<NSUInteger>(need.align,1);
+        NSUInteger required=(need.size+align-1)&~(align-1);
+        MTLHeapDescriptor* hd=[MTLHeapDescriptor new];
+        hd.size=std::max<NSUInteger>(required*4,16u*1024u*1024u);
+        hd.storageMode=MTLStorageModePrivate;hd.hazardTrackingMode=MTLHazardTrackingModeTracked;
+        id<MTLHeap> heap=[device newHeapWithDescriptor:hd];if(!heap)return nil;
+        [textureHeaps addObject:heap];return [heap newTextureWithDescriptor:d];
     }
     id<MTLBuffer> ResourceBuffer(Slot& slot,Res resource,id<MTLBuffer> config,
         id<MTLBuffer> scene)
@@ -117,6 +147,13 @@ MetalVelloPipeline::~MetalVelloPipeline()=default;
 bool MetalVelloPipeline::Initialize()
 {
     NSString* path=[NSBundle.mainBundle pathForResource:@"jalium_vello" ofType:@"metallib"];
+    if(!path){const char* directory=std::getenv("JALIUM_METALLIB_DIR");if(directory&&*directory){
+        NSString* candidate=[[NSString stringWithUTF8String:directory]
+            stringByAppendingPathComponent:@"jalium_vello.metallib"];
+        if([NSFileManager.defaultManager fileExistsAtPath:candidate])path=candidate;}}
+    if(!path){NSString* candidate=[NSBundle.mainBundle.executablePath.stringByDeletingLastPathComponent
+        stringByAppendingPathComponent:@"jalium_vello.metallib"];
+        if([NSFileManager.defaultManager fileExistsAtPath:candidate])path=candidate;}
     if(!path)return false;NSError* error=nil;
     impl_->library=[impl_->device newLibraryWithURL:[NSURL fileURLWithPath:path]
         error:&error];if(!impl_->library)return false;
@@ -142,7 +179,7 @@ bool MetalVelloPipeline::Record(id<MTLCommandBuffer> command,const VelloSubScene
 {
     if(!impl_->ready||!command||sub.packed.data.empty()||sub.packed.region.Empty())return false;
     auto& slot=impl_->slots[frameIndex%3];const VelloRenderInfo& ri=sub.ri;
-    auto ensure=[&](Res r,NSUInteger bytes){return impl_->Ensure(slot.buffers[(size_t)r],bytes);};
+    auto ensure=[&](Res r,NSUInteger bytes){return impl_->Ensure(slot,slot.buffers[(size_t)r],bytes);};
     bool ok=true;
     ok&=ensure(Res::Bump,sizeof(VelloBumpAllocators));ok&=ensure(Res::Indirect,64);
     ok&=ensure(Res::Reduced,Bytes(ri.reducedSize,kVelloStrideTagMonoid));
@@ -232,6 +269,8 @@ bool MetalVelloPipeline::Record(id<MTLCommandBuffer> command,const VelloSubScene
 id<MTLTexture> MetalVelloPipeline::OutputTexture()const{return impl_->output;}
 VelloRenderRegion MetalVelloPipeline::OutputRegion()const{return impl_->region;}
 void MetalVelloPipeline::ReclaimIdleResources()
-{impl_->output=nil;for(auto& slot:impl_->slots){for(auto& b:slot.buffers){b.object=nil;b.capacity=0;}[slot.retained removeAllObjects];}}
+{impl_->output=nil;[impl_->textureHeaps removeAllObjects];for(auto& slot:impl_->slots){
+    for(auto& b:slot.buffers){b.object=nil;b.heap=nil;b.capacity=0;}
+    [slot.retained removeAllObjects];[slot.heaps removeAllObjects];}}
 
 } // namespace jalium

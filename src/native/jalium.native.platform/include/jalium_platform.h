@@ -180,6 +180,8 @@ typedef enum JaliumPointerFlags {
     JALIUM_POINTER_FLAG_ERASER     = 1 << 3,
     JALIUM_POINTER_FLAG_INVERTED   = 1 << 4,
     JALIUM_POINTER_FLAG_BARREL     = 1 << 5,
+    JALIUM_POINTER_FLAG_COALESCED  = 1 << 6,
+    JALIUM_POINTER_FLAG_PREDICTED  = 1 << 7,
 } JaliumPointerFlags;
 
 /// Physical tablet tool shape. Unknown is used for touch and for backends that
@@ -430,6 +432,11 @@ JALIUM_PLATFORM_API JaliumPlatform jalium_platform_get_current(void);
 /// delegate as the root surface for the next Jalium window. The platform
 /// backend keeps a weak reference; pass 0 when a scene disconnects.
 JALIUM_PLATFORM_API void jalium_apple_set_root_view(intptr_t nativeView);
+/// Registers/unregisters one UIWindowScene root. IDs are UTF-8 persistent
+/// session identifiers; window creation claims an unclaimed root in FIFO order.
+JALIUM_PLATFORM_API void jalium_apple_register_scene_root(
+    const char* sceneId, intptr_t nativeView);
+JALIUM_PLATFORM_API void jalium_apple_unregister_scene_root(const char* sceneId);
 
 /// Forwards a JaliumEventType application lifecycle event (PAUSE, RESUME,
 /// DESTROY or LOW_MEMORY) to all Apple windows.

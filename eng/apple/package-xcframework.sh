@@ -26,7 +26,9 @@ merge_slice() {
   local rid="$1"
   local dir="$apple_root/slices/$rid/$configuration"
   [[ -f "$dir/.jalium-native-complete" ]] || return 1
-  mapfile -t archives < <(find "$dir" -maxdepth 1 -name '*.a' -print | sort)
+  local archives=()
+  while IFS= read -r archive; do archives+=("$archive"); done < <(
+    find "$dir" -maxdepth 1 -name '*.a' ! -name 'libJaliumNative.a' -print | sort)
   [[ ${#archives[@]} -gt 0 ]] || return 1
   local merged="$dir/libJaliumNative.a"
   /usr/bin/libtool -static -o "$merged" "${archives[@]}"

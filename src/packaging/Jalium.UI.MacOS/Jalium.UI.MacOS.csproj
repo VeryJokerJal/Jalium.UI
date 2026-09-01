@@ -27,8 +27,8 @@
     <Content Include="$(JaliumMacNativeRoot)/*.metallib" Pack="true"
              PackagePath="runtimes/osx-arm64/native" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
-  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\native\artifacts\apple\slices\osx-arm64\$(Configuration)\jalium_vello.metallib')">
-    <BundleResource Include="$(MSBuildThisFileDirectory)..\..\native\artifacts\apple\slices\osx-arm64\$(Configuration)\jalium_vello.metallib"
-                    LogicalName="jalium_vello.metallib" />
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\native\artifacts\apple\slices\osx-arm64\$(Configuration)\jalium_core.metallib')">
+    <BundleResource Include="$(MSBuildThisFileDirectory)..\..\native\artifacts\apple\slices\osx-arm64\$(Configuration)\jalium_*.metallib" />
+    <BundleResource Include="$(MSBuildThisFileDirectory)..\..\native\artifacts\apple\slices\osx-arm64\$(Configuration)\jalium_metal_manifest.json" />
   </ItemGroup>
 </Project>

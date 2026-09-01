@@ -9,4 +9,8 @@ namespace jalium {
 bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
     std::string& entryPoint, std::string& error);
 
+/// Compiles a BrushMain body against the canonical D3D12/Vulkan/Metal Ink ABI.
+bool CompileMetalBrushShader(const char* brushMainHlsl, std::string& msl,
+    std::string& entryPoint, std::string& error);
+
 } // namespace jalium
