@@ -91,6 +91,12 @@
     <ClInclude Include="include\jalium_text_options.h" />
     <ClInclude Include="include\jalium_video_surface.h" />
     <ClInclude Include="include\jalium_text_stats.h" />
+    <ClInclude Include="include\jalium_abi_guard.h" />
+    <ClInclude Include="include\jalium_gradient_sample.h" />
+    <ClInclude Include="include\jalium_impeller_shapes.h" />
+    <ClInclude Include="include\jalium_impeller_stroke.h" />
+    <ClInclude Include="include\jalium_scanline_rasterizer.h" />
+    <ClInclude Include="include\jalium_vello_encode.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\context.cpp" />

@@ -17,6 +17,11 @@ struct PsInput
     nointerpolation float4 shapeParams : TEXCOORD8;  // x=shapeType, y=shapeN, z=shadowMode, w=paintMode
     nointerpolation float  shadowSigma : TEXCOORD9;  // gaussian sigma (screen px), used when shadowMode>0.5
     nointerpolation float  gradientOpacity : TEXCOORD10;
+    // Coverage-band widening, computed once per instance in the VS from the
+    // 2x3 affine: 1.0 when axis-aligned (bit-identical to the legacy path),
+    // rising to 1.4 once the rotation/skew passes ~3.6 degrees. See the VS for
+    // why a shallow rotation needs a wider box filter than the exact 1px one.
+    nointerpolation float  aaScale     : TEXCOORD11;
 };
 
 ByteAddressBuffer gradientStopData : register(t2);
@@ -150,6 +155,7 @@ float4 main(PsInput input) : SV_Target
             p, halfSize, cornerRadii, cornerRadii, input.shapeParams.y);
     else
         aa = JaliumSdfAaWidth(dist);
+    aa *= input.aaScale;
     float fillAlpha = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, dist);
 
     float4 fill;
@@ -228,6 +234,7 @@ float4 main(PsInput input) : SV_Target
             centerDist = sdRoundedBox(p, centerHalf, centerR);
             centerAa = JaliumSdfAaWidth(centerDist);
         }
+        centerAa *= input.aaScale;
 
         const float strokeDistance = abs(centerDist) - halfStroke;
         const float borderMask =

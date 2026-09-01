@@ -145,6 +145,13 @@ internal sealed class LayoutManager
         if (_isUpdating)
             return default;
 
+        // Pending CSS evaluation must land before measure so first-frame styling is in
+        // place (no flash of unstyled content). One static-bool read when CSS is unused.
+        if (Jalium.UI.Styling.CssEngine.IsActive)
+        {
+            Jalium.UI.Styling.CssEvaluationScheduler.FlushIfPending(root.Dispatcher);
+        }
+
         _isUpdating = true;
         _layoutIterations = 0;
         _reportedRunawayLayout = false;

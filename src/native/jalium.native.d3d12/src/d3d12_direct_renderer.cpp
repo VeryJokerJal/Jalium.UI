@@ -1395,6 +1395,11 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     // (active engine==Vello)时按需懒创建 Vello 子系统;Impeller 下整条跳过,
     // velloRenderer_ 永远为空,零开销。
     if (velloEnabled_ && EnsureVelloRenderer()) {
+        VelloPerfBeginFrame();  // JALIUM_VELLO_PERF stats tick (no-op when unset)
+        // The fence for this slot has been observed above, so the sub-scene
+        // output textures it had in flight can go back on the pool and the
+        // linear upload arena can rewind.
+        velloRenderer_->RecycleFrameResources(currentFrame_);
         velloRenderer_->BeginFrame(width, height);
     }
 
@@ -2455,13 +2460,33 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // the final screen pen (tx folded in) so the snap lands it within 1/8 px
     // of its true place instead of a whole pixel — no per-glyph stepping when
     // the run's layout scales or slides sub-pixel.
+    //
+    // The full 2x2 goes with it. When it is axis-aligned the atlas ignores it
+    // and behaves exactly as before (scaleX/scaleY drive everything, and the
+    // loop below magnifies the base-DIP quads). When it carries a real rotation
+    // or skew the atlas rasterizes the glyphs THROUGH the matrix and returns
+    // quads already in final screen DIPs — the loop below must then leave them
+    // alone, which is what `rotatedText` gates.
+    const float linear2x2[4] = { t.m11, t.m12, t.m21, t.m22 };
+    const bool rotatedText = !axisAligned;
+    // Decorations are emitted as SDF rects at the bottom of this function, and
+    // AddSdfRect applies the ambient transform to them — so they must be handed
+    // the UNtransformed origin, or they get transformed twice. (Before this,
+    // they shared the glyph origin and a scaled/rotated run's underline drifted
+    // away from its text.) Routing them through the transform is also what
+    // rotates the bar along with the baseline.
+    const float decorationOrigin[2] = { x, y };
+    bool requiresSmoothSampling = false;
     uint32_t count = glyphAtlas_->GenerateGlyphs(layout, tx, ty, r, g, b, effectiveA,
                                                   textInstances_, &decorations,
                                                   layoutKey,
                                                   aaMode, hintingMode,
                                                   scaleX, scaleY,
                                                   crispAxisAligned,
-                                                  subpixelPositioning);
+                                                  subpixelPositioning,
+                                                  linear2x2,
+                                                  decorationOrigin,
+                                                  &requiresSmoothSampling);
     if (count > 0) {
         glyphAtlasUsedThisFrame_ = true;
     }
@@ -2473,7 +2498,7 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // base-DIP quad to its on-screen size; because the atlas bitmap was already
     // rasterized for the quantized final transform, the magnified quad stays
     // crisp instead of mosaicking.
-    if (count > 0) {
+    if (count > 0 && !rotatedText) {
         const float dpi = dpiScale_ > 0.0f ? dpiScale_ : 1.0f;
         const float invDpi = 1.0f / dpi;
         for (uint32_t i = startIdx; i < startIdx + count; i++) {
@@ -2501,6 +2526,23 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
                 g.posX = std::round(g.posX * dpi) * invDpi;
                 g.posY = std::round(g.posY * dpi) * invDpi;
             }
+        }
+    }
+
+    // Rotated runs skip the re-magnify above — their quads already came back in
+    // final screen DIPs — but they still want the same integer-pixel snap. The
+    // atlas bitmap IS the rotated ink at final resolution, so an integer-aligned
+    // quad maps those texels 1:1 onto physical pixels and the smooth PSO's
+    // bilinear fetch degenerates to a point fetch. Without the snap every glyph
+    // lands on a fraction and picks up a half-texel blur, which is what makes
+    // rotated labels read as soft next to their upright neighbours.
+    if (count > 0 && rotatedText) {
+        const float dpi = dpiScale_ > 0.0f ? dpiScale_ : 1.0f;
+        const float invDpi = 1.0f / dpi;
+        for (uint32_t i = startIdx; i < startIdx + count; i++) {
+            auto& g = textInstances_[i];
+            g.posX = std::round(g.posX * dpi) * invDpi;
+            g.posY = std::round(g.posY * dpi) * invDpi;
         }
     }
 
@@ -2551,6 +2593,19 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
         if (!stopData.empty()) {
             const float invSx = (scaled && std::abs(scaleX) > 1e-6f) ? 1.0f / scaleX : 1.0f;
             const float invSy = (scaled && std::abs(scaleY) > 1e-6f) ? 1.0f / scaleY : 1.0f;
+            // Per-axis reciprocals ARE the inverse for an axis-aligned
+            // transform. Under rotation they are not, so invert the real 2x2 —
+            // otherwise the gradient reads at a sheared position and a rotated
+            // gradient caption picks up visibly wrong colours.
+            float i11 = invSx, i12 = 0.0f, i21 = 0.0f, i22 = invSy;
+            if (rotatedText) {
+                const float det = t.m11 * t.m22 - t.m12 * t.m21;
+                if (std::abs(det) > 1e-9f) {
+                    const float invDet = 1.0f / det;
+                    i11 =  t.m22 * invDet; i12 = -t.m12 * invDet;
+                    i21 = -t.m21 * invDet; i22 =  t.m11 * invDet;
+                }
+            }
 
             for (uint32_t i = startIdx; i < startIdx + count; i++) {
                 auto& q = textInstances_[i];
@@ -2560,8 +2615,10 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
                 // foreground and equally wrong for a gradient — leave them alone.
                 if (q.colorR < 0.0f) continue;
 
-                const float cx = x + ((q.posX + q.sizeX * 0.5f) - tx) * invSx;
-                const float cy = y + ((q.posY + q.sizeY * 0.5f) - ty) * invSy;
+                const float ox = (q.posX + q.sizeX * 0.5f) - tx;
+                const float oy = (q.posY + q.sizeY * 0.5f) - ty;
+                const float cx = x + (ox * i11 + oy * i21);
+                const float cy = y + (ox * i12 + oy * i22);
 
                 GradientColor gc = SampleBrushGradient(*gradientBrush, stopData.data(), cx, cy);
                 const float ga = gc.a * currentOpacity_;
@@ -2576,12 +2633,12 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     if (count > 0) {
         DrawBatch candidate;
         candidate.type = DrawBatchType::Text;
-        // PSO selection: rotation / skew and Animated hinting use the bilinear
-        // text PSO so continuously-moving sub-pixel edges do not shimmer.
-        // Fixed/Auto axis-aligned text (identity or scaled) was rasterized at
-        // display resolution and integer-snapped above, so it stays on the
-        // crisp POINT PSO without a second filtering pass.
-        candidate.smoothText = !crispAxisAligned;
+        // PSO selection: rotation/skew and Animated hinting use bilinear so
+        // continuously-moving sub-pixel edges do not shimmer. A small symbol
+        // font also requests bilinear to resolve its 2x coverage strike. Other
+        // Fixed/Auto axis-aligned text was rasterized at display resolution and
+        // integer-snapped above, so it stays on the crisp POINT PSO.
+        candidate.smoothText = !crispAxisAligned || requiresSmoothSampling;
         candidate.instanceOffset = startIdx;
         candidate.instanceCount = count;
         candidate.hasScissor = !scissorStack_.empty();
@@ -3046,6 +3103,29 @@ bool D3D12DirectRenderer::HasVelloPaths() const
     return velloRenderer_ && velloRenderer_->HasWork();
 }
 
+bool D3D12DirectRenderer::VelloPendingHitsDipRect(float x, float y, float w, float h) const
+{
+    if (!velloRenderer_ || !velloRenderer_->HasWork()) return false;
+    if (w < 0.0f) { x += w; w = -w; }
+    if (h < 0.0f) { y += h; h = -h; }
+    Transform2D t = GetCurrentTransform();
+    const float s = dpiScale_;
+    const float cxs[4] = { x, x + w, x, x + w };
+    const float cys[4] = { y, y, y + h, y + h };
+    float dx0 = 1e30f, dy0 = 1e30f, dx1 = -1e30f, dy1 = -1e30f;
+    for (int i = 0; i < 4; i++) {
+        float px = (t.m11 * cxs[i] + t.m21 * cys[i] + t.dx) * s;
+        float py = (t.m12 * cxs[i] + t.m22 * cys[i] + t.dy) * s;
+        dx0 = std::fmin(dx0, px); dy0 = std::fmin(dy0, py);
+        dx1 = std::fmax(dx1, px); dy1 = std::fmax(dy1, py);
+    }
+    // Half-pixel AA halo. The per-primitive boxes give ITEM granularity, so an
+    // icon and the label RIGHT NEXT to it no longer count as overlapping.
+    const float pad = 0.5f;
+    return velloRenderer_->PendingHitsDeviceRect(dx0 - pad, dy0 - pad,
+                                                 dx1 + pad, dy1 + pad);
+}
+
 void D3D12DirectRenderer::FlushVelloPaths()
 {
     if (!velloRenderer_ || !velloRenderer_->HasWork() || !inFrame_) return;
@@ -3072,14 +3152,35 @@ void D3D12DirectRenderer::FlushVelloPaths()
             // the flush and those drawn afterwards — opaque content drawn after
             // (e.g. card backgrounds) correctly covers the wave/dot pixels in
             // the Vello bitmap.
-            float w = (float)viewportWidth_ / dpiScale_;
-            float h = (float)viewportHeight_ / dpiScale_;
-            AddBitmap(0, 0, w, h, 1.0f, output, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
+            // A sub-scene renders only the region it covers, so composite
+            // the output texture at that region rather than full-viewport.
+            const VelloRenderRegion& reg = velloRenderer_->LastRegion();
+            float x = (float)reg.originX / dpiScale_;
+            float y = (float)reg.originY / dpiScale_;
+            float w = (float)reg.width / dpiScale_;
+            float h = (float)reg.height / dpiScale_;
+            // The composite quad addresses ABSOLUTE window DIPs: every path
+            // already carried its own transform / scissor / opacity into the
+            // scene. The flush, however, is triggered from arbitrarily deep in
+            // the element tree, so the AMBIENT transform/scissor/opacity of
+            // that element must not be baked into the quad -- with a deep
+            // translation it lands off-screen (icons silently vanish).
+            std::stack<Transform2D> savedXf = std::move(transformStack_);
+            transformStack_ = {};
+            transformStack_.push(Transform2D::Identity());
+            std::stack<D3D12_RECT> savedSc = std::move(scissorStack_);
+            scissorStack_ = {};
+            float savedOp = currentOpacity_;
+            currentOpacity_ = 1.0f;
+            AddBitmap(x, y, w, h, 1.0f, output, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
+            currentOpacity_ = savedOp;
+            scissorStack_ = std::move(savedSc);
+            transformStack_ = std::move(savedXf);
         }
         // Force the next Dispatch in this frame to allocate a fresh output
         // texture; the one we just composited is held alive by the
         // BitmapBatchTexture entry AddBitmap pushed above.
-        velloRenderer_->ForceNewOutputTexture();
+        velloRenderer_->ForceNewOutputTexture(currentFrame_);
         // Reset Vello's CPU-side scene encoding so subsequent paths in this
         // frame accumulate into a fresh subscene rather than re-rendering the
         // content we just flushed.
@@ -3135,7 +3236,7 @@ int32_t D3D12DirectRenderer::DebugForceVelloOutputOrphan(int32_t* outAlive) {
     const float w = (float)viewportWidth_ / dpiScale_;
     const float h = (float)viewportHeight_ / dpiScale_;
     AddBitmap(0.0f, 0.0f, w, h, 1.0f, parked, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
-    velloRenderer_->ForceNewOutputTexture();          // fix parks `parked`; regression bare-Resets it
+    velloRenderer_->ForceNewOutputTexture(currentFrame_);          // fix parks `parked`; regression bare-Resets it
     velloRenderer_->BeginFrame(viewportWidth_, viewportHeight_);
     auto& fr = frames_[currentFrame_];
     velloRenderer_->DrainRetired(fr.retiredInstanceBuffers);
@@ -3145,10 +3246,16 @@ int32_t D3D12DirectRenderer::DebugForceVelloOutputOrphan(int32_t* outAlive) {
     // open command list still referenced the texture.
     if (!FlushGraphicsForCompute()) return -9;        // device lost mid-stage
 
-    // Detection (deterministic, debug-layer-independent): is `parked` still pinned on
-    // the fence-gated retired list?
+    // Detection (deterministic, debug-layer-independent): is `parked` still
+    // pinned by a fence-gated owner? Since the sub-scene rewrite the texture is
+    // recycled through the Vello renderer's own per-frame-slot pool (released
+    // only in RecycleFrameResources, after that slot's fence) instead of the
+    // direct renderer's retired list, so both owners count.
     for (const auto& r : fr.retiredInstanceBuffers) {
         if (r.Get() == parked) { if (outAlive) *outAlive = 1; break; }
+    }
+    if (outAlive && *outAlive == 0 && velloRenderer_->OwnsOutputTexture(parked)) {
+        *outAlive = 1;
     }
     return 0;
 }
@@ -5247,19 +5354,71 @@ void D3D12DirectRenderer::DrawSnapshotBackdrop(const JaliumBackdropMaterialDesc&
 {
     if (!inFrame_ || m.width <= 0 || m.height <= 0) return;
 
+    // Batched geometry applies the live transform stack CPU-side, but this
+    // immediate quad historically did not: outside a capture the panel rect,
+    // sampling region, blur kernel and rounding all stayed in untransformed
+    // space, so a scaled ancestor (designer zoom) left the backdrop at its
+    // unscaled position and size. Vulkan parity (TryRecordGpuBackdropCommand):
+    // fold the current transform in here — AABB of the transformed panel,
+    // isotropic quantities scaled by the min axis scale. Capture-nested draws
+    // keep the historical capture-local mapping in TryDrawSnapshotBackdropQuad.
+    JaliumBackdropMaterialDesc adjusted = m;
+    const bool inCapture = inOffscreenCapture_ || inRetainedCapture_;
+    if (!inCapture && !transformStack_.empty()) {
+        const Transform2D& t = transformStack_.top();
+        constexpr float kEps = 1e-6f;
+        const bool isIdentity =
+            std::abs(t.m11 - 1.0f) < kEps && std::abs(t.m12) < kEps &&
+            std::abs(t.m21) < kEps && std::abs(t.m22 - 1.0f) < kEps &&
+            std::abs(t.dx) < kEps && std::abs(t.dy) < kEps;
+        if (!isIdentity) {
+            auto transformPoint = [&t](float px, float py, float& outX, float& outY) {
+                outX = px * t.m11 + py * t.m21 + t.dx;
+                outY = px * t.m12 + py * t.m22 + t.dy;
+            };
+            float x0, y0, x1, y1, x2, y2, x3, y3;
+            transformPoint(m.x, m.y, x0, y0);
+            transformPoint(m.x + m.width, m.y, x1, y1);
+            transformPoint(m.x + m.width, m.y + m.height, x2, y2);
+            transformPoint(m.x, m.y + m.height, x3, y3);
+            const float minX = std::min(std::min(x0, x1), std::min(x2, x3));
+            const float minY = std::min(std::min(y0, y1), std::min(y2, y3));
+            const float maxX = std::max(std::max(x0, x1), std::max(x2, x3));
+            const float maxY = std::max(std::max(y0, y1), std::max(y2, y3));
+            adjusted.x = minX;
+            adjusted.y = minY;
+            adjusted.width = maxX - minX;
+            adjusted.height = maxY - minY;
+            if (adjusted.width <= 0.0f || adjusted.height <= 0.0f) return;
+
+            float sx = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
+            float sy = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
+            if (sx <= 0.0f) sx = 1.0f;
+            if (sy <= 0.0f) sy = 1.0f;
+            const float effectScale = std::min(sx, sy);
+            adjusted.blurRadius *= effectScale;
+            adjusted.blurSigma *= effectScale;
+            adjusted.cornerRadiusTL *= effectScale;
+            adjusted.cornerRadiusTR *= effectScale;
+            adjusted.cornerRadiusBR *= effectScale;
+            adjusted.cornerRadiusBL *= effectScale;
+        }
+    }
+
     // Material route: compute Gaussian region blur + the full colour pipeline
     // (brightness/contrast/saturation/hue/grayscale/sepia/invert), tint with
     // alpha, grain, frost jitter, opacity and anti-aliased per-corner rounding.
-    if (TryDrawSnapshotBackdropQuad(m)) {
+    if (TryDrawSnapshotBackdropQuad(adjusted)) {
         return;
     }
 
     // Fallback (backdrop PSO unavailable): the legacy blit + BlurRegion + tint
     // sequence. The colour pipeline / grain are not applied here, but the
     // backdrop still shows blurred + tinted content instead of vanishing.
-    DrawSnapshotBlurred(m.x, m.y, m.width, m.height, m.blurRadius,
-                        m.tintR, m.tintG, m.tintB, m.tintA,
-                        m.cornerRadiusTL, m.cornerRadiusTR, m.cornerRadiusBR, m.cornerRadiusBL);
+    DrawSnapshotBlurred(adjusted.x, adjusted.y, adjusted.width, adjusted.height, adjusted.blurRadius,
+                        adjusted.tintR, adjusted.tintG, adjusted.tintB, adjusted.tintA,
+                        adjusted.cornerRadiusTL, adjusted.cornerRadiusTR,
+                        adjusted.cornerRadiusBR, adjusted.cornerRadiusBL);
 }
 
 // ============================================================================

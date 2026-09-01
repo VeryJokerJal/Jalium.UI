@@ -805,6 +805,58 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         }
     }
 
+    private Jalium.UI.Styling.CssStyleSheetCollection? _cssStyleSheets;
+
+    /// <summary>
+    /// Application-level CSS style sheets. Rules apply across every window's tree; adding,
+    /// removing, or replacing sheets refreshes all live visual roots.
+    /// </summary>
+    public Jalium.UI.Styling.CssStyleSheetCollection StyleSheets
+    {
+        get
+        {
+            if (_cssStyleSheets is null)
+            {
+                _cssStyleSheets = new Jalium.UI.Styling.CssStyleSheetCollection();
+                _cssStyleSheets.Changed += OnCssStyleSheetsChanged;
+                Jalium.UI.Styling.CssEngine.ApplicationStyleSheetsProvider =
+                    static () => Current?._cssStyleSheets;
+                Jalium.UI.Styling.CssEngine.CascadeRootsInvalidator =
+                    static () => Current?.InvalidateCssOnAllRoots();
+            }
+
+            return _cssStyleSheets;
+        }
+    }
+
+    private void OnCssStyleSheetsChanged()
+    {
+        Jalium.UI.Styling.CssEngine.MarkActive();
+        Jalium.UI.Styling.CssEngine.NotifyCascadeChanged();
+    }
+
+    private void InvalidateCssOnAllRoots()
+    {
+        var mainWindow = MainWindow;
+        if (mainWindow is FrameworkElement mainRoot)
+        {
+            Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(mainRoot);
+        }
+
+        foreach (var window in Window.SnapshotOpenWindows())
+        {
+            if (!ReferenceEquals(window, mainWindow))
+            {
+                Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(window);
+            }
+        }
+
+        foreach (var popupWindow in PopupWindow.SnapshotOpenPopupWindows())
+        {
+            Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(popupWindow);
+        }
+    }
+
     /// <summary>
     /// Publishes a theme-palette change without reapplying implicit styles. Theme dictionaries
     /// keep the same Style and ControlTemplate instances across variants, but controls still

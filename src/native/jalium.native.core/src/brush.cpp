@@ -25,7 +25,8 @@ JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
     JaliumContext* ctx,
     float startX, float startY, float endX, float endY,
     const JaliumGradientStop* stops,
-    uint32_t stopCount)
+    uint32_t stopCount,
+    uint32_t extendMode)
 {
     if (!ctx || !stops || stopCount == 0 ||
         stopCount > jalium::kMaxGradientStopCount) {
@@ -35,7 +36,8 @@ JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
         auto backend = jalium::GetBackendFromContext(ctx);
         if (!backend) return nullptr;
         auto brush = backend->CreateLinearGradientBrush(
-            startX, startY, endX, endY, stops, stopCount);
+            startX, startY, endX, endY, stops, stopCount,
+            extendMode <= 2 ? extendMode : 0);
         return reinterpret_cast<JaliumBrush*>(brush);
     } catch (...) {
         return nullptr;
@@ -47,7 +49,8 @@ JALIUM_API JaliumBrush* jalium_brush_create_radial_gradient(
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
     const JaliumGradientStop* stops,
-    uint32_t stopCount)
+    uint32_t stopCount,
+    uint32_t extendMode)
 {
     if (!ctx || !stops || stopCount == 0 ||
         stopCount > jalium::kMaxGradientStopCount) {
@@ -58,7 +61,8 @@ JALIUM_API JaliumBrush* jalium_brush_create_radial_gradient(
         if (!backend) return nullptr;
         auto brush = backend->CreateRadialGradientBrush(
             centerX, centerY, radiusX, radiusY, originX, originY,
-            stops, stopCount);
+            stops, stopCount,
+            extendMode <= 2 ? extendMode : 0);
         return reinterpret_cast<JaliumBrush*>(brush);
     } catch (...) {
         return nullptr;

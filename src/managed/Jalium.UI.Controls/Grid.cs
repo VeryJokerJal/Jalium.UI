@@ -346,8 +346,12 @@ public class Grid : Panel
     /// Solves both axes as one transaction. Width is resolved before content
     /// height so wrapping controls always see their committed cell width.
     /// </summary>
-    protected override Size MeasureOverride(Size availableSize) =>
-        SolveLayout(NormalizeConstraint(availableSize), calculateDesiredSize: true);
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        var desired = SolveLayout(NormalizeConstraint(availableSize), calculateDesiredSize: true);
+        MeasureCssAbsoluteChildren(availableSize);
+        return desired;
+    }
 
     /// <summary>
     /// Reuses the intrinsic measurements produced by MeasureOverride and only
@@ -442,6 +446,8 @@ public class Grid : Panel
             // halfway through arrange.
             InvalidateMeasure();
         }
+
+        ArrangeCssAbsoluteChildren(finalSize);
 
         return finalSize;
     }
@@ -811,6 +817,10 @@ public class Grid : Panel
         _cellCount = 0;
         foreach (var child in Children.EnumerateStruct())
         {
+            // position:absolute children are out of flow: no cell, no track contribution.
+            if (IsCssAbsolute(child))
+                continue;
+
             var row = Math.Clamp(GetRow(child), 0, rowCount - 1);
             var column = Math.Clamp(
                 GetColumn(child),

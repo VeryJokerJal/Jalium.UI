@@ -53,6 +53,51 @@
 #define VK_LOG(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
 #endif
 
+// ── Damage/present trace (diagnostic, opt-in) ────────────────────────────────
+// JALIUM_VK_DAMAGE_TRACE=1 writes per-frame damage bookkeeping to
+// %TEMP%\jalium_vk_damage.log (or =path for an explicit file): the host dirty
+// rects, the frame render area, the per-image stale-region decision and the
+// present result. For chasing partial-presentation artifacts (e.g. stale hover
+// highlights) on real scenarios; near-zero cost when the env var is unset.
+static FILE* VkDamageTraceFile()
+{
+    static FILE* s_file = []() -> FILE* {
+        const char* env = std::getenv("JALIUM_VK_DAMAGE_TRACE");
+        if (env == nullptr || env[0] == '\0' || (env[0] == '0' && env[1] == '\0')) {
+            return nullptr;
+        }
+        char pathBuf[512];
+        const char* path = env;
+        if (env[0] == '1' && env[1] == '\0') {
+            const char* tmp = std::getenv("TEMP");
+            if (tmp == nullptr || tmp[0] == '\0') tmp = ".";
+            snprintf(pathBuf, sizeof(pathBuf), "%s\\jalium_vk_damage.log", tmp);
+            path = pathBuf;
+        }
+#ifdef _WIN32
+        // _fsopen with _SH_DENYNO so the log can be tailed while the app runs
+        // (fopen_s opens files non-sharable).
+        FILE* f = _fsopen(path, "a", _SH_DENYNO);
+        if (f == nullptr) return nullptr;
+#else
+        FILE* f = std::fopen(path, "a");
+        if (f == nullptr) return nullptr;
+#endif
+        fprintf(f, "==== jalium vk damage trace start ====\n");
+        fflush(f);
+        return f;
+    }();
+    return s_file;
+}
+#define VK_DMG(fmt, ...)                                            \
+    do {                                                            \
+        FILE* _dmgf = VkDamageTraceFile();                          \
+        if (_dmgf) {                                                \
+            fprintf(_dmgf, fmt "\n", ##__VA_ARGS__);                \
+            fflush(_dmgf);                                          \
+        }                                                           \
+    } while (0)
+
 #ifdef _WIN32
 #include <Windows.h>
 // Dedicated Vulkan text-glyph pipeline (B4) — Windows-only because the CPU glyph
@@ -73,6 +118,20 @@
 #endif
 
 namespace jalium {
+
+namespace {
+int VkVelloDbgLevel()
+{
+    static int level = []() {
+        char buf[8]; size_t n = 0;
+        if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VELLO_PERF") != 0 || n == 0) return 0;
+        int v = atoi(buf);
+        return v > 0 ? v : (buf[0] != '0' ? 1 : 0);
+    }();
+    return level;
+}
+int g_vkVelloDbgBudget = 2000;
+}  // namespace
 
 namespace {
 
@@ -2025,7 +2084,7 @@ public:
                          const float clearColor[4],
                          bool fullClear,
                          const std::vector<VkImpellerDrawBatch>* engineBatches = nullptr,
-                         const VelloScene* velloScene = nullptr,
+                         const std::vector<VelloSubScene>* velloSubScenes = nullptr,
                          std::vector<VulkanImportedVideoSurface*>*
                              externalVideoSurfaces = nullptr);
     /// Lazy-create the fullscreen composite pipeline (samples the Vello output
@@ -2037,10 +2096,16 @@ public:
     /// rect instead of the full extent — used by the engine-batch stencil path
     /// when a degraded offscreen capture bounds the span to the record-time
     /// clip (see RenderEngineBatches' extraScissorBound). Null = full screen.
+    /// `dstRect` is where the sampled image lands in the target. A Vello
+    /// sub-scene renders only its own region, so it passes that region here and
+    /// the fullscreen triangle is mapped onto it via the viewport; null means
+    /// full-target (the stencil-resolve caller).
     void CompositeVelloOutput(VkCommandBuffer cmd, VkImageView outputView, VkSampler sampler,
                               VkExtent2D extent, uint32_t frameIdx,
                               VkRenderPass renderPass, VkFramebuffer framebuffer,
-                              const VkRect2D* scissorBound = nullptr);
+                              const VkRect2D* scissorBound = nullptr,
+                              const VkRect2D* dstRect = nullptr,
+                              VkExtent2D srcExtent = {});
     /// Lazy-create the POSITION+COLOR pipeline used to drain Impeller / Vello
     /// engine batches.
     bool EnsureEngineBatchPipeline();
@@ -3409,21 +3474,23 @@ JaliumResult VulkanRenderTarget::EndDraw()
     // submission order.
     MaybeEmitEngineSpan();
 
-    // Pick the active rendering engine's pending work so the EngineBatchSpan
-    // commands inside the GPU replay stream can drain sub-ranges of it in
-    // painter order. Only one engine is active at a time. Vello in compute
-    // mode hands over a scene (consumed at frame end by the GPU compute graph
-    // + composite); everything else hands over CPU-tessellation triangle
-    // batches indexed by the spans.
+    // Pick the active rendering engine's pending work so the EngineBatchSpan /
+    // VelloSceneSpan commands inside the GPU replay stream can drain
+    // sub-ranges of it in painter order. Only one engine is active at a time.
+    // Vello in compute mode hands over the sub-scenes cut by
+    // MaybeEmitEngineSpan (the tail call above sealed the last one, so the
+    // encoder itself is drained here); everything else hands over
+    // CPU-tessellation triangle batches indexed by the spans.
     const std::vector<VkImpellerDrawBatch>* engineBatches = nullptr;
-    const VelloScene* velloScene = nullptr;
+    const std::vector<VelloSubScene>* velloSubScenes = nullptr;
     if (IsImpellerActive() && impellerEngine_ && impellerEngine_->HasPendingWork()) {
         engineBatches = &impellerEngine_->GetBatches();
-    } else if (IsVelloActive() && velloEngine_ && velloEngine_->HasPendingWork()) {
+    } else if (IsVelloActive() && velloEngine_) {
         if (velloEngine_->IsComputeMode() && impl_ && impl_->velloCompute_) {
-            velloEngine_->FinalizeScene();
-            velloScene = &velloEngine_->GetScene();
-        } else {
+            if (velloEngine_->SubSceneCount() > 0) {
+                velloSubScenes = &velloEngine_->SubScenes();
+            }
+        } else if (velloEngine_->HasPendingWork()) {
             engineBatches = &velloEngine_->GetBatches();
         }
     }
@@ -3492,6 +3559,17 @@ JaliumResult VulkanRenderTarget::EndDraw()
                 impl_->pendingDamageValid_ = true;
             }
         }
+        if (VkDamageTraceFile() != nullptr) {
+            VK_DMG("ED seq=%llu full=%d rects=%zu bounds=(%d,%d %ux%u) valid=%d cmds=%zu",
+                   static_cast<unsigned long long>(impl_->frameSequence_ + 1),
+                   fullInvalidation_ ? 1 : 0, dirtyRects_.size(),
+                   impl_->pendingDamageBounds_.offset.x, impl_->pendingDamageBounds_.offset.y,
+                   impl_->pendingDamageBounds_.extent.width, impl_->pendingDamageBounds_.extent.height,
+                   impl_->pendingDamageValid_ ? 1 : 0, gpuReplayCommands_.size());
+            for (const auto& dr : dirtyRects_) {
+                VK_DMG("  rect (%.1f,%.1f %.1fx%.1f)", dr.x, dr.y, dr.width, dr.height);
+            }
+        }
     }
 
     bool ok = false;
@@ -3515,10 +3593,31 @@ JaliumResult VulkanRenderTarget::EndDraw()
             if (!impl_->DeviceUsable()) {
                 ok = false;
             } else if (useGpuReplay) {
+                const auto drfT0 = std::chrono::steady_clock::now();
                 ok = impl_->DrawReplayFrame(
                     gpuReplayCommands_, clearColor_, fullInvalidation_,
-                    engineBatches, velloScene,
+                    engineBatches, velloSubScenes,
                     &recordedExternalVideoSurfaces_);
+                if (VkVelloDbgLevel() >= 1) {
+                    static uint64_t s_us = 0, s_n = 0;
+                    static std::chrono::steady_clock::time_point s_w0 =
+                        std::chrono::steady_clock::now();
+                    s_us += (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - drfT0)
+                                .count();
+                    if (++s_n >= 120) {
+                        const auto now = std::chrono::steady_clock::now();
+                        const double wallSec =
+                            std::chrono::duration<double>(now - s_w0).count();
+                        std::fprintf(stderr,
+                                     "[VkFrame] drawReplay=%.2fms fps=%.1f (%llu frames)",
+                                     (double)s_us / 1000.0 / (double)s_n,
+                                     wallSec > 0.0 ? (double)s_n / wallSec : 0.0,
+                                     (unsigned long long)s_n);
+                        std::fputc(10, stderr);
+                        s_us = 0; s_n = 0; s_w0 = now;
+                    }
+                }
             } else {
                 ok = impl_->DrawFrame(
                     pixelBuffer_.data(), static_cast<uint32_t>(width_),
@@ -12631,17 +12730,21 @@ bool VulkanRenderTarget::Impl::EnsureVelloCompositePipeline()
     }
     for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
         if (velloCompositeDescPools[f] != VK_NULL_HANDLE) continue;
-        // 32 sets per frame slot: the composite runs once per engine-batch
-        // span taking the stencil path (plus the Vello compute composite)
-        // instead of once per frame. A frame needing more than 32 fails the
-        // allocate and skips that span's composite — bounded and non-fatal.
+        // One set per composite call. Sized for the Vello compute path: every
+        // sub-scene span composites individually (kMaxRecordsPerFrame of them),
+        // plus the engine-batch stencil-path composites. The old 32-set pool
+        // predates mid-frame sub-scenes; with 97 spans per frame the 33rd+
+        // allocate failed and those spans' composites were SILENTLY skipped --
+        // that is exactly the "icons missing" symptom on Vulkan.
+        const uint32_t kCompositeSets =
+            VelloComputePipeline::kMaxRecordsPerFrame + 32;
         VkDescriptorPoolSize sizes[2] = {
-            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 32 },
-            { VK_DESCRIPTOR_TYPE_SAMPLER, 32 },
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kCompositeSets },
+            { VK_DESCRIPTOR_TYPE_SAMPLER, kCompositeSets },
         };
         VkDescriptorPoolCreateInfo pi {};
         pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pi.maxSets = 32;
+        pi.maxSets = kCompositeSets;
         pi.poolSizeCount = 2;
         pi.pPoolSizes = sizes;
         if (createDescriptorPool(device, &pi, nullptr, &velloCompositeDescPools[f]) != VK_SUCCESS) {
@@ -12739,12 +12842,14 @@ bool VulkanRenderTarget::Impl::EnsureVelloCompositePipeline()
     return result == VK_SUCCESS && velloCompositePipeline != VK_NULL_HANDLE;
 }
 
+
 void VulkanRenderTarget::Impl::CompositeVelloOutput(
     VkCommandBuffer cmd, VkImageView outputView, VkSampler sampler,
     VkExtent2D extent, uint32_t frameIdx,
     VkRenderPass renderPass, VkFramebuffer framebuffer,
-    const VkRect2D* scissorBound)
+    const VkRect2D* scissorBound, const VkRect2D* dstRect, VkExtent2D srcExtent)
 {
+    if (srcExtent.width == 0 || srcExtent.height == 0) srcExtent = extent;
     if (cmd == VK_NULL_HANDLE || outputView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
     if (frameIdx >= MAX_FRAMES_IN_FLIGHT) return;
     if (!EnsureVelloCompositePipeline()) return;
@@ -12819,6 +12924,22 @@ void VulkanRenderTarget::Impl::CompositeVelloOutput(
         sc.extent = extent;
     }
 
+    // A sub-scene's output only covers `dstRect`; clamp the write area to it so
+    // the surrounding pixels are untouched.
+    if (dstRect) {
+        const int32_t l2 = std::max(sc.offset.x, dstRect->offset.x);
+        const int32_t t2 = std::max(sc.offset.y, dstRect->offset.y);
+        const int32_t r2 = std::min(sc.offset.x + static_cast<int32_t>(sc.extent.width),
+                                    dstRect->offset.x + static_cast<int32_t>(dstRect->extent.width));
+        const int32_t b2 = std::min(sc.offset.y + static_cast<int32_t>(sc.extent.height),
+                                    dstRect->offset.y + static_cast<int32_t>(dstRect->extent.height));
+        if (r2 <= l2 || b2 <= t2) return;   // sub-scene lies outside the damage area
+        sc.offset.x = l2;
+        sc.offset.y = t2;
+        sc.extent.width = static_cast<uint32_t>(r2 - l2);
+        sc.extent.height = static_cast<uint32_t>(b2 - t2);
+    }
+
     VkClearValue dummyClear {};
     VkRenderPassBeginInfo rpBegin {};
     rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -12829,9 +12950,22 @@ void VulkanRenderTarget::Impl::CompositeVelloOutput(
     rpBegin.pClearValues = &dummyClear;
     cmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
     cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, velloCompositePipeline);
+    // The vertex shader emits a fullscreen triangle whose uv spans 0..1 across
+    // the WHOLE sampled image, so the viewport is sized to the full image and
+    // placed at dstRect's origin: texel (0,0) lands on dstRect's corner at 1:1
+    // scale. The scissor (already clamped to dstRect above) then keeps only the
+    // sub-scene's region -- the image may legitimately be larger, since it only
+    // ever grows. No shader change needed.
     VkViewport vp {};
-    vp.width = static_cast<float>(extent.width);
-    vp.height = static_cast<float>(extent.height);
+    if (dstRect) {
+        vp.x = static_cast<float>(dstRect->offset.x);
+        vp.y = static_cast<float>(dstRect->offset.y);
+        vp.width = static_cast<float>(srcExtent.width);
+        vp.height = static_cast<float>(srcExtent.height);
+    } else {
+        vp.width = static_cast<float>(extent.width);
+        vp.height = static_cast<float>(extent.height);
+    }
     vp.maxDepth = 1.0f;
     cmdSetViewport(cmd, 0, 1, &vp);
     cmdSetScissor(cmd, 0, 1, &sc);
@@ -13154,7 +13288,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                                                const float clearColor[4],
                                                bool fullClear,
                                                const std::vector<VkImpellerDrawBatch>* engineBatches,
-                                               const VelloScene* velloScene,
+                                               const std::vector<VelloSubScene>* velloSubScenes,
                                                std::vector<VulkanImportedVideoSurface*>*
                                                    externalVideoSurfaces)
 {
@@ -13383,6 +13517,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             // the dedicated draw-loop branch (mirror Transition useSlotImages / Blur
             // captureLiveScene). Leaving bitmapOffsets[index] = 0 is fine (the draw branch never
             // reads it), and it must NOT abort the frame on the empty-pixels check below.
+            if (command.retainedLayerKey != nullptr && VkVelloDbgLevel() >= 2 &&
+                g_vkVelloDbgBudget > 0) {
+                g_vkVelloDbgBudget--;
+                std::fprintf(stderr, "[VkLayerComp] key=%p dst=(%.0f,%.0f %.0fx%.0f)",
+                             command.retainedLayerKey, command.bitmap.x, command.bitmap.y,
+                             command.bitmap.w, command.bitmap.h);
+                std::fputc(10, stderr);
+            }
             if (command.retainedLayerKey != nullptr) {
                 continue;
             }
@@ -14717,6 +14859,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 cat = GpuTimingCategory::Bitmap; break;
             case GpuReplayCommandKind::FilledPolygon:
             case GpuReplayCommandKind::EngineBatchSpan:
+            case GpuReplayCommandKind::VelloSceneSpan:
                 cat = GpuTimingCategory::Path; break;
             case GpuReplayCommandKind::Backdrop:
             case GpuReplayCommandKind::Blur:         // Blur shares the backdrop blur pipeline
@@ -14800,6 +14943,91 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                                     spanBoundPtr);
                 if (spanToOffscreen && spanRendered) {
                     offscreenFirstDraw = false;
+                }
+            }
+            continue;
+        }
+
+        if (command.kind == GpuReplayCommandKind::VelloSceneSpan) {
+            // Dispatch + composite ONE cut Vello-compute sub-scene at this
+            // point of the stream — the compute-mode analogue of the CPU-batch
+            // span above (closes B2: the old frame-end single-scene consume
+            // composited every path of the frame on top of all content drawn
+            // after it). The loop sits between render passes here, which both
+            // the 19-stage dispatch graph and the composite's own load-op pass
+            // require.
+            const uint32_t subIndex = command.engineBatchSpan.firstBatch;
+            if (velloSubScenes && subIndex < velloSubScenes->size() &&
+                velloFrameSlotPrepared && velloCompute_ &&
+                EnsureVelloCompositePipeline() &&
+                velloCompute_->Record(commandBuffer, (*velloSubScenes)[subIndex],
+                                      currentFrame_)) {
+                // Capture-follow — identical target/bound selection to the
+                // CPU-batch span above: inside an OffscreenBegin..End region
+                // the sub-scene belongs to the isolated element, so composite
+                // into the offscreen pair (CLEAR variant on the region's
+                // first draw); a degraded capture bounds the composite to the
+                // record-time clip snapshot; a partial main-target frame stays
+                // inside the frame damage.
+                const bool spanToOffscreen = offscreenActive && offscreenReady;
+                VkRenderPass  spanPass = frameRenderPass;
+                VkFramebuffer spanFb   = sceneFramebuffer_;
+                if (spanToOffscreen) {
+                    spanPass = offscreenFirstDraw ? effectOffscreenRenderPassClear  : effectOffscreenRenderPassLoad;
+                    spanFb   = offscreenFirstDraw ? effectOffscreenFramebufferClear : effectOffscreenFramebufferLoad;
+                }
+                VkRect2D spanBound {};
+                const VkRect2D* spanBoundPtr = nullptr;
+                if (spanToOffscreen) {
+                    spanBound = offscreenRegionArea;
+                    spanBoundPtr = &spanBound;
+                } else if (degradedCaptureScissorActive) {
+                    spanBound = damageFull ? degradedCaptureScissor
+                                           : intersectRect(degradedCaptureScissor, frameRenderArea);
+                    spanBoundPtr = &spanBound;
+                } else if (!damageFull) {
+                    spanBound = frameRenderArea;
+                    spanBoundPtr = &spanBound;
+                }
+                const VelloRenderRegion& vreg = (*velloSubScenes)[subIndex].packed.region;
+                VkRect2D velloDst {};
+                velloDst.offset.x = static_cast<int32_t>(vreg.originX);
+                velloDst.offset.y = static_cast<int32_t>(vreg.originY);
+                velloDst.extent.width = vreg.width;
+                velloDst.extent.height = vreg.height;
+                if (VkVelloDbgLevel() >= 2 && g_vkVelloDbgBudget > 0) {
+                    g_vkVelloDbgBudget--;
+                    std::fprintf(stderr,
+                                 "[VkSpan] #%u dst=(%d,%d %ux%u) off=%d damageFull=%d bound=(%d,%d %ux%u)",
+                                 subIndex, velloDst.offset.x, velloDst.offset.y,
+                                 velloDst.extent.width, velloDst.extent.height,
+                                 spanToOffscreen ? 1 : 0, damageFull ? 1 : 0,
+                                 spanBoundPtr ? spanBoundPtr->offset.x : -1,
+                                 spanBoundPtr ? spanBoundPtr->offset.y : -1,
+                                 spanBoundPtr ? spanBoundPtr->extent.width : 0,
+                                 spanBoundPtr ? spanBoundPtr->extent.height : 0);
+                    std::fputc(10, stderr);
+                }
+                CompositeVelloOutput(commandBuffer, velloCompute_->OutputView(),
+                                     velloCompute_->OutputSampler(), extent, currentFrame_,
+                                     spanPass, spanFb, spanBoundPtr, &velloDst,
+                                     velloCompute_->OutputExtent());
+                if (spanToOffscreen) {
+                    offscreenFirstDraw = false;
+                }
+            } else if (velloSubScenes && subIndex < velloSubScenes->size()) {
+                // Sub-scene dropped (record cap / allocation failure): the
+                // paths of this span are missing from the frame. Log once per
+                // process so the degradation is attributable.
+                if (VkVelloDbgLevel() >= 2 && g_vkVelloDbgBudget > 0) {
+                    g_vkVelloDbgBudget--;
+                    std::fprintf(stderr, "[VkSpan] #%u DROPPED", subIndex);
+                    std::fputc(10, stderr);
+                }
+                static bool s_loggedVelloSpanDrop = false;
+                if (!s_loggedVelloSpanDrop) {
+                    s_loggedVelloSpanDrop = true;
+                    VK_LOG("[Vulkan] VelloSceneSpan dropped (record cap or allocation failure) — paths missing this frame\n");
                 }
             }
             continue;
@@ -15041,6 +15269,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             offscreenActive = false;
             const int32_t elemW = static_cast<int32_t>(std::floor(command.solidRect.w + 0.5f));
             const int32_t elemH = static_cast<int32_t>(std::floor(command.solidRect.h + 0.5f));
+            if (VkVelloDbgLevel() >= 2 && g_vkVelloDbgBudget > 0) {
+                g_vkVelloDbgBudget--;
+                std::fprintf(stderr, "[VkLayerEnd] key=%p src=(%.0f,%.0f %.0fx%.0f) open=%d ready=%d",
+                             command.retainedLayerKey, command.solidRect.x, command.solidRect.y,
+                             command.solidRect.w, command.solidRect.h,
+                             hadOpenRegion ? 1 : 0, offscreenReady ? 1 : 0);
+                std::fputc(10, stderr);
+            }
             RetainedLayerGpuImage* layerImg = (command.retainedLayerKey && elemW > 0 && elemH > 0)
                 ? EnsureRetainedLayerImage(command.retainedLayerKey,
                                            static_cast<uint32_t>(elemW), static_cast<uint32_t>(elemH))
@@ -16808,60 +17044,21 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // fence-gated). Host-side only; the retired images drain post-fence next frame.
     EvictBitmapResidentImagesIfNeeded();
 
-    // AFTER all GPU-replay commands (the command buffer is outside a render
-    // pass here): run the real Vello GPU compute graph + composite its output
-    // image. The Impeller / Vello CPU-tessellation batches are NO LONGER
-    // drained here — they render in painter order through the EngineBatchSpan
-    // commands inside the loop above (EndDraw's tail MaybeEmitEngineSpan
-    // guarantees every batch is covered by a span before handoff).
-    //
-    // ── B2 (Vello COMPUTE-mode painter order) — KNOWN FOLLOW-UP ──────────────
-    // Vello in GPU-COMPUTE mode still consumes ONE monolithic scene here at
-    // frame end, so a rect/text/bitmap drawn AFTER a path in the same frame is
-    // painted BEFORE this composite and then covered by it (z-order inverted for
-    // path-then-opaque sequences). This is the compute-mode analogue of the
-    // Impeller interleaving that B1 already fixed via EngineBatchSpan; the
-    // CPU-tessellation Vello path is also already interleaved (see
-    // MaybeEmitEngineSpan). Only real-GPU-compute Vello is affected.
-    //
-    // Why it is NOT a localized change: VelloComputePipeline::Record (see
-    // vulkan_vello_compute.cpp) is structurally single-scene-per-frame —
-    //   1. it calls resetDescriptorPool_ at entry, so a 2nd Record in the same
-    //      frame invalidates the 1st sub-scene's already-recorded stage sets;
-    //   2. it writes ONE shared outputImage_ (the composite reads it), so a 2nd
-    //      Record overwrites the 1st sub-scene's pixels before they composite;
-    //   3. its host-visible input buffers (config_/pathSegment_/… ) are indexed
-    //      by frameIdx only, so a 2nd Record clobbers the 1st sub-scene's inputs
-    //      that the 1st sub-scene's GPU dispatch still reads;
-    //   4. the single shared device-local scratch (bump_/ptcl_/velloTile_/…) is
-    //      zeroed each Record and only barrier-serialized against the PREVIOUS
-    //      frame, not against an earlier sub-scene in THIS frame.
-    // Splitting sub-scenes therefore requires the full D3D12 mid-frame
-    // multi-Dispatch machinery ported to Vulkan: a per-sub-scene output-image
-    // pool with fence-gated retirement (D3D12 ForceNewOutputTexture /
-    // RetireOutputTexture / pendingRetiredResources_), deferred or per-sub-scene
-    // descriptor-pool + input/scratch regions with inter-sub-scene compute
-    // barriers, and threading each sub-scene's CompositeVelloOutput into the
-    // GPU-replay stream at its EngineBatchSpan position (the composite
-    // descriptor pool at velloCompositeDescPools already supports >1 composite
-    // per frame — see DrawReplayFrame's once-per-frame reset — so only the
-    // compute pipeline is the blocker). Vello is the NON-default engine
-    // (Auto -> Impeller), the default Impeller painter order is correct and
-    // parity-harness-verified, and the harness has no engine-select hook to
-    // exercise compute-mode Vello — so this is deferred rather than risk a large
-    // unverified compute-pipeline restructure. MaybeEmitEngineSpan deliberately
-    // excludes compute-mode Vello from spans to keep this the ONLY Vello-compute
-    // composite site (see its comment).
-    if (velloFrameSlotPrepared && velloScene && velloCompute_ &&
-        EnsureVelloCompositePipeline() &&
-        velloCompute_->Record(commandBuffer, *velloScene, currentFrame_)) {
-        // On a partial frame the composite must stay inside the frame render
-        // area like every other main-target draw.
-        CompositeVelloOutput(commandBuffer, velloCompute_->OutputView(),
-                             velloCompute_->OutputSampler(), extent, currentFrame_,
-                             frameRenderPass, sceneFramebuffer_,
-                             damageFull ? nullptr : &frameRenderArea);
-    }
+    // NOTE (B2 closed, 2026-08-30): Vello GPU-COMPUTE work no longer
+    // composites here at frame end. Each span of consecutive path encodes is
+    // cut into a self-contained sub-scene (MaybeEmitEngineSpan →
+    // VelloVulkanEngine::CutPendingToSubScene) and dispatched + composited at
+    // ITS VelloSceneSpan position inside the loop above — the compute-mode
+    // analogue of the CPU-batch EngineBatchSpan interleaving (B1) and of
+    // D3D12's lazy FlushVelloIfNeeded. The old frame-end single-scene consume
+    // z-inverted every path over content drawn after it (hidden-tab toolbar
+    // icons floating over the editor, hover highlights covering row text).
+    // Multi-Record safety lives in VelloComputePipeline::Record: per-frame
+    // descriptor pools sized for kMaxRecordsPerFrame 19-set groups (reset only
+    // in PrepareFrameSlot), host-visible inputs + ramp image retired-not-
+    // rewritten between same-frame Records, the shared scratch serialized by
+    // the leading barrier, and the single output image reused serially
+    // (composite sample → next Record's clear is barrier-ordered).
 
     // ── Readback (parity verification) — from the scene image ──────────────
     // Recorded after every draw of this frame, so the captured bytes are exactly
@@ -16912,6 +17109,17 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             staleRegion.offset.y = t;
             staleRegion.extent.width  = static_cast<uint32_t>(r - l);
             staleRegion.extent.height = static_cast<uint32_t>(b - t);
+        }
+        if (VkDamageTraceFile() != nullptr) {
+            VK_DMG("PC seq=%llu img=%u imgSeq=%llu covered=%d full=%d stale=(%d,%d %ux%u) fra=(%d,%d %ux%u) dmgFull=%d clear=%d",
+                   static_cast<unsigned long long>(thisFrameSeq), imageIndex,
+                   static_cast<unsigned long long>(imageSeq), staleCovered ? 1 : 0,
+                   staleFull ? 1 : 0,
+                   staleRegion.offset.x, staleRegion.offset.y,
+                   staleRegion.extent.width, staleRegion.extent.height,
+                   frameRenderArea.offset.x, frameRenderArea.offset.y,
+                   frameRenderArea.extent.width, frameRenderArea.extent.height,
+                   damageFull ? 1 : 0, doClear ? 1 : 0);
         }
 
         // Scene image -> SHADER_READ_ONLY for the composite sample.
@@ -17085,6 +17293,11 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     const VkResult presentResult = QueuePresentSynchronized(
         &presentInfo, "DrawReplayFrame.queuePresent");
     lastPresentBlockNs = MonotonicDiffNs(presentStartNs, MonotonicNowNs());
+    if (VkDamageTraceFile() != nullptr) {
+        VK_DMG("PR seq=%llu img=%u result=%d hintRects=%zu",
+               static_cast<unsigned long long>(thisFrameSeq), imageIndex,
+               static_cast<int>(presentResult), pendingPresentRegions_.size());
+    }
     if (presentResult != VK_SUCCESS) {
         swapchainRecreatePending = true;
     }
@@ -18229,11 +18442,13 @@ void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
             // switch exhaustive (no -Wswitch).
             break;
         case GpuReplayCommandKind::EngineBatchSpan:
-            // GPU-only marker indexing the engines' batch vectors. On the CPU
-            // fallback the engine-routed primitives never became replay
-            // commands in the first place (their CPU mirror draws are gated on
-            // cpuRasterNeeded_ inside FillPath/StrokePath/FillPolygon), so
-            // there is nothing to replay here; keeps the switch exhaustive.
+        case GpuReplayCommandKind::VelloSceneSpan:
+            // GPU-only markers indexing the engines' batch/sub-scene vectors.
+            // On the CPU fallback the engine-routed primitives never became
+            // replay commands in the first place (their CPU mirror draws are
+            // gated on cpuRasterNeeded_ inside FillPath/StrokePath/
+            // FillPolygon), so there is nothing to replay here; keeps the
+            // switch exhaustive.
             break;
     }
 }
@@ -18452,19 +18667,290 @@ void VulkanRenderTarget::StrokeRoundedRectApprox(float x, float y, float w, floa
 // point of the stream instead of on top of the whole frame — the Vulkan
 // analogue of D3D12's FlushVelloIfNeeded lazy flush at each non-path draw
 // entry point.
-void VulkanRenderTarget::MaybeEmitEngineSpan()
+
+bool VulkanRenderTarget::VelloReroutePreflight(float bx, float by, float bw, float bh,
+                                               float inflate)
 {
-    // Only the CPU-tessellation engine outputs interleave (they render via
-    // RenderEngineBatches). Vello COMPUTE mode keeps its frame-end scene
-    // consume — sub-scene splitting is B2 — so it must not be folded into
-    // spans; the condition mirrors EndDraw's engine pick exactly.
+    // Opt-in until the retained-layer capture interaction is fully understood
+    // on Vulkan (the reroute changes which commands exist inside a capture,
+    // which perturbs where the sub-scene cuts land).
+    static const bool s_on = []() {
+        char buf[8]; size_t n = 0;
+        if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VK_VELLO_REROUTE") != 0 || n == 0) {
+            return true;  // default ON; JALIUM_VK_VELLO_REROUTE=0 disables
+        }
+        return buf[0] != '0';
+    }();
+    if (!s_on) return false;
+    if (!IsVelloActive() || !velloEngine_ || !velloEngine_->IsComputeMode()) return false;
+    if (!impl_ || !impl_->velloCompute_) return false;
+    // Captures raster on the CPU / transition surface; content encoded into the
+    // compute scene would escape them. Same gate the engine batch route uses.
+    if (cpuRasterNeeded_ || activeTransitionSlot_ >= 0 || !effectCaptureStack_.empty()) {
+        return false;
+    }
+    if (bw <= 0.0f || bh <= 0.0f || bw > 160.0f || bh > 160.0f) return false;
+    auto& enc = velloEngine_->SceneEncoder();
+    if (!enc.HasWork()) return false;
+    const auto t = GetCurrentTransform();
+    const float cxs[4] = { bx, bx + bw, bx, bx + bw };
+    const float cys[4] = { by, by, by + bh, by + bh };
+    float dx0 = 1e30f, dy0 = 1e30f, dx1 = -1e30f, dy1 = -1e30f;
+    for (int i = 0; i < 4; i++) {
+        float px, py;
+        ApplyTransform(t, cxs[i], cys[i], px, py);
+        dx0 = std::min(dx0, px); dy0 = std::min(dy0, py);
+        dx1 = std::max(dx1, px); dy1 = std::max(dy1, py);
+    }
+    const float pad = inflate + 0.5f;
+    return enc.PendingHitsDeviceRect(dx0 - pad, dy0 - pad, dx1 + pad, dy1 + pad);
+}
+
+bool VulkanRenderTarget::VelloRerouteEncode(float sx, float sy, const float* cmds,
+                                            uint32_t cmdLen, Brush* brush,
+                                            float strokeWidth, bool fill, int32_t fillRule,
+                                            bool closed, int32_t lineJoin, float miterLimit)
+{
+    float opacity = GetCurrentOpacity();
+    EngineBrushData bd;
+    std::vector<EngineBrushData::GradientStop> stopStore;
+    if (!BuildEngineBrush(brush, opacity, bd, stopStore)) return false;
+    const auto t = GetCurrentTransform();
+    EngineTransform et;
+    et.m11 = t.m11; et.m12 = t.m12;
+    et.m21 = t.m21; et.m22 = t.m22;
+    et.dx = t.dx; et.dy = t.dy;
+    SyncClipToEngine(velloEngine_.get());
+    if (fill) {
+        FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+        return velloEngine_->EncodeFillPath(sx, sy, cmds, cmdLen, bd, fr, et, -1);
+    }
+    return velloEngine_->EncodeStrokePath(sx, sy, cmds, cmdLen, bd, strokeWidth, closed,
+                                          lineJoin, miterLimit, 0, nullptr, 0, 0.0f, et, -1);
+}
+
+bool VulkanRenderTarget::TryEncodeRoundedRectIntoPendingVello(float x, float y, float w,
+                                                              float h, float tl, float tr,
+                                                              float br, float bl,
+                                                              Brush* brush,
+                                                              float strokeWidth, bool fill)
+{
+    if (!brush) return false;
+    // SuperEllipse / continuous corners have their own analytic shape; the
+    // cubic approximation below is only valid for plain rounded rects.
+    if (currentShapeType_ != 0) return false;
+    if (!VelloReroutePreflight(x, y, w, h, fill ? 0.0f : strokeWidth)) return false;
+
+    const float maxR = std::min(w, h) * 0.5f;
+    float ctl = std::min(std::max(tl, 0.0f), maxR);
+    float ctr = std::min(std::max(tr, 0.0f), maxR);
+    float cbr = std::min(std::max(br, 0.0f), maxR);
+    float cbl = std::min(std::max(bl, 0.0f), maxR);
+    const float k = 0.5522847498f;
+    float sx = x + ctl, sy = y;
+    float cmds[64];
+    uint32_t n = 0;
+    auto line = [&](float px, float py) { cmds[n++] = 0.0f; cmds[n++] = px; cmds[n++] = py; };
+    auto cubic = [&](float c1x, float c1y, float c2x, float c2y, float px, float py) {
+        cmds[n++] = 1.0f;
+        cmds[n++] = c1x; cmds[n++] = c1y;
+        cmds[n++] = c2x; cmds[n++] = c2y;
+        cmds[n++] = px; cmds[n++] = py;
+    };
+    line(x + w - ctr, y);
+    if (ctr > 0.0f) {
+        float kk = ctr * k;
+        cubic(x + w - ctr + kk, y, x + w, y + ctr - kk, x + w, y + ctr);
+    }
+    line(x + w, y + h - cbr);
+    if (cbr > 0.0f) {
+        float kk = cbr * k;
+        cubic(x + w, y + h - cbr + kk, x + w - cbr + kk, y + h, x + w - cbr, y + h);
+    }
+    line(x + cbl, y + h);
+    if (cbl > 0.0f) {
+        float kk = cbl * k;
+        cubic(x + cbl - kk, y + h, x, y + h - cbl + kk, x, y + h - cbl);
+    }
+    line(x, y + ctl);
+    if (ctl > 0.0f) {
+        float kk = ctl * k;
+        cubic(x, y + ctl - kk, x + ctl - kk, y, x + ctl, y);
+    }
+    cmds[n++] = 5.0f;
+    return VelloRerouteEncode(sx, sy, cmds, n, brush, strokeWidth, fill, 1, true, 0, 4.0f);
+}
+
+bool VulkanRenderTarget::TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx,
+                                                          float ry, Brush* brush,
+                                                          float strokeWidth, bool fill)
+{
+    if (!brush) return false;
+    if (rx <= 0.0f || ry <= 0.0f || rx > 80.0f || ry > 80.0f) return false;
+    if (!VelloReroutePreflight(cx - rx, cy - ry, rx * 2.0f, ry * 2.0f,
+                               fill ? 0.0f : strokeWidth)) {
+        return false;
+    }
+    const float k = 0.5522847498f;
+    float kx = rx * k, ky = ry * k;
+    float cmds[] = {
+        1.0f, cx + rx, cy + ky, cx + kx, cy + ry, cx,      cy + ry,
+        1.0f, cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy,
+        1.0f, cx - rx, cy - ky, cx - kx, cy - ry, cx,      cy - ry,
+        1.0f, cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy,
+        5.0f
+    };
+    return VelloRerouteEncode(cx + rx, cy, cmds,
+                              (uint32_t)(sizeof(cmds) / sizeof(float)), brush,
+                              strokeWidth, fill, 1, true, 2, 4.0f);
+}
+
+bool VulkanRenderTarget::TryEncodePolylineIntoPendingVello(const float* points,
+                                                           uint32_t pointCount,
+                                                           Brush* brush, float strokeWidth,
+                                                           bool closed, int32_t lineJoin,
+                                                           float miterLimit)
+{
+    if (!brush || !points || pointCount < 2) return false;
+    float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
+    for (uint32_t i = 0; i + 1 < pointCount * 2; i += 2) {
+        pminX = std::min(pminX, points[i]);     pminY = std::min(pminY, points[i + 1]);
+        pmaxX = std::max(pmaxX, points[i]);     pmaxY = std::max(pmaxY, points[i + 1]);
+    }
+    if (!(pminX <= pmaxX)) return false;
+    if (!VelloReroutePreflight(pminX, pminY, pmaxX - pminX, pmaxY - pminY, strokeWidth)) {
+        return false;
+    }
+    std::vector<float> cmds;
+    cmds.reserve((size_t)pointCount * 3 + 1);
+    for (uint32_t i = 1; i < pointCount; i++) {
+        cmds.push_back(0.0f);
+        cmds.push_back(points[i * 2]);
+        cmds.push_back(points[i * 2 + 1]);
+    }
+    if (closed) cmds.push_back(5.0f);
+    return VelloRerouteEncode(points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                              brush, strokeWidth, false, 0, closed, lineJoin, miterLimit);
+}
+
+bool VulkanRenderTarget::ReplayCommandDeviceBounds(const GpuReplayCommand& c,
+                                                   float& x0, float& y0,
+                                                   float& x1, float& y1)
+{
+    auto fromRect = [&](float rx, float ry, float rw, float rh) {
+        x0 = rx; y0 = ry; x1 = rx + rw; y1 = ry + rh;
+    };
+    switch (c.kind) {
+        case GpuReplayCommandKind::SolidRect:
+        case GpuReplayCommandKind::ClearRect: {
+            if (c.hasCustomQuad) {
+                x0 = std::min(std::min(c.quadPoint0X, c.quadPoint1X),
+                              std::min(c.quadPoint2X, c.quadPoint3X));
+                y0 = std::min(std::min(c.quadPoint0Y, c.quadPoint1Y),
+                              std::min(c.quadPoint2Y, c.quadPoint3Y));
+                x1 = std::max(std::max(c.quadPoint0X, c.quadPoint1X),
+                              std::max(c.quadPoint2X, c.quadPoint3X));
+                y1 = std::max(std::max(c.quadPoint0Y, c.quadPoint1Y),
+                              std::max(c.quadPoint2Y, c.quadPoint3Y));
+            } else {
+                fromRect(c.solidRect.x, c.solidRect.y, c.solidRect.w, c.solidRect.h);
+            }
+            if (c.shadowMode > 0.5f) {
+                const float grow = c.shadowSigma * 3.0f + 1.0f;
+                x0 -= grow; y0 -= grow; x1 += grow; y1 += grow;
+            }
+            return true;
+        }
+        case GpuReplayCommandKind::Bitmap:
+            fromRect(c.bitmap.x, c.bitmap.y, c.bitmap.w, c.bitmap.h);
+            return true;
+        case GpuReplayCommandKind::InkLayer:
+            fromRect(c.inkLayer.x, c.inkLayer.y, c.inkLayer.w, c.inkLayer.h);
+            return true;
+        case GpuReplayCommandKind::ExternalVideo:
+            fromRect(c.externalVideo.x, c.externalVideo.y, c.externalVideo.w, c.externalVideo.h);
+            return true;
+        case GpuReplayCommandKind::TextRun: {
+            if (c.textRun.glyphCount == 0) return false;
+            x0 = 1e30f; y0 = 1e30f; x1 = -1e30f; y1 = -1e30f;
+            const auto& g = c.textRun.glyphs;
+            for (size_t i = 0; i + 3 < g.size(); i += 12) {
+                x0 = std::min(x0, g[i]);
+                y0 = std::min(y0, g[i + 1]);
+                x1 = std::max(x1, g[i] + g[i + 2]);
+                y1 = std::max(y1, g[i + 1] + g[i + 3]);
+            }
+            return x0 <= x1;
+        }
+        case GpuReplayCommandKind::VcTriangles: {
+            if (c.vcTriangles.vertexCount == 0) return false;
+            x0 = 1e30f; y0 = 1e30f; x1 = -1e30f; y1 = -1e30f;
+            const auto& v = c.vcTriangles.vertices;
+            for (size_t i = 0; i + 1 < v.size(); i += 6) {
+                x0 = std::min(x0, v[i]);
+                y0 = std::min(y0, v[i + 1]);
+                x1 = std::max(x1, v[i]);
+                y1 = std::max(y1, v[i + 1]);
+            }
+            return x0 <= x1;
+        }
+        default:
+            return false;  // no extractable bounds -> caller cuts unconditionally
+    }
+}
+
+void VulkanRenderTarget::MaybeEmitEngineSpan(const GpuReplayCommand* upcoming)
+{
+    // Vello COMPUTE mode: cut the encoder's pending path work into a
+    // self-contained sub-scene and mark ITS position in the stream with a
+    // VelloSceneSpan — the compute analogue of the CPU-batch span below and
+    // of D3D12's lazy FlushVelloIfNeeded. This is what keeps painter order
+    // correct (the old frame-end single-scene consume composited every path
+    // of the frame ON TOP of all content drawn after it — B2 z-inversion).
+    if (IsVelloActive() && velloEngine_ && velloEngine_->IsComputeMode() &&
+        impl_ && impl_->velloCompute_) {
+        static const bool s_spanGate = []() {
+            char buf[8]; size_t n = 0;
+            if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VK_VELLO_SPAN_GATE") != 0 || n == 0) {
+                return true;  // default ON; JALIUM_VK_VELLO_SPAN_GATE=0 disables
+            }
+            return buf[0] != '0';
+        }();
+        if (s_spanGate && upcoming && velloEngine_->SceneEncoder().HasWork()) {
+            float bx0, by0, bx1, by1;
+            if (ReplayCommandDeviceBounds(*upcoming, bx0, by0, bx1, by1) &&
+                !velloEngine_->SceneEncoder().PendingHitsDeviceRect(
+                    bx0 - 0.5f, by0 - 0.5f, bx1 + 0.5f, by1 + 0.5f)) {
+                return;  // disjoint from every pending path -> keep accumulating
+            }
+        }
+        const int32_t subIndex = velloEngine_->CutPendingToSubScene();
+        if (subIndex >= 0) {
+            if (VkVelloDbgLevel() >= 2 && g_vkVelloDbgBudget > 0) {
+                g_vkVelloDbgBudget--;
+                const auto& reg = velloEngine_->SubScene((size_t)subIndex).packed.region;
+                std::fprintf(stderr, "[VkCut] #%d region=(%u,%u %ux%u) trigger=%d",
+                             subIndex, reg.originX, reg.originY, reg.width, reg.height,
+                             upcoming ? (int)upcoming->kind : -1);
+                std::fputc(10, stderr);
+            }
+            GpuReplayCommand span {};
+            span.kind = GpuReplayCommandKind::VelloSceneSpan;
+            span.engineBatchSpan.firstBatch = static_cast<uint32_t>(subIndex);
+            span.engineBatchSpan.batchCount = 0;
+            // Raw push_back on purpose: RecordReplayCommand calls back into
+            // this function, so routing the span through it would recurse.
+            gpuReplayCommands_.push_back(span);
+        }
+        return;
+    }
+
+    // CPU-tessellation engine outputs interleave via RenderEngineBatches.
     const std::vector<VkImpellerDrawBatch>* batches = nullptr;
     if (IsImpellerActive() && impellerEngine_) {
         batches = &impellerEngine_->GetBatches();
     } else if (IsVelloActive() && velloEngine_) {
-        if (!(velloEngine_->IsComputeMode() && impl_ && impl_->velloCompute_)) {
-            batches = &velloEngine_->GetBatches();
-        }
+        batches = &velloEngine_->GetBatches();
     }
     if (!batches) {
         return;
@@ -18493,13 +18979,13 @@ void VulkanRenderTarget::MaybeEmitEngineSpan()
 // semantics of the raw push_back call sites they replaced.
 void VulkanRenderTarget::RecordReplayCommand(const GpuReplayCommand& command)
 {
-    MaybeEmitEngineSpan();
+    MaybeEmitEngineSpan(&command);
     gpuReplayCommands_.push_back(command);
 }
 
 void VulkanRenderTarget::RecordReplayCommand(GpuReplayCommand&& command)
 {
-    MaybeEmitEngineSpan();
+    MaybeEmitEngineSpan(&command);
     gpuReplayCommands_.push_back(std::move(command));
 }
 
@@ -21973,6 +22459,9 @@ void VulkanRenderTarget::FillRectangle(float x, float y, float w, float h, Brush
             return;
         }
     }
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, 0, 0, 0, 0, brush, 0.0f, true)) {
+        return;
+    }
     if (!TryRecordGpuSolidRectCommand(x, y, w, h, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -22014,6 +22503,9 @@ void VulkanRenderTarget::DrawRectangle(float x, float y, float w, float h, Brush
                        /*lineCap*/ 0, nullptr, 0, 0.0f, /*edgeMode*/ -1);
             return;
         }
+    }
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, 0, 0, 0, 0, brush, strokeWidth, false)) {
+        return;
     }
     if (!TryRecordGpuRectangleStrokeCommand(x, y, w, h, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
@@ -22508,6 +23000,9 @@ void VulkanRenderTarget::FillRoundedRectangle(float x, float y, float w, float h
         }
     }
 
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, rx, rx, rx, rx, brush, 0.0f, true)) {
+        return;
+    }
     if (!TryRecordGpuRoundedRectFillCommand(x, y, w, h, rx, ry, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -22578,6 +23073,9 @@ void VulkanRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w
         }
     }
 
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, tl, tr, br, bl, brush, 0.0f, true)) {
+        return;
+    }
     if (!TryRecordGpuPerCornerRoundedRectFillCommand(x, y, w, h, tl, tr, br, bl, brush)) {
         // GPU path can't represent this (effect capture, rotated transform,
         // non-replayable brush). Degrade to the largest-radius uniform
@@ -22690,6 +23188,9 @@ void VulkanRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w
         }
     }
 
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, tl, tr, br, bl, brush, strokeWidth, false)) {
+        return;
+    }
     if (!TryRecordGpuPerCornerRoundedRectStrokeCommand(x, y, w, h, tl, tr, br, bl, strokeWidth, brush)) {
         const float maxR = std::max({ tl, tr, br, bl, 0.0f });
         DrawRoundedRectangle(x, y, w, h, maxR, maxR, brush, strokeWidth);
@@ -22722,6 +23223,9 @@ void VulkanRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h
         }
     }
 
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, rx, rx, rx, rx, brush, strokeWidth, false)) {
+        return;
+    }
     if (!TryRecordGpuRoundedRectStrokeCommand(x, y, w, h, rx, ry, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -22791,6 +23295,9 @@ void VulkanRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Bru
         }
     }
 
+    if (TryEncodeEllipseIntoPendingVello(cx, cy, rx, ry, brush, 0.0f, true)) {
+        return;
+    }
     if (!TryRecordGpuEllipseFillCommand(cx, cy, rx, ry, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -22849,6 +23356,9 @@ void VulkanRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Bru
                        /*lineCap*/ 0, nullptr, 0, 0.0f, /*edgeMode*/ -1);
             return;
         }
+    }
+    if (TryEncodeEllipseIntoPendingVello(cx, cy, rx, ry, brush, strokeWidth, false)) {
+        return;
     }
     if (!TryRecordGpuEllipseStrokeCommand(cx, cy, rx, ry, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
@@ -22964,7 +23474,8 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
             // latch cpuRasterNeeded_). The GPU-RT offscreen region is NOT
             // bypassed: its batches stay engine-encoded and the EngineBatchSpan
             // replay case redirects them into the offscreen framebuffer.
-        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty()) {
+        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty() &&
+            !cpuRasterNeeded_) {
             // Route solid AND gradient brushes through the engine. BuildEngineBrush
             // packs linear/radial stops into bd; the Impeller engine bakes a true
             // per-vertex gradient (ImpellerVulkanEngine::EncodeFillPolygon gradient
@@ -23071,6 +23582,10 @@ void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, B
             localPoints.push_back(points[index * 2]);
             localPoints.push_back(points[index * 2 + 1]);
         }
+        if (TryEncodePolylineIntoPendingVello(points, pointCount, brush, strokeWidth,
+                                              closed, lineJoin, miterLimit)) {
+            return;
+        }
         if (!TryRecordGpuPolylineCommand(localPoints, closed, strokeWidth, brush)) {
             // Same fallback as FillPolygon — CPU-rasterize the stroked
             // polyline into a local bitmap. Points need to be in world space
@@ -23128,7 +23643,8 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
             // latch cpuRasterNeeded_). The GPU-RT offscreen region is NOT
             // bypassed: its batches stay engine-encoded and the EngineBatchSpan
             // replay case redirects them into the offscreen framebuffer.
-        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty()) {
+        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty() &&
+            !cpuRasterNeeded_) {
             // Route solid AND gradient brushes through the engine. BuildEngineBrush
             // packs linear/radial stops into bd; the Impeller engine bakes a true
             // per-vertex gradient (ImpellerVulkanEngine::EncodeFillPath gradient
@@ -23320,7 +23836,8 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
             // latch cpuRasterNeeded_). The GPU-RT offscreen region is NOT
             // bypassed: its batches stay engine-encoded and the EngineBatchSpan
             // replay case redirects them into the offscreen framebuffer.
-        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty()) {
+        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty() &&
+            !cpuRasterNeeded_) {
             auto t = GetCurrentTransform();
             float opacity = GetCurrentOpacity();
 
@@ -23339,6 +23856,13 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
                 // vector-text-stroke / stroked icons to the active clip before
                 // the batch is emitted.
                 SyncClipToEngine(engine);
+                if (VkVelloDbgLevel() >= 3 && g_vkVelloDbgBudget > 0) {
+                    g_vkVelloDbgBudget--;
+                    std::fprintf(stderr, "[VkSP] engine try at(%.0f,%.0f) sw=%.2f cap=%d ts=%d",
+                                 startX, startY, strokeWidth,
+                                 (int)effectCaptureStack_.size(), (int)activeTransitionSlot_);
+                    std::fputc(10, stderr);
+                }
                 if (engine->EncodeStrokePath(startX, startY, commands, commandLength,
                         bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
                         dashPattern, dashCount, dashOffset, et, edgeMode))
@@ -24452,9 +24976,16 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // isotropic high-res bitmap is point-minified in one axis and thin stems
     // vanish. Isotropic DPI keeps the crisp 1:1 path.
     const bool anisoText = std::abs(txScaleX - txScaleY) > 0.01f * std::max(txScaleX, txScaleY);
+    // A ROTATED run joins the anisotropic branch for the same reason: the glyph
+    // has to be rasterized in the FINAL space (the atlas bakes the rotation in),
+    // so the transform must reach GenerateGlyphs as scaleX/scaleY + the 2x2
+    // rather than being hidden inside the atlas DPI. dpiScale_ = 1 then keeps
+    // the emitted quads in that same final space, and the re-magnify loop below
+    // is skipped for them.
+    const bool rotatedText = !axisAligned;
     float glyphRasterScaleX = 1.0f;
     float glyphRasterScaleY = 1.0f;
-    if (anisoText) {
+    if (anisoText || rotatedText) {
         impl_->glyphAtlas_->SetDpiScale(1.0f);  // size carried by the final per-axis scale buckets
         glyphRasterScaleX = txScaleX;
         glyphRasterScaleY = txScaleY;
@@ -24499,6 +25030,10 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     const auto effectiveAaMode = (resolvedAaMode == JALIUM_TEXT_AA_CLEARTYPE && !runClearType)
                                      ? JALIUM_TEXT_AA_GRAYSCALE
                                      : resolvedAaMode;
+    const float textLinear2x2[4] = { transform.m11, transform.m12,
+                                     transform.m21, transform.m22 };
+    const float textDecorationOrigin[2] = { x, y };
+    bool requiresSmoothSampling = false;
     const uint32_t count = impl_->glyphAtlas_->GenerateGlyphs(
         layout.Get(), tx, ty, colR, colG, colB, effectiveA,
         instances, &decorations,
@@ -24507,7 +25042,16 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         /*hintingMode=*/hintingMode,
         /*scaleX=*/glyphRasterScaleX, /*scaleY=*/glyphRasterScaleY,
         /*crispAxisAligned=*/crispAxisAligned,
-        /*subpixelPositioning=*/subpixelPositioning);
+        /*subpixelPositioning=*/subpixelPositioning,
+        /*linear2x2=*/textLinear2x2,
+        // Decorations are emitted as SDF rects further down, and that path
+        // applies the ambient transform to them — so they must be handed the
+        // UNtransformed origin, or they get transformed twice. (Before this they
+        // shared the glyph origin and a scaled/rotated run's underline drifted
+        // away from its text.) Routing them through the transform is also what
+        // rotates the bar along with the baseline.
+        /*decorationOrigin=*/textDecorationOrigin,
+        /*outRequiresSmoothSampling=*/&requiresSmoothSampling);
     if (count == 0 || instances.empty()) {
         return;
     }
@@ -24515,8 +25059,12 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // Re-magnify each base-DIP quad by the transform's axis scales around the
     // transformed origin (tx, ty) — byte-identical to D3D12 AddText. Identity
     // transform (scale 1) leaves the quads untouched.
-    const bool scaled = std::abs(txScaleX - 1.0f) > 0.001f ||
-                        std::abs(txScaleY - 1.0f) > 0.001f;
+    // A rotated run is exempt: GenerateGlyphs already emitted its quads in the
+    // final space (ink rotated in the atlas, pen walked through the 2x2), so
+    // re-magnifying by the axis scales would double-apply the transform.
+    const bool scaled = !rotatedText &&
+                        (std::abs(txScaleX - 1.0f) > 0.001f ||
+                         std::abs(txScaleY - 1.0f) > 0.001f);
     for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
         auto& gi = instances[i];
         if (scaled) {
@@ -24525,7 +25073,14 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
             gi.sizeX *= txScaleX;
             gi.sizeY *= txScaleY;
         }
-        if (crispAxisAligned) {
+        // A rotated run snaps too. Its atlas bitmap is already the rotated ink
+        // at FINAL resolution, so an integer-aligned quad maps those texels 1:1
+        // onto physical pixels and the bilinear sampler degenerates to a point
+        // fetch — without the snap every glyph lands on a fraction and gets
+        // half-texel blurred, which is what made rotated labels look soft. The
+        // cost is the usual <=0.5px per-glyph placement error, invisible on a
+        // baseline that is already off-grid.
+        if (crispAxisAligned || rotatedText) {
             gi.posX = std::round(gi.posX);
             gi.posY = std::round(gi.posY);
         }
@@ -24561,6 +25116,20 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
             if (!stopData.empty()) {
                 const float invSx = (scaled && std::abs(txScaleX) > 1e-6f) ? 1.0f / txScaleX : 1.0f;
                 const float invSy = (scaled && std::abs(txScaleY) > 1e-6f) ? 1.0f / txScaleY : 1.0f;
+                // Per-axis reciprocals ARE the inverse for an axis-aligned
+                // transform. Under rotation they are not, so invert the real
+                // 2x2 — otherwise the gradient is sampled at a sheared position
+                // and a rotated gradient caption picks up visibly wrong colours.
+                float gi11 = invSx, gi12 = 0.0f, gi21 = 0.0f, gi22 = invSy;
+                if (rotatedText) {
+                    const float det = transform.m11 * transform.m22 -
+                                      transform.m12 * transform.m21;
+                    if (std::abs(det) > 1e-9f) {
+                        const float invDet = 1.0f / det;
+                        gi11 =  transform.m22 * invDet; gi12 = -transform.m12 * invDet;
+                        gi21 = -transform.m21 * invDet; gi22 =  transform.m11 * invDet;
+                    }
+                }
                 const float runOpacity = GetCurrentOpacity();
                 for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
                     auto& gi = instances[i];
@@ -24569,8 +25138,10 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
                     // foreground and equally wrong for a gradient.
                     if (gi.colorR < 0.0f) continue;
 
-                    const float cx = x + ((gi.posX + gi.sizeX * 0.5f) - tx) * invSx;
-                    const float cy = y + ((gi.posY + gi.sizeY * 0.5f) - ty) * invSy;
+                    const float ox = (gi.posX + gi.sizeX * 0.5f) - tx;
+                    const float oy = (gi.posY + gi.sizeY * 0.5f) - ty;
+                    const float cx = x + (ox * gi11 + oy * gi21);
+                    const float cy = y + (ox * gi12 + oy * gi22);
 
                     GradientColor gc = SampleBrushGradient(textGradient, stopData.data(), cx, cy);
                     const float ga = gc.a * runOpacity;
@@ -24616,7 +25187,9 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     cmd.textRun.glyphs = std::move(glyphFloats);
     cmd.textRun.glyphCount = glyphCount;
     cmd.textRun.clearType = runClearType;
-    cmd.textRun.smoothText = !crispAxisAligned;
+    // Animated/rotated text needs continuous bilinear motion; a small symbol
+    // glyph needs the same sampler to resolve its 2x coverage strike.
+    cmd.textRun.smoothText = !crispAxisAligned || requiresSmoothSampling;
     if (!TryPopulateReplayClip(cmd)) {
         return;
     }
@@ -24627,16 +25200,20 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
 
     // Text decorations (underline / strikethrough): emit each as a solid rect in
     // the SAME physical/screen space as the glyph quads. GenerateGlyphs returns
-    // them at (origin + base-DIP offset) with PREMULTIPLIED colour; re-magnify the
-    // position by the per-axis transform scale around (tx,ty) exactly like the
-    // glyph quads above, and un-premultiply the colour for the straight-colour
-    // solid_rect pipeline. Mirrors D3D12, which emits decorations as SdfRects.
+    // them at the PRE-transform origin with PREMULTIPLIED colour, so the anchor
+    // maps through the FULL matrix here (the previous per-axis re-magnify around
+    // (tx,ty) sheared the bar off its text under rotation, and double-applied the
+    // translation under a plain scale). The bar's own extent still uses the axis
+    // scales: GpuSolidRectCommand is screen-axis-aligned, so a steeply rotated
+    // underline stays horizontal — correct placement without an oriented
+    // decoration primitive. Un-premultiply for the straight-colour solid_rect
+    // pipeline. Mirrors D3D12, which emits decorations as SdfRects.
     for (const auto& dec : decorations) {
         if (dec.colorA <= 0.0f) {
             continue;
         }
-        const float decPhysX = tx + (dec.x - tx) * txScaleX;
-        const float decPhysY = ty + (dec.y - ty) * txScaleY;
+        float decPhysX = 0.0f, decPhysY = 0.0f;
+        ApplyTransform(transform, dec.x, dec.y, decPhysX, decPhysY);
         const float decPhysW = dec.width * txScaleX;
         const float decPhysH = dec.thickness * txScaleY;
         if (decPhysW <= 0.0f || decPhysH <= 0.0f) {

@@ -120,15 +120,18 @@ internal static class RenderBackendSelector
 
     private static RenderBackend[] GetPreferredOrder(bool isWindows, bool isMacOS, bool isLinux, bool isAndroid = false)
     {
-        // Each platform uses exactly one GPU backend + Software fallback.
+        // Platform GPU backend first, then the secondary GPU backend, then the
+        // software rasterizer. Mirrors the native preferred order inside
+        // jalium_context_create, so a host whose primary GPU backend is missing
+        // gets the other GPU backend instead of dropping straight to the CPU.
         if (isWindows)
         {
-            return [RenderBackend.D3D12, RenderBackend.Software];
+            return [RenderBackend.D3D12, RenderBackend.Vulkan, RenderBackend.Software];
         }
 
         if (isMacOS)
         {
-            return [RenderBackend.Metal, RenderBackend.Software];
+            return [RenderBackend.Metal, RenderBackend.Vulkan, RenderBackend.Software];
         }
 
         if (isAndroid || isLinux)
@@ -136,7 +139,7 @@ internal static class RenderBackendSelector
             return [RenderBackend.Vulkan, RenderBackend.Software];
         }
 
-        return [RenderBackend.D3D12, RenderBackend.Software];
+        return [RenderBackend.D3D12, RenderBackend.Vulkan, RenderBackend.Software];
     }
 
     // ========================================================================

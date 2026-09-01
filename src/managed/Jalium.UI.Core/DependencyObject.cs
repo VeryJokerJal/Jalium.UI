@@ -203,7 +203,11 @@ public class DependencyObject : DispatcherObject
         TemplateTrigger,
         StyleSetter,
         /// <summary>模板对**自己生成的具名部件**下的 trigger（TargetName）。仅次于 local。</summary>
-        ParentTemplateTrigger
+        ParentTemplateTrigger,
+        /// <summary>CSS 引擎:胜者选择器含动态伪类(:hover 等)。高于 StyleTrigger、低于 ParentTemplate。</summary>
+        CssState,
+        /// <summary>CSS 引擎:普通命中值与内联 Css.Style。高于 StyleSetter、低于 TemplateTrigger。</summary>
+        CssBase,
     }
 
     private enum ValueMutationKind : byte
@@ -376,6 +380,13 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     /// <param name="dp">The dependency property to check.</param>
     /// <returns>True if a local value is set; otherwise, false.</returns>
+    /// <summary>
+    /// True when the property carries a local or animated value — the precedence tiers a
+    /// CSS layout-state override must never displace (used by the %-margin guard).
+    /// </summary>
+    internal bool HasLocalOrAnimatedValue(DependencyProperty dp)
+        => HasLocalValue(dp) || _animatedValues?.ContainsKey(dp) == true;
+
     public bool HasLocalValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
@@ -453,6 +464,27 @@ public class DependencyObject : DispatcherObject
         // directly, bypassing the SetLayerValueCore backstop.
         if (IsNullForNonNullableValueType(dp, value))
             return;
+
+        // When the effective value comes from a CSS layer, BaseValueSource reports the closest
+        // WPF analogue (Style/StyleTrigger); dispatching on it would misroute the write into the
+        // StyleSetter/StyleTrigger layer where it stays shadowed by the CSS layer. Write back to
+        // the owning CSS layer instead — the next CSS re-evaluation overwrites it, matching the
+        // "style reapplication overwrites SetCurrentValue" semantics.
+        if (_valueStore is { } cssProbe &&
+            cssProbe.TryGetEffectiveLayer(dp, out var effectiveLayer))
+        {
+            if (effectiveLayer == DependencyValueStore.Layer.CssBase)
+            {
+                SetLayerValue(dp, value, LayerValueSource.CssBase, allowAutoTransition: true);
+                return;
+            }
+
+            if (effectiveLayer == DependencyValueStore.Layer.CssState)
+            {
+                SetLayerValue(dp, value, LayerValueSource.CssState, allowAutoTransition: true);
+                return;
+            }
+        }
 
         var source = GetValueSourceInternal(dp);
         SetCurrentValueForSource(dp, value, source.BaseValueSource, allowAutoTransition: true);
@@ -1521,6 +1553,8 @@ public class DependencyObject : DispatcherObject
         LayerValueSource.TemplateTrigger => DependencyValueStore.Layer.TemplateTrigger,
         LayerValueSource.StyleSetter => DependencyValueStore.Layer.StyleSetter,
         LayerValueSource.ParentTemplateTrigger => DependencyValueStore.Layer.ParentTemplateTrigger,
+        LayerValueSource.CssState => DependencyValueStore.Layer.CssState,
+        LayerValueSource.CssBase => DependencyValueStore.Layer.CssBase,
         _ => throw new ArgumentOutOfRangeException(nameof(source), source, null),
     };
 
@@ -1532,6 +1566,8 @@ public class DependencyObject : DispatcherObject
             LayerValueSource.TemplateTrigger => BaseValueSource.TemplateTrigger,
             LayerValueSource.StyleSetter => BaseValueSource.Style,
             LayerValueSource.ParentTemplateTrigger => BaseValueSource.ParentTemplateTrigger,
+            LayerValueSource.CssState => BaseValueSource.StyleTrigger,
+            LayerValueSource.CssBase => BaseValueSource.Style,
             _ => BaseValueSource.Unknown
         };
 

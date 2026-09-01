@@ -294,6 +294,67 @@ public abstract class Panel : FrameworkElement
             ? Enumerable.Empty<object>().GetEnumerator()
             : base.LogicalChildren;
 
+    /// <summary>
+    /// Whether the child is taken out of flow by CSS <c>position: absolute</c>. Panel
+    /// Measure/Arrange loops skip such children (they contribute nothing to the flow or
+    /// the panel's desired size) and place them via
+    /// <see cref="ArrangeCssAbsoluteChildren"/>. A custom panel opts into the protocol
+    /// with three lines: `if (IsCssAbsolute(child)) continue;` inside both loops, plus
+    /// the two helper calls at the end of MeasureOverride/ArrangeOverride.
+    /// </summary>
+    protected static bool IsCssAbsolute(UIElement? child)
+        => child is FrameworkElement fe &&
+           fe.CssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Absolute };
+
+    /// <summary>
+    /// Measures every absolutely positioned child (constraint pre-narrowed by opposing
+    /// insets). Their desired sizes must not join the panel's desired size.
+    /// </summary>
+    protected void MeasureCssAbsoluteChildren(Size availableSize)
+    {
+        foreach (var child in InternalChildren.EnumerateStruct())
+        {
+            if (child is not FrameworkElement fe ||
+                fe.CssLayout is not { Position: Jalium.UI.Styling.CssPositionMode.Absolute } layout ||
+                child.Visibility == Visibility.Collapsed)
+            {
+                continue;
+            }
+
+            child.Measure(Jalium.UI.Styling.CssAbsoluteLayout.ComputeMeasureConstraint(layout, availableSize));
+        }
+    }
+
+    /// <summary>Places every absolutely positioned child per the CSS inset rules.</summary>
+    protected void ArrangeCssAbsoluteChildren(Size finalSize)
+    {
+        foreach (var child in InternalChildren.EnumerateStruct())
+        {
+            if (child is not FrameworkElement fe ||
+                fe.CssLayout is not { Position: Jalium.UI.Styling.CssPositionMode.Absolute } layout ||
+                child.Visibility == Visibility.Collapsed)
+            {
+                continue;
+            }
+
+            var effectiveWidth = fe.Width;
+            if (double.IsNaN(effectiveWidth) && layout.Width.IsSet)
+            {
+                effectiveWidth = layout.Width.Resolve(finalSize.Width, double.NaN);
+            }
+
+            var effectiveHeight = fe.Height;
+            if (double.IsNaN(effectiveHeight) && layout.Height.IsSet)
+            {
+                effectiveHeight = layout.Height.Resolve(finalSize.Height, double.NaN);
+            }
+
+            var slot = Jalium.UI.Styling.CssAbsoluteLayout.ComputeSlot(
+                layout, finalSize, child.DesiredSize, effectiveWidth, effectiveHeight);
+            child.Arrange(slot);
+        }
+    }
+
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {

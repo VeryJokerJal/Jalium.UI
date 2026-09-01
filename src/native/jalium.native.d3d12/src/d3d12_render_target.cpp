@@ -1554,6 +1554,47 @@ void D3D12RenderTarget::Clear(float r, float g, float b, float a) {
     }
 }
 
+extern uint64_t g_velloGateSkip;
+extern uint64_t g_velloGateHit;
+extern uint64_t g_velloGateUnbounded;
+extern uint64_t g_velloGateHitSite[8];
+extern uint64_t g_velloGateDumpBudget;
+extern uint64_t g_velloGateReroute;
+
+void D3D12RenderTarget::FlushVelloIfNeeded(float x, float y, float w, float h, int siteTag) {
+    if (!pendingStateOps_.empty()) {
+        CommitDeferredState();
+    }
+    if (IsImpellerActive()) {
+        if (impellerEngine_ && impellerEngine_->HasPendingWork()) {
+            FlushImpellerBatches();
+        }
+        return;
+    }
+    if (!directRenderer_ || !directRenderer_->HasVelloPaths()) return;
+    // Painter-order gate: the pending Vello sub-scene only has to composite
+    // BEFORE this draw when the two can touch the same pixels. Icon-dense UIs
+    // interleave paths with rects/text hundreds of times per frame; without
+    // this gate every one of those draws cut a sub-scene and paid a full
+    // compute dispatch. Disjoint bounds -> order irrelevant -> keep
+    // accumulating into the same sub-scene.
+    if (!directRenderer_->VelloPendingHitsDipRect(x, y, w, h)) { g_velloGateSkip++; return; }
+    g_velloGateHit++;
+    g_velloGateHitSite[siteTag & 7]++;
+    if (VelloPerfLevel() >= 2) {
+        if (g_velloGateDumpBudget > 0) {
+            g_velloGateDumpBudget--;
+            float bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+            auto* vr = directRenderer_->GetVelloRenderer();
+            if (vr) vr->PendingDeviceBounds(bx0, by0, bx1, by1);
+            std::fprintf(stderr,
+                         "[GateHit] site=%d draw=(%.0f,%.0f %.0fx%.0f)dip pend=(%.0f,%.0f)-(%.0f,%.0f)px\n",
+                         siteTag, x, y, w, h, bx0, by0, bx1, by1);
+        }
+    }
+    directRenderer_->FlushVelloPaths();
+}
+
 void D3D12RenderTarget::FlushVelloIfNeeded() {
     // First commit any deferred Push* — every real draw method calls this
     // hook, so it is the single right place to materialise queued state
@@ -1579,6 +1620,7 @@ void D3D12RenderTarget::FlushVelloIfNeeded() {
         return;
     }
     if (!directRenderer_ || !directRenderer_->HasVelloPaths()) return;
+    g_velloGateUnbounded++;
 
     // Vello accumulates all path encodes (FillPath / StrokePath) across the
     // whole frame and produces a single offscreen RT in Dispatch. Compositing
@@ -1717,9 +1759,189 @@ void D3D12RenderTarget::FlushImpellerBatches() {
     impellerEngine_->ClearBatches();
 }
 
+
+
+bool D3D12RenderTarget::TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx, float ry,
+                                                         Brush* brush, float strokeWidth, bool fill)
+{
+    if (IsImpellerActive() || !directRenderer_ || !brush) return false;
+    if (rx <= 0.0f || ry <= 0.0f || rx > 80.0f || ry > 80.0f) return false;
+    if (!pendingStateOps_.empty()) CommitDeferredState();
+    if (!directRenderer_->HasVelloPaths()) return false;
+    const float inflate = fill ? 0.0f : strokeWidth;
+    if (!directRenderer_->VelloPendingHitsDipRect(cx - rx - inflate, cy - ry - inflate,
+                                                  (rx + inflate) * 2.0f, (ry + inflate) * 2.0f)) {
+        return false;
+    }
+    auto* vello = directRenderer_->GetVelloRenderer();
+    if (!vello) return false;
+
+    const float k = 0.5522847498f;
+    float kx = rx * k, ky = ry * k;
+    float cmds[] = {
+        1.0f, cx + rx, cy + ky, cx + kx, cy + ry, cx,      cy + ry,
+        1.0f, cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy,
+        1.0f, cx - rx, cy - ky, cx - kx, cy - ry, cx,      cy - ry,
+        1.0f, cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy,
+        5.0f
+    };
+    directRenderer_->ApplyScissorToVello();
+    float opacity = directRenderer_->GetOpacity();
+    auto t = directRenderer_->GetCurrentTransform();
+    float s = directRenderer_->GetDpiScale();
+    float m11 = t.m11 * s, m12 = t.m12 * s, m21 = t.m21 * s, m22 = t.m22 * s;
+    float mdx = t.dx * s, mdy = t.dy * s;
+    bool ok;
+    if (fill) {
+        ok = vello->EncodeFillPathBrush(cx + rx, cy, cmds, (uint32_t)(sizeof(cmds) / sizeof(float)),
+                                        brush, 1u, opacity, m11, m12, m21, m22, mdx, mdy);
+    } else {
+        ok = vello->EncodeStrokePathBrush(cx + rx, cy, cmds, (uint32_t)(sizeof(cmds) / sizeof(float)),
+                                          brush, strokeWidth, true, 2, 4.0f, opacity,
+                                          0, nullptr, 0, 0.0f, m11, m12, m21, m22, mdx, mdy);
+    }
+    if (ok) g_velloGateReroute++;
+    return ok;
+}
+
+bool D3D12RenderTarget::TryEncodeRectIntoPendingVello(float x, float y, float w, float h,
+                                                      float rTL, float rTR, float rBR, float rBL,
+                                                      Brush* brush, float strokeWidth, bool fill)
+{
+    if (IsImpellerActive() || !directRenderer_ || !brush) return false;
+    if (w <= 0.0f || h <= 0.0f || w > 160.0f || h > 160.0f) return false;
+    if (!pendingStateOps_.empty()) CommitDeferredState();
+    if (!directRenderer_->HasVelloPaths()) return false;
+    const float inflate = fill ? 0.0f : strokeWidth;
+    if (!directRenderer_->VelloPendingHitsDipRect(x - inflate, y - inflate,
+                                                  w + inflate * 2.0f, h + inflate * 2.0f)) {
+        return false;
+    }
+    auto* vello = directRenderer_->GetVelloRenderer();
+    if (!vello) return false;
+
+    const float maxR = std::fmin(w, h) * 0.5f;
+    float tl = std::fmin(std::fmax(rTL, 0.0f), maxR);
+    float tr = std::fmin(std::fmax(rTR, 0.0f), maxR);
+    float br = std::fmin(std::fmax(rBR, 0.0f), maxR);
+    float bl = std::fmin(std::fmax(rBL, 0.0f), maxR);
+    const float k = 0.5522847498f;
+
+    float sx = x + tl, sy = y;
+    std::vector<float> cmds;
+    cmds.reserve(44);
+    cmds.push_back(0.0f); cmds.push_back(x + w - tr); cmds.push_back(y);
+    if (tr > 0.0f) {
+        float kk = tr * k;
+        cmds.push_back(1.0f);
+        cmds.push_back(x + w - tr + kk); cmds.push_back(y);
+        cmds.push_back(x + w); cmds.push_back(y + tr - kk);
+        cmds.push_back(x + w); cmds.push_back(y + tr);
+    }
+    cmds.push_back(0.0f); cmds.push_back(x + w); cmds.push_back(y + h - br);
+    if (br > 0.0f) {
+        float kk = br * k;
+        cmds.push_back(1.0f);
+        cmds.push_back(x + w); cmds.push_back(y + h - br + kk);
+        cmds.push_back(x + w - br + kk); cmds.push_back(y + h);
+        cmds.push_back(x + w - br); cmds.push_back(y + h);
+    }
+    cmds.push_back(0.0f); cmds.push_back(x + bl); cmds.push_back(y + h);
+    if (bl > 0.0f) {
+        float kk = bl * k;
+        cmds.push_back(1.0f);
+        cmds.push_back(x + bl - kk); cmds.push_back(y + h);
+        cmds.push_back(x); cmds.push_back(y + h - bl + kk);
+        cmds.push_back(x); cmds.push_back(y + h - bl);
+    }
+    cmds.push_back(0.0f); cmds.push_back(x); cmds.push_back(y + tl);
+    if (tl > 0.0f) {
+        float kk = tl * k;
+        cmds.push_back(1.0f);
+        cmds.push_back(x); cmds.push_back(y + tl - kk);
+        cmds.push_back(x + tl - kk); cmds.push_back(y);
+        cmds.push_back(x + tl); cmds.push_back(y);
+    }
+    cmds.push_back(5.0f);
+
+    directRenderer_->ApplyScissorToVello();
+    float opacity = directRenderer_->GetOpacity();
+    auto t = directRenderer_->GetCurrentTransform();
+    float s = directRenderer_->GetDpiScale();
+    float m11 = t.m11 * s, m12 = t.m12 * s, m21 = t.m21 * s, m22 = t.m22 * s;
+    float mdx = t.dx * s, mdy = t.dy * s;
+    bool ok;
+    if (fill) {
+        ok = vello->EncodeFillPathBrush(sx, sy, cmds.data(), (uint32_t)cmds.size(),
+                                        brush, 1u, opacity, m11, m12, m21, m22, mdx, mdy);
+    } else {
+        ok = vello->EncodeStrokePathBrush(sx, sy, cmds.data(), (uint32_t)cmds.size(),
+                                          brush, strokeWidth, true, 0, 4.0f, opacity,
+                                          0, nullptr, 0, 0.0f, m11, m12, m21, m22, mdx, mdy);
+    }
+    if (ok) g_velloGateReroute++;
+    return ok;
+}
+
+bool D3D12RenderTarget::TryEncodePolygonIntoPendingVello(const float* points, uint32_t pointCount,
+                                                         Brush* brush, float strokeWidth, bool closed,
+                                                         int32_t lineJoin, float miterLimit,
+                                                         bool fill, int32_t fillRule)
+{
+    if (IsImpellerActive() || !directRenderer_ || !brush || !points) return false;
+    if (fill ? (pointCount < 3) : (pointCount < 2)) return false;
+    if (!pendingStateOps_.empty()) CommitDeferredState();
+    if (!directRenderer_->HasVelloPaths()) return false;
+
+    float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
+    for (uint32_t pi = 0; pi + 1 < pointCount * 2; pi += 2) {
+        pminX = std::fmin(pminX, points[pi]);     pminY = std::fmin(pminY, points[pi + 1]);
+        pmaxX = std::fmax(pmaxX, points[pi]);     pmaxY = std::fmax(pmaxY, points[pi + 1]);
+    }
+    if (!(pminX <= pmaxX)) return false;
+    if (pmaxX - pminX > 160.0f || pmaxY - pminY > 160.0f) return false;
+    const float pad = fill ? 0.0f : strokeWidth;
+    if (!directRenderer_->VelloPendingHitsDipRect(pminX - pad, pminY - pad,
+                                                  (pmaxX - pminX) + pad * 2.0f,
+                                                  (pmaxY - pminY) + pad * 2.0f)) {
+        return false;
+    }
+    auto* vello = directRenderer_->GetVelloRenderer();
+    if (!vello) return false;
+
+    std::vector<float> cmds;
+    cmds.reserve((size_t)pointCount * 3 + 1);
+    for (uint32_t i = 1; i < pointCount; i++) {
+        cmds.push_back(0.0f);
+        cmds.push_back(points[i * 2]);
+        cmds.push_back(points[i * 2 + 1]);
+    }
+    if (fill || closed) cmds.push_back(5.0f);
+
+    directRenderer_->ApplyScissorToVello();
+    float opacity = directRenderer_->GetOpacity();
+    auto t = directRenderer_->GetCurrentTransform();
+    float s = directRenderer_->GetDpiScale();
+    float m11 = t.m11 * s, m12 = t.m12 * s, m21 = t.m21 * s, m22 = t.m22 * s;
+    float mdx = t.dx * s, mdy = t.dy * s;
+    bool ok;
+    if (fill) {
+        ok = vello->EncodeFillPathBrush(points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                                        brush, (uint32_t)fillRule, opacity,
+                                        m11, m12, m21, m22, mdx, mdy);
+    } else {
+        ok = vello->EncodeStrokePathBrush(points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                                          brush, strokeWidth, closed, lineJoin, miterLimit, opacity,
+                                          0, nullptr, 0, 0.0f, m11, m12, m21, m22, mdx, mdy);
+    }
+    if (ok) g_velloGateReroute++;
+    return ok;
+}
+
 void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, 0, 0, 0, 0, brush, 0.0f, true)) return;
+    FlushVelloIfNeeded(x, y, w, h, 0);
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
@@ -1734,7 +1956,8 @@ void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush*
 
 void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, 0, 0, 0, 0, brush, strokeWidth, false)) return;
+    FlushVelloIfNeeded(x - strokeWidth, y - strokeWidth, w + strokeWidth * 2.0f, h + strokeWidth * 2.0f, 0);
     if (TryDrawGradientStroke(
             x, y, w, h, 0.0f, 0.0f, 0.0f, 0.0f, brush, strokeWidth)) return;
     // Gradient outline → TRUE per-pixel gradient stroke via the engine (the SDF
@@ -1773,7 +1996,8 @@ void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush*
 
 void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, rx, rx, rx, rx, brush, 0.0f, true)) return;
+    FlushVelloIfNeeded(x, y, w, h, 0);
     SdfRectInstance inst = {};
     bool brushOk = FillBrushToInstance(brush, inst);
     if (brushOk) {
@@ -1786,7 +2010,8 @@ void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h,
 
 void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, rx, rx, rx, rx, brush, strokeWidth, false)) return;
+    FlushVelloIfNeeded(x - strokeWidth, y - strokeWidth, w + strokeWidth * 2.0f, h + strokeWidth * 2.0f, 0);
     if (TryDrawGradientStroke(
             x, y, w, h, rx, rx, rx, rx, brush, strokeWidth)) return;
 
@@ -1836,7 +2061,8 @@ void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h,
 void D3D12RenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, tl, tr, br, bl, brush, 0.0f, true)) return;
+    FlushVelloIfNeeded(x, y, w, h, 0);
 
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
@@ -1850,7 +2076,8 @@ void D3D12RenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w,
 void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, tl, tr, br, bl, brush, strokeWidth, false)) return;
+    FlushVelloIfNeeded(x - strokeWidth, y - strokeWidth, w + strokeWidth * 2.0f, h + strokeWidth * 2.0f, 0);
     if (TryDrawGradientStroke(
             x, y, w, h, tl, tr, br, bl, brush, strokeWidth)) return;
 
@@ -1908,7 +2135,8 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
 
 void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeEllipseIntoPendingVello(cx, cy, rx, ry, brush, 0.0f, true)) return;
+    FlushVelloIfNeeded(cx - rx, cy - ry, rx * 2.0f, ry * 2.0f, 3);
 
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
@@ -1957,7 +2185,8 @@ void D3D12RenderTarget::FillEllipseBatch(const float* data, uint32_t count) {
 
 void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeEllipseIntoPendingVello(cx, cy, rx, ry, brush, strokeWidth, false)) return;
+    FlushVelloIfNeeded(cx - rx - strokeWidth, cy - ry - strokeWidth, (rx + strokeWidth) * 2.0f, (ry + strokeWidth) * 2.0f, 3);
     // Gradient ring → TRUE per-pixel gradient stroke via the engine (4 cubic
     // beziers approximating the ellipse). Solids fall through to the SDF ring.
     if (IsImpellerActive() && rx > 0.0f && ry > 0.0f &&
@@ -2006,7 +2235,7 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
 
 void D3D12RenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    FlushVelloIfNeeded(std::fmin(x1, x2) - strokeWidth, std::fmin(y1, y2) - strokeWidth, std::fabs(x2 - x1) + strokeWidth * 2.0f, std::fabs(y2 - y1) + strokeWidth * 2.0f, 4);
     // Gradient line → TRUE per-pixel gradient stroke via the engine (the 3-strip
     // AA path below is solid-only). Solids fall straight through; if the gradient
     // encode fails, ExtractStrokeColor degrades it to a representative solid.
@@ -2200,7 +2429,22 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
         }
     }
 
-    FlushVelloIfNeeded();
+    if (TryEncodePolygonIntoPendingVello(points, pointCount, brush, 0.0f, true,
+                                         0, 4.0f, true, fillRule)) return;
+    {
+        float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
+        for (uint32_t pi = 0; pi + 1 < pointCount * 2; pi += 2) {
+            pminX = std::fmin(pminX, points[pi]);     pminY = std::fmin(pminY, points[pi + 1]);
+            pmaxX = std::fmax(pmaxX, points[pi]);     pmaxY = std::fmax(pmaxY, points[pi + 1]);
+        }
+        const float ppad = 0.0f;
+        if (pminX <= pmaxX) {
+            FlushVelloIfNeeded(pminX - ppad, pminY - ppad,
+                               (pmaxX - pminX) + ppad * 2.0f, (pmaxY - pminY) + ppad * 2.0f, 2);
+        } else {
+            FlushVelloIfNeeded();
+        }
+    }
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
@@ -2279,7 +2523,22 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
         }
     }
 
-    FlushVelloIfNeeded();
+    if (TryEncodePolygonIntoPendingVello(points, pointCount, brush, strokeWidth, closed,
+                                         lineJoin, miterLimit, false, 0)) return;
+    {
+        float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
+        for (uint32_t pi = 0; pi + 1 < pointCount * 2; pi += 2) {
+            pminX = std::fmin(pminX, points[pi]);     pminY = std::fmin(pminY, points[pi + 1]);
+            pmaxX = std::fmax(pmaxX, points[pi]);     pmaxY = std::fmax(pmaxY, points[pi + 1]);
+        }
+        const float ppad = strokeWidth;
+        if (pminX <= pmaxX) {
+            FlushVelloIfNeeded(pminX - ppad, pminY - ppad,
+                               (pmaxX - pminX) + ppad * 2.0f, (pmaxY - pminY) + ppad * 2.0f, 2);
+        } else {
+            FlushVelloIfNeeded();
+        }
+    }
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
@@ -2420,6 +2679,10 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
                 auto geom = directRenderer_->GetOrBuildStencilPathGeometry(
                     startX, startY, commands, commandLength);
                 if (directRenderer_->AddStencilPath(geom, r, g, b, a, fillRule)) {
+                    if (VelloPerfLevel() >= 3 && g_velloGateDumpBudget > 0) {
+                        g_velloGateDumpBudget--;
+                        std::fprintf(stderr, "[FP] stencil at(%.0f,%.0f)%c", startX, startY, (char)10);
+                    }
                     return;
                 }
             }
@@ -2467,9 +2730,16 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
             float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
             float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
             float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
-            if (vello->EncodeFillPathBrush(startX, startY, commands, commandLength,
+            bool fpOk = vello->EncodeFillPathBrush(startX, startY, commands, commandLength,
                     brush, (uint32_t)fillRule, opacity,
-                    vm11, vm12, vm21, vm22, vdx, vdy))
+                    vm11, vm12, vm21, vm22, vdx, vdy);
+            if (VelloPerfLevel() >= 3 && g_velloGateDumpBudget > 0) {
+                g_velloGateDumpBudget--;
+                std::fprintf(stderr, "[FP] vello %s brush=%d at(%.0f,%.0f) op=%.2f m=(%.2f,%.2f)+(%.0f,%.0f)%c",
+                             fpOk ? "ok" : "FAIL", (int)brush->GetType(), startX, startY,
+                             opacity, vm11, vm22, vdx, vdy, (char)10);
+            }
+            if (fpOk)
                 return;
             // Vello encoding failed (unsupported brush, degenerate path, etc.) — fall through to CPU
         }
@@ -2561,10 +2831,17 @@ void D3D12RenderTarget::StrokePath(float startX, float startY, const float* comm
             float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
             float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
             float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
-            if (vello->EncodeStrokePathBrush(startX, startY, commands, commandLength,
+            bool spOk = vello->EncodeStrokePathBrush(startX, startY, commands, commandLength,
                     brush, strokeWidth, closed, lineJoin, miterLimit, opacity,
                     lineCap, dashPattern, dashCount, dashOffset,
-                    vm11, vm12, vm21, vm22, vdx, vdy))
+                    vm11, vm12, vm21, vm22, vdx, vdy);
+            if (VelloPerfLevel() >= 3 && g_velloGateDumpBudget > 0) {
+                g_velloGateDumpBudget--;
+                std::fprintf(stderr, "[SP] vello %s brush=%d at(%.0f,%.0f) sw=%.2f cmds=%u%c",
+                             spOk ? "ok" : "FAIL", (int)brush->GetType(), startX, startY,
+                             strokeWidth, commandLength, (char)10);
+            }
+            if (spOk)
                 return;
             // Vello encoding failed — fall through to CPU
         }
@@ -2581,7 +2858,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
     Brush* fillBrush, Brush* strokeBrush, float strokeWidth)
 {
     if (!isDrawing_ || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    FlushVelloIfNeeded(x, y, w, h, 0);
     // Fill with bottom corner radii
     if (fillBrush) {
         SdfRectInstance inst = {};
@@ -2618,7 +2895,6 @@ void D3D12RenderTarget::RenderText(
     Brush* brush)
 {
     if (!isDrawing_ || !directRenderer_ || !format || !text || textLength == 0) return;
-    FlushVelloIfNeeded();
     jalium::text_stats::AddDrawTextCall();
 
     auto* tf = static_cast<D3D12TextFormat*>(format);
@@ -2650,6 +2926,23 @@ void D3D12RenderTarget::RenderText(
     ComPtr<IDWriteTextLayout> layout;
     uint64_t layoutKey = 0;
     if (FAILED(tf->CreateLayout(text, textLength, w, h, &layout, &layoutKey))) return;
+
+    // Painter-order gate bounds: the LAYOUT box arrives as "practically
+    // unbounded" (10000 DIP) for auto-sized text, which would make every text
+    // run overlap every pending path on its row band. The DWrite metrics give
+    // the real ink extent (cached inside the layout object, which is itself
+    // cached by layoutKey).
+    {
+        float gx = x, gy = y, gw = w, gh = h;
+        DWRITE_TEXT_METRICS tm{};
+        if (SUCCEEDED(layout->GetMetrics(&tm))) {
+            gx = x + tm.left;
+            gy = y + tm.top;
+            gw = tm.widthIncludingTrailingWhitespace;
+            gh = tm.height;
+        }
+        FlushVelloIfNeeded(gx, gy, gw, gh, 1);
+    }
     // Resolve per-element TextOptions against the process-wide fallback chain
     // here at the boundary so AddText / GenerateGlyphs / RasterizeGlyph only
     // see concrete modes; the glyph atlas keys off the resolved AA mode so
@@ -2674,7 +2967,7 @@ void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, fl
 
 void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode) {
     if (!isDrawing_ || !directRenderer_ || !bitmap) return;
-    FlushVelloIfNeeded();
+    FlushVelloIfNeeded(x, y, w, h, 5);
 
     auto* d3d12Bmp = static_cast<D3D12Bitmap*>(bitmap);
     auto* cl = directRenderer_->GetCommandList();

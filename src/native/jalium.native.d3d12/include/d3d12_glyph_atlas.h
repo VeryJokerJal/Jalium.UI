@@ -39,6 +39,11 @@ struct GlyphEntry {
     // ClearType dual-source blend, so the emoji renders in its own colours
     // rather than being tinted by the text Foreground.
     bool isColor = false;
+    // Upscale GenerateGlyphs applies to w/h/bearings at quad emission. 1.0 for
+    // normal glyphs; > 1.0 when RasterizeGlyph had to shrink the em because the
+    // ink box exceeded kMaxGlyphBitmapDim (huge-ink fonts, capped-ppem emoji) —
+    // the glyph renders slightly soft instead of vanishing.
+    float scale = 1.0f;
 };
 
 // ============================================================================
@@ -54,6 +59,38 @@ struct GlyphEntry {
 // bucket. 1/16 halves that residual vs 1/8. Cost: more cached deformation buckets.
 // uint8 cap => max scale kGlyphScaleQuant-relative is 255/16 ≈ 15.9x (ample).
 static constexpr int kGlyphScaleQuant = 16;
+
+// Quantization granularity for the ROTATED / SKEWED 2x2 glyph transform baked
+// into GlyphKey (xf**Q = round(m * kGlyphXformQuant)). At 1/256 a unit-scale
+// rotation buckets every ~0.22 degrees: fine enough that a static rotation is
+// visually exact, coarse enough that a slow rotate animation reuses a bucket
+// for several frames instead of rasterizing a fresh strike every frame.
+static constexpr int kGlyphXformQuant = 256;
+
+// Upper bound on the FINAL vertical ppem a glyph is rasterized at. Deep-zoomed
+// or print-preview text above this renders from a strike rasterized AT the cap
+// and upscaled at quad emission — bounded atlas pressure instead of glyphs
+// silently vanishing past the old hard 512px ink rejection. Every ppem above
+// the cap shares ONE strike per glyph, so continuous zoom stops flooding the
+// atlas with per-step size buckets.
+static constexpr uint16_t kMaxGlyphRasterPpem = 512;
+
+// Largest ink box RasterizeGlyph accepts into the atlas. Ink beyond it (fonts
+// whose ink overshoots the em box, extreme aspect deforms) re-rasterizes at a
+// proportionally smaller em, with GlyphEntry::scale carrying the upscale.
+static constexpr int kMaxGlyphBitmapDim = 640;
+
+// Above this ppem, sub-pixel phases are pinned to 0: the ≤1/8-px placement
+// residual is an invisible fraction of such a glyph's advance, while caching
+// up to 8 phase variants of big strikes multiplies atlas load by 8× — a
+// zoomed CJK paragraph's variants alone can exceed the 4096² maximum, which
+// degenerates into a reset-every-frame loop with per-frame missing glyphs.
+static constexpr uint16_t kMaxSubpixelPhasePpem = 96;
+
+// Colour-emoji scratch canvas stays capped at 512px, with the baseline parked
+// at 75% from the top. Cap the emoji em low enough that Fluent overshoot ink
+// (≈1.1–1.2 em above baseline) still fits: 0.75·512 / 1.2 ≈ 320.
+static constexpr uint16_t kMaxColorGlyphPpem = 320;
 
 struct GlyphKey {
     IDWriteFontFace* fontFace;
@@ -78,6 +115,22 @@ struct GlyphKey {
     // very next glyph after a per-format mode switch.
     uint8_t  aaMode;
     uint8_t  hintingMode;
+    // Quantized 2x2 glyph transform for a ROTATED / SKEWED run, expressed
+    // relative to the vertical scale that is already folded into fontSize (so
+    // an unrotated uniform scale would come out as the identity here). All four
+    // stay 0 on an axis-aligned run — that path keeps using the scaleXQ:scaleYQ
+    // aspect matrix — which makes every pre-existing key byte-identical to what
+    // it was before this field existed.
+    int16_t  xf11Q = 0;
+    int16_t  xf12Q = 0;
+    int16_t  xf21Q = 0;
+    int16_t  xf22Q = 0;
+
+    /// True when this key carries a real rotation / skew, i.e. RasterizeGlyph
+    /// must hand DirectWrite the full 2x2 above instead of the aspect matrix.
+    bool HasGlyphRotation() const {
+        return (xf11Q | xf12Q | xf21Q | xf22Q) != 0;
+    }
 
     bool operator==(const GlyphKey& other) const {
         return fontFace == other.fontFace &&
@@ -87,7 +140,11 @@ struct GlyphKey {
                aaMode == other.aaMode &&
                hintingMode == other.hintingMode &&
                scaleXQ == other.scaleXQ &&
-               scaleYQ == other.scaleYQ;
+               scaleYQ == other.scaleYQ &&
+               xf11Q == other.xf11Q &&
+               xf12Q == other.xf12Q &&
+               xf21Q == other.xf21Q &&
+               xf22Q == other.xf22Q;
     }
 };
 
@@ -112,6 +169,17 @@ struct GlyphKeyHash {
                         | ((uint64_t)k.scaleXQ    << 41)   // per-axis transform scale
                         | ((uint64_t)k.scaleYQ    << 49);
         h ^= std::hash<uint64_t>{}(packed) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        // Rotated / skewed runs pack their quantized 2x2 into a second word.
+        // It is all-zero on the axis-aligned path, so this leaves those hashes
+        // exactly where they were (h ^= hash(0) + ... is still a fixed shuffle
+        // of the same input, applied uniformly, so bucket spread is unchanged).
+        if (k.HasGlyphRotation()) {
+            const uint64_t xf = ((uint64_t)(uint16_t)k.xf11Q)
+                              | ((uint64_t)(uint16_t)k.xf12Q << 16)
+                              | ((uint64_t)(uint16_t)k.xf21Q << 32)
+                              | ((uint64_t)(uint16_t)k.xf22Q << 48);
+            h ^= std::hash<uint64_t>{}(xf) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        }
         return h;
     }
 };
@@ -122,6 +190,12 @@ struct GlyphKeyHash {
 struct GlyphCacheValue {
     GlyphEntry entry;
     ComPtr<IDWriteFontFace> fontFaceRef;  // prevents dangling GlyphKey::fontFace
+    // Frame counter of the last GenerateGlyphs that referenced this strike.
+    // CompactAtlas keeps only recently-used entries, so the stale size buckets
+    // a zoom gesture leaves behind get reclaimed WITHOUT wiping the glyphs the
+    // current frame is drawing — which is exactly what a full Reset does, and
+    // why zooming used to make text flicker line by line.
+    uint32_t lastUsedFrame = 0;
 };
 
 // ============================================================================
@@ -200,7 +274,32 @@ public:
         // ScaleTransform). Ignored for deformed (non-unit scale-bucket) runs,
         // which keep their single-phase policy. Origin-dependent: the
         // instance memo is keyed by the origin phase as well.
-        bool subpixelPositioning = false);
+        bool subpixelPositioning = false,
+        // Full 2x2 linear part of the caller's transform, row-major
+        // (m11, m12, m21, m22). Pass nullptr — or an axis-aligned matrix — to
+        // keep the historical behaviour exactly: the run is placed with
+        // scaleX/scaleY alone and the glyphs are rasterized upright.
+        //
+        // When it carries a real rotation / skew the run switches to the
+        // ROTATED path: DirectWrite rasterizes each glyph THROUGH the matrix
+        // (so the bitmap in the atlas is already the rotated ink), and the pen
+        // walk is mapped through the same matrix, so the emitted quads are
+        // screen-axis-aligned boxes over pre-rotated ink. Those quads are
+        // already in final screen DIPs — the caller must NOT re-apply
+        // scaleX/scaleY to them (see D3D12DirectRenderer::AddText).
+        const float* linear2x2 = nullptr,
+        // Optional {x, y} origin for the emitted TextDecorationRects. Glyph
+        // quads bake their ink into the atlas, so they need the POST-transform
+        // origin; decorations are drawn as plain rects that run through the
+        // ambient transform again, so they need the PRE-transform one — which
+        // is also what makes an underline rotate along with its text. Pass
+        // nullptr to keep the historical behaviour of sharing the glyph origin.
+        const float* decorationOrigin = nullptr,
+        // Set when at least one symbol-font run was rasterized above its final
+        // display resolution. The caller must use the smooth sampler for that
+        // batch so the higher-resolution coverage is resolved instead of
+        // point-sampled back into the same small-size aliasing.
+        bool* outRequiresSmoothSampling = nullptr);
 
     /// Uploads any pending glyph data to the GPU atlas texture.
     /// Must be called before rendering text in a frame. Returns true only when
@@ -241,7 +340,12 @@ public:
     /// thread that doesn't hold the render-target's command list, including
     /// mid-frame — the actual GPU work happens later, inside
     /// ApplyPendingGrowthOrReset on the next BeginFrame.
-    void RequestResetAtFrameBoundary() { needsReset_ = true; }
+    ///
+    /// This is a HARD reset request: the caller wants the memory back (or the
+    /// cached pixels are in the wrong format after an antialias-mode switch),
+    /// so it is never downgraded to a compaction the way an atlas-full
+    /// condition is.
+    void RequestResetAtFrameBoundary() { needsHardReset_ = true; }
 
     /// Returns true if AllocateAtlasRect ran out of space *and* the atlas can
     /// still grow before hitting kMaxAtlasDim.  Caller (D3D12DirectRenderer
@@ -251,8 +355,10 @@ public:
 
     /// Frame-boundary entry point: if the previous frame requested growth, do it
     /// now (preserving cached glyph pixels); if the previous frame requested a
-    /// reset because growth wasn't possible, perform the reset.  Safe to call
-    /// before any glyph SRV is bound onto the new frame's command list.
+    /// reset because growth wasn't possible, compact (preferred) or reset.  Also
+    /// compacts pre-emptively while the atlas still has headroom, so a mid-frame
+    /// allocation never has to fail.  Safe to call before any glyph SRV is bound
+    /// onto the new frame's command list.
     void ApplyPendingGrowthOrReset();
 
     // ── Diagnostics accessors (used by DevTools Perf tab via RenderTarget::QueryGpuStats) ──
@@ -321,6 +427,36 @@ private:
     // list), so AllocateAtlasRect is the natural caller.
     bool GrowAtlas(uint32_t reqW, uint32_t reqH);
 
+    // Re-packs the strikes used within the last kCompactKeepFrames frames into
+    // the front of the atlas (tallest first, which is what makes shelf packing
+    // efficient) and drops everything older. Pixels are memcpy'd from their old
+    // slot, so nothing is re-rasterized. Bumps the generation like Reset does —
+    // the caller must be at a frame boundary.
+    //
+    // This is what a zoom gesture needs: each zoom step interns a whole new set
+    // of (glyph, ppem) strikes, so the atlas fills with dozens of dead size
+    // buckets. Reset() reclaims them by throwing away the LIVE set too, so the
+    // frames right after it draw with half their glyphs missing — the flicker.
+    // Compaction reclaims exactly the dead ones.
+    //
+    // Returns false when the live set alone cannot be re-packed (nothing worth
+    // reclaiming), leaving the atlas untouched so the caller can Reset instead.
+    bool CompactAtlas();
+
+    // Sums the packed area of strikes used within kCompactKeepFrames (live) and
+    // of everything older (dead). Drives both the growth target and the
+    // decision to compact.
+    void MeasurePackedArea(uint64_t& liveArea, uint64_t& deadArea) const;
+
+    // Frames whose strikes survive a compaction. 2 keeps the previous frame's
+    // set as well, so a run that alternates between two states (hover, caret
+    // blink) doesn't re-rasterize on every frame.
+    static constexpr uint32_t kCompactKeepFrames = 2;
+
+    // Incremented once per frame boundary (ApplyPendingGrowthOrReset), stamped
+    // into GlyphCacheValue::lastUsedFrame on every cache touch.
+    uint32_t frameCounter_ = 0;
+
     ID3D12Device* device_;
     IDWriteFactory* dwriteFactory_;
     D3D12Backend* backend_;  // optional: when set, GrowAtlas retires old atlas/upload buffers through the backend's fence-tracked graveyard instead of dropping them via ComPtr operator= (which triggers D3D12 ERROR #921).
@@ -371,6 +507,7 @@ private:
     struct CachedGlyphRun {
         std::vector<GlyphQuadInstance> instances;  // posX/posY = layout-local; colour unset
         std::vector<TextDecorationRect> decos;     // x/y = layout-local; colour unset
+        bool requiresSmoothSampling = false;
         uint32_t gen = 0;
     };
     struct InstNode { uint64_t key; CachedGlyphRun run; };
@@ -385,7 +522,12 @@ private:
                                     float scaleX, float scaleY,
                                     bool crispAxisAligned,
                                     uint8_t originPhaseX = 0,
-                                    bool subpixelPositioning = false) noexcept;
+                                    bool subpixelPositioning = false,
+                                    // Four quantized 2x2 components (GlyphKey
+                                    // xf11Q..xf22Q) for a rotated run, or
+                                    // nullptr on the axis-aligned path — which
+                                    // leaves the hash exactly as it was.
+                                    const int16_t* xformQ = nullptr) noexcept;
 
     // Simple row-based atlas packer
     uint16_t packX_ = 0;
@@ -415,7 +557,11 @@ private:
     bool RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entry);
 
     bool initialized_ = false;
-    bool needsReset_ = false;  // Atlas at max dim and overflowed — reset next frame
+    bool needsReset_ = false;  // Atlas overflowed — grow, compact or reset next frame
+    // Unconditional wipe requested: the idle reclaimer wants the memory back, or
+    // an antialias-mode switch made every cached strike the wrong format. Never
+    // downgraded to a compaction, which would keep those pixels.
+    bool needsHardReset_ = false;
     bool needsGrow_ = false;   // Atlas can still grow — recreate resources next frame
     uint32_t pendingGrowW_ = 0;  // largest reqW seen this frame (px)
     uint32_t pendingGrowH_ = 0;  // largest reqH seen this frame (px)

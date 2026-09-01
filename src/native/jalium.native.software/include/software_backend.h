@@ -43,10 +43,13 @@ public:
 class SoftwareLinearGradientBrush : public Brush {
 public:
     float startX, startY, endX, endY;
+    uint32_t spreadMethod; // 0=Pad, 1=Repeat, 2=Reflect
     std::vector<JaliumGradientStop> stops;
     SoftwareLinearGradientBrush(float sx, float sy, float ex, float ey,
-                                const JaliumGradientStop* s, uint32_t count)
-        : startX(sx), startY(sy), endX(ex), endY(ey), stops(s, s + count) {}
+                                const JaliumGradientStop* s, uint32_t count,
+                                uint32_t spread)
+        : startX(sx), startY(sy), endX(ex), endY(ey), spreadMethod(spread),
+          stops(s, s + count) {}
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_LINEAR_GRADIENT; }
 
     void SampleColor(float px, float py, float& outR, float& outG, float& outB, float& outA) const;
@@ -55,12 +58,14 @@ public:
 class SoftwareRadialGradientBrush : public Brush {
 public:
     float centerX, centerY, radiusX, radiusY, originX, originY;
+    uint32_t spreadMethod; // 0=Pad, 1=Repeat, 2=Reflect
     std::vector<JaliumGradientStop> stops;
     SoftwareRadialGradientBrush(float cx, float cy, float rx, float ry,
                                  float ox, float oy,
-                                 const JaliumGradientStop* s, uint32_t count)
+                                 const JaliumGradientStop* s, uint32_t count,
+                                 uint32_t spread)
         : centerX(cx), centerY(cy), radiusX(rx), radiusY(ry),
-          originX(ox), originY(oy), stops(s, s + count) {}
+          originX(ox), originY(oy), spreadMethod(spread), stops(s, s + count) {}
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_RADIAL_GRADIENT; }
 
     void SampleColor(float px, float py, float& outR, float& outG, float& outB, float& outA) const;
@@ -231,6 +236,9 @@ struct SoftwareClipRect {
     // those paths populate all four per-corner values too.
     float radiusTL = 0, radiusTR = 0, radiusBR = 0, radiusBL = 0;
     float rx = 0, ry = 0;
+    // Set on the clipStack_ entry when this level also pushed a rounded-corner
+    // entry onto roundedClipStack_ (so PopClip pops both in lockstep).
+    bool ownsRounded = false;
     bool Contains(float px, float py) const {
         if (px < x || px >= x + w || py < y || py >= y + h) return false;
 
@@ -304,6 +312,16 @@ public:
         TextFormat* format,
         float x, float y, float w, float h,
         Brush* brush) override;
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    // Resampling blit for glyph runs under a rotated / skewed / anisotropic
+    // matrix: quads are in physical-resolution local space, R maps them onto
+    // the screen around (originX, originY). LCD coverage degrades to grayscale.
+    void RenderTransformedGlyphQuads(
+        const std::vector<TextGlyphQuad>& quads,
+        float originX, float originY,
+        float r00, float r01, float r10, float r11,
+        uint8_t textR, uint8_t textG, uint8_t textB, float textAlpha);
+#endif
     void PushTransform(const float* matrix) override;
     void PopTransform() override;
     void PushClip(float x, float y, float w, float h) override;
@@ -514,6 +532,12 @@ private:
     SoftwareFramebuffer fb_;
     std::stack<SoftwareTransform> transformStack_;
     std::stack<SoftwareClipRect> clipStack_;
+    // Rounded-corner clip levels, in their own (untrimmed) rectangles. The
+    // clipStack_ intersection cannot carry an ancestor's corner rounding, so
+    // IsClipped tests every live rounded level here in addition to the top
+    // rectangle intersection. Entries pair with the clipStack_ level whose
+    // ownsRounded flag is set.
+    std::vector<SoftwareClipRect> roundedClipStack_;
     std::stack<float> opacityStack_;
     SoftwareTransform currentTransform_;
     float currentOpacity_ = 1.0f;

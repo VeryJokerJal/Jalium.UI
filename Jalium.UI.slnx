@@ -1,10 +1,37 @@
 <Solution>
   <Folder Name="/src/" />
-  <!-- Shared/build-only projects are intentionally discovered through the
-       entry-point ProjectReference graphs below. Listing them as independent
-       solution roots creates duplicate project instances with different
-       target-framework globals, which can race on the same obj/bin outputs. -->
-  <Folder Name="/src/managed/" />
+  <!-- Shared projects are visible in Solution Explorer but are not independent
+       solution build roots. Entry-point ProjectReference graphs build them with
+       the correct target-framework globals and avoid duplicate obj/bin writers. -->
+  <Folder Name="/src/managed/">
+    <Project Path="src/managed/Jalium.UI.Controls/Jalium.UI.Controls.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/managed/Jalium.UI.Core/Jalium.UI.Core.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/managed/Jalium.UI.Gpu/Jalium.UI.Gpu.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/managed/Jalium.UI.Input/Jalium.UI.Input.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/managed/Jalium.UI.Interop/Jalium.UI.Interop.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/managed/Jalium.UI.Media/Jalium.UI.Media.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/managed/Jalium.UI.Xaml.SourceGenerator/Jalium.UI.Xaml.SourceGenerator.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/managed/Jalium.UI.Xaml/Jalium.UI.Xaml.csproj">
+      <Build Project="false" />
+    </Project>
+  </Folder>
   <Folder Name="/src/packaging/">
     <Project Path="src/packaging/Jalium.UI/Jalium.UI.csproj" />
     <Project Path="src/packaging/Jalium.UI.Desktop/Jalium.UI.Desktop.csproj" />
@@ -12,7 +39,39 @@
     <Project Path="src/packaging/Jalium.UI.Linux/Jalium.UI.Linux.csproj" />
   </Folder>
   <Folder Name="/src/tools/">
+    <Project Path="src/managed/Jalium.UI.Build/Jalium.UI.Build.csproj">
+      <Build Project="false" />
+    </Project>
     <Project Path="src/managed/Jalium.UI.Compiler/Jalium.UI.Compiler.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Jalium.UI.AndroidDemo/Jalium.UI.AndroidDemo.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="samples/Jalium.UI.AotWindowDemo/Jalium.UI.AotWindowDemo.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="samples/Jalium.UI.BorderlessDemo/Jalium.UI.BorderlessDemo.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="samples/Jalium.UI.DesktopDemo/Jalium.UI.DesktopDemo.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="samples/Jalium.UI.Gallery/Jalium.UI.Gallery.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="samples/Jalium.UI.HostingDemo/Jalium.UI.HostingDemo.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="samples/Jalium.UI.LinuxDemo/Jalium.UI.LinuxDemo.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="samples/Jalium.UI.MillionScroll/Jalium.UI.MillionScroll.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="samples/Jalium.UI.TransparentBackdropDemo/Jalium.UI.TransparentBackdropDemo.csproj">
+      <Build Project="false" />
+    </Project>
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Jalium.UI.LinuxAccessibilitySmoke/Jalium.UI.LinuxAccessibilitySmoke.csproj" />
@@ -21,5 +80,16 @@
     <Project Path="tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj" />
     <Project Path="tests/Jalium.UI.Media.LinuxSmoke/Jalium.UI.Media.LinuxSmoke.csproj" />
     <Project Path="tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj" />
+  </Folder>
+  <!-- NuGet consumer tests intentionally remain standalone: their NuGet.config
+       requires JALIUM_NUGET_FEED to point at packages produced by the current
+       checkout, so including them would break ordinary solution restores. -->
+  <Folder Name="/tools/">
+    <Project Path="tools/Jalium.UI.ApiParity/Jalium.UI.ApiParity.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="tools/Jalium.UI.HotReload.Watcher/Jalium.UI.HotReload.Watcher.csproj">
+      <Build Project="false" />
+    </Project>
   </Folder>
 </Solution>

@@ -152,7 +152,11 @@ public class ScrollViewerInertiaTests
         viewer.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed, timestamp: 4));
 
         var scrollRange = trackHeight - thumbHeight;
-        var expected = 100 + ((end.Y - start.Y) / scrollRange) * viewer.ScrollableHeight;
+        // Committed offsets are quantized to whole device pixels (LayoutDpiScale is 1
+        // here), so the thumb's proportional fraction rounds onto the pixel grid.
+        var expected = Math.Round(
+            100 + ((end.Y - start.Y) / scrollRange) * viewer.ScrollableHeight,
+            MidpointRounding.AwayFromZero);
 
         Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
         Assert.Equal(expected, viewer.VerticalOffset, precision: 3);

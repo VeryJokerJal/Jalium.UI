@@ -460,6 +460,12 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     private Style? _themeStyle;
 
     /// <summary>
+    /// Per-element CSS engine state (classes, inline declarations, values the engine owns).
+    /// Null until CSS first touches this element, so non-CSS apps pay one pointer field.
+    /// </summary>
+    internal Jalium.UI.Styling.CssElementState? CssRuntimeState;
+
+    /// <summary>
     /// Resolves the theme default style for a concrete element type. Injected by
     /// Jalium.UI.Controls' ThemeManager (Core cannot reference the theme dictionaries
     /// directly). Returns null when no theme is loaded or the type has no default style.
@@ -506,7 +512,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <see cref="OnVisualParentChanged"/> 对整棵可视子树重算一遍；够不到的非可视子节点
     /// （Popup.Child 等）再由随后的 <c>Control.ReactivateBindingsRecursive</c> 兜住。
     /// 于是同一批元素从「重算三遍」降到「重算一遍」，而三趟依然全部在模板展开返回前完成。</para>
-    /// </summary>
+    /// </param>
     internal void SetTemplatedParent(FrameworkElement? parent, bool reactivateBindings)
     {
         var oldParent = _templatedParent;
@@ -1222,7 +1228,18 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <inheritdoc />
     protected override Size MeasureCore(Size availableSize)
     {
-        var margin = Margin;
+        // CSS layout state (%, aspect-ratio, box-sizing) resolves here because the
+        // containing-block basis only exists during layout. Null = zero-cost path.
+        var cssLayout = CssLayout;
+
+        var margin = cssLayout is { HasMargin: true } && !HasLocalOrAnimatedValue(MarginProperty)
+            ? ResolveCssMargin(cssLayout, availableSize.Width)
+            : Margin;
+        if (cssLayout is not null)
+        {
+            cssLayout.MeasureMarginCache = margin;
+        }
+
         var marginWidth = margin.Left + margin.Right;
         var marginHeight = margin.Top + margin.Bottom;
 
@@ -1231,30 +1248,50 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             Math.Max(0, availableSize.Width - marginWidth),
             Math.Max(0, availableSize.Height - marginHeight));
 
-        // Apply explicit size constraints
-        if (!double.IsNaN(Width))
+        // %-padding materializes into the Padding DP before MeasureOverride so the
+        // padding consumers (Control/Border MeasureOverride) see plain pixels.
+        if (cssLayout is { HasPadding: true })
         {
-            contentAvailable = new Size(Width, contentAvailable.Height);
+            MaterializeCssPadding(cssLayout, availableSize.Width);
         }
-        if (!double.IsNaN(Height))
+
+        // Apply explicit size constraints (DP wins; CSS % resolves against the basis)
+        var effectiveWidth = ResolveEffectiveWidth(cssLayout, availableSize.Width);
+        var effectiveHeight = ResolveEffectiveHeight(cssLayout, availableSize.Height);
+        if (!double.IsNaN(effectiveWidth))
         {
-            contentAvailable = new Size(contentAvailable.Width, Height);
+            contentAvailable = new Size(effectiveWidth, contentAvailable.Height);
+        }
+        if (!double.IsNaN(effectiveHeight))
+        {
+            contentAvailable = new Size(contentAvailable.Width, effectiveHeight);
         }
 
         // Apply min/max constraints
+        var (minWidth, maxWidth) = ResolveEffectiveWidthBounds(cssLayout, availableSize.Width);
+        var (minHeight, maxHeight) = ResolveEffectiveHeightBounds(cssLayout, availableSize.Height);
         contentAvailable = new Size(
-            Math.Clamp(contentAvailable.Width, MinWidth, MaxWidth),
-            Math.Clamp(contentAvailable.Height, MinHeight, MaxHeight));
+            Math.Clamp(contentAvailable.Width, minWidth, maxWidth),
+            Math.Clamp(contentAvailable.Height, minHeight, maxHeight));
 
         // Measure content
         var contentSize = MeasureOverride(contentAvailable);
 
         // Apply constraints to result
-        var resultWidth = double.IsNaN(Width) ? contentSize.Width : Width;
-        var resultHeight = double.IsNaN(Height) ? contentSize.Height : Height;
+        var resultWidth = double.IsNaN(effectiveWidth) ? contentSize.Width : effectiveWidth;
+        var resultHeight = double.IsNaN(effectiveHeight) ? contentSize.Height : effectiveHeight;
 
-        resultWidth = Math.Clamp(resultWidth, MinWidth, MaxWidth);
-        resultHeight = Math.Clamp(resultHeight, MinHeight, MaxHeight);
+        // aspect-ratio derives the auto axis; min/max clamp afterwards (CSS order).
+        if (cssLayout is not null && cssLayout.AspectRatio > 0)
+        {
+            (resultWidth, resultHeight) = ApplyCssAspectRatio(
+                cssLayout.AspectRatio,
+                resultWidth, !double.IsNaN(effectiveWidth),
+                resultHeight, !double.IsNaN(effectiveHeight));
+        }
+
+        resultWidth = Math.Clamp(resultWidth, minWidth, maxWidth);
+        resultHeight = Math.Clamp(resultHeight, minHeight, maxHeight);
 
         var transformedSize = ApplyLayoutTransformToDesiredSize(new Size(resultWidth, resultHeight));
         return new Size(
@@ -1265,7 +1302,32 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <inheritdoc />
     protected sealed override void ArrangeCore(Rect finalRect)
     {
-        var margin = Margin;
+        var cssLayout = CssLayout;
+
+        // An absolutely positioned element's slot was ALREADY solved by the panel against
+        // the panel's size (its true containing block) — the slot itself is not a
+        // containing block, so re-resolving percentages here would apply them twice
+        // (a 50%-wide child in a 200px panel gets a 100px slot; taking 50% of the slot
+        // again would shrink it to 50). Reuse the measure-side margin and skip the rest.
+        var isCssAbsolute = cssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Absolute };
+
+        // Arrange-side containing block is the final rect the parent allotted.
+        Thickness margin;
+        if (cssLayout is { HasMargin: true } && !HasLocalOrAnimatedValue(MarginProperty))
+        {
+            margin = isCssAbsolute
+                ? cssLayout.MeasureMarginCache
+                : ResolveCssMargin(cssLayout, finalRect.Width);
+        }
+        else
+        {
+            margin = Margin;
+        }
+
+        if (isCssAbsolute)
+        {
+            cssLayout = null;
+        }
         var marginWidth = margin.Left + margin.Right;
         var marginHeight = margin.Top + margin.Bottom;
 
@@ -1277,8 +1339,11 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         // to the current margin (margin changed after the last measure, or the element
         // was never measured — e.g. a template rebuild arranged before its measure pass),
         // so the subtraction must clamp to zero like WPF does; Size throws on negatives.
-        var desiredWidth = Math.Max(0, DesiredSize.Width - marginWidth);
-        var desiredHeight = Math.Max(0, DesiredSize.Height - marginHeight);
+        // %-margins may resolve differently per pass, so subtract the margin that was
+        // actually added during Measure — otherwise the content desired size is skewed.
+        var measureMargin = cssLayout is { HasMargin: true } ? cssLayout.MeasureMarginCache : margin;
+        var desiredWidth = Math.Max(0, DesiredSize.Width - (measureMargin.Left + measureMargin.Right));
+        var desiredHeight = Math.Max(0, DesiredSize.Height - (measureMargin.Top + measureMargin.Bottom));
 
         // Determine arrange size based on alignment
         // When alignment is Stretch, use available size; otherwise use desired size (clamped to available)
@@ -1292,20 +1357,55 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
         var arrangeSize = new Size(arrangeWidth, arrangeHeight);
 
-        // Apply explicit size constraints
-        if (!double.IsNaN(Width))
+        // Apply explicit size constraints (DP wins; CSS % resolves against the final rect)
+        var effectiveWidth = ResolveEffectiveWidth(cssLayout, finalRect.Width);
+        var effectiveHeight = ResolveEffectiveHeight(cssLayout, finalRect.Height);
+        if (!double.IsNaN(effectiveWidth))
         {
-            arrangeSize = new Size(Width, arrangeSize.Height);
+            arrangeSize = new Size(effectiveWidth, arrangeSize.Height);
         }
-        if (!double.IsNaN(Height))
+        if (!double.IsNaN(effectiveHeight))
         {
-            arrangeSize = new Size(arrangeSize.Width, Height);
+            arrangeSize = new Size(arrangeSize.Width, effectiveHeight);
+        }
+
+        // aspect-ratio mirrors the Measure-side derivation so render size stays consistent.
+        if (cssLayout is not null && cssLayout.AspectRatio > 0 &&
+            (!double.IsNaN(effectiveWidth) || !double.IsNaN(effectiveHeight)))
+        {
+            var (ratioWidth, ratioHeight) = ApplyCssAspectRatio(
+                cssLayout.AspectRatio,
+                arrangeSize.Width, !double.IsNaN(effectiveWidth),
+                arrangeSize.Height, !double.IsNaN(effectiveHeight));
+            arrangeSize = new Size(ratioWidth, ratioHeight);
         }
 
         // Apply min/max constraints
+        var (minWidth, maxWidth) = ResolveEffectiveWidthBounds(cssLayout, finalRect.Width);
+        var (minHeight, maxHeight) = ResolveEffectiveHeightBounds(cssLayout, finalRect.Height);
         arrangeSize = new Size(
-            Math.Clamp(arrangeSize.Width, MinWidth, MaxWidth),
-            Math.Clamp(arrangeSize.Height, MinHeight, MaxHeight));
+            Math.Clamp(arrangeSize.Width, minWidth, maxWidth),
+            Math.Clamp(arrangeSize.Height, minHeight, maxHeight));
+
+        // Percentage values resolved against a drifted basis (∞ measure constraint,
+        // star-track shrink) converge through a one-shot re-measure, mirroring Grid's
+        // correction pattern; the flag prevents oscillation loops.
+        if (cssLayout is { UsesPercent: true })
+        {
+            var measureBasis = PreviousAvailableSize;
+            var drifted =
+                Math.Abs(finalRect.Width - measureBasis.Width) > 0.5 ||
+                Math.Abs(finalRect.Height - measureBasis.Height) > 0.5;
+            if (drifted && !cssLayout.ArrangeCorrectionQueued)
+            {
+                cssLayout.ArrangeCorrectionQueued = true;
+                InvalidateMeasure();
+            }
+            else if (!drifted)
+            {
+                cssLayout.ArrangeCorrectionQueued = false;
+            }
+        }
 
         // Arrange content
         var renderSize = ArrangeOverride(arrangeSize);
@@ -1818,6 +1918,15 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
                 RescopeSubtreeAfterAttach(hadVirtualizationRecycleMarker);
             }
 
+            // CSS re-evaluation is deliberately deferred (batched, deduplicated by subtree)
+            // rather than synchronous like the rescope above: there is no "attach returns with
+            // styles readable" contract, and the batch avoids the O(n × depth) re-scan cost
+            // documented for bottom-up tree construction.
+            if (Jalium.UI.Styling.CssEngine.IsActive)
+            {
+                Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(this);
+            }
+
             // Recursively reactivate bindings on this element and ALL descendants,
             // because descendants may have bindings that depend on DataContext
             // inherited from an ancestor that is now reachable via the visual tree
@@ -1863,6 +1972,13 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             }
 
             SetLoadedState(false);
+
+            // Ancestor-scoped rules no longer apply after a detach; the batched pass diffs
+            // the subtree's CSS values against the reduced scope set.
+            if (Jalium.UI.Styling.CssEngine.IsActive)
+            {
+                Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(this);
+            }
         }
     }
 
@@ -2745,6 +2861,11 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         {
             ResourceLookup.InvalidateResourceCache();
         }
+
+        if (Jalium.UI.Styling.CssEngine.IsActive && child is FrameworkElement cssChild)
+        {
+            Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(cssChild);
+        }
     }
 
     /// <summary>
@@ -2794,6 +2915,11 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         if (!preservesVirtualizationResourceScope)
         {
             ResourceLookup.InvalidateResourceCache();
+        }
+
+        if (Jalium.UI.Styling.CssEngine.IsActive && child is FrameworkElement cssChild)
+        {
+            Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(cssChild);
         }
     }
 

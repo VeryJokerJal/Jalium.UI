@@ -260,9 +260,6 @@ public class TitleBar : Control
     {
         Focusable = false;
 
-        // Set default backdrop effect (Gaussian blur)
-        BackdropEffect = new BackdropBlurEffect(20f);
-
         _fallbackMinimizeButton = new TitleBarButton { Kind = TitleBarButtonKind.Minimize };
         _fallbackMaximizeButton = new TitleBarButton { Kind = TitleBarButtonKind.Maximize };
         _fallbackCloseButton = new TitleBarButton { Kind = TitleBarButtonKind.Close };

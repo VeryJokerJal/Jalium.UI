@@ -44,6 +44,20 @@ public static class ThemeLoader
         // 让渲染层强转崩溃。
         Style.StringValueConverter = TypeConverterRegistry.ConvertValue;
 
+        // CSS 样式表的 pack/application URI 取流（CssStyleSheet.FromUri）。Core 看不到
+        // Application，与 TypeResolver 同构地经钩子注入。
+        Jalium.UI.Styling.CssStyleSheet.UriStreamResolver = static uri =>
+        {
+            try
+            {
+                return Application.GetResourceStream(uri)?.Stream;
+            }
+            catch
+            {
+                return null;
+            }
+        };
+
         // NOTE on intentional restraint: this ModuleInitializer ONLY registers callbacks
         // (XamlLoader, SourceLoader, StartupObjectLoader, type resolver, value converter).
         // It MUST NOT call back into ThemeManager.Initialize here — even guarded by

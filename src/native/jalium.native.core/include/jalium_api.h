@@ -703,12 +703,14 @@ JALIUM_API JaliumBrush* jalium_brush_create_solid(JaliumContext* ctx, float r, f
 /// @param endY The end y coordinate.
 /// @param stops Array of gradient stops (position, r, g, b, a for each stop).
 /// @param stopCount Number of gradient stops.
+/// @param extendMode Spread method: 0=Pad, 1=Repeat, 2=Reflect.
 /// @return A handle to the created brush, or nullptr on failure.
 JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
     JaliumContext* ctx,
     float startX, float startY, float endX, float endY,
     const JaliumGradientStop* stops,
-    uint32_t stopCount
+    uint32_t stopCount,
+    uint32_t extendMode
 );
 
 /// Creates a radial gradient brush.
@@ -721,13 +723,15 @@ JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
 /// @param originY The gradient origin y coordinate.
 /// @param stops Array of gradient stops.
 /// @param stopCount Number of gradient stops.
+/// @param extendMode Spread method: 0=Pad, 1=Repeat, 2=Reflect.
 /// @return A handle to the created brush, or nullptr on failure.
 JALIUM_API JaliumBrush* jalium_brush_create_radial_gradient(
     JaliumContext* ctx,
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
     const JaliumGradientStop* stops,
-    uint32_t stopCount
+    uint32_t stopCount,
+    uint32_t extendMode
 );
 
 /// Destroys a brush.

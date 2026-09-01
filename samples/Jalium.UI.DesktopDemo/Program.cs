@@ -20,7 +20,13 @@ internal static class Program
         // Auto = honour JALIUM_RENDER_BACKEND (vulkan/d3d12/software); the
         // platform default order still picks D3D12 on Windows when unset.
         var renderContext = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
-        renderContext.DefaultRenderingEngine = RenderingEngine.Impeller;
+        // JALIUM_RENDERING_ENGINE=vello switches the demo to the Vello compute
+        // engine; anything else keeps the Impeller default.
+        renderContext.DefaultRenderingEngine =
+            string.Equals(Environment.GetEnvironmentVariable("JALIUM_RENDERING_ENGINE"), "vello",
+                          StringComparison.OrdinalIgnoreCase)
+                ? RenderingEngine.Vello
+                : RenderingEngine.Impeller;
         System.Diagnostics.Debug.WriteLine($"[Demo] step 1: render ctx backend={renderContext.Backend} engine={renderContext.DefaultRenderingEngine}");
 
         var builder = AppBuilder.CreateBuilder(args);
@@ -44,8 +50,15 @@ internal static class Program
             ToastService.SetHost(toastHost);
             System.Diagnostics.Debug.WriteLine("[Demo] step 3c: toast host wired");
 
-            System.Diagnostics.Debug.WriteLine("[Demo] step 3d: building EffectReproWindow...");
-            app.MainWindow = EffectReproWindow.Build();
+            System.Diagnostics.Debug.WriteLine("[Demo] step 3d: building main window...");
+            app.MainWindow =
+                Environment.GetEnvironmentVariable("JALIUM_DEMO_WINDOW")?.ToLowerInvariant() switch
+                {
+                    "vellotest" => VelloTestWindow.Build(),
+                    "pathperf" => PathPerfWindow.Build(),
+                    "hoverprobe" => HoverProbeWindow.Build(),
+                    _ => EffectReproWindow.Build(),
+                };
             System.Diagnostics.Debug.WriteLine($"[Demo] step 3e: MainWindow set, title='{app.MainWindow?.Title}'");
         });
 

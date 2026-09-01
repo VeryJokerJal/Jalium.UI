@@ -97,6 +97,7 @@
     <ClInclude Include="include\d3dx12.h" />
     <ClInclude Include="include\liquid_glass_effects.h" />
     <ClInclude Include="include\transition_shader_effect.h" />
+    <ClInclude Include="include\d3d12_retained_layer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\d3d12_backend.cpp" />
@@ -122,6 +123,28 @@
     <None Include="shaders\rounded_clip.hlsli" />
     <None Include="shaders\sdf_rect.ps.hlsl" />
     <None Include="shaders\sdf_rect.vs.hlsl" />
+    <None Include="shaders\gen_vello_bytecode.ps1" />
+    <None Include="shaders\vello_backdrop.cs.hlsl" />
+    <None Include="shaders\vello_bbox_clear.cs.hlsl" />
+    <None Include="shaders\vello_binning.cs.hlsl" />
+    <None Include="shaders\vello_blend.hlsli" />
+    <None Include="shaders\vello_clip_leaf.cs.hlsl" />
+    <None Include="shaders\vello_clip_reduce.cs.hlsl" />
+    <None Include="shaders\vello_coarse.cs.hlsl" />
+    <None Include="shaders\vello_draw_leaf.cs.hlsl" />
+    <None Include="shaders\vello_draw_reduce.cs.hlsl" />
+    <None Include="shaders\vello_fine.cs.hlsl" />
+    <None Include="shaders\vello_flatten.cs.hlsl" />
+    <None Include="shaders\vello_path_count.cs.hlsl" />
+    <None Include="shaders\vello_path_count_setup.cs.hlsl" />
+    <None Include="shaders\vello_path_tiling.cs.hlsl" />
+    <None Include="shaders\vello_path_tiling_setup.cs.hlsl" />
+    <None Include="shaders\vello_pathtag_reduce.cs.hlsl" />
+    <None Include="shaders\vello_pathtag_reduce2.cs.hlsl" />
+    <None Include="shaders\vello_pathtag_scan.cs.hlsl" />
+    <None Include="shaders\vello_pathtag_scan1.cs.hlsl" />
+    <None Include="shaders\vello_shared.hlsli" />
+    <None Include="shaders\vello_tile_alloc.cs.hlsl" />
     <None Include="..\jalium.native.core\shaders\continuous_corner.hlsli">
       <Link>shaders\continuous_corner.hlsli</Link>
     </None>

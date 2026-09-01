@@ -122,6 +122,16 @@
     <ClInclude Include="include\vulkan_shader_compiler.h" />
     <ClInclude Include="include\vulkan_vello_engine.h" />
     <ClInclude Include="include\vulkan_vello_compute.h" />
+    <ClInclude Include="include\vulkan_bitmap_lcd_shaders.h" />
+    <ClInclude Include="include\vulkan_bitmap_premul_shaders.h" />
+    <ClInclude Include="include\vulkan_effect_builtin_shaders.h" />
+    <ClInclude Include="include\vulkan_impeller_shaders.h" />
+    <ClInclude Include="include\vulkan_ink_composite_shaders.h" />
+    <ClInclude Include="include\vulkan_lcd_staging.h" />
+    <ClInclude Include="include\vulkan_minimal.h" />
+    <ClInclude Include="include\vulkan_triangle_vc_shaders.h" />
+    <ClInclude Include="include\vulkan_vello_composite_shaders.h" />
+    <ClInclude Include="include\vulkan_vello_shaders.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\vulkan_backend.cpp" />
@@ -159,6 +169,10 @@
     <None Include="shaders\transition_quad.vert.hlsl" />
     <None Include="shaders\triangle_fill.frag.hlsl" />
     <None Include="shaders\triangle_fill.vert.hlsl" />
+    <None Include="shaders\gen_vello_composite_spv.ps1" />
+    <None Include="shaders\gen_vello_spv.ps1" />
+    <None Include="shaders\vello_composite.frag.hlsl" />
+    <None Include="shaders\vello_composite.vert.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\jalium.native.core\jalium.native.core.vcxproj">

@@ -49,6 +49,34 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private int _height;
     private const int RenderRecoveryRetryDelayMs = 120;
 
+    /// <summary>
+    /// Whether this popup HWND presents through DirectComposition
+    /// (<c>WS_EX_NOREDIRECTIONBITMAP</c>) instead of the window's own DWM redirection
+    /// surface.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only the D3D12 backend implements the DirectComposition path
+    /// (<c>CreateSwapChainForComposition</c> + <c>DCompositionCreateDevice</c>). Vulkan on
+    /// Windows binds <c>vkCreateWin32SurfaceKHR</c> straight to the HWND and the software
+    /// rasterizer blits to the window DC — both present into the redirection surface.
+    /// </para>
+    /// <para>
+    /// <c>WS_EX_NOREDIRECTIONBITMAP</c> is exactly the style that tells DWM not to allocate
+    /// that surface, so setting it unconditionally left every Vulkan / software popup
+    /// invisible: the HWND existed, was visible, correctly sized and hit-testable, and its
+    /// frames presented without error, but DWM had nothing to composite. User-visible
+    /// symptom: menus and drop-downs that "cannot be opened" under Vulkan.
+    /// </para>
+    /// <para>
+    /// Dropping the style is not enough on its own — a plain redirection surface is
+    /// composited as opaque, which turns everything the frame left transparent (a rounded
+    /// menu's corners) into solid black. <see cref="EnableRedirectionSurfaceAlpha"/>
+    /// restores per-pixel alpha for that path.
+    /// </para>
+    /// </remarks>
+    private bool _useDirectComposition = true;
+
     // Mouse tracking
     private UIElement? _lastMouseOverElement;
     private bool _isMouseTracking;
@@ -132,13 +160,21 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         {
             RegisterPopupWindowClass();
 
+            // WS_EX_NOREDIRECTIONBITMAP only when the backend can actually present
+            // without a redirection surface — see CompositionSurfacePolicy.
+            _useDirectComposition = CompositionSurfacePolicy.BackendSupportsDirectComposition(
+                CompositionSurfacePolicy.ResolveHostBackend(_parentWindow.CurrentRenderBackend));
+
+            uint exStyle = CompositionSurfacePolicy.ApplyRedirectionStyle(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                _useDirectComposition);
+
             // Content declared non-hit-testable (tooltips) must stay transparent to the
             // pointer at the HWND level too. A topmost popup that answers hit tests takes
             // hover away from the owner window the moment it covers the cursor: the owner
             // gets WM_MOUSELEAVE, hides the tooltip, then sees the cursor re-enter and shows
             // it again — an endless flicker near screen edges where the popup is clamped
             // back onto the pointer.
-            uint exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP;
             if (Child is PopupRoot { IsHitTestVisible: false })
             {
                 exStyle |= WS_EX_TRANSPARENT;
@@ -182,12 +218,19 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             throw new InvalidOperationException("Failed to create popup window.");
 
         _popupWindows[_hwnd] = this;
+        if (!_useDirectComposition)
+        {
+            CompositionSurfacePolicy.EnableRedirectionSurfaceAlpha(_hwnd);
+        }
         SubscribeFrameStarting();
 
-        // Create composition render target for per-pixel alpha transparency.
-        // Uses CreateSwapChainForComposition + DirectComposition (WinUI 3 / Avalonia approach).
-        // WS_EX_NOREDIRECTIONBITMAP tells DWM not to allocate a redirection surface;
-        // DirectComposition provides content directly to DWM compositor.
+        // Composition-capable backends (D3D12 on Windows) get per-pixel alpha:
+        // CreateSwapChainForComposition + DirectComposition, with
+        // WS_EX_NOREDIRECTIONBITMAP telling DWM not to allocate a redirection
+        // surface because DirectComposition hands content straight to the
+        // compositor. Backends without that interop (Vulkan / software on
+        // Windows) present into the window's DWM redirection surface instead —
+        // see _useDirectComposition for why the style must NOT be set there.
         try
         {
             EnsureRenderTarget();
@@ -381,6 +424,22 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     #region Rendering
 
+    /// <summary>
+    /// Re-aligns the HWND style with the presentation mode of the backend that is about
+    /// to draw into it. A backend fallback (D3D12 → Vulkan → software) can flip that mode
+    /// under a popup that is already open.
+    /// </summary>
+    private void SyncCompositionWindowStyle(bool useDirectComposition)
+    {
+        if (_useDirectComposition == useDirectComposition)
+        {
+            return;
+        }
+
+        _useDirectComposition = useDirectComposition;
+        CompositionSurfacePolicy.SyncRedirectionStyle(_hwnd, useDirectComposition);
+    }
+
     private void EnsureRenderTarget(bool forceReplaceContext = false)
     {
         lock (_renderLifecycleGate)
@@ -407,6 +466,21 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _renderTarget = null;
 
         var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceReplaceContext);
+
+        if (_platformWindow == null)
+        {
+            // A backend fallback (D3D12 → Vulkan → software) can flip the presentation
+            // mode under a popup that is already open. Re-align the HWND style with the
+            // mode the *current* backend actually supports before building the target,
+            // otherwise the popup silently stops being composited.
+            SyncCompositionWindowStyle(
+                CompositionSurfacePolicy.BackendSupportsDirectComposition(context.Backend));
+        }
+
+        // Always a composition target: it is what asks the backend for a
+        // premultiplied-alpha surface. Whether the HWND carries
+        // WS_EX_NOREDIRECTIONBITMAP is a separate decision — see
+        // _useDirectComposition.
         _renderTarget = _platformWindow != null
             ? context.CreateRenderTarget(
                 _platformWindow.GetSurface(), Math.Max(1, _width), Math.Max(1, _height))

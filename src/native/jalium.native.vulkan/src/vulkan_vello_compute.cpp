@@ -1,63 +1,14 @@
+#include <chrono>
 #include "vulkan_vello_compute.h"
 #include "vulkan_vello_shaders.h"   // kVello<Stage>Spv / ...SpvSize
 
 #include <vector>
 #include <cstring>
 #include <algorithm>
-#include <array>      // clip-bbox stack replay entries
 
 namespace jalium {
 
 namespace {
-
-// GPU-internal struct strides (mirror d3d12_vello.h; these structs are written
-// and read entirely on-GPU so only the byte stride matters here). Compiled with
-// -fvk-use-dx-layout, so these match the SPIR-V StructuredBuffer ArrayStrides
-// exactly (verified: LineSoup 24, VelloPath 20, VelloTile 8, VelloSegment 20,
-// SegmentCount 8, BinHeader 8, PathBbox 24, ClipBic 8, ClipEl 20).
-constexpr uint32_t kLineSoupStride     = 24;
-constexpr uint32_t kVelloPathStride    = 20;
-constexpr uint32_t kVelloTileStride    = 8;
-constexpr uint32_t kVelloSegmentStride = 20;
-constexpr uint32_t kSegCountStride     = 8;
-constexpr uint32_t kBinHeaderStride    = 8;
-constexpr uint32_t kPathBboxStride     = 24;
-constexpr uint32_t kClipBicStride      = 8;
-constexpr uint32_t kClipElStride       = 20;
-constexpr uint32_t kFloat4Stride       = 16;   // intersected_bbox / clip_bbox
-constexpr uint32_t kBumpBytes          = 32;   // BumpAllocators
-
-// Fixed power-of-two capacities (element counts) — bump-allocator-indexed
-// over-allocations, NOT growable. Match D3D12 EnsureGPUBuffers nominal sizes.
-constexpr uint32_t kBinDataCap   = 1u << 18;   // uint
-constexpr uint32_t kTilesCap     = 1u << 21;   // VelloTile
-constexpr uint32_t kSegCountsCap = 1u << 21;   // VelloSegmentCount
-constexpr uint32_t kSegmentsCap  = 1u << 21;   // VelloSegment
-constexpr uint32_t kPtclCap      = 1u << 23;   // uint
-constexpr uint32_t kBlendCap     = 1u << 20;   // reported in config; no buffer (fine stripped it)
-
-// GPU pipeline config (96 bytes, matches HLSL cbuffer VelloConfig / d3d12_vello.h).
-struct VelloConfig {
-    uint32_t width_in_tiles;
-    uint32_t height_in_tiles;
-    uint32_t target_width;
-    uint32_t target_height;
-    uint32_t base_color;
-    uint32_t n_drawobj;
-    uint32_t n_path;
-    uint32_t n_clip;
-    uint32_t bin_data_start;
-    uint32_t lines_size;
-    uint32_t binning_size;
-    uint32_t tiles_size;
-    uint32_t seg_counts_size;
-    uint32_t segments_size;
-    uint32_t blend_size;
-    uint32_t ptcl_size;
-    uint32_t num_segments;
-    uint32_t pad_[7];
-};
-static_assert(sizeof(VelloConfig) == 96, "VelloConfig must be 96 bytes");
 
 using Res = VelloComputePipeline::Res;
 using StageBinding = VelloComputePipeline::StageBinding;
@@ -65,73 +16,94 @@ using StageBinding = VelloComputePipeline::StageBinding;
 constexpr VkDescriptorType UBO = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 constexpr VkDescriptorType SSB = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 constexpr VkDescriptorType SIMG = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-constexpr VkDescriptorType SMPL = VK_DESCRIPTOR_TYPE_SAMPLER;
 constexpr VkDescriptorType STIMG = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
 // Per-stage binding tables. Binding numbers are the register-shifted values
-// emitted by dxc (-fvk-{t,s,u}-shift {16,32,48}); only the bindings that survive
-// -O3 are listed (verified by spirv-dis). The descriptor-set layout for each
-// stage is built EXACTLY from its list, so it matches the loaded SPIR-V.
-const StageBinding kBboxClear[] = {
-    {0, UBO, Res::Config}, {16, SSB, Res::PathInfo}, {48, SSB, Res::PathBbox},
+// emitted by dxc (-fvk-{t,s,u}-shift {16,32,48}); only the bindings that
+// survive -O3 are listed (verified by spirv-dis on the regenerated 0.10.0
+// SPIR-V). The descriptor-set layout for each stage is built EXACTLY from its
+// list, so it matches the loaded module.
+const StageBinding kPathtagReduceB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {48, SSB, Res::Reduced},
 };
-const StageBinding kFlatten[] = {
-    {0, UBO, Res::Config}, {16, SSB, Res::PathSegment},
-    {48, SSB, Res::LineSoup}, {49, SSB, Res::Bump}, {50, SSB, Res::PathBbox},
+const StageBinding kPathtagReduce2B[] = {
+    {16, SSB, Res::Reduced}, {48, SSB, Res::Reduced2},
 };
-const StageBinding kClipReduce[] = {
+const StageBinding kPathtagScan1B[] = {
+    {16, SSB, Res::Reduced}, {17, SSB, Res::Reduced2}, {48, SSB, Res::ReducedScan},
+};
+const StageBinding kPathtagScanB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {17, SSB, Res::ReducedScan},
+    {48, SSB, Res::TagMonoids},
+};
+const StageBinding kBboxClearB[] = {
+    {0, UBO, Res::Config}, {48, SSB, Res::PathBbox},
+};
+const StageBinding kFlattenB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {17, SSB, Res::TagMonoids},
+    {48, SSB, Res::PathBbox}, {49, SSB, Res::Bump}, {50, SSB, Res::LineSoup},
+};
+const StageBinding kDrawReduceB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {48, SSB, Res::DrawReduced},
+};
+const StageBinding kDrawLeafB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {17, SSB, Res::DrawReduced},
+    {18, SSB, Res::PathBbox}, {48, SSB, Res::DrawMonoid}, {49, SSB, Res::InfoBinData},
+    {50, SSB, Res::ClipInp},
+};
+const StageBinding kClipReduceB[] = {
     {16, SSB, Res::ClipInp}, {17, SSB, Res::PathBbox},
     {48, SSB, Res::ClipBic}, {49, SSB, Res::ClipEl},
 };
-const StageBinding kClipLeaf[] = {
+const StageBinding kClipLeafB[] = {
     {0, UBO, Res::Config}, {16, SSB, Res::ClipInp}, {17, SSB, Res::PathBbox},
-    {19, SSB, Res::ClipEl}, {49, SSB, Res::ClipBbox},
+    {18, SSB, Res::ClipBic}, {19, SSB, Res::ClipEl},
+    {48, SSB, Res::DrawMonoid}, {49, SSB, Res::ClipBbox},
 };
-const StageBinding kBinning[] = {
+const StageBinding kBinningB[] = {
     {0, UBO, Res::Config}, {16, SSB, Res::DrawMonoid}, {17, SSB, Res::PathBbox},
-    {18, SSB, Res::ClipBbox}, {48, SSB, Res::Bump}, {49, SSB, Res::IntersectedBbox},
-    {50, SSB, Res::BinData}, {51, SSB, Res::BinHeader},
+    {18, SSB, Res::ClipBbox}, {48, SSB, Res::DrawBbox}, {49, SSB, Res::Bump},
+    {50, SSB, Res::InfoBinData}, {51, SSB, Res::BinHeader},
 };
-const StageBinding kTileAlloc[] = {
-    {0, UBO, Res::Config}, {16, SSB, Res::IntersectedBbox}, {17, SSB, Res::DrawTag},
-    {18, SSB, Res::DrawMonoid},   // t2: paths[] written in PATH index space (see vello_tile_alloc.cs.hlsl)
+const StageBinding kTileAllocB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {17, SSB, Res::DrawBbox},
     {48, SSB, Res::Bump}, {49, SSB, Res::VelloPath}, {50, SSB, Res::VelloTile},
 };
-const StageBinding kPathCountSetup[] = {
-    {48, SSB, Res::Bump}, {49, SSB, Res::Indirect1},
+const StageBinding kPathCountSetupB[] = {
+    {48, SSB, Res::Bump}, {49, SSB, Res::Indirect},
 };
-const StageBinding kPathCount[] = {
+const StageBinding kPathCountB[] = {
     {0, UBO, Res::Config}, {16, SSB, Res::LineSoup}, {17, SSB, Res::VelloPath},
     {48, SSB, Res::Bump}, {49, SSB, Res::VelloTile}, {50, SSB, Res::SegCount},
 };
-const StageBinding kPathTilingSetup[] = {
-    {48, SSB, Res::Bump}, {49, SSB, Res::Indirect2},
+const StageBinding kBackdropB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::VelloPath},
+    {48, SSB, Res::Bump}, {49, SSB, Res::VelloTile},
 };
-const StageBinding kPathTiling[] = {
-    {0, UBO, Res::Config}, {16, SSB, Res::SegCount}, {17, SSB, Res::LineSoup},
-    {18, SSB, Res::VelloPath}, {19, SSB, Res::VelloTile},
-    {48, SSB, Res::Bump}, {49, SSB, Res::VelloSegment},
-};
-const StageBinding kBackdrop[] = {
-    {0, UBO, Res::Config}, {16, SSB, Res::VelloPath}, {48, SSB, Res::VelloTile},
-};
-const StageBinding kCoarse[] = {
-    {0, UBO, Res::Config}, {16, SSB, Res::DrawTag}, {17, SSB, Res::DrawMonoid},
-    {18, SSB, Res::PathDraw}, {19, SSB, Res::BinHeader}, {20, SSB, Res::BinData},
-    {21, SSB, Res::VelloPath}, {22, SSB, Res::PathBbox},
+const StageBinding kCoarseB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {17, SSB, Res::DrawMonoid},
+    {18, SSB, Res::BinHeader}, {19, SSB, Res::InfoBinData}, {20, SSB, Res::VelloPath},
     {48, SSB, Res::VelloTile}, {49, SSB, Res::Bump}, {50, SSB, Res::Ptcl},
 };
-const StageBinding kFine[] = {
+const StageBinding kPathTilingSetupB[] = {
+    {48, SSB, Res::Bump}, {49, SSB, Res::Indirect}, {50, SSB, Res::Ptcl},
+};
+const StageBinding kPathTilingB[] = {
+    {16, SSB, Res::SegCount}, {17, SSB, Res::LineSoup}, {18, SSB, Res::VelloPath},
+    {19, SSB, Res::VelloTile}, {48, SSB, Res::Bump}, {49, SSB, Res::VelloSegment},
+};
+const StageBinding kFineB[] = {
     {0, UBO, Res::Config}, {16, SSB, Res::VelloSegment}, {17, SSB, Res::Ptcl},
-    {18, SSB, Res::GradientRamp}, {20, SIMG, Res::DummyImage},
-    {32, SMPL, Res::Sampler}, {48, STIMG, Res::OutputImage},
+    {18, SSB, Res::InfoBinData}, {19, SIMG, Res::RampImage}, {20, SIMG, Res::DummyImage},
+    {48, SSB, Res::BlendSpill}, {49, STIMG, Res::OutputImage},
 };
 
-// Stage index order — also the dispatch order for the non-indirect stages.
+// Stage index order == dispatch order.
 enum StageIdx : uint32_t {
-    S_BboxClear = 0, S_Flatten, S_ClipReduce, S_ClipLeaf, S_Binning, S_TileAlloc,
-    S_PathCountSetup, S_PathCount, S_Backdrop, S_Coarse, S_PathTilingSetup,
-    S_PathTiling, S_Fine,
+    S_PathtagReduce = 0, S_PathtagReduce2, S_PathtagScan1, S_PathtagScan,
+    S_BboxClear, S_Flatten, S_DrawReduce, S_DrawLeaf, S_ClipReduce, S_ClipLeaf,
+    S_Binning, S_TileAlloc, S_PathCountSetup, S_PathCount, S_Backdrop, S_Coarse,
+    S_PathTilingSetup, S_PathTiling, S_Fine,
 };
 
 struct StageDef {
@@ -144,25 +116,27 @@ struct StageDef {
 #define VVC_STAGE(spv, tbl) { spv, spv##Size, tbl, (uint32_t)(sizeof(tbl) / sizeof(tbl[0])) }
 
 const StageDef kStages[VelloComputePipeline::kStageCount] = {
-    VVC_STAGE(kVelloBboxClearSpv,      kBboxClear),
-    VVC_STAGE(kVelloFlattenSpv,        kFlatten),
-    VVC_STAGE(kVelloClipReduceSpv,     kClipReduce),
-    VVC_STAGE(kVelloClipLeafSpv,       kClipLeaf),
-    VVC_STAGE(kVelloBinningSpv,        kBinning),
-    VVC_STAGE(kVelloTileAllocSpv,      kTileAlloc),
-    VVC_STAGE(kVelloPathCountSetupSpv, kPathCountSetup),
-    VVC_STAGE(kVelloPathCountSpv,      kPathCount),
-    VVC_STAGE(kVelloBackdropSpv,       kBackdrop),
-    VVC_STAGE(kVelloCoarseSpv,         kCoarse),
-    VVC_STAGE(kVelloPathTilingSetupSpv,kPathTilingSetup),
-    VVC_STAGE(kVelloPathTilingSpv,     kPathTiling),
-    VVC_STAGE(kVelloFineSpv,           kFine),
+    VVC_STAGE(kVelloPathtagReduceSpv,  kPathtagReduceB),
+    VVC_STAGE(kVelloPathtagReduce2Spv, kPathtagReduce2B),
+    VVC_STAGE(kVelloPathtagScan1Spv,   kPathtagScan1B),
+    VVC_STAGE(kVelloPathtagScanSpv,    kPathtagScanB),
+    VVC_STAGE(kVelloBboxClearSpv,      kBboxClearB),
+    VVC_STAGE(kVelloFlattenSpv,        kFlattenB),
+    VVC_STAGE(kVelloDrawReduceSpv,     kDrawReduceB),
+    VVC_STAGE(kVelloDrawLeafSpv,       kDrawLeafB),
+    VVC_STAGE(kVelloClipReduceSpv,     kClipReduceB),
+    VVC_STAGE(kVelloClipLeafSpv,       kClipLeafB),
+    VVC_STAGE(kVelloBinningSpv,        kBinningB),
+    VVC_STAGE(kVelloTileAllocSpv,      kTileAllocB),
+    VVC_STAGE(kVelloPathCountSetupSpv, kPathCountSetupB),
+    VVC_STAGE(kVelloPathCountSpv,      kPathCountB),
+    VVC_STAGE(kVelloBackdropSpv,       kBackdropB),
+    VVC_STAGE(kVelloCoarseSpv,         kCoarseB),
+    VVC_STAGE(kVelloPathTilingSetupSpv,kPathTilingSetupB),
+    VVC_STAGE(kVelloPathTilingSpv,     kPathTilingB),
+    VVC_STAGE(kVelloFineSpv,           kFineB),
 };
 #undef VVC_STAGE
-
-constexpr uint32_t kTileSize = 16;
-inline uint32_t DivCeil(uint32_t a, uint32_t b) { return (a + b - 1) / b; }
-inline uint32_t Wg256(uint32_t n) { return (n + 255) / 256; }
 
 // A full COMPUTE->COMPUTE global memory barrier (the analogue of D3D12's UAV
 // barrier between dependent compute stages).
@@ -189,6 +163,20 @@ uint32_t VelloComputePipeline::FindMemoryType(uint32_t typeFilter,
     }
     return UINT32_MAX;
 }
+
+namespace {
+uint64_t g_vkRecMicros = 0;
+uint64_t g_vkRecCount = 0;
+struct VkRecTimer {
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    ~VkRecTimer() {
+        g_vkRecMicros += (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - t0)
+                             .count();
+        g_vkRecCount++;
+    }
+};
+}  // namespace
 
 bool VelloComputePipeline::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                         VkMemoryPropertyFlags memProps, GpuBuffer& out) {
@@ -250,9 +238,7 @@ bool VelloComputePipeline::EnsureBuffer(GpuBuffer& buf, VkDeviceSize bytes,
     if (buf.buffer && buf.capacity >= bytes) return true;
 
     // Build first: an allocation/bind/map failure must leave the live
-    // generation completely untouched. Shared buffers cannot be destroyed at
-    // this point because the other in-flight slot may still execute descriptors
-    // that reference them.
+    // generation completely untouched.
     GpuBuffer candidate{};
     if (!CreateBuffer(bytes, usage, memProps, candidate)) {
         DestroyBuffer(candidate);
@@ -277,7 +263,7 @@ bool VelloComputePipeline::EnsureBuffer(GpuBuffer& buf, VkDeviceSize bytes,
     return true;
 }
 
-void VelloComputePipeline::DestroyOutputImage(RetiredOutputImage& image) {
+void VelloComputePipeline::DestroyRetiredImage(RetiredImage& image) {
     if (image.view)   destroyImageView_(device_, image.view, nullptr);
     if (image.image)  destroyImage_(device_, image.image, nullptr);
     if (image.memory) freeMemory_(device_, image.memory, nullptr);
@@ -333,24 +319,28 @@ bool VelloComputePipeline::Initialize(VkDevice device, VkPhysicalDevice physical
     cmdPipelineBarrier_         = (PFN_vkCmdPipelineBarrier)        need(load("vkCmdPipelineBarrier"));
     cmdFillBuffer_              = (PFN_vkCmdFillBuffer)             need(load("vkCmdFillBuffer"));
     cmdClearColorImage_         = (PFN_vkCmdClearColorImage)        need(load("vkCmdClearColorImage"));
+    cmdCopyBufferToImage_       = (PFN_vkCmdCopyBufferToImage)      need(load("vkCmdCopyBufferToImage"));
     if (!ok) return false;
 
     if (!CreatePipelines()) return false;
     if (!CreateOutputSampler()) return false;
     if (!CreateDummyImage()) return false;
 
-    // Per-frame transient descriptor pools.
+    // Per-frame transient descriptor pools. Each Record allocates a fresh
+    // 19-set group (the pool is reset once per frame in PrepareFrameSlot, so
+    // groups from earlier sub-scenes of the SAME frame stay valid while their
+    // GPU reads are still queued); size everything for kMaxRecordsPerFrame
+    // groups.
     VkDescriptorPoolSize poolSizes[] = {
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 80 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16 },
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   2 },
-        { VK_DESCRIPTOR_TYPE_SAMPLER,         2 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,   2 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128 * kMaxRecordsPerFrame },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,  24 * kMaxRecordsPerFrame },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    4 * kMaxRecordsPerFrame },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    4 * kMaxRecordsPerFrame },
     };
     for (uint32_t f = 0; f < kFramesInFlight; ++f) {
         VkDescriptorPoolCreateInfo pi{};
         pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pi.maxSets = kStageCount;
+        pi.maxSets = kStageCount * kMaxRecordsPerFrame;
         pi.poolSizeCount = (uint32_t)(sizeof(poolSizes) / sizeof(poolSizes[0]));
         pi.pPoolSizes = poolSizes;
         if (createDescriptorPool_(device_, &pi, nullptr, &descriptorPools_[f]) != VK_SUCCESS) {
@@ -358,19 +348,12 @@ bool VelloComputePipeline::Initialize(VkDevice device, VkPhysicalDevice physical
         }
     }
 
-    // Fixed device-local scratch buffers that never change size.
     const VkBufferUsageFlags storageDst =
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     const VkMemoryPropertyFlags devLocal = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    if (!CreateBuffer(kBumpBytes, storageDst, devLocal, bump_)) return false;
-    if (!CreateBuffer((VkDeviceSize)kBinDataCap * 4, storageDst, devLocal, binData_)) return false;
-    if (!CreateBuffer((VkDeviceSize)kTilesCap * kVelloTileStride, storageDst, devLocal, velloTile_)) return false;
-    if (!CreateBuffer((VkDeviceSize)kSegCountsCap * kSegCountStride, storageDst, devLocal, segCount_)) return false;
-    if (!CreateBuffer((VkDeviceSize)kSegmentsCap * kVelloSegmentStride, storageDst, devLocal, velloSegment_)) return false;
-    if (!CreateBuffer((VkDeviceSize)kPtclCap * 4, storageDst, devLocal, ptcl_)) return false;
+    if (!CreateBuffer(sizeof(VelloBumpAllocators), storageDst, devLocal, bump_)) return false;
     const VkBufferUsageFlags indirectUsage = storageDst | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    if (!CreateBuffer(64, indirectUsage, devLocal, indirect1_)) return false;
-    if (!CreateBuffer(64, indirectUsage, devLocal, indirect2_)) return false;
+    if (!CreateBuffer(64, indirectUsage, devLocal, indirect_)) return false;
 
     ready_ = true;
     return true;
@@ -431,7 +414,6 @@ bool VelloComputePipeline::CreateOutputSampler() {
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     si.maxLod = VK_LOD_CLAMP_NONE;
     if (createSampler_(device_, &si, nullptr, &outputSampler_) != VK_SUCCESS) return false;
-    // A second sampler bound to the fine stage's image-atlas slot (unused in v1).
     if (createSampler_(device_, &si, nullptr, &dummySampler_) != VK_SUCCESS) return false;
     return true;
 }
@@ -479,14 +461,13 @@ bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height,
 
     // Transactional replacement: keep the current output (and every descriptor
     // that references it) valid unless the complete image+memory+view candidate
-    // succeeds. The old generation is then retired to the only slot that can
-    // still be executing it.
-    RetiredOutputImage candidate{};
+    // succeeds.
+    RetiredImage candidate{};
 
     VkImageCreateInfo ii{};
     ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ii.imageType = VK_IMAGE_TYPE_2D;
-    ii.format = VK_FORMAT_R32G32B32A32_SFLOAT;   // fine writes RWTexture2D<float4> (Rgba32f)
+    ii.format = VK_FORMAT_R8G8B8A8_UNORM;   // fine writes premultiplied RGBA8
     ii.extent = { width, height, 1 };
     ii.mipLevels = 1;
     ii.arrayLayers = 1;
@@ -497,7 +478,7 @@ bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height,
     ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (createImage_(device_, &ii, nullptr, &candidate.image) != VK_SUCCESS) {
-        DestroyOutputImage(candidate);
+        DestroyRetiredImage(candidate);
         return false;
     }
 
@@ -505,7 +486,7 @@ bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height,
     getImageMemoryRequirements_(device_, candidate.image, &req);
     uint32_t typeIdx = FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (typeIdx == UINT32_MAX) {
-        DestroyOutputImage(candidate);
+        DestroyRetiredImage(candidate);
         return false;
     }
     VkMemoryAllocateInfo ai{};
@@ -513,11 +494,11 @@ bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height,
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = typeIdx;
     if (allocateMemory_(device_, &ai, nullptr, &candidate.memory) != VK_SUCCESS) {
-        DestroyOutputImage(candidate);
+        DestroyRetiredImage(candidate);
         return false;
     }
     if (bindImageMemory_(device_, candidate.image, candidate.memory, 0) != VK_SUCCESS) {
-        DestroyOutputImage(candidate);
+        DestroyRetiredImage(candidate);
         return false;
     }
 
@@ -525,24 +506,24 @@ bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height,
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vi.image = candidate.image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    vi.format = VK_FORMAT_R8G8B8A8_UNORM;
     vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     if (createImageView_(device_, &vi, nullptr, &candidate.view) != VK_SUCCESS) {
-        DestroyOutputImage(candidate);
+        DestroyRetiredImage(candidate);
         return false;
     }
 
     if (outputImage_ || outputMemory_ || outputView_) {
-        RetiredOutputImage old{ outputImage_, outputMemory_, outputView_ };
+        RetiredImage old{ outputImage_, outputMemory_, outputView_ };
         if (retireSlot < kFramesInFlight) {
             try {
-                retiredOutputImages_[retireSlot].push_back(old);
+                retiredImages_[retireSlot].push_back(old);
             } catch (...) {
-                DestroyOutputImage(candidate);
+                DestroyRetiredImage(candidate);
                 return false;
             }
         } else {
-            DestroyOutputImage(old);
+            DestroyRetiredImage(old);
         }
     }
 
@@ -555,229 +536,314 @@ bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height,
     return true;
 }
 
-bool VelloComputePipeline::EnsureScratch(const VelloScene& scene,
-                                         uint32_t retireSlot) {
-    const VkBufferUsageFlags storageDst =
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    const VkMemoryPropertyFlags devLocal = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+bool VelloComputePipeline::EnsureRampImage(uint32_t rows, uint32_t retireSlot) {
+    if (rows == 0) rows = 1;
+    if (rampImage_ && rampRows_ >= rows) return true;
 
-    const uint32_t numPaths     = std::max<uint32_t>(scene.numPaths, 1);
-    const uint32_t numSegs      = std::max<uint32_t>((uint32_t)scene.segments.size(), 1);
-    const uint32_t numDrawObjs  = std::max<uint32_t>(scene.numDrawObjs, 1);
-    const uint32_t numClipOps   = std::max<uint32_t>(scene.numClipOps, 1);
-    const uint32_t tilesX       = DivCeil(scene.viewportW, kTileSize);
-    const uint32_t tilesY       = DivCeil(scene.viewportH, kTileSize);
-    const uint32_t numBins      = std::max<uint32_t>(DivCeil(tilesX, 16) * DivCeil(tilesY, 16), 1);
-    const uint32_t clipWgs      = std::max<uint32_t>(Wg256(numClipOps), 1);
+    uint32_t newRows = std::max(rows, std::max(rampRows_ * 2, 4u));
 
-    bool ok = true;
-    ok &= EnsureBuffer(pathBbox_,        (VkDeviceSize)numPaths * kPathBboxStride,         storageDst, devLocal, retireSlot);
-    ok &= EnsureBuffer(lineSoup_,        (VkDeviceSize)numSegs * 64 * kLineSoupStride,     storageDst, devLocal, retireSlot);
-    ok &= EnsureBuffer(intersectedBbox_, (VkDeviceSize)numDrawObjs * kFloat4Stride,        storageDst, devLocal, retireSlot);
-    // clipBic_/clipEl_ back the retained (never-dispatched) clip_reduce /
-    // clip_leaf descriptor sets — kept so the PSOs stay bindable, mirroring
-    // D3D12 which retains its clip PSOs + Bic/ClipEl buffers. The clip bboxes
-    // themselves are CPU-replayed and uploaded per frame (see UploadInputs).
-    ok &= EnsureBuffer(clipBic_,         (VkDeviceSize)clipWgs * kClipBicStride,           storageDst, devLocal, retireSlot);
-    ok &= EnsureBuffer(clipEl_,          (VkDeviceSize)numClipOps * kClipElStride,         storageDst, devLocal, retireSlot);
-    ok &= EnsureBuffer(binHeader_,       (VkDeviceSize)numBins * 256 * kBinHeaderStride,   storageDst, devLocal, retireSlot);
-    ok &= EnsureBuffer(velloPath_,       (VkDeviceSize)numDrawObjs * kVelloPathStride,     storageDst, devLocal, retireSlot);
-    return ok;
-}
+    RetiredImage candidate{};
+    VkImageCreateInfo ii{};
+    ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ii.extent = { kVelloRampWidth, newRows, 1 };
+    ii.mipLevels = 1;
+    ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (createImage_(device_, &ii, nullptr, &candidate.image) != VK_SUCCESS) {
+        DestroyRetiredImage(candidate);
+        return false;
+    }
+    VkMemoryRequirements req{};
+    getImageMemoryRequirements_(device_, candidate.image, &req);
+    uint32_t typeIdx = FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (typeIdx == UINT32_MAX) {
+        DestroyRetiredImage(candidate);
+        return false;
+    }
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = typeIdx;
+    if (allocateMemory_(device_, &ai, nullptr, &candidate.memory) != VK_SUCCESS) {
+        DestroyRetiredImage(candidate);
+        return false;
+    }
+    if (bindImageMemory_(device_, candidate.image, candidate.memory, 0) != VK_SUCCESS) {
+        DestroyRetiredImage(candidate);
+        return false;
+    }
+    VkImageViewCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = candidate.image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    if (createImageView_(device_, &vi, nullptr, &candidate.view) != VK_SUCCESS) {
+        DestroyRetiredImage(candidate);
+        return false;
+    }
 
-bool VelloComputePipeline::UploadInputs(const VelloScene& scene, uint32_t frameIdx) {
-    const VkBufferUsageFlags hostStorage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    const VkBufferUsageFlags hostUbo     = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    const VkMemoryPropertyFlags hostVis =
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-    auto upload = [&](GpuBuffer& buf, const void* data, size_t bytes, VkBufferUsageFlags usage) -> bool {
-        if (!EnsureBuffer(buf, std::max<size_t>(bytes, 256), usage, hostVis)) return false;
-        if (bytes && data) std::memcpy(buf.mapped, data, bytes);
-        return true;
-    };
-
-    // VelloConfig — built here (capacities are a container concern, not the encoder's).
-    const uint32_t tilesX = DivCeil(scene.viewportW, kTileSize);
-    const uint32_t tilesY = DivCeil(scene.viewportH, kTileSize);
-    const uint32_t numSegs = (uint32_t)scene.segments.size();
-    const uint32_t lineSoupCap = std::max<uint32_t>(numSegs, 1) * 64;
-
-    VelloConfig cfg{};
-    cfg.width_in_tiles  = tilesX;
-    cfg.height_in_tiles = tilesY;
-    cfg.target_width    = scene.viewportW;
-    cfg.target_height   = scene.viewportH;
-    cfg.base_color      = 0;                       // transparent
-    cfg.n_drawobj       = scene.numDrawObjs;
-    cfg.n_path          = scene.numPaths;
-    cfg.n_clip          = scene.numClipOps;
-    cfg.bin_data_start  = 0;
-    cfg.lines_size      = lineSoupCap;
-    cfg.binning_size    = kBinDataCap;
-    cfg.tiles_size      = kTilesCap;
-    cfg.seg_counts_size = kSegCountsCap;
-    cfg.segments_size   = kSegmentsCap;
-    cfg.blend_size      = kBlendCap;
-    cfg.ptcl_size       = kPtclCap;
-    cfg.num_segments    = numSegs;
-
-    // ── CPU stack replay of the FULL Vello clip_bbox semantics (D3D12 parity) ──
-    // Replaces the clip_reduce/clip_leaf GPU stages, whose simplified EndClip
-    // branch wrote `self ∩ parent` instead of "revert to the PARENT context":
-    // draw objects encoded after a closed clip pair index that pair's End entry
-    // via clip_ix-1 in binning, so the wrong value permanently clipped
-    // everything after the first pair to the first pair's rect (with the
-    // scissor realized as a clip, the second scissor group of a frame vanished
-    // — reproduced + fix-verified on a D3D12 WARP device; the Vulkan production
-    // path hits the same encoder-emitted scissor Begin/EndClip pairs).
-    //   BeginClip entry: running-intersection ∩ own path bbox (nested clips
-    //                    tighten — also fixes the old Begin branch which
-    //                    ignored ancestors);
-    //   EndClip entry:   the restored parent context (top level = infinite).
-    // Bboxes come from PathDraw (the encoder's exact float bbox — the same
-    // source the coarse/fine pipeline draws with). scene.drawMonoids already
-    // carries the EndClip path_ix fixup (VelloSceneEncoder::Finalize).
-    std::vector<float> clipBboxData;
-    if (scene.numClipOps > 0) {
-        clipBboxData.resize((size_t)scene.numClipOps * 4);
-        uint32_t clipIdx = 0;
-        std::vector<std::array<float, 4>> clipBboxStack;   // saved parent contexts
-        float curClip[4] = { -1e9f, -1e9f, 1e9f, 1e9f };   // running intersection
-        const uint32_t n = (uint32_t)scene.drawTags.size();
-        for (uint32_t i = 0; i < n && clipIdx < scene.numClipOps; ++i) {
-            const uint32_t tag = scene.drawTags[i].tag;
-            if (tag == kDrawTagBeginClip) {
-                clipBboxStack.push_back({ curClip[0], curClip[1], curClip[2], curClip[3] });
-                const uint32_t pathIx = (i < scene.drawMonoids.size())
-                    ? scene.drawMonoids[i].path_ix : 0u;
-                if (pathIx < scene.pathDraws.size()) {
-                    const PathDraw& pd = scene.pathDraws[pathIx];
-                    curClip[0] = std::max(curClip[0], pd.bboxMinX);
-                    curClip[1] = std::max(curClip[1], pd.bboxMinY);
-                    curClip[2] = std::min(curClip[2], pd.bboxMaxX);
-                    curClip[3] = std::min(curClip[3], pd.bboxMaxY);
-                }
-                float* cb = &clipBboxData[(size_t)clipIdx * 4];
-                cb[0] = curClip[0]; cb[1] = curClip[1];
-                cb[2] = curClip[2]; cb[3] = curClip[3];
-                ++clipIdx;
-            } else if (tag == kDrawTagEndClip) {
-                if (!clipBboxStack.empty()) {
-                    const auto& parent = clipBboxStack.back();
-                    curClip[0] = parent[0]; curClip[1] = parent[1];
-                    curClip[2] = parent[2]; curClip[3] = parent[3];
-                    clipBboxStack.pop_back();
-                } else {
-                    curClip[0] = -1e9f; curClip[1] = -1e9f;
-                    curClip[2] = 1e9f;  curClip[3] = 1e9f;
-                }
-                float* cb = &clipBboxData[(size_t)clipIdx * 4];
-                cb[0] = curClip[0]; cb[1] = curClip[1];
-                cb[2] = curClip[2]; cb[3] = curClip[3];
-                ++clipIdx;
+    if (rampImage_ || rampMemory_ || rampView_) {
+        RetiredImage old{ rampImage_, rampMemory_, rampView_ };
+        if (retireSlot < kFramesInFlight) {
+            try {
+                retiredImages_[retireSlot].push_back(old);
+            } catch (...) {
+                DestroyRetiredImage(candidate);
+                return false;
             }
+        } else {
+            DestroyRetiredImage(old);
         }
     }
 
+    rampImage_ = candidate.image;
+    rampMemory_ = candidate.memory;
+    rampView_ = candidate.view;
+    rampRows_ = newRows;
+    rampImageInitialized_ = false;
+    return true;
+}
+
+bool VelloComputePipeline::EnsureScratch(const VelloRenderInfo& ri, uint32_t retireSlot) {
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkMemoryPropertyFlags devLocal = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     bool ok = true;
-    ok &= upload(config_[frameIdx],      &cfg, sizeof(cfg), hostUbo);
-    ok &= upload(pathSegment_[frameIdx], scene.segments.data(),  scene.segments.size()  * sizeof(PathSegment),     hostStorage);
-    ok &= upload(pathInfo_[frameIdx],    scene.pathInfos.data(), scene.pathInfos.size() * sizeof(PathInfo),        hostStorage);
-    ok &= upload(pathDraw_[frameIdx],    scene.pathDraws.data(), scene.pathDraws.size() * sizeof(PathDraw),        hostStorage);
-    ok &= upload(drawTag_[frameIdx],     scene.drawTags.data(),  scene.drawTags.size()  * sizeof(DrawTag),         hostStorage);
-    ok &= upload(drawMonoid_[frameIdx],  scene.drawMonoids.data(), scene.drawMonoids.size() * sizeof(VelloDrawMonoid), hostStorage);
-    ok &= upload(clipInp_[frameIdx],     scene.clipInps.data(),  scene.clipInps.size()  * sizeof(VelloClipInp),    hostStorage);
-    ok &= upload(clipBbox_[frameIdx],    clipBboxData.data(),    clipBboxData.size()    * sizeof(float),           hostStorage);
-    ok &= upload(gradientRamp_[frameIdx],scene.gradientRamps.data(), scene.gradientRamps.size() * sizeof(uint32_t),hostStorage);
+    auto ensure = [&](GpuBuffer& b, uint64_t bytes) {
+        ok = ok && EnsureBuffer(b, bytes, storage, devLocal, retireSlot);
+    };
+    ensure(reduced_, (uint64_t)ri.reducedSize * kVelloStrideTagMonoid);
+    ensure(reduced2_, (uint64_t)ri.reduced2Size * kVelloStrideTagMonoid);
+    ensure(reducedScan_, (uint64_t)ri.reducedScanSize * kVelloStrideTagMonoid);
+    ensure(tagMonoids_, (uint64_t)ri.tagMonoidsSize * kVelloStrideTagMonoid);
+    ensure(pathBbox_, (uint64_t)ri.pathBboxSize * kVelloStridePathBbox);
+    ensure(lineSoup_, (uint64_t)ri.lineSoupSize * kVelloStrideLineSoup);
+    ensure(drawReduced_, (uint64_t)ri.drawReducedSize * kVelloStrideDrawMonoid);
+    ensure(drawMonoid_, (uint64_t)ri.drawMonoidSize * kVelloStrideDrawMonoid);
+    ensure(infoBinData_, (uint64_t)ri.infoBinDataSize * 4);
+    ensure(clipInp_, (uint64_t)ri.clipInpSize * kVelloStrideClipInp);
+    ensure(clipBic_, (uint64_t)ri.clipBicSize * kVelloStrideClipBic);
+    ensure(clipEl_, (uint64_t)ri.clipElSize * kVelloStrideClipEl);
+    ensure(clipBbox_, (uint64_t)ri.clipBboxSize * kVelloStrideClipBbox);
+    ensure(drawBbox_, (uint64_t)ri.drawBboxSize * kVelloStrideDrawBbox);
+    ensure(binHeader_, (uint64_t)ri.binHeaderSize * kVelloStrideBinHeader);
+    ensure(velloPath_, (uint64_t)ri.pathSize * kVelloStridePath);
+    ensure(velloTile_, (uint64_t)ri.tileSize * kVelloStrideTile);
+    ensure(segCount_, (uint64_t)ri.segCountSize * kVelloStrideSegCount);
+    ensure(velloSegment_, (uint64_t)ri.segmentSize * kVelloStrideSegment);
+    ensure(ptcl_, (uint64_t)ri.ptclSize * 4);
+    ensure(blendSpill_, (uint64_t)ri.blendSpillSize * 4);
     return ok;
 }
 
-VkBuffer VelloComputePipeline::BufferForRes(Res res, uint32_t f) const {
-    switch (res) {
-        case Res::Config:          return config_[f].buffer;
-        case Res::PathSegment:     return pathSegment_[f].buffer;
-        case Res::PathInfo:        return pathInfo_[f].buffer;
-        case Res::PathDraw:        return pathDraw_[f].buffer;
-        case Res::DrawTag:         return drawTag_[f].buffer;
-        case Res::DrawMonoid:      return drawMonoid_[f].buffer;
-        case Res::ClipInp:         return clipInp_[f].buffer;
-        case Res::ClipBbox:        return clipBbox_[f].buffer;   // CPU-replayed, uploaded per frame
-        case Res::GradientRamp:    return gradientRamp_[f].buffer;
-        case Res::Bump:            return bump_.buffer;
-        case Res::PathBbox:        return pathBbox_.buffer;
-        case Res::LineSoup:        return lineSoup_.buffer;
-        case Res::IntersectedBbox: return intersectedBbox_.buffer;
-        case Res::ClipBic:         return clipBic_.buffer;
-        case Res::ClipEl:          return clipEl_.buffer;
-        case Res::BinHeader:       return binHeader_.buffer;
-        case Res::BinData:         return binData_.buffer;
-        case Res::VelloPath:       return velloPath_.buffer;
-        case Res::VelloTile:       return velloTile_.buffer;
-        case Res::SegCount:        return segCount_.buffer;
-        case Res::VelloSegment:    return velloSegment_.buffer;
-        case Res::Ptcl:            return ptcl_.buffer;
-        case Res::Indirect1:       return indirect1_.buffer;
-        case Res::Indirect2:       return indirect2_.buffer;
-        default:                   return VK_NULL_HANDLE;
+void VelloComputePipeline::RetireInputsForReuse(uint32_t frameIdx, uint32_t retireSlot,
+                                                bool willUploadRamps) {
+    if (frameIdx >= kFramesInFlight || recordsThisFrame_[frameIdx] == 0) return;
+    auto retire = [&](GpuBuffer& b) {
+        if (b.buffer == VK_NULL_HANDLE && b.memory == VK_NULL_HANDLE) return;
+        if (retireSlot < kFramesInFlight) {
+            try {
+                retiredBuffers_[retireSlot].push_back(b);
+                b = GpuBuffer{};
+                return;
+            } catch (...) {
+                // fall through to immediate destroy — never leave b dangling
+            }
+        }
+        DestroyBuffer(b);
+    };
+    // scene/config/ramp staging now live in the per-slot arena (fresh slices
+    // per Record) -- nothing to retire here; the arena itself is reset per
+    // frame in PrepareFrameSlot and retired wholesale on growth.
+    (void)retire;
+    // The ramp IMAGE is also rewritten in place by the upload copy: retiring
+    // it forces EnsureRampImage to build a fresh one, so the earlier
+    // sub-scene's queued fine reads keep their texels. Skip when this
+    // sub-scene has no ramps — with no gradient draws it never samples the
+    // image, and the stale binding is harmless.
+    if (willUploadRamps && rampImage_ != VK_NULL_HANDLE) {
+        RetiredImage old{ rampImage_, rampMemory_, rampView_ };
+        if (retireSlot < kFramesInFlight) {
+            try {
+                retiredImages_[retireSlot].push_back(old);
+                old = RetiredImage{};
+            } catch (...) {
+            }
+        }
+        if (old.image != VK_NULL_HANDLE || old.memory != VK_NULL_HANDLE ||
+            old.view != VK_NULL_HANDLE) {
+            DestroyRetiredImage(old);
+        }
+        rampImage_ = VK_NULL_HANDLE;
+        rampMemory_ = VK_NULL_HANDLE;
+        rampView_ = VK_NULL_HANDLE;
+        rampRows_ = 0;
+        rampImageInitialized_ = false;
     }
 }
 
-bool VelloComputePipeline::BuildDescriptorSets(uint32_t frameIdx, const VelloScene& scene) {
-    // PrepareFrameSlot already reset this exact pool after its fence. Keeping
-    // reset at that single boundary is important: it is also the proof that
-    // retired shared generations may be released before Record starts.
+bool VelloComputePipeline::ArenaAlloc(uint32_t frameIdx, VkDeviceSize bytes,
+                                      VkDeviceSize& outOffset) {
+    FrameArena& a = arena_[frameIdx % kFramesInFlight];
+    VkDeviceSize off = ((a.cursor + kArenaAlign - 1) / kArenaAlign) * kArenaAlign;
+    if (a.buf.buffer == VK_NULL_HANDLE || off + bytes > a.buf.capacity) {
+        const VkDeviceSize kMinArena = 1048576;
+        VkDeviceSize want = off + bytes;
+        if (want < kMinArena) want = kMinArena;
+        VkDeviceSize newCap = a.buf.capacity ? a.buf.capacity : kMinArena;
+        while (newCap < want) newCap = newCap * 2;
+        // Retire the old arena into THIS slot: earlier sub-scenes of this
+        // frame recorded descriptor sets / copies against it.
+        if (!EnsureBuffer(a.buf, newCap,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                              VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          frameIdx % kFramesInFlight)) {
+            return false;
+        }
+        off = 0;
+        a.cursor = 0;
+    }
+    outOffset = off;
+    a.cursor = off + bytes;
+    return true;
+}
+
+bool VelloComputePipeline::UploadInputs(const VelloSubScene& sub, uint32_t frameIdx) {
+    // One bump allocation per input from the per-slot arena -- no per-Record
+    // buffer creation (2-3 vkAllocateMemory x ~55 sub-scenes made EndDraw the
+    // scrolling bottleneck). The slices' offsets feed the descriptor writes
+    // (scene / config) and the ramp copy (bufferOffset).
+    const uint64_t sceneBytes4 = (uint64_t)sub.packed.data.size() * 4;
+    const uint64_t sceneBytes = sceneBytes4 > 256 ? sceneBytes4 : 256;
+    const uint64_t rampBytes = (uint64_t)sub.rampData.size() * 4;
+    if (!ArenaAlloc(frameIdx, sceneBytes, curSceneOffset_)) return false;
+    if (!ArenaAlloc(frameIdx, 256, curConfigOffset_)) return false;
+    if (rampBytes > 0) {
+        if (!ArenaAlloc(frameIdx, rampBytes, curRampOffset_)) return false;
+    } else {
+        curRampOffset_ = 0;
+    }
+    curSceneRange_ = sceneBytes;
+
+    FrameArena& a = arena_[frameIdx % kFramesInFlight];
+    if (!a.buf.mapped) return false;
+    uint8_t* base = static_cast<uint8_t*>(a.buf.mapped);
+    std::memcpy(base + curSceneOffset_, sub.packed.data.data(), (size_t)sceneBytes4);
+    std::memset(base + curConfigOffset_, 0, 256);
+    std::memcpy(base + curConfigOffset_, &sub.ri.config, sizeof(VelloConfig));
+    if (rampBytes > 0) {
+        std::memcpy(base + curRampOffset_, sub.rampData.data(), (size_t)rampBytes);
+    }
+    return true;
+}
+
+VkBuffer VelloComputePipeline::BufferForRes(Res res, uint32_t frameIdx) const {
+    switch (res) {
+        case Res::Config:       return config_[frameIdx].buffer;
+        case Res::Scene:        return scene_[frameIdx].buffer;
+        case Res::Bump:         return bump_.buffer;
+        case Res::Reduced:      return reduced_.buffer;
+        case Res::Reduced2:     return reduced2_.buffer;
+        case Res::ReducedScan:  return reducedScan_.buffer;
+        case Res::TagMonoids:   return tagMonoids_.buffer;
+        case Res::PathBbox:     return pathBbox_.buffer;
+        case Res::LineSoup:     return lineSoup_.buffer;
+        case Res::DrawReduced:  return drawReduced_.buffer;
+        case Res::DrawMonoid:   return drawMonoid_.buffer;
+        case Res::InfoBinData:  return infoBinData_.buffer;
+        case Res::ClipInp:      return clipInp_.buffer;
+        case Res::ClipBic:      return clipBic_.buffer;
+        case Res::ClipEl:       return clipEl_.buffer;
+        case Res::ClipBbox:     return clipBbox_.buffer;
+        case Res::DrawBbox:     return drawBbox_.buffer;
+        case Res::BinHeader:    return binHeader_.buffer;
+        case Res::VelloPath:    return velloPath_.buffer;
+        case Res::VelloTile:    return velloTile_.buffer;
+        case Res::SegCount:     return segCount_.buffer;
+        case Res::VelloSegment: return velloSegment_.buffer;
+        case Res::Ptcl:         return ptcl_.buffer;
+        case Res::BlendSpill:   return blendSpill_.buffer;
+        case Res::Indirect:     return indirect_.buffer;
+        default:                return VK_NULL_HANDLE;
+    }
+}
+
+bool VelloComputePipeline::BuildDescriptorSets(uint32_t frameIdx, const VelloRenderInfo& ri,
+                                               uint32_t sceneWords) {
+    (void)ri;
+    (void)sceneWords;
+    // NO pool reset here: the pool is reset once per frame in PrepareFrameSlot.
+    // Resetting per Record would invalidate the descriptor groups of earlier
+    // sub-scenes in the SAME frame whose GPU reads are still queued in this
+    // command buffer. Each call just allocates a fresh 19-set group.
+
     VkDescriptorSetLayout layouts[kStageCount];
     for (uint32_t s = 0; s < kStageCount; ++s) layouts[s] = setLayouts_[s];
+
     VkDescriptorSetAllocateInfo ai{};
     ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     ai.descriptorPool = descriptorPools_[frameIdx];
     ai.descriptorSetCount = kStageCount;
     ai.pSetLayouts = layouts;
-    if (allocateDescriptorSets_(device_, &ai, stageSets_) != VK_SUCCESS) return false;
+    if (allocateDescriptorSets_(device_, &ai, stageSets_) != VK_SUCCESS) {
+        return false;
+    }
 
-    const bool hasClips = scene.numClipOps > 0;
-
-    // Reused storage for the descriptor writes (stable addresses required until
-    // the updateDescriptorSets call).
+    std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorBufferInfo> bufInfos;
-    std::vector<VkDescriptorImageInfo>  imgInfos;
-    std::vector<VkWriteDescriptorSet>   writes;
-    bufInfos.reserve(96); imgInfos.reserve(8); writes.reserve(96);
+    std::vector<VkDescriptorImageInfo> imgInfos;
+    writes.reserve(kStageCount * 10);
+    bufInfos.reserve(kStageCount * 10);
+    imgInfos.reserve(8);
 
     for (uint32_t s = 0; s < kStageCount; ++s) {
         const StageDef& def = kStages[s];
         for (uint32_t i = 0; i < def.bindingCount; ++i) {
-            const StageBinding& b = def.bindings[i];
+            const StageBinding& sb = def.bindings[i];
             VkWriteDescriptorSet w{};
             w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w.dstSet = stageSets_[s];
-            w.dstBinding = b.binding;
+            w.dstBinding = sb.binding;
             w.descriptorCount = 1;
-            w.descriptorType = b.type;
-
-            if (b.type == SIMG || b.type == STIMG || b.type == SMPL) {
+            w.descriptorType = sb.type;
+            if (sb.type == SIMG || sb.type == STIMG) {
                 VkDescriptorImageInfo ii{};
-                if (b.res == Res::OutputImage) {
-                    ii.imageView = outputView_;
-                    ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                } else if (b.res == Res::DummyImage) {
+                if (sb.res == Res::RampImage) {
+                    ii.imageView = rampView_;
+                    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                } else if (sb.res == Res::DummyImage) {
                     ii.imageView = dummyView_;
                     ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                } else { // Sampler
-                    ii.sampler = dummySampler_;
+                } else {  // OutputImage
+                    ii.imageView = outputView_;
+                    ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
                 }
                 imgInfos.push_back(ii);
                 w.pImageInfo = &imgInfos.back();
             } else {
-                Res res = b.res;
-                // Mirror D3D12: when there are no clips, binning reads a dummy
-                // for clip_bbox (the CPU replay uploaded nothing this frame).
-                if (res == Res::ClipBbox && !hasClips) res = Res::IntersectedBbox;
                 VkDescriptorBufferInfo bi{};
-                bi.buffer = BufferForRes(res, frameIdx);
-                bi.offset = 0;
-                bi.range = VK_WHOLE_SIZE;
+                if (sb.res == Res::Scene) {
+                    bi.buffer = arena_[frameIdx % kFramesInFlight].buf.buffer;
+                    bi.offset = curSceneOffset_;
+                    bi.range = curSceneRange_;
+                } else if (sb.res == Res::Config) {
+                    bi.buffer = arena_[frameIdx % kFramesInFlight].buf.buffer;
+                    bi.offset = curConfigOffset_;
+                    bi.range = 256;
+                } else {
+                    bi.buffer = BufferForRes(sb.res, frameIdx);
+                    bi.offset = 0;
+                    bi.range = VK_WHOLE_SIZE;
+                }
+                if (bi.buffer == VK_NULL_HANDLE) return false;
                 bufInfos.push_back(bi);
                 w.pBufferInfo = &bufInfos.back();
             }
@@ -789,183 +855,265 @@ bool VelloComputePipeline::BuildDescriptorSets(uint32_t frameIdx, const VelloSce
 }
 
 bool VelloComputePipeline::PrepareFrameSlot(uint32_t frameIdx) {
-    if (!ready_ || !device_ || !resetDescriptorPool_) return false;
-    frameIdx %= kFramesInFlight;
-    if (descriptorPools_[frameIdx] == VK_NULL_HANDLE ||
-        resetDescriptorPool_(device_, descriptorPools_[frameIdx], 0) != VK_SUCCESS) {
-        // Do not release anything unless stale descriptors were conclusively
-        // removed. The caller skips Vello for this frame and retries when this
-        // slot next becomes available.
+    {
+        static int s_perf = -1;
+        if (s_perf < 0) {
+            char buf[8]; size_t n = 0;
+            s_perf = (getenv_s(&n, buf, sizeof(buf), "JALIUM_VELLO_PERF") == 0 && n > 0 &&
+                      buf[0] != '0') ? 1 : 0;
+        }
+        if (frameIdx < kFramesInFlight) arena_[frameIdx].cursor = 0;
+        if (s_perf && frameIdx < kFramesInFlight && recordsThisFrame_[frameIdx] > 0) {
+            static uint32_t s_frames = 0, s_records = 0;
+            s_frames++;
+            s_records += recordsThisFrame_[frameIdx];
+            if (s_frames >= 120) {
+                std::fprintf(stderr, "[VkVello] subscenes/frame=%.1f (cap %u) rec=%.0fus", 
+                             (double)s_records / (double)s_frames, kMaxRecordsPerFrame,
+                             g_vkRecCount ? (double)g_vkRecMicros / (double)g_vkRecCount : 0.0);
+                g_vkRecMicros = 0;
+                g_vkRecCount = 0;
+                std::fputc(10, stderr);
+                std::fflush(stderr);
+                s_frames = s_records = 0;
+            }
+        }
+    }
+    if (!ready_ || frameIdx >= kFramesInFlight) return false;
+    if (resetDescriptorPool_(device_, descriptorPools_[frameIdx], 0) != VK_SUCCESS) {
         frameSlotPrepared_[frameIdx] = false;
         return false;
     }
-
-    for (auto& buffer : retiredBuffers_[frameIdx]) {
-        DestroyBuffer(buffer);
-    }
+    for (auto& b : retiredBuffers_[frameIdx]) DestroyBuffer(b);
     retiredBuffers_[frameIdx].clear();
-    for (auto& image : retiredOutputImages_[frameIdx]) {
-        DestroyOutputImage(image);
-    }
-    retiredOutputImages_[frameIdx].clear();
+    for (auto& im : retiredImages_[frameIdx]) DestroyRetiredImage(im);
+    retiredImages_[frameIdx].clear();
     frameSlotPrepared_[frameIdx] = true;
+    recordsThisFrame_[frameIdx] = 0;
     return true;
 }
 
-bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloScene& scene, uint32_t frameIdx) {
-    if (!ready_ || scene.drawTags.empty()) return false;
-    frameIdx %= kFramesInFlight;
+bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloSubScene& sub,
+                                  uint32_t frameIdx) {
+    if (!ready_ || frameIdx >= kFramesInFlight) return false;
     if (!frameSlotPrepared_[frameIdx]) return false;
-    // One monolithic Vello scene is supported per frame (see the render-target
-    // painter-order note). Consume the preparation proof so an accidental
-    // second Record cannot mutate shared generations without another reset.
-    frameSlotPrepared_[frameIdx] = false;
-    const uint32_t retireSlot = (frameIdx + 1u) % kFramesInFlight;
+    if (recordsThisFrame_[frameIdx] >= kMaxRecordsPerFrame) return false;
 
-    if (!EnsureOutputImage(scene.viewportW, scene.viewportH, retireSlot)) return false;
-    if (!EnsureScratch(scene, retireSlot)) return false;
-    if (!UploadInputs(scene, frameIdx)) return false;
-    if (!BuildDescriptorSets(frameIdx, scene)) return false;
+    if (sub.packed.data.empty()) return false;
+    if (sub.viewportW == 0 || sub.viewportH == 0) return false;
+    const VelloRenderInfo& ri = sub.ri;
 
-    const uint32_t numPaths    = scene.numPaths;
-    const uint32_t numSegs     = (uint32_t)scene.segments.size();
-    const uint32_t numDrawObjs = scene.numDrawObjs;
-    const uint32_t tilesX = DivCeil(scene.viewportW, kTileSize);
-    const uint32_t tilesY = DivCeil(scene.viewportH, kTileSize);
-    const uint32_t widthInBins  = DivCeil(tilesX, 16);
-    const uint32_t heightInBins = DivCeil(tilesY, 16);
+    // Retire into THIS slot's bucket, not the other in-flight one. A frame now
+    // issues many Records (one per sub-scene), so a resource replaced by the
+    // Nth sub-scene may still be referenced by commands the 1st..N-1th recorded
+    // into this frame's still-unsubmitted command buffer. Only this slot's own
+    // fence proves those have executed, and that is exactly what gates
+    // PrepareFrameSlot(frameIdx) on the next cycle.
+    const uint32_t retireSlot = frameIdx;
+    VkRecTimer recTimer_;
+    // Second and later sub-scenes of this frame: never rewrite the previous
+    // sub-scene's host-visible inputs (its GPU reads are queued in this very
+    // command buffer) — retire them and allocate fresh ones.
+    RetireInputsForReuse(frameIdx, retireSlot, sub.rampCount > 0);
+    // Render only the sub-scene's region: its packed transforms are already
+    // rebased by -region.origin, so the output image is region-sized and the
+    // render target composites it at that origin.
+    const VelloRenderRegion& region = sub.packed.region;
+    if (region.Empty()) return false;
+    // Grow-only: the sub-scene writes region.width x region.height texels into
+    // the image's top-left corner. Resizing per sub-scene would retire an image
+    // that descriptor sets from earlier sub-scenes in THIS frame still
+    // reference, so the image only ever grows and the composite maps just the
+    // region's texels (see CompositeVelloOutput's viewport trick).
+    if (!EnsureOutputImage(std::max(region.width, outputWidth_),
+                           std::max(region.height, outputHeight_), retireSlot)) {
+        return false;
+    }
+    if (!EnsureRampImage(std::max(sub.rampCount, 1u), retireSlot)) return false;
+    if (!EnsureScratch(ri, retireSlot)) return false;
+    if (!UploadInputs(sub, frameIdx)) return false;
+    if (!BuildDescriptorSets(frameIdx, ri, (uint32_t)sub.packed.data.size())) return false;
+    ++recordsThisFrame_[frameIdx];
 
-    // ── Leading serialization barriers ──
-    // (1) global compute->compute: serialize this frame's scratch writes after
-    //     the previous frame's compute (single shared scratch buffers); and
-    //     transition the output image to GENERAL (waiting on the previous
-    //     frame's composite fragment read) + the dummy image to SHADER_READ.
+    // ------------------------------------------------------------------
+    // Leading barrier: serialize against the previous frame's compute reads/
+    // writes, the composite's fragment reads and the indirect dispatch reads
+    // (the scratch and indirect buffers are shared across frames).
+    // ------------------------------------------------------------------
     {
         VkMemoryBarrier mb{};
         mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        // INDIRECT_COMMAND_READ: indirect1_/indirect2_ are single shared buffers;
-        // the previous frame's last touch was vkCmdDispatchIndirect (a
-        // DRAW_INDIRECT read), so serialize this frame's path_count_setup write
-        // against it explicitly (mirrors D3D12's INDIRECT_ARGUMENT<->UAV round-trip).
         mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                           VK_ACCESS_TRANSFER_WRITE_BIT;
 
-        VkImageMemoryBarrier imgs[2]{};
-        // output image: prior composite fragment-read -> this frame's writes (clear+fine), -> GENERAL.
-        imgs[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        imgs[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        imgs[0].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-        imgs[0].oldLayout = outputLayout_;
-        imgs[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        imgs[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imgs[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imgs[0].image = outputImage_;
-        imgs[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        // dummy image: (re)assert SHADER_READ for fine's unused image-atlas binding
-        // EVERY frame (UNDEFINED oldLayout is always valid; robust to a failed first submit).
-        imgs[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        imgs[1].srcAccessMask = 0;
-        imgs[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        imgs[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imgs[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgs[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imgs[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imgs[1].image = dummyImage_;
-        imgs[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        VkImageMemoryBarrier imgs[3]{};
+        uint32_t imgCount = 0;
+
+        // Output: whatever the last frame left -> GENERAL for clear + fine.
+        VkImageMemoryBarrier& ob = imgs[imgCount++];
+        ob.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        ob.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        ob.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        ob.oldLayout = outputLayout_;
+        ob.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ob.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        ob.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        ob.image = outputImage_;
+        ob.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+        // Dummy atlas: (re-)assert SHADER_READ_ONLY (contents are irrelevant).
+        VkImageMemoryBarrier& db = imgs[imgCount++];
+        db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        db.srcAccessMask = 0;
+        db.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        db.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.image = dummyImage_;
+        db.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+        // Ramp image: to TRANSFER_DST when uploading this frame, else make
+        // sure it is SHADER_READ_ONLY at least once.
+        VkImageMemoryBarrier& rb = imgs[imgCount++];
+        rb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        rb.srcAccessMask = rampImageInitialized_ ? VK_ACCESS_SHADER_READ_BIT : 0;
+        rb.oldLayout = rampImageInitialized_ ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                             : VK_IMAGE_LAYOUT_UNDEFINED;
+        if (sub.rampCount > 0) {
+            rb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            rb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        } else {
+            rb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            rb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+        rb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        rb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        rb.image = rampImage_;
+        rb.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
         cmdPipelineBarrier_(cmd,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 1, &mb, 0, nullptr, 2, imgs);
-        outputLayout_ = VK_IMAGE_LAYOUT_GENERAL;
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            0, 1, &mb, 0, nullptr, imgCount, imgs);
     }
 
-    // Clear the output image to transparent (D3D12 parity / defensive — the fine
-    // stage writes every in-bounds pixel, but the clear future-proofs any partial
-    // write) and zero the bump allocator. Both are TRANSFER writes made visible to
-    // the first compute stage (and to fine's image write) by the barrier below.
+    // Clear output (defensive: fine writes every in-bounds pixel unless an
+    // earlier stage failed) and zero the bump allocators.
     {
         VkClearColorValue clear{};
         VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         cmdClearColorImage_(cmd, outputImage_, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
+        cmdFillBuffer_(cmd, bump_.buffer, 0, VK_WHOLE_SIZE, 0);
     }
-    cmdFillBuffer_(cmd, bump_.buffer, 0, VK_WHOLE_SIZE, 0u);
+
+    // Upload gradient ramps.
+    if (sub.rampCount > 0) {
+        VkBufferImageCopy region{};
+        region.bufferOffset = curRampOffset_;
+        region.bufferRowLength = kVelloRampWidth;
+        region.bufferImageHeight = sub.rampCount;
+        region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        region.imageOffset = { 0, 0, 0 };
+        region.imageExtent = { kVelloRampWidth, sub.rampCount, 1 };
+        cmdCopyBufferToImage_(cmd, arena_[frameIdx % kFramesInFlight].buf.buffer, rampImage_,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        VkImageMemoryBarrier rb{};
+        rb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        rb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        rb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        rb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        rb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        rb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        rb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        rb.image = rampImage_;
+        rb.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        cmdPipelineBarrier_(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                            1, &rb);
+    }
+    rampImageInitialized_ = true;
+
+    // Transfer writes (clear + bump zero) -> compute.
     {
         VkMemoryBarrier mb{};
         mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        cmdPipelineBarrier_(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                            0, 1, &mb, 0, nullptr, 0, nullptr);
+        cmdPipelineBarrier_(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0,
+                            nullptr);
     }
 
-    auto dispatch = [&](uint32_t s, uint32_t gx, uint32_t gy, uint32_t gz) {
-        cmdBindPipeline_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[s]);
-        cmdBindDescriptorSets_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayouts_[s],
-                               0, 1, &stageSets_[s], 0, nullptr);
-        cmdDispatch_(cmd, gx, gy, gz);
+    // ------------------------------------------------------------------
+    // The dispatch graph
+    // ------------------------------------------------------------------
+    auto bindAndDispatch = [&](uint32_t stage, uint32_t x, uint32_t y, uint32_t z) {
+        cmdBindPipeline_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[stage]);
+        cmdBindDescriptorSets_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayouts_[stage],
+                               0, 1, &stageSets_[stage], 0, nullptr);
+        cmdDispatch_(cmd, x, y, z);
+        ComputeBarrier(cmdPipelineBarrier_, cmd);
     };
-    auto barrier = [&]() { ComputeBarrier(cmdPipelineBarrier_, cmd); };
 
-    // Compute<-write -> indirect-read dependency around the two indirect setups.
+    bindAndDispatch(S_PathtagReduce, ri.pathtagReduceWgs, 1, 1);
+    bindAndDispatch(S_PathtagReduce2, ri.pathtagReduce2Wgs, 1, 1);
+    bindAndDispatch(S_PathtagScan1, ri.pathtagScan1Wgs, 1, 1);
+    bindAndDispatch(S_PathtagScan, ri.pathtagScanWgs, 1, 1);
+    bindAndDispatch(S_BboxClear, ri.bboxClearWgs, 1, 1);
+    bindAndDispatch(S_Flatten, ri.flattenWgs, 1, 1);
+    bindAndDispatch(S_DrawReduce, ri.drawReduceWgs, 1, 1);
+    bindAndDispatch(S_DrawLeaf, ri.drawReduceWgs, 1, 1);
+    if (ri.clipReduceWgs > 0) {
+        bindAndDispatch(S_ClipReduce, ri.clipReduceWgs, 1, 1);
+    }
+    if (ri.clipLeafWgs > 0) {
+        bindAndDispatch(S_ClipLeaf, ri.clipLeafWgs, 1, 1);
+    }
+    bindAndDispatch(S_Binning, ri.binningWgs, 1, 1);
+    bindAndDispatch(S_TileAlloc, ri.tileAllocWgs, 1, 1);
+
     auto indirectBarrier = [&]() {
         VkMemoryBarrier mb{};
         mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         mb.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
         cmdPipelineBarrier_(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+                            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1, &mb, 0, nullptr, 0,
+                            nullptr);
     };
 
-    // ── Stage 1: bbox_clear ──
-    dispatch(S_BboxClear, Wg256(numPaths), 1, 1);
-    barrier();
-    // ── Stage 2: flatten ──
-    dispatch(S_Flatten, Wg256(numSegs), 1, 1);
-    barrier();
-    // ── Stage 3 (clip bboxes): CPU stack replay, uploaded in UploadInputs. ──
-    // The former clip_reduce -> clip_leaf dispatches are intentionally NOT
-    // issued (D3D12 parity): their simplified EndClip branch wrote
-    // `self ∩ parent` instead of Vello's "revert to parent context", which
-    // clipped every draw object after the first closed clip pair to that
-    // pair's rect — with the scissor realized as a clip, the second scissor
-    // group of a frame vanished. The CPU replay writes the exact Vello
-    // semantics for both entry kinds and needs no GPU matching. The PSOs /
-    // Bic / ClipEl buffers are retained (harmless) in case a future
-    // n_clip>workgroup implementation brings the GPU path back.
-    // ── Stage 4: binning ──
-    dispatch(S_Binning, Wg256(numDrawObjs), 1, 1);
-    barrier();
-    // ── Stage 5: tile_alloc ──
-    dispatch(S_TileAlloc, Wg256(numDrawObjs), 1, 1);
-    barrier();
-    // ── Stage 6: path_count_setup (writes indirect1) ──
-    dispatch(S_PathCountSetup, 1, 1, 1);
+    // path_count_setup -> path_count (indirect)
+    bindAndDispatch(S_PathCountSetup, 1, 1, 1);
     indirectBarrier();
-    // ── Stage 7: path_count (indirect) ──
     cmdBindPipeline_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[S_PathCount]);
     cmdBindDescriptorSets_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayouts_[S_PathCount],
                            0, 1, &stageSets_[S_PathCount], 0, nullptr);
-    cmdDispatchIndirect_(cmd, indirect1_.buffer, 0);
-    barrier();
-    // ── Stage 8: backdrop ──
-    dispatch(S_Backdrop, numDrawObjs, tilesY, 1);
-    barrier();
-    // ── Stage 9: coarse ──
-    dispatch(S_Coarse, widthInBins, heightInBins, 1);
-    barrier();
-    // ── Stage 10: path_tiling_setup (writes indirect2) ──
-    dispatch(S_PathTilingSetup, 1, 1, 1);
-    indirectBarrier();
-    // ── Stage 11: path_tiling (indirect) ──
-    cmdBindPipeline_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[S_PathTiling]);
-    cmdBindDescriptorSets_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayouts_[S_PathTiling],
-                           0, 1, &stageSets_[S_PathTiling], 0, nullptr);
-    cmdDispatchIndirect_(cmd, indirect2_.buffer, 0);
-    barrier();
-    // ── Stage 12: fine (writes the output storage image) ──
-    dispatch(S_Fine, tilesX, tilesY, 1);
+    cmdDispatchIndirect_(cmd, indirect_.buffer, 0);
+    ComputeBarrier(cmdPipelineBarrier_, cmd);
 
-    // Transition the output image GENERAL -> SHADER_READ for the composite blit.
+    bindAndDispatch(S_Backdrop, ri.backdropWgs, 1, 1);
+    bindAndDispatch(S_Coarse, ri.widthInBins, ri.heightInBins, 1);
+
+    // path_tiling_setup -> path_tiling (indirect)
+    bindAndDispatch(S_PathTilingSetup, 1, 1, 1);
+    indirectBarrier();
+    cmdBindPipeline_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[S_PathTiling]);
+    cmdBindDescriptorSets_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                           pipelineLayouts_[S_PathTiling], 0, 1, &stageSets_[S_PathTiling], 0,
+                           nullptr);
+    cmdDispatchIndirect_(cmd, indirect_.buffer, 0);
+    ComputeBarrier(cmdPipelineBarrier_, cmd);
+
+    bindAndDispatch(S_Fine, ri.config.width_in_tiles, ri.config.height_in_tiles, 1);
+
+    // Output -> SHADER_READ_ONLY for the composite (carries the memory
+    // dependency for fine's writes).
     {
         VkImageMemoryBarrier ob{};
         ob.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -978,9 +1126,11 @@ bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloScene& scene, 
         ob.image = outputImage_;
         ob.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         cmdPipelineBarrier_(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &ob);
-        outputLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                            1, &ob);
     }
+    outputLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     return true;
 }
 
@@ -988,81 +1138,123 @@ void VelloComputePipeline::Destroy() {
     if (!device_) return;
 
     for (uint32_t s = 0; s < kStageCount; ++s) {
-        if (pipelines_[s])       destroyPipeline_(device_, pipelines_[s], nullptr);
-        if (pipelineLayouts_[s]) destroyPipelineLayout_(device_, pipelineLayouts_[s], nullptr);
-        if (setLayouts_[s])      destroyDescriptorSetLayout_(device_, setLayouts_[s], nullptr);
-        if (modules_[s])         destroyShaderModule_(device_, modules_[s], nullptr);
-        pipelines_[s] = VK_NULL_HANDLE; pipelineLayouts_[s] = VK_NULL_HANDLE;
-        setLayouts_[s] = VK_NULL_HANDLE; modules_[s] = VK_NULL_HANDLE;
+        if (pipelines_[s]) { destroyPipeline_(device_, pipelines_[s], nullptr); pipelines_[s] = VK_NULL_HANDLE; }
+        if (pipelineLayouts_[s]) { destroyPipelineLayout_(device_, pipelineLayouts_[s], nullptr); pipelineLayouts_[s] = VK_NULL_HANDLE; }
+        if (setLayouts_[s]) { destroyDescriptorSetLayout_(device_, setLayouts_[s], nullptr); setLayouts_[s] = VK_NULL_HANDLE; }
+        if (modules_[s]) { destroyShaderModule_(device_, modules_[s], nullptr); modules_[s] = VK_NULL_HANDLE; }
     }
     for (uint32_t f = 0; f < kFramesInFlight; ++f) {
-        if (descriptorPools_[f]) destroyDescriptorPool_(device_, descriptorPools_[f], nullptr);
-        descriptorPools_[f] = VK_NULL_HANDLE;
-        frameSlotPrepared_[f] = false;
-        for (auto& buffer : retiredBuffers_[f]) DestroyBuffer(buffer);
+        if (descriptorPools_[f]) { destroyDescriptorPool_(device_, descriptorPools_[f], nullptr); descriptorPools_[f] = VK_NULL_HANDLE; }
+        for (auto& b : retiredBuffers_[f]) DestroyBuffer(b);
         retiredBuffers_[f].clear();
-        for (auto& image : retiredOutputImages_[f]) DestroyOutputImage(image);
-        retiredOutputImages_[f].clear();
-        DestroyBuffer(config_[f]); DestroyBuffer(pathSegment_[f]); DestroyBuffer(pathInfo_[f]);
-        DestroyBuffer(pathDraw_[f]); DestroyBuffer(drawTag_[f]); DestroyBuffer(drawMonoid_[f]);
-        DestroyBuffer(clipInp_[f]); DestroyBuffer(clipBbox_[f]); DestroyBuffer(gradientRamp_[f]);
+        for (auto& im : retiredImages_[f]) DestroyRetiredImage(im);
+        retiredImages_[f].clear();
+        DestroyBuffer(config_[f]);
+        DestroyBuffer(scene_[f]);
+        DestroyBuffer(rampStaging_[f]);
+        DestroyBuffer(arena_[f].buf);
+        arena_[f].cursor = 0;
+        frameSlotPrepared_[f] = false;
     }
-    DestroyBuffer(bump_); DestroyBuffer(pathBbox_); DestroyBuffer(lineSoup_);
-    DestroyBuffer(intersectedBbox_); DestroyBuffer(clipBic_); DestroyBuffer(clipEl_);
-    DestroyBuffer(binHeader_); DestroyBuffer(binData_);
-    DestroyBuffer(velloPath_); DestroyBuffer(velloTile_); DestroyBuffer(segCount_);
-    DestroyBuffer(velloSegment_); DestroyBuffer(ptcl_); DestroyBuffer(indirect1_);
-    DestroyBuffer(indirect2_);
 
-    if (outputView_)   destroyImageView_(device_, outputView_, nullptr);
-    if (outputImage_)  destroyImage_(device_, outputImage_, nullptr);
-    if (outputMemory_) freeMemory_(device_, outputMemory_, nullptr);
-    if (outputSampler_)destroySampler_(device_, outputSampler_, nullptr);
-    if (dummyView_)    destroyImageView_(device_, dummyView_, nullptr);
-    if (dummyImage_)   destroyImage_(device_, dummyImage_, nullptr);
-    if (dummyMemory_)  freeMemory_(device_, dummyMemory_, nullptr);
-    if (dummySampler_) destroySampler_(device_, dummySampler_, nullptr);
-    outputView_ = VK_NULL_HANDLE; outputImage_ = VK_NULL_HANDLE; outputMemory_ = VK_NULL_HANDLE;
-    outputSampler_ = VK_NULL_HANDLE; dummyView_ = VK_NULL_HANDLE; dummyImage_ = VK_NULL_HANDLE;
-    dummyMemory_ = VK_NULL_HANDLE; dummySampler_ = VK_NULL_HANDLE;
+    DestroyBuffer(bump_);
+    DestroyBuffer(reduced_);
+    DestroyBuffer(reduced2_);
+    DestroyBuffer(reducedScan_);
+    DestroyBuffer(tagMonoids_);
+    DestroyBuffer(pathBbox_);
+    DestroyBuffer(lineSoup_);
+    DestroyBuffer(drawReduced_);
+    DestroyBuffer(drawMonoid_);
+    DestroyBuffer(infoBinData_);
+    DestroyBuffer(clipInp_);
+    DestroyBuffer(clipBic_);
+    DestroyBuffer(clipEl_);
+    DestroyBuffer(clipBbox_);
+    DestroyBuffer(drawBbox_);
+    DestroyBuffer(binHeader_);
+    DestroyBuffer(velloPath_);
+    DestroyBuffer(velloTile_);
+    DestroyBuffer(segCount_);
+    DestroyBuffer(velloSegment_);
+    DestroyBuffer(ptcl_);
+    DestroyBuffer(blendSpill_);
+    DestroyBuffer(indirect_);
+
+    if (rampView_) { destroyImageView_(device_, rampView_, nullptr); rampView_ = VK_NULL_HANDLE; }
+    if (rampImage_) { destroyImage_(device_, rampImage_, nullptr); rampImage_ = VK_NULL_HANDLE; }
+    if (rampMemory_) { freeMemory_(device_, rampMemory_, nullptr); rampMemory_ = VK_NULL_HANDLE; }
+    rampRows_ = 0;
+    rampImageInitialized_ = false;
+
+    if (outputView_) { destroyImageView_(device_, outputView_, nullptr); outputView_ = VK_NULL_HANDLE; }
+    if (outputImage_) { destroyImage_(device_, outputImage_, nullptr); outputImage_ = VK_NULL_HANDLE; }
+    if (outputMemory_) { freeMemory_(device_, outputMemory_, nullptr); outputMemory_ = VK_NULL_HANDLE; }
     outputLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    outputWidth_ = 0;
-    outputHeight_ = 0;
+    outputWidth_ = outputHeight_ = 0;
+
+    if (outputSampler_) { destroySampler_(device_, outputSampler_, nullptr); outputSampler_ = VK_NULL_HANDLE; }
+    if (dummySampler_) { destroySampler_(device_, dummySampler_, nullptr); dummySampler_ = VK_NULL_HANDLE; }
+    if (dummyView_) { destroyImageView_(device_, dummyView_, nullptr); dummyView_ = VK_NULL_HANDLE; }
+    if (dummyImage_) { destroyImage_(device_, dummyImage_, nullptr); dummyImage_ = VK_NULL_HANDLE; }
+    if (dummyMemory_) { freeMemory_(device_, dummyMemory_, nullptr); dummyMemory_ = VK_NULL_HANDLE; }
 
     ready_ = false;
     device_ = VK_NULL_HANDLE;
 }
 
 void VelloComputePipeline::AbandonDeviceResources() noexcept {
-    // The generation's completion state is unknown. Never call into Vulkan;
-    // forget every handle and host container so the C++ object can be reclaimed
-    // without a destructor later trying to tear down quarantined driver state.
-    auto forgetBuffer = [](GpuBuffer& buffer) noexcept { buffer = {}; };
+    // Zero every handle without any Vulkan call: the allocations stay owned by
+    // the quarantined device generation until process exit.
+    for (uint32_t s = 0; s < kStageCount; ++s) {
+        pipelines_[s] = VK_NULL_HANDLE;
+        pipelineLayouts_[s] = VK_NULL_HANDLE;
+        setLayouts_[s] = VK_NULL_HANDLE;
+        modules_[s] = VK_NULL_HANDLE;
+    }
     for (uint32_t f = 0; f < kFramesInFlight; ++f) {
         descriptorPools_[f] = VK_NULL_HANDLE;
-        frameSlotPrepared_[f] = false;
         retiredBuffers_[f].clear();
-        retiredOutputImages_[f].clear();
-        forgetBuffer(config_[f]); forgetBuffer(pathSegment_[f]); forgetBuffer(pathInfo_[f]);
-        forgetBuffer(pathDraw_[f]); forgetBuffer(drawTag_[f]); forgetBuffer(drawMonoid_[f]);
-        forgetBuffer(clipInp_[f]); forgetBuffer(clipBbox_[f]); forgetBuffer(gradientRamp_[f]);
+        retiredImages_[f].clear();
+        config_[f] = {};
+        scene_[f] = {};
+        rampStaging_[f] = {};
+        arena_[f] = {};
+        frameSlotPrepared_[f] = false;
     }
-    forgetBuffer(bump_); forgetBuffer(pathBbox_); forgetBuffer(lineSoup_);
-    forgetBuffer(intersectedBbox_); forgetBuffer(clipBic_); forgetBuffer(clipEl_);
-    forgetBuffer(binHeader_); forgetBuffer(binData_); forgetBuffer(velloPath_);
-    forgetBuffer(velloTile_); forgetBuffer(segCount_); forgetBuffer(velloSegment_);
-    forgetBuffer(ptcl_); forgetBuffer(indirect1_); forgetBuffer(indirect2_);
-    for (auto& module : modules_) module = VK_NULL_HANDLE;
-    for (auto& layout : setLayouts_) layout = VK_NULL_HANDLE;
-    for (auto& layout : pipelineLayouts_) layout = VK_NULL_HANDLE;
-    for (auto& pipeline : pipelines_) pipeline = VK_NULL_HANDLE;
-    for (auto& set : stageSets_) set = VK_NULL_HANDLE;
+    bump_ = {};
+    reduced_ = {};
+    reduced2_ = {};
+    reducedScan_ = {};
+    tagMonoids_ = {};
+    pathBbox_ = {};
+    lineSoup_ = {};
+    drawReduced_ = {};
+    drawMonoid_ = {};
+    infoBinData_ = {};
+    clipInp_ = {};
+    clipBic_ = {};
+    clipEl_ = {};
+    clipBbox_ = {};
+    drawBbox_ = {};
+    binHeader_ = {};
+    velloPath_ = {};
+    velloTile_ = {};
+    segCount_ = {};
+    velloSegment_ = {};
+    ptcl_ = {};
+    blendSpill_ = {};
+    indirect_ = {};
+    rampImage_ = VK_NULL_HANDLE;
+    rampMemory_ = VK_NULL_HANDLE;
+    rampView_ = VK_NULL_HANDLE;
+    rampRows_ = 0;
+    rampImageInitialized_ = false;
     outputImage_ = VK_NULL_HANDLE;
     outputMemory_ = VK_NULL_HANDLE;
     outputView_ = VK_NULL_HANDLE;
     outputLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    outputWidth_ = 0;
-    outputHeight_ = 0;
+    outputWidth_ = outputHeight_ = 0;
     outputSampler_ = VK_NULL_HANDLE;
     dummyImage_ = VK_NULL_HANDLE;
     dummyMemory_ = VK_NULL_HANDLE;

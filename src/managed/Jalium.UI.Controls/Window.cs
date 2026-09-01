@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
@@ -48,6 +48,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
+    // Same escape hatch for Vulkan: every rendered frame repaints the whole
+    // scene (damage tracking still throttles idle frames, but nothing renders
+    // partially). Diagnosis bisector + mitigation for partial-present
+    // artifacts such as stale hover highlights.
+    private static readonly bool ForceFullReplayForVulkan = IsEnvironmentSwitchEnabled("JALIUM_VULKAN_FORCE_FULL_REPLAY");
     private static readonly bool DebugRender = IsEnvironmentSwitchEnabled("JALIUM_DEBUG_RENDER");
 
     // RC2 逃生门：JALIUM_DIRTY_PROMOTE_LEGACY=1 恢复重写前的 promote 管线——
@@ -381,6 +386,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _presentFailedRebuildAttempted;
     private long _lastFrameClockRenderTargetAttemptTicks;
     private RenderBackend _renderBackendOverride = RenderBackend.Auto;
+    // Backends this window has already burned through, so the fallback ladder
+    // never revisits one that failed. Reset only with the window's lifetime.
+    private readonly HashSet<RenderBackend> _exhaustedRenderBackends = [];
     private bool _fullInvalidation = true;  // First frame is always full
     // FLIP_SEQUENTIAL with N buffers: buffer K's non-dirty area still has content
     // from frame K-N.  We must repaint the union of the last N-1 dirty regions
@@ -3829,8 +3837,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
         }
 
+        bool supportsDirectComposition = CompositionSurfacePolicy.BackendSupportsDirectComposition(
+            CompositionSurfacePolicy.ResolveHostBackend(RenderBackend.Auto));
+
         uint dwExStyle = ComputeWin32ExStyle(
-            TitleBarStyle, ShowInTaskbar, AllowsTransparency, Topmost);
+            TitleBarStyle, ShowInTaskbar, AllowsTransparency, Topmost, supportsDirectComposition);
 
         // Query system DPI for initial window sizing (before HWND exists)
         uint systemDpi = GetDpiForSystem();
@@ -3870,6 +3881,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         // Store reference for message handling
         _windows[Handle] = this;
+
+        if (AllowsTransparency && !supportsDirectComposition)
+        {
+            // Kept its redirection surface (see ComputeWin32ExStyle): ask DWM to blend
+            // the window's alpha channel, otherwise the transparent pixels composite as
+            // solid black instead of showing the desktop.
+            CompositionSurfacePolicy.EnableRedirectionSurfaceAlpha(Handle);
+        }
 
         // Refine DPI from actual window monitor (may differ from system DPI).
         // For custom title bar, also apply SWP_FRAMECHANGED so NCCALCSIZE semantics
@@ -4093,7 +4112,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         WindowTitleBarStyle titleBarStyle,
         bool showInTaskbar,
         bool allowsTransparency,
-        bool topmost)
+        bool topmost,
+        bool supportsDirectComposition = true)
     {
         uint dwExStyle = titleBarStyle == WindowTitleBarStyle.Custom
             ? WS_EX_APPWINDOW
@@ -4105,13 +4125,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             dwExStyle &= ~WS_EX_APPWINDOW;
         }
 
-        if (allowsTransparency)
+        if (allowsTransparency && supportsDirectComposition)
         {
             // Use WS_EX_NOREDIRECTIONBITMAP so the HWND has no redirection
             // surface and the render backend can present through DirectComposition
             // for real per-pixel transparency. WS_EX_LAYERED would only support
             // uniform GDI alpha and does not composite D3D12 swap chains, which
             // made layered fullscreen windows appear click-through.
+            //
+            // Gated on the backend: only D3D12 implements the DirectComposition
+            // path. Vulkan and the software rasterizer present INTO the redirection
+            // surface, so setting this style there means DWM has nothing to
+            // composite and the window never shows anything at all. Those backends
+            // keep the surface and get per-pixel alpha from
+            // CompositionSurfacePolicy.EnableRedirectionSurfaceAlpha instead.
             dwExStyle |= WS_EX_NOREDIRECTIONBITMAP;
         }
 
@@ -5629,42 +5656,37 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private static bool IsBackendAvailable(RenderBackend backend)
         => backend != RenderBackend.Auto && NativeMethods.IsBackendAvailable(backend) != 0;
 
+    /// <summary>
+    /// Backend ladder this window walks when a render target cannot be built or
+    /// keeps failing. Both GPU backends come before the software rasterizer:
+    /// conceding to the CPU is the last rung, never the first fallback from a
+    /// GPU backend the application selected on purpose.
+    /// </summary>
     private static ReadOnlySpan<RenderBackend> GetBackendFallbackOrder()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            return [RenderBackend.D3D12, RenderBackend.Software];
+            return [RenderBackend.D3D12, RenderBackend.Vulkan, RenderBackend.Software];
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            return [RenderBackend.Metal, RenderBackend.Software];
+            return [RenderBackend.Metal, RenderBackend.Vulkan, RenderBackend.Software];
         return [RenderBackend.Vulkan, RenderBackend.Software];
-    }
-
-    private static int GetBackendFallbackIndex(RenderBackend backend)
-    {
-        var order = GetBackendFallbackOrder();
-        for (int i = 0; i < order.Length; i++)
-        {
-            if (order[i] == backend)
-            {
-                return i;
-            }
-        }
-
-        return -1;
     }
 
     private bool TryAdvanceRenderBackendFallback(RenderBackend failedBackend)
     {
-        var order = GetBackendFallbackOrder();
-        int index = GetBackendFallbackIndex(failedBackend);
-        if (index < 0)
+        if (failedBackend != RenderBackend.Auto)
         {
-            index = 0;
+            _exhaustedRenderBackends.Add(failedBackend);
         }
 
-        for (int i = index + 1; i < order.Length; i++)
+        // Scan the whole ladder rather than only the rungs below the failed
+        // backend: a window that started on the backend the application selected
+        // (Vulkan on Windows, say) sits below D3D12 in this order, and must still
+        // be able to reach it before conceding to the software rasterizer. The
+        // exhausted set is what keeps that from cycling.
+        foreach (var candidate in GetBackendFallbackOrder())
         {
-            var candidate = order[i];
-            if (candidate != failedBackend && IsBackendAvailable(candidate))
+            if (!_exhaustedRenderBackends.Contains(candidate) &&
+                IsBackendAvailable(candidate))
             {
                 _renderBackendOverride = candidate;
                 return true;
@@ -5796,7 +5818,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return context.CreateRenderTarget(surface, width, height);
         }
 
-        if (context.Backend == RenderBackend.D3D12 || ShouldUseCompositionRenderTarget())
+        // AllowsTransparency always wants a premultiplied-alpha surface, even when the
+        // HWND kept its redirection bitmap because the backend cannot present through
+        // DirectComposition — asking for a composition target is what makes Vulkan pick
+        // VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR.
+        if (context.Backend == RenderBackend.D3D12 || AllowsTransparency || ShouldUseCompositionRenderTarget())
             return context.CreateRenderTargetForComposition(Handle, width, height);
 
         return context.CreateRenderTarget(Handle, width, height);
@@ -10264,7 +10290,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 frameRenderTarget.Backend,
                 supportsPartialPresentation);
             bool requiresFullReplay = !supportsPartialPresentation ||
-                (frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12);
+                (frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12) ||
+                (frameRenderTarget.Backend == RenderBackend.Vulkan && ForceFullReplayForVulkan);
             if (!requiresBackBufferConvergence)
             {
                 // Vulkan seeds every acquired image from its canonical retained

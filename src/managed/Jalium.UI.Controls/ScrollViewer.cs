@@ -602,6 +602,13 @@ public partial class ScrollViewer : ContentControl
     private bool _pointerPanningAxisResolved;
     private bool _pointerPanningAllowHorizontal;
     private bool _pointerPanningAllowVertical;
+
+    // Committed offsets are quantized to whole device pixels, but a slow pan can move
+    // less than half a pixel per frame. Delta-based panning would lose each such
+    // increment to the rounding and the finger would appear stuck; these carry the
+    // quantization remainder into the next packet so slow pans keep integrating.
+    private double _pointerPanningResidualX;
+    private double _pointerPanningResidualY;
     private bool _pointerPanningYieldedToAncestor;
 
     /// <summary>
@@ -871,6 +878,8 @@ public partial class ScrollViewer : ContentControl
         _pointerPanningLastTimestamp = e.Timestamp;
         _pointerPanningVelocityX = 0;
         _pointerPanningVelocityY = 0;
+        _pointerPanningResidualX = 0;
+        _pointerPanningResidualY = 0;
         _pointerPanningYieldedToAncestor = false;
 
         InitializePointerPanningAxes();
@@ -1353,18 +1362,23 @@ public partial class ScrollViewer : ContentControl
 
         if (_pointerPanningAllowHorizontal && CanScrollHorizontally && Math.Abs(horizontalDelta) > double.Epsilon)
         {
-            double newOffset = Math.Clamp(_horizontalOffset + horizontalDelta, 0, ScrollableWidth);
+            double effectiveDelta = horizontalDelta + _pointerPanningResidualX;
+            double newOffset = Math.Clamp(_horizontalOffset + effectiveDelta, 0, ScrollableWidth);
             double consumed = newOffset - _horizontalOffset;
             if (!AreClose(newOffset, _horizontalOffset))
             {
                 ScrollToHorizontalOffset(newOffset);
                 moved = true;
             }
+            // Whatever the quantized commit did not take stays in the residual so a
+            // slow pan integrates across packets instead of stalling below the
+            // half-pixel rounding threshold.
+            _pointerPanningResidualX = newOffset - _horizontalOffset;
             // Any movement not absorbed by the scroll offset feeds the rubber-
             // band overscroll. We negate here because horizontalDelta is the
             // scroll-offset delta (opposite the finger direction); overscroll
             // is rendered as a content translation that follows the finger.
-            double remaining = horizontalDelta - consumed;
+            double remaining = effectiveDelta - consumed;
             if (Math.Abs(remaining) > double.Epsilon)
             {
                 // In a nested chain the next packet is handed to an ancestor.
@@ -1382,14 +1396,16 @@ public partial class ScrollViewer : ContentControl
 
         if (_pointerPanningAllowVertical && CanScrollVertically && Math.Abs(verticalDelta) > double.Epsilon)
         {
-            double newOffset = Math.Clamp(_verticalOffset + verticalDelta, 0, ScrollableHeight);
+            double effectiveDelta = verticalDelta + _pointerPanningResidualY;
+            double newOffset = Math.Clamp(_verticalOffset + effectiveDelta, 0, ScrollableHeight);
             double consumed = newOffset - _verticalOffset;
             if (!AreClose(newOffset, _verticalOffset))
             {
                 ScrollToVerticalOffset(newOffset);
                 moved = true;
             }
-            double remaining = verticalDelta - consumed;
+            _pointerPanningResidualY = newOffset - _verticalOffset;
+            double remaining = effectiveDelta - consumed;
             if (Math.Abs(remaining) > double.Epsilon)
             {
                 if (!HasScrollableAncestorForPointerDelta(0, remaining))
@@ -1531,6 +1547,8 @@ public partial class ScrollViewer : ContentControl
         _pointerPanningLastTimestamp = 0;
         _pointerPanningVelocityX = 0;
         _pointerPanningVelocityY = 0;
+        _pointerPanningResidualX = 0;
+        _pointerPanningResidualY = 0;
         _pointerPanningAxisResolved = false;
         _pointerPanningAllowHorizontal = false;
         _pointerPanningAllowVertical = false;
@@ -1951,12 +1969,58 @@ public partial class ScrollViewer : ContentControl
     #region Scroll Methods
 
     /// <summary>
+    /// Quantizes a committed scroll offset to whole physical pixels. A scroll offset
+    /// translates the entire content subtree, and the renderer pixel-snaps text runs
+    /// and axis-aligned strokes in DEVICE space: under a fractional translation each
+    /// primitive crosses its integer pixel boundary on a different frame, so during a
+    /// smooth scroll neighbouring text and paths visibly jitter against each other by
+    /// 1px (some appear to hold still while others move). Whole-device-pixel offsets
+    /// keep every primitive's sub-pixel phase constant, so snapped and unsnapped
+    /// content translate in lockstep — the same policy browsers and WPF's pixel-based
+    /// scrolling apply. Element animations are unaffected: this quantizes only the
+    /// scroll translation, not arranged element origins.
+    ///
+    /// The extremes stay exact: 0 and <paramref name="maxOffset"/> are resting
+    /// positions (no motion, so no jitter), and rounding the bottom stop would
+    /// otherwise leave a sub-pixel gap that keeps IsAtVerticalEnd false forever.
+    /// </summary>
+    internal static double SnapScrollOffsetToDevicePixels(double offset, double maxOffset, double dpiScale)
+    {
+        if (!double.IsFinite(offset))
+        {
+            return offset;
+        }
+
+        if (offset <= 0)
+        {
+            return 0;
+        }
+
+        // Only the KNOWN end stop is preserved exactly. With maxOffset still 0 (metrics
+        // not yet synced from the IScrollInfo, or genuinely unscrollable) the offset is
+        // handed onward rounded-but-unclamped so the existing clamp sites keep owning
+        // the range decision, exactly as they did before quantization.
+        if (maxOffset > 0 && double.IsFinite(maxOffset) && offset >= maxOffset)
+        {
+            return maxOffset;
+        }
+
+        if (!(dpiScale > 0.0) || !double.IsFinite(dpiScale))
+        {
+            return offset;
+        }
+
+        return Math.Round(offset * dpiScale, MidpointRounding.AwayFromZero) / dpiScale;
+    }
+
+    /// <summary>
     /// Scrolls to the specified horizontal offset.
     /// </summary>
     /// <param name="offset">The horizontal offset.</param>
     public void ScrollToHorizontalOffset(double offset)
     {
         offset = ValidateScrollOffset(offset, nameof(offset));
+        offset = SnapScrollOffsetToDevicePixels(offset, ScrollableWidth, FrameworkElement.LayoutDpiScale);
 
         if (!_isApplyingSmoothScrollStep)
         {
@@ -2003,6 +2067,7 @@ public partial class ScrollViewer : ContentControl
     public void ScrollToVerticalOffset(double offset)
     {
         offset = ValidateScrollOffset(offset, nameof(offset));
+        offset = SnapScrollOffsetToDevicePixels(offset, ScrollableHeight, FrameworkElement.LayoutDpiScale);
 
         if (!_isApplyingSmoothScrollStep)
         {
@@ -3132,6 +3197,8 @@ public partial class ScrollViewer : ContentControl
         double minStep = SmoothScrollMinSpeedPixelsPerSecond * dtSeconds;
 
         bool moved = false;
+        var offsetXBefore = _horizontalOffset;
+        var offsetYBefore = _verticalOffset;
 
         _isApplyingSmoothScrollStep = true;
         try
@@ -3144,7 +3211,12 @@ public partial class ScrollViewer : ContentControl
             _isApplyingSmoothScrollStep = false;
         }
 
-        if (!moved)
+        // The committed offsets are quantized to whole device pixels, so a
+        // sub-pixel closing step can round back onto the pixel the offset is
+        // already on. StepSmoothAxis still reports intent to move in that case;
+        // judging progress by the committed offsets is what guarantees the timer
+        // stops instead of spinning on a target it can never get closer to.
+        if (!moved || (_horizontalOffset == offsetXBefore && _verticalOffset == offsetYBefore))
         {
             StopSmoothScroll();
         }

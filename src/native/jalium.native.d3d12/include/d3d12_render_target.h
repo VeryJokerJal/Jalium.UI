@@ -308,6 +308,22 @@ private:
     // observes the correct scissor and transform stacks. Call this before any
     // non-path draw (FillRect, DrawText, DrawBitmap, etc.).
     void FlushVelloIfNeeded();
+    // Bounded variant for draws with known DIP-space extents: skips the Vello
+    // flush when the draw cannot overlap any pending path content.
+    void FlushVelloIfNeeded(float x, float y, float w, float h, int siteTag = 6);
+    // Overlap reroute: when pending Vello content overlaps an incoming small
+    // rect / polygon, encode the primitive INTO the same sub-scene (painter
+    // order inside one dispatch) instead of flushing. Returns true when the
+    // primitive was fully handled.
+    bool TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx, float ry,
+                                          Brush* brush, float strokeWidth, bool fill);
+    bool TryEncodeRectIntoPendingVello(float x, float y, float w, float h,
+                                       float rTL, float rTR, float rBR, float rBL,
+                                       Brush* brush, float strokeWidth, bool fill);
+    bool TryEncodePolygonIntoPendingVello(const float* points, uint32_t pointCount,
+                                          Brush* brush, float strokeWidth, bool closed,
+                                          int32_t lineJoin, float miterLimit,
+                                          bool fill, int32_t fillRule);
 
     // Flush Impeller tessellated batches into DirectRenderer's triangle pipeline.
     // Called after each Impeller path encode to maintain correct Z-order.

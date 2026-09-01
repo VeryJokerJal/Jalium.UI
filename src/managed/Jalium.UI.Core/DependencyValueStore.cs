@@ -14,7 +14,7 @@ namespace Jalium.UI;
 internal sealed class DependencyValueStore
 {
     [Flags]
-    internal enum LayerMask : byte
+    internal enum LayerMask : ushort
     {
         None = 0,
         Local = 1 << 0,
@@ -24,6 +24,8 @@ internal sealed class DependencyValueStore
         StyleSetter = 1 << 4,
         Current = 1 << 5,
         ParentTemplateTrigger = 1 << 6,
+        CssState = 1 << 7,
+        CssBase = 1 << 8,
     }
 
     internal enum Layer : byte
@@ -35,6 +37,8 @@ internal sealed class DependencyValueStore
         StyleSetter,
         Current,
         ParentTemplateTrigger,
+        CssState,
+        CssBase,
     }
 
     private sealed class LayerValues
@@ -42,8 +46,10 @@ internal sealed class DependencyValueStore
         public object? Local;
         public object? ParentTemplateTrigger;
         public object? ParentTemplate;
+        public object? CssState;
         public object? StyleTrigger;
         public object? TemplateTrigger;
+        public object? CssBase;
         public object? StyleSetter;
         public object? Current;
         public BaseValueSource CurrentSource;
@@ -323,6 +329,11 @@ internal sealed class DependencyValueStore
     /// 优先级仅次于 local；<c>TemplateTrigger</c> 是模板对**被模板化的控件自身**下的
     /// trigger（无 TargetName），它必须低于该控件自己 Style 上的 trigger，否则用户写的
     /// <c>&lt;Style.Triggers&gt;</c> 永远盖不过主题模板的 hover/pressed 反馈。</para>
+    ///
+    /// <para>CSS 引擎占两层：<c>CssState</c>（胜者选择器含动态伪类，如 :hover）压过
+    /// StyleTrigger——作者显式写的 :hover 必须盖过主题的 hover 反馈——但永不压 local；
+    /// <c>CssBase</c>（普通命中值与内联 Css.Style）压过 StyleSetter（CSS 能覆盖主题/隐式/
+    /// 显式样式的 setter）但低于任何 trigger，保住「setter 类基线值输给 trigger」的不变式。</para>
     /// </summary>
     private static void RecomputeEffective(ref Entry entry)
     {
@@ -342,6 +353,11 @@ internal sealed class DependencyValueStore
             entry.EffectiveValue = values.ParentTemplate;
             entry.EffectiveSource = BaseValueSource.ParentTemplate;
         }
+        else if ((entry.Mask & LayerMask.CssState) != 0)
+        {
+            entry.EffectiveValue = values.CssState;
+            entry.EffectiveSource = BaseValueSource.StyleTrigger;
+        }
         else if ((entry.Mask & LayerMask.StyleTrigger) != 0)
         {
             entry.EffectiveValue = values.StyleTrigger;
@@ -351,6 +367,11 @@ internal sealed class DependencyValueStore
         {
             entry.EffectiveValue = values.TemplateTrigger;
             entry.EffectiveSource = BaseValueSource.TemplateTrigger;
+        }
+        else if ((entry.Mask & LayerMask.CssBase) != 0)
+        {
+            entry.EffectiveValue = values.CssBase;
+            entry.EffectiveSource = BaseValueSource.Style;
         }
         else if ((entry.Mask & LayerMask.StyleSetter) != 0)
         {
@@ -364,6 +385,35 @@ internal sealed class DependencyValueStore
         }
     }
 
+    /// <summary>Reports which layer currently supplies the effective value (mirrors <see cref="RecomputeEffective"/>).</summary>
+    internal bool TryGetEffectiveLayer(DependencyProperty property, out Layer layer)
+    {
+        var index = FindIndex(property);
+        if (index < 0)
+        {
+            layer = default;
+            return false;
+        }
+
+        var mask = _entries[index].Mask;
+        if ((mask & LayerMask.Local) != 0) layer = Layer.Local;
+        else if ((mask & LayerMask.ParentTemplateTrigger) != 0) layer = Layer.ParentTemplateTrigger;
+        else if ((mask & LayerMask.ParentTemplate) != 0) layer = Layer.ParentTemplate;
+        else if ((mask & LayerMask.CssState) != 0) layer = Layer.CssState;
+        else if ((mask & LayerMask.StyleTrigger) != 0) layer = Layer.StyleTrigger;
+        else if ((mask & LayerMask.TemplateTrigger) != 0) layer = Layer.TemplateTrigger;
+        else if ((mask & LayerMask.CssBase) != 0) layer = Layer.CssBase;
+        else if ((mask & LayerMask.StyleSetter) != 0) layer = Layer.StyleSetter;
+        else if ((mask & LayerMask.Current) != 0) layer = Layer.Current;
+        else
+        {
+            layer = default;
+            return false;
+        }
+
+        return true;
+    }
+
     private static void SetLayerValue(
         LayerValues values,
         Layer layer,
@@ -375,8 +425,10 @@ internal sealed class DependencyValueStore
             case Layer.Local: values.Local = value; break;
             case Layer.ParentTemplateTrigger: values.ParentTemplateTrigger = value; break;
             case Layer.ParentTemplate: values.ParentTemplate = value; break;
+            case Layer.CssState: values.CssState = value; break;
             case Layer.StyleTrigger: values.StyleTrigger = value; break;
             case Layer.TemplateTrigger: values.TemplateTrigger = value; break;
+            case Layer.CssBase: values.CssBase = value; break;
             case Layer.StyleSetter: values.StyleSetter = value; break;
             case Layer.Current:
                 values.Current = value;
@@ -391,8 +443,10 @@ internal sealed class DependencyValueStore
         Layer.Local => values.Local,
         Layer.ParentTemplateTrigger => values.ParentTemplateTrigger,
         Layer.ParentTemplate => values.ParentTemplate,
+        Layer.CssState => values.CssState,
         Layer.StyleTrigger => values.StyleTrigger,
         Layer.TemplateTrigger => values.TemplateTrigger,
+        Layer.CssBase => values.CssBase,
         Layer.StyleSetter => values.StyleSetter,
         Layer.Current => values.Current,
         _ => throw new ArgumentOutOfRangeException(nameof(layer), layer, null),
@@ -406,8 +460,10 @@ internal sealed class DependencyValueStore
         Layer.Local => LayerMask.Local,
         Layer.ParentTemplateTrigger => LayerMask.ParentTemplateTrigger,
         Layer.ParentTemplate => LayerMask.ParentTemplate,
+        Layer.CssState => LayerMask.CssState,
         Layer.StyleTrigger => LayerMask.StyleTrigger,
         Layer.TemplateTrigger => LayerMask.TemplateTrigger,
+        Layer.CssBase => LayerMask.CssBase,
         Layer.StyleSetter => LayerMask.StyleSetter,
         Layer.Current => LayerMask.Current,
         _ => throw new ArgumentOutOfRangeException(nameof(layer), layer, null),
@@ -418,15 +474,20 @@ internal sealed class DependencyValueStore
         Layer.Local => BaseValueSource.Local,
         Layer.ParentTemplateTrigger => BaseValueSource.ParentTemplateTrigger,
         Layer.ParentTemplate => BaseValueSource.ParentTemplate,
+        // CSS layers surface as their closest WPF analogue: BaseValueSource is a WPF-parity
+        // enum (pinned by parity tests) and must not grow new members. Precise attribution
+        // is available through CssDiagnostics instead.
+        Layer.CssState => BaseValueSource.StyleTrigger,
         Layer.StyleTrigger => BaseValueSource.StyleTrigger,
         Layer.TemplateTrigger => BaseValueSource.TemplateTrigger,
+        Layer.CssBase => BaseValueSource.Style,
         Layer.StyleSetter => BaseValueSource.Style,
         _ => BaseValueSource.Unknown,
     };
 
     private static bool IsSingleLayer(LayerMask mask)
     {
-        var bits = (byte)mask;
+        var bits = (ushort)mask;
         return bits != 0 && (bits & (bits - 1)) == 0;
     }
 
@@ -440,8 +501,10 @@ internal sealed class DependencyValueStore
             LayerMask.Local => Layer.Local,
             LayerMask.ParentTemplateTrigger => Layer.ParentTemplateTrigger,
             LayerMask.ParentTemplate => Layer.ParentTemplate,
+            LayerMask.CssState => Layer.CssState,
             LayerMask.StyleTrigger => Layer.StyleTrigger,
             LayerMask.TemplateTrigger => Layer.TemplateTrigger,
+            LayerMask.CssBase => Layer.CssBase,
             LayerMask.StyleSetter => Layer.StyleSetter,
             LayerMask.Current => Layer.Current,
             _ => throw new InvalidOperationException("Unknown dependency-property value layer."),

@@ -5003,9 +5003,11 @@ public static class XamlTypeRegistry
         // 需按简单名找到它（否则 SetAttachedProperty 抛 "Cannot resolve attached property owner type"）。
         Register<VirtualizingPanel>(types);
         Register<VirtualizingStackPanel>(types);
+        Register<FlexPanel>(types);
 
         // Static service classes used as attached-property owners
         RegisterStaticOwner(types, typeof(ContextMenuService));
+        RegisterStaticOwner(types, typeof(Jalium.UI.Styling.Css));
     }
 
     private static void RegisterStaticOwner(

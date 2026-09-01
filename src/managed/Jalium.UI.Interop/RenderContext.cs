@@ -31,6 +31,14 @@ public sealed class RenderContext : IDisposable
     private static readonly HashSet<RenderContext> _retiredContexts = [];
     private static int _generationCounter;
     private static RenderContext? _current;
+    // Backend an explicit (non-Auto) request last installed successfully. Every
+    // later Auto resolution prefers it, so an application-level backend choice
+    // survives the GPU prewarm, popup/dock-indicator surfaces and device-lost
+    // recovery — all of which request RenderBackend.Auto. Written under s_sync,
+    // read unlocked as a hint; cleared when the current context is disposed.
+    private static RenderBackend _pinnedBackend = RenderBackend.Auto;
+    // Backend the caller named when _current was installed (Auto when implicit).
+    private static RenderBackend _currentRequestedBackend = RenderBackend.Auto;
     private nint _handle;
     // 0 = usable, 1 = disposal requested.  A requested context can retain its
     // native handle while backend-bound resources are still pinned; the final
@@ -192,27 +200,47 @@ public sealed class RenderContext : IDisposable
     /// <c>GetOrCreateCurrent(RenderBackend.Vulkan)</c>
     /// reliably switch even after the background GPU prewarm
     /// (<see cref="RenderBackend.Auto"/> → platform default, D3D12 on Windows)
-    /// has already populated <see cref="Current"/>. Call it before the first
+    /// has already populated <see cref="Current"/>. An honored explicit request
+    /// also becomes sticky: every later <see cref="RenderBackend.Auto"/>
+    /// resolution in the process picks that backend while it stays available, so
+    /// the prewarm, popup / dock-indicator surfaces and device-lost recovery
+    /// (all of which request Auto) cannot fall back to the platform default
+    /// behind the application's back. Call it before the first
     /// window builds its render target: a context still pinned by a live render
     /// target (see <see cref="RegisterRenderTarget"/>) is retired but cannot be
     /// torn down until that target is released, so an already-rendering window
     /// keeps its original backend until its render target is recreated.
     /// </param>
-    /// <param name="gpuPreference">GPU adapter preference for multi-GPU systems.</param>
+    /// <param name="gpuPreference">
+    /// GPU adapter preference for multi-GPU systems.
+    /// <see cref="GpuPreference.Auto"/> means "no requirement": it never retires a
+    /// current context whose preference differs, it only supplies the default for
+    /// a context this call has to construct. Only an explicit preference is
+    /// enforced against the current context.
+    /// </param>
     /// <param name="forceReplace">
     /// Forces a brand-new context even when the current one already satisfies the
     /// request (used to recover from device-lost scenarios).
     /// </param>
     public static RenderContext GetOrCreateCurrent(RenderBackend backend = RenderBackend.Auto, GpuPreference gpuPreference = GpuPreference.Auto, bool forceReplace = false)
     {
-        // Capture whether the caller named a concrete backend BEFORE Auto is
-        // resolved to the platform default. Only an explicitly requested backend
-        // is enforced against the existing context; an Auto request is satisfied
-        // by whatever context is already current. That asymmetry is deliberate:
-        // it lets the prewarm's Auto call and the window's Auto call happily reuse
-        // a Vulkan context an explicit caller installed, instead of clobbering it
-        // back to the platform default.
+        // Capture what the caller actually named BEFORE normalization resolves
+        // Auto to a concrete value. Only an explicit request is enforced against
+        // the existing context; an Auto request is satisfied by whatever context
+        // is already current. That asymmetry is what lets the prewarm's Auto call
+        // and the window's Auto call reuse a Vulkan context an explicit caller
+        // installed instead of clobbering it back to the platform default.
+        //
+        // The same rule must hold for the GPU preference. NormalizeGpuPreference
+        // turns Auto into HighPerformance for D3D12 on Windows, so an Auto call
+        // (backend Auto -> D3D12 -> HighPerformance) used to compare
+        // HighPerformance against the Vulkan context's Auto preference, miss, and
+        // replace the explicitly installed Vulkan context with a fresh D3D12 one.
+        // A normalized default is a value for CONSTRUCTION, never a reuse
+        // requirement.
+        var requestedBackend = backend;
         bool explicitBackend = backend != RenderBackend.Auto;
+        bool explicitGpuPreference = gpuPreference != GpuPreference.Auto;
         backend = NormalizeRequestedBackend(backend);
         gpuPreference = NormalizeGpuPreference(gpuPreference, backend);
 
@@ -229,12 +257,10 @@ public sealed class RenderContext : IDisposable
             NativeMethods.IsBackendAvailable(backend) != 0;
 
         var current = _current;
-        if (!forceReplace && current != null && current.IsValid &&
-            (!enforceBackend || current.Backend == backend) &&
-            (gpuPreference == GpuPreference.Auto ||
-             current.GpuPreference == gpuPreference))
+        if (!forceReplace &&
+            CanSatisfyRequest(current, requestedBackend, backend, gpuPreference, enforceBackend, explicitGpuPreference))
         {
-            return current;
+            return current!;
         }
 
         RenderContext? previous;
@@ -243,31 +269,41 @@ public sealed class RenderContext : IDisposable
         lock (s_sync)
         {
             current = _current;
-            if (!forceReplace && current != null && current.IsValid &&
-                (!enforceBackend || current.Backend == backend) &&
-                (gpuPreference == GpuPreference.Auto ||
-                 current.GpuPreference == gpuPreference))
+            if (!forceReplace &&
+                CanSatisfyRequest(current, requestedBackend, backend, gpuPreference, enforceBackend, explicitGpuPreference))
             {
-                return current;
+                return current!;
             }
 
             previous = current;
             context = new RenderContext(backend, gpuPreference);
             _current = context;
+            _currentRequestedBackend = requestedBackend;
+
+            // Sticky selection: once an explicit request is honored, every later
+            // Auto resolution in this process resolves to that backend — including
+            // the device-lost paths that pass RenderBackend.Auto with forceReplace.
+            // Only pin an honored request: a request that silently degraded (e.g.
+            // the constructor's Software last resort) must not become the process
+            // default.
+            if (explicitBackend && context.Backend == backend)
+            {
+                _pinnedBackend = backend;
+            }
+
             clearTextMeasurementCache = previous != null && !ReferenceEquals(previous, context);
 
             // Retire the displaced context when we forced a replacement, or when an
-            // available explicit backend request swapped out a context running a
-            // different backend. Retirement defers native teardown until the
-            // context's last render target / dependent handle is released, so this
-            // stays safe even if something still holds the old context.
+            // available explicit backend / GPU-preference request swapped out a
+            // context that does not match it. Retirement defers native teardown
+            // until the context's last render target / dependent handle is released,
+            // so this stays safe even if something still holds the old context.
             if (previous != null &&
                 previous.IsValid &&
                 !ReferenceEquals(previous, context) &&
                 (forceReplace ||
                  (enforceBackend && previous.Backend != backend) ||
-                 (gpuPreference != GpuPreference.Auto &&
-                  previous.GpuPreference != gpuPreference)))
+                 (explicitGpuPreference && previous.GpuPreference != gpuPreference)))
             {
                 previous._retireRequested = true;
                 _retiredContexts.Add(previous);
@@ -281,6 +317,40 @@ public sealed class RenderContext : IDisposable
 
         TryDisposeRetiredContexts();
         return context;
+    }
+
+    /// <summary>
+    /// Decides whether <paramref name="current"/> already satisfies the request.
+    /// Backend and GPU preference are only compared when the caller named them:
+    /// a value produced by normalizing Auto is a construction default, not a
+    /// reuse requirement.
+    /// </summary>
+    private static bool CanSatisfyRequest(
+        RenderContext? current,
+        RenderBackend requestedBackend,
+        RenderBackend resolvedBackend,
+        GpuPreference resolvedGpuPreference,
+        bool enforceBackend,
+        bool enforceGpuPreference)
+    {
+        if (current is null || !current.IsValid)
+        {
+            return false;
+        }
+
+        // A context whose Backend differs from the request is still accepted when
+        // it was installed for that very request: jalium_context_create honors
+        // JALIUM_RENDER_BACKEND after the fact, so an overridden request can never
+        // produce a context whose Backend equals it, and without this the caller
+        // would churn a brand-new context on every call.
+        if (enforceBackend &&
+            current.Backend != resolvedBackend &&
+            _currentRequestedBackend != requestedBackend)
+        {
+            return false;
+        }
+
+        return !enforceGpuPreference || current.GpuPreference == resolvedGpuPreference;
     }
 
     /// <summary>
@@ -611,10 +681,28 @@ public sealed class RenderContext : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Resolves an Auto backend request. A backend an explicit caller already
+    /// installed wins over the platform default for as long as it stays
+    /// available, so the Auto call sites (GPU prewarm, popup / dock-indicator
+    /// surfaces, device-lost recovery) rebuild on the application's choice.
+    /// </summary>
     private static RenderBackend NormalizeRequestedBackend(RenderBackend backend)
-        => backend == RenderBackend.Auto
-            ? RenderBackendSelector.GetPreferredBackend()
-            : backend;
+    {
+        if (backend != RenderBackend.Auto)
+        {
+            return backend;
+        }
+
+        var pinned = _pinnedBackend;
+        if (pinned != RenderBackend.Auto &&
+            NativeMethods.IsBackendAvailable(pinned) != 0)
+        {
+            return pinned;
+        }
+
+        return RenderBackendSelector.GetPreferredBackend();
+    }
 
     private static GpuPreference NormalizeGpuPreference(
         GpuPreference preference,
@@ -635,6 +723,11 @@ public sealed class RenderContext : IDisposable
             if (_current == this)
             {
                 _current = null;
+                _currentRequestedBackend = RenderBackend.Auto;
+                // The sticky selection lives exactly as long as the context an
+                // explicit request installed; a later Auto request resolves the
+                // platform default again.
+                _pinnedBackend = RenderBackend.Auto;
             }
 
             if (_handle != nint.Zero && _activeRenderTargetCount == 0)

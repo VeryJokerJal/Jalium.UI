@@ -44,12 +44,18 @@ if ($FxcPath) {
 if (-not $fxc) { throw 'fxc.exe not found (install a Windows 10/11 SDK or pass -FxcPath)' }
 Write-Host "Using fxc: $fxc"
 
-# The 13 Vello compute stages, in the header's array order.
+# The 19 Vello 0.10.0 compute stages, in dispatch order.
 # Symbol names MUST stay in sync with the consumers in d3d12_vello.cpp
-# (CreateComputePipelines / CreateGpuPipelines reference vello_bytecode::k*).
+# (CreateGPUPipeline references vello_bytecode::k*).
 $stages = @(
+    @{ File = 'vello_pathtag_reduce';    Symbol = 'kPathtagReduce' },
+    @{ File = 'vello_pathtag_reduce2';   Symbol = 'kPathtagReduce2' },
+    @{ File = 'vello_pathtag_scan1';     Symbol = 'kPathtagScan1' },
+    @{ File = 'vello_pathtag_scan';      Symbol = 'kPathtagScan' },
     @{ File = 'vello_bbox_clear';        Symbol = 'kBboxClear' },
     @{ File = 'vello_flatten';           Symbol = 'kFlatten' },
+    @{ File = 'vello_draw_reduce';       Symbol = 'kDrawReduce' },
+    @{ File = 'vello_draw_leaf';         Symbol = 'kDrawLeaf' },
     @{ File = 'vello_clip_reduce';       Symbol = 'kVelloClipReduce' },
     @{ File = 'vello_clip_leaf';         Symbol = 'kVelloClipLeaf' },
     @{ File = 'vello_binning';           Symbol = 'kBinning' },

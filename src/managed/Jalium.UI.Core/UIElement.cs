@@ -6495,6 +6495,10 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         }
         else
         {
+            // Mirror LayoutManager.UpdateLayout: pending CSS can change sizes, so it has to
+            // settle before this pass, not after it. Trees without a layout manager — headless
+            // hosts, RenderTargetBitmap snapshots — would otherwise lay out unstyled.
+            Jalium.UI.Styling.CssEvaluationScheduler.FlushIfPending(root.Dispatcher);
             root.Measure(available);
             root.Arrange(new Rect(0, 0, available.Width, available.Height));
         }

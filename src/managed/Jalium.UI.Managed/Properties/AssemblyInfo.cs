@@ -43,6 +43,7 @@ using Jalium.UI.Markup;
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.Primitives")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.Ribbon")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Shapes")]
+[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Styling")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.Shell")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Shell")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.TextEffects")]

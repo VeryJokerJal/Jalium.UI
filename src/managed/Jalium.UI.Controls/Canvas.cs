@@ -141,6 +141,27 @@ public class Canvas : Panel
     /// </summary>
     protected virtual void ArrangeChild(FrameworkElement child, Size finalSize)
     {
+        // CSS position:absolute children use the inset protocol (adds % support and
+        // both-edges sizing); the classic attached-property path stays untouched.
+        if (child.CssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Absolute } cssLayout)
+        {
+            var effectiveWidth = child.Width;
+            if (double.IsNaN(effectiveWidth) && cssLayout.Width.IsSet)
+            {
+                effectiveWidth = cssLayout.Width.Resolve(finalSize.Width, double.NaN);
+            }
+
+            var effectiveHeight = child.Height;
+            if (double.IsNaN(effectiveHeight) && cssLayout.Height.IsSet)
+            {
+                effectiveHeight = cssLayout.Height.Resolve(finalSize.Height, double.NaN);
+            }
+
+            child.Arrange(Jalium.UI.Styling.CssAbsoluteLayout.ComputeSlot(
+                cssLayout, finalSize, child.DesiredSize, effectiveWidth, effectiveHeight));
+            return;
+        }
+
         var left = GetLeft(child);
         var top = GetTop(child);
         var right = GetRight(child);

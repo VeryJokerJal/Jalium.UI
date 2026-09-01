@@ -93,6 +93,7 @@
   <ItemGroup>
     <ClInclude Include="include\jalium_media.h" />
     <ClInclude Include="include\jalium_media_internal.h" />
+    <ClInclude Include="include\jalium_audio.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\jalium_media_common.cpp" />

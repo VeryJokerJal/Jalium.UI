@@ -1,0 +1,628 @@
+{
+  "states": [
+    {
+      "name": "initial-home",
+      "window": {
+        "ActualWidth": 1800,
+        "ActualHeight": 1200
+      },
+      "host": {
+        "ActualHeight": 1136,
+        "ViewportHeight": 1136,
+        "ExtentHeight": 980.07080078125,
+        "ScrollableHeight": 0,
+        "VerticalOffset": 0
+      },
+      "frame": {
+        "ActualHeight": 1136,
+        "DesiredSize": {
+          "Width": 1540,
+          "Height": 980.07080078125,
+          "IsEmpty": false
+        }
+      },
+      "page": {
+        "ActualHeight": 1086,
+        "DesiredSize": {
+          "Width": 1492,
+          "Height": 930.07080078125,
+          "IsEmpty": false
+        },
+        "IsLoaded": true,
+        "hostFound": true,
+        "hostMatches": true
+      },
+      "list": {
+        "Height": 798,
+        "ActualHeight": 798,
+        "DesiredSize": {
+          "Width": 1112,
+          "Height": 798,
+          "IsEmpty": false
+        },
+        "innerViewportHeight": 798,
+        "innerExtentHeight": 7968,
+        "innerScrollableHeight": 7170,
+        "innerOffset": 0
+      }
+    },
+    {
+      "name": "returned-home",
+      "window": {
+        "ActualWidth": 1800,
+        "ActualHeight": 1200
+      },
+      "host": {
+        "ActualHeight": 1136,
+        "ViewportHeight": 1136,
+        "ExtentHeight": 1136,
+        "ScrollableHeight": 0,
+        "VerticalOffset": 0
+      },
+      "frame": {
+        "ActualHeight": 1136,
+        "DesiredSize": {
+          "Width": 1540,
+          "Height": 1136,
+          "IsEmpty": false
+        }
+      },
+      "page": {
+        "ActualHeight": 1086,
+        "DesiredSize": {
+          "Width": 1492,
+          "Height": 1086,
+          "IsEmpty": false
+        },
+        "IsLoaded": true,
+        "hostFound": true,
+        "hostMatches": true
+      },
+      "list": {
+        "Height": 953.92919921875,
+        "ActualHeight": 953.92919921875,
+        "DesiredSize": {
+          "Width": 1112,
+          "Height": 953.92919921875,
+          "IsEmpty": false
+        },
+        "innerViewportHeight": 953.92919921875,
+        "innerExtentHeight": 7968,
+        "innerScrollableHeight": 7014.07080078125,
+        "innerOffset": 0
+      }
+    }
+  ],
+  "themeClick": {
+    "diagnostics": {
+      "origin": {
+        "X": 78,
+        "Y": 1095.3798828125
+      },
+      "ActualWidth": 74.84375,
+      "ActualHeight": 17.240234375,
+      "center": {
+        "X": 115.421875,
+        "Y": 1104
+      },
+      "DpiScale": 1,
+      "clientX": 115,
+      "clientY": 1104,
+      "hit": "Jalium.UI.Controls.TextBlock",
+      "chain": [
+        {
+          "type": "TextBlock",
+          "Name": "ThemeToggleLabel",
+          "origin": {
+            "X": 78,
+            "Y": 1095.3798828125
+          },
+          "ActualWidth": 74.84375,
+          "ActualHeight": 17.240234375,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "StackPanel",
+          "Name": "",
+          "origin": {
+            "X": 40,
+            "Y": 1090
+          },
+          "ActualWidth": 112.84375,
+          "ActualHeight": 28,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "ContentPresenter",
+          "Name": "",
+          "origin": {
+            "X": 40,
+            "Y": 1090
+          },
+          "ActualWidth": 112.84375,
+          "ActualHeight": 28,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "",
+          "origin": {
+            "X": 30,
+            "Y": 1082
+          },
+          "ActualWidth": 187,
+          "ActualHeight": 44,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Button",
+          "Name": "",
+          "origin": {
+            "X": 30,
+            "Y": 1082
+          },
+          "ActualWidth": 187,
+          "ActualHeight": 44,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "StackPanel",
+          "Name": "",
+          "origin": {
+            "X": 30,
+            "Y": 1082
+          },
+          "ActualWidth": 187,
+          "ActualHeight": 92,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "PaneFooterContent",
+          "origin": {
+            "X": 30,
+            "Y": 1070
+          },
+          "ActualWidth": 187,
+          "ActualHeight": 104,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "PART_PaneFooterHost",
+          "origin": {
+            "X": 0,
+            "Y": 1054
+          },
+          "ActualWidth": 247,
+          "ActualHeight": 140,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "StackPanel",
+          "Name": "",
+          "origin": {
+            "X": 0,
+            "Y": 1047
+          },
+          "ActualWidth": 247,
+          "ActualHeight": 147,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "PART_PaneFooterRegion",
+          "origin": {
+            "X": 0,
+            "Y": 1047
+          },
+          "ActualWidth": 247,
+          "ActualHeight": 147,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 2,
+          "gridColumn": 0
+        },
+        {
+          "type": "Grid",
+          "Name": "",
+          "origin": {
+            "X": 0,
+            "Y": 74
+          },
+          "ActualWidth": 247,
+          "ActualHeight": 1126,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "PART_PaneContainer",
+          "origin": {
+            "X": 0,
+            "Y": 64
+          },
+          "ActualWidth": 248,
+          "ActualHeight": 1136,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Grid",
+          "Name": "PART_RootGrid",
+          "origin": {
+            "X": 0,
+            "Y": 64
+          },
+          "ActualWidth": 1800,
+          "ActualHeight": 1136,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "NavigationView",
+          "Name": "NavigationView",
+          "origin": {
+            "X": 0,
+            "Y": 64
+          },
+          "ActualWidth": 1800,
+          "ActualHeight": 1136,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Grid",
+          "Name": "RootShellGrid",
+          "origin": {
+            "X": 0,
+            "Y": 64
+          },
+          "ActualWidth": 1800,
+          "ActualHeight": 1136,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "MainWindow",
+          "Name": "",
+          "origin": {
+            "X": 0,
+            "Y": 0
+          },
+          "ActualWidth": 1800,
+          "ActualHeight": 1200,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        }
+      ],
+      "labelChain": [
+        {
+          "type": "TextBlock",
+          "Name": "ThemeToggleLabel",
+          "origin": {
+            "X": 78,
+            "Y": 1095.3798828125
+          },
+          "ActualWidth": 74.84375,
+          "ActualHeight": 17.240234375,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "StackPanel",
+          "Name": "",
+          "origin": {
+            "X": 40,
+            "Y": 1090
+          },
+          "ActualWidth": 112.84375,
+          "ActualHeight": 28,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "ContentPresenter",
+          "Name": "",
+          "origin": {
+            "X": 40,
+            "Y": 1090
+          },
+          "ActualWidth": 112.84375,
+          "ActualHeight": 28,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "",
+          "origin": {
+            "X": 30,
+            "Y": 1082
+          },
+          "ActualWidth": 187,
+          "ActualHeight": 44,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Button",
+          "Name": "",
+          "origin": {
+            "X": 30,
+            "Y": 1082
+          },
+          "ActualWidth": 187,
+          "ActualHeight": 44,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "StackPanel",
+          "Name": "",
+          "origin": {
+            "X": 30,
+            "Y": 1082
+          },
+          "ActualWidth": 187,
+          "ActualHeight": 92,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "PaneFooterContent",
+          "origin": {
+            "X": 30,
+            "Y": 1070
+          },
+          "ActualWidth": 187,
+          "ActualHeight": 104,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "PART_PaneFooterHost",
+          "origin": {
+            "X": 0,
+            "Y": 1054
+          },
+          "ActualWidth": 247,
+          "ActualHeight": 140,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "StackPanel",
+          "Name": "",
+          "origin": {
+            "X": 0,
+            "Y": 1047
+          },
+          "ActualWidth": 247,
+          "ActualHeight": 147,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "PART_PaneFooterRegion",
+          "origin": {
+            "X": 0,
+            "Y": 1047
+          },
+          "ActualWidth": 247,
+          "ActualHeight": 147,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 2,
+          "gridColumn": 0
+        },
+        {
+          "type": "Grid",
+          "Name": "",
+          "origin": {
+            "X": 0,
+            "Y": 74
+          },
+          "ActualWidth": 247,
+          "ActualHeight": 1126,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Border",
+          "Name": "PART_PaneContainer",
+          "origin": {
+            "X": 0,
+            "Y": 64
+          },
+          "ActualWidth": 248,
+          "ActualHeight": 1136,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Grid",
+          "Name": "PART_RootGrid",
+          "origin": {
+            "X": 0,
+            "Y": 64
+          },
+          "ActualWidth": 1800,
+          "ActualHeight": 1136,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "NavigationView",
+          "Name": "NavigationView",
+          "origin": {
+            "X": 0,
+            "Y": 64
+          },
+          "ActualWidth": 1800,
+          "ActualHeight": 1136,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "Grid",
+          "Name": "RootShellGrid",
+          "origin": {
+            "X": 0,
+            "Y": 64
+          },
+          "ActualWidth": 1800,
+          "ActualHeight": 1136,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        },
+        {
+          "type": "MainWindow",
+          "Name": "",
+          "origin": {
+            "X": 0,
+            "Y": 0
+          },
+          "ActualWidth": 1800,
+          "ActualHeight": 1200,
+          "Visibility": 0,
+          "IsHitTestVisible": true,
+          "gridRow": 0,
+          "gridColumn": 0
+        }
+      ],
+      "paneScrollViewer": {
+        "type": "ScrollViewer",
+        "Name": "PART_PaneScrollViewer",
+        "origin": {
+          "X": 0,
+          "Y": 179.48046875
+        },
+        "ActualWidth": 247,
+        "ActualHeight": 865.51953125,
+        "Visibility": 0,
+        "IsHitTestVisible": true,
+        "gridRow": 1,
+        "gridColumn": 0
+      },
+      "paneFooterRegion": {
+        "type": "Border",
+        "Name": "PART_PaneFooterRegion",
+        "origin": {
+          "X": 0,
+          "Y": 1047
+        },
+        "ActualWidth": 247,
+        "ActualHeight": 147,
+        "Visibility": 0,
+        "IsHitTestVisible": true,
+        "gridRow": 2,
+        "gridColumn": 0
+      },
+      "templateOwner": null,
+      "rootIsCurrent": false,
+      "currentRootParent": null,
+      "templateOwnerParent": null
+    },
+    "before": "Light theme",
+    "afterFirst": "Dark theme",
+    "afterSecond": "Light theme",
+    "themeStateAfterFirst": "Dark/Dark",
+    "themeStateAfterSecond": "Light/Light",
+    "firstChanged": true,
+    "secondChanged": true,
+    "clickHandlersBefore": [
+      "Jalium.UI.Gallery.Modules.Main.Views.MainWindow.OnThemeToggleClick target=Jalium.UI.Gallery.Modules.Main.Views.MainWindow"
+    ],
+    "postedMessages": [
+      true,
+      true
+    ],
+    "inputEvents": [
+      "label-down handled=False source=TextBlock state=Light/Light",
+      "button-down handled=True pressed=True over=True",
+      "mode-changed framework=Dark gallery=Dark",
+      "button-click",
+      "button-up handled=True pressed=False over=True",
+      "label-down handled=False source=TextBlock state=Dark/Dark",
+      "button-down handled=True pressed=True over=True",
+      "mode-changed framework=Light gallery=Light",
+      "button-click",
+      "button-up handled=True pressed=False over=True"
+    ],
+    "mouseCaptured": null,
+    "mouseDirectlyOver": "Jalium.UI.Controls.TextBlock",
+    "buttonPressed": false,
+    "buttonMouseOver": true
+  }
+}

@@ -884,6 +884,7 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
         { "Border", "Jalium.UI.Controls.Border" },
         { "DockPanel", "Jalium.UI.Controls.DockPanel" },
         { "WrapPanel", "Jalium.UI.Controls.WrapPanel" },
+        { "FlexPanel", "Jalium.UI.Controls.FlexPanel" },
         { "ContentControl", "Jalium.UI.Controls.ContentControl" },
         { "ItemsControl", "Jalium.UI.Controls.ItemsControl" },
         { "UserControl", "Jalium.UI.Controls.UserControl" },

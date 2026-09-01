@@ -1502,6 +1502,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
              Math.Abs(nm21) < 1e-6 && Math.Abs(nm22 - 1.0) < 1e-6 &&
              Math.Abs(ndx) < 1e-6 && Math.Abs(ndy) < 1e-6);
 
+
         // Pixel-snap the effective font size (mirrors WPF TextFormattingMode.Display) and
         // degrade heavy weights at sizes where CJK strokes collide (WinUI's gasp-table
         // hinting does the same implicitly). These passes apply to both identity-matrix
@@ -1674,6 +1675,26 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         const double axisAlignmentEpsilon = 1e-6;
         const double scaleDifferenceEpsilon = 0.001;
+
+        // Rotation / skew: the screen-resolution compensation below can only
+        // express the matrix as ONE font size, which is exactly what an angle
+        // cannot be folded into — so it used to be dropped outright and a
+        // rotated card rendered with upright glyphs. Keeping the live matrix
+        // instead hands the rotation to the native glyph rasterizer, which bakes
+        // it into the atlas bitmap (D3D12GlyphAtlas / VulkanGlyphAtlas take the
+        // full 2x2 and rasterize THROUGH it).
+        //
+        // The threshold is scale-RELATIVE and matches the native side's own
+        // axis-aligned test, so the two never disagree about which class a
+        // transform belongs to: a matrix native treats as axis-aligned must not
+        // be sent down this path, or the run would be laid out at 1x while
+        // native still expects the compensated size.
+        double scaleReference = Math.Max(Math.Max(scaleX, scaleY), 1.0);
+        double rotationEpsilon = 1e-3 * scaleReference;
+        if (Math.Abs(m12) > rotationEpsilon || Math.Abs(m21) > rotationEpsilon)
+        {
+            return true;
+        }
 
         return Math.Abs(m12) <= axisAlignmentEpsilon &&
                Math.Abs(m21) <= axisAlignmentEpsilon &&
@@ -1923,6 +1944,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 // StrokePath too would double-paint the cap, which darkens visibly the
                 // moment the stroke brush is translucent.
                 bool routeRendersCaps;
+                double capSnapDx = 0, capSnapDy = 0;
                 if (hasDash && FigureHasCurves(figure))
                 {
                     // Route dashed curved paths through native StrokePath (Vello handles dash expansion)
@@ -1942,7 +1964,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 }
                 else
                 {
-                    DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule, geoBounds);
+                    // The polygon route may snap the stroke onto the crisp device
+                    // phase; the manually appended cap circles below must follow
+                    // the same translation or they sit up to half a pixel off the
+                    // stroke they terminate.
+                    DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule, geoBounds,
+                        out capSnapDx, out capSnapDy);
                     routeRendersCaps = false;
                 }
 
@@ -1963,9 +1990,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                         else if (seg is ArcSegment arcs) endPt = arcs.Point;
                     }
                     if (pen.StartLineCap == PenLineCap.Round)
-                        DrawEllipse(pen.Brush, null, startPt, capRadius, capRadius);
+                        DrawEllipse(pen.Brush, null,
+                            new Point(startPt.X + capSnapDx, startPt.Y + capSnapDy), capRadius, capRadius);
                     if (pen.EndLineCap == PenLineCap.Round)
-                        DrawEllipse(pen.Brush, null, endPt, capRadius, capRadius);
+                        DrawEllipse(pen.Brush, null,
+                            new Point(endPt.X + capSnapDx, endPt.Y + capSnapDy), capRadius, capRadius);
                 }
             }
         }
@@ -2586,7 +2615,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private List<Point>? _polygonPointBuffer;
 
     private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds)
+        => DrawPathFigurePolygon(brush, pen, figure, fillRule, geoBounds, out _, out _);
+
+    private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds,
+        out double appliedSnapDx, out double appliedSnapDy)
     {
+        appliedSnapDx = 0;
+        appliedSnapDy = 0;
+
         if (_svgDiagActive)
             _svgDrawPathPolygonCount++;
 
@@ -2657,30 +2693,33 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
         }
 
-        // The native DrawPolygon already adds a 0.5 offset for odd-pixel strokes
-        // to align to pixel centers.  The managed side must therefore snap to the
-        // nearest *integer* so the combined result lands on half-pixel → crisp 1px.
-        // Using SnapCoordinate (which preserves half-pixel values) would cause a
-        // double offset: 0.5 (snap) + 0.5 (native) = 1.0 → integer position →
-        // the stroke spans two pixel rows and appears ~2px thick.
+        // Axis-aligned figures are snapped so their DEVICE-space stroke phase is
+        // crisp. The old contract here ("managed rounds to the nearest integer,
+        // native DrawPolygon adds 0.5 for odd widths") is dead: the Impeller
+        // stroke path applies no such shift, so integer-rounded coordinates
+        // parked every 1px line exactly on a pixel BOUNDARY — anti-aliasing then
+        // splits it across two ~60% columns and a 1px stroke reads as a fuzzy
+        // 2px one.
         //
-        // For paths that contain diagonal segments we skip snapping entirely so
-        // that the native 0.5 shift is a uniform translation (no visual impact on
-        // thickness) and anti-aliased diagonals render at their natural weight.
+        // The snap therefore happens in device pixels (native scale × DPI folded
+        // in) and picks the phase from the rounded device stroke width: odd
+        // widths get a half-pixel center, even widths an integer center,
+        // fill-only polygons an integer edge. Under rotation/skew "axis-aligned"
+        // has no device meaning and the snap is skipped, as it is for diagonal
+        // segments, so anti-aliased diagonals render at their natural weight.
         bool isAxisAligned = !hasCurvedSegments && IsAxisAlignedPath(points);
 
         var pointArray = new float[points.Count * 2];
-        if (isAxisAligned && points.Count > 0)
+        double snapDx = 0, snapDy = 0;
+        bool hasStroke = pen?.Brush != null && pen.Thickness > 0;
+        if (isAxisAligned && points.Count > 0
+            && TryComputeAxisAlignedSnap(
+                points[0].X + Offset.X, points[0].Y + Offset.Y,
+                hasStroke ? pen!.Thickness : 0.0, hasStroke,
+                out snapDx, out snapDy))
         {
-            // Snap the first point to the nearest integer, then apply the
-            // same fractional offset to all subsequent points.  This preserves
-            // relative distances (lengths) between points while still aligning
-            // the path to the pixel grid for crisp rendering.
-            var baseX = points[0].X + Offset.X;
-            var baseY = points[0].Y + Offset.Y;
-            var snapDx = Math.Round(baseX) - baseX;
-            var snapDy = Math.Round(baseY) - baseY;
-
+            appliedSnapDx = snapDx;
+            appliedSnapDy = snapDy;
             for (int i = 0; i < points.Count; i++)
             {
                 pointArray[i * 2] = (float)(points[i].X + Offset.X + snapDx);
@@ -2726,6 +2765,121 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit);
             }
         }
+    }
+
+    /// <summary>
+    /// Computes the translation that parks an axis-aligned polygon figure on the crisp
+    /// device-pixel phase, folding the mirrored native transform and the render target's
+    /// DPI scale into the calculation. Returns false when the accumulated transform
+    /// rotates or skews (axis alignment has no device meaning there) — callers then
+    /// draw unsnapped.
+    /// </summary>
+    private bool TryComputeAxisAlignedSnap(
+        double baseX, double baseY, double strokeThickness, bool hasStroke,
+        out double snapDx, out double snapDy)
+    {
+        double m11 = 1, m12 = 0, m21 = 0, m22 = 1, tdx = 0, tdy = 0;
+        if (_nativeTransformDepth > 0)
+        {
+            m11 = _currentNativeMatrix[0];
+            m12 = _currentNativeMatrix[1];
+            m21 = _currentNativeMatrix[2];
+            m22 = _currentNativeMatrix[3];
+            tdx = _currentNativeMatrix[4];
+            tdy = _currentNativeMatrix[5];
+        }
+
+        return ComputeAxisAlignedSnap(
+            baseX, baseY, strokeThickness, hasStroke,
+            m11, m12, m21, m22, tdx, tdy,
+            _renderTarget.DpiScaleX, _renderTarget.DpiScaleY,
+            out snapDx, out snapDy);
+    }
+
+    /// <summary>
+    /// Device-phase snap arithmetic for axis-aligned polygon figures, separated from
+    /// the drawing-context state so it is testable. The returned offsets are in the
+    /// caller's (pre-transform) coordinate space and are applied uniformly to every
+    /// point of the figure, preserving segment lengths.
+    /// </summary>
+    /// <remarks>
+    /// The native renderer multiplies coordinates by transform × dpiScale, so the
+    /// device-space center of a stroked line is <c>coord·scale·dpi + translate·dpi</c>.
+    /// A stroke whose rounded device width is ODD is crispest with its center on a
+    /// half-pixel (covers a whole pixel column exactly); an EVEN width wants an
+    /// integer center (covers whole columns on both sides). A fill-only polygon wants
+    /// its EDGE on an integer. Getting this phase wrong is not subtle: a 1px line
+    /// centered on a pixel boundary is split by anti-aliasing into two half-covered
+    /// columns and visibly reads as a blurry 2px line.
+    /// </remarks>
+    internal static bool ComputeAxisAlignedSnap(
+        double baseX, double baseY, double strokeThickness, bool hasStroke,
+        double m11, double m12, double m21, double m22, double tdx, double tdy,
+        double dpiScaleX, double dpiScaleY,
+        out double snapDx, out double snapDy)
+    {
+        snapDx = 0;
+        snapDy = 0;
+
+        // Rotation / skew / mirroring / degenerate scale: no meaningful device phase.
+        if (Math.Abs(m12) > 1e-6 || Math.Abs(m21) > 1e-6) return false;
+        if (!(m11 > 0) || !(m22 > 0) || !double.IsFinite(m11) || !double.IsFinite(m22)) return false;
+
+        var dpiX = dpiScaleX > 0 && double.IsFinite(dpiScaleX) ? dpiScaleX : 1.0;
+        var dpiY = dpiScaleY > 0 && double.IsFinite(dpiScaleY) ? dpiScaleY : 1.0;
+        var sx = m11 * dpiX;
+        var sy = m22 * dpiY;
+        if (!(sx > 0) || !(sy > 0) || !double.IsFinite(sx) || !double.IsFinite(sy)) return false;
+
+        var devX = baseX * sx + tdx * dpiX;
+        var devY = baseY * sy + tdy * dpiY;
+        if (!double.IsFinite(devX) || !double.IsFinite(devY)) return false;
+
+        double targetX, targetY;
+        if (hasStroke && strokeThickness > 0)
+        {
+            targetX = SnapStrokeCenter(devX, strokeThickness * sx);
+            targetY = SnapStrokeCenter(devY, strokeThickness * sy);
+        }
+        else
+        {
+            targetX = Math.Round(devX);
+            targetY = Math.Round(devY);
+        }
+
+        snapDx = (targetX - devX) / sx;
+        snapDy = (targetY - devY) / sy;
+        return double.IsFinite(snapDx) && double.IsFinite(snapDy);
+    }
+
+    /// <summary>
+    /// Snaps a device-space stroke center-line coordinate to the phase matching its
+    /// device-space width: odd rounded widths → half-pixel center, even → integer center.
+    /// </summary>
+    internal static double SnapStrokeCenter(double deviceCoord, double deviceWidth)
+    {
+        if (!(deviceWidth > 0) || !double.IsFinite(deviceWidth))
+            return Math.Round(deviceCoord);
+
+        return RoundWidthPreferOdd(deviceWidth) % 2 == 1
+            ? Math.Floor(deviceCoord) + 0.5
+            : Math.Round(deviceCoord);
+    }
+
+    /// <summary>
+    /// Rounds a device stroke width to whole pixels for the phase decision. Exact
+    /// midpoints (x.5) resolve toward the ODD neighbour: at e.g. 1.5px the half-pixel
+    /// phase renders one full column with light side bleed (reads as one line) while
+    /// the integer phase renders two 75% columns (reads as a fuzzy pair).
+    /// </summary>
+    internal static int RoundWidthPreferOdd(double deviceWidth)
+    {
+        var floor = Math.Floor(deviceWidth);
+        var frac = deviceWidth - floor;
+        var lower = Math.Max(0, (int)floor);
+        if (frac > 0.5 + 1e-9) return lower + 1;
+        if (frac < 0.5 - 1e-9) return Math.Max(1, lower);
+        return lower % 2 == 1 ? lower : lower + 1;
     }
 
     /// <summary>
@@ -4841,6 +4995,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         return hash == 0 ? 1 : hash;
     }
 
+    /// <summary>
+    /// Maps the WPF-ordered <see cref="GradientSpreadMethod"/> (Pad=0, Reflect=1,
+    /// Repeat=2) to the native ABI extend convention (0=Pad, 1=Repeat, 2=Reflect).
+    /// </summary>
+    private static uint ToNativeExtendMode(GradientSpreadMethod spread) => spread switch
+    {
+        GradientSpreadMethod.Repeat => 1u,
+        GradientSpreadMethod.Reflect => 2u,
+        _ => 0u,
+    };
+
     private NativeBrush? CreateNativeLinearGradient(LinearGradientBrush brush,
         float bx, float by, float bw, float bh)
     {
@@ -4870,7 +5035,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var stops = MarshalGradientStops(
             brush.GradientStops,
             brush.Opacity);
-        var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count, (uint)brush.SpreadMethod);
+        var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count, ToNativeExtendMode(brush.SpreadMethod));
         if (!nb.IsValid)
         {
             nb.Dispose();
@@ -4920,7 +5085,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var stops = MarshalGradientStops(
             brush.GradientStops,
             brush.Opacity);
-        var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count, (uint)brush.SpreadMethod);
+        var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count, ToNativeExtendMode(brush.SpreadMethod));
         if (!nb.IsValid)
         {
             nb.Dispose();

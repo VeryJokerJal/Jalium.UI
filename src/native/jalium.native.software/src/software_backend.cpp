@@ -201,6 +201,24 @@ void SoftwareFramebuffer::SetPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, u
 // Brush Sampling
 // ============================================================================
 
+// 0=Pad, 1=Repeat, 2=Reflect — same wire values as EngineBrushData::spreadMethod
+// and the managed SoftwareVectorRasterizer. Applied to the raw gradient
+// parameter BEFORE stop interpolation (InterpolateGradientStops clamps, which
+// is exactly Pad, so Pad needs no wrapping here).
+static inline float ApplyGradientSpread(float t, uint32_t spreadMethod)
+{
+    switch (spreadMethod) {
+        case 1: // Repeat
+            return t - std::floor(t);
+        case 2: { // Reflect
+            float wrapped = std::fmod(std::fabs(t), 2.0f);
+            return wrapped > 1.0f ? 2.0f - wrapped : wrapped;
+        }
+        default:
+            return t;
+    }
+}
+
 void SoftwareLinearGradientBrush::SampleColor(float px, float py,
     float& outR, float& outG, float& outB, float& outA) const
 {
@@ -208,15 +226,37 @@ void SoftwareLinearGradientBrush::SampleColor(float px, float py,
     float dy = endY - startY;
     float lenSq = dx * dx + dy * dy;
     float t = (lenSq > 0) ? ((px - startX) * dx + (py - startY) * dy) / lenSq : 0;
+    t = ApplyGradientSpread(t, spreadMethod);
     InterpolateGradientStops(stops, t, outR, outG, outB, outA);
 }
 
 void SoftwareRadialGradientBrush::SampleColor(float px, float py,
     float& outR, float& outG, float& outB, float& outA) const
 {
-    float dx = (px - centerX) / (radiusX > 0 ? radiusX : 1);
-    float dy = (py - centerY) / (radiusY > 0 ? radiusY : 1);
-    float t = std::sqrt(dx * dx + dy * dy);
+    // WPF focal-point semantics (GradientOrigin): t=0 at the origin, t=1 where
+    // the ray origin→P crosses the center/radius ellipse. Solved in the unit
+    // circle space of the ellipse; matches the managed SoftwareVectorRasterizer.
+    // With origin == center this reduces exactly to the plain distance formula.
+    float rx = radiusX > 0 ? radiusX : 1;
+    float ry = radiusY > 0 ? radiusY : 1;
+    float ux = (px - centerX) / rx;
+    float uy = (py - centerY) / ry;
+    float fx = (originX - centerX) / rx;
+    float fy = (originY - centerY) / ry;
+    float dx = ux - fx;
+    float dy = uy - fy;
+    float a = dx * dx + dy * dy;
+    float t;
+    if (a <= 1e-12f) {
+        t = 0.0f;
+    } else {
+        float b = 2.0f * (fx * dx + fy * dy);
+        float c = fx * fx + fy * fy - 1.0f;
+        float disc = std::max(b * b - 4.0f * a * c, 0.0f);
+        float s = (-b + std::sqrt(disc)) / (2.0f * a);
+        t = s > 1e-12f ? 1.0f / s : 0.0f;
+    }
+    t = ApplyGradientSpread(t, spreadMethod);
     InterpolateGradientStops(stops, t, outR, outG, outB, outA);
 }
 
@@ -1385,21 +1425,39 @@ JaliumResult SoftwareRenderTarget::EndDraw()
     }
 
 #ifdef _WIN32
-    // Present to window via GDI
+    // Present to window via GDI. Only the invalidated row band is uploaded:
+    // the framebuffer is persistent, so everything outside the dirty union is
+    // already on screen and re-sending the full surface (~8MB at 1080p, ~33MB
+    // at 4K, every frame) just burns memory bandwidth in GDI. Rows are the
+    // natural granularity — the source is row-contiguous, so a vertical band
+    // uploads with zero repacking; clipping X too would need a per-row copy.
     if (hwnd_) {
-        HDC hdc = GetDC((HWND)hwnd_);
-        if (hdc) {
-            BITMAPINFO bmi{};
-            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bmi.bmiHeader.biWidth = width_;
-            bmi.bmiHeader.biHeight = -height_; // top-down
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB;
+        if (fullInvalidation_ || hasDirtyRect_) {
+            int32_t top = fullInvalidation_ ? 0 : std::clamp(dirtyTop_, 0, height_);
+            int32_t bottom = fullInvalidation_ ? height_ : std::clamp(dirtyBottom_, top, height_);
+            if (bottom > top) {
+                HDC hdc = GetDC((HWND)hwnd_);
+                if (hdc) {
+                    // A band-local top-down DIB starting at the band's first row
+                    // sidesteps SetDIBitsToDevice's bottom-up ySrc convention.
+                    BITMAPINFO bmi{};
+                    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                    bmi.bmiHeader.biWidth = width_;
+                    bmi.bmiHeader.biHeight = -(bottom - top); // top-down
+                    bmi.bmiHeader.biPlanes = 1;
+                    bmi.bmiHeader.biBitCount = 32;
+                    bmi.bmiHeader.biCompression = BI_RGB;
 
-            SetDIBitsToDevice(hdc, 0, 0, width_, height_, 0, 0, 0, height_,
-                fb_.pixels.data(), &bmi, DIB_RGB_COLORS);
-            ReleaseDC((HWND)hwnd_, hdc);
+                    const uint8_t* bandStart =
+                        fb_.pixels.data() + static_cast<size_t>(top) * width_ * 4;
+                    SetDIBitsToDevice(hdc, 0, top, width_, bottom - top,
+                        0, 0, 0, bottom - top,
+                        bandStart, &bmi, DIB_RGB_COLORS);
+                    ReleaseDC((HWND)hwnd_, hdc);
+                }
+            }
+            fullInvalidation_ = false;
+            hasDirtyRect_ = false;
         }
     }
 #else
@@ -1577,10 +1635,18 @@ void SoftwareRenderTarget::Clear(float r, float g, float b, float a)
 bool SoftwareRenderTarget::IsClipped(float px, float py) const
 {
     if (clipStack_.empty()) return false;
-    // Clip stack uses intersection — only need to check top (already intersected).
-    // But rounded-rect clips need per-pixel testing since intersection doesn't shrink radii.
+    // The top entry carries the full rectangle intersection of every level, so
+    // one Contains covers all rectangular clipping.
     auto& clip = const_cast<std::stack<SoftwareClipRect>&>(clipStack_).top();
-    return !clip.Contains(px, py);
+    if (!clip.Contains(px, py)) return true;
+    // Corner rounding cannot be folded into an intersection — every live
+    // rounded level keeps its own untrimmed rectangle and is tested here. The
+    // rectangle part of each is a superset of the top intersection (already
+    // passed above), so effectively only the corner circles are evaluated.
+    for (const auto& rounded : roundedClipStack_) {
+        if (!rounded.Contains(px, py)) return true;
+    }
+    return false;
 }
 
 bool SoftwareRenderTarget::IsInsidePerCornerRoundedRect(float px, float py, float w, float h,
@@ -2695,17 +2761,70 @@ void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
     uint8_t textB = FloatToU8(brush->b);
     float textAlpha = brush->a * currentOpacity_;
 
-    // Generate positioned glyph quads via HarfBuzz shaping + FreeType rasterization.
-    // When DPI scaling is active, pass the scale so glyphs are rasterized at
-    // physical pixel resolution rather than DIP resolution.
-    float textRenderScale = (scaleX_ != 1.0f || scaleY_ != 1.0f) ? scaleY_ : 1.0f;
+    // Decompose the active matrix. Managed DrawText cancels a plain uniform
+    // scale through the inverse-transform path (the matrix here is identity and
+    // glyphs arrive pre-scaled), but the deformation-preserving path and any
+    // rotation/skew hand the LIVE matrix down — the glyph run must be laid out
+    // in local space, rasterized at the matrix's resolution and mapped through
+    // it, or scaled/rotated text renders at 1x upright (the designer-zoom bug).
+    const float m0 = currentTransform_.m[0], m1 = currentTransform_.m[1];
+    const float m2 = currentTransform_.m[2], m3 = currentTransform_.m[3];
+    const bool matrixIsIdentity =
+        std::fabs(m0 - 1.0f) <= 1e-4f && std::fabs(m3 - 1.0f) <= 1e-4f &&
+        std::fabs(m1) <= 1e-4f && std::fabs(m2) <= 1e-4f;
+
+    // Rasterization scale comes from the matrix basis vectors, NOT from the
+    // DPI members: the root DPI scale already travels inside the transform
+    // stack, so multiplying scaleY_ on top of managed's pre-scaled font size
+    // would double-scale (identity matrix ⇒ scale 1, bit-compatible with the
+    // old behaviour on 100% DPI).
+    const float scaleXAxis = std::sqrt(m0 * m0 + m1 * m1);
+    const float scaleYAxis = std::sqrt(m2 * m2 + m3 * m3);
+    float textRenderScale = std::max(scaleXAxis, scaleYAxis);
+    if (!std::isfinite(textRenderScale) || textRenderScale <= 1e-6f) return;
+
     std::vector<TextGlyphQuad> quads;
-    ftFormat->GenerateGlyphQuads(
-        text, textLength, w, h,
-        brush->r, brush->g, brush->b, textAlpha,
-        tx, ty, quads, textRenderScale);
+    if (matrixIsIdentity) {
+        // Fast path: quads are generated directly in screen space.
+        ftFormat->GenerateGlyphQuads(
+            text, textLength, w, h,
+            brush->r, brush->g, brush->b, textAlpha,
+            tx, ty, quads, 1.0f);
+    } else {
+        // Layout in local space at the matrix's physical resolution; each quad
+        // is then mapped through the residual matrix R = M / renderScale below.
+        ftFormat->GenerateGlyphQuads(
+            text, textLength, w, h,
+            brush->r, brush->g, brush->b, textAlpha,
+            0.0f, 0.0f, quads, textRenderScale);
+    }
 
     if (quads.empty()) return;
+
+    // Residual matrix mapping physical-resolution local quads onto the screen.
+    // For a uniform scale-only matrix this is ~identity and the axis-aligned
+    // blit below stays valid; rotation/skew/anisotropy take the resampling path.
+    const float invRenderScale = 1.0f / textRenderScale;
+    const float r00 = m0 * invRenderScale, r01 = m1 * invRenderScale;
+    const float r10 = m2 * invRenderScale, r11 = m3 * invRenderScale;
+    const bool residualIsAxisAligned =
+        std::fabs(r00 - 1.0f) <= 2e-3f && std::fabs(r11 - 1.0f) <= 2e-3f &&
+        std::fabs(r01) <= 2e-3f && std::fabs(r10) <= 2e-3f;
+
+    if (!matrixIsIdentity && !residualIsAxisAligned) {
+        RenderTransformedGlyphQuads(quads, tx, ty, r00, r01, r10, r11,
+                                    textR, textG, textB, textAlpha);
+        return;
+    }
+
+    if (!matrixIsIdentity) {
+        // Uniform scale: rebase each local-space quad onto the transformed
+        // origin so the fast axis-aligned blit below applies unchanged.
+        for (auto& quad : quads) {
+            quad.posX += tx;
+            quad.posY += ty;
+        }
+    }
 
     // Get glyph atlas pixel data
     GlyphAtlas* atlas = backend_->GetTextEngine()->GetGlyphAtlas();
@@ -2797,6 +2916,122 @@ void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
         }
     }
 }
+
+void SoftwareRenderTarget::RenderTransformedGlyphQuads(
+    const std::vector<TextGlyphQuad>& quads,
+    float originX, float originY,
+    float r00, float r01, float r10, float r11,
+    uint8_t textR, uint8_t textG, uint8_t textB, float textAlpha)
+{
+    float det = r00 * r11 - r01 * r10;
+    if (std::fabs(det) < 1e-9f) return;
+    float invDet = 1.0f / det;
+    float i00 = r11 * invDet, i01 = -r01 * invDet;
+    float i10 = -r10 * invDet, i11 = r00 * invDet;
+
+    GlyphAtlas* atlas = backend_->GetTextEngine()->GetGlyphAtlas();
+    const uint8_t* atlasData = atlas->GetPixelData();
+    int32_t atlasW = static_cast<int32_t>(atlas->GetWidth());
+    int32_t atlasH = static_cast<int32_t>(atlas->GetHeight());
+    if (!atlasData || atlasW <= 0 || atlasH <= 0) return;
+
+    for (const auto& quad : quads) {
+        float sizeX = quad.sizeX, sizeY = quad.sizeY;
+        if (sizeX <= 0 || sizeY <= 0) continue;
+        int32_t qw = static_cast<int32_t>(std::ceil(sizeX));
+        int32_t qh = static_cast<int32_t>(std::ceil(sizeY));
+        int32_t srcX = static_cast<int32_t>(quad.uvMinX * atlasW);
+        int32_t srcY = static_cast<int32_t>(quad.uvMinY * atlasH);
+
+        // Screen-space parallelogram: P(s,t) = base + R·(s,t).
+        float baseX = originX + quad.posX * r00 + quad.posY * r10;
+        float baseY = originY + quad.posX * r01 + quad.posY * r11;
+        float ex0 = sizeX * r00, ey0 = sizeX * r01;   // R·(sizeX, 0)
+        float ex1 = sizeY * r10, ey1 = sizeY * r11;   // R·(0, sizeY)
+
+        float minX = baseX, maxX = baseX, minY = baseY, maxY = baseY;
+        minX = std::min({minX, baseX + ex0, baseX + ex1, baseX + ex0 + ex1});
+        maxX = std::max({maxX, baseX + ex0, baseX + ex1, baseX + ex0 + ex1});
+        minY = std::min({minY, baseY + ey0, baseY + ey1, baseY + ey0 + ey1});
+        maxY = std::max({maxY, baseY + ey0, baseY + ey1, baseY + ey0 + ey1});
+
+        int32_t px0 = std::max(0, static_cast<int32_t>(std::floor(minX)) - 1);
+        int32_t py0 = std::max(0, static_cast<int32_t>(std::floor(minY)) - 1);
+        int32_t px1 = std::min(width_ - 1, static_cast<int32_t>(std::ceil(maxX)) + 1);
+        int32_t py1 = std::min(height_ - 1, static_cast<int32_t>(std::ceil(maxY)) + 1);
+        if (px0 > px1 || py0 > py1) continue;
+
+        const bool colorGlyph = (quad.flags & ATLAS_GLYPH_COLOR) != 0;
+
+        // Bilinear sample of the glyph's atlas rect at local coordinates
+        // (s, t) ∈ [0, sizeX] × [0, sizeY]; clamped to the quad so neighbouring
+        // atlas entries never bleed in.
+        auto sampleGlyph = [&](float s, float t, float out[4]) {
+            float ax = s - 0.5f;
+            float ay = t - 0.5f;
+            int32_t x0 = static_cast<int32_t>(std::floor(ax));
+            int32_t y0 = static_cast<int32_t>(std::floor(ay));
+            float fx = ax - x0;
+            float fy = ay - y0;
+            int32_t cx0 = std::clamp(x0, 0, qw - 1);
+            int32_t cx1 = std::clamp(x0 + 1, 0, qw - 1);
+            int32_t cy0 = std::clamp(y0, 0, qh - 1);
+            int32_t cy1 = std::clamp(y0 + 1, 0, qh - 1);
+            auto texel = [&](int32_t lx, int32_t ly, float weight) {
+                int32_t sx = srcX + lx, sy = srcY + ly;
+                if (sx < 0 || sx >= atlasW || sy < 0 || sy >= atlasH) return;
+                size_t idx = (static_cast<size_t>(sy) * atlasW + sx) * 4;
+                out[0] += atlasData[idx + 0] * weight;
+                out[1] += atlasData[idx + 1] * weight;
+                out[2] += atlasData[idx + 2] * weight;
+                out[3] += atlasData[idx + 3] * weight;
+            };
+            out[0] = out[1] = out[2] = out[3] = 0;
+            texel(cx0, cy0, (1 - fx) * (1 - fy));
+            texel(cx1, cy0, fx * (1 - fy));
+            texel(cx0, cy1, (1 - fx) * fy);
+            texel(cx1, cy1, fx * fy);
+        };
+
+        for (int32_t py = py0; py <= py1; ++py) {
+            for (int32_t px = px0; px <= px1; ++px) {
+                float cxp = px + 0.5f;
+                float cyp = py + 0.5f;
+                float dx = cxp - baseX;
+                float dy = cyp - baseY;
+                float s = dx * i00 + dy * i10;
+                float t = dx * i01 + dy * i11;
+                if (s < -0.5f || s > sizeX + 0.5f || t < -0.5f || t > sizeY + 0.5f)
+                    continue;
+                if (IsClipped(cxp, cyp)) continue;
+
+                float sample[4];
+                sampleGlyph(s, t, sample);
+                float coverage = sample[3];
+                if (coverage <= 0.5f) continue;
+
+                if (colorGlyph) {
+                    // Atlas stores premultiplied RGBA; interpolate premultiplied,
+                    // then un-premultiply for the straight-alpha BlendPixel.
+                    float sa = coverage / 255.0f;
+                    float inv = 1.0f / sa;
+                    uint8_t cr = static_cast<uint8_t>(std::clamp(sample[0] * inv, 0.0f, 255.0f));
+                    uint8_t cg = static_cast<uint8_t>(std::clamp(sample[1] * inv, 0.0f, 255.0f));
+                    uint8_t cb = static_cast<uint8_t>(std::clamp(sample[2] * inv, 0.0f, 255.0f));
+                    uint8_t alpha = static_cast<uint8_t>(
+                        std::clamp(textAlpha * coverage + 0.5f, 0.0f, 255.0f));
+                    fb_.BlendPixel(px, py, cr, cg, cb, alpha);
+                } else {
+                    // LCD stripes cannot survive an arbitrary transform, so both
+                    // mask and LCD glyphs blend with max-channel (alpha) coverage.
+                    uint8_t alpha = static_cast<uint8_t>(
+                        std::clamp(textAlpha * coverage + 0.5f, 0.0f, 255.0f));
+                    fb_.BlendPixel(px, py, textR, textG, textB, alpha);
+                }
+            }
+        }
+    }
+}
 #endif
 
 // ============================================================================
@@ -2824,16 +3059,28 @@ void SoftwareRenderTarget::RenderTextWithGDI(
     HDC hdc = static_cast<HDC>(cachedTextDC_);
     if (!hdc) return;
 
-    // (w, h) arrive in DIPs while (tx, ty) is already in physical pixels — the
-    // root transform pushed in BeginDraw carries the DPI scale. The blit below
-    // copies DIB texels 1:1 onto framebuffer pixels, so the DIB must be sized
-    // in physical pixels and the em height scaled the same way, or high-DPI
-    // text is rasterized at DIP resolution and truncated. At 96 DPI both
-    // factors are 1 and this is byte-identical to the DIP-sized path. The
-    // 16384 clamp only guards the "unbounded" 10000-DIP layout fallback from
-    // exploding the DIB allocation at high scale factors.
-    int32_t pw = std::min((int32_t)std::ceil(w * scaleX_), 16384);
-    int32_t ph = std::min((int32_t)std::ceil(h * scaleY_), 16384);
+    // (w, h) arrive in DIPs while (tx, ty) is already in physical pixels. The
+    // physical scale is decomposed from the LIVE matrix, not from the DPI
+    // members: the root DPI transform pushed in BeginDraw travels inside the
+    // matrix, and so does any user scale (designer zoom, a ScaleTransform, the
+    // deformation-preserving text path) — sizing the DIB and the em height by
+    // DPI alone rendered such text at 1x, overflowing its scaled container.
+    // With only the DPI root transform active the decomposition equals
+    // scaleX_/scaleY_ and this is byte-identical to the previous behaviour.
+    // The 16384 clamp only guards the "unbounded" 10000-DIP layout fallback
+    // from exploding the DIB allocation at high scale factors.
+    const float m0 = currentTransform_.m[0], m1 = currentTransform_.m[1];
+    const float m2 = currentTransform_.m[2], m3 = currentTransform_.m[3];
+    float axisScaleY = std::sqrt(m2 * m2 + m3 * m3);
+    if (!std::isfinite(axisScaleY) || axisScaleY <= 1e-6f) return;
+
+    // The DIB is rasterized uniformly at the Y-axis scale (em size and layout
+    // box together, so wrap positions stay consistent); any X-axis stretch or
+    // rotation is left in the residual matrix R = M / axisScaleY and applied by
+    // the inverse-mapping blit below — matching the GPU backends, where an
+    // anisotropic matrix visibly stretches the glyphs.
+    int32_t pw = std::min((int32_t)std::ceil(w * axisScaleY), 16384);
+    int32_t ph = std::min((int32_t)std::ceil(h * axisScaleY), 16384);
     if (pw <= 0 || ph <= 0) return;
 
     BITMAPINFO bmi{};
@@ -2850,10 +3097,11 @@ void SoftwareRenderTarget::RenderTextWithGDI(
         HGDIOBJ oldBm = SelectObject(hdc, hbm);
 
         // fontSize is a DIP em size (DirectWrite convention shared by every
-        // backend); scale straight to physical pixels. The previous
-        // dpiY_ / 72 form treated it as a point size, rendering every glyph
-        // 4/3 too large and clipping it against its own line box.
-        int fontHeight = -(std::max)(1, (int)(stf->fontSize * scaleY_ + 0.5f));
+        // backend); scale straight to physical pixels using the same matrix
+        // decomposition as the DIB sizing above. The previous dpiY_ / 72 form
+        // treated it as a point size, rendering every glyph 4/3 too large and
+        // clipping it against its own line box.
+        int fontHeight = -(std::max)(1, (int)(stf->fontSize * axisScaleY + 0.5f));
         HFONT hFont = CreateFontW(fontHeight, 0, 0, 0,
             stf->fontWeight, (stf->fontStyle == 1 || stf->fontStyle == 2) ? TRUE : FALSE,
             FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
@@ -2883,51 +3131,116 @@ void SoftwareRenderTarget::RenderTextWithGDI(
 
         DrawTextW(hdc, text, textLength, &rc, dtFlags);
 
-        // Copy rendered text to framebuffer with alpha blending. The block is
-        // sampled with a fractional (bilinear) phase so an animated text origin
-        // moves smoothly sub-pixel instead of snapping to a whole pixel. When
-        // (tx,ty) are integer (fracX/fracY == 0) the sampling reduces to the
-        // original 1:1 copy, so static text is unchanged.
+        // Copy rendered text to framebuffer with alpha blending. The DIB is
+        // already rasterized at the matrix's per-axis physical resolution, so
+        // the residual matrix (unit-length basis vectors) is identity for any
+        // axis-aligned transform — including plain scale — and the fast
+        // sub-pixel-phase blit below applies. Rotation / skew leave a real
+        // residual and take the inverse-mapping resample instead.
         uint8_t* textBits = static_cast<uint8_t*>(bits);
         int32_t bw = pw, bh = ph;
-        int32_t ix = static_cast<int32_t>(std::floor(tx));
-        int32_t iy = static_cast<int32_t>(std::floor(ty));
-        float fracX = tx - static_cast<float>(ix);
-        float fracY = ty - static_cast<float>(iy);
         auto blockLum = [&](int32_t cc, int32_t rr) -> float {
             if (cc < 0 || cc >= bw || rr < 0 || rr >= bh) return 0.0f;
             int srcIdx = (rr * bw + cc) * 4;
             return (textBits[srcIdx + 2] + textBits[srcIdx + 1] + textBits[srcIdx + 0]) / 3.0f;
         };
-        // Iterate only the DIB rows/cols that land inside the framebuffer —
-        // the unbounded-layout fallback (w = h = 10000 DIPs) otherwise spins
-        // ~10^8 iterations of pure bounds-check misses per DrawText call. The
-        // per-pixel guards stay as a defensive backstop; this only trims the
-        // loop ranges.
-        int32_t rowBegin = (std::max)(0, -iy);
-        int32_t rowEnd = (std::min)(bh, height_ - 1 - iy);
-        int32_t colBegin = (std::max)(0, -ix);
-        int32_t colEnd = (std::min)(bw, width_ - 1 - ix);
-        for (int32_t row = rowBegin; row <= rowEnd; row++) {
-            int32_t dyy = iy + row;
-            if (dyy < 0 || dyy >= height_) continue;
-            float sv = static_cast<float>(row) - fracY;
-            int32_t sv0 = static_cast<int32_t>(std::floor(sv));
-            float fv = sv - static_cast<float>(sv0);
-            for (int32_t col = colBegin; col <= colEnd; col++) {
-                int32_t dxx = ix + col;
-                if (dxx < 0 || dxx >= width_) continue;
-                float su = static_cast<float>(col) - fracX;
-                int32_t su0 = static_cast<int32_t>(std::floor(su));
-                float fu = su - static_cast<float>(su0);
-                float lum = blockLum(su0, sv0)         * (1.0f - fu) * (1.0f - fv)
-                          + blockLum(su0 + 1, sv0)     * fu          * (1.0f - fv)
-                          + blockLum(su0, sv0 + 1)     * (1.0f - fu) * fv
-                          + blockLum(su0 + 1, sv0 + 1) * fu          * fv;
-                if (lum <= 0.0f) continue;
-                uint8_t sa = static_cast<uint8_t>(std::clamp((lum / 255.0f) * a + 0.5f, 0.0f, 255.0f));
-                if (sa == 0) continue;
-                fb_.BlendPixel(dxx, dyy, r, g, b, sa);
+
+        const float r00 = m0 / axisScaleY, r01 = m1 / axisScaleY;
+        const float r10 = m2 / axisScaleY, r11 = m3 / axisScaleY;
+        const bool residualIsAxisAligned =
+            std::fabs(r00 - 1.0f) <= 2e-3f && std::fabs(r11 - 1.0f) <= 2e-3f &&
+            std::fabs(r01) <= 2e-3f && std::fabs(r10) <= 2e-3f;
+
+        if (residualIsAxisAligned) {
+            // The block is sampled with a fractional (bilinear) phase so an
+            // animated text origin moves smoothly sub-pixel instead of snapping
+            // to a whole pixel. When (tx,ty) are integer (fracX/fracY == 0) the
+            // sampling reduces to the original 1:1 copy, so static text is
+            // unchanged.
+            int32_t ix = static_cast<int32_t>(std::floor(tx));
+            int32_t iy = static_cast<int32_t>(std::floor(ty));
+            float fracX = tx - static_cast<float>(ix);
+            float fracY = ty - static_cast<float>(iy);
+            // Iterate only the DIB rows/cols that land inside the framebuffer —
+            // the unbounded-layout fallback (w = h = 10000 DIPs) otherwise spins
+            // ~10^8 iterations of pure bounds-check misses per DrawText call. The
+            // per-pixel guards stay as a defensive backstop; this only trims the
+            // loop ranges.
+            int32_t rowBegin = (std::max)(0, -iy);
+            int32_t rowEnd = (std::min)(bh, height_ - 1 - iy);
+            int32_t colBegin = (std::max)(0, -ix);
+            int32_t colEnd = (std::min)(bw, width_ - 1 - ix);
+            for (int32_t row = rowBegin; row <= rowEnd; row++) {
+                int32_t dyy = iy + row;
+                if (dyy < 0 || dyy >= height_) continue;
+                float sv = static_cast<float>(row) - fracY;
+                int32_t sv0 = static_cast<int32_t>(std::floor(sv));
+                float fv = sv - static_cast<float>(sv0);
+                for (int32_t col = colBegin; col <= colEnd; col++) {
+                    int32_t dxx = ix + col;
+                    if (dxx < 0 || dxx >= width_) continue;
+                    if (!clipStack_.empty() && IsClipped(dxx + 0.5f, dyy + 0.5f)) continue;
+                    float su = static_cast<float>(col) - fracX;
+                    int32_t su0 = static_cast<int32_t>(std::floor(su));
+                    float fu = su - static_cast<float>(su0);
+                    float lum = blockLum(su0, sv0)         * (1.0f - fu) * (1.0f - fv)
+                              + blockLum(su0 + 1, sv0)     * fu          * (1.0f - fv)
+                              + blockLum(su0, sv0 + 1)     * (1.0f - fu) * fv
+                              + blockLum(su0 + 1, sv0 + 1) * fu          * fv;
+                    if (lum <= 0.0f) continue;
+                    uint8_t sa = static_cast<uint8_t>(std::clamp((lum / 255.0f) * a + 0.5f, 0.0f, 255.0f));
+                    if (sa == 0) continue;
+                    fb_.BlendPixel(dxx, dyy, r, g, b, sa);
+                }
+            }
+        } else {
+            // Rotated / skewed run: the DIB is a coverage mask in local physical
+            // space; map its parallelogram onto the screen and inverse-sample.
+            float det = r00 * r11 - r01 * r10;
+            if (std::fabs(det) > 1e-9f) {
+                float invDet = 1.0f / det;
+                float i00 = r11 * invDet, i01 = -r01 * invDet;
+                float i10 = -r10 * invDet, i11 = r00 * invDet;
+
+                float ex0 = bw * r00, ey0 = bw * r01;   // R·(bw, 0)
+                float ex1 = bh * r10, ey1 = bh * r11;   // R·(0, bh)
+                float minX = std::min({tx, tx + ex0, tx + ex1, tx + ex0 + ex1});
+                float maxX = std::max({tx, tx + ex0, tx + ex1, tx + ex0 + ex1});
+                float minY = std::min({ty, ty + ey0, ty + ey1, ty + ey0 + ey1});
+                float maxY = std::max({ty, ty + ey0, ty + ey1, ty + ey0 + ey1});
+
+                int32_t px0 = std::max(0, static_cast<int32_t>(std::floor(minX)) - 1);
+                int32_t py0 = std::max(0, static_cast<int32_t>(std::floor(minY)) - 1);
+                int32_t px1 = std::min(width_ - 1, static_cast<int32_t>(std::ceil(maxX)) + 1);
+                int32_t py1 = std::min(height_ - 1, static_cast<int32_t>(std::ceil(maxY)) + 1);
+
+                for (int32_t py = py0; py <= py1; ++py) {
+                    for (int32_t px = px0; px <= px1; ++px) {
+                        float cxp = px + 0.5f;
+                        float cyp = py + 0.5f;
+                        float dx = cxp - tx;
+                        float dy = cyp - ty;
+                        float u = dx * i00 + dy * i10;
+                        float v = dx * i01 + dy * i11;
+                        if (u < -0.5f || u > bw + 0.5f || v < -0.5f || v > bh + 0.5f)
+                            continue;
+                        if (!clipStack_.empty() && IsClipped(cxp, cyp)) continue;
+                        float su = u - 0.5f;
+                        float sv = v - 0.5f;
+                        int32_t su0 = static_cast<int32_t>(std::floor(su));
+                        int32_t sv0 = static_cast<int32_t>(std::floor(sv));
+                        float fu = su - su0;
+                        float fv = sv - sv0;
+                        float lum = blockLum(su0, sv0)         * (1.0f - fu) * (1.0f - fv)
+                                  + blockLum(su0 + 1, sv0)     * fu          * (1.0f - fv)
+                                  + blockLum(su0, sv0 + 1)     * (1.0f - fu) * fv
+                                  + blockLum(su0 + 1, sv0 + 1) * fu          * fv;
+                        if (lum <= 0.0f) continue;
+                        uint8_t sa = static_cast<uint8_t>(std::clamp((lum / 255.0f) * a + 0.5f, 0.0f, 255.0f));
+                        if (sa == 0) continue;
+                        fb_.BlendPixel(px, py, r, g, b, sa);
+                    }
+                }
             }
         }
 
@@ -3010,7 +3323,10 @@ void SoftwareRenderTarget::PushClip(float x, float y, float w, float h)
 
 void SoftwareRenderTarget::PopClip()
 {
-    if (!clipStack_.empty()) clipStack_.pop();
+    if (clipStack_.empty()) return;
+    if (clipStack_.top().ownsRounded && !roundedClipStack_.empty())
+        roundedClipStack_.pop_back();
+    clipStack_.pop();
 }
 
 void SoftwareRenderTarget::PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry)
@@ -3032,6 +3348,13 @@ void SoftwareRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float 
     float tw = tx2 - tx;
     float th = ty2 - ty;
 
+    // The stack entry carries only the rectangle intersection. Corner rounding
+    // must NOT live on the intersected rect: intersecting can move the rect's
+    // edges, which would drag the corner circles away from where this level's
+    // own corners actually are — and a nested plain clip would drop an
+    // ancestor's rounding entirely. Rounded levels are tracked separately in
+    // their own untrimmed rectangles (roundedClipStack_) and tested per pixel
+    // by IsClipped.
     SoftwareClipRect clip;
     if (!clipStack_.empty()) {
         auto& top = clipStack_.top();
@@ -3044,15 +3367,27 @@ void SoftwareRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float 
     } else {
         clip = {tx, ty, tw, th};
     }
-    // Use the smaller of X/Y scale so non-uniform stretch doesn't produce an
-    // ellipse-shaped clip — the corners of a Border are conceptually circular.
-    float scale = std::min(scaleX_, scaleY_);
-    clip.radiusTL = tl * scale;
-    clip.radiusTR = tr * scale;
-    clip.radiusBR = br * scale;
-    clip.radiusBL = bl * scale;
-    clip.rx = std::max({ clip.radiusTL, clip.radiusTR, clip.radiusBR, clip.radiusBL });
-    clip.ry = clip.rx;
+
+    if (tl > 0 || tr > 0 || br > 0 || bl > 0) {
+        // Corner radii scale with the live matrix (the root DPI transform and
+        // any user scale both live in it), taking the smaller axis so
+        // non-uniform stretch doesn't produce an ellipse-shaped corner.
+        const float* m = currentTransform_.m;
+        float axisX = std::sqrt(m[0] * m[0] + m[1] * m[1]);
+        float axisY = std::sqrt(m[2] * m[2] + m[3] * m[3]);
+        float scale = std::min(axisX, axisY);
+        if (!std::isfinite(scale) || scale <= 0) scale = 1.0f;
+
+        SoftwareClipRect rounded{tx, ty, tw, th};
+        rounded.radiusTL = tl * scale;
+        rounded.radiusTR = tr * scale;
+        rounded.radiusBR = br * scale;
+        rounded.radiusBL = bl * scale;
+        rounded.rx = std::max({ rounded.radiusTL, rounded.radiusTR, rounded.radiusBR, rounded.radiusBL });
+        rounded.ry = rounded.rx;
+        roundedClipStack_.push_back(rounded);
+        clip.ownsRounded = true;
+    }
     clipStack_.push(clip);
 }
 
@@ -4419,18 +4754,20 @@ Brush* SoftwareBackend::CreateSolidBrush(float r, float g, float b, float a)
 Brush* SoftwareBackend::CreateLinearGradientBrush(
     float startX, float startY, float endX, float endY,
     const JaliumGradientStop* stops, uint32_t stopCount,
-    uint32_t /*spreadMethod*/)
+    uint32_t spreadMethod)
 {
-    return new SoftwareLinearGradientBrush(startX, startY, endX, endY, stops, stopCount);
+    return new SoftwareLinearGradientBrush(startX, startY, endX, endY, stops, stopCount,
+        spreadMethod <= 2 ? spreadMethod : 0);
 }
 
 Brush* SoftwareBackend::CreateRadialGradientBrush(
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
     const JaliumGradientStop* stops, uint32_t stopCount,
-    uint32_t /*spreadMethod*/)
+    uint32_t spreadMethod)
 {
-    return new SoftwareRadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount);
+    return new SoftwareRadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount,
+        spreadMethod <= 2 ? spreadMethod : 0);
 }
 
 TextFormat* SoftwareBackend::CreateTextFormat(

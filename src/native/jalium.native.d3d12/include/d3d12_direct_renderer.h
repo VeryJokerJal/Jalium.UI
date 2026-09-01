@@ -661,6 +661,11 @@ public:
     // --- Vello GPU path renderer ---
     D3D12VelloRenderer* GetVelloRenderer() const { return velloEnabled_ ? velloRenderer_.get() : nullptr; }
     bool HasVelloPaths() const;
+    // True when the pending (un-dispatched) Vello content could share pixels
+    // with the given DIP-space rect under the CURRENT transform. False means
+    // the upcoming non-path draw is disjoint from every pending path, so the
+    // painter-order flush can be skipped.
+    bool VelloPendingHitsDipRect(float x, float y, float w, float h) const;
     void FlushVelloPaths();
     void ApplyScissorToVello();
     void SetVelloEnabled(bool enabled) { velloEnabled_ = enabled; }
