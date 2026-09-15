@@ -335,6 +335,164 @@ public class RazorLightweightInterpreterTests
     }
 
     [Fact]
+    public void CodeBlock_MarkupIf_EmitsPlainTextFromTrueBody()
+    {
+        var result = ExpandCodeBlock("<TextBlock>@if (true) { hello }</TextBlock>");
+
+        Assert.Contains("hello", result);
+    }
+
+    [Fact]
+    public void CodeBlock_MarkupIf_EmitsPlainTextFromElseBody()
+    {
+        var result = ExpandCodeBlock("<TextBlock>@if (false) { wrong } else { goodbye }</TextBlock>");
+
+        Assert.DoesNotContain("wrong", result);
+        Assert.Contains("goodbye", result);
+    }
+
+    [Fact]
+    public void CodeBlock_MarkupIf_EmitsPlainTextFromElseIfBody()
+    {
+        var result = ExpandCodeBlock(
+            "<TextBlock>@if (false) { wrong } else if (true) { expected } else { also-wrong }</TextBlock>");
+
+        Assert.DoesNotContain("wrong", result);
+        Assert.Contains("expected", result);
+    }
+
+    [Fact]
+    public void CodeBlock_MarkupFor_EmitsPlainTextForEveryIteration()
+    {
+        var result = ExpandCodeBlock("<TextBlock>@for (var i = 0; i < 3; i++) { item }</TextBlock>");
+
+        Assert.Equal(3, result.Split("item", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void CodeBlock_MarkupFor_CanContainMarkupIf()
+    {
+        var result = ExpandCodeBlock(
+            "<Root>@for (var i = 0; i < 2; i++) { @if (true) { <Item Value=\"@i\" /> } }</Root>");
+
+        Assert.Contains("Value=\"0\"", result);
+        Assert.Contains("Value=\"1\"", result);
+    }
+
+    [Fact]
+    public void CodeBlock_NestedAwaitForeach_UsesExplicitAsyncEnumeratorInterfaceMembers()
+    {
+        var source = new ExplicitAsyncEnumerable("A", "B");
+
+        var (output, _) = RazorLightweightCodeBlockInterpreter.ExpandWithScope(
+            """
+            <Root>
+              @await foreach(var item in Source) {
+                <Item Value="@item" />
+              }
+              <After Value="@item" />
+            </Root>
+            """,
+            name => name == "Source" ? source : null);
+
+        Assert.Contains("Value=\"A\"", output);
+        Assert.Contains("Value=\"B\"", output);
+        Assert.Contains("<After Value=\"\" />", output);
+        Assert.Equal(1, source.GetAsyncEnumeratorCount);
+        Assert.Equal(3, source.MoveNextCount);
+        Assert.Equal(1, source.DisposeCount);
+        Assert.True(source.Disposed);
+    }
+
+    [Fact]
+    public void CodeBlock_NestedAwaitForeach_DisposesEnumeratorWhenBodyThrows()
+    {
+        var source = new ExplicitAsyncEnumerable("A");
+
+        Assert.Throws<InvalidOperationException>(() =>
+            RazorLightweightCodeBlockInterpreter.ExpandWithScope(
+                """
+                <Root>
+                  @await foreach(var item in Source) {
+                    <Item Value="@(Fail())" />
+                  }
+                </Root>
+                """,
+                name => name switch
+                {
+                    "Source" => source,
+                    "Fail" => new Func<object?[], object?>(_ => throw new InvalidOperationException("boom")),
+                    _ => null
+                }));
+
+        Assert.True(source.Disposed);
+        Assert.Equal(1, source.GetAsyncEnumeratorCount);
+        Assert.Equal(1, source.MoveNextCount);
+        Assert.Equal(1, source.DisposeCount);
+    }
+
+    [Fact]
+    public void CodeBlock_NestedAwaitForeach_UnwrapsGetAsyncEnumeratorException()
+    {
+        var expected = new AsyncEnumerationException("get enumerator");
+        var source = new ThrowingAsyncEnumerable(AsyncThrowStage.GetAsyncEnumerator, expected);
+
+        var actual = Assert.Throws<AsyncEnumerationException>(() => ExpandNestedAwaitForeach(source));
+
+        Assert.Same(expected, actual);
+        Assert.Equal(1, source.GetAsyncEnumeratorCount);
+        Assert.Equal(0, source.DisposeCount);
+    }
+
+    [Fact]
+    public void CodeBlock_NestedAwaitForeach_UnwrapsMoveNextAsyncExceptionAndDisposes()
+    {
+        var expected = new AsyncEnumerationException("move next");
+        var source = new ThrowingAsyncEnumerable(AsyncThrowStage.MoveNextAsync, expected);
+
+        var actual = Assert.Throws<AsyncEnumerationException>(() => ExpandNestedAwaitForeach(source));
+
+        Assert.Same(expected, actual);
+        Assert.Equal(1, source.GetAsyncEnumeratorCount);
+        Assert.Equal(1, source.MoveNextCount);
+        Assert.Equal(1, source.DisposeCount);
+    }
+
+    [Fact]
+    public void CodeBlock_NestedAwaitForeach_UnwrapsCurrentExceptionAndDisposes()
+    {
+        var expected = new AsyncEnumerationException("current");
+        var source = new ThrowingAsyncEnumerable(AsyncThrowStage.Current, expected);
+
+        var actual = Assert.Throws<AsyncEnumerationException>(() => ExpandNestedAwaitForeach(source));
+
+        Assert.Same(expected, actual);
+        Assert.Equal(1, source.GetAsyncEnumeratorCount);
+        Assert.Equal(1, source.MoveNextCount);
+        Assert.Equal(1, source.CurrentCount);
+        Assert.Equal(1, source.DisposeCount);
+    }
+
+    [Fact]
+    public void CodeBlock_NestedAwaitForeach_EnforcesMaxLoopIterations()
+    {
+        var source = new InfiniteExplicitAsyncEnumerable();
+
+        RazorLightweightCodeBlockInterpreter.ExpandWithScope(
+            """
+            <Root>
+              @await foreach(var item in Source) {
+              }
+            </Root>
+            """,
+            name => name == "Source" ? source : null);
+
+        Assert.Equal(1, source.GetAsyncEnumeratorCount);
+        Assert.Equal(10_000, source.MoveNextCount);
+        Assert.Equal(1, source.DisposeCount);
+    }
+
+    [Fact]
     public void CodeBlock_EmptyCode_ReturnsEmpty()
     {
         var result = ExpandCodeBlock("");
@@ -459,5 +617,154 @@ public class RazorLightweightInterpreterTests
         Assert.Equal(2 + 1, tokens.Count);
         Assert.Equal("a", tokens[0].Value);
         Assert.Equal("b", tokens[1].Value);
+    }
+
+    private static string ExpandNestedAwaitForeach(object source)
+    {
+        return RazorLightweightCodeBlockInterpreter.ExpandWithScope(
+            """
+            <Root>
+              @await foreach(var item in Source) {
+                <Item Value="@item" />
+              }
+            </Root>
+            """,
+            name => name == "Source" ? source : null).Output;
+    }
+
+    private sealed class ExplicitAsyncEnumerable(params string[] values) : IAsyncEnumerable<string>
+    {
+        public int GetAsyncEnumeratorCount { get; private set; }
+
+        public int MoveNextCount { get; private set; }
+
+        public int DisposeCount { get; private set; }
+
+        public bool Disposed => DisposeCount > 0;
+
+        IAsyncEnumerator<string> IAsyncEnumerable<string>.GetAsyncEnumerator(CancellationToken cancellationToken)
+        {
+            GetAsyncEnumeratorCount++;
+            return new Enumerator(values, () => MoveNextCount++, () => DisposeCount++);
+        }
+
+        private sealed class Enumerator(string[] values, Action onMoveNext, Action onDispose) : IAsyncEnumerator<string>
+        {
+            private int _index = -1;
+
+            string IAsyncEnumerator<string>.Current => values[_index];
+
+            ValueTask<bool> IAsyncEnumerator<string>.MoveNextAsync()
+            {
+                onMoveNext();
+                return ValueTask.FromResult(++_index < values.Length);
+            }
+
+            ValueTask IAsyncDisposable.DisposeAsync()
+            {
+                onDispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
+    private sealed class InfiniteExplicitAsyncEnumerable : IAsyncEnumerable<int>
+    {
+        public int GetAsyncEnumeratorCount { get; private set; }
+
+        public int MoveNextCount { get; private set; }
+
+        public int DisposeCount { get; private set; }
+
+        IAsyncEnumerator<int> IAsyncEnumerable<int>.GetAsyncEnumerator(CancellationToken cancellationToken)
+        {
+            GetAsyncEnumeratorCount++;
+            return new Enumerator(this);
+        }
+
+        private sealed class Enumerator(InfiniteExplicitAsyncEnumerable owner) : IAsyncEnumerator<int>
+        {
+            int IAsyncEnumerator<int>.Current => 1;
+
+            ValueTask<bool> IAsyncEnumerator<int>.MoveNextAsync()
+            {
+                owner.MoveNextCount++;
+                return ValueTask.FromResult(true);
+            }
+
+            ValueTask IAsyncDisposable.DisposeAsync()
+            {
+                owner.DisposeCount++;
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
+    private enum AsyncThrowStage
+    {
+        GetAsyncEnumerator,
+        MoveNextAsync,
+        Current
+    }
+
+    private sealed class AsyncEnumerationException(string message) : Exception(message);
+
+    private sealed class ThrowingAsyncEnumerable(AsyncThrowStage throwStage, Exception exception) : IAsyncEnumerable<string>
+    {
+        public int GetAsyncEnumeratorCount { get; private set; }
+
+        public int MoveNextCount { get; private set; }
+
+        public int CurrentCount { get; private set; }
+
+        public int DisposeCount { get; private set; }
+
+        IAsyncEnumerator<string> IAsyncEnumerable<string>.GetAsyncEnumerator(CancellationToken cancellationToken)
+        {
+            GetAsyncEnumeratorCount++;
+            if (throwStage == AsyncThrowStage.GetAsyncEnumerator)
+                throw exception;
+
+            return new Enumerator(this, throwStage, exception);
+        }
+
+        private sealed class Enumerator(
+            ThrowingAsyncEnumerable owner,
+            AsyncThrowStage throwStage,
+            Exception exception) : IAsyncEnumerator<string>
+        {
+            private bool _moved;
+
+            string IAsyncEnumerator<string>.Current
+            {
+                get
+                {
+                    owner.CurrentCount++;
+                    if (throwStage == AsyncThrowStage.Current)
+                        throw exception;
+
+                    return "A";
+                }
+            }
+
+            ValueTask<bool> IAsyncEnumerator<string>.MoveNextAsync()
+            {
+                owner.MoveNextCount++;
+                if (throwStage == AsyncThrowStage.MoveNextAsync)
+                    throw exception;
+
+                if (_moved)
+                    return ValueTask.FromResult(false);
+
+                _moved = true;
+                return ValueTask.FromResult(true);
+            }
+
+            ValueTask IAsyncDisposable.DisposeAsync()
+            {
+                owner.DisposeCount++;
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 }

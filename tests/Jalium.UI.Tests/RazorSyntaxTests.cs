@@ -701,6 +701,32 @@ public class RazorSyntaxTests
     }
 
     [Fact]
+    public void RazorDoWhile_NestedInsideEmittedMarkup_ShouldGenerateRepeatedChildren()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{
+                var k = 0;
+                <StackPanel>
+                  @do {
+                    <TextBlock Text="@(k.ToString())" />
+                    @{ k++; }
+                  } while(k < 3);
+                </StackPanel>
+              }
+            </StackPanel>
+            """;
+
+        var outer = (StackPanel)XamlReader.Parse(xaml);
+        var inner = Assert.IsType<StackPanel>(Assert.Single(outer.Children));
+
+        Assert.Equal(3, inner.Children.Count);
+        Assert.Equal("0", Assert.IsType<TextBlock>(inner.Children[0]).Text);
+        Assert.Equal("1", Assert.IsType<TextBlock>(inner.Children[1]).Text);
+        Assert.Equal("2", Assert.IsType<TextBlock>(inner.Children[2]).Text);
+    }
+
+    [Fact]
     public void RazorTryCatch_ShouldExpandTryBlock()
     {
         const string xaml = """
@@ -851,6 +877,34 @@ public class RazorSyntaxTests
         Assert.Equal(2, panel.Children.Count);
         Assert.Equal("X", ((TextBlock)panel.Children[0]).Text);
         Assert.Equal("Y", ((TextBlock)panel.Children[1]).Text);
+    }
+
+    [Fact]
+    public void RazorAwaitForeach_NestedInsideEmittedMarkup_ShouldExpandAsyncEnumerable()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{
+                async System.Collections.Generic.IAsyncEnumerable<string> Produce() {
+                  yield return "X";
+                  yield return "Y";
+                }
+
+                <StackPanel>
+                  @await foreach(var item in Produce()) {
+                    <TextBlock Text="@item" />
+                  }
+                </StackPanel>
+              }
+            </StackPanel>
+            """;
+
+        var outer = (StackPanel)XamlReader.Parse(xaml);
+        var inner = Assert.IsType<StackPanel>(Assert.Single(outer.Children));
+
+        Assert.Equal(2, inner.Children.Count);
+        Assert.Equal("X", Assert.IsType<TextBlock>(inner.Children[0]).Text);
+        Assert.Equal("Y", Assert.IsType<TextBlock>(inner.Children[1]).Text);
     }
 
     private static void LoadComponent(object component, string resourceName)
