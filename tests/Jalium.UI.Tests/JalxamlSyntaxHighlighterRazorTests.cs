@@ -93,6 +93,19 @@ public class JalxamlSyntaxHighlighterRazorTests
     }
 
     [Fact]
+    public void HighlightLine_RazorCodeBlockInAttribute_ClassifiesAllBracesAsOperators()
+    {
+        const string line = """<TextBlock Text="@{ if (isReady) { Render(); } }" />""";
+
+        var braceTokens = Highlight(line)
+            .Where(token => token.Text is "{" or "}")
+            .ToArray();
+
+        Assert.Equal(4, braceTokens.Length);
+        Assert.All(braceTokens, token => Assert.Equal(TokenClassification.Operator, token.Classification));
+    }
+
+    [Fact]
     public void HighlightLine_RazorForBlockMultiLine_HighlightsCSharpInBody()
     {
         // @for (var i = 0; i < length; i++)

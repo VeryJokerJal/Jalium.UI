@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -388,7 +390,7 @@ internal static class RazorLightweightCodeBlockInterpreter
 
         ExecutePureCode(initCode, output, child);
 
-        var limit = 10000;
+        var limit = MaxLoopIterations;
         while (limit-- > 0)
         {
             var cond = RazorLightweightExpressionEvaluator.Evaluate(condExpr, child.Resolve);
@@ -798,6 +800,24 @@ internal static class RazorLightweightCodeBlockInterpreter
         var header = ReadParenthesized(code, ref pos);
         var body = ReadBraceBody(code, ref pos);
 
+        ExecuteAwaitForeachLoop(
+            header,
+            scope,
+            (child, bodyFlow) =>
+            {
+                var bodyPos = 0;
+                InterpretMixedCodeRange(body, ref bodyPos, output, child, bodyFlow);
+            },
+            flow);
+    }
+
+    private static void ExecuteAwaitForeachLoop(
+        string header,
+        InterpreterScope scope,
+        Action<InterpreterScope, FlowSignal> executeBody,
+        FlowSignal? flow)
+    {
+
         var inIdx = header.IndexOf(" in ", StringComparison.Ordinal);
         if (inIdx < 0) return;
         var varName = header[..inIdx].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
@@ -812,40 +832,53 @@ internal static class RazorLightweightCodeBlockInterpreter
 
             if (asyncEnumType != null)
             {
-                // Call GetAsyncEnumerator() and iterate
                 var getEnumerator = asyncEnumType.GetMethod("GetAsyncEnumerator");
                 if (getEnumerator != null)
                 {
-                    var enumerator = getEnumerator.Invoke(collection, new object[] { default(System.Threading.CancellationToken) });
+                    var enumerator = InvokeReflection(() =>
+                        getEnumerator.Invoke(collection, new object[] { default(System.Threading.CancellationToken) }));
                     if (enumerator != null)
                     {
-                        var moveNextAsync = enumerator.GetType().GetMethod("MoveNextAsync");
-                        var currentProp = enumerator.GetType().GetProperty("Current");
-                        if (moveNextAsync != null && currentProp != null)
+                        try
                         {
-                            var child = scope.CreateChild();
-                            var remainingIterations = MaxLoopIterations;
-                            while (remainingIterations-- > 0)
+                            var itemType = asyncEnumType.GetGenericArguments()[0];
+                            var asyncEnumeratorType = typeof(IAsyncEnumerator<>).MakeGenericType(itemType);
+                            var moveNextAsync = asyncEnumeratorType.GetMethod("MoveNextAsync");
+                            var currentProp = asyncEnumeratorType.GetProperty("Current");
+                            if (moveNextAsync != null && currentProp != null)
                             {
-                                var moveResult = moveNextAsync.Invoke(enumerator, null);
-                                bool hasNext;
-                                if (moveResult is System.Threading.Tasks.ValueTask<bool> vt)
-                                    hasNext = vt.AsTask().GetAwaiter().GetResult();
-                                else if (moveResult is System.Threading.Tasks.Task<bool> t)
-                                    hasNext = t.GetAwaiter().GetResult();
-                                else break;
+                                var child = scope.CreateChild();
+                                var remainingIterations = MaxLoopIterations;
+                                while (remainingIterations-- > 0)
+                                {
+                                    var moveResult = InvokeReflection(() => moveNextAsync.Invoke(enumerator, null));
+                                    bool hasNext;
+                                    if (moveResult is System.Threading.Tasks.ValueTask<bool> vt)
+                                        hasNext = vt.AsTask().GetAwaiter().GetResult();
+                                    else if (moveResult is System.Threading.Tasks.Task<bool> t)
+                                        hasNext = t.GetAwaiter().GetResult();
+                                    else break;
 
-                                if (!hasNext) break;
+                                    if (!hasNext) break;
 
-                                child.Set(varName, currentProp.GetValue(enumerator));
-                                var bodyFlow = new FlowSignal();
-                                var bodyPos = 0;
-                                InterpretMixedCodeRange(body, ref bodyPos, output, child, bodyFlow);
-                                if (bodyFlow.Kind == Signal.Break) break;
-                                if (bodyFlow.Kind == Signal.Return) { flow.Kind = Signal.Return; break; }
+                                    child.Set(varName, InvokeReflection(() => currentProp.GetValue(enumerator)));
+                                    var bodyFlow = new FlowSignal();
+                                    executeBody(child, bodyFlow);
+                                    if (bodyFlow.Kind == Signal.Break) break;
+                                    if (bodyFlow.Kind == Signal.Return)
+                                    {
+                                        if (flow != null)
+                                        {
+                                            flow.Kind = Signal.Return;
+                                            flow.ReturnValue = bodyFlow.ReturnValue;
+                                        }
+                                        break;
+                                    }
+                                }
                             }
-
-                            // Dispose if IAsyncDisposable
+                        }
+                        finally
+                        {
                             if (enumerator is IAsyncDisposable asyncDisposable)
                                 asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
                         }
@@ -859,15 +892,37 @@ internal static class RazorLightweightCodeBlockInterpreter
         if (collection is System.Collections.IEnumerable enumerable)
         {
             var child = scope.CreateChild();
+            var remainingIterations = MaxLoopIterations;
             foreach (var item in enumerable)
             {
+                if (remainingIterations-- <= 0) break;
                 child.Set(varName, item);
                 var bodyFlow = new FlowSignal();
-                var bodyPos = 0;
-                InterpretMixedCodeRange(body, ref bodyPos, output, child, bodyFlow);
+                executeBody(child, bodyFlow);
                 if (bodyFlow.Kind == Signal.Break) break;
-                if (bodyFlow.Kind == Signal.Return) { flow.Kind = Signal.Return; break; }
+                if (bodyFlow.Kind == Signal.Return)
+                {
+                    if (flow != null)
+                    {
+                        flow.Kind = Signal.Return;
+                        flow.ReturnValue = bodyFlow.ReturnValue;
+                    }
+                    break;
+                }
             }
+        }
+    }
+
+    private static object? InvokeReflection(Func<object?> invocation)
+    {
+        try
+        {
+            return invocation();
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException != null)
+        {
+            ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+            throw;
         }
     }
 
@@ -1299,8 +1354,10 @@ internal static class RazorLightweightCodeBlockInterpreter
                 // @identifier
                 if (char.IsLetter(markup[i + 1]) || markup[i + 1] == '_')
                 {
-                    // Check for block directive (@for, @foreach, etc.)
-                    if (TryMatchAndExecuteBlockDirective(markup, i, output, scope, out var consumed))
+                    // Parse the complete directive here, but execute it through the same mixed
+                    // interpreter used for top-level code. Keeping one executor avoids the two
+                    // paths drifting on supported constructs, loop limits, and scope behavior.
+                    if (TryMatchAndExecuteMarkupDirective(markup, i, output, scope, out var consumed))
                     {
                         i = consumed;
                         continue;
@@ -1372,120 +1429,284 @@ internal static class RazorLightweightCodeBlockInterpreter
         return true;
     }
 
-    private static bool TryMatchAndExecuteBlockDirective(string markup, int atPos, StringBuilder output, InterpreterScope scope, out int consumed)
+    private static bool TryMatchAndExecuteMarkupDirective(string markup, int atPos, StringBuilder output, InterpreterScope scope, out int consumed)
     {
         consumed = 0;
         var pos = atPos + 1;
-        var remaining = markup.Length - pos;
 
-        // Match keyword
-        string? keyword = null;
-        int keywordLen = 0;
-        if (remaining >= 7 && markup.AsSpan(pos, 7).SequenceEqual("foreach") && (remaining == 7 || !char.IsLetterOrDigit(markup[pos + 7])))
-        { keyword = "foreach"; keywordLen = 7; }
-        else if (remaining >= 5 && markup.AsSpan(pos, 5).SequenceEqual("while") && (remaining == 5 || !char.IsLetterOrDigit(markup[pos + 5])))
-        { keyword = "while"; keywordLen = 5; }
-        else if (remaining >= 3 && markup.AsSpan(pos, 3).SequenceEqual("for") && (remaining == 3 || !char.IsLetterOrDigit(markup[pos + 3])))
-        { keyword = "for"; keywordLen = 3; }
-        else if (remaining >= 2 && markup.AsSpan(pos, 2).SequenceEqual("if") && (remaining == 2 || !char.IsLetterOrDigit(markup[pos + 2])))
-        { keyword = "if"; keywordLen = 2; }
-
-        if (keyword == null) return false;
-
-        var p = pos + keywordLen;
-        while (p < markup.Length && char.IsWhiteSpace(markup[p])) p++;
-        if (p >= markup.Length || markup[p] != '(') return false;
-
-        // Find matching ) and {
-        var afterParen = FindMatchingChar(markup, p + 1, '(', ')');
-        if (afterParen < 0) return false;
-        var condition = markup[(p + 1)..afterParen];
-        p = afterParen + 1;
-
-        while (p < markup.Length && char.IsWhiteSpace(markup[p])) p++;
-        if (p >= markup.Length || markup[p] != '{') return false;
-
-        var bodyEnd = FindMatchingChar(markup, p + 1, '{', '}');
-        if (bodyEnd < 0) return false;
-        var body = markup[(p + 1)..bodyEnd];
-        consumed = bodyEnd + 1;
-
-        // Execute the directive
-        switch (keyword)
+        if (TryMatchKeyword(markup, pos, "await", out var afterAwait))
         {
-            case "for":
-                ExecuteForInMarkup(condition, body, output, scope);
+            pos = afterAwait;
+            SkipWhitespace(markup, ref pos);
+            if (TryMatchKeyword(markup, pos, "foreach", out var afterForeach))
+            {
+                pos = afterForeach;
+                if (!TryReadMarkupParenthesizedBody(markup, ref pos, out var header, out var body))
+                    return false;
+
+                ExecuteAwaitForeachLoop(
+                    header,
+                    scope,
+                    (child, _) => EmitMarkup(body, output, child),
+                    flow: null);
+                consumed = pos;
+                return true;
+            }
+        }
+
+        pos = atPos + 1;
+        if (TryMatchKeyword(markup, pos, "do", out var afterDo))
+        {
+            pos = afterDo;
+            if (!TryReadMarkupBraceBody(markup, ref pos, out var body))
+                return false;
+
+            SkipWhitespace(markup, ref pos);
+            if (!TryMatchKeyword(markup, pos, "while", out var afterWhile))
+                return false;
+
+            pos = afterWhile;
+            if (!TryReadMarkupParenthesized(markup, ref pos, out var condition))
+                return false;
+
+            SkipSemicolon(markup, ref pos);
+            ExecuteDoWhileInMarkup(condition, body, output, scope);
+            consumed = pos;
+            return true;
+        }
+
+        pos = atPos + 1;
+        if (TryMatchKeyword(markup, pos, "if", out var afterIf))
+            return TryExecuteMarkupIf(markup, afterIf, output, scope, out consumed);
+
+        string? keyword = null;
+        var afterKeyword = pos;
+        if (TryMatchKeyword(markup, pos, "foreach", out afterKeyword))
+            keyword = "foreach";
+        else if (TryMatchKeyword(markup, pos, "while", out afterKeyword))
+            keyword = "while";
+        else if (TryMatchKeyword(markup, pos, "for", out afterKeyword))
+            keyword = "for";
+
+        if (keyword != null)
+        {
+            pos = afterKeyword;
+            if (!TryReadMarkupParenthesizedBody(markup, ref pos, out var header, out var body))
+                return false;
+
+            switch (keyword)
+            {
+                case "for":
+                    ExecuteForInMarkup(header, body, output, scope);
+                    break;
+                case "foreach":
+                    ExecuteForeachInMarkup(header, body, output, scope);
+                    break;
+                case "while":
+                    ExecuteWhileInMarkup(header, body, output, scope);
+                    break;
+            }
+
+            consumed = pos;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExecuteMarkupIf(
+        string markup,
+        int pos,
+        StringBuilder output,
+        InterpreterScope scope,
+        out int consumed)
+    {
+        consumed = 0;
+        var branches = new List<(string? Condition, string Body)>();
+
+        while (true)
+        {
+            if (!TryReadMarkupConditionAndBody(markup, ref pos, out var condition, out var body))
+                return false;
+
+            branches.Add((condition, body));
+
+            var elsePos = pos;
+            SkipWhitespace(markup, ref elsePos);
+            if (!TryMatchKeyword(markup, elsePos, "else", out var afterElse))
+            {
+                consumed = pos;
                 break;
-            case "foreach":
-                ExecuteForeachInMarkup(condition, body, output, scope);
-                break;
-            case "while":
-                ExecuteWhileInMarkup(condition, body, output, scope);
-                break;
-            case "if":
-                ExecuteIfInMarkup(condition, body, output, scope);
-                break;
+            }
+
+            pos = afterElse;
+            SkipWhitespace(markup, ref pos);
+            if (TryMatchKeyword(markup, pos, "if", out var nextIf))
+            {
+                pos = nextIf;
+                continue;
+            }
+
+            if (!TryReadMarkupBraceBody(markup, ref pos, out var elseBody))
+                return false;
+
+            branches.Add((null, elseBody));
+            consumed = pos;
+            break;
+        }
+
+        foreach (var branch in branches)
+        {
+            if (branch.Condition != null)
+            {
+                var result = RazorLightweightExpressionEvaluator.Evaluate(branch.Condition.Trim(), scope.Resolve);
+                if (!RazorExpressionParser.IsTruthy(result))
+                    continue;
+            }
+
+            EmitMarkup(branch.Body, output, scope);
+            break;
         }
 
         return true;
     }
 
-    private static void ExecuteForInMarkup(string header, string body, StringBuilder output, InterpreterScope scope)
+    private static bool TryReadMarkupConditionAndBody(
+        string markup,
+        ref int pos,
+        out string condition,
+        out string body)
     {
-        // Parse: init; condition; increment
+        condition = string.Empty;
+        body = string.Empty;
+        if (!TryReadMarkupParenthesized(markup, ref pos, out condition))
+            return false;
+
+        return TryReadMarkupBraceBody(markup, ref pos, out body);
+    }
+
+    private static bool TryReadMarkupParenthesizedBody(
+        string markup,
+        ref int pos,
+        out string header,
+        out string body)
+    {
+        header = string.Empty;
+        body = string.Empty;
+        if (!TryReadMarkupParenthesized(markup, ref pos, out header))
+            return false;
+
+        return TryReadMarkupBraceBody(markup, ref pos, out body);
+    }
+
+    private static bool TryReadMarkupParenthesized(string markup, ref int pos, out string content)
+    {
+        content = string.Empty;
+        SkipWhitespace(markup, ref pos);
+        if (pos >= markup.Length || markup[pos] != '(')
+            return false;
+
+        var conditionEnd = FindMatchingChar(markup, pos + 1, '(', ')');
+        if (conditionEnd < 0)
+            return false;
+
+        content = markup[(pos + 1)..conditionEnd];
+        pos = conditionEnd + 1;
+        return true;
+    }
+
+    private static bool TryReadMarkupBraceBody(string markup, ref int pos, out string body)
+    {
+        body = string.Empty;
+        SkipWhitespace(markup, ref pos);
+        if (pos >= markup.Length || markup[pos] != '{')
+            return false;
+
+        var bodyEnd = FindMatchingChar(markup, pos + 1, '{', '}');
+        if (bodyEnd < 0)
+            return false;
+
+        body = markup[(pos + 1)..bodyEnd];
+        pos = bodyEnd + 1;
+        return true;
+    }
+
+    private static void ExecuteForInMarkup(
+        string header,
+        string body,
+        StringBuilder output,
+        InterpreterScope scope)
+    {
         var parts = SplitForHeader(header);
         if (parts.Length != 3) return;
 
         var child = scope.CreateChild();
-        ExecuteCode(parts[0] + ";", output, child);
-        var iterLimit = 10000;
-        while (iterLimit-- > 0)
+        ExecuteCode(parts[0].Trim() + ";", output, child);
+        var remainingIterations = MaxLoopIterations;
+        while (remainingIterations-- > 0)
         {
-            var cond = RazorLightweightExpressionEvaluator.Evaluate(parts[1].Trim(), child.Resolve);
-            if (!RazorExpressionParser.IsTruthy(cond)) break;
+            var condition = RazorLightweightExpressionEvaluator.Evaluate(parts[1].Trim(), child.Resolve);
+            if (!RazorExpressionParser.IsTruthy(condition)) break;
+
             EmitMarkup(body, output, child);
             ExecuteCode(parts[2].Trim() + ";", output, child);
         }
     }
 
-    private static void ExecuteForeachInMarkup(string header, string body, StringBuilder output, InterpreterScope scope)
+    private static void ExecuteForeachInMarkup(
+        string header,
+        string body,
+        StringBuilder output,
+        InterpreterScope scope)
     {
-        // Parse: var x in expr  or  Type x in expr
         var inIdx = header.IndexOf(" in ", StringComparison.Ordinal);
         if (inIdx < 0) return;
-        var varPart = header[..inIdx].Trim();
-        var exprPart = header[(inIdx + 4)..].Trim();
 
-        var varName = varPart.Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
-        var collection = RazorLightweightExpressionEvaluator.Evaluate(exprPart, scope.Resolve);
+        var varName = header[..inIdx].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
+        var collectionExpression = header[(inIdx + 4)..].Trim();
+        var collection = RazorLightweightExpressionEvaluator.Evaluate(collectionExpression, scope.Resolve);
 
         if (collection is IEnumerable enumerable)
         {
             var child = scope.CreateChild();
+            var remainingIterations = MaxLoopIterations;
             foreach (var item in enumerable)
             {
+                if (remainingIterations-- <= 0) break;
                 child.Set(varName, item);
                 EmitMarkup(body, output, child);
             }
         }
     }
 
-    private static void ExecuteWhileInMarkup(string condition, string body, StringBuilder output, InterpreterScope scope)
+    private static void ExecuteWhileInMarkup(
+        string condition,
+        string body,
+        StringBuilder output,
+        InterpreterScope scope)
     {
-        var iterLimit = 10000;
-        while (iterLimit-- > 0)
+        var remainingIterations = MaxLoopIterations;
+        while (remainingIterations-- > 0)
         {
-            var cond = RazorLightweightExpressionEvaluator.Evaluate(condition.Trim(), scope.Resolve);
-            if (!RazorExpressionParser.IsTruthy(cond)) break;
+            var result = RazorLightweightExpressionEvaluator.Evaluate(condition.Trim(), scope.Resolve);
+            if (!RazorExpressionParser.IsTruthy(result)) break;
             EmitMarkup(body, output, scope);
         }
     }
 
-    private static void ExecuteIfInMarkup(string condition, string body, StringBuilder output, InterpreterScope scope)
+    private static void ExecuteDoWhileInMarkup(
+        string condition,
+        string body,
+        StringBuilder output,
+        InterpreterScope scope)
     {
-        var cond = RazorLightweightExpressionEvaluator.Evaluate(condition.Trim(), scope.Resolve);
-        if (RazorExpressionParser.IsTruthy(cond))
+        var remainingIterations = MaxLoopIterations;
+        while (remainingIterations-- > 0)
+        {
             EmitMarkup(body, output, scope);
+            var result = RazorLightweightExpressionEvaluator.Evaluate(condition.Trim(), scope.Resolve);
+            if (!RazorExpressionParser.IsTruthy(result)) break;
+        }
     }
 
     private static int FindMatchingChar(string text, int start, char open, char close)
@@ -2135,7 +2356,7 @@ internal static class RazorLightweightCodeBlockInterpreter
         var bodyStart = pos;
         var bodyEnd = FindBlockEnd(tokens, pos);
 
-        var iterLimit = 10000;
+        var iterLimit = MaxLoopIterations;
         while (iterLimit-- > 0)
         {
             var condVal = RazorLightweightExpressionEvaluator.Evaluate(condExpr, child.Resolve);
