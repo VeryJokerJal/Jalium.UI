@@ -1575,7 +1575,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
         if (pos + 1 < text.Length && text[pos + 1] == '{')
         {
             tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
-            tokens.Add(new SyntaxToken(pos + 1, 1, TokenClassification.Punctuation));
+            tokens.Add(new SyntaxToken(pos + 1, 1, TokenClassification.Operator));
             return ScanRazorCodeBlock(text, pos + 2, tokens, initialBraceDepth: 1);
         }
 
@@ -1680,7 +1680,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
 
             if (c == '{')
             {
-                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Punctuation));
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
                 pos++;
                 braceDepth++;
                 continue;
@@ -1688,7 +1688,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
 
             if (c == '}')
             {
-                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Punctuation));
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
                 pos++;
                 braceDepth--;
                 if (braceDepth <= 0)

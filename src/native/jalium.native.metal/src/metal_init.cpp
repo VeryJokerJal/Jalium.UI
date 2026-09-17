@@ -1,6 +1,10 @@
 #include "jalium_api.h"
 #include "metal_backend.h"
 
+#ifdef __APPLE__
+#import <Metal/Metal.h>
+#endif
+
 #include <atomic>
 
 #ifdef __APPLE__
