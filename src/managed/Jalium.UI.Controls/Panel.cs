@@ -127,7 +127,10 @@ public abstract class Panel : FrameworkElement
         InvalidateVisual();
     }
 
+    internal void InvalidateCssFlowOrder() => InvalidateZOrder();
+
     private int[]? _zIndexValues;
+    private int[]? _cssPaintRanks;
 
     private void EnsureZOrderMap()
     {
@@ -143,17 +146,20 @@ public abstract class Panel : FrameworkElement
             // nondecreasing. This is by far the most common case (all values are zero),
             // so avoid allocating sorting buffers for every panel in the visual tree.
             var previousZIndex = int.MinValue;
+            var previousRank = 0;
             var requiresSort = false;
             for (int i = 0; i < count; i++)
             {
                 var zIndex = GetZIndex(children[i]);
-                if (zIndex < previousZIndex)
+                var rank = Jalium.UI.Styling.CssFloatProperties.PaintRank(this, children[i]);
+                if (zIndex < previousZIndex || zIndex == previousZIndex && rank < previousRank)
                 {
                     requiresSort = true;
                     break;
                 }
 
                 previousZIndex = zIndex;
+                previousRank = rank;
             }
 
             if (!requiresSort)
@@ -173,17 +179,20 @@ public abstract class Panel : FrameworkElement
                 _zIndexValues = new int[count];
 
             var zValues = _zIndexValues;
+            if (_cssPaintRanks is null || _cssPaintRanks.Length < count) _cssPaintRanks = new int[count];
+            var ranks = _cssPaintRanks;
             for (int i = 0; i < count; i++)
             {
                 map[i] = i;
                 zValues[i] = GetZIndex(children[i]);
+                ranks[i] = Jalium.UI.Styling.CssFloatProperties.PaintRank(this, children[i]);
             }
 
             Array.Sort(map, (a, b) =>
             {
                 var za = zValues[a];
                 var zb = zValues[b];
-                return za != zb ? za.CompareTo(zb) : a.CompareTo(b);
+                return za != zb ? za.CompareTo(zb) : ranks[a] != ranks[b] ? ranks[a].CompareTo(ranks[b]) : a.CompareTo(b);
             });
 
             _zOrderDirty = false;
@@ -324,6 +333,9 @@ public abstract class Panel : FrameworkElement
             child.Measure(Jalium.UI.Styling.CssAbsoluteLayout.ComputeMeasureConstraint(layout, availableSize));
         }
     }
+
+    internal void MeasureCssLayoutAbsoluteChildren(Size availableSize) => MeasureCssAbsoluteChildren(availableSize);
+    internal void ArrangeCssLayoutAbsoluteChildren(Size finalSize) => ArrangeCssAbsoluteChildren(finalSize);
 
     /// <summary>Places every absolutely positioned child per the CSS inset rules.</summary>
     protected void ArrangeCssAbsoluteChildren(Size finalSize)

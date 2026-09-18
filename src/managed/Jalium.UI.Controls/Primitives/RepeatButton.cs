@@ -1,4 +1,3 @@
-using System.Timers;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Input;
@@ -90,7 +89,7 @@ public class RepeatButton : ButtonBase
 
     #region Private Fields
 
-    private System.Timers.Timer? _timer;
+    private DispatcherTimer? _timer;
     private bool _isInDelay;
     private bool _isPointerOverForArrow;
 
@@ -147,6 +146,23 @@ public class RepeatButton : ButtonBase
     public RepeatButton()
     {
         ResourcesChanged += OnResourcesChangedHandler;
+        Unloaded += static (sender, _) => (sender as RepeatButton)?.CompleteInteractionForDetach();
+    }
+
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+        if (oldParent != null && VisualParent == null) CompleteInteractionForDetach();
+    }
+
+    internal void CompleteInteractionForDetach()
+    {
+        StopTimer();
+        _isPointerOverForArrow = false;
+        if (IsMouseCaptured) ReleaseMouseCapture();
+        if (IsPressed) SetIsPressed(false);
+        StartArrowVisualTransition(immediate: true);
+        StopArrowTimer();
     }
 
     #endregion
@@ -157,12 +173,12 @@ public class RepeatButton : ButtonBase
     {
         if (_timer == null)
         {
-            _timer = new System.Timers.Timer();
-            _timer.Elapsed += OnTimerElapsed;
+            _timer = new DispatcherTimer();
+            _timer.Tick += OnTimerElapsed;
         }
 
         _isInDelay = true;
-        _timer.Interval = Delay;
+        _timer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, Delay));
         _timer.Start();
     }
 
@@ -172,7 +188,7 @@ public class RepeatButton : ButtonBase
         _isInDelay = false;
     }
 
-    private void OnTimerElapsed(object? sender, ElapsedEventArgs e)
+    private void OnTimerElapsed(object? sender, EventArgs e)
     {
         if (_timer == null) return;
 
@@ -180,20 +196,18 @@ public class RepeatButton : ButtonBase
         {
             // Switch from delay to repeat interval
             _isInDelay = false;
-            _timer.Interval = Interval;
+            _timer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, Interval));
         }
 
-        // Raise Click event on the UI thread
-        Dispatcher?.Invoke(() =>
+        // DispatcherTimer already invokes on the UI thread, with stopped/replaced
+        // generations cancelled. Do not queue a second callback for the same tick.
+        if (IsPressed && CanRespondToInput())
         {
             // CanRespondToInput (not raw IsEnabled) so a ReactiveCommand's async CanExecute flap
             // mid-hold doesn't drop auto-repeat ticks — RepeatButton is the worst case for the
             // swallowed-input bug since it fires OnClick continuously while pressed.
-            if (IsPressed && CanRespondToInput())
-            {
-                OnClick();
-            }
-        });
+            OnClick();
+        }
     }
 
     #endregion
@@ -289,7 +303,7 @@ public class RepeatButton : ButtonBase
     {
         if (d is RepeatButton button && button._timer != null && button._isInDelay)
         {
-            button._timer.Interval = (int)(e.NewValue ?? SystemParameters.KeyboardDelay);
+            button._timer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, (int)(e.NewValue ?? SystemParameters.KeyboardDelay)));
         }
     }
 
@@ -297,7 +311,7 @@ public class RepeatButton : ButtonBase
     {
         if (d is RepeatButton button && button._timer != null && !button._isInDelay)
         {
-            button._timer.Interval = (int)(e.NewValue ?? SystemParameters.KeyboardSpeed);
+            button._timer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, (int)(e.NewValue ?? SystemParameters.KeyboardSpeed)));
         }
     }
 
@@ -545,7 +559,7 @@ public class RepeatButton : ButtonBase
     /// </summary>
     ~RepeatButton()
     {
-        _timer?.Dispose();
+        _timer?.Stop();
         if (_arrowStateTimer != null)
         {
             _arrowStateTimer.Stop();

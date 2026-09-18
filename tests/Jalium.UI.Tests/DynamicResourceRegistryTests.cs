@@ -1,4 +1,6 @@
+using System.Collections;
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using Jalium.UI;
 using Jalium.UI.Controls.Themes;
@@ -105,6 +107,51 @@ public sealed class DynamicResourceRegistryTests
             $"Twenty-five compacted refreshes took {stopwatch.Elapsed}.");
 
         GC.KeepAlive(weakTargets);
+    }
+
+    [Fact]
+    public void Registry_NormalRegistrationAfterCollection_CompactsDeadWeakMetadata()
+    {
+        ThemeManager.Reset();
+        var deadKey = new object();
+        var triggerKey = new object();
+        var deadTarget = CreateTransientTarget(deadKey);
+
+        try
+        {
+            Assert.Equal(1, GetRawRegisteredTargetCount());
+            Assert.Equal(1, GetRawKeyIndexEntryCount(deadKey));
+
+            ForceFullCollection();
+            Assert.False(deadTarget.TryGetTarget(out _));
+
+            // Merely collecting the target does not mutate either static metadata table.
+            // The next normal registration batch observes GC progress and performs the
+            // amortized cleanup without RefreshAll or GetRegistryDiagnostics doing it for us.
+            Assert.Equal(1, GetRawRegisteredTargetCount());
+            Assert.Equal(1, GetRawKeyIndexEntryCount(deadKey));
+
+            var liveTargets = new RegistryProbe[128];
+            for (var index = 0; index < liveTargets.Length; index++)
+            {
+                var target = new RegistryProbe();
+                DynamicResourceBindingOperations.SetDynamicResource(
+                    target,
+                    RegistryProbe.ValueProperty,
+                    triggerKey);
+                liveTargets[index] = target;
+            }
+
+            Assert.Equal(liveTargets.Length, GetRawRegisteredTargetCount());
+            Assert.Equal(0, GetRawKeyIndexEntryCount(deadKey));
+            Assert.Equal(liveTargets.Length, GetRawKeyIndexEntryCount(triggerKey));
+            GC.KeepAlive(liveTargets);
+        }
+        finally
+        {
+            ThemeManager.Reset();
+            GC.KeepAlive(deadTarget);
+        }
     }
 
     [Fact]
@@ -241,6 +288,34 @@ public sealed class DynamicResourceRegistryTests
         }
 
         return weakTargets;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<FrameworkElement> CreateTransientTarget(object key)
+    {
+        var target = new RegistryProbe();
+        DynamicResourceBindingOperations.SetDynamicResource(target, RegistryProbe.ValueProperty, key);
+        return new WeakReference<FrameworkElement>(target);
+    }
+
+    private static int GetRawRegisteredTargetCount()
+    {
+        var field = typeof(DependencyObject).Assembly
+            .GetType("Jalium.UI.DynamicResourceBindingOperations")!
+            .GetField("RegisteredTargets", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(field);
+        return ((ICollection)field!.GetValue(null)!).Count;
+    }
+
+    private static int GetRawKeyIndexEntryCount(object key)
+    {
+        var field = typeof(DependencyObject).Assembly
+            .GetType("Jalium.UI.DynamicResourceBindingOperations")!
+            .GetField("KeyIndex", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(field);
+
+        var index = (IDictionary)field!.GetValue(null)!;
+        return index[key] is ICollection entries ? entries.Count : 0;
     }
 
     private static void ForceFullCollection()

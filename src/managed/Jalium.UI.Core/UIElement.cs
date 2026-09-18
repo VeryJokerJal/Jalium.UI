@@ -394,6 +394,10 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         finally
         {
             _tunnelDepth--;
+            // Keep the reusable capacity, not the last routed tree. This list is
+            // thread-static and otherwise roots detached controls until another
+            // tunnel event happens, including after a handler throws.
+            path.Clear();
         }
     }
 
@@ -1409,6 +1413,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// Gets the previous available size used for measurement (used by LayoutManager).
     /// </summary>
     internal Size PreviousAvailableSize => _previousAvailableSize;
+    private static long s_measureInputVersion;
+    internal long MeasureInputVersion { get; private set; }
 
     /// <summary>
     /// Gets the previous final rect used for arrangement (used by LayoutManager).
@@ -1421,6 +1427,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     internal void MarkMeasureInvalid()
     {
+        MeasureInputVersion = Interlocked.Increment(ref s_measureInputVersion);
         _isMeasureValid = false;
         _isArrangeValid = false;
     }
@@ -1439,6 +1446,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     public void InvalidateMeasure()
     {
+        MeasureInputVersion = Interlocked.Increment(ref s_measureInputVersion);
         _isMeasureValid = false;
         _isArrangeValid = false;
 
@@ -1479,8 +1487,19 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     }
 
     /// <summary>
-    /// Invalidates the arrange pass for this element.
+    /// Invalidates a CSS allocation during the parent's current layout pass.
     /// </summary>
+    internal void InvalidateCssAllocation()
+    {
+        // The CSS parent is already measuring this child. A changed allocation requires
+        // fresh layout and paint, but does not change the child's intrinsic content.
+        _isMeasureValid = false;
+        _isArrangeValid = false;
+        if (_isArrangeInProgress) _arrangeInvalidatedWhileArranging = true;
+        InvalidateLayoutVisual();
+    }
+
+    /// <summary>Invalidates the arrange pass for this element.</summary>
     public void InvalidateArrange()
     {
         _isArrangeValid = false;
@@ -2167,6 +2186,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// <param name="finalRect">The final area for this element.</param>
     public void Arrange(Rect finalRect)
     {
+        if (Jalium.UI.Styling.CssEngine.IsActive && this is FrameworkElement cssRoot)
+            Jalium.UI.Styling.CssEngine.RecordViewportAllocation(cssRoot, finalRect.Size);
         if (Visibility == Visibility.Collapsed)
         {
             _renderSize = default;
@@ -4746,6 +4767,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         public IAnimationClock Clock { get; }
         public object? BaseValue { get; }
         public ElementAnimationKind Kind { get; }
+        public bool IsCssTransition { get; }
         public bool StartPending { get; private set; }
 
         /// <summary>
@@ -4773,7 +4795,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             bool startPending,
             object? handoffSnapshot = null,
             bool hasHandoffSnapshot = false,
-            IStoryboardClockOwner? storyboardOwner = null)
+            IStoryboardClockOwner? storyboardOwner = null,
+            bool isCssTransition = false)
         {
             Animation = animation;
             Clock = clock;
@@ -4783,6 +4806,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             HandoffSnapshot = handoffSnapshot;
             HasHandoffSnapshot = hasHandoffSnapshot;
             StoryboardOwner = storyboardOwner;
+            IsCssTransition = isCssTransition;
         }
 
         public bool ConsumePendingStart()
@@ -4903,7 +4927,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         bool useInitialAnimatedValue = false,
         bool deferClockBeginUntilRendering = false,
         IAnimationClock? existingClock = null,
-        IStoryboardClockOwner? storyboardOwner = null)
+        IStoryboardClockOwner? storyboardOwner = null,
+        bool isCssTransition = false)
     {
         _activeAnimations ??= new Dictionary<DependencyProperty, ElementAnimation>();
 
@@ -4958,7 +4983,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             deferClockBeginUntilRendering,
             handoffSnapshot,
             hasHandoffSnapshot,
-            storyboardOwner);
+            storyboardOwner,
+            isCssTransition);
 
         // Subscribe to completion
         clock.Completed += OnAnimationClockCompleted;
@@ -6015,6 +6041,21 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // immediately followed by a re-attach within the same dispatcher batch is a no-op.
         Input.KeyboardFocusRevalidation.OnVisualParentChanged(this, oldParent);
 
+        if (VisualParent == null && oldParent is Visual previousParent)
+        {
+            // Nested page hosts and template containers can detach content without
+            // changing Window.Content. Let the former input host revalidate only
+            // the state it owns after this dispatcher batch has finished reparenting.
+            for (Visual? ancestor = previousParent; ancestor != null; ancestor = ancestor.VisualParent)
+            {
+                if (ancestor is Input.IInputTreeLifetimeHost host)
+                {
+                    host.OnInputSubtreeDetached(this);
+                    break;
+                }
+            }
+        }
+
         if (VisualParent != null)
         {
             ScheduleAutomaticTransitionArmRecursive(this);
@@ -6038,6 +6079,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (!_automaticTransitionsArmed)
             return false;
 
+        if (Jalium.UI.Styling.CssEngine.IsActive && Jalium.UI.Styling.CssTransitions.IsConfiguration(dp)) return false;
+
         if (ReferenceEquals(dp, TransitionPropertyProperty) ||
             ReferenceEquals(dp, TransitionDurationProperty) ||
             ReferenceEquals(dp, TransitionTimingFunctionProperty))
@@ -6060,6 +6103,13 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (GetAutomaticTransitionAnimationFactory() == null)
             return false;
 
+        if (Jalium.UI.Styling.CssEngine.IsActive && GetValue(Jalium.UI.Styling.CssTransitions.DataProperty) is Jalium.UI.Styling.CssTransitionData cssData)
+        {
+            if (HasLocalValue(dp)) return false;
+            var cssTransition = cssData.Find(this, dp);
+            return cssTransition is not null && cssTransition.Duration.TotalMilliseconds + cssTransition.Delay.TotalMilliseconds > 0;
+        }
+
         var duration = GetTransitionDurationOrDefault();
         if (duration <= TimeSpan.Zero)
             return false;
@@ -6071,6 +6121,19 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     internal bool TryStartAutomaticTransition(DependencyProperty dp, object? fromValue, object? toValue)
     {
         ArgumentNullException.ThrowIfNull(dp);
+
+        if (Jalium.UI.Styling.CssEngine.IsActive && GetValue(Jalium.UI.Styling.CssTransitions.DataProperty) is Jalium.UI.Styling.CssTransitionData cssData)
+        {
+            if (HasLocalValue(dp)) return false;
+            var transition = cssData.Find(this, dp);
+            if (transition is null || transition.Duration.TotalMilliseconds + transition.Delay.TotalMilliseconds <= 0) return false;
+            var cssAnimation = Jalium.UI.Styling.CssTransitions.Create(this, dp, fromValue, toValue, transition);
+            if (cssAnimation is null) return false;
+            return BeginAnimationCore(dp, cssAnimation, Media.Animation.HandoffBehavior.SnapshotAndReplace,
+                ElementAnimationKind.AutomaticTransition, clearAnimatedValueOnReplace: false,
+                allowAutomaticToReplaceExplicit: false, initialAnimatedValue: fromValue,
+                useInitialAnimatedValue: true, deferClockBeginUntilRendering: true, isCssTransition: true);
+        }
 
         var duration = GetTransitionDurationOrDefault();
         if (duration <= TimeSpan.Zero)
@@ -6107,10 +6170,27 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         StopAnimationCore(dp, ElementAnimationKind.AutomaticTransition, clearAnimatedValue);
     }
 
+    // Local values/bindings take control immediately, even when their value is
+    // unchanged from the CSS destination or automatic animations were disabled.
+    // Record ownership on the clock so native animations keep their precedence.
+    // True means clearing the animated layer already notified the value change.
+    internal bool StopCssTransitionForLocalValue(DependencyProperty dp)
+    {
+        if (!TryGetActiveAnimation(dp, out var animation) || !animation.IsCssTransition || !HasLocalValue(dp))
+            return false;
+
+        var hadAnimatedValue = HasAnimatedValue(dp);
+        RemoveAnimationCore(dp, animation, clearAnimatedValue: true);
+        UnregisterFromAnimationManagerIfIdle();
+        return hadAnimatedValue;
+    }
+
     internal bool HasExplicitAnimation(DependencyProperty dp)
     {
+        // Both BeginAnimation and Storyboard own the animated layer. Automatic
+        // transitions must leave that layer intact while changing its base value.
         return TryGetActiveAnimation(dp, out var animation) &&
-               animation.Kind == ElementAnimationKind.Explicit;
+               animation.Kind is ElementAnimationKind.Explicit or ElementAnimationKind.Storyboard;
     }
 
     internal bool HasAutomaticTransition(DependencyProperty dp)
@@ -6498,12 +6578,40 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             // Mirror LayoutManager.UpdateLayout: pending CSS can change sizes, so it has to
             // settle before this pass, not after it. Trees without a layout manager — headless
             // hosts, RenderTargetBitmap snapshots — would otherwise lay out unstyled.
-            Jalium.UI.Styling.CssEvaluationScheduler.FlushIfPending(root.Dispatcher);
-            root.Measure(available);
-            root.Arrange(new Rect(0, 0, available.Width, available.Height));
+            for (var pass = 0; pass < 64; pass++)
+            {
+                Jalium.UI.Styling.CssEvaluationScheduler.FlushIfPending(root.Dispatcher);
+                PropagateHeadlessLayoutInvalidation(root);
+                root.Measure(available);
+                root.Arrange(new Rect(0, 0, available.Width, available.Height));
+                if (!Jalium.UI.Styling.CssEvaluationScheduler.HasPending(root.Dispatcher)) break;
+            }
         }
 
         RaiseLayoutUpdatedRecursive(root);
+    }
+
+    private static (bool Measure, bool Arrange) PropagateHeadlessLayoutInvalidation(Visual visual)
+    {
+        var element = visual as UIElement;
+        var measure = element is not null && !element.IsMeasureValid;
+        var arrange = element is not null && !element.IsArrangeValid;
+        if (element?.Visibility != Visibility.Collapsed)
+        {
+            for (var i = 0; i < visual.VisualChildrenCount; i++)
+            {
+                if (visual.GetVisualChild(i) is not { } child) continue;
+                var dirty = PropagateHeadlessLayoutInvalidation(child);
+                measure |= dirty.Measure; arrange |= dirty.Arrange;
+            }
+        }
+        if (element is not null)
+        {
+            if (measure && element.IsMeasureValid) element.MarkMeasureInvalid();
+            else if (arrange && element.IsArrangeValid) element.MarkArrangeInvalid();
+            if (element.IsLayoutIsolated) return default;
+        }
+        return (measure, arrange || measure);
     }
 
     public void AddToEventRoute(EventRoute route, RoutedEventArgs e)

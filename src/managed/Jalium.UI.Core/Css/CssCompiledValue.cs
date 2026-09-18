@@ -18,6 +18,7 @@ internal interface ICssSetterSink
 internal sealed class CssCompileContext
 {
     public Uri? BaseUri;
+    internal CssLengthContext? NumericLengths;
 
     public static readonly CssCompileContext Default = new();
 }
@@ -25,11 +26,21 @@ internal sealed class CssCompileContext
 /// <summary>Per-element context threaded through <see cref="CssCompiledValue.TryApply"/>.</summary>
 internal readonly struct CssApplyContext
 {
-    public readonly FrameworkElement Element;
+    private static readonly Jalium.UI.Media.SolidColorBrush s_black = CreateBlack();
+    private static Jalium.UI.Media.SolidColorBrush CreateBlack()
+    {
+        var brush = new Jalium.UI.Media.SolidColorBrush(Jalium.UI.Media.Color.FromRgb(0, 0, 0));
+        brush.Freeze();
+        return brush;
+    }
+    public readonly CssNode Element;
     public readonly CssLengthContext Lengths;
     public readonly CssSlotAccumulator Slots;
+    public Jalium.UI.Media.Brush CurrentColor => Slots.ForegroundBrush ??
+        (CssDependencyPropertyLookup.Find(Element.GetType(), "Foreground") is { } dp && Element.GetValue(dp) is Jalium.UI.Media.SolidColorBrush brush
+            ? brush : s_black);
 
-    public CssApplyContext(FrameworkElement element, CssLengthContext lengths, CssSlotAccumulator slots)
+    public CssApplyContext(CssNode element, CssLengthContext lengths, CssSlotAccumulator slots)
     {
         Element = element;
         Lengths = lengths;
@@ -220,6 +231,17 @@ internal sealed class CssLayoutValue : CssCompiledValue
 /// at apply time. When position is static the slot flush falls back to the Canvas
 /// compatibility DP for absolute pixels.
 /// </summary>
+internal sealed class CssExpressionLayoutValue(CssLayoutSlotField field, CssLength length,
+    DependencyProperty property, object sentinel) : CssCompiledValue
+{
+    public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
+    {
+        context.Slots.SetLayoutLength(field, CssLayoutLength.Math(length.Expression!, context.Lengths));
+        sink.Set(property, sentinel);
+        return true;
+    }
+}
+
 internal sealed class CssInsetValue : CssCompiledValue
 {
     private readonly string _cssName;
@@ -238,7 +260,11 @@ internal sealed class CssInsetValue : CssCompiledValue
     public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
     {
         CssLayoutLength resolved;
-        if (_length.Unit == CssUnit.Percent)
+        if (_length.Expression is { UsesPercent: true } expression)
+        {
+            resolved = CssLayoutLength.Math(expression, context.Lengths);
+        }
+        else if (_length.Unit == CssUnit.Percent)
         {
             resolved = CssLayoutLength.Percent(_length.Value / 100.0);
         }
@@ -415,5 +441,26 @@ internal static class CssDependencyPropertyLookup
     private static readonly ConcurrentDictionary<(Type, string), DependencyProperty?> s_cache = new();
 
     public static DependencyProperty? Find(Type ownerType, string name)
-        => s_cache.GetOrAdd((ownerType, name), static key => DependencyProperty.FromName(key.Item1, key.Item2));
+        => s_cache.GetOrAdd((ownerType, name), static key => DependencyProperty.FromName(key.Item1, key.Item2) ?? (key.Item2 switch
+        {
+            "Foreground" => Jalium.UI.Documents.TextElement.ForegroundProperty,
+            "FontSize" => Jalium.UI.Documents.TextElement.FontSizeProperty,
+            "FontFamily" => Jalium.UI.Documents.TextElement.FontFamilyProperty,
+            "FontStyle" => Jalium.UI.Documents.TextElement.FontStyleProperty,
+            "FontWeight" => Jalium.UI.Documents.TextElement.FontWeightProperty,
+            "FontStretch" => Jalium.UI.Documents.TextElement.FontStretchProperty,
+            "LineHeight" => Jalium.UI.Controls.TextBlock.LineHeightProperty,
+            "TextAlignment" => Jalium.UI.Controls.TextBlock.TextAlignmentProperty,
+            "TextWrapping" => Jalium.UI.Controls.TextBlock.TextWrappingProperty,
+            _ => null,
+        }));
+}
+
+internal sealed class CssCurrentColorValue(string property) : CssCompiledValue
+{
+    public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
+    {
+        if (property == "background-color") { context.Slots.SetBackgroundColor(context.CurrentColor); return true; }
+        return new CssNamedValue(property, property == "outline-color" ? "OutlineBrush" : "BorderBrush", context.CurrentColor).TryApply(in context, sink);
+    }
 }

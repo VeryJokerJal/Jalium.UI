@@ -117,14 +117,16 @@ static FILE* VkDamageTraceFile()
 #include "glyph_atlas.h"
 #endif
 
+#include "vulkan_environment.h"
+
 namespace jalium {
 
 namespace {
 int VkVelloDbgLevel()
 {
     static int level = []() {
-        char buf[8]; size_t n = 0;
-        if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VELLO_PERF") != 0 || n == 0) return 0;
+        char buf[8];
+        if (!ReadVulkanEnvironment("JALIUM_VELLO_PERF", buf)) return 0;
         int v = atoi(buf);
         return v > 0 ? v : (buf[0] != '0' ? 1 : 0);
     }();
@@ -13722,7 +13724,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         if (command.kind == GpuReplayCommandKind::TextRun) {
             const uint32_t gc = command.textRun.glyphCount;
             if (gc > 0) {
-                if (command.textRun.glyphs.size() != static_cast<size_t>(gc) * 12u) { EndFrame(); return false; }
+                if (command.textRun.glyphs.size() != static_cast<size_t>(gc) * 16u) { EndFrame(); return false; }
                 textRunOffsets[index] = totalTextBytes;
                 totalTextBytes += static_cast<VkDeviceSize>(command.textRun.glyphs.size() * sizeof(float));
                 hasTextCommands = true;
@@ -18675,8 +18677,8 @@ bool VulkanRenderTarget::VelloReroutePreflight(float bx, float by, float bw, flo
     // on Vulkan (the reroute changes which commands exist inside a capture,
     // which perturbs where the sub-scene cuts land).
     static const bool s_on = []() {
-        char buf[8]; size_t n = 0;
-        if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VK_VELLO_REROUTE") != 0 || n == 0) {
+        char buf[8];
+        if (!ReadVulkanEnvironment("JALIUM_VK_VELLO_REROUTE", buf)) {
             return true;  // default ON; JALIUM_VK_VELLO_REROUTE=0 disables
         }
         return buf[0] != '0';
@@ -18910,8 +18912,8 @@ void VulkanRenderTarget::MaybeEmitEngineSpan(const GpuReplayCommand* upcoming)
     if (IsVelloActive() && velloEngine_ && velloEngine_->IsComputeMode() &&
         impl_ && impl_->velloCompute_) {
         static const bool s_spanGate = []() {
-            char buf[8]; size_t n = 0;
-            if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VK_VELLO_SPAN_GATE") != 0 || n == 0) {
+            char buf[8];
+            if (!ReadVulkanEnvironment("JALIUM_VK_VELLO_SPAN_GATE", buf)) {
                 return true;  // default ON; JALIUM_VK_VELLO_SPAN_GATE=0 disables
             }
             return buf[0] != '0';
@@ -23554,26 +23556,27 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
 void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit)
 {
     TouchFrame();
-    // Gradient stroke: route through StrokePath so the Impeller/Vello engine bakes
-    // a TRUE per-vertex gradient stroke (same engine path StrokePath/DrawContentBorder
-    // use), instead of collapsing to a representative solid via TryGetApproximateBrushColor
-    // below. Solid/image brushes fall through to the existing fast path unchanged.
-    if (brush && points && pointCount >= 2) {
-        EngineBrushData gbd {};
-        std::vector<EngineBrushData::GradientStop> gstops;
-        if (BuildEngineBrush(brush, GetCurrentOpacity(), gbd, gstops) && gbd.type != 0) {
-            std::vector<float> gcmds;
-            gcmds.reserve(static_cast<size_t>(pointCount - 1) * 3u);
-            for (uint32_t i = 1; i < pointCount; ++i) {
-                gcmds.push_back(0.0f);                 // tag 0 = LineTo
-                gcmds.push_back(points[i * 2]);
-                gcmds.push_back(points[i * 2 + 1]);
-            }
-            StrokePath(points[0], points[1], gcmds.data(), static_cast<uint32_t>(gcmds.size()),
-                       brush, strokeWidth, closed, lineJoin, miterLimit, /*lineCap*/ 0,
-                       nullptr, 0, 0.0f, /*edgeMode*/ -1);
-            return;
+    // A line-only managed Path specializes to DrawPolygon. Keep that
+    // specialization inside the selected rendering engine for solid AND
+    // gradient brushes; the old solid fast path bypassed both engines and
+    // emitted a binary GPU polyline (0 partial-coverage pixels). StrokePath
+    // already owns capture fallback, clip sync, Vello scene cutting, and the
+    // Impeller icon-scale analytic gate, so use it as the single source of
+    // stroke semantics.
+    if (brush && points && pointCount >= 2 &&
+        (IsImpellerActive() || IsVelloActive())) {
+        std::vector<float> commands;
+        commands.reserve(static_cast<size_t>(pointCount - 1) * 3u + 1u);
+        for (uint32_t i = 1; i < pointCount; ++i) {
+            commands.push_back(0.0f);                 // tag 0 = LineTo
+            commands.push_back(points[i * 2]);
+            commands.push_back(points[i * 2 + 1]);
         }
+        if (closed) commands.push_back(5.0f);          // ClosePath
+        StrokePath(points[0], points[1], commands.data(), static_cast<uint32_t>(commands.size()),
+                   brush, strokeWidth, closed, lineJoin, miterLimit, /*lineCap*/ 0,
+                   nullptr, 0, 0.0f, /*edgeMode*/ -1);
+        return;
     }
     if (points && pointCount >= 2) {
         std::vector<float> localPoints;
@@ -24943,8 +24946,8 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // screen pen instead of whole-pixel pen snapping. Same crisp path.
     const bool subpixelPositioning = format->GetSubpixelPositioning();
     // Vulkan's root transform already includes dpi/96, so the quads below end
-    // in PHYSICAL pixels. Fixed/Auto axis-aligned text can therefore be snapped
-    // and point-sampled exactly; Animated or rotated/skewed text stays smooth.
+    // in PHYSICAL pixels. Axis-aligned Fixed/Auto text stays point-sampled;
+    // oriented rotated/skewed quads use smooth texture resolution.
     const bool crispAxisAligned = axisAligned && hintingMode != 2;
     const float effectiveA = (static_cast<float>(a) / 255.0f) * GetCurrentOpacity();
     if (effectiveA <= 0.0f) {
@@ -24976,12 +24979,10 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // isotropic high-res bitmap is point-minified in one axis and thin stems
     // vanish. Isotropic DPI keeps the crisp 1:1 path.
     const bool anisoText = std::abs(txScaleX - txScaleY) > 0.01f * std::max(txScaleX, txScaleY);
-    // A ROTATED run joins the anisotropic branch for the same reason: the glyph
-    // has to be rasterized in the FINAL space (the atlas bakes the rotation in),
-    // so the transform must reach GenerateGlyphs as scaleX/scaleY + the 2x2
-    // rather than being hidden inside the atlas DPI. dpiScale_ = 1 then keeps
-    // the emitted quads in that same final space, and the re-magnify loop below
-    // is skipped for them.
+    // A ROTATED run joins the anisotropic branch so scaleX/scaleY and the full
+    // 2x2 reach GenerateGlyphs, which builds the final oriented glyph basis.
+    // dpiScale_=1 keeps those quads in physical-pixel space; the re-magnify loop
+    // below is skipped for them.
     const bool rotatedText = !axisAligned;
     float glyphRasterScaleX = 1.0f;
     float glyphRasterScaleY = 1.0f;
@@ -25052,6 +25053,10 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         // rotates the bar along with the baseline.
         /*decorationOrigin=*/textDecorationOrigin,
         /*outRequiresSmoothSampling=*/&requiresSmoothSampling);
+    // Rotated/skewed text now uses an oriented quad over an upright strike;
+    // smooth sampling resolves that texture mapping (and any 2x strike).
+    const bool smoothText = hintingMode == 2 || requiresSmoothSampling ||
+        (rotatedText && effectiveAaMode != JALIUM_TEXT_AA_ALIASED);
     if (count == 0 || instances.empty()) {
         return;
     }
@@ -25060,11 +25065,16 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // transformed origin (tx, ty) — byte-identical to D3D12 AddText. Identity
     // transform (scale 1) leaves the quads untouched.
     // A rotated run is exempt: GenerateGlyphs already emitted its quads in the
-    // final space (ink rotated in the atlas, pen walked through the 2x2), so
+    // final space (oriented basis and pen both mapped through the 2x2), so
     // re-magnifying by the axis scales would double-apply the transform.
     const bool scaled = !rotatedText &&
                         (std::abs(txScaleX - 1.0f) > 0.001f ||
                          std::abs(txScaleY - 1.0f) > 0.001f);
+    // A rotated glyph bitmap is already in final physical-pixel space. Keep a
+    // single phase for the whole run: independently rounding every glyph AABB
+    // perturbs the transformed advances and turns the baseline into a staircase.
+    const float rotatedSnapX = rotatedText ? std::round(tx) - tx : 0.0f;
+    const float rotatedSnapY = rotatedText ? std::round(ty) - ty : 0.0f;
     for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
         auto& gi = instances[i];
         if (scaled) {
@@ -25073,16 +25083,12 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
             gi.sizeX *= txScaleX;
             gi.sizeY *= txScaleY;
         }
-        // A rotated run snaps too. Its atlas bitmap is already the rotated ink
-        // at FINAL resolution, so an integer-aligned quad maps those texels 1:1
-        // onto physical pixels and the bilinear sampler degenerates to a point
-        // fetch — without the snap every glyph lands on a fraction and gets
-        // half-texel blurred, which is what made rotated labels look soft. The
-        // cost is the usual <=0.5px per-glyph placement error, invisible on a
-        // baseline that is already off-grid.
-        if (crispAxisAligned || rotatedText) {
+        if (crispAxisAligned) {
             gi.posX = std::round(gi.posX);
             gi.posY = std::round(gi.posY);
+        } else if (rotatedText) {
+            gi.posX += rotatedSnapX;
+            gi.posY += rotatedSnapY;
         }
     }
 
@@ -25138,8 +25144,8 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
                     // foreground and equally wrong for a gradient.
                     if (gi.colorR < 0.0f) continue;
 
-                    const float ox = (gi.posX + gi.sizeX * 0.5f) - tx;
-                    const float oy = (gi.posY + gi.sizeY * 0.5f) - ty;
+                    const float ox = (gi.posX + (gi.sizeX + gi.skewX) * 0.5f) - tx;
+                    const float oy = (gi.posY + (gi.skewY + gi.sizeY) * 0.5f) - ty;
                     const float cx = x + (ox * gi11 + oy * gi21);
                     const float cy = y + (ox * gi12 + oy * gi22);
 
@@ -25154,27 +25160,30 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         }
     }
 
-    // Flatten to the 12-float-per-glyph SSBO layout the TextRun command expects
-    // (posX,posY, sizeX,sizeY, uvMinX,uvMinY, uvMaxX,uvMaxY, colorR,colorG,colorB,
-    // colorA — UVs + PREMULTIPLIED colour pass through unchanged).
+    // Flatten to the 16-float/64-byte SSBO layout the TextRun command expects
+    // (position, oriented basis, UV rectangle, std430 pad, premultiplied colour).
     std::vector<float> glyphFloats;
-    glyphFloats.reserve(static_cast<size_t>(count) * 12u);
+    glyphFloats.reserve(static_cast<size_t>(count) * 16u);
     for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
         const auto& gi = instances[i];
         glyphFloats.push_back(gi.posX);
         glyphFloats.push_back(gi.posY);
         glyphFloats.push_back(gi.sizeX);
         glyphFloats.push_back(gi.sizeY);
+        glyphFloats.push_back(gi.skewX);
+        glyphFloats.push_back(gi.skewY);
         glyphFloats.push_back(gi.uvMinX);
         glyphFloats.push_back(gi.uvMinY);
         glyphFloats.push_back(gi.uvMaxX);
         glyphFloats.push_back(gi.uvMaxY);
+        glyphFloats.push_back(0.0f);
+        glyphFloats.push_back(0.0f);
         glyphFloats.push_back(gi.colorR);
         glyphFloats.push_back(gi.colorG);
         glyphFloats.push_back(gi.colorB);
         glyphFloats.push_back(gi.colorA);
     }
-    const uint32_t glyphCount = static_cast<uint32_t>(glyphFloats.size() / 12u);
+    const uint32_t glyphCount = static_cast<uint32_t>(glyphFloats.size() / 16u);
     if (glyphCount == 0) {
         return;
     }
@@ -25187,9 +25196,9 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     cmd.textRun.glyphs = std::move(glyphFloats);
     cmd.textRun.glyphCount = glyphCount;
     cmd.textRun.clearType = runClearType;
-    // Animated/rotated text needs continuous bilinear motion; a small symbol
-    // glyph needs the same sampler to resolve its 2x coverage strike.
-    cmd.textRun.smoothText = !crispAxisAligned || requiresSmoothSampling;
+    // Animated text needs continuous bilinear motion; a small supersampled
+    // symbol glyph needs the same sampler to resolve its 2x coverage strike.
+    cmd.textRun.smoothText = smoothText;
     if (!TryPopulateReplayClip(cmd)) {
         return;
     }
@@ -25214,6 +25223,8 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         }
         float decPhysX = 0.0f, decPhysY = 0.0f;
         ApplyTransform(transform, dec.x, dec.y, decPhysX, decPhysY);
+        decPhysX += rotatedSnapX;
+        decPhysY += rotatedSnapY;
         const float decPhysW = dec.width * txScaleX;
         const float decPhysH = dec.thickness * txScaleY;
         if (decPhysW <= 0.0f || decPhysH <= 0.0f) {

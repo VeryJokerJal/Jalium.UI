@@ -15,6 +15,7 @@ set(HEADERS
     include/jalium_bitmap_stats.h
     include/jalium_text_stats.h
     include/jalium_text_options.h
+    include/jalium_dwrite_font_units.h
     include/jalium_video_surface.h
 )
 
@@ -85,3 +86,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.core"
     DEBUG_POSTFIX ""
 )
+
+if(JALIUM_TEXT_BUILD_TESTS OR JALIUM_D3D12_BUILD_TESTS)
+    add_executable(jalium.native.font-unit.tests tests/font_unit_metrics.cpp)
+    target_link_libraries(jalium.native.font-unit.tests PRIVATE jalium.native.core jalium.native.software)
+    if(WIN32)
+        target_link_libraries(jalium.native.font-unit.tests PRIVATE dwrite)
+    endif()
+    add_test(NAME jalium.native.font-units COMMAND jalium.native.font-unit.tests)
+endif()

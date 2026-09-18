@@ -6,6 +6,11 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Canvas : Panel
 {
+    // Absolute children may lie anywhere, including at negative coordinates.
+    // Only a complete layout clip makes RenderSize a safe subtree bound.
+    internal override bool HasUnboundedContent =>
+        !ClipToBounds || ClipToBoundsEdges != ClipEdges.All;
+
     #region Attached Properties
 
     /// <summary>

@@ -2,8 +2,8 @@
 //
 // Full rewrite (2026-08-30): the CPU-side scene encoding is the shared
 // VelloSceneEncoder (jalium_vello_encode.h, a port of vello_encoding); this
-// class owns only the D3D12 resources and the 19-stage dispatch graph
-// (pathtag_reduce/reduce2/scan1/scan -> bbox_clear -> flatten -> draw_reduce/
+// class owns only the D3D12 resources and the Vello dispatch graph
+// (pathtag_reduce -> small scan OR reduce2/scan1/large scan -> bbox_clear -> flatten -> draw_reduce/
 // draw_leaf -> clip_reduce/clip_leaf -> binning -> tile_alloc ->
 // path_count_setup/path_count(indirect) -> backdrop -> coarse ->
 // path_tiling_setup/path_tiling(indirect) -> fine).
@@ -49,7 +49,9 @@ class D3D12VelloRenderer {
 public:
     static constexpr uint32_t kMaxFrames = 3;
 
-    explicit D3D12VelloRenderer(ID3D12Device* device, ShaderBlobCache* shaderCache = nullptr);
+    explicit D3D12VelloRenderer(ID3D12Device* device,
+                               ShaderBlobCache* shaderCache = nullptr,
+                               uint64_t timestampFrequency = 0);
     ~D3D12VelloRenderer();
 
     bool Initialize();
@@ -196,6 +198,7 @@ private:
         kStagePathtagReduce2,
         kStagePathtagScan1,
         kStagePathtagScan,
+        kStagePathtagScanSmall,
         kStageBboxClear,
         kStageFlatten,
         kStageDrawReduce,
@@ -213,6 +216,27 @@ private:
         kStageFine,
         kStageCount
     };
+
+    // Opt-in JALIUM_VELLO_STAGE_PERF hardware timestamps. Each dispatch writes
+    // one initial query plus one after every executed stage, then resolves its
+    // contiguous range into the current fence-gated frame slot. The next reuse
+    // of that slot decodes it after the direct renderer has observed the fence.
+    static constexpr uint32_t kMaxStageProfileDispatches = 128;
+    static constexpr uint32_t kMaxStageProfileQueriesPerFrame =
+        kMaxStageProfileDispatches * (kStageCount + 1);
+    struct StageProfileRecord {
+        uint32_t firstQuery = 0;
+        std::vector<Stage> stages;
+    };
+
+    bool InitializeStageProfiler();
+    StageProfileRecord* BeginStageProfile(ID3D12GraphicsCommandList* cmdList,
+                                          uint32_t frameIndex);
+    void MarkStageProfile(ID3D12GraphicsCommandList* cmdList, uint32_t frameIndex,
+                          StageProfileRecord* record, Stage stage);
+    void ResolveStageProfile(ID3D12GraphicsCommandList* cmdList, uint32_t frameIndex,
+                             StageProfileRecord* record);
+    void DecodeStageProfile(uint32_t frameIndex);
 
     // Per-frame-slot linear upload arena. Every Dispatch bump-allocates its
     // scene / config / ramp / bump-zero bytes out of one persistent buffer
@@ -233,6 +257,15 @@ private:
         bool Valid() const { return resource != nullptr; }
     };
 
+    struct CpuTagMonoid {
+        uint32_t transIx = 0;
+        uint32_t pathsegIx = 0;
+        uint32_t pathsegOffset = 0;
+        uint32_t styleIx = 0;
+        uint32_t pathIx = 0;
+    };
+    static_assert(sizeof(CpuTagMonoid) == kVelloStrideTagMonoid);
+
     bool CreatePipelines();
     bool EnsureOutputTexture(uint32_t w, uint32_t h);
     bool EnsureGpuBuffers(const VelloRenderInfo& ri, uint32_t sceneWords);
@@ -252,6 +285,7 @@ private:
         }
         outputW_ = 0;
         outputH_ = 0;
+        outputAllocationBytes_ = 0;
     }
 
     // Creates (or regrows, retiring the old resource) a DEFAULT-heap buffer
@@ -268,6 +302,18 @@ private:
     ComPtr<ID3D12RootSignature> rootSig_;
     ComPtr<ID3D12PipelineState> psos_[kStageCount];
     ComPtr<ID3D12CommandSignature> dispatchIndirectSig_;
+
+    uint64_t timestampFrequency_ = 0;
+    bool stageProfilerEnabled_ = false;
+    ComPtr<ID3D12QueryHeap> stageProfileQueryHeap_;
+    ComPtr<ID3D12Resource> stageProfileReadback_[kMaxFrames];
+    uint32_t stageProfileQueryCursor_[kMaxFrames] = {};
+    std::vector<StageProfileRecord> stageProfileRecords_[kMaxFrames];
+    uint64_t stageProfileFrames_ = 0;
+    uint64_t stageProfileDispatches_ = 0;
+    uint64_t stageProfileTicks_[kStageCount] = {};
+    uint64_t stageProfileSamples_[kStageCount] = {};
+    uint64_t stageProfileLastDumpMs_ = 0;
 
     // GPU buffers (DEFAULT heap, UAV-capable; COMMON at rest).
     ComPtr<ID3D12Resource> sceneBuffer_;
@@ -326,6 +372,7 @@ private:
     ComPtr<ID3D12Resource> outputTexture_;
     uint32_t outputW_ = 0;
     uint32_t outputH_ = 0;
+    uint64_t outputAllocationBytes_ = 0;
     VelloRenderRegion lastRegion_;
 
     // Output-texture recycling. Textures are pooled per size bucket; a frame
@@ -335,12 +382,11 @@ private:
         ComPtr<ID3D12Resource> tex;
         uint32_t w = 0;
         uint32_t h = 0;
+        uint64_t allocationBytes = 0;
     };
     std::vector<PooledTexture> outputFreeList_;
+    uint64_t outputFreeBytes_ = 0;
     std::vector<PooledTexture> outputInFlight_[kMaxFrames];
-
-    // Non-shader-visible UAV heap slot for ClearUnorderedAccessViewFloat.
-    ComPtr<ID3D12DescriptorHeap> cpuUavHeap_;
 
     // One shader-visible descriptor heap per frame slot, bump-allocated across
     // every sub-scene dispatch in that frame (creating a heap per dispatch cost
@@ -361,6 +407,7 @@ private:
     uint32_t cachedSharedBase_ = 0;
 
     FrameUploads frameUploads_[kMaxFrames];
+    std::vector<CpuTagMonoid> cpuTagMonoids_;
 
     uint32_t descriptorSize_ = 0;
 

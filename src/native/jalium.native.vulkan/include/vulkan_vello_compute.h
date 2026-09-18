@@ -3,7 +3,8 @@
 // ============================================================================
 // VelloComputePipeline -- the Vello 0.10.0 GPU compute pipeline on Vulkan.
 //
-// Runs the full 19-stage graph (pathtag_reduce/reduce2/scan1/scan ->
+// Runs the Vello graph with a small-scene scan fast path
+// (pathtag_reduce -> small scan OR reduce2/scan1/large scan ->
 // bbox_clear -> flatten -> draw_reduce/draw_leaf -> clip_reduce/clip_leaf ->
 // binning -> tile_alloc -> path_count_setup/path_count(indirect) -> backdrop
 // -> coarse -> path_tiling_setup/path_tiling(indirect) -> fine) using the
@@ -36,8 +37,9 @@ namespace jalium {
 class VelloComputePipeline {
 public:
     static constexpr uint32_t kFramesInFlight = 2;
-    // Number of compute stages (shader modules / pipelines).
-    static constexpr uint32_t kStageCount = 19;
+    // Number of compiled compute shader permutations / pipelines. A record
+    // executes either small-scan or the three-stage large-scan branch.
+    static constexpr uint32_t kStageCount = 20;
 
     VelloComputePipeline() = default;
     ~VelloComputePipeline();
@@ -45,7 +47,7 @@ public:
     VelloComputePipeline(const VelloComputePipeline&) = delete;
     VelloComputePipeline& operator=(const VelloComputePipeline&) = delete;
 
-    // Loads procs, creates the 19 compute pipelines, the fixed scratch
+    // Loads procs, creates the 20 compute pipelines, the fixed scratch
     // buffers, the per-frame descriptor pools, the output sampler and the 1x1
     // dummy image (for the fine stage's image-atlas binding). Returns false on
     // any failure -- the caller then keeps the CPU fallback and never calls
@@ -57,7 +59,7 @@ public:
 
     bool IsReady() const { return ready_; }
 
-    // Cap on Record() calls per prepared frame slot: each one allocates 19
+    // Cap on Record() calls per prepared frame slot: each one allocates 20
     // descriptor sets from the per-frame pool (sized kMaxRecordsPerFrame *
     // kStageCount) and retires the previous sub-scene's host-visible inputs.
     // A frame with more sub-scenes than this drops the excess (logged by the
@@ -108,7 +110,7 @@ public:
     // C++ container itself can still be reclaimed safely.
     void AbandonDeviceResources() noexcept;
 
-    // Logical resource roles bound across the 19 stages, and a single
+    // Logical resource roles bound across the compiled stages, and a single
     // (binding, type, role) tuple. Public so the file-scope per-stage binding
     // tables in the .cpp can name them.
     enum class Res : uint8_t {
@@ -234,7 +236,6 @@ private:
     PFN_vkCmdDispatchIndirect       cmdDispatchIndirect_ = nullptr;
     PFN_vkCmdPipelineBarrier        cmdPipelineBarrier_ = nullptr;
     PFN_vkCmdFillBuffer             cmdFillBuffer_ = nullptr;
-    PFN_vkCmdClearColorImage        cmdClearColorImage_ = nullptr;
     PFN_vkCmdCopyBufferToImage      cmdCopyBufferToImage_ = nullptr;
 
     // Per-stage GPU objects (indexed by Stage enum order in the .cpp).
@@ -244,7 +245,7 @@ private:
     VkPipeline            pipelines_[kStageCount] = {};
 
     // Per-frame transient descriptor pool (reset once in PrepareFrameSlot;
-    // each Record allocates a fresh 19-set group from it, up to
+    // each Record allocates a fresh 20-set group from it, up to
     // kMaxRecordsPerFrame groups per frame).
     VkDescriptorPool descriptorPools_[kFramesInFlight] = {};
     VkDescriptorSet  stageSets_[kStageCount] = {};   // valid only during a Record

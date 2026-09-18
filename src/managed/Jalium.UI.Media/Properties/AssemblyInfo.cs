@@ -3,6 +3,7 @@ using Jalium.UI.Markup;
 
 [assembly: InternalsVisibleTo("Jalium.UI.Interop")]
 [assembly: InternalsVisibleTo("Jalium.UI.Tests")]
+[assembly: InternalsVisibleTo("Jalium.UI.Gallery.Modules.Main.Tests")]
 
 // Expose CLR namespaces defined in Jalium.UI.Media under the canonical JALXAML namespace.
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media", AssemblyName = "Jalium.UI.Managed")]

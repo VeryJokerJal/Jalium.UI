@@ -13,6 +13,7 @@
 #include <d3d11_1.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -39,6 +40,8 @@ struct jalium_video_decoder {
     size_t                  frame_buffer_size  = 0;
     int64_t                 last_pts_us        = 0;
     int                     last_keyframe      = 0;
+    bool                    endOfStream        = false;
+    int64_t                 seekTargetUs       = -1;
 
     // Stage 3a: DXVA hardware decode.
     // ID3D11Device + IMFDXGIDeviceManager handed to IMFSourceReader. MF picks
@@ -57,16 +60,16 @@ struct jalium_video_decoder {
     UINT                          dxgiResetToken = 0;
     bool                          dxvaEnabled    = false;
 
-    // Stage 3b.1: shared-able BGRA8 D3D11 texture that mirrors the last GPU
-    // decode output. ReadSample's IMFDXGIBuffer / ID3D11Texture2D is owned by
-    // MF's internal decoder pool and cannot be shared directly; we own a
-    // BGRA8 texture with D3D11_RESOURCE_MISC_SHARED_NTHANDLE +
-    // D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, CopyResource the MF sample into
-    // it, then expose its NT handle via IDXGIResource1::CreateSharedHandle.
-    // The NT handle is what D3D12 OpenSharedHandle imports in stage 3b.2.
-    ComPtr<ID3D11Texture2D>       sharedTexture;          // own SHARED_NTHANDLE texture
-    HANDLE                        sharedTextureHandle = nullptr;  // owned NT HANDLE (CloseHandle on dtor)
-    bool                          sharedTextureValid  = false;    // true after first successful CopyResource
+    // One immutable, GPU-complete BGRX allocation per published frame. The
+    // decoder owns the NT handle until the next read; OpenSharedHandle gives
+    // the renderer an independent resource reference. Never recycle this
+    // allocation while queued/presented frames may still refer to it.
+    ComPtr<ID3D11Texture2D>       sharedTexture;
+    HANDLE                      sharedTextureHandle = nullptr;
+    bool                        sharedTextureValid = false;
+    ComPtr<ID3D11Query>          exportCompleted;
+    bool                        gpuExportDisabled = false;
+    bool                        gpuDiagnosticReported = false;
 };
 
 namespace jalium::media::win {
@@ -331,42 +334,83 @@ bool TryCreateD3D11VideoDevice(jalium_video_decoder_t* dec)
     return true;
 }
 
-// Stage 3b.1: lazily create the shared NT-handle BGRA8 texture used to mirror
-// the latest decoded frame. Reused across frames (size invariant); we only
-// recreate when the stream changes resolution.
-bool EnsureSharedTexture(jalium_video_decoder_t* dec)
+void ResetSharedFrame(jalium_video_decoder_t* dec)
+{
+    dec->sharedTextureValid = false;
+    if (dec->sharedTextureHandle) {
+        CloseHandle(dec->sharedTextureHandle);
+        dec->sharedTextureHandle = nullptr;
+    }
+    dec->sharedTexture.Reset();
+}
+
+void ReportGpuExport(jalium_video_decoder_t* dec, const char* stage, HRESULT hr,
+                     DXGI_FORMAT inputFormat)
+{
+    // Opt-in diagnostics contain only the stage, HRESULT and format, never a
+    // media URI or credentials. Report once per decoder rather than per frame.
+    if (dec->gpuDiagnosticReported) return;
+    wchar_t enabled[2]{};
+    if (GetEnvironmentVariableW(L"JALIUM_MEDIA_DIAGNOSTICS", enabled, 2) != 1 || enabled[0] != L'1') return;
+    dec->gpuDiagnosticReported = true;
+    std::fprintf(stderr, "Jalium video GPU export: %s hr=0x%08lX inputFormat=%u\n",
+                 stage, static_cast<unsigned long>(hr), static_cast<unsigned>(inputFormat));
+}
+
+void TraceGpuFramePixels(jalium_video_decoder_t* dec, ID3D11Texture2D* texture, UINT subresource, const char* label)
+{
+    if (dec->gpuDiagnosticReported) return;
+    wchar_t enabled[2]{};
+    if (GetEnvironmentVariableW(L"JALIUM_MEDIA_DIAGNOSTICS", enabled, 2) != 1 || enabled[0] != L'1') return;
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    desc.ArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.MiscFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> readback;
+    HRESULT hr = dec->d3d11Device->CreateTexture2D(&desc, nullptr, &readback);
+    if (FAILED(hr)) return;
+    dec->d3d11Context->CopySubresourceRegion(readback.Get(), 0, 0, 0, 0, texture, subresource, nullptr);
+    D3D11_MAPPED_SUBRESOURCE mapping{};
+    hr = dec->d3d11Context->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapping);
+    if (FAILED(hr)) return;
+    uint64_t rgb = 0, alpha = 0;
+    for (uint32_t y = 0; y < dec->height; ++y) {
+        const auto* row = static_cast<const uint8_t*>(mapping.pData) + static_cast<size_t>(y) * mapping.RowPitch;
+        for (uint32_t x = 0; x < dec->width; ++x) {
+            rgb += row[x * 4] + row[x * 4 + 1] + row[x * 4 + 2];
+            alpha += row[x * 4 + 3];
+        }
+    }
+    dec->d3d11Context->Unmap(readback.Get(), 0);
+    const double count = static_cast<double>(dec->width) * dec->height;
+    std::fprintf(stderr, "Jalium video pixels: %s RGB=%.3f alpha=%.3f format=%u\n", label, rgb / (count * 3), alpha / count, desc.Format);
+}
+
+bool CreateSharedFrame(jalium_video_decoder_t* dec)
 {
     if (!dec->d3d11Device) return false;
-
-    if (dec->sharedTexture) {
-        D3D11_TEXTURE2D_DESC existing{};
-        dec->sharedTexture->GetDesc(&existing);
-        if (existing.Width == dec->width && existing.Height == dec->height) {
-            return true;
-        }
-        // Resolution changed mid-stream — drop the old texture + handle.
-        if (dec->sharedTextureHandle) {
-            CloseHandle(dec->sharedTextureHandle);
-            dec->sharedTextureHandle = nullptr;
-        }
-        dec->sharedTexture.Reset();
-        dec->sharedTextureValid = false;
-    }
 
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width            = dec->width;
     desc.Height           = dec->height;
     desc.MipLevels        = 1;
     desc.ArraySize        = 1;
-    desc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+    // MFVideoFormat_RGB32 is BGRX, not BGRA. Retain that format through the
+    // shared allocation and SRV so the unused zero X byte is never interpreted
+    // as transparent alpha by the bitmap shader.
+    desc.Format           = DXGI_FORMAT_B8G8R8X8_UNORM;
     desc.SampleDesc.Count = 1;
     desc.Usage            = D3D11_USAGE_DEFAULT;
     desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    // NT-handle shared so D3D12 OpenSharedHandle can import. KEYED_MUTEX gives
-    // D3D11 writer + D3D12 reader a synchronization handshake (defer to 3b.2
-    // — for now we serialize via D3D11 device flush before exposing handle).
+    // No keyed mutex: the frame is immutable and a completion query establishes
+    // producer completion before publication. D3D12 cannot acquire a D3D11
+    // keyed mutex by QueryInterface on ID3D12Resource.
     desc.MiscFlags        = D3D11_RESOURCE_MISC_SHARED_NTHANDLE
-                          | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+                          | D3D11_RESOURCE_MISC_SHARED;
 
     HRESULT hr = dec->d3d11Device->CreateTexture2D(&desc, nullptr, dec->sharedTexture.GetAddressOf());
     if (FAILED(hr) || !dec->sharedTexture) return false;
@@ -389,15 +433,14 @@ bool EnsureSharedTexture(jalium_video_decoder_t* dec)
     return true;
 }
 
-// Stage 3b.1: when MF gave us a GPU sample (IMFDXGIBuffer), CopyResource into
-// our owned shared NT texture so D3D12 (a different device) can OpenSharedHandle
-// it. Caller (ReadFrame) drives this whenever it sees a GPU sample. Returns
-// true on success; on false caller falls back to the existing CPU path
-// (CopySampleToFrame) so the frame still renders.
+// Export MF's BGRX texture without changing its format or interpreting X as
+// alpha. B8G8R8X8 -> B8G8R8A8 is not a legal format-family copy, and relabeling
+// RGB32 as BGRA makes the bitmap shader discard every zero-alpha pixel.
+// On any unsupported/failed stage the already available CPU BGRA frame remains
+// the fallback; no stale shared descriptor is returned as a successful frame.
 bool TryCopySampleToSharedTexture(jalium_video_decoder_t* dec, IMFSample* sample)
 {
-    if (!dec->dxvaEnabled || !dec->d3d11Context || !sample) return false;
-    if (!EnsureSharedTexture(dec)) return false;
+    if (!dec->dxvaEnabled || !dec->d3d11Context || !sample || dec->gpuExportDisabled) return false;
 
     ComPtr<IMFMediaBuffer> buffer;
     if (FAILED(sample->GetBufferByIndex(0, buffer.GetAddressOf()))) return false;
@@ -409,23 +452,42 @@ bool TryCopySampleToSharedTexture(jalium_video_decoder_t* dec, IMFSample* sample
     if (FAILED(dxgiBuffer->GetResource(IID_PPV_ARGS(mfTex.GetAddressOf())))) return false;
 
     UINT subresource = 0;
-    dxgiBuffer->GetSubresourceIndex(&subresource);
+    if (FAILED(dxgiBuffer->GetSubresourceIndex(&subresource))) return false;
+    D3D11_TEXTURE2D_DESC input{};
+    mfTex->GetDesc(&input);
+    if (input.SampleDesc.Count != 1 || input.MipLevels != 1 || subresource >= input.ArraySize ||
+        input.Width < dec->width || input.Height < dec->height ||
+        input.Format != DXGI_FORMAT_B8G8R8X8_UNORM) return false;
+    if (!CreateSharedFrame(dec)) {
+        ReportGpuExport(dec, "unsupported shared texture; CPU fallback", E_NOTIMPL, input.Format);
+        return false;
+    }
+    const D3D11_BOX region{0, 0, 0, dec->width, dec->height, 1};
+    dec->d3d11Context->CopySubresourceRegion(dec->sharedTexture.Get(), 0, 0, 0, 0,
+                                           mfTex.Get(), subresource, &region);
 
-    // Acquire keyed mutex on the writer side (key 0 means "available").
-    ComPtr<IDXGIKeyedMutex> writeMutex;
-    if (FAILED(dec->sharedTexture.As(&writeMutex))) return false;
-    if (FAILED(writeMutex->AcquireSync(0, 16))) return false;  // 16ms timeout
-
-    dec->d3d11Context->CopySubresourceRegion(
-        dec->sharedTexture.Get(), 0, 0, 0, 0,
-        mfTex.Get(), subresource, nullptr);
+    HRESULT hr = S_OK;
+    if (!dec->exportCompleted) {
+        D3D11_QUERY_DESC query{D3D11_QUERY_EVENT, 0};
+        hr = dec->d3d11Device->CreateQuery(&query, &dec->exportCompleted);
+        if (FAILED(hr)) return false;
+    }
+    dec->d3d11Context->End(dec->exportCompleted.Get());
     dec->d3d11Context->Flush();
-
-    // Release key 1 so D3D12 reader can pick up — D3D12 side then re-releases
-    // back to key 0 after it samples. Stage 3b.2 ImportedD3D12VideoSurface
-    // handles the reader side of the handshake.
-    writeMutex->ReleaseSync(1);
-
+    const ULONGLONG deadline = GetTickCount64() + 500;
+    do {
+        hr = dec->d3d11Context->GetData(dec->exportCompleted.Get(), nullptr, 0, 0);
+        if (hr == S_OK) break;
+        if (FAILED(hr) || GetTickCount64() >= deadline) {
+            dec->gpuExportDisabled = true;
+            ReportGpuExport(dec, "completion; CPU fallback", hr, input.Format);
+            return false;
+        }
+        Sleep(1);
+    } while (true);
+    TraceGpuFramePixels(dec, mfTex.Get(), subresource, "MF input");
+    TraceGpuFramePixels(dec, dec->sharedTexture.Get(), 0, "shared output");
+    ReportGpuExport(dec, "immutable BGRX ready", S_OK, input.Format);
     dec->sharedTextureValid = true;
     return true;
 }
@@ -507,52 +569,54 @@ jalium_media_status_t MfVideoDecoderReadFrame(
     jalium_video_frame_t*   out_frame)
 {
     if (!decoder || !decoder->reader || !out_frame) return JALIUM_MEDIA_E_INVALID_ARG;
+    *out_frame = {};
+    ResetSharedFrame(decoder);
+    if (decoder->endOfStream) return JALIUM_MEDIA_E_END_OF_STREAM;
 
     DWORD     streamIndex   = 0;
     DWORD     flags         = 0;
     LONGLONG  pts100ns      = 0;
     ComPtr<IMFSample> sample;
 
-    HRESULT hr = decoder->reader->ReadSample(
-        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
-        0,
-        &streamIndex,
-        &flags,
-        &pts100ns,
-        sample.GetAddressOf());
-
-    if (FAILED(hr)) return JALIUM_MEDIA_E_DECODE_FAILED;
-
-    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
-        return JALIUM_MEDIA_E_END_OF_STREAM;
+    // Media-type changes and stream ticks may legitimately return no sample.
+    // Only ENDOFSTREAM is EOF: an empty transient result must not silently
+    // terminate playback. Bound malformed/no-progress readers without reporting
+    // a fake successful end, and deliver a last sample carrying EOS first.
+    int emptyReads = 0;
+    for (;;) {
+        flags = 0;
+        HRESULT hr = decoder->reader->ReadSample(
+            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0,
+            &streamIndex, &flags, &pts100ns, sample.ReleaseAndGetAddressOf());
+        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ERROR)) return JALIUM_MEDIA_E_DECODE_FAILED;
+        if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
+            auto status = QueryStreamInfo(decoder->reader.Get(), decoder);
+            if (status != JALIUM_MEDIA_OK) return status;
+        }
+        decoder->endOfStream = (flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0;
+        if (decoder->endOfStream && !sample) return JALIUM_MEDIA_E_END_OF_STREAM;
+        if (!sample) {
+            if (++emptyReads >= 128) return JALIUM_MEDIA_E_DECODE_FAILED;
+            continue;
+        }
+        emptyReads = 0;
+        // MF seeks to a preceding decodable keyframe, not necessarily the
+        // requested presentation time. Decode the preroll here, before any
+        // expensive CPU copy/shared export, so a resumed clock does not spend
+        // seconds dropping old keyframe-to-target frames while showing a still.
+        if (decoder->seekTargetUs >= 0 && pts100ns / 10 < decoder->seekTargetUs) {
+            sample.Reset();
+            if (decoder->endOfStream) return JALIUM_MEDIA_E_END_OF_STREAM;
+            continue;
+        }
+        decoder->seekTargetUs = -1;
+        break;
     }
-
-    if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
-        // Re-query stream info — width/height may have changed.
-        auto status = QueryStreamInfo(decoder->reader.Get(), decoder);
-        if (status != JALIUM_MEDIA_OK) return status;
-    }
-
-    if (!sample) {
-        // No sample but no EOS either — legitimate for some formats; treat as transient,
-        // signal EOS so the caller's loop yields rather than spinning.
-        return JALIUM_MEDIA_E_END_OF_STREAM;
-    }
-
-    // Stage 3b.1: when DXVA is on, try the GPU path first — mirror the GPU
-    // sample into our shared NT texture so AcquireGpuDescriptor can hand the
-    // NT HANDLE to D3D12 OpenSharedHandle. Failure (non-DXGI buffer, mutex
-    // timeout, no SHARED_NTHANDLE support on driver, ...) drops to the CPU
-    // CopySampleToFrame path so the frame still renders via stage 2 BGRA
-    // staging.
-    bool sharedOk = false;
-    if (decoder->dxvaEnabled) {
-        sharedOk = TryCopySampleToSharedTexture(decoder, sample.Get());
-    }
+    if (!sample) return JALIUM_MEDIA_E_DECODE_FAILED;
 
     auto status = CopySampleToFrame(decoder, sample.Get());
     if (status != JALIUM_MEDIA_OK) return status;
-    (void)sharedOk;  // shared-texture liveness is reported through AcquireGpuDescriptor
+    if (decoder->dxvaEnabled) TryCopySampleToSharedTexture(decoder, sample.Get());
 
     decoder->last_pts_us = pts100ns / 10;
     decoder->last_keyframe = 0;
@@ -576,6 +640,7 @@ jalium_media_status_t MfVideoDecoderSeek(
         pts_microseconds > std::numeric_limits<int64_t>::max() / 10) {
         return JALIUM_MEDIA_E_INVALID_ARG;
     }
+    ResetSharedFrame(decoder);
 
     PROPVARIANT pv;
     PropVariantInit(&pv);
@@ -583,6 +648,10 @@ jalium_media_status_t MfVideoDecoderSeek(
     pv.hVal.QuadPart = pts_microseconds * 10;  // µs → 100-ns ticks
     HRESULT hr = decoder->reader->SetCurrentPosition(GUID_NULL, pv);
     PropVariantClear(&pv);
+    if (SUCCEEDED(hr)) {
+        decoder->endOfStream = false;
+        decoder->seekTargetUs = pts_microseconds;
+    }
     return SUCCEEDED(hr) ? JALIUM_MEDIA_OK : JALIUM_MEDIA_E_PLATFORM;
 }
 
@@ -617,22 +686,17 @@ void MfVideoDecoderClose(jalium_video_decoder_t* decoder)
 // shared texture hasn't been written yet (caller falls back to BGRA path).
 //
 // Note: the NT HANDLE returned here is *not* duplicated — the decoder owns
-// it for its lifetime; the consumer (D3D12) only OpenSharedHandle's it and
-// must not CloseHandle. This matches the lifetime model the descriptor
-// implies (the surface stays valid until the next ReadFrame).
+// it until the next ReadFrame/Seek/Close. The consumer opens its own resource
+// reference before that point and must not CloseHandle the borrowed handle.
+// Its imported immutable allocation stays valid across subsequent decoder work.
 jalium_media_status_t MfVideoDecoderAcquireGpuDescriptor(
     jalium_video_decoder_t*                decoder,
     jalium_video_decoder_gpu_descriptor_t* out_descriptor)
 {
     if (!decoder || !out_descriptor) return JALIUM_MEDIA_E_INVALID_ARG;
 
-    out_descriptor->kind        = 0;
-    out_descriptor->width       = 0;
-    out_descriptor->height      = 0;
-    out_descriptor->handle0     = 0;
-    out_descriptor->handle1     = 0;
-    out_descriptor->format_hint = 0;
-    out_descriptor->reserved    = 0;
+    *out_descriptor = {};
+    out_descriptor->acquire_fence_fd = -1;
 
     if (!decoder->dxvaEnabled || !decoder->sharedTextureValid || !decoder->sharedTextureHandle) {
         return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
@@ -643,7 +707,8 @@ jalium_media_status_t MfVideoDecoderAcquireGpuDescriptor(
     out_descriptor->width       = decoder->width;
     out_descriptor->height      = decoder->height;
     out_descriptor->handle0     = reinterpret_cast<uint64_t>(decoder->sharedTextureHandle);
-    out_descriptor->format_hint = 0;  // BGRA8
+    out_descriptor->format_hint = 4;  // JALIUM_VS_FORMAT_BGRX8: X is not alpha.
+    out_descriptor->descriptor_flags = JALIUM_VIDEO_GPU_DESCRIPTOR_IMMUTABLE_READY;
     return JALIUM_MEDIA_OK;
 }
 

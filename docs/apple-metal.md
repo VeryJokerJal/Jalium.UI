@@ -44,7 +44,7 @@ canonical HLSL -> DXC SPIR-V -> SPIRV-Cross MSL -> xcrun metal -> metallib
 ```
 
 `eng/apple/dependencies.lock.json` pins both compiler revisions.
-The generator reflects all 19 SPIR-V stages and rejects resource-binding or
+The generator reflects every compiled SPIR-V stage/permutation and rejects resource-binding or
 threadgroup-size drift before compiling `jalium_vello.metallib`. The embedded
 core MSL is extracted byte-for-byte and compiled offline to
 `jalium_core.metallib`; runtime source compilation is only a source-tree/debug
@@ -62,7 +62,7 @@ fallback.
 - Damage is applied as a Metal scissor against a persistent scene texture;
   `CAMetalDrawable` preservation is never assumed.
 - Impeller uses the shared path flatten/stroke/triangulation algorithms.
-- Vello uses the shared 0.10 scene encoder and a 19-stage Metal compute graph.
+- Vello uses the shared 0.10 scene encoder and the classic Metal compute graph.
 - Effects, Vello scratch and retained layers allocate from `MTLHeap` pools;
   retained destruction and external video producer callbacks retire only after
   the relevant command buffer completes. Two-phase readback is the only normal

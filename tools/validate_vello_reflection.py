@@ -13,6 +13,7 @@ EXPECTED_BINDINGS: dict[str, set[int]] = {
     "pathtag_reduce2": {16, 48},
     "pathtag_scan1": {16, 17, 48},
     "pathtag_scan": {0, 16, 17, 48},
+    "pathtag_scan_small": {0, 16, 17, 48},
     "bbox_clear": {0, 48},
     "flatten": {0, 16, 17, 48, 49, 50},
     "draw_reduce": {0, 16, 48},
@@ -85,7 +86,7 @@ def main() -> int:
         for failure in failures:
             print(f"ERROR: {failure}")
         return 1
-    print("PASS: Vello 19-stage resources and workgroup sizes match the Metal ABI.")
+    print("PASS: Vello shader resources and workgroup sizes match the Metal ABI.")
     return 0
 
 

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
 using System.Text;
@@ -17,7 +18,25 @@ namespace Jalium.UI;
 /// </summary>
 internal static partial class DragDropPlatform
 {
-    private static bool _initialized;
+    private static int _initialized;
+    private static readonly object s_initializationGate = new();
+
+    // Only the top-most effective AllowDrop element in a visual region is tracked.
+    // A Window with AllowDrop=true therefore has one entry rather than one entry per
+    // descendant. Keys are weak, and the value keeps only a weak Window reference,
+    // so detached user trees cannot retain a closed Window through this index.
+    private static ConditionalWeakTable<UIElement, DropTargetRootMembership>?
+        s_dropTargetRoots;
+
+    private sealed class DropTargetRootMembership
+    {
+        internal DropTargetRootMembership(Window window)
+        {
+            Window = new WeakReference<Window>(window);
+        }
+
+        internal WeakReference<Window> Window { get; }
+    }
 
     /// <summary>
     /// Ensures the platform DoDragDrop handler is registered with <see cref="DragDrop"/>.
@@ -25,19 +44,177 @@ internal static partial class DragDropPlatform
     /// </summary>
     internal static void EnsureInitialized()
     {
-        if (_initialized) return;
-        _initialized = true;
-        if (OperatingSystem.IsWindows())
+        if (Volatile.Read(ref _initialized) != 0)
         {
-            OleDropTarget.Initialize();
-            DragDrop.DoDragDropOverride = DoDragDropManaged;
-            DragDrop.DoShellDragDropOverride = OleDragSource.DoDragDrop;
+            return;
         }
-        else if (OperatingSystem.IsLinux())
+
+        lock (s_initializationGate)
         {
-            DragDrop.DoDragDropOverride = DoLinuxDragDrop;
-            DragDrop.DoShellDragDropOverride = DoLinuxDragDrop;
+            if (_initialized != 0)
+            {
+                return;
+            }
+
+            if (OperatingSystem.IsWindows())
+            {
+                DragDrop.DoDragDropOverride = DoDragDropManaged;
+                DragDrop.DoShellDragDropOverride = OleDragSource.DoDragDrop;
+                DragDrop.AllowDropChangedOverride = OnAllowDropChanged;
+                DragDrop.VisualTreeChangedOverride = ReconcileDropTargetsInSubtree;
+            }
+            else if (OperatingSystem.IsLinux())
+            {
+                DragDrop.DoDragDropOverride = DoLinuxDragDrop;
+                DragDrop.DoShellDragDropOverride = DoLinuxDragDrop;
+            }
+
+            Volatile.Write(ref _initialized, 1);
         }
+    }
+
+    private static void OnAllowDropChanged(DependencyObject element)
+    {
+        if (element is Visual visual)
+        {
+            // AllowDrop inherits. A change on one element can alter every descendant's
+            // effective value, so reconcile this one affected subtree as a batch.
+            ReconcileDropTargetsInSubtree(visual);
+        }
+    }
+
+    /// <summary>
+    /// Reconciles the small set of top-most effective AllowDrop roots for one changed
+    /// visual subtree. This runs only for a property/tree mutation, never per frame.
+    /// </summary>
+    private static void ReconcileDropTargetsInSubtree(Visual subtreeRoot)
+    {
+        Window? window = Window.GetWindow(subtreeRoot);
+        bool ancestorAllowsDrop = HasAllowDropVisualAncestor(subtreeRoot);
+        Dictionary<Window, int>? deltas = null;
+        HashSet<Window>? touchedWindows = null;
+        var stack = new Stack<(Visual Visual, bool AncestorAllowsDrop)>();
+        stack.Push((subtreeRoot, ancestorAllowsDrop));
+
+        while (stack.Count != 0)
+        {
+            var (visual, ancestorAllows) = stack.Pop();
+            bool allowsDrop = visual is UIElement element && DragDrop.GetAllowDrop(element);
+            Window? desiredWindow = allowsDrop && !ancestorAllows ? window : null;
+
+            if (visual is UIElement uiElement)
+            {
+                ReconcileDropTargetRoot(
+                    uiElement,
+                    desiredWindow,
+                    ref deltas,
+                    ref touchedWindows);
+            }
+
+            bool descendantsHaveAllowDropAncestor = ancestorAllows || allowsDrop;
+            for (int i = visual.InternalVisualChildrenCount - 1; i >= 0; i--)
+            {
+                if (visual.InternalGetVisualChild(i) is { } child)
+                {
+                    stack.Push((child, descendantsHaveAllowDropAncestor));
+                }
+            }
+        }
+
+        if (touchedWindows is null)
+        {
+            return;
+        }
+
+        foreach (Window touched in touchedWindows)
+        {
+            int delta = deltas?.GetValueOrDefault(touched) ?? 0;
+            touched.ApplyDropTargetRootDelta(delta);
+        }
+    }
+
+    private static bool HasAllowDropVisualAncestor(Visual visual)
+    {
+        for (Visual? current = visual.InternalVisualParent;
+             current is not null;
+             current = current.InternalVisualParent)
+        {
+            if (current is UIElement element && DragDrop.GetAllowDrop(element))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ReconcileDropTargetRoot(
+        UIElement element,
+        Window? desiredWindow,
+        ref Dictionary<Window, int>? deltas,
+        ref HashSet<Window>? touchedWindows)
+    {
+        var roots = Volatile.Read(ref s_dropTargetRoots);
+        if (roots is null && desiredWindow is null)
+        {
+            // Empty windows take this path for every ordinary visual attach. Keep
+            // the weak index itself lazy until the first real AllowDrop root.
+            return;
+        }
+
+        roots ??= Interlocked.CompareExchange(
+            ref s_dropTargetRoots,
+            new ConditionalWeakTable<UIElement, DropTargetRootMembership>(),
+            null) ?? s_dropTargetRoots!;
+
+        Window? previousWindow = null;
+        if (roots.TryGetValue(element, out var membership))
+        {
+            membership.Window.TryGetTarget(out previousWindow);
+        }
+
+        if (ReferenceEquals(previousWindow, desiredWindow))
+        {
+            if (membership is not null && previousWindow is null)
+            {
+                // The weak Window died after this element was detached. Remove the
+                // stale value now rather than keeping it until the element also dies.
+                roots.Remove(element);
+            }
+            if (desiredWindow is not null)
+            {
+                (touchedWindows ??= new()).Add(desiredWindow);
+            }
+            return;
+        }
+
+        if (membership is not null)
+        {
+            roots.Remove(element);
+        }
+
+        if (previousWindow is not null)
+        {
+            AddWindowDelta(previousWindow, -1, ref deltas, ref touchedWindows);
+        }
+
+        if (desiredWindow is not null)
+        {
+            roots.Add(element, new DropTargetRootMembership(desiredWindow));
+            AddWindowDelta(desiredWindow, 1, ref deltas, ref touchedWindows);
+        }
+    }
+
+    private static void AddWindowDelta(
+        Window window,
+        int delta,
+        ref Dictionary<Window, int>? deltas,
+        ref HashSet<Window>? touchedWindows)
+    {
+        touchedWindows ??= new();
+        touchedWindows.Add(window);
+        deltas ??= new();
+        deltas[window] = deltas.GetValueOrDefault(window) + delta;
     }
 
     /// <summary>
@@ -111,7 +288,7 @@ internal static partial class DragDropPlatform
 
             Canvas.SetLeft(dragVisual, clickPos.X - dragOffsetX);
             Canvas.SetTop(dragVisual, clickPos.Y - dragOffsetY);
-            window.OverlayLayer.Children.Add(dragVisual);
+            window.OverlayLayer.AddOverlayChild(dragVisual);
             dragVisualAdded = true;
             dragVisual.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         }

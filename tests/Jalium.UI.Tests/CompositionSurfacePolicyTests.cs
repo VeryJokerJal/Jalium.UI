@@ -124,4 +124,61 @@ public class CompositionSurfacePolicyTests
 
         Assert.Equal(0u, exStyle & WS_EX_NOREDIRECTIONBITMAP);
     }
+
+    [Fact]
+    public void OpaqueWindow_UsesNativeHwndTarget()
+    {
+        Assert.False(Window.ShouldUseCompositionRenderTarget(
+            allowsTransparency: false,
+            hasNoRedirectionBitmapStyle: false,
+            currentTargetIsComposition: false));
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public void CompositionRequirement_UsesCompositionTarget(
+        bool allowsTransparency,
+        bool hasNoRedirectionBitmapStyle,
+        bool currentTargetIsComposition)
+    {
+        Assert.True(Window.ShouldUseCompositionRenderTarget(
+            allowsTransparency,
+            hasNoRedirectionBitmapStyle,
+            currentTargetIsComposition));
+    }
+
+    [Fact]
+    public void D3D12Hwnd_OnSoftwareDisplayRoute_FallsBackToRedirectedSoftware()
+    {
+        Assert.True(Window.ShouldFallbackFromD3D12SoftwareDisplayRoute(
+            RenderBackend.D3D12,
+            backendSelectionWasAutomatic: true,
+            isCompositionTarget: false,
+            usesSoftwareDisplayRoute: true,
+            allowBasicDisplayRoute: false));
+    }
+
+    [Theory]
+    [InlineData(RenderBackend.Software, true, false, true, false)]
+    [InlineData(RenderBackend.Vulkan, true, false, true, false)]
+    [InlineData(RenderBackend.D3D12, false, false, true, false)]
+    [InlineData(RenderBackend.D3D12, true, true, true, false)]
+    [InlineData(RenderBackend.D3D12, true, false, false, false)]
+    [InlineData(RenderBackend.D3D12, true, false, true, true)]
+    public void SoftwareDisplayFallback_StaysNarrow(
+        RenderBackend backend,
+        bool backendSelectionWasAutomatic,
+        bool isCompositionTarget,
+        bool usesSoftwareDisplayRoute,
+        bool allowBasicDisplayRoute)
+    {
+        Assert.False(Window.ShouldFallbackFromD3D12SoftwareDisplayRoute(
+            backend,
+            backendSelectionWasAutomatic,
+            isCompositionTarget,
+            usesSoftwareDisplayRoute,
+            allowBasicDisplayRoute));
+    }
 }

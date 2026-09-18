@@ -5,6 +5,9 @@
 #include <vector>
 #include <cstring>
 #include <algorithm>
+#include <cstdlib>
+
+#include "vulkan_environment.h"
 
 namespace jalium {
 
@@ -17,6 +20,15 @@ constexpr VkDescriptorType UBO = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 constexpr VkDescriptorType SSB = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 constexpr VkDescriptorType SIMG = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 constexpr VkDescriptorType STIMG = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+
+bool VelloSmallScanEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("JALIUM_VELLO_SMALL_SCAN");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
 
 // Per-stage binding tables. Binding numbers are the register-shifted values
 // emitted by dxc (-fvk-{t,s,u}-shift {16,32,48}); only the bindings that
@@ -34,6 +46,10 @@ const StageBinding kPathtagScan1B[] = {
 };
 const StageBinding kPathtagScanB[] = {
     {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {17, SSB, Res::ReducedScan},
+    {48, SSB, Res::TagMonoids},
+};
+const StageBinding kPathtagScanSmallB[] = {
+    {0, UBO, Res::Config}, {16, SSB, Res::Scene}, {17, SSB, Res::Reduced},
     {48, SSB, Res::TagMonoids},
 };
 const StageBinding kBboxClearB[] = {
@@ -101,6 +117,7 @@ const StageBinding kFineB[] = {
 // Stage index order == dispatch order.
 enum StageIdx : uint32_t {
     S_PathtagReduce = 0, S_PathtagReduce2, S_PathtagScan1, S_PathtagScan,
+    S_PathtagScanSmall,
     S_BboxClear, S_Flatten, S_DrawReduce, S_DrawLeaf, S_ClipReduce, S_ClipLeaf,
     S_Binning, S_TileAlloc, S_PathCountSetup, S_PathCount, S_Backdrop, S_Coarse,
     S_PathTilingSetup, S_PathTiling, S_Fine,
@@ -120,6 +137,7 @@ const StageDef kStages[VelloComputePipeline::kStageCount] = {
     VVC_STAGE(kVelloPathtagReduce2Spv, kPathtagReduce2B),
     VVC_STAGE(kVelloPathtagScan1Spv,   kPathtagScan1B),
     VVC_STAGE(kVelloPathtagScanSpv,    kPathtagScanB),
+    VVC_STAGE(kVelloPathtagScanSmallSpv, kPathtagScanSmallB),
     VVC_STAGE(kVelloBboxClearSpv,      kBboxClearB),
     VVC_STAGE(kVelloFlattenSpv,        kFlattenB),
     VVC_STAGE(kVelloDrawReduceSpv,     kDrawReduceB),
@@ -318,7 +336,6 @@ bool VelloComputePipeline::Initialize(VkDevice device, VkPhysicalDevice physical
     cmdDispatchIndirect_        = (PFN_vkCmdDispatchIndirect)       need(load("vkCmdDispatchIndirect"));
     cmdPipelineBarrier_         = (PFN_vkCmdPipelineBarrier)        need(load("vkCmdPipelineBarrier"));
     cmdFillBuffer_              = (PFN_vkCmdFillBuffer)             need(load("vkCmdFillBuffer"));
-    cmdClearColorImage_         = (PFN_vkCmdClearColorImage)        need(load("vkCmdClearColorImage"));
     cmdCopyBufferToImage_       = (PFN_vkCmdCopyBufferToImage)      need(load("vkCmdCopyBufferToImage"));
     if (!ok) return false;
 
@@ -327,7 +344,7 @@ bool VelloComputePipeline::Initialize(VkDevice device, VkPhysicalDevice physical
     if (!CreateDummyImage()) return false;
 
     // Per-frame transient descriptor pools. Each Record allocates a fresh
-    // 19-set group (the pool is reset once per frame in PrepareFrameSlot, so
+    // 20-set group (the pool is reset once per frame in PrepareFrameSlot, so
     // groups from earlier sub-scenes of the SAME frame stay valid while their
     // GPU reads are still queued); size everything for kMaxRecordsPerFrame
     // groups.
@@ -783,7 +800,7 @@ bool VelloComputePipeline::BuildDescriptorSets(uint32_t frameIdx, const VelloRen
     // NO pool reset here: the pool is reset once per frame in PrepareFrameSlot.
     // Resetting per Record would invalidate the descriptor groups of earlier
     // sub-scenes in the SAME frame whose GPU reads are still queued in this
-    // command buffer. Each call just allocates a fresh 19-set group.
+    // command buffer. Each call just allocates a fresh 20-set group.
 
     VkDescriptorSetLayout layouts[kStageCount];
     for (uint32_t s = 0; s < kStageCount; ++s) layouts[s] = setLayouts_[s];
@@ -858,9 +875,8 @@ bool VelloComputePipeline::PrepareFrameSlot(uint32_t frameIdx) {
     {
         static int s_perf = -1;
         if (s_perf < 0) {
-            char buf[8]; size_t n = 0;
-            s_perf = (getenv_s(&n, buf, sizeof(buf), "JALIUM_VELLO_PERF") == 0 && n > 0 &&
-                      buf[0] != '0') ? 1 : 0;
+            char buf[8];
+            s_perf = (ReadVulkanEnvironment("JALIUM_VELLO_PERF", buf) && buf[0] != '0') ? 1 : 0;
         }
         if (frameIdx < kFramesInFlight) arena_[frameIdx].cursor = 0;
         if (s_perf && frameIdx < kFramesInFlight && recordsThisFrame_[frameIdx] > 0) {
@@ -950,11 +966,11 @@ bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloSubScene& sub,
         VkImageMemoryBarrier imgs[3]{};
         uint32_t imgCount = 0;
 
-        // Output: whatever the last frame left -> GENERAL for clear + fine.
+        // Output: whatever the previous composite left -> GENERAL for fine.
         VkImageMemoryBarrier& ob = imgs[imgCount++];
         ob.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         ob.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        ob.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        ob.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         ob.oldLayout = outputLayout_;
         ob.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         ob.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1002,14 +1018,9 @@ bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloSubScene& sub,
                             0, 1, &mb, 0, nullptr, imgCount, imgs);
     }
 
-    // Clear output (defensive: fine writes every in-bounds pixel unless an
-    // earlier stage failed) and zero the bump allocators.
-    {
-        VkClearColorValue clear{};
-        VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        cmdClearColorImage_(cmd, outputImage_, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
-        cmdFillBuffer_(cmd, bump_.buffer, 0, VK_WHOLE_SIZE, 0);
-    }
+    // Fine writes the complete region, including empty tiles and allocator
+    // failure. Do not clear the (possibly much larger) reusable output image.
+    cmdFillBuffer_(cmd, bump_.buffer, 0, VK_WHOLE_SIZE, 0);
 
     // Upload gradient ramps.
     if (sub.rampCount > 0) {
@@ -1039,7 +1050,7 @@ bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloSubScene& sub,
     }
     rampImageInitialized_ = true;
 
-    // Transfer writes (clear + bump zero) -> compute.
+    // Transfer writes (bump zero) -> compute.
     {
         VkMemoryBarrier mb{};
         mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1061,13 +1072,25 @@ bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloSubScene& sub,
         ComputeBarrier(cmdPipelineBarrier_, cmd);
     };
 
-    bindAndDispatch(S_PathtagReduce, ri.pathtagReduceWgs, 1, 1);
-    bindAndDispatch(S_PathtagReduce2, ri.pathtagReduce2Wgs, 1, 1);
-    bindAndDispatch(S_PathtagScan1, ri.pathtagScan1Wgs, 1, 1);
-    bindAndDispatch(S_PathtagScan, ri.pathtagScanWgs, 1, 1);
+    const bool useSmallPathScan = !ri.useLargePathScan && VelloSmallScanEnabled();
+    // Small scan's first workgroup has an identity parent; only subsequent
+    // groups read reduced[]. The large permutation still needs its chain.
+    if (!useSmallPathScan || ri.pathtagReduceWgs > 1) {
+        bindAndDispatch(S_PathtagReduce, ri.pathtagReduceWgs, 1, 1);
+    }
+    if (!useSmallPathScan) {
+        bindAndDispatch(S_PathtagReduce2, ri.pathtagReduce2Wgs, 1, 1);
+        bindAndDispatch(S_PathtagScan1, ri.pathtagScan1Wgs, 1, 1);
+        bindAndDispatch(S_PathtagScan, ri.pathtagScanWgs, 1, 1);
+    } else {
+        bindAndDispatch(S_PathtagScanSmall, ri.pathtagScanWgs, 1, 1);
+    }
     bindAndDispatch(S_BboxClear, ri.bboxClearWgs, 1, 1);
     bindAndDispatch(S_Flatten, ri.flattenWgs, 1, 1);
-    bindAndDispatch(S_DrawReduce, ri.drawReduceWgs, 1, 1);
+    // draw_leaf likewise only reads reductions for preceding workgroups.
+    if (ri.drawReduceWgs > 1) {
+        bindAndDispatch(S_DrawReduce, ri.drawReduceWgs, 1, 1);
+    }
     bindAndDispatch(S_DrawLeaf, ri.drawReduceWgs, 1, 1);
     if (ri.clipReduceWgs > 0) {
         bindAndDispatch(S_ClipReduce, ri.clipReduceWgs, 1, 1);

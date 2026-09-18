@@ -232,14 +232,7 @@ internal static partial class CssCoreProperties
         => new CssDeferredValue(cssName, FrameworkElement.OutlineBrushProperty,
             (in CssApplyContext ctx, out object? value) =>
             {
-                var dp = CssDependencyPropertyLookup.Find(ctx.Element.GetType(), "Foreground");
-                if (dp is not null && ctx.Element.GetValue(dp) is SolidColorBrush solid)
-                {
-                    value = FreezeIfPossible(new SolidColorBrush(solid.Color));
-                    return true;
-                }
-
-                value = FreezeIfPossible(new SolidColorBrush(Jalium.UI.Media.Color.FromArgb(0xFF, 0, 0, 0)));
+                value = ctx.CurrentColor;
                 return true;
             });
 }

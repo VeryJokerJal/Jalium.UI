@@ -1,5 +1,7 @@
 project(jalium.native.software)
 
+find_package(Threads REQUIRED)
+
 option(JALIUM_SOFTWARE_ENABLE_XSHM
     "Enable the optional MIT-SHM fast path for X11 software presentation" ON)
 
@@ -44,6 +46,7 @@ endif()
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         jalium.native.core
+        Threads::Threads
 )
 
 if(WIN32)
@@ -146,7 +149,60 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 )
 
 option(JALIUM_SOFTWARE_BUILD_TESTS
-    "Build jalium.native.software Linux presentation smoke tests" OFF)
+    "Build jalium.native.software native tests" OFF)
+
+if(JALIUM_SOFTWARE_BUILD_TESTS)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        JALIUM_SOFTWARE_TESTING=1)
+
+    add_executable(jalium.native.software.worker-pool.tests
+        tests/software_worker_pool.cpp)
+    target_include_directories(jalium.native.software.worker-pool.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_link_libraries(jalium.native.software.worker-pool.tests PRIVATE
+        jalium.native.core
+        jalium.native.software)
+    add_test(NAME jalium.native.software.worker-pool
+        COMMAND jalium.native.software.worker-pool.tests)
+
+    add_executable(jalium.native.software.framebuffer-storage.tests
+        tests/software_framebuffer_storage.cpp)
+    target_include_directories(
+        jalium.native.software.framebuffer-storage.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_link_libraries(
+        jalium.native.software.framebuffer-storage.tests PRIVATE
+        jalium.native.core
+        jalium.native.software)
+    add_test(NAME jalium.native.software.framebuffer-storage
+        COMMAND jalium.native.software.framebuffer-storage.tests)
+
+    if(WIN32)
+        add_executable(jalium.native.software.wic-memory-decode.tests
+            tests/software_wic_memory_decode.cpp)
+        target_include_directories(jalium.native.software.wic-memory-decode.tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+        target_link_libraries(jalium.native.software.wic-memory-decode.tests PRIVATE
+            jalium.native.core
+            jalium.native.software
+            ole32)
+        add_test(NAME jalium.native.software.wic-memory-decode
+            COMMAND jalium.native.software.wic-memory-decode.tests)
+
+        add_executable(jalium.native.software.windows-present.tests
+            tests/software_windows_present.cpp)
+        target_include_directories(jalium.native.software.windows-present.tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+        target_link_libraries(jalium.native.software.windows-present.tests PRIVATE
+            jalium.native.core
+            jalium.native.software
+            gdi32
+            user32)
+        add_test(NAME jalium.native.software.windows-present
+            COMMAND jalium.native.software.windows-present.tests)
+    endif()
+endif()
+
 if(JALIUM_SOFTWARE_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
     if(TARGET jalium.native.platform)
         if(WAYLAND_CLIENT_FOUND)
@@ -159,6 +215,8 @@ if(JALIUM_SOFTWARE_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
                 jalium.native.core
                 jalium.native.platform
                 jalium.native.software)
+            add_test(NAME jalium.native.software.wayland
+                COMMAND jalium.native.software.wayland.tests)
         endif()
 
         if(X11_FOUND)
@@ -207,7 +265,8 @@ if(JALIUM_TEXT_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID AND TARGET jal
             ${JALIUM_STB_ROOT})
     target_link_libraries(jalium.native.software.text.test-support PRIVATE
         jalium.native.core
-        jalium.native.text)
+        jalium.native.text
+        Threads::Threads)
     if(X11_FOUND)
         target_compile_definitions(jalium.native.software.text.test-support
             PUBLIC JALIUM_SOFTWARE_X11_PRESENT)

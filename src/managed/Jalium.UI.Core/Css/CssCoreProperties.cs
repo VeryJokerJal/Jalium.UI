@@ -12,6 +12,7 @@ internal static partial class CssCoreProperties
 {
     public static void RegisterAll()
     {
+        RegisterShorthand("all", static (ref CssTokenReader reader, CssCompileContext context, List<CssCompiledDeclaration> output) => false);
         RegisterSizes();
         RegisterBoxShorthands();
         RegisterVisibility();
@@ -19,6 +20,7 @@ internal static partial class CssCoreProperties
         RegisterBackgroundAndBorders();
         RegisterTextAndFonts();
         RegisterTransformAndTransition();
+        RegisterDetailedTransitions();
         RegisterOutline();
         RegisterCssLayout();
         RegisterUnsupportedPlaceholders();
@@ -103,6 +105,11 @@ internal static partial class CssCoreProperties
             return null;
         }
 
+        if (length.Expression is null && length.Value < 0) return null;
+
+        if (length.Expression is { UsesPercent: true })
+            return new CssExpressionLayoutValue(field, length, property, sentinel);
+
         if (length.Unit == CssUnit.Percent)
         {
             var fraction = length.Value / 100.0;
@@ -111,14 +118,16 @@ internal static partial class CssCoreProperties
 
         if (length.IsAbsolute)
         {
-            return new CssImmediateValue(property, length.ToPxAbsolute());
+            var pixels = length.ToPxAbsolute();
+            if (length.Expression is null && pixels < 0) return null;
+            return new CssImmediateValue(property, Math.Max(0, pixels));
         }
 
         var captured = length;
         return new CssDeferredValue(cssName, property, (in CssApplyContext ctx, out object? value) =>
         {
             var ok = captured.TryResolve(ctx.Lengths, CssPercentBasis.NotSupported, out var px);
-            value = px;
+            value = Math.Max(0, px);
             return ok;
         });
     }
@@ -137,7 +146,8 @@ internal static partial class CssCoreProperties
             Kind = CssPropertyKind.Shorthand,
             Expand = (ref CssTokenReader reader, CssCompileContext ctx_, List<CssCompiledDeclaration> output) =>
             {
-                Span<CssLength> parts = stackalloc CssLength[4];
+                CssLengthBuffer buffer = default;
+                Span<CssLength> parts = buffer;
                 var count = 0;
                 while (!reader.AtEnd)
                 {
@@ -202,10 +212,7 @@ internal static partial class CssCoreProperties
             var probe = reader;
             if (probe.TryReadIdent(out var ident) && ident.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
-                CssDiagnostics.Report(
-                    cssName, CssDiagnosticReason.LossyConversion, null,
-                    "'auto' margins do not center in this framework; use horizontal-alignment/vertical-alignment instead. Treated as 0.");
-                length = new CssLength(0, CssUnit.Px);
+                length = new CssLength(0, CssUnit.Auto);
                 reader = probe;
                 return true;
             }
@@ -220,6 +227,7 @@ internal static partial class CssCoreProperties
         {
             Name = "visibility",
             Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssDisplayProperties.VisibilityProperty,
             Parse = (ref CssTokenReader reader, CssCompileContext ctx_) =>
             {
                 if (!reader.TryReadIdent(out var ident) || !reader.AtEnd)
@@ -229,17 +237,17 @@ internal static partial class CssCoreProperties
 
                 if (ident.Equals("visible", StringComparison.OrdinalIgnoreCase))
                 {
-                    return new CssImmediateValue(UIElement.VisibilityProperty, Visibility.Visible);
+                    return new CssVisibilityValue(Visibility.Visible);
                 }
 
                 if (ident.Equals("hidden", StringComparison.OrdinalIgnoreCase))
                 {
-                    return new CssImmediateValue(UIElement.VisibilityProperty, Visibility.Hidden);
+                    return new CssVisibilityValue(Visibility.Hidden);
                 }
 
                 if (ident.Equals("collapse", StringComparison.OrdinalIgnoreCase))
                 {
-                    return new CssImmediateValue(UIElement.VisibilityProperty, Visibility.Collapsed);
+                    return new CssVisibilityValue(Visibility.Collapsed);
                 }
 
                 return null;
@@ -549,7 +557,8 @@ internal static partial class CssCoreProperties
         RegisterShorthand("inset",
             (ref CssTokenReader reader, CssCompileContext ctx_, List<CssCompiledDeclaration> output) =>
         {
-            Span<CssLength> parts = stackalloc CssLength[4];
+            CssLengthBuffer buffer = default;
+            Span<CssLength> parts = buffer;
             var count = 0;
             while (!reader.AtEnd)
             {

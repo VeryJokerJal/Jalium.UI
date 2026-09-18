@@ -4,7 +4,7 @@ namespace Jalium.UI.Media;
 public class HitTestResult
 {
     [ThreadStatic]
-    private static HitTestResult? s_reusable;
+    private static WeakReference<HitTestResult>? s_reusable;
 
     public HitTestResult(Visual visualHit)
     {
@@ -15,9 +15,18 @@ public class HitTestResult
 
     internal static HitTestResult GetReusable(Visual visualHit)
     {
-        s_reusable ??= new HitTestResult(visualHit);
-        s_reusable.VisualHit = visualHit;
-        return s_reusable;
+        if (s_reusable != null && s_reusable.TryGetTarget(out var result))
+        {
+            result.VisualHit = visualHit;
+            return result;
+        }
+        // Retain reuse between collections without rooting the last visual tree
+        // for the UI thread's lifetime. A caller holding the result still owns a
+        // strong, ordinary VisualHit reference.
+        result = new HitTestResult(visualHit);
+        if (s_reusable == null) s_reusable = new WeakReference<HitTestResult>(result);
+        else s_reusable.SetTarget(result);
+        return result;
     }
 }
 

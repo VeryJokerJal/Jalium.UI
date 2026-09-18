@@ -29,6 +29,22 @@ public sealed class GpuSmallIconPathRenderingTests
     public void Vulkan_Vello_SmallCubicIcon_IsCompleteAndAntialiased() =>
         AssertSmallCubicIconContract(RenderBackend.Vulkan, RenderingEngine.Vello);
 
+    [RequiresWindowsBackendFact(RenderBackend.D3D12)]
+    public void D3D12_Impeller_SmallStraightFill_IsAntialiased() =>
+        AssertSmallStraightFillContract(RenderBackend.D3D12, RenderingEngine.Impeller);
+
+    [RequiresWindowsBackendFact(RenderBackend.D3D12)]
+    public void D3D12_Vello_SmallStraightFill_IsAntialiased() =>
+        AssertSmallStraightFillContract(RenderBackend.D3D12, RenderingEngine.Vello);
+
+    [RequiresWindowsBackendFact(RenderBackend.Vulkan)]
+    public void Vulkan_Impeller_SmallStraightFill_IsAntialiased() =>
+        AssertSmallStraightFillContract(RenderBackend.Vulkan, RenderingEngine.Impeller);
+
+    [RequiresWindowsBackendFact(RenderBackend.Vulkan)]
+    public void Vulkan_Vello_SmallStraightFill_IsAntialiased() =>
+        AssertSmallStraightFillContract(RenderBackend.Vulkan, RenderingEngine.Vello);
+
     private static void AssertSmallCubicIconContract(
         RenderBackend backend,
         RenderingEngine engine)
@@ -116,6 +132,59 @@ public sealed class GpuSmallIconPathRenderingTests
         Assert.Equal(Width, capturedWidth);
         Assert.Equal(Height, capturedHeight);
         return pixels;
+    }
+
+    private static void AssertSmallStraightFillContract(
+        RenderBackend backend,
+        RenderingEngine engine)
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(backend, GpuPreference.Auto, engine);
+        using var target = context.CreateRenderTarget(window.Hwnd, Width, Height);
+        using var white = context.CreateSolidBrush(1f, 1f, 1f, 1f);
+
+        float[] diamond = [16f, 3.25f, 27.5f, 15.5f, 16f, 27.75f, 4.5f, 15.5f];
+        for (var frame = 0; frame < 2; frame++)
+        {
+            target.SetFullInvalidation();
+            Assert.True(TryBeginDrawWithRetry(target));
+            target.Clear(0f, 0f, 0f);
+            // Line-only filled Path figures specialize to FillPolygon.
+            target.FillPolygon(diamond, white, fillRule: 1);
+            if (frame == 1)
+                Assert.Equal(JaliumResult.Ok, target.RequestReadback());
+            Assert.Equal(JaliumResult.Ok, target.TryEndDraw());
+        }
+
+        var pixels = new byte[Width * Height * 4];
+        Assert.Equal(
+            JaliumResult.Ok,
+            target.FetchReadback(pixels, Width * 4u, out var capturedWidth, out var capturedHeight));
+        Assert.Equal(Width, capturedWidth);
+        Assert.Equal(Height, capturedHeight);
+
+        var partial = 0;
+        var solid = 0;
+        for (var y = 1; y < Height - 1; y++)
+        {
+            for (var x = 1; x < Width - 1; x++)
+            {
+                var value = IntensityAt(pixels, x, y);
+                if (value is > 4 and < 251)
+                    partial++;
+                else if (value >= 251)
+                    solid++;
+            }
+        }
+
+        Assert.True(
+            partial >= 24,
+            $"{backend}/{engine}: straight filled icon has binary edges " +
+            $"({partial} partial pixels).");
+        Assert.True(
+            solid >= 180 && IntensityAt(pixels, 16, 16) >= 251,
+            $"{backend}/{engine}: straight filled icon is incomplete " +
+            $"({solid} solid pixels).");
     }
 
     private static int IntensityAt(byte[] pixels, int x, int y)

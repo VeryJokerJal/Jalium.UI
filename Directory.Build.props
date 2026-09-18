@@ -54,9 +54,9 @@
 
     <!-- NuGet Package Metadata -->
     <Authors>Jal</Authors>
-    <Company>Jal</Company>
+    <Company>Jialium</Company>
     <Product>Jalium UI</Product>
-    <Copyright>Copyright (c) Jal</Copyright>
+    <Copyright>Copyright © 2024-2026 Jialium. All rights reserved.</Copyright>
     <PackageProjectUrl>https://github.com/VeryJokerJal/Jalium.UI</PackageProjectUrl>
     <RepositoryUrl>https://github.com/VeryJokerJal/Jalium.UI</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

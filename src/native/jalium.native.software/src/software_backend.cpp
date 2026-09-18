@@ -3,11 +3,32 @@
 #include "jalium_impeller_stroke.h"       // ExpandStrokePath (collect-contours mode)
 #include "jalium_triangulate.h"           // FlattenPathToContours
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
+#include <atomic>
+#include <condition_variable>
+#include <chrono>
+#include <functional>
+#include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <system_error>
+#include <thread>
+#include <unordered_map>
+#include <string_view>
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h>
+#include <immintrin.h>
+#elif defined(__AVX2__) || defined(__SSE2__)
+#include <immintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
 
 #ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
 #include "wayland_shm_present.h"
@@ -17,10 +38,8 @@
 #ifdef _WIN32
 #include <Windows.h>
 #include <wincodec.h>
-#include <Shlwapi.h>
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
-#pragma comment(lib, "Shlwapi.lib")
 #endif
 
 #ifdef __APPLE__
@@ -66,12 +85,1784 @@ using Microsoft::WRL::ComPtr;
 
 namespace jalium {
 
+static uint64_t SoftwareNowNs()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+static void MaybeFailFramebufferAllocationForTesting()
+{
+#ifdef JALIUM_SOFTWARE_TESTING
+    constexpr const char* kFailureVariable =
+        "JALIUM_SOFTWARE_TEST_FAIL_FRAMEBUFFER_ALLOCATION";
+    const char* value = std::getenv(kFailureVariable);
+    if (value && value[0] == '1' && value[1] == '\0') {
+#ifdef _WIN32
+        (void)_putenv_s(kFailureVariable, "");
+#else
+        (void)unsetenv(kFailureVariable);
+#endif
+        throw std::bad_alloc();
+    }
+#endif
+}
+
+static size_t ComputeFramebufferGrowthCapacity(
+    size_t currentCapacity,
+    size_t requiredBytes)
+{
+    constexpr size_t kCapacityAlignment = 64u * 1024u;
+    constexpr size_t kMaximumGrowthSlack = 16u * 1024u * 1024u;
+    const size_t maximum = std::numeric_limits<size_t>::max();
+
+    size_t grownCapacity = currentCapacity;
+    if (grownCapacity < requiredBytes) {
+        const size_t halfCapacity = currentCapacity / 2u;
+        grownCapacity = currentCapacity > maximum - halfCapacity
+            ? maximum
+            : currentCapacity + halfCapacity;
+        grownCapacity = std::max(grownCapacity, requiredBytes);
+    }
+
+    const size_t growthLimit = requiredBytes > maximum - kMaximumGrowthSlack
+        ? maximum
+        : requiredBytes + kMaximumGrowthSlack;
+    grownCapacity = std::min(grownCapacity, growthLimit);
+
+    if (grownCapacity <= maximum - (kCapacityAlignment - 1u)) {
+        const size_t alignedCapacity =
+            (grownCapacity + kCapacityAlignment - 1u) &
+            ~(kCapacityAlignment - 1u);
+        grownCapacity = std::min(alignedCapacity, growthLimit);
+    }
+    return std::max(grownCapacity, requiredBytes);
+}
+
+static constexpr size_t kRetainedCaptureBufferCacheBudget =
+    32u * 1024u * 1024u;
+static constexpr size_t kRetainedCaptureBufferCacheDepth = 4u;
+
+static constexpr size_t kSoftwareResourceCacheBudget =
+    48u * 1024u * 1024u;
+static std::atomic<size_t> gSoftwareResourceCacheBytes{0};
+
+static bool TryReserveSoftwareResourceCache(size_t bytes)
+{
+    size_t current = gSoftwareResourceCacheBytes.load(std::memory_order_relaxed);
+    for (;;) {
+        if (bytes > kSoftwareResourceCacheBudget ||
+            current > kSoftwareResourceCacheBudget - bytes) return false;
+        if (gSoftwareResourceCacheBytes.compare_exchange_weak(
+                current, current + bytes,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) return true;
+    }
+}
+
+static void ReleaseSoftwareResourceCache(size_t bytes)
+{
+    if (bytes > 0)
+        gSoftwareResourceCacheBytes.fetch_sub(bytes, std::memory_order_relaxed);
+}
+
+static size_t SoftwareResourceCacheBytes()
+{
+    return gSoftwareResourceCacheBytes.load(std::memory_order_relaxed);
+}
+
+static std::atomic<int> gSoftwareSimdMode{2}; // 0=scalar, 1=SSE2/NEON, 2=widest
+
+static std::string ReadSoftwareEnvironmentVariable(const char* name)
+{
+#if defined(_MSC_VER)
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&value, &length, name) != 0 || !value) {
+        if (value) std::free(value);
+        return {};
+    }
+    std::string result(value);
+    std::free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    return value ? std::string(value) : std::string{};
+#endif
+}
+
+static void RefreshSoftwareSimdMode()
+{
+    const std::string configured =
+        ReadSoftwareEnvironmentVariable("JALIUM_SOFTWARE_SIMD");
+    int mode = 2;
+    if (configured == "0" ||
+        configured == "scalar" ||
+        configured == "SCALAR") {
+        mode = 0;
+    } else if (configured == "sse2" ||
+               configured == "SSE2" ||
+               configured == "neon" ||
+               configured == "NEON") {
+        mode = 1;
+    }
+    gSoftwareSimdMode.store(mode, std::memory_order_relaxed);
+}
+
+static bool SoftwareSimdEnabled()
+{
+    return gSoftwareSimdMode.load(std::memory_order_relaxed) != 0;
+}
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+static bool SoftwareCpuHasAvx2()
+{
+    if (gSoftwareSimdMode.load(std::memory_order_relaxed) != 2) return false;
+    static const bool available = [] {
+        int registers[4] = {};
+        __cpuid(registers, 1);
+        constexpr int kOsXsave = 1 << 27;
+        constexpr int kAvx = 1 << 28;
+        if ((registers[2] & (kOsXsave | kAvx)) != (kOsXsave | kAvx)) return false;
+        const unsigned __int64 xcr0 = _xgetbv(0);
+        if ((xcr0 & 0x6u) != 0x6u) return false;
+        __cpuidex(registers, 7, 0);
+        return (registers[1] & (1 << 5)) != 0;
+    }();
+    return available;
+}
+#endif
+
+// A plain BGRA clear is memory-bandwidth bound and remains cheaper on the
+// submitting thread at ordinary window sizes. Keeping this just above a
+// 1920x1080 surface also prevents an otherwise empty 800x600 logical window
+// from materializing worker stacks at common high-DPI scale factors.
+constexpr uint64_t kParallelClearPixelThreshold = 2u * 1024u * 1024u;
+
+// ============================================================================
+// Persistent row worker pool
+// ============================================================================
+
+class SoftwareWorkerPool {
+public:
+    SoftwareWorkerPool()
+    {
+        const unsigned hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
+#ifdef __ANDROID__
+        const unsigned workerLimit = 4;
+#else
+        const unsigned workerLimit = 8;
+#endif
+        maxWorkerCount_ = std::min(
+            hardwareThreads > 1 ? hardwareThreads - 1 : 0u,
+            workerLimit);
+        const std::string threadOverride =
+            ReadSoftwareEnvironmentVariable("JALIUM_SOFTWARE_THREADS");
+        if (!threadOverride.empty()) {
+            const char* overrideValue = threadOverride.c_str();
+            char* end = nullptr;
+            const long parsed = std::strtol(overrideValue, &end, 10);
+            if (end != overrideValue && parsed >= 0 && parsed <= 16) {
+                maxWorkerCount_ = static_cast<size_t>(parsed);
+            }
+        }
+    }
+
+    ~SoftwareWorkerPool()
+    {
+        // Backend destruction can race a final render-target release. Let an
+        // in-flight dispatch finish before waking the pool for shutdown.
+        std::unique_lock<std::mutex> dispatchLock(dispatchMutex_);
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            stopping_ = true;
+            ++generation_;
+        }
+        workAvailable_.notify_all();
+        for (auto& worker : workers_) {
+            if (worker.joinable()) worker.join();
+        }
+        workerCount_.store(0, std::memory_order_relaxed);
+    }
+
+    void ParallelFor(
+        int32_t begin, int32_t end, int32_t grain,
+        const std::function<void(int32_t, int32_t)>& function)
+    {
+        if (end <= begin) return;
+        grain = std::max(grain, 1);
+        const int64_t itemCount = static_cast<int64_t>(end) - begin;
+        if (maxWorkerCount_ == 0 || itemCount <= grain) {
+            function(begin, end);
+            return;
+        }
+
+        const size_t chunkCount = static_cast<size_t>(
+            (itemCount + grain - 1) / grain);
+        const size_t desiredWorkerCount = std::min(
+            maxWorkerCount_, chunkCount > 1 ? chunkCount - 1 : 0u);
+        if (desiredWorkerCount == 0) {
+            function(begin, end);
+            return;
+        }
+
+        // A backend owns one pool shared by all its render targets. Serialize
+        // dispatch, while individual jobs still fan out over all workers.
+        std::unique_lock<std::mutex> dispatchLock(dispatchMutex_);
+        EnsureWorkerCount(desiredWorkerCount);
+        const size_t activeWorkerCount = std::min(
+            desiredWorkerCount, workers_.size());
+        if (activeWorkerCount == 0) {
+            function(begin, end);
+            return;
+        }
+
+        const auto started = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            function_ = function;
+            next_.store(begin, std::memory_order_relaxed);
+            end_ = end;
+            grain_ = grain;
+            completedWorkers_ = 0;
+            activeWorkerCount_ = activeWorkerCount;
+            ++generation_;
+        }
+        workAvailable_.notify_all();
+
+        // The submitting/render thread participates instead of sleeping.
+        Consume(function, end, grain);
+
+        std::unique_lock<std::mutex> stateLock(stateMutex_);
+        workComplete_.wait(stateLock, [this] {
+            return completedWorkers_ == activeWorkerCount_;
+        });
+        function_ = {};
+        activeWorkerCount_ = 0;
+        const auto finished = std::chrono::steady_clock::now();
+        totalParallelNs_.fetch_add(
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                finished - started).count()),
+            std::memory_order_relaxed);
+    }
+
+    bool CanParallelize() const { return maxWorkerCount_ > 0; }
+    size_t WorkerCount() const
+    {
+        return workerCount_.load(std::memory_order_relaxed);
+    }
+    uint64_t TotalParallelNs() const
+    {
+        return totalParallelNs_.load(std::memory_order_relaxed);
+    }
+
+private:
+    void EnsureWorkerCount(size_t desiredWorkerCount)
+    {
+        while (workers_.size() < desiredWorkerCount) {
+            const size_t workerIndex = workers_.size();
+            uint64_t initialGeneration = 0;
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                initialGeneration = generation_;
+            }
+
+            try {
+                workers_.emplace_back(
+                    [this, workerIndex, initialGeneration] {
+                        WorkerLoop(workerIndex, initialGeneration);
+                    });
+                workerCount_.store(workers_.size(), std::memory_order_relaxed);
+            } catch (const std::system_error&) {
+                return;
+            } catch (const std::bad_alloc&) {
+                return;
+            }
+        }
+    }
+
+    void Consume(
+        const std::function<void(int32_t, int32_t)>& function,
+        int32_t end, int32_t grain)
+    {
+        for (;;) {
+            const int32_t chunkBegin = next_.fetch_add(grain, std::memory_order_relaxed);
+            if (chunkBegin >= end) return;
+            function(chunkBegin, std::min(chunkBegin + grain, end));
+        }
+    }
+
+    void WorkerLoop(size_t workerIndex, uint64_t observedGeneration)
+    {
+        for (;;) {
+            std::function<void(int32_t, int32_t)> function;
+            int32_t end = 0;
+            int32_t grain = 1;
+            {
+                std::unique_lock<std::mutex> lock(stateMutex_);
+                workAvailable_.wait(lock, [this, observedGeneration] {
+                    return stopping_ || generation_ != observedGeneration;
+                });
+                if (stopping_) return;
+                observedGeneration = generation_;
+                if (workerIndex >= activeWorkerCount_) continue;
+                function = function_;
+                end = end_;
+                grain = grain_;
+            }
+
+            Consume(function, end, grain);
+
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                ++completedWorkers_;
+                if (completedWorkers_ == activeWorkerCount_) {
+                    workComplete_.notify_one();
+                }
+            }
+        }
+    }
+
+    std::vector<std::thread> workers_;
+    size_t maxWorkerCount_ = 0;
+    std::atomic<size_t> workerCount_{0};
+    std::mutex dispatchMutex_;
+    std::mutex stateMutex_;
+    std::condition_variable workAvailable_;
+    std::condition_variable workComplete_;
+    std::function<void(int32_t, int32_t)> function_;
+    std::atomic<int32_t> next_{0};
+    int32_t end_ = 0;
+    int32_t grain_ = 1;
+    size_t completedWorkers_ = 0;
+    size_t activeWorkerCount_ = 0;
+    uint64_t generation_ = 0;
+    bool stopping_ = false;
+    std::atomic<uint64_t> totalParallelNs_{0};
+};
+
+class SoftwareRetainedLayer {
+public:
+    std::unique_ptr<SoftwareBitmap> bitmap;
+
+    size_t ByteSize() const
+    {
+        return bitmap ? bitmap->pixels_.size() : 0u;
+    }
+};
+
+struct SoftwareCoverageSpan {
+    int32_t y = 0;
+    int32_t x = 0;
+    int32_t width = 0;
+    uint8_t hits = 0;
+};
+
+class SoftwareEllipseMaskCache {
+public:
+    bool Matches(
+        int32_t width, int32_t height,
+        float centerX, float centerY,
+        float radiusX, float radiusY,
+        float innerRadiusX, float innerRadiusY,
+        bool stroke) const
+    {
+        constexpr float kEpsilon = 1e-6f;
+        return valid_ && width_ == width && height_ == height && stroke_ == stroke &&
+            std::abs(centerX_ - centerX) < kEpsilon &&
+            std::abs(centerY_ - centerY) < kEpsilon &&
+            std::abs(radiusX_ - radiusX) < kEpsilon &&
+            std::abs(radiusY_ - radiusY) < kEpsilon &&
+            std::abs(innerRadiusX_ - innerRadiusX) < kEpsilon &&
+            std::abs(innerRadiusY_ - innerRadiusY) < kEpsilon;
+    }
+
+    void Build(
+        int32_t width, int32_t height,
+        float centerX, float centerY,
+        float radiusX, float radiusY,
+        float innerRadiusX, float innerRadiusY,
+        bool stroke)
+    {
+        valid_ = false;
+        spans_.clear();
+        if (width <= 0 || height <= 0 || radiusX <= 0.0f || radiusY <= 0.0f) return;
+
+        width_ = width;
+        height_ = height;
+        centerX_ = centerX;
+        centerY_ = centerY;
+        radiusX_ = radiusX;
+        radiusY_ = radiusY;
+        innerRadiusX_ = innerRadiusX;
+        innerRadiusY_ = innerRadiusY;
+        stroke_ = stroke;
+        spans_.reserve(static_cast<size_t>(height) * 8u);
+
+        constexpr int kSub = 4;
+        constexpr float kStep = 1.0f / static_cast<float>(kSub);
+        const bool hasInner = stroke && innerRadiusX > 0.0f && innerRadiusY > 0.0f;
+
+        for (int32_t py = 0; py < height; ++py) {
+            int32_t runStart = 0;
+            int runHits = -1;
+            auto flushRun = [&](int32_t runEnd) {
+                if (runHits <= 0 || runEnd <= runStart) return;
+                spans_.push_back({
+                    py, runStart, runEnd - runStart,
+                    static_cast<uint8_t>(runHits)
+                });
+            };
+
+            for (int32_t px = 0; px < width; ++px) {
+                int hits = 0;
+                for (int sy = 0; sy < kSub; ++sy) {
+                    const float localY =
+                        static_cast<float>(py) + (sy + 0.5f) * kStep - centerY;
+                    const float outerY = localY / radiusY;
+                    const float innerY = hasInner ? localY / innerRadiusY : 0.0f;
+                    for (int sx = 0; sx < kSub; ++sx) {
+                        const float localX =
+                            static_cast<float>(px) + (sx + 0.5f) * kStep - centerX;
+                        const float outerX = localX / radiusX;
+                        const bool insideOuter = outerX * outerX + outerY * outerY <= 1.0f;
+                        const float innerX = hasInner ? localX / innerRadiusX : 0.0f;
+                        const bool insideInner = hasInner &&
+                            innerX * innerX + innerY * innerY <= 1.0f;
+                        if (insideOuter && !insideInner) ++hits;
+                    }
+                }
+
+                if (hits != runHits) {
+                    flushRun(px);
+                    runStart = px;
+                    runHits = hits;
+                }
+            }
+            flushRun(width);
+        }
+        valid_ = true;
+    }
+
+    const std::vector<SoftwareCoverageSpan>& Spans() const { return spans_; }
+    size_t ByteSize() const { return spans_.capacity() * sizeof(SoftwareCoverageSpan); }
+
+private:
+    std::vector<SoftwareCoverageSpan> spans_;
+    int32_t width_ = 0;
+    int32_t height_ = 0;
+    float centerX_ = 0.0f;
+    float centerY_ = 0.0f;
+    float radiusX_ = 0.0f;
+    float radiusY_ = 0.0f;
+    float innerRadiusX_ = 0.0f;
+    float innerRadiusY_ = 0.0f;
+    bool stroke_ = false;
+    bool valid_ = false;
+};
+
+class SoftwareRoundedRectMaskCache {
+public:
+    struct Mask {
+        int32_t width = 0;
+        int32_t height = 0;
+        float originX = 0.0f;
+        float originY = 0.0f;
+        float shapeWidth = 0.0f;
+        float shapeHeight = 0.0f;
+        float topLeft = 0.0f;
+        float topRight = 0.0f;
+        float bottomRight = 0.0f;
+        float bottomLeft = 0.0f;
+        float innerOffset = 0.0f;
+        float innerWidth = 0.0f;
+        float innerHeight = 0.0f;
+        float innerTopLeft = 0.0f;
+        float innerTopRight = 0.0f;
+        float innerBottomRight = 0.0f;
+        float innerBottomLeft = 0.0f;
+        bool stroke = false;
+        std::vector<SoftwareCoverageSpan> spans;
+        uint64_t lastUse = 0;
+
+        size_t ByteSize() const
+        {
+            return spans.capacity() * sizeof(SoftwareCoverageSpan) + sizeof(Mask);
+        }
+    };
+
+    const Mask* GetOrBuild(
+        int32_t width, int32_t height,
+        float originX, float originY,
+        float shapeWidth, float shapeHeight,
+        float topLeft, float topRight, float bottomRight, float bottomLeft,
+        float innerOffset, float innerWidth, float innerHeight,
+        float innerTopLeft, float innerTopRight,
+        float innerBottomRight, float innerBottomLeft,
+        bool stroke)
+    {
+        for (auto& mask : masks_) {
+            if (Matches(mask, width, height, originX, originY,
+                    shapeWidth, shapeHeight,
+                    topLeft, topRight, bottomRight, bottomLeft,
+                    innerOffset, innerWidth, innerHeight,
+                    innerTopLeft, innerTopRight,
+                    innerBottomRight, innerBottomLeft, stroke)) {
+                mask.lastUse = ++clock_;
+                return &mask;
+            }
+        }
+
+        Mask mask;
+        mask.width = width;
+        mask.height = height;
+        mask.originX = originX;
+        mask.originY = originY;
+        mask.shapeWidth = shapeWidth;
+        mask.shapeHeight = shapeHeight;
+        mask.topLeft = topLeft;
+        mask.topRight = topRight;
+        mask.bottomRight = bottomRight;
+        mask.bottomLeft = bottomLeft;
+        mask.innerOffset = innerOffset;
+        mask.innerWidth = innerWidth;
+        mask.innerHeight = innerHeight;
+        mask.innerTopLeft = innerTopLeft;
+        mask.innerTopRight = innerTopRight;
+        mask.innerBottomRight = innerBottomRight;
+        mask.innerBottomLeft = innerBottomLeft;
+        mask.stroke = stroke;
+        mask.lastUse = ++clock_;
+        Build(mask);
+
+        constexpr size_t kBudget = 8u * 1024u * 1024u;
+        constexpr size_t kMaxMasks = 128;
+        const size_t bytes = mask.ByteSize();
+        if (bytes > kBudget) return nullptr;
+        while (!masks_.empty() &&
+               (masks_.size() >= kMaxMasks || bytes_ + bytes > kBudget)) {
+            auto oldest = std::min_element(
+                masks_.begin(), masks_.end(),
+                [](const Mask& left, const Mask& right) {
+                    return left.lastUse < right.lastUse;
+                });
+            bytes_ -= oldest->ByteSize();
+            masks_.erase(oldest);
+        }
+        bytes_ += bytes;
+        masks_.push_back(std::move(mask));
+        return &masks_.back();
+    }
+
+    void Clear()
+    {
+        masks_.clear();
+        bytes_ = 0;
+    }
+
+    size_t EntryCount() const { return masks_.size(); }
+    size_t ByteSize() const { return bytes_; }
+
+private:
+    static bool NearlyEqual(float left, float right)
+    {
+        return std::abs(left - right) < 1e-6f;
+    }
+
+    static bool Matches(
+        const Mask& mask,
+        int32_t width, int32_t height,
+        float originX, float originY,
+        float shapeWidth, float shapeHeight,
+        float topLeft, float topRight, float bottomRight, float bottomLeft,
+        float innerOffset, float innerWidth, float innerHeight,
+        float innerTopLeft, float innerTopRight,
+        float innerBottomRight, float innerBottomLeft,
+        bool stroke)
+    {
+        return mask.width == width && mask.height == height && mask.stroke == stroke &&
+            NearlyEqual(mask.originX, originX) && NearlyEqual(mask.originY, originY) &&
+            NearlyEqual(mask.shapeWidth, shapeWidth) &&
+            NearlyEqual(mask.shapeHeight, shapeHeight) &&
+            NearlyEqual(mask.topLeft, topLeft) && NearlyEqual(mask.topRight, topRight) &&
+            NearlyEqual(mask.bottomRight, bottomRight) &&
+            NearlyEqual(mask.bottomLeft, bottomLeft) &&
+            NearlyEqual(mask.innerOffset, innerOffset) &&
+            NearlyEqual(mask.innerWidth, innerWidth) &&
+            NearlyEqual(mask.innerHeight, innerHeight) &&
+            NearlyEqual(mask.innerTopLeft, innerTopLeft) &&
+            NearlyEqual(mask.innerTopRight, innerTopRight) &&
+            NearlyEqual(mask.innerBottomRight, innerBottomRight) &&
+            NearlyEqual(mask.innerBottomLeft, innerBottomLeft);
+    }
+
+    static bool InsideRoundedRect(
+        float x, float y, float width, float height,
+        float topLeft, float topRight, float bottomRight, float bottomLeft)
+    {
+        if (x < 0.0f || x > width || y < 0.0f || y > height) return false;
+        if (topLeft > 0.0f && x < topLeft && y < topLeft) {
+            const float dx = (x - topLeft) / topLeft;
+            const float dy = (y - topLeft) / topLeft;
+            return dx * dx + dy * dy <= 1.0f;
+        }
+        if (topRight > 0.0f && x > width - topRight && y < topRight) {
+            const float dx = (x - (width - topRight)) / topRight;
+            const float dy = (y - topRight) / topRight;
+            return dx * dx + dy * dy <= 1.0f;
+        }
+        if (bottomRight > 0.0f && x > width - bottomRight && y > height - bottomRight) {
+            const float dx = (x - (width - bottomRight)) / bottomRight;
+            const float dy = (y - (height - bottomRight)) / bottomRight;
+            return dx * dx + dy * dy <= 1.0f;
+        }
+        if (bottomLeft > 0.0f && x < bottomLeft && y > height - bottomLeft) {
+            const float dx = (x - bottomLeft) / bottomLeft;
+            const float dy = (y - (height - bottomLeft)) / bottomLeft;
+            return dx * dx + dy * dy <= 1.0f;
+        }
+        return true;
+    }
+
+    static void Build(Mask& mask)
+    {
+        constexpr int kSub = 4;
+        constexpr float kStep = 1.0f / static_cast<float>(kSub);
+        mask.spans.reserve(static_cast<size_t>(mask.height) * 8u);
+        for (int32_t py = 0; py < mask.height; ++py) {
+            int32_t runStart = 0;
+            int runHits = -1;
+            auto flushRun = [&](int32_t runEnd) {
+                if (runHits <= 0 || runEnd <= runStart) return;
+                mask.spans.push_back({
+                    py, runStart, runEnd - runStart,
+                    static_cast<uint8_t>(runHits)
+                });
+            };
+            for (int32_t px = 0; px < mask.width; ++px) {
+                int hits = 0;
+                for (int sy = 0; sy < kSub; ++sy) {
+                    const float y = static_cast<float>(py) +
+                        (sy + 0.5f) * kStep - mask.originY;
+                    for (int sx = 0; sx < kSub; ++sx) {
+                        const float x = static_cast<float>(px) +
+                            (sx + 0.5f) * kStep - mask.originX;
+                        if (!InsideRoundedRect(
+                                x, y, mask.shapeWidth, mask.shapeHeight,
+                                mask.topLeft, mask.topRight,
+                                mask.bottomRight, mask.bottomLeft)) continue;
+                        const bool insideInner = mask.stroke &&
+                            mask.innerWidth > 0.0f && mask.innerHeight > 0.0f &&
+                            InsideRoundedRect(
+                                x - mask.innerOffset, y - mask.innerOffset,
+                                mask.innerWidth, mask.innerHeight,
+                                mask.innerTopLeft, mask.innerTopRight,
+                                mask.innerBottomRight, mask.innerBottomLeft);
+                        if (!insideInner) ++hits;
+                    }
+                }
+                if (hits != runHits) {
+                    flushRun(px);
+                    runStart = px;
+                    runHits = hits;
+                }
+            }
+            flushRun(mask.width);
+        }
+    }
+
+    std::vector<Mask> masks_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+class SoftwareEllipticalRoundedRectMaskCache {
+public:
+    struct Mask {
+        int32_t width = 0;
+        int32_t height = 0;
+        float originX = 0.0f;
+        float originY = 0.0f;
+        float shapeWidth = 0.0f;
+        float shapeHeight = 0.0f;
+        float radiusX = 0.0f;
+        float radiusY = 0.0f;
+        std::vector<SoftwareCoverageSpan> spans;
+        uint64_t lastUse = 0;
+
+        size_t ByteSize() const
+        {
+            return sizeof(Mask) + spans.capacity() * sizeof(SoftwareCoverageSpan);
+        }
+    };
+
+    const Mask* GetOrBuild(
+        int32_t width, int32_t height,
+        float originX, float originY,
+        float shapeWidth, float shapeHeight,
+        float radiusX, float radiusY)
+    {
+        for (auto& mask : masks_) {
+            if (mask.width == width && mask.height == height &&
+                NearlyEqual(mask.originX, originX) &&
+                NearlyEqual(mask.originY, originY) &&
+                NearlyEqual(mask.shapeWidth, shapeWidth) &&
+                NearlyEqual(mask.shapeHeight, shapeHeight) &&
+                NearlyEqual(mask.radiusX, radiusX) &&
+                NearlyEqual(mask.radiusY, radiusY)) {
+                mask.lastUse = ++clock_;
+                return &mask;
+            }
+        }
+
+        Mask mask;
+        mask.width = width;
+        mask.height = height;
+        mask.originX = originX;
+        mask.originY = originY;
+        mask.shapeWidth = shapeWidth;
+        mask.shapeHeight = shapeHeight;
+        mask.radiusX = radiusX;
+        mask.radiusY = radiusY;
+        mask.lastUse = ++clock_;
+        Build(mask);
+
+        constexpr size_t kBudget = 8u * 1024u * 1024u;
+        constexpr size_t kMaxMasks = 128;
+        const size_t bytes = mask.ByteSize();
+        if (bytes > kBudget) return nullptr;
+        while (!masks_.empty() &&
+               (masks_.size() >= kMaxMasks || bytes_ + bytes > kBudget)) {
+            auto oldest = std::min_element(
+                masks_.begin(), masks_.end(),
+                [](const Mask& left, const Mask& right) {
+                    return left.lastUse < right.lastUse;
+                });
+            bytes_ -= oldest->ByteSize();
+            masks_.erase(oldest);
+        }
+        bytes_ += bytes;
+        masks_.push_back(std::move(mask));
+        return &masks_.back();
+    }
+
+    void Clear()
+    {
+        masks_.clear();
+        bytes_ = 0;
+    }
+
+    size_t EntryCount() const { return masks_.size(); }
+    size_t ByteSize() const { return bytes_; }
+
+private:
+    static bool NearlyEqual(float left, float right)
+    {
+        return std::abs(left - right) < 1e-6f;
+    }
+
+    static bool Contains(const Mask& mask, float x, float y)
+    {
+        if (x < 0.0f || x > mask.shapeWidth ||
+            y < 0.0f || y > mask.shapeHeight) return false;
+        if (mask.radiusX <= 0.0f || mask.radiusY <= 0.0f) return true;
+        if (x < mask.radiusX && y < mask.radiusY) {
+            const float dx = (x - mask.radiusX) / mask.radiusX;
+            const float dy = (y - mask.radiusY) / mask.radiusY;
+            return dx * dx + dy * dy <= 1.0f;
+        }
+        if (x > mask.shapeWidth - mask.radiusX && y < mask.radiusY) {
+            const float dx =
+                (x - (mask.shapeWidth - mask.radiusX)) / mask.radiusX;
+            const float dy = (y - mask.radiusY) / mask.radiusY;
+            return dx * dx + dy * dy <= 1.0f;
+        }
+        if (x < mask.radiusX && y > mask.shapeHeight - mask.radiusY) {
+            const float dx = (x - mask.radiusX) / mask.radiusX;
+            const float dy =
+                (y - (mask.shapeHeight - mask.radiusY)) / mask.radiusY;
+            return dx * dx + dy * dy <= 1.0f;
+        }
+        if (x > mask.shapeWidth - mask.radiusX &&
+            y > mask.shapeHeight - mask.radiusY) {
+            const float dx =
+                (x - (mask.shapeWidth - mask.radiusX)) / mask.radiusX;
+            const float dy =
+                (y - (mask.shapeHeight - mask.radiusY)) / mask.radiusY;
+            return dx * dx + dy * dy <= 1.0f;
+        }
+        return true;
+    }
+
+    static void Build(Mask& mask)
+    {
+        constexpr int kSub = 4;
+        constexpr float kStep = 1.0f / static_cast<float>(kSub);
+        mask.spans.reserve(static_cast<size_t>(mask.height) * 8u);
+        for (int32_t py = 0; py < mask.height; ++py) {
+            int32_t runStart = 0;
+            int runHits = -1;
+            auto flushRun = [&](int32_t runEnd) {
+                if (runHits > 0 && runEnd > runStart) {
+                    mask.spans.push_back({
+                        py, runStart, runEnd - runStart,
+                        static_cast<uint8_t>(runHits) });
+                }
+            };
+            for (int32_t px = 0; px < mask.width; ++px) {
+                int hits = 0;
+                for (int sy = 0; sy < kSub; ++sy) {
+                    const float localY = static_cast<float>(py) +
+                        (sy + 0.5f) * kStep - mask.originY;
+                    for (int sx = 0; sx < kSub; ++sx) {
+                        const float localX = static_cast<float>(px) +
+                            (sx + 0.5f) * kStep - mask.originX;
+                        if (Contains(mask, localX, localY)) ++hits;
+                    }
+                }
+                if (hits != runHits) {
+                    flushRun(px);
+                    runStart = px;
+                    runHits = hits;
+                }
+            }
+            flushRun(mask.width);
+        }
+    }
+
+    std::vector<Mask> masks_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+class SoftwarePathRasterCache {
+public:
+    struct Entry {
+        float startX = 0.0f;
+        float startY = 0.0f;
+        float transform[6] = {};
+        int32_t fillRule = 0;
+        bool stroke = false;
+        float strokeWidth = 0.0f;
+        bool closed = false;
+        int32_t lineJoin = 0;
+        float miterLimit = 0.0f;
+        int32_t lineCap = 0;
+        float dashOffset = 0.0f;
+        std::vector<float> commands;
+        std::vector<float> dashPattern;
+        std::vector<PixelRect> rects;
+        uint64_t lastUse = 0;
+
+        size_t ByteSize() const
+        {
+            return sizeof(Entry) + commands.capacity() * sizeof(float) +
+                dashPattern.capacity() * sizeof(float) +
+                rects.capacity() * sizeof(PixelRect);
+        }
+    };
+
+    const Entry* Find(
+        float startX, float startY,
+        const float* commands, uint32_t commandLength,
+        const SoftwareTransform& transform, int32_t fillRule)
+    {
+        for (auto& entry : entries_) {
+            if (entry.stroke || entry.startX != startX || entry.startY != startY ||
+                entry.fillRule != fillRule ||
+                entry.commands.size() != commandLength ||
+                std::memcmp(entry.transform, transform.m, sizeof(entry.transform)) != 0) {
+                continue;
+            }
+            if (commandLength > 0 &&
+                std::memcmp(entry.commands.data(), commands,
+                    static_cast<size_t>(commandLength) * sizeof(float)) != 0) {
+                continue;
+            }
+            entry.lastUse = ++clock_;
+            return &entry;
+        }
+        return nullptr;
+    }
+
+    const Entry* Store(
+        float startX, float startY,
+        const float* commands, uint32_t commandLength,
+        const SoftwareTransform& transform, int32_t fillRule,
+        std::vector<PixelRect> rects)
+    {
+        Entry entry;
+        entry.startX = startX;
+        entry.startY = startY;
+        std::memcpy(entry.transform, transform.m, sizeof(entry.transform));
+        entry.fillRule = fillRule;
+        entry.stroke = false;
+        if (commandLength > 0) {
+            entry.commands.assign(commands, commands + commandLength);
+        }
+        entry.rects = std::move(rects);
+        entry.lastUse = ++clock_;
+
+        constexpr size_t kBudget = 16u * 1024u * 1024u;
+        constexpr size_t kMaxEntries = 256;
+        const size_t bytes = entry.ByteSize();
+        if (bytes > kBudget) return nullptr;
+        while (!entries_.empty() &&
+               (entries_.size() >= kMaxEntries || bytes_ + bytes > kBudget)) {
+            auto oldest = std::min_element(
+                entries_.begin(), entries_.end(),
+                [](const Entry& left, const Entry& right) {
+                    return left.lastUse < right.lastUse;
+                });
+            bytes_ -= oldest->ByteSize();
+            entries_.erase(oldest);
+        }
+        bytes_ += bytes;
+        entries_.push_back(std::move(entry));
+        return &entries_.back();
+    }
+
+    const Entry* FindStroke(
+        float startX, float startY,
+        const float* commands, uint32_t commandLength,
+        const SoftwareTransform& transform,
+        float strokeWidth, bool closed, int32_t lineJoin,
+        float miterLimit, int32_t lineCap,
+        const float* dashPattern, uint32_t dashCount, float dashOffset)
+    {
+        for (auto& entry : entries_) {
+            if (!entry.stroke || entry.startX != startX || entry.startY != startY ||
+                entry.strokeWidth != strokeWidth || entry.closed != closed ||
+                entry.lineJoin != lineJoin || entry.miterLimit != miterLimit ||
+                entry.lineCap != lineCap || entry.dashOffset != dashOffset ||
+                entry.commands.size() != commandLength ||
+                entry.dashPattern.size() != dashCount ||
+                std::memcmp(entry.transform, transform.m, sizeof(entry.transform)) != 0) {
+                continue;
+            }
+            if (commandLength > 0 &&
+                std::memcmp(entry.commands.data(), commands,
+                    static_cast<size_t>(commandLength) * sizeof(float)) != 0) continue;
+            if (dashCount > 0 &&
+                std::memcmp(entry.dashPattern.data(), dashPattern,
+                    static_cast<size_t>(dashCount) * sizeof(float)) != 0) continue;
+            entry.lastUse = ++clock_;
+            return &entry;
+        }
+        return nullptr;
+    }
+
+    const Entry* StoreStroke(
+        float startX, float startY,
+        const float* commands, uint32_t commandLength,
+        const SoftwareTransform& transform,
+        float strokeWidth, bool closed, int32_t lineJoin,
+        float miterLimit, int32_t lineCap,
+        const float* dashPattern, uint32_t dashCount, float dashOffset,
+        std::vector<PixelRect> rects)
+    {
+        Entry entry;
+        entry.startX = startX;
+        entry.startY = startY;
+        std::memcpy(entry.transform, transform.m, sizeof(entry.transform));
+        entry.stroke = true;
+        entry.strokeWidth = strokeWidth;
+        entry.closed = closed;
+        entry.lineJoin = lineJoin;
+        entry.miterLimit = miterLimit;
+        entry.lineCap = lineCap;
+        entry.dashOffset = dashOffset;
+        if (commandLength > 0)
+            entry.commands.assign(commands, commands + commandLength);
+        if (dashCount > 0)
+            entry.dashPattern.assign(dashPattern, dashPattern + dashCount);
+        entry.rects = std::move(rects);
+        entry.lastUse = ++clock_;
+        return Insert(std::move(entry));
+    }
+
+    void Clear()
+    {
+        entries_.clear();
+        bytes_ = 0;
+    }
+
+    size_t EntryCount() const { return entries_.size(); }
+    size_t ByteSize() const { return bytes_; }
+
+private:
+    const Entry* Insert(Entry entry)
+    {
+        constexpr size_t kBudget = 16u * 1024u * 1024u;
+        constexpr size_t kMaxEntries = 256;
+        const size_t bytes = entry.ByteSize();
+        if (bytes > kBudget) return nullptr;
+        while (!entries_.empty() &&
+               (entries_.size() >= kMaxEntries || bytes_ + bytes > kBudget)) {
+            auto oldest = std::min_element(
+                entries_.begin(), entries_.end(),
+                [](const Entry& left, const Entry& right) {
+                    return left.lastUse < right.lastUse;
+                });
+            bytes_ -= oldest->ByteSize();
+            entries_.erase(oldest);
+        }
+        bytes_ += bytes;
+        entries_.push_back(std::move(entry));
+        return &entries_.back();
+    }
+
+    std::vector<Entry> entries_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+class SoftwareLineRasterCache {
+public:
+    struct Span {
+        int32_t y = 0;
+        int32_t x = 0;
+        int32_t width = 0;
+        float coverage = 0.0f;
+    };
+
+    struct Entry {
+        float x1 = 0.0f;
+        float y1 = 0.0f;
+        float x2 = 0.0f;
+        float y2 = 0.0f;
+        float halfWidth = 0.0f;
+        int32_t targetWidth = 0;
+        int32_t targetHeight = 0;
+        std::vector<Span> spans;
+        uint64_t lastUse = 0;
+
+        size_t ByteSize() const
+        {
+            return sizeof(Entry) + spans.capacity() * sizeof(Span);
+        }
+    };
+
+    const Entry* Find(
+        float x1, float y1, float x2, float y2, float halfWidth,
+        int32_t targetWidth, int32_t targetHeight)
+    {
+        for (auto& entry : entries_) {
+            if (entry.x1 != x1 || entry.y1 != y1 ||
+                entry.x2 != x2 || entry.y2 != y2 ||
+                entry.halfWidth != halfWidth ||
+                entry.targetWidth != targetWidth ||
+                entry.targetHeight != targetHeight) continue;
+            entry.lastUse = ++clock_;
+            return &entry;
+        }
+        return nullptr;
+    }
+
+    const Entry* Store(Entry entry)
+    {
+        constexpr size_t kBudget = 8u * 1024u * 1024u;
+        constexpr size_t kMaxEntries = 512;
+        entry.lastUse = ++clock_;
+        const size_t bytes = entry.ByteSize();
+        if (bytes > kBudget) return nullptr;
+        while (!entries_.empty() &&
+               (entries_.size() >= kMaxEntries || bytes_ + bytes > kBudget)) {
+            auto oldest = std::min_element(
+                entries_.begin(), entries_.end(),
+                [](const Entry& left, const Entry& right) {
+                    return left.lastUse < right.lastUse;
+                });
+            bytes_ -= oldest->ByteSize();
+            entries_.erase(oldest);
+        }
+        bytes_ += bytes;
+        entries_.push_back(std::move(entry));
+        return &entries_.back();
+    }
+
+    void Clear()
+    {
+        entries_.clear();
+        bytes_ = 0;
+    }
+
+    size_t EntryCount() const { return entries_.size(); }
+    size_t ByteSize() const { return bytes_; }
+
+private:
+    std::vector<Entry> entries_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+class SoftwareTextMaskCache {
+public:
+    struct CoverageRun {
+        int32_t y = 0;
+        int32_t x = 0;
+        int32_t width = 0;
+    };
+
+    struct Key {
+        std::wstring text;
+        std::wstring fontFamily;
+        int32_t pixelWidth = 0;
+        int32_t pixelHeight = 0;
+        int32_t fontHeight = 0;
+        int32_t fontWeight = 0;
+        int32_t fontStyle = 0;
+        int32_t alignment = 0;
+
+        bool operator==(const Key& other) const
+        {
+            return pixelWidth == other.pixelWidth && pixelHeight == other.pixelHeight &&
+                fontHeight == other.fontHeight && fontWeight == other.fontWeight &&
+                fontStyle == other.fontStyle && alignment == other.alignment &&
+                text == other.text && fontFamily == other.fontFamily;
+        }
+    };
+
+    struct KeyView {
+        std::wstring_view text;
+        std::wstring_view fontFamily;
+        int32_t pixelWidth = 0;
+        int32_t pixelHeight = 0;
+        int32_t fontHeight = 0;
+        int32_t fontWeight = 0;
+        int32_t fontStyle = 0;
+        int32_t alignment = 0;
+    };
+
+    struct KeyHash {
+        using is_transparent = void;
+
+        size_t operator()(const Key& key) const
+        {
+            return Hash(
+                key.text, key.fontFamily,
+                key.pixelWidth, key.pixelHeight, key.fontHeight,
+                key.fontWeight, key.fontStyle, key.alignment);
+        }
+
+        size_t operator()(const KeyView& key) const
+        {
+            return Hash(
+                key.text, key.fontFamily,
+                key.pixelWidth, key.pixelHeight, key.fontHeight,
+                key.fontWeight, key.fontStyle, key.alignment);
+        }
+
+    private:
+        static size_t Hash(
+            std::wstring_view text,
+            std::wstring_view fontFamily,
+            int32_t pixelWidth,
+            int32_t pixelHeight,
+            int32_t fontHeight,
+            int32_t fontWeight,
+            int32_t fontStyle,
+            int32_t alignment)
+        {
+            size_t hash = std::hash<std::wstring_view>{}(text);
+            auto combine = [&](size_t value) {
+                hash ^= value + static_cast<size_t>(0x9e3779b9u) +
+                    (hash << 6) + (hash >> 2);
+            };
+            combine(std::hash<std::wstring_view>{}(fontFamily));
+            combine(std::hash<int32_t>{}(pixelWidth));
+            combine(std::hash<int32_t>{}(pixelHeight));
+            combine(std::hash<int32_t>{}(fontHeight));
+            combine(std::hash<int32_t>{}(fontWeight));
+            combine(std::hash<int32_t>{}(fontStyle));
+            combine(std::hash<int32_t>{}(alignment));
+            return hash;
+        }
+    };
+
+    struct KeyEqual {
+        using is_transparent = void;
+
+        bool operator()(const Key& left, const Key& right) const
+        {
+            return left == right;
+        }
+
+        bool operator()(const Key& left, const KeyView& right) const
+        {
+            return Equals(left, right);
+        }
+
+        bool operator()(const KeyView& left, const Key& right) const
+        {
+            return Equals(right, left);
+        }
+
+    private:
+        static bool Equals(const Key& left, const KeyView& right)
+        {
+            return left.pixelWidth == right.pixelWidth &&
+                left.pixelHeight == right.pixelHeight &&
+                left.fontHeight == right.fontHeight &&
+                left.fontWeight == right.fontWeight &&
+                left.fontStyle == right.fontStyle &&
+                left.alignment == right.alignment &&
+                std::wstring_view(left.text) == right.text &&
+                std::wstring_view(left.fontFamily) == right.fontFamily;
+        }
+    };
+
+    struct Entry {
+        int32_t x = 0;
+        int32_t y = 0;
+        int32_t width = 0;
+        int32_t height = 0;
+        std::vector<uint16_t> channelSums;
+        std::vector<CoverageRun> coverageRuns;
+        uint64_t cacheId = 0;
+        uint64_t lastUse = 0;
+
+        size_t ByteSize() const
+        {
+            return channelSums.capacity() * sizeof(uint16_t) +
+                coverageRuns.capacity() * sizeof(CoverageRun) + sizeof(Entry);
+        }
+    };
+
+    Entry* Find(const KeyView& key)
+    {
+#if defined(__cpp_lib_generic_unordered_lookup) && \
+    __cpp_lib_generic_unordered_lookup >= 201811L
+        auto iterator = entries_.find(key);
+#else
+        // Heterogeneous unordered lookup was standardized in C++20, but the
+        // Ubuntu 20.04 baseline ships libstdc++ 9 without that overload. Keep
+        // the lookup allocation-free on that baseline instead of materializing
+        // two temporary std::wstring instances for every text draw.
+        const KeyEqual equals;
+        auto iterator = std::find_if(
+            entries_.begin(), entries_.end(),
+            [&](const auto& candidate) { return equals(candidate.first, key); });
+#endif
+        if (iterator == entries_.end()) return nullptr;
+        iterator->second.lastUse = ++clock_;
+        return &iterator->second;
+    }
+
+    void Insert(Key key, Entry entry)
+    {
+        constexpr size_t kBudget = 32u * 1024u * 1024u;
+        entry.cacheId = ++nextCacheId_;
+        entry.lastUse = ++clock_;
+        const size_t entryBytes = entry.ByteSize();
+        auto existing = entries_.find(key);
+        if (existing != entries_.end()) {
+            bytes_ -= existing->second.ByteSize();
+            entries_.erase(existing);
+        }
+        while (!entries_.empty() && bytes_ + entryBytes > kBudget) {
+            auto oldest = entries_.begin();
+            for (auto iterator = std::next(entries_.begin());
+                 iterator != entries_.end(); ++iterator) {
+                if (iterator->second.lastUse < oldest->second.lastUse) oldest = iterator;
+            }
+            bytes_ -= oldest->second.ByteSize();
+            entries_.erase(oldest);
+        }
+        if (entryBytes > kBudget) return;
+        bytes_ += entryBytes;
+        entries_.emplace(std::move(key), std::move(entry));
+    }
+
+    void Clear()
+    {
+        entries_.clear();
+        bytes_ = 0;
+    }
+
+    size_t EntryCount() const { return entries_.size(); }
+    size_t ByteSize() const { return bytes_; }
+
+private:
+    std::unordered_map<Key, Entry, KeyHash, KeyEqual> entries_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+    uint64_t nextCacheId_ = 0;
+};
+
+class SoftwareTextCompositeCache {
+public:
+    struct Entry {
+        uint64_t maskId = 0;
+        uint8_t red = 0;
+        uint8_t green = 0;
+        uint8_t blue = 0;
+        uint8_t alpha = 0;
+        float phaseX = 0.0f;
+        float phaseY = 0.0f;
+        int32_t x = 0;
+        int32_t y = 0;
+        int32_t width = 0;
+        int32_t height = 0;
+        bool hasClip = false;
+        SoftwareClipRect clip{};
+        std::vector<SoftwareClipRect> roundedClips;
+        std::vector<uint8_t> contextPixels;
+        std::vector<uint8_t> outputPixels;
+        uint64_t lastUse = 0;
+
+        size_t ByteSize() const
+        {
+            return sizeof(Entry) +
+                roundedClips.capacity() * sizeof(SoftwareClipRect) +
+                contextPixels.capacity() + outputPixels.capacity();
+        }
+    };
+
+    bool TryApply(
+        uint64_t maskId,
+        uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha,
+        float phaseX, float phaseY,
+        int32_t x, int32_t y, int32_t width, int32_t height,
+        const SoftwareClipRect* clip,
+        const std::vector<SoftwareClipRect>& roundedClips,
+        SoftwareFramebuffer& framebuffer)
+    {
+        if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
+            x + width > framebuffer.width || y + height > framebuffer.height)
+            return false;
+        const size_t rowBytes = static_cast<size_t>(width) * 4u;
+        const size_t bytes = rowBytes * static_cast<size_t>(height);
+        for (auto& entry : entries_) {
+            if (entry.maskId != maskId || entry.red != red ||
+                entry.green != green || entry.blue != blue || entry.alpha != alpha ||
+                entry.phaseX != phaseX || entry.phaseY != phaseY ||
+                entry.x != x || entry.y != y || entry.width != width ||
+                entry.height != height || entry.hasClip != (clip != nullptr) ||
+                (clip && !ClipEquals(entry.clip, *clip)) ||
+                !RoundedClipsEqual(entry.roundedClips, roundedClips) ||
+                entry.contextPixels.size() != bytes ||
+                entry.outputPixels.size() != bytes) continue;
+
+            bool matches = true;
+            for (int32_t row = 0; row < height; ++row) {
+                const uint8_t* current = framebuffer.pixels.data() +
+                    (static_cast<size_t>(y + row) * framebuffer.width + x) * 4u;
+                const uint8_t* expected = entry.contextPixels.data() +
+                    static_cast<size_t>(row) * rowBytes;
+                if (std::memcmp(current, expected, rowBytes) != 0) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (!matches) continue;
+
+            for (int32_t row = 0; row < height; ++row) {
+                uint8_t* destination = framebuffer.pixels.data() +
+                    (static_cast<size_t>(y + row) * framebuffer.width + x) * 4u;
+                const uint8_t* source = entry.outputPixels.data() +
+                    static_cast<size_t>(row) * rowBytes;
+                std::memcpy(destination, source, rowBytes);
+            }
+            entry.lastUse = ++clock_;
+            return true;
+        }
+        return false;
+    }
+
+    void Store(Entry entry)
+    {
+        constexpr size_t kBudget = 16u * 1024u * 1024u;
+        constexpr size_t kMaxEntries = 1024;
+        entry.lastUse = ++clock_;
+        const size_t bytes = entry.ByteSize();
+        if (bytes > kBudget) return;
+        while (!entries_.empty() &&
+               (entries_.size() >= kMaxEntries || bytes_ + bytes > kBudget)) {
+            auto oldest = std::min_element(
+                entries_.begin(), entries_.end(),
+                [](const Entry& left, const Entry& right) {
+                    return left.lastUse < right.lastUse;
+                });
+            bytes_ -= oldest->ByteSize();
+            entries_.erase(oldest);
+        }
+        bytes_ += bytes;
+        entries_.push_back(std::move(entry));
+    }
+
+    void Clear()
+    {
+        entries_.clear();
+        bytes_ = 0;
+    }
+
+    size_t EntryCount() const { return entries_.size(); }
+    size_t ByteSize() const { return bytes_; }
+
+private:
+    static bool ClipEquals(
+        const SoftwareClipRect& left, const SoftwareClipRect& right)
+    {
+        return left.x == right.x && left.y == right.y &&
+            left.w == right.w && left.h == right.h &&
+            left.radiusTL == right.radiusTL && left.radiusTR == right.radiusTR &&
+            left.radiusBR == right.radiusBR && left.radiusBL == right.radiusBL &&
+            left.rx == right.rx && left.ry == right.ry &&
+            left.ownsRounded == right.ownsRounded;
+    }
+
+    static bool RoundedClipsEqual(
+        const std::vector<SoftwareClipRect>& left,
+        const std::vector<SoftwareClipRect>& right)
+    {
+        if (left.size() != right.size()) return false;
+        for (size_t index = 0; index < left.size(); ++index) {
+            if (!ClipEquals(left[index], right[index])) return false;
+        }
+        return true;
+    }
+
+    std::vector<Entry> entries_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+class SoftwareBackdropCache {
+public:
+    struct Entry {
+        JaliumBackdropMaterialDesc descriptor{};
+        float transform[6] = {};
+        float ambientOpacity = 1.0f;
+        bool hasClip = false;
+        SoftwareClipRect clip{};
+        int32_t panelX = 0;
+        int32_t panelY = 0;
+        int32_t panelWidth = 0;
+        int32_t panelHeight = 0;
+        std::vector<uint8_t> sourcePixels;
+        std::vector<uint8_t> outputPixels;
+        uint64_t lastUse = 0;
+
+        size_t ByteSize() const
+        {
+            return sourcePixels.capacity() + outputPixels.capacity() + sizeof(Entry);
+        }
+    };
+
+    Entry* Find(
+        const JaliumBackdropMaterialDesc& descriptor,
+        const SoftwareTransform& transform,
+        float ambientOpacity,
+        const SoftwareClipRect* clip,
+        const std::vector<uint8_t>& sourcePixels)
+    {
+        for (auto& entry : entries_) {
+            if (std::memcmp(&entry.descriptor, &descriptor, sizeof(descriptor)) != 0 ||
+                std::memcmp(entry.transform, transform.m, sizeof(entry.transform)) != 0 ||
+                entry.ambientOpacity != ambientOpacity ||
+                entry.hasClip != (clip != nullptr) ||
+                (clip && !ClipEquals(entry.clip, *clip)) ||
+                entry.sourcePixels.size() != sourcePixels.size()) {
+                continue;
+            }
+            if (!sourcePixels.empty() &&
+                std::memcmp(entry.sourcePixels.data(), sourcePixels.data(), sourcePixels.size()) != 0) {
+                continue;
+            }
+            entry.lastUse = ++clock_;
+            return &entry;
+        }
+        return nullptr;
+    }
+
+    void Store(Entry entry)
+    {
+        constexpr size_t kBudget = 24u * 1024u * 1024u;
+        constexpr size_t kMaxEntries = 16;
+        entry.lastUse = ++clock_;
+        const size_t bytes = entry.ByteSize();
+        if (bytes > kBudget) return;
+        while (!entries_.empty() &&
+               (entries_.size() >= kMaxEntries || bytes_ + bytes > kBudget)) {
+            auto oldest = std::min_element(
+                entries_.begin(), entries_.end(),
+                [](const Entry& left, const Entry& right) {
+                    return left.lastUse < right.lastUse;
+                });
+            bytes_ -= oldest->ByteSize();
+            entries_.erase(oldest);
+        }
+        bytes_ += bytes;
+        entries_.push_back(std::move(entry));
+    }
+
+    void Clear()
+    {
+        entries_.clear();
+        bytes_ = 0;
+    }
+
+    size_t EntryCount() const { return entries_.size(); }
+    size_t ByteSize() const { return bytes_; }
+
+private:
+    static bool ClipEquals(const SoftwareClipRect& left, const SoftwareClipRect& right)
+    {
+        return left.x == right.x && left.y == right.y &&
+            left.w == right.w && left.h == right.h &&
+            left.radiusTL == right.radiusTL && left.radiusTR == right.radiusTR &&
+            left.radiusBR == right.radiusBR && left.radiusBL == right.radiusBL &&
+            left.ownsRounded == right.ownsRounded;
+    }
+
+    std::vector<Entry> entries_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+class SoftwareEffectResultCache {
+public:
+    struct Entry {
+        std::vector<uint8_t> key;
+        std::vector<uint8_t> sourcePixels;
+        std::vector<uint8_t> contextPixels;
+        std::vector<uint8_t> outputPixels;
+        std::weak_ptr<const SoftwareGradientRaster> gradientRaster;
+        std::weak_ptr<const SoftwareScaledBitmap> scaledBitmap;
+        int32_t panelX = 0;
+        int32_t panelY = 0;
+        int32_t panelWidth = 0;
+        int32_t panelHeight = 0;
+        uint64_t lastUse = 0;
+
+        size_t ByteSize() const
+        {
+            return key.capacity() + sourcePixels.capacity() + contextPixels.capacity() +
+                outputPixels.capacity() + sizeof(Entry);
+        }
+    };
+
+    Entry* Find(
+        const std::vector<uint8_t>& key,
+        const std::vector<uint8_t>& sourcePixels)
+    {
+        for (auto& entry : entries_) {
+            if (entry.key != key || entry.sourcePixels.size() != sourcePixels.size()) continue;
+            if (!sourcePixels.empty() &&
+                std::memcmp(entry.sourcePixels.data(), sourcePixels.data(), sourcePixels.size()) != 0) {
+                continue;
+            }
+            entry.lastUse = ++clock_;
+            ++hits_;
+            return &entry;
+        }
+        ++misses_;
+        return nullptr;
+    }
+
+    Entry* FindComposited(
+        const std::vector<uint8_t>& key,
+        const std::vector<uint8_t>& sourcePixels,
+        const SoftwareFramebuffer& context,
+        int32_t panelX, int32_t panelY,
+        int32_t panelWidth, int32_t panelHeight)
+    {
+        if (panelX < 0 || panelY < 0 || panelWidth <= 0 || panelHeight <= 0 ||
+            panelX + panelWidth > context.width ||
+            panelY + panelHeight > context.height) {
+            ++misses_;
+            return nullptr;
+        }
+        const size_t rowBytes = static_cast<size_t>(panelWidth) * 4u;
+        const size_t expectedBytes = rowBytes * static_cast<size_t>(panelHeight);
+        for (auto& entry : entries_) {
+            if (entry.key != key || entry.panelX != panelX || entry.panelY != panelY ||
+                entry.panelWidth != panelWidth || entry.panelHeight != panelHeight ||
+                entry.sourcePixels.size() != sourcePixels.size() ||
+                entry.contextPixels.size() != expectedBytes ||
+                entry.outputPixels.size() != expectedBytes) continue;
+            if (!sourcePixels.empty() &&
+                std::memcmp(entry.sourcePixels.data(), sourcePixels.data(),
+                    sourcePixels.size()) != 0) continue;
+
+            bool contextMatches = true;
+            for (int32_t row = 0; row < panelHeight; ++row) {
+                const uint8_t* current = context.pixels.data() +
+                    (static_cast<size_t>(panelY + row) * context.width + panelX) * 4u;
+                const uint8_t* cached = entry.contextPixels.data() +
+                    static_cast<size_t>(row) * rowBytes;
+                if (std::memcmp(current, cached, rowBytes) != 0) {
+                    contextMatches = false;
+                    break;
+                }
+            }
+            if (!contextMatches) continue;
+            entry.lastUse = ++clock_;
+            ++hits_;
+            return &entry;
+        }
+        ++misses_;
+        return nullptr;
+    }
+
+    Entry* FindGradientComposited(
+        const std::vector<uint8_t>& key,
+        const std::shared_ptr<const SoftwareGradientRaster>& raster,
+        const SoftwareFramebuffer& context,
+        int32_t panelX, int32_t panelY,
+        int32_t panelWidth, int32_t panelHeight)
+    {
+        if (!raster || panelX < 0 || panelY < 0 ||
+            panelWidth <= 0 || panelHeight <= 0 ||
+            panelX + panelWidth > context.width ||
+            panelY + panelHeight > context.height) {
+            ++misses_;
+            return nullptr;
+        }
+        const size_t rowBytes = static_cast<size_t>(panelWidth) * 4u;
+        const size_t expectedBytes = rowBytes * static_cast<size_t>(panelHeight);
+        for (auto& entry : entries_) {
+            auto cachedRaster = entry.gradientRaster.lock();
+            if (!cachedRaster || cachedRaster.get() != raster.get() ||
+                entry.key != key || entry.panelX != panelX || entry.panelY != panelY ||
+                entry.panelWidth != panelWidth || entry.panelHeight != panelHeight ||
+                entry.contextPixels.size() != expectedBytes ||
+                entry.outputPixels.size() != expectedBytes) continue;
+
+            bool contextMatches = true;
+            for (int32_t row = 0; row < panelHeight; ++row) {
+                const uint8_t* current = context.pixels.data() +
+                    (static_cast<size_t>(panelY + row) * context.width + panelX) * 4u;
+                const uint8_t* cached = entry.contextPixels.data() +
+                    static_cast<size_t>(row) * rowBytes;
+                if (std::memcmp(current, cached, rowBytes) != 0) {
+                    contextMatches = false;
+                    break;
+                }
+            }
+            if (!contextMatches) continue;
+            entry.lastUse = ++clock_;
+            ++hits_;
+            return &entry;
+        }
+        ++misses_;
+        return nullptr;
+    }
+
+    Entry* FindBitmapComposited(
+        const std::vector<uint8_t>& key,
+        const std::shared_ptr<const SoftwareScaledBitmap>& bitmap,
+        const SoftwareFramebuffer& context,
+        int32_t panelX, int32_t panelY,
+        int32_t panelWidth, int32_t panelHeight)
+    {
+        if (!bitmap || panelX < 0 || panelY < 0 ||
+            panelWidth <= 0 || panelHeight <= 0 ||
+            panelX + panelWidth > context.width ||
+            panelY + panelHeight > context.height) {
+            ++misses_;
+            return nullptr;
+        }
+        const size_t rowBytes = static_cast<size_t>(panelWidth) * 4u;
+        const size_t expectedBytes = rowBytes * static_cast<size_t>(panelHeight);
+        for (auto& entry : entries_) {
+            auto cachedBitmap = entry.scaledBitmap.lock();
+            if (!cachedBitmap || cachedBitmap.get() != bitmap.get() ||
+                entry.key != key || entry.panelX != panelX || entry.panelY != panelY ||
+                entry.panelWidth != panelWidth || entry.panelHeight != panelHeight ||
+                entry.contextPixels.size() != expectedBytes ||
+                entry.outputPixels.size() != expectedBytes) continue;
+
+            bool contextMatches = true;
+            for (int32_t row = 0; row < panelHeight; ++row) {
+                const uint8_t* current = context.pixels.data() +
+                    (static_cast<size_t>(panelY + row) * context.width + panelX) * 4u;
+                const uint8_t* cached = entry.contextPixels.data() +
+                    static_cast<size_t>(row) * rowBytes;
+                if (std::memcmp(current, cached, rowBytes) != 0) {
+                    contextMatches = false;
+                    break;
+                }
+            }
+            if (!contextMatches) continue;
+            entry.lastUse = ++clock_;
+            ++hits_;
+            return &entry;
+        }
+        ++misses_;
+        return nullptr;
+    }
+
+    void Store(Entry entry)
+    {
+        constexpr size_t kBudget = 32u * 1024u * 1024u;
+        constexpr size_t kMaxEntries = 32;
+        entry.lastUse = ++clock_;
+        const size_t bytes = entry.ByteSize();
+        if (bytes > kBudget) return;
+        while (!entries_.empty() &&
+               (entries_.size() >= kMaxEntries || bytes_ + bytes > kBudget)) {
+            auto oldest = std::min_element(
+                entries_.begin(), entries_.end(),
+                [](const Entry& left, const Entry& right) {
+                    return left.lastUse < right.lastUse;
+                });
+            bytes_ -= oldest->ByteSize();
+            entries_.erase(oldest);
+        }
+        bytes_ += bytes;
+        entries_.push_back(std::move(entry));
+    }
+
+    void Clear()
+    {
+        entries_.clear();
+        bytes_ = 0;
+        hits_ = 0;
+        misses_ = 0;
+    }
+
+    size_t EntryCount() const { return entries_.size(); }
+    size_t ByteSize() const { return bytes_; }
+    uint64_t Hits() const { return hits_; }
+    uint64_t Misses() const { return misses_; }
+
+private:
+    std::vector<Entry> entries_;
+    size_t bytes_ = 0;
+    uint64_t clock_ = 0;
+    uint64_t hits_ = 0;
+    uint64_t misses_ = 0;
+};
+
 // ============================================================================
 // Utility
 // ============================================================================
 
 static inline uint8_t FloatToU8(float v) {
     return (uint8_t)(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
+}
+
+static uint8_t TextMaskAlpha(uint16_t channelSum, uint8_t paintAlpha)
+{
+    // GDI masks hold B+G+R in [0,765]. Precompute the exact historical float
+    // expression for every paint alpha so cached-text composition performs one
+    // indexed load rather than two divisions and a clamp per ink pixel.
+    static const std::array<std::array<uint8_t, 766>, 256> table = [] {
+        std::array<std::array<uint8_t, 766>, 256> result{};
+        for (size_t alpha = 0; alpha < result.size(); ++alpha) {
+            for (size_t sum = 0; sum < result[alpha].size(); ++sum) {
+                const float luminance = static_cast<float>(sum) / 3.0f;
+                result[alpha][sum] = static_cast<uint8_t>(std::clamp(
+                    (luminance / 255.0f) * static_cast<float>(alpha) + 0.5f,
+                    0.0f, 255.0f));
+            }
+        }
+        return result;
+    }();
+    return table[paintAlpha][std::min<uint16_t>(channelSum, 765u)];
 }
 
 static inline float Lerp(float a, float b, float t) {
@@ -94,11 +1885,17 @@ static void InterpolateGradientStops(const std::vector<JaliumGradientStop>& stop
     t = std::clamp(t, 0.0f, 1.0f);
 
     if (t <= stops.front().position) {
-        r = stops.front().r; g = stops.front().g; b = stops.front().b; a = stops.front().a;
+        r = LinearToSrgb(stops.front().r);
+        g = LinearToSrgb(stops.front().g);
+        b = LinearToSrgb(stops.front().b);
+        a = stops.front().a;
         return;
     }
     if (t >= stops.back().position) {
-        r = stops.back().r; g = stops.back().g; b = stops.back().b; a = stops.back().a;
+        r = LinearToSrgb(stops.back().r);
+        g = LinearToSrgb(stops.back().g);
+        b = LinearToSrgb(stops.back().b);
+        a = stops.back().a;
         return;
     }
 
@@ -106,19 +1903,170 @@ static void InterpolateGradientStops(const std::vector<JaliumGradientStop>& stop
         if (t >= stops[i].position && t <= stops[i + 1].position) {
             float range = stops[i + 1].position - stops[i].position;
             float local = (range > 0) ? (t - stops[i].position) / range : 0;
-            // Interpolate in linear light space for perceptually correct gradients,
-            // matching D2D's D2D1_GAMMA_2_2 gradient stop collection behavior.
-            float lr0 = SrgbToLinear(stops[i].r), lr1 = SrgbToLinear(stops[i + 1].r);
-            float lg0 = SrgbToLinear(stops[i].g), lg1 = SrgbToLinear(stops[i + 1].g);
-            float lb0 = SrgbToLinear(stops[i].b), lb1 = SrgbToLinear(stops[i + 1].b);
-            r = LinearToSrgb(Lerp(lr0, lr1, local));
-            g = LinearToSrgb(Lerp(lg0, lg1, local));
-            b = LinearToSrgb(Lerp(lb0, lb1, local));
+            // Stops already carry linear-light RGB, prepared once when the
+            // brush is created. Only the final conversion back to sRGB remains
+            // in the pixel loop.
+            r = LinearToSrgb(Lerp(stops[i].r, stops[i + 1].r, local));
+            g = LinearToSrgb(Lerp(stops[i].g, stops[i + 1].g, local));
+            b = LinearToSrgb(Lerp(stops[i].b, stops[i + 1].b, local));
             a = Lerp(stops[i].a, stops[i + 1].a, local);
             return;
         }
     }
-    r = stops.back().r; g = stops.back().g; b = stops.back().b; a = stops.back().a;
+    r = LinearToSrgb(stops.back().r);
+    g = LinearToSrgb(stops.back().g);
+    b = LinearToSrgb(stops.back().b);
+    a = stops.back().a;
+}
+
+static uint8_t LinearToSrgbByte(float linear)
+{
+    static const std::array<uint8_t, 65536> table = [] {
+        std::array<uint8_t, 65536> result{};
+        for (size_t index = 0; index < result.size(); ++index) {
+            const float value = static_cast<float>(index) / 65535.0f;
+            result[index] = FloatToU8(LinearToSrgb(value));
+        }
+        return result;
+    }();
+    const size_t index = static_cast<size_t>(std::clamp(
+        linear * 65535.0f + 0.5f, 0.0f, 65535.0f));
+    return table[index];
+}
+
+static void InterpolateGradientStops8(
+    const std::vector<JaliumGradientStop>& stops, float t,
+    uint8_t& r, uint8_t& g, uint8_t& b, float& a)
+{
+    if (stops.empty()) { r = g = b = 0; a = 0.0f; return; }
+    t = std::clamp(t, 0.0f, 1.0f);
+
+    const JaliumGradientStop* left = &stops.front();
+    const JaliumGradientStop* right = left;
+    float local = 0.0f;
+    if (t <= stops.front().position) {
+        right = left;
+    } else if (t >= stops.back().position) {
+        left = right = &stops.back();
+    } else {
+        for (size_t index = 0; index + 1 < stops.size(); ++index) {
+            if (t < stops[index].position || t > stops[index + 1].position) continue;
+            left = &stops[index];
+            right = &stops[index + 1];
+            const float range = right->position - left->position;
+            local = range > 0.0f ? (t - left->position) / range : 0.0f;
+            break;
+        }
+    }
+
+    r = LinearToSrgbByte(Lerp(left->r, right->r, local));
+    g = LinearToSrgbByte(Lerp(left->g, right->g, local));
+    b = LinearToSrgbByte(Lerp(left->b, right->b, local));
+    a = Lerp(left->a, right->a, local);
+}
+
+static constexpr size_t kGradientLutIntervals = 4096;
+
+static void BuildGradientLut(
+    const std::vector<JaliumGradientStop>& stops,
+    std::vector<uint32_t>& colors,
+    std::vector<float>& alphas)
+{
+    colors.resize(kGradientLutIntervals + 1u);
+    alphas.resize(kGradientLutIntervals + 1u);
+    for (size_t index = 0; index <= kGradientLutIntervals; ++index) {
+        uint8_t r, g, b;
+        float a;
+        InterpolateGradientStops8(
+            stops,
+            static_cast<float>(index) / static_cast<float>(kGradientLutIntervals),
+            r, g, b, a);
+        colors[index] = static_cast<uint32_t>(r) |
+            (static_cast<uint32_t>(g) << 8) |
+            (static_cast<uint32_t>(b) << 16);
+        alphas[index] = a;
+    }
+}
+
+static void SampleGradientLut(
+    const std::vector<uint32_t>& colors,
+    const std::vector<float>& alphas,
+    float t,
+    uint8_t& r, uint8_t& g, uint8_t& b, float& a)
+{
+    if (colors.size() != kGradientLutIntervals + 1u ||
+        alphas.size() != kGradientLutIntervals + 1u) {
+        r = g = b = 0;
+        a = 0.0f;
+        return;
+    }
+    const float position = std::clamp(t, 0.0f, 1.0f) *
+        static_cast<float>(kGradientLutIntervals);
+    const size_t lower = std::min(
+        static_cast<size_t>(position), kGradientLutIntervals);
+    const size_t upper = std::min(lower + 1u, kGradientLutIntervals);
+    const float fraction = position - static_cast<float>(lower);
+    const uint32_t c0 = colors[lower];
+    const uint32_t c1 = colors[upper];
+    auto interpolateByte = [&](int shift) {
+        const float left = static_cast<float>((c0 >> shift) & 0xFFu);
+        const float right = static_cast<float>((c1 >> shift) & 0xFFu);
+        return static_cast<uint8_t>(std::clamp(
+            left + (right - left) * fraction + 0.5f, 0.0f, 255.0f));
+    };
+    r = interpolateByte(0);
+    g = interpolateByte(8);
+    b = interpolateByte(16);
+    a = Lerp(alphas[lower], alphas[upper], fraction);
+}
+
+SoftwareLinearGradientBrush::SoftwareLinearGradientBrush(
+    float sx, float sy, float ex, float ey,
+    const JaliumGradientStop* sourceStops, uint32_t count, uint32_t spread)
+    : startX(sx), startY(sy), endX(ex), endY(ey), spreadMethod(spread),
+      stops(sourceStops, sourceStops + count)
+{
+    deltaX = endX - startX;
+    deltaY = endY - startY;
+    const float lengthSquared = deltaX * deltaX + deltaY * deltaY;
+    inverseLengthSquared = lengthSquared > 0.0f ? 1.0f / lengthSquared : 0.0f;
+    for (auto& stop : stops) {
+        stop.r = SrgbToLinear(stop.r);
+        stop.g = SrgbToLinear(stop.g);
+        stop.b = SrgbToLinear(stop.b);
+    }
+    BuildGradientLut(stops, colorLut, alphaLut);
+}
+
+SoftwareRadialGradientBrush::SoftwareRadialGradientBrush(
+    float cx, float cy, float rx, float ry, float ox, float oy,
+    const JaliumGradientStop* sourceStops, uint32_t count, uint32_t spread)
+    : centerX(cx), centerY(cy), radiusX(rx), radiusY(ry),
+      originX(ox), originY(oy), spreadMethod(spread),
+      stops(sourceStops, sourceStops + count)
+{
+    for (auto& stop : stops) {
+        stop.r = SrgbToLinear(stop.r);
+        stop.g = SrgbToLinear(stop.g);
+        stop.b = SrgbToLinear(stop.b);
+    }
+    BuildGradientLut(stops, colorLut, alphaLut);
+}
+
+SoftwareLinearGradientBrush::~SoftwareLinearGradientBrush()
+{
+    std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+    ReleaseSoftwareResourceCache(rasterCacheBytes_);
+    rasterCache_.clear();
+    rasterCacheBytes_ = 0;
+}
+
+SoftwareRadialGradientBrush::~SoftwareRadialGradientBrush()
+{
+    std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+    ReleaseSoftwareResourceCache(rasterCacheBytes_);
+    rasterCache_.clear();
+    rasterCacheBytes_ = 0;
 }
 
 // ============================================================================
@@ -128,6 +2076,12 @@ static void InterpolateGradientStops(const std::vector<JaliumGradientStop>& stop
 void SoftwareFramebuffer::BlendPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     if (x < 0 || x >= width || y < 0 || y >= height) return;
+    BlendPixelUnchecked(x, y, r, g, b, a);
+}
+
+void SoftwareFramebuffer::BlendPixelUnchecked(
+    int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
     size_t idx = (static_cast<size_t>(y) * width + x) * 4;
 
     if (a == 255) {
@@ -138,6 +2092,20 @@ void SoftwareFramebuffer::BlendPixel(int32_t x, int32_t y, uint8_t r, uint8_t g,
         return;
     }
     if (a == 0) return;
+
+    if (pixels[idx + 3] == 255) {
+        const uint32_t inverseAlpha = 255u - a;
+        pixels[idx + 0] = static_cast<uint8_t>(
+            (static_cast<uint32_t>(b) * a +
+             static_cast<uint32_t>(pixels[idx + 0]) * inverseAlpha) / 255u);
+        pixels[idx + 1] = static_cast<uint8_t>(
+            (static_cast<uint32_t>(g) * a +
+             static_cast<uint32_t>(pixels[idx + 1]) * inverseAlpha) / 255u);
+        pixels[idx + 2] = static_cast<uint8_t>(
+            (static_cast<uint32_t>(r) * a +
+             static_cast<uint32_t>(pixels[idx + 2]) * inverseAlpha) / 255u);
+        return;
+    }
 
     // Alpha blending using premultiplied alpha, matching D3D12/Metal behavior.
     // Source (r,g,b,a) arrives as straight alpha; convert to premultiplied for blending.
@@ -163,6 +2131,333 @@ void SoftwareFramebuffer::BlendPixel(int32_t x, int32_t y, uint8_t r, uint8_t g,
     pixels[idx + 1] = (uint8_t)std::clamp((srcG + dstG * oneMinusSa) * invOutA, 0.0f, 255.0f);
     pixels[idx + 2] = (uint8_t)std::clamp((srcR + dstR * oneMinusSa) * invOutA, 0.0f, 255.0f);
     pixels[idx + 3] = (uint8_t)(outA * 255.0f + 0.5f);
+}
+
+void SoftwareFramebuffer::FillOpaqueSpan(
+    int32_t y, int32_t x0, int32_t x1, uint32_t packedBgra)
+{
+    if (y < 0 || y >= height) return;
+    x0 = std::max(x0, 0);
+    x1 = std::min(x1, width);
+    if (x1 <= x0) return;
+
+    // BGRA pixels are naturally 32-bit aligned. Select the widest exact store
+    // kernel available on the running CPU, with a scalar tail/fallback that is
+    // byte-identical on every architecture.
+    auto* destination = reinterpret_cast<uint32_t*>(
+        pixels.data() + (static_cast<size_t>(y) * width + x0) * 4);
+    size_t count = static_cast<size_t>(x1 - x0);
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    if (count >= 8 && SoftwareCpuHasAvx2()) {
+        const __m256i value = _mm256_set1_epi32(static_cast<int>(packedBgra));
+        while (count >= 8) {
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(destination), value);
+            destination += 8;
+            count -= 8;
+        }
+        _mm256_zeroupper();
+    }
+#elif defined(__AVX2__)
+    {
+        const __m256i value = _mm256_set1_epi32(static_cast<int>(packedBgra));
+        while (count >= 8) {
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(destination), value);
+            destination += 8;
+            count -= 8;
+        }
+    }
+#endif
+
+#if defined(_M_X64) || defined(_M_IX86) || defined(__SSE2__)
+    if (SoftwareSimdEnabled()) {
+        const __m128i value = _mm_set1_epi32(static_cast<int>(packedBgra));
+        while (count >= 4) {
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(destination), value);
+            destination += 4;
+            count -= 4;
+        }
+    }
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    if (SoftwareSimdEnabled()) {
+        const uint32x4_t value = vdupq_n_u32(packedBgra);
+        while (count >= 4) {
+            vst1q_u32(destination, value);
+            destination += 4;
+            count -= 4;
+        }
+    }
+#endif
+
+    std::fill_n(destination, count, packedBgra);
+}
+
+void SoftwareFramebuffer::BlendSolidSpan(
+    int32_t y, int32_t x0, int32_t x1,
+    uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    if (a == 0 || y < 0 || y >= height) return;
+    x0 = std::max(x0, 0);
+    x1 = std::min(x1, width);
+    if (x1 <= x0) return;
+
+    const uint32_t packed = static_cast<uint32_t>(b) |
+        (static_cast<uint32_t>(g) << 8) |
+        (static_cast<uint32_t>(r) << 16) |
+        (static_cast<uint32_t>(a) << 24);
+    if (a == 255) {
+        FillOpaqueSpan(y, x0, x1, packed);
+        return;
+    }
+
+    const uint32_t inverseAlpha = 255u - a;
+    uint8_t* destination = pixels.data() +
+        (static_cast<size_t>(y) * width + x0) * 4;
+    for (int32_t x = x0; x < x1; ++x, destination += 4) {
+        // Opaque window contents are overwhelmingly the common case. With an
+        // opaque destination SrcOver stays opaque and needs neither floating
+        // point nor the expensive straight-alpha un-premultiply division.
+        if (destination[3] == 255) {
+            destination[0] = static_cast<uint8_t>(
+                (static_cast<uint32_t>(b) * a +
+                 static_cast<uint32_t>(destination[0]) * inverseAlpha) / 255u);
+            destination[1] = static_cast<uint8_t>(
+                (static_cast<uint32_t>(g) * a +
+                 static_cast<uint32_t>(destination[1]) * inverseAlpha) / 255u);
+            destination[2] = static_cast<uint8_t>(
+                (static_cast<uint32_t>(r) * a +
+                 static_cast<uint32_t>(destination[2]) * inverseAlpha) / 255u);
+            continue;
+        }
+
+        BlendPixelUnchecked(x, y, r, g, b, a);
+    }
+}
+
+void SoftwareFramebuffer::BlendBgraSpan(
+    int32_t y, int32_t x0, int32_t x1, const uint8_t* sourceBgra)
+{
+    if (!sourceBgra || y < 0 || y >= height) return;
+    x0 = std::max(x0, 0);
+    x1 = std::min(x1, width);
+    if (x1 <= x0) return;
+
+    uint8_t* destination = pixels.data() +
+        (static_cast<size_t>(y) * width + x0) * 4u;
+    size_t count = static_cast<size_t>(x1 - x0);
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    if (count >= 8 && SoftwareCpuHasAvx2()) {
+        const __m256i zero = _mm256_setzero_si256();
+        const __m256i one = _mm256_set1_epi16(1);
+        const __m256i alphaMask = _mm256_set1_epi32(
+            static_cast<int>(0xFF000000u));
+        while (count >= 8) {
+            const __m256i source = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(sourceBgra));
+            const __m256i sourceAlpha = _mm256_and_si256(source, alphaMask);
+            const __m256i sourceOpaque =
+                _mm256_cmpeq_epi32(sourceAlpha, alphaMask);
+            if (_mm256_movemask_epi8(sourceOpaque) == -1) {
+                _mm256_storeu_si256(
+                    reinterpret_cast<__m256i*>(destination), source);
+                sourceBgra += 32;
+                destination += 32;
+                count -= 8;
+                continue;
+            }
+            const __m256i target = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(destination));
+            const __m256i targetAlpha = _mm256_and_si256(target, alphaMask);
+            const __m256i opaque = _mm256_cmpeq_epi32(targetAlpha, alphaMask);
+            if (_mm256_movemask_epi8(opaque) == -1) {
+                __m256i alpha = _mm256_srli_epi32(source, 24);
+                alpha = _mm256_or_si256(alpha, _mm256_slli_epi32(alpha, 8));
+                alpha = _mm256_or_si256(alpha, _mm256_slli_epi32(alpha, 16));
+                const __m256i inverse = _mm256_sub_epi8(
+                    _mm256_set1_epi8(static_cast<char>(0xFF)), alpha);
+
+                const __m256i sourceLo = _mm256_unpacklo_epi8(source, zero);
+                const __m256i sourceHi = _mm256_unpackhi_epi8(source, zero);
+                const __m256i targetLo = _mm256_unpacklo_epi8(target, zero);
+                const __m256i targetHi = _mm256_unpackhi_epi8(target, zero);
+                const __m256i alphaLo = _mm256_unpacklo_epi8(alpha, zero);
+                const __m256i alphaHi = _mm256_unpackhi_epi8(alpha, zero);
+                const __m256i inverseLo = _mm256_unpacklo_epi8(inverse, zero);
+                const __m256i inverseHi = _mm256_unpackhi_epi8(inverse, zero);
+                __m256i sumLo = _mm256_add_epi16(
+                    _mm256_mullo_epi16(sourceLo, alphaLo),
+                    _mm256_mullo_epi16(targetLo, inverseLo));
+                __m256i sumHi = _mm256_add_epi16(
+                    _mm256_mullo_epi16(sourceHi, alphaHi),
+                    _mm256_mullo_epi16(targetHi, inverseHi));
+                sumLo = _mm256_add_epi16(sumLo, one);
+                sumHi = _mm256_add_epi16(sumHi, one);
+                sumLo = _mm256_add_epi16(sumLo, _mm256_srli_epi16(sumLo, 8));
+                sumHi = _mm256_add_epi16(sumHi, _mm256_srli_epi16(sumHi, 8));
+                sumLo = _mm256_srli_epi16(sumLo, 8);
+                sumHi = _mm256_srli_epi16(sumHi, 8);
+                __m256i result = _mm256_packus_epi16(sumLo, sumHi);
+                result = _mm256_or_si256(result, alphaMask);
+                _mm256_storeu_si256(
+                    reinterpret_cast<__m256i*>(destination), result);
+                sourceBgra += 32;
+                destination += 32;
+                count -= 8;
+                continue;
+            }
+            break;
+        }
+        _mm256_zeroupper();
+    }
+#endif
+
+#if defined(_M_X64) || defined(_M_IX86) || defined(__SSE2__)
+    if (SoftwareSimdEnabled()) {
+        const __m128i zero = _mm_setzero_si128();
+        const __m128i one = _mm_set1_epi16(1);
+        const __m128i alphaMask = _mm_set1_epi32(
+            static_cast<int>(0xFF000000u));
+        while (count >= 4) {
+            const __m128i source = _mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(sourceBgra));
+            const __m128i sourceAlpha = _mm_and_si128(source, alphaMask);
+            const __m128i sourceOpaque =
+                _mm_cmpeq_epi32(sourceAlpha, alphaMask);
+            if (_mm_movemask_epi8(sourceOpaque) == 0xFFFF) {
+                _mm_storeu_si128(
+                    reinterpret_cast<__m128i*>(destination), source);
+                sourceBgra += 16;
+                destination += 16;
+                count -= 4;
+                continue;
+            }
+            const __m128i target = _mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(destination));
+            const __m128i targetAlpha = _mm_and_si128(target, alphaMask);
+            const __m128i opaque = _mm_cmpeq_epi32(targetAlpha, alphaMask);
+            if (_mm_movemask_epi8(opaque) != 0xFFFF) break;
+
+            __m128i alpha = _mm_srli_epi32(source, 24);
+            alpha = _mm_or_si128(alpha, _mm_slli_epi32(alpha, 8));
+            alpha = _mm_or_si128(alpha, _mm_slli_epi32(alpha, 16));
+            const __m128i inverse = _mm_sub_epi8(
+                _mm_set1_epi8(static_cast<char>(0xFF)), alpha);
+            const __m128i sourceLo = _mm_unpacklo_epi8(source, zero);
+            const __m128i sourceHi = _mm_unpackhi_epi8(source, zero);
+            const __m128i targetLo = _mm_unpacklo_epi8(target, zero);
+            const __m128i targetHi = _mm_unpackhi_epi8(target, zero);
+            const __m128i alphaLo = _mm_unpacklo_epi8(alpha, zero);
+            const __m128i alphaHi = _mm_unpackhi_epi8(alpha, zero);
+            const __m128i inverseLo = _mm_unpacklo_epi8(inverse, zero);
+            const __m128i inverseHi = _mm_unpackhi_epi8(inverse, zero);
+            __m128i sumLo = _mm_add_epi16(
+                _mm_mullo_epi16(sourceLo, alphaLo),
+                _mm_mullo_epi16(targetLo, inverseLo));
+            __m128i sumHi = _mm_add_epi16(
+                _mm_mullo_epi16(sourceHi, alphaHi),
+                _mm_mullo_epi16(targetHi, inverseHi));
+            sumLo = _mm_add_epi16(sumLo, one);
+            sumHi = _mm_add_epi16(sumHi, one);
+            sumLo = _mm_add_epi16(sumLo, _mm_srli_epi16(sumLo, 8));
+            sumHi = _mm_add_epi16(sumHi, _mm_srli_epi16(sumHi, 8));
+            sumLo = _mm_srli_epi16(sumLo, 8);
+            sumHi = _mm_srli_epi16(sumHi, 8);
+            __m128i result = _mm_packus_epi16(sumLo, sumHi);
+            result = _mm_or_si128(result, alphaMask);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(destination), result);
+            sourceBgra += 16;
+            destination += 16;
+            count -= 4;
+        }
+    }
+#endif
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+    if (SoftwareSimdEnabled()) {
+        static const uint8_t alphaIndicesBytes[16] = {
+            3, 3, 3, 3, 7, 7, 7, 7,
+            11, 11, 11, 11, 15, 15, 15, 15
+        };
+        static const uint8_t alphaPositionsBytes[16] = {
+            0, 0, 0, 255, 0, 0, 0, 255,
+            0, 0, 0, 255, 0, 0, 0, 255
+        };
+        const uint8x16_t alphaIndices = vld1q_u8(alphaIndicesBytes);
+        const uint8x16_t alphaPositions = vld1q_u8(alphaPositionsBytes);
+        const uint8x16_t all255 = vdupq_n_u8(255);
+        const uint16x8_t one = vdupq_n_u16(1);
+        while (count >= 4) {
+            const uint8x16_t source = vld1q_u8(sourceBgra);
+            const uint8x16_t alpha = vqtbl1q_u8(source, alphaIndices);
+            if (vminvq_u8(vceqq_u8(alpha, all255)) == 255) {
+                vst1q_u8(destination, source);
+                sourceBgra += 16;
+                destination += 16;
+                count -= 4;
+                continue;
+            }
+
+            const uint8x16_t target = vld1q_u8(destination);
+            const uint8x16_t targetAlpha = vqtbl1q_u8(target, alphaIndices);
+            if (vminvq_u8(vceqq_u8(targetAlpha, all255)) != 255) break;
+            const uint8x16_t inverse = vsubq_u8(all255, alpha);
+
+            const uint16x8_t sourceLo = vmovl_u8(vget_low_u8(source));
+            const uint16x8_t sourceHi = vmovl_u8(vget_high_u8(source));
+            const uint16x8_t targetLo = vmovl_u8(vget_low_u8(target));
+            const uint16x8_t targetHi = vmovl_u8(vget_high_u8(target));
+            const uint16x8_t alphaLo = vmovl_u8(vget_low_u8(alpha));
+            const uint16x8_t alphaHi = vmovl_u8(vget_high_u8(alpha));
+            const uint16x8_t inverseLo = vmovl_u8(vget_low_u8(inverse));
+            const uint16x8_t inverseHi = vmovl_u8(vget_high_u8(inverse));
+            uint16x8_t sumLo = vaddq_u16(
+                vmulq_u16(sourceLo, alphaLo),
+                vmulq_u16(targetLo, inverseLo));
+            uint16x8_t sumHi = vaddq_u16(
+                vmulq_u16(sourceHi, alphaHi),
+                vmulq_u16(targetHi, inverseHi));
+            sumLo = vaddq_u16(sumLo, one);
+            sumHi = vaddq_u16(sumHi, one);
+            sumLo = vaddq_u16(sumLo, vshrq_n_u16(sumLo, 8));
+            sumHi = vaddq_u16(sumHi, vshrq_n_u16(sumHi, 8));
+            sumLo = vshrq_n_u16(sumLo, 8);
+            sumHi = vshrq_n_u16(sumHi, 8);
+            uint8x16_t result = vcombine_u8(
+                vqmovn_u16(sumLo), vqmovn_u16(sumHi));
+            result = vbslq_u8(alphaPositions, all255, result);
+            vst1q_u8(destination, result);
+            sourceBgra += 16;
+            destination += 16;
+            count -= 4;
+        }
+    }
+#endif
+
+    for (size_t index = 0; index < count; ++index) {
+        const uint8_t alpha = sourceBgra[3];
+        if (alpha == 255) {
+            std::memcpy(destination, sourceBgra, 4u);
+        } else if (alpha != 0 && destination[3] == 255) {
+            const uint32_t inverseAlpha = 255u - alpha;
+            destination[0] = static_cast<uint8_t>(
+                (static_cast<uint32_t>(sourceBgra[0]) * alpha +
+                 static_cast<uint32_t>(destination[0]) * inverseAlpha) / 255u);
+            destination[1] = static_cast<uint8_t>(
+                (static_cast<uint32_t>(sourceBgra[1]) * alpha +
+                 static_cast<uint32_t>(destination[1]) * inverseAlpha) / 255u);
+            destination[2] = static_cast<uint8_t>(
+                (static_cast<uint32_t>(sourceBgra[2]) * alpha +
+                 static_cast<uint32_t>(destination[2]) * inverseAlpha) / 255u);
+        } else if (alpha != 0) {
+            const int32_t x = x1 - static_cast<int32_t>(count) +
+                static_cast<int32_t>(index);
+            BlendPixelUnchecked(
+                x, y, sourceBgra[2], sourceBgra[1], sourceBgra[0], alpha);
+        }
+        sourceBgra += 4;
+        destination += 4;
+    }
 }
 
 void SoftwareFramebuffer::BlendPixelSubpixel(
@@ -204,6 +2499,144 @@ void SoftwareFramebuffer::SetPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, u
     pixels[idx + 3] = a;
 }
 
+std::shared_ptr<const SoftwareScaledBitmap> SoftwareBitmap::GetOrCreateScaled(
+    uint32_t width, uint32_t height,
+    float destinationWidth, float destinationHeight,
+    float phaseX, float phaseY, float opacity)
+{
+    if (dynamic_ || width == 0 || height == 0 || width_ == 0 || height_ == 0 ||
+        destinationWidth <= 0.0f || destinationHeight <= 0.0f) return {};
+    const uint64_t byteCount64 = static_cast<uint64_t>(width) * height * 4u;
+    if (byteCount64 > scaledCacheBudgetBytes_ || byteCount64 > SIZE_MAX) return {};
+
+    {
+        std::lock_guard<std::mutex> lock(scaledCacheMutex_);
+        for (size_t index = 0; index < scaledCache_.size(); ++index) {
+            const auto& candidate = scaledCache_[index];
+            if (candidate->width != width || candidate->height != height ||
+                std::abs(candidate->destinationWidth - destinationWidth) >= 1e-6f ||
+                std::abs(candidate->destinationHeight - destinationHeight) >= 1e-6f ||
+                std::abs(candidate->phaseX - phaseX) >= 1e-6f ||
+                std::abs(candidate->phaseY - phaseY) >= 1e-6f ||
+                std::abs(candidate->opacity - opacity) >= 1e-6f) continue;
+            auto hit = candidate;
+            if (index + 1u != scaledCache_.size()) {
+                scaledCache_.erase(scaledCache_.begin() + index);
+                scaledCache_.push_back(hit);
+            }
+            return hit;
+        }
+    }
+
+    auto scaled = std::make_shared<SoftwareScaledBitmap>();
+    scaled->width = width;
+    scaled->height = height;
+    scaled->opaque = true;
+    scaled->destinationWidth = destinationWidth;
+    scaled->destinationHeight = destinationHeight;
+    scaled->phaseX = phaseX;
+    scaled->phaseY = phaseY;
+    scaled->opacity = opacity;
+    scaled->pixels.resize(static_cast<size_t>(byteCount64));
+
+    const int32_t sourceWidth = static_cast<int32_t>(width_);
+    const int32_t sourceHeight = static_cast<int32_t>(height_);
+    for (uint32_t y = 0; y < height; ++y) {
+        const float coverageY = std::clamp(
+            std::min(static_cast<float>(y) + 1.0f, phaseY + destinationHeight) -
+            std::max(static_cast<float>(y), phaseY),
+            0.0f, 1.0f);
+        const float sourceY =
+            ((static_cast<float>(y) + 0.5f - phaseY) / destinationHeight) *
+            static_cast<float>(height_) - 0.5f;
+        const float sourceYFloor = std::floor(sourceY);
+        const int32_t y0 = std::clamp(static_cast<int32_t>(sourceYFloor), 0, sourceHeight - 1);
+        const int32_t y1 = std::clamp(static_cast<int32_t>(sourceYFloor) + 1, 0, sourceHeight - 1);
+        const float fy = sourceY - sourceYFloor;
+        for (uint32_t x = 0; x < width; ++x) {
+            const float coverageX = std::clamp(
+                std::min(static_cast<float>(x) + 1.0f, phaseX + destinationWidth) -
+                std::max(static_cast<float>(x), phaseX),
+                0.0f, 1.0f);
+            const float sourceX =
+                ((static_cast<float>(x) + 0.5f - phaseX) / destinationWidth) *
+                static_cast<float>(width_) - 0.5f;
+            const float sourceXFloor = std::floor(sourceX);
+            const int32_t x0 = std::clamp(static_cast<int32_t>(sourceXFloor), 0, sourceWidth - 1);
+            const int32_t x1 = std::clamp(static_cast<int32_t>(sourceXFloor) + 1, 0, sourceWidth - 1);
+            const float fx = sourceX - sourceXFloor;
+            const float w00 = (1.0f - fx) * (1.0f - fy);
+            const float w10 = fx * (1.0f - fy);
+            const float w01 = (1.0f - fx) * fy;
+            const float w11 = fx * fy;
+            const size_t i00 = (static_cast<size_t>(y0) * sourceWidth + x0) * 4u;
+            const size_t i10 = (static_cast<size_t>(y0) * sourceWidth + x1) * 4u;
+            const size_t i01 = (static_cast<size_t>(y1) * sourceWidth + x0) * 4u;
+            const size_t i11 = (static_cast<size_t>(y1) * sourceWidth + x1) * 4u;
+            const size_t destination = (static_cast<size_t>(y) * width + x) * 4u;
+            for (int channel = 0; channel < 3; ++channel) {
+                const float value =
+                    pixels_[i00 + channel] * w00 + pixels_[i10 + channel] * w10 +
+                    pixels_[i01 + channel] * w01 + pixels_[i11 + channel] * w11;
+                scaled->pixels[destination + channel] = static_cast<uint8_t>(
+                    std::clamp(value + 0.5f, 0.0f, 255.0f));
+            }
+            const float sourceAlpha =
+                pixels_[i00 + 3] * w00 + pixels_[i10 + 3] * w10 +
+                pixels_[i01 + 3] * w01 + pixels_[i11 + 3] * w11;
+            const uint8_t alpha = static_cast<uint8_t>(std::clamp(
+                sourceAlpha * opacity * coverageX * coverageY + 0.5f,
+                0.0f, 255.0f));
+            scaled->pixels[destination + 3] = alpha;
+            if (alpha != 255) scaled->opaque = false;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(scaledCacheMutex_);
+    for (const auto& candidate : scaledCache_) {
+        if (candidate->width == width && candidate->height == height &&
+            std::abs(candidate->destinationWidth - destinationWidth) < 1e-6f &&
+            std::abs(candidate->destinationHeight - destinationHeight) < 1e-6f &&
+            std::abs(candidate->phaseX - phaseX) < 1e-6f &&
+            std::abs(candidate->phaseY - phaseY) < 1e-6f &&
+            std::abs(candidate->opacity - opacity) < 1e-6f) {
+            return candidate;
+        }
+    }
+    const size_t bytes = scaled->pixels.size();
+    while (!scaledCache_.empty() &&
+           scaledCacheBytes_ + bytes > scaledCacheBudgetBytes_) {
+        if (trackGlobalCache_)
+            ReleaseSoftwareResourceCache(scaledCache_.front()->pixels.size());
+        scaledCacheBytes_ -= scaledCache_.front()->pixels.size();
+        scaledCache_.erase(scaledCache_.begin());
+    }
+    if (trackGlobalCache_ && !TryReserveSoftwareResourceCache(bytes)) return {};
+    scaledCacheBytes_ += bytes;
+    scaledCache_.push_back(std::move(scaled));
+    return scaledCache_.back();
+}
+
+SoftwareBitmap::~SoftwareBitmap()
+{
+    ClearScaledCache();
+}
+
+size_t SoftwareBitmap::ScaledCacheBytes() const
+{
+    std::lock_guard<std::mutex> lock(scaledCacheMutex_);
+    return scaledCacheBytes_;
+}
+
+void SoftwareBitmap::ClearScaledCache()
+{
+    std::lock_guard<std::mutex> lock(scaledCacheMutex_);
+    if (trackGlobalCache_)
+        ReleaseSoftwareResourceCache(scaledCacheBytes_);
+    scaledCache_.clear();
+    scaledCacheBytes_ = 0;
+}
+
 // ============================================================================
 // Brush Sampling
 // ============================================================================
@@ -229,12 +2662,21 @@ static inline float ApplyGradientSpread(float t, uint32_t spreadMethod)
 void SoftwareLinearGradientBrush::SampleColor(float px, float py,
     float& outR, float& outG, float& outB, float& outA) const
 {
-    float dx = endX - startX;
-    float dy = endY - startY;
-    float lenSq = dx * dx + dy * dy;
-    float t = (lenSq > 0) ? ((px - startX) * dx + (py - startY) * dy) / lenSq : 0;
+    float t = inverseLengthSquared > 0.0f
+        ? ((px - startX) * deltaX + (py - startY) * deltaY) * inverseLengthSquared
+        : 0.0f;
     t = ApplyGradientSpread(t, spreadMethod);
     InterpolateGradientStops(stops, t, outR, outG, outB, outA);
+}
+
+void SoftwareLinearGradientBrush::SampleColor8(
+    float px, float py, uint8_t& outR, uint8_t& outG, uint8_t& outB, float& outA) const
+{
+    float t = inverseLengthSquared > 0.0f
+        ? ((px - startX) * deltaX + (py - startY) * deltaY) * inverseLengthSquared
+        : 0.0f;
+    t = ApplyGradientSpread(t, spreadMethod);
+    SampleGradientLut(colorLut, alphaLut, t, outR, outG, outB, outA);
 }
 
 void SoftwareRadialGradientBrush::SampleColor(float px, float py,
@@ -265,6 +2707,184 @@ void SoftwareRadialGradientBrush::SampleColor(float px, float py,
     }
     t = ApplyGradientSpread(t, spreadMethod);
     InterpolateGradientStops(stops, t, outR, outG, outB, outA);
+}
+
+void SoftwareRadialGradientBrush::SampleColor8(
+    float px, float py, uint8_t& outR, uint8_t& outG, uint8_t& outB, float& outA) const
+{
+    float rx = radiusX > 0 ? radiusX : 1;
+    float ry = radiusY > 0 ? radiusY : 1;
+    float ux = (px - centerX) / rx;
+    float uy = (py - centerY) / ry;
+    float fx = (originX - centerX) / rx;
+    float fy = (originY - centerY) / ry;
+    float dx = ux - fx;
+    float dy = uy - fy;
+    float quadratic = dx * dx + dy * dy;
+    float t;
+    if (quadratic <= 1e-12f) {
+        t = 0.0f;
+    } else {
+        float linear = 2.0f * (fx * dx + fy * dy);
+        float constant = fx * fx + fy * fy - 1.0f;
+        float discriminant = std::max(
+            linear * linear - 4.0f * quadratic * constant, 0.0f);
+        float intersection =
+            (-linear + std::sqrt(discriminant)) / (2.0f * quadratic);
+        t = intersection > 1e-12f ? 1.0f / intersection : 0.0f;
+    }
+    t = ApplyGradientSpread(t, spreadMethod);
+    SampleGradientLut(colorLut, alphaLut, t, outR, outG, outB, outA);
+}
+
+static bool GradientRasterMatches(
+    const SoftwareGradientRaster& raster,
+    float left, float top, float right, float bottom, float opacity)
+{
+    constexpr float kTolerance = 1e-6f;
+    return std::abs(raster.left - left) < kTolerance &&
+        std::abs(raster.top - top) < kTolerance &&
+        std::abs(raster.right - right) < kTolerance &&
+        std::abs(raster.bottom - bottom) < kTolerance &&
+        std::abs(raster.opacity - opacity) < kTolerance;
+}
+
+static constexpr size_t kMaxGradientRasterCacheBytes = 8u * 1024u * 1024u;
+
+template <typename GradientBrush>
+static std::shared_ptr<SoftwareGradientRaster> BuildGradientRaster(
+    const GradientBrush& brush,
+    float left, float top, float right, float bottom, float opacity)
+{
+    const int32_t x = static_cast<int32_t>(std::floor(left));
+    const int32_t y = static_cast<int32_t>(std::floor(top));
+    const int32_t width = static_cast<int32_t>(std::ceil(right)) - x;
+    const int32_t height = static_cast<int32_t>(std::ceil(bottom)) - y;
+    if (width <= 0 || height <= 0) return {};
+
+    // A single brush is allowed one bounded raster. Larger gradients continue
+    // through the incremental scanline sampler instead of consuming an
+    // unbounded amount of the renderer's 128 MiB cache budget.
+    const uint64_t byteCount = static_cast<uint64_t>(width) *
+        static_cast<uint64_t>(height) * 4u;
+    if (byteCount > kMaxGradientRasterCacheBytes || byteCount > SIZE_MAX) return {};
+
+    auto raster = std::make_shared<SoftwareGradientRaster>();
+    raster->x = x;
+    raster->y = y;
+    raster->width = width;
+    raster->height = height;
+    raster->left = left;
+    raster->top = top;
+    raster->right = right;
+    raster->bottom = bottom;
+    raster->opacity = opacity;
+    raster->opaque = true;
+    raster->pixels.resize(static_cast<size_t>(byteCount));
+
+    for (int32_t row = 0; row < height; ++row) {
+        const float sampleY = static_cast<float>(y + row) + 0.5f;
+        uint8_t* destination = raster->pixels.data() +
+            static_cast<size_t>(row) * static_cast<size_t>(width) * 4u;
+        for (int32_t column = 0; column < width; ++column, destination += 4) {
+            uint8_t red, green, blue;
+            float alpha;
+            brush.SampleColor8(
+                static_cast<float>(x + column) + 0.5f, sampleY,
+                red, green, blue, alpha);
+            const uint8_t alphaByte = FloatToU8(alpha * opacity);
+            destination[0] = blue;
+            destination[1] = green;
+            destination[2] = red;
+            destination[3] = alphaByte;
+            raster->opaque = raster->opaque && alphaByte == 255;
+        }
+    }
+    return raster;
+}
+
+std::shared_ptr<const SoftwareGradientRaster>
+SoftwareLinearGradientBrush::GetOrCreateRaster(
+    float left, float top, float right, float bottom, float opacity) const
+{
+    {
+        std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+        for (size_t index = 0; index < rasterCache_.size(); ++index) {
+            if (!GradientRasterMatches(
+                    *rasterCache_[index], left, top, right, bottom, opacity)) continue;
+            auto hit = rasterCache_[index];
+            if (index + 1u != rasterCache_.size()) {
+                rasterCache_.erase(rasterCache_.begin() + index);
+                rasterCache_.push_back(hit);
+            }
+            return hit;
+        }
+    }
+
+    auto raster = BuildGradientRaster(
+        *this, left, top, right, bottom, opacity);
+    if (!raster) return {};
+
+    std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+    for (size_t index = 0; index < rasterCache_.size(); ++index) {
+        if (GradientRasterMatches(
+                *rasterCache_[index], left, top, right, bottom, opacity)) {
+            return rasterCache_[index];
+        }
+    }
+    const size_t bytes = raster->pixels.size();
+    while (!rasterCache_.empty() &&
+           rasterCacheBytes_ + bytes > kMaxGradientRasterCacheBytes) {
+        ReleaseSoftwareResourceCache(rasterCache_.front()->pixels.size());
+        rasterCacheBytes_ -= rasterCache_.front()->pixels.size();
+        rasterCache_.erase(rasterCache_.begin());
+    }
+    if (!TryReserveSoftwareResourceCache(bytes)) return {};
+    rasterCacheBytes_ += bytes;
+    rasterCache_.push_back(std::move(raster));
+    return rasterCache_.back();
+}
+
+std::shared_ptr<const SoftwareGradientRaster>
+SoftwareRadialGradientBrush::GetOrCreateRaster(
+    float left, float top, float right, float bottom, float opacity) const
+{
+    {
+        std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+        for (size_t index = 0; index < rasterCache_.size(); ++index) {
+            if (!GradientRasterMatches(
+                    *rasterCache_[index], left, top, right, bottom, opacity)) continue;
+            auto hit = rasterCache_[index];
+            if (index + 1u != rasterCache_.size()) {
+                rasterCache_.erase(rasterCache_.begin() + index);
+                rasterCache_.push_back(hit);
+            }
+            return hit;
+        }
+    }
+
+    auto raster = BuildGradientRaster(
+        *this, left, top, right, bottom, opacity);
+    if (!raster) return {};
+
+    std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+    for (size_t index = 0; index < rasterCache_.size(); ++index) {
+        if (GradientRasterMatches(
+                *rasterCache_[index], left, top, right, bottom, opacity)) {
+            return rasterCache_[index];
+        }
+    }
+    const size_t bytes = raster->pixels.size();
+    while (!rasterCache_.empty() &&
+           rasterCacheBytes_ + bytes > kMaxGradientRasterCacheBytes) {
+        ReleaseSoftwareResourceCache(rasterCache_.front()->pixels.size());
+        rasterCacheBytes_ -= rasterCache_.front()->pixels.size();
+        rasterCache_.erase(rasterCache_.begin());
+    }
+    if (!TryReserveSoftwareResourceCache(bytes)) return {};
+    rasterCacheBytes_ += bytes;
+    rasterCache_.push_back(std::move(raster));
+    return rasterCache_.back();
 }
 
 // ============================================================================
@@ -370,6 +2990,41 @@ JaliumResult SoftwareTextFormat::MeasureText(
     return JALIUM_OK;
 }
 
+JaliumResult SoftwareTextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)
+{
+    if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
+    JaliumTextMetrics line{};
+    GetFontMetrics(&line);
+    *metrics = {sizeof(JaliumFontUnitMetrics), fontSize * .5f, line.ascent,
+        fontSize * .5f, fontSize, line.ascent, line.lineHeight, 0};
+#ifdef _WIN32
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (!dc) return JALIUM_OK;
+    HFONT font = CreateFontW(-(std::max)(1, (int)(fontSize + .5f)), 0, 0, 0,
+        fontWeight, fontStyle == 1 || fontStyle == 2, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH, fontFamily.c_str());
+    HGDIOBJ previous = SelectObject(dc, font);
+    OUTLINETEXTMETRICW outline{}; outline.otmSize = sizeof(outline);
+    if (GetOutlineTextMetricsW(dc, sizeof(outline), &outline)) {
+        metrics->available |= 16;
+        if (outline.otmsXHeight > 0) { metrics->xHeight = static_cast<float>(outline.otmsXHeight); metrics->available |= 1; }
+        if (outline.otmsCapEmHeight > 0) { metrics->capHeight = static_cast<float>(outline.otmsCapEmHeight); metrics->available |= 2; }
+    }
+    auto advance = [&](wchar_t character, float& value, uint32_t flag) {
+        WORD glyph = 0; SIZE size{};
+        if (GetGlyphIndicesW(dc, &character, 1, &glyph, GGI_MARK_NONEXISTING_GLYPHS) != GDI_ERROR && glyph != 0xffff &&
+            GetTextExtentPoint32W(dc, &character, 1, &size)) {
+            value = static_cast<float>(size.cx); metrics->available |= flag;
+        }
+    };
+    advance(L'0', metrics->zeroAdvance, 4);
+    advance(L'\x6c34', metrics->ideographicAdvance, 8);
+    SelectObject(dc, previous); DeleteObject(font); DeleteDC(dc);
+#endif
+    return JALIUM_OK;
+}
+
 JaliumResult SoftwareTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
 {
     if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
@@ -425,13 +3080,15 @@ void SoftwareRenderTarget::BoxBlur(std::vector<uint8_t>& pixels, int32_t w, int3
 {
     if (radius <= 0 || w <= 0 || h <= 0) return;
     // Three-pass box blur approximates Gaussian blur
-    std::vector<uint8_t> temp(pixels.size());
+    blurScratch_.resize(pixels.size());
+    auto& temp = blurScratch_;
 
     auto blurPass = [&](std::vector<uint8_t>& src, std::vector<uint8_t>& dst, bool horizontal) {
         int32_t outerLimit = horizontal ? h : w;
         int32_t innerLimit = horizontal ? w : h;
 
-        for (int32_t outer = 0; outer < outerLimit; outer++) {
+        auto processOuter = [&](int32_t outerBegin, int32_t outerEnd) {
+        for (int32_t outer = outerBegin; outer < outerEnd; outer++) {
             // Running sum for each channel
             int32_t sumR = 0, sumG = 0, sumB = 0, sumA = 0;
             int32_t count = 0;
@@ -499,6 +3156,18 @@ void SoftwareRenderTarget::BoxBlur(std::vector<uint8_t>& pixels, int32_t w, int3
                 }
             }
         }
+        };
+
+        SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+        const uint64_t pixelWork = static_cast<uint64_t>(outerLimit) *
+            static_cast<uint64_t>(innerLimit);
+        if (workerPool && workerPool->CanParallelize() &&
+            pixelWork >= 128u * 1024u && outerLimit >= 16) {
+            const int32_t grain = horizontal ? 8 : 16;
+            workerPool->ParallelFor(0, outerLimit, grain, processOuter);
+        } else {
+            processOuter(0, outerLimit);
+        }
     };
 
     // Three-pass box blur (approximates Gaussian)
@@ -511,38 +3180,164 @@ void SoftwareRenderTarget::BoxBlur(std::vector<uint8_t>& pixels, int32_t w, int3
 void SoftwareRenderTarget::CopyRegion(const SoftwareFramebuffer& src, SoftwareFramebuffer& dst,
     int32_t srcX, int32_t srcY, int32_t w, int32_t h)
 {
+    if (w <= 0 || h <= 0) {
+        dst.Resize(0, 0);
+        return;
+    }
     dst.Resize(w, h);
-    for (int32_t row = 0; row < h; row++) {
-        int32_t sy = srcY + row;
-        if (sy < 0 || sy >= src.height) continue;
-        for (int32_t col = 0; col < w; col++) {
-            int32_t sx = srcX + col;
-            if (sx < 0 || sx >= src.width) continue;
-            size_t srcIdx = ((size_t)sy * src.width + sx) * 4;
-            size_t dstIdx = ((size_t)row * w + col) * 4;
-            dst.pixels[dstIdx + 0] = src.pixels[srcIdx + 0];
-            dst.pixels[dstIdx + 1] = src.pixels[srcIdx + 1];
-            dst.pixels[dstIdx + 2] = src.pixels[srcIdx + 2];
-            dst.pixels[dstIdx + 3] = src.pixels[srcIdx + 3];
+    const int32_t sourceLeft = std::max(srcX, 0);
+    const int32_t sourceTop = std::max(srcY, 0);
+    const int32_t sourceRight = std::min(srcX + w, src.width);
+    const int32_t sourceBottom = std::min(srcY + h, src.height);
+    if (sourceRight <= sourceLeft || sourceBottom <= sourceTop) return;
+
+    const int32_t destinationX = sourceLeft - srcX;
+    const int32_t destinationY = sourceTop - srcY;
+    const size_t rowBytes = static_cast<size_t>(sourceRight - sourceLeft) * 4u;
+    auto copyRows = [&](int32_t rowBegin, int32_t rowEnd) {
+        for (int32_t row = rowBegin; row < rowEnd; ++row) {
+            const int32_t sourceRow = sourceTop + row;
+            const int32_t destinationRow = destinationY + row;
+            const uint8_t* source = src.pixels.data() +
+                (static_cast<size_t>(sourceRow) * src.width + sourceLeft) * 4u;
+            uint8_t* destination = dst.pixels.data() +
+                (static_cast<size_t>(destinationRow) * w + destinationX) * 4u;
+            std::memcpy(destination, source, rowBytes);
         }
+    };
+    const int32_t rows = sourceBottom - sourceTop;
+    SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+    if (workerPool && workerPool->CanParallelize() &&
+        static_cast<uint64_t>(rowBytes) * rows >= 512u * 1024u) {
+        workerPool->ParallelFor(0, rows, 16, copyRows);
+    } else {
+        copyRows(0, rows);
+    }
+}
+
+void SoftwareRenderTarget::RestoreRegion(
+    const SoftwareFramebuffer& src, int32_t dstX, int32_t dstY)
+{
+    RestoreRawRegion(src.pixels.data(), src.width, src.height, dstX, dstY);
+}
+
+void SoftwareRenderTarget::RestoreRawRegion(
+    const uint8_t* pixels, int32_t width, int32_t height,
+    int32_t dstX, int32_t dstY)
+{
+    if (!pixels || width <= 0 || height <= 0) return;
+    const int32_t sourceLeft = std::max(0, -dstX);
+    const int32_t sourceTop = std::max(0, -dstY);
+    const int32_t sourceRight = std::min(width, fb_.width - dstX);
+    const int32_t sourceBottom = std::min(height, fb_.height - dstY);
+    if (sourceRight <= sourceLeft || sourceBottom <= sourceTop) return;
+
+    const int32_t destinationX = dstX + sourceLeft;
+    const int32_t destinationY = dstY + sourceTop;
+    const size_t rowBytes = static_cast<size_t>(sourceRight - sourceLeft) * 4u;
+    auto copyRows = [&](int32_t rowBegin, int32_t rowEnd) {
+        for (int32_t row = rowBegin; row < rowEnd; ++row) {
+            const uint8_t* source = pixels +
+                (static_cast<size_t>(sourceTop + row) * width + sourceLeft) * 4u;
+            uint8_t* destination = fb_.pixels.data() +
+                (static_cast<size_t>(destinationY + row) * fb_.width +
+                 destinationX) * 4u;
+            std::memcpy(destination, source, rowBytes);
+        }
+    };
+
+    const int32_t rows = sourceBottom - sourceTop;
+    SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+    if (workerPool && workerPool->CanParallelize() &&
+        static_cast<uint64_t>(rowBytes) * rows >= 512u * 1024u) {
+        workerPool->ParallelFor(0, rows, 16, copyRows);
+    } else {
+        copyRows(0, rows);
     }
 }
 
 void SoftwareRenderTarget::BlitBuffer(const SoftwareFramebuffer& src, int32_t dstX, int32_t dstY, float opacity)
 {
-    for (int32_t row = 0; row < src.height; row++) {
-        int32_t dy = dstY + row;
-        if (dy < 0 || dy >= fb_.height) continue;
-        for (int32_t col = 0; col < src.width; col++) {
-            int32_t dx = dstX + col;
-            if (dx < 0 || dx >= fb_.width) continue;
-            size_t srcIdx = ((size_t)row * src.width + col) * 4;
-            uint8_t sb = src.pixels[srcIdx + 0];
-            uint8_t sg = src.pixels[srcIdx + 1];
-            uint8_t sr = src.pixels[srcIdx + 2];
-            uint8_t sa = (uint8_t)(src.pixels[srcIdx + 3] * opacity);
+    BlitRawBuffer(src.pixels.data(), src.width, src.height, dstX, dstY, opacity);
+}
+
+void SoftwareRenderTarget::BlitRawBuffer(
+    const uint8_t* pixels, int32_t width, int32_t height,
+    int32_t dstX, int32_t dstY, float opacity)
+{
+    if (!pixels || width <= 0 || height <= 0) return;
+    const int32_t sourceX0 = std::max(0, -dstX);
+    const int32_t sourceY0 = std::max(0, -dstY);
+    const int32_t sourceX1 = std::min(width, fb_.width - dstX);
+    const int32_t sourceY1 = std::min(height, fb_.height - dstY);
+    if (sourceX1 <= sourceX0 || sourceY1 <= sourceY0) return;
+
+    auto blendRows = [&](int32_t rowBegin, int32_t rowEnd) {
+    for (int32_t row = rowBegin; row < rowEnd; row++) {
+        const int32_t dy = dstY + row;
+        int32_t col = sourceX0;
+        while (col < sourceX1) {
+            const int32_t dx = dstX + col;
+            size_t srcIdx = ((size_t)row * width + col) * 4;
+            if (opacity >= 0.999999f && pixels[srcIdx + 3] == 255) {
+                const int32_t runStart = col;
+                do {
+                    ++col;
+                    if (col >= sourceX1) break;
+                    srcIdx = ((size_t)row * width + col) * 4;
+                } while (pixels[srcIdx + 3] == 255);
+                const size_t runBytes = static_cast<size_t>(col - runStart) * 4u;
+                const uint8_t* source = pixels +
+                    (static_cast<size_t>(row) * width + runStart) * 4u;
+                uint8_t* destination = fb_.pixels.data() +
+                    (static_cast<size_t>(dy) * fb_.width + dstX + runStart) * 4u;
+                std::memcpy(destination, source, runBytes);
+                continue;
+            }
+            uint8_t sb = pixels[srcIdx + 0];
+            uint8_t sg = pixels[srcIdx + 1];
+            uint8_t sr = pixels[srcIdx + 2];
+            uint8_t sa = (uint8_t)(pixels[srcIdx + 3] * opacity);
             if (sa > 0)
-                fb_.BlendPixel(dx, dy, sr, sg, sb, sa);
+                fb_.BlendPixelUnchecked(dx, dy, sr, sg, sb, sa);
+            ++col;
+        }
+    }
+    };
+    SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+    const uint64_t pixelWork = static_cast<uint64_t>(sourceX1 - sourceX0) *
+        static_cast<uint64_t>(sourceY1 - sourceY0);
+    if (workerPool && workerPool->CanParallelize() && pixelWork >= 256u * 1024u) {
+        workerPool->ParallelFor(sourceY0, sourceY1, 16, blendRows);
+    } else {
+        blendRows(sourceY0, sourceY1);
+    }
+}
+
+static void BlendBufferInto(
+    SoftwareFramebuffer& destination,
+    const SoftwareFramebuffer& source,
+    int32_t destinationX, int32_t destinationY,
+    float opacity)
+{
+    const int32_t sourceX0 = std::max(0, -destinationX);
+    const int32_t sourceY0 = std::max(0, -destinationY);
+    const int32_t sourceX1 = std::min(
+        source.width, destination.width - destinationX);
+    const int32_t sourceY1 = std::min(
+        source.height, destination.height - destinationY);
+    if (sourceX1 <= sourceX0 || sourceY1 <= sourceY0) return;
+    for (int32_t row = sourceY0; row < sourceY1; ++row) {
+        for (int32_t column = sourceX0; column < sourceX1; ++column) {
+            const size_t index =
+                (static_cast<size_t>(row) * source.width + column) * 4u;
+            const uint8_t alpha = static_cast<uint8_t>(
+                source.pixels[index + 3] * opacity);
+            if (alpha == 0) continue;
+            destination.BlendPixelUnchecked(
+                destinationX + column, destinationY + row,
+                source.pixels[index + 2], source.pixels[index + 1],
+                source.pixels[index], alpha);
         }
     }
 }
@@ -931,8 +3726,8 @@ namespace {
 
 bool X11EnvironmentFlag(const char* name)
 {
-    const char* value = std::getenv(name);
-    return value && value[0] != '\0' && value[0] != '0';
+    const std::string value = ReadSoftwareEnvironmentVariable(name);
+    return !value.empty() && value[0] != '0';
 }
 
 unsigned long ScaleChannelToMask(uint8_t value, unsigned long mask)
@@ -1357,20 +4152,270 @@ SoftwareRenderTarget::~SoftwareRenderTarget() {
 #endif
 }
 
+uint64_t SoftwareRenderTarget::MainFramebufferOwnedBytes() const
+{
+    return static_cast<uint64_t>(fb_.pixels.capacity()) +
+        static_cast<uint64_t>(compactFramebuffer_.prefixPixels.capacity());
+}
+
+JaliumResult SoftwareRenderTarget::QueryMainFramebufferOwnedBytes(
+    uint64_t* outBytes) const
+{
+    if (!outBytes) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *outBytes = MainFramebufferOwnedBytes();
+    return JALIUM_OK;
+}
+
+bool SoftwareRenderTarget::HasActiveFramebufferCapture() const
+{
+    return !retainedCaptureStack_.empty() ||
+        !effectCaptureStack_.empty() ||
+        transitionCaptureActive_[0] ||
+        transitionCaptureActive_[1] ||
+        readbackPending_;
+}
+
+void SoftwareRenderTarget::ResetCompactFramebufferStorage()
+{
+    std::vector<uint8_t>().swap(compactFramebuffer_.prefixPixels);
+    std::memset(compactFramebuffer_.suffixBgra, 0,
+        sizeof(compactFramebuffer_.suffixBgra));
+    compactFramebuffer_.suffixStartRow = 0;
+    compactFramebuffer_.active = false;
+}
+
+size_t SoftwareRenderTarget::RetainedCaptureBufferPoolBytes() const
+{
+    size_t ownedBytes = 0;
+    for (const auto& framebuffer : retainedCaptureBufferPool_) {
+        const size_t capacity = framebuffer.pixels.capacity();
+        if (ownedBytes > std::numeric_limits<size_t>::max() - capacity)
+            return std::numeric_limits<size_t>::max();
+        ownedBytes += capacity;
+    }
+    return ownedBytes;
+}
+
+void SoftwareRenderTarget::CacheRetainedCaptureBuffer(
+    size_t depth,
+    SoftwareFramebuffer&& framebuffer)
+{
+    if (depth >= kRetainedCaptureBufferCacheDepth ||
+        framebuffer.pixels.capacity() > kRetainedCaptureBufferCacheBudget) {
+        return;
+    }
+
+    try {
+        if (retainedCaptureBufferPool_.size() <= depth)
+            retainedCaptureBufferPool_.resize(depth + 1u);
+    } catch (const std::bad_alloc&) {
+        return;
+    }
+
+    size_t otherBytes = 0;
+    for (size_t index = 0; index < retainedCaptureBufferPool_.size(); ++index) {
+        if (index == depth) continue;
+        const size_t capacity = retainedCaptureBufferPool_[index].pixels.capacity();
+        if (capacity > kRetainedCaptureBufferCacheBudget - otherBytes) {
+            otherBytes = kRetainedCaptureBufferCacheBudget;
+            break;
+        }
+        otherBytes += capacity;
+    }
+
+    const size_t framebufferBytes = framebuffer.pixels.capacity();
+    if (otherBytes <= kRetainedCaptureBufferCacheBudget - framebufferBytes)
+        retainedCaptureBufferPool_[depth] = std::move(framebuffer);
+}
+
+void SoftwareRenderTarget::ReleaseRetainedCaptureBufferPool()
+{
+    std::vector<SoftwareFramebuffer>().swap(retainedCaptureBufferPool_);
+}
+
+void SoftwareRenderTarget::CopyMainFramebufferBytes(
+    uint8_t* destination,
+    size_t byteCount) const
+{
+    if (!destination || byteCount == 0) return;
+    if (!compactFramebuffer_.active) {
+        std::memcpy(destination, fb_.pixels.data(), byteCount);
+        return;
+    }
+
+    const size_t prefixBytes = std::min(
+        byteCount, compactFramebuffer_.prefixPixels.size());
+    if (prefixBytes > 0) {
+        std::memcpy(destination,
+            compactFramebuffer_.prefixPixels.data(), prefixBytes);
+    }
+    for (size_t index = prefixBytes; index < byteCount; ++index) {
+        destination[index] = compactFramebuffer_.suffixBgra[
+            (index - compactFramebuffer_.prefixPixels.size()) & 3u];
+    }
+}
+
+JaliumResult SoftwareRenderTarget::MaterializeMainFramebuffer()
+{
+    if (!compactFramebuffer_.active) return JALIUM_OK;
+
+    const size_t rowBytes = static_cast<size_t>(width_) * 4u;
+    const size_t logicalBytes = rowBytes * static_cast<size_t>(height_);
+    if (compactFramebuffer_.suffixStartRow < 0 ||
+        compactFramebuffer_.suffixStartRow > height_) {
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+    const size_t expectedPrefixBytes = rowBytes *
+        static_cast<size_t>(compactFramebuffer_.suffixStartRow);
+    if (compactFramebuffer_.prefixPixels.size() != expectedPrefixBytes)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    std::vector<uint8_t> materialized;
+    try {
+        MaybeFailFramebufferAllocationForTesting();
+        materialized.resize(logicalBytes);
+    } catch (const std::bad_alloc&) {
+        return JALIUM_ERROR_OUT_OF_MEMORY;
+    }
+
+    CopyMainFramebufferBytes(materialized.data(), logicalBytes);
+    fb_.pixels.swap(materialized);
+    ResetCompactFramebufferStorage();
+    return JALIUM_OK;
+}
+
+JaliumResult SoftwareRenderTarget::CompactIdleFramebufferStorage()
+{
+    constexpr uint64_t kMinimumReleasedBytes = 1024u * 1024u;
+    if (isDrawing_ || HasActiveFramebufferCapture())
+        return JALIUM_ERROR_INVALID_STATE;
+    ReleaseRetainedCaptureBufferPool();
+    if (compactFramebuffer_.active)
+        return JALIUM_OK;
+    if (width_ <= 0 || height_ <= 0 || fb_.pixels.empty())
+        return JALIUM_ERROR_INVALID_STATE;
+
+    const size_t rowBytes = static_cast<size_t>(width_) * 4u;
+    const size_t logicalBytes = rowBytes * static_cast<size_t>(height_);
+    if (fb_.pixels.size() != logicalBytes)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    auto releaseDenseExcessCapacity = [&]() -> JaliumResult {
+        if (fb_.pixels.capacity() <= logicalBytes)
+            return JALIUM_OK;
+
+        std::vector<uint8_t> compacted;
+        try {
+            MaybeFailFramebufferAllocationForTesting();
+            compacted.resize(logicalBytes);
+            if (logicalBytes > 0) {
+                std::memcpy(
+                    compacted.data(), fb_.pixels.data(), logicalBytes);
+            }
+        } catch (const std::bad_alloc&) {
+            return JALIUM_ERROR_OUT_OF_MEMORY;
+        }
+        fb_.pixels.swap(compacted);
+        return JALIUM_OK;
+    };
+
+    const uint8_t* pixels = fb_.pixels.data();
+    const uint8_t* suffixColour = pixels + logicalBytes - 4u;
+    int32_t suffixStartRow = height_;
+    for (int32_t row = height_ - 1; row >= 0; --row) {
+        const uint8_t* rowPixels = pixels + static_cast<size_t>(row) * rowBytes;
+        bool rowMatches = true;
+        for (int32_t column = 0; column < width_; ++column) {
+            const uint8_t* pixel = rowPixels + static_cast<size_t>(column) * 4u;
+            if (pixel[0] != suffixColour[0] ||
+                pixel[1] != suffixColour[1] ||
+                pixel[2] != suffixColour[2] ||
+                pixel[3] != suffixColour[3]) {
+                rowMatches = false;
+                break;
+            }
+        }
+        if (!rowMatches) break;
+        suffixStartRow = row;
+    }
+
+    if (suffixStartRow == height_)
+        return releaseDenseExcessCapacity();
+    const size_t prefixBytes = rowBytes * static_cast<size_t>(suffixStartRow);
+    const uint64_t denseOwnedBytes =
+        static_cast<uint64_t>(fb_.pixels.capacity());
+    if (denseOwnedBytes < static_cast<uint64_t>(prefixBytes) +
+            kMinimumReleasedBytes) {
+        return releaseDenseExcessCapacity();
+    }
+
+    std::vector<uint8_t> prefixCandidate;
+    try {
+        MaybeFailFramebufferAllocationForTesting();
+        prefixCandidate.resize(prefixBytes);
+        if (prefixBytes > 0)
+            std::memcpy(prefixCandidate.data(), pixels, prefixBytes);
+    } catch (const std::bad_alloc&) {
+        return JALIUM_ERROR_OUT_OF_MEMORY;
+    }
+
+    const uint64_t compactOwnedBytes =
+        static_cast<uint64_t>(prefixCandidate.capacity());
+    if (denseOwnedBytes < compactOwnedBytes + kMinimumReleasedBytes)
+        return releaseDenseExcessCapacity();
+
+    compactFramebuffer_.prefixPixels.swap(prefixCandidate);
+    std::memcpy(compactFramebuffer_.suffixBgra, suffixColour, 4u);
+    compactFramebuffer_.suffixStartRow = suffixStartRow;
+    compactFramebuffer_.active = true;
+    std::vector<uint8_t>().swap(fb_.pixels);
+    return JALIUM_OK;
+}
+
 JaliumResult SoftwareRenderTarget::Resize(int32_t width, int32_t height)
 {
     if (width <= 0 || height <= 0 || width > INT32_MAX / 4 ||
         static_cast<uint64_t>(width) * static_cast<uint64_t>(height) >
             static_cast<uint64_t>(SIZE_MAX) / 4u)
         return JALIUM_ERROR_INVALID_ARGUMENT;
-    try
-    {
-        fb_.Resize(width, height);
+    if (width == width_ && height == height_) {
+        fullInvalidation_ = true;
+        hasDirtyRect_ = false;
+        return JALIUM_OK;
     }
-    catch (const std::bad_alloc&)
-    {
-        return JALIUM_ERROR_OUT_OF_MEMORY;
+
+    const size_t resizedBytes = static_cast<size_t>(width) *
+        static_cast<size_t>(height) * 4u;
+    const size_t oldLogicalBytes = static_cast<size_t>(width_) *
+        static_cast<size_t>(height_) * 4u;
+    const size_t preservedBytes = std::min(oldLogicalBytes, resizedBytes);
+
+    if (!compactFramebuffer_.active &&
+        resizedBytes <= fb_.pixels.capacity()) {
+        fb_.pixels.resize(resizedBytes, 0);
+        fb_.width = width;
+        fb_.height = height;
+    } else {
+        SoftwareFramebuffer resized;
+        resized.width = width;
+        resized.height = height;
+        try
+        {
+            MaybeFailFramebufferAllocationForTesting();
+            resized.pixels.reserve(ComputeFramebufferGrowthCapacity(
+                fb_.pixels.capacity(), resizedBytes));
+            resized.pixels.resize(resizedBytes, 0);
+        }
+        catch (const std::bad_alloc&)
+        {
+            return JALIUM_ERROR_OUT_OF_MEMORY;
+        }
+
+        if (preservedBytes > 0)
+            CopyMainFramebufferBytes(resized.pixels.data(), preservedBytes);
+        fb_ = std::move(resized);
     }
+    ResetCompactFramebufferStorage();
     width_ = width;
     height_ = height;
     fullInvalidation_ = true;
@@ -1383,11 +4428,53 @@ JaliumResult SoftwareRenderTarget::Resize(int32_t width, int32_t height)
 
 JaliumResult SoftwareRenderTarget::BeginDraw()
 {
+    const JaliumResult materializeResult = MaterializeMainFramebuffer();
+    if (materializeResult != JALIUM_OK)
+        return materializeResult;
+
+    RefreshSoftwareSimdMode();
+    framePixelsVisited_ = 0;
+    framePixelsBlended_ = 0;
+    frameAaSamples_ = 0;
+    frameClipRejectedPixels_ = 0;
+    frameStartNs_ = SoftwareNowNs();
+    SoftwareWorkerPool* frameWorkerPool =
+        backend_ ? backend_->GetWorkerPool() : nullptr;
+    frameParallelStartNs_ = frameWorkerPool
+        ? frameWorkerPool->TotalParallelNs() : 0;
+    // Recover from an abandoned retained-layer capture before accepting a new
+    // frame. The first saved framebuffer/clip state is the real parent frame;
+    // nested entries only contain intermediate isolated canvases.
+    if (!retainedCaptureStack_.empty()) {
+        const size_t captureDepth = retainedCaptureStack_.size();
+        SoftwareFramebuffer restoredFramebuffer =
+            std::move(retainedCaptureStack_.front().savedFramebuffer);
+        std::stack<SoftwareClipRect> restoredClips =
+            std::move(retainedCaptureStack_.front().savedClips);
+        std::vector<SoftwareClipRect> restoredRoundedClips =
+            std::move(retainedCaptureStack_.front().savedRoundedClips);
+
+        CacheRetainedCaptureBuffer(captureDepth - 1u, std::move(fb_));
+        for (size_t depth = captureDepth - 1u; depth > 0u; --depth) {
+            CacheRetainedCaptureBuffer(
+                depth - 1u,
+                std::move(retainedCaptureStack_[depth].savedFramebuffer));
+        }
+
+        fb_ = std::move(restoredFramebuffer);
+        clipStack_ = std::move(restoredClips);
+        roundedClipStack_ = std::move(restoredRoundedClips);
+        retainedCaptureStack_.clear();
+    }
+
     // Recover from an abandoned managed Begin/End pair before a new frame.
-    // The first entry owns the real framebuffer as it looked before the
-    // outermost capture; nested entries only own intermediate capture state.
+    // Restore innermost-to-outermost so the outer saved region wins and the
+    // final framebuffer is exactly the state before the first capture.
     if (!effectCaptureStack_.empty()) {
-        fb_ = std::move(effectCaptureStack_.front().savedFramebuffer);
+        for (auto state = effectCaptureStack_.rbegin();
+             state != effectCaptureStack_.rend(); ++state) {
+            RestoreRegion(state->savedRegion, state->pixelX, state->pixelY);
+        }
         effectCaptureStack_.clear();
     }
     effectCaptureReady_ = false;
@@ -1400,11 +4487,27 @@ JaliumResult SoftwareRenderTarget::BeginDraw()
                         dpiScale.m[3], dpiScale.m[4], dpiScale.m[5] };
         PushTransform(m);
     }
+    isDrawing_ = true;
     return JALIUM_OK;
 }
 
 JaliumResult SoftwareRenderTarget::EndDraw()
 {
+    struct DrawingStateReset {
+        bool& value;
+        ~DrawingStateReset() { value = false; }
+    } drawingStateReset{isDrawing_};
+
+    const uint64_t rasterFinishedNs = SoftwareNowNs();
+    lastRasterNs_ = frameStartNs_ > 0 && rasterFinishedNs >= frameStartNs_
+        ? rasterFinishedNs - frameStartNs_ : 0;
+    SoftwareWorkerPool* frameWorkerPool =
+        backend_ ? backend_->GetWorkerPool() : nullptr;
+    const uint64_t parallelFinishedNs = frameWorkerPool
+        ? frameWorkerPool->TotalParallelNs() : frameParallelStartNs_;
+    lastParallelNs_ = parallelFinishedNs >= frameParallelStartNs_
+        ? parallelFinishedNs - frameParallelStartNs_ : 0;
+
     // Pop the root DPI scale transform pushed in BeginDraw
     if (scaleX_ != 1.0f || scaleY_ != 1.0f) {
         PopTransform();
@@ -1432,34 +4535,48 @@ JaliumResult SoftwareRenderTarget::EndDraw()
     }
 
 #ifdef _WIN32
-    // Present to window via GDI. Only the invalidated row band is uploaded:
-    // the framebuffer is persistent, so everything outside the dirty union is
-    // already on screen and re-sending the full surface (~8MB at 1080p, ~33MB
-    // at 4K, every frame) just burns memory bandwidth in GDI. Rows are the
-    // natural granularity — the source is row-contiguous, so a vertical band
-    // uploads with zero repacking; clipping X too would need a per-row copy.
+    // Upload directly from the framebuffer. A persistent DIBSection duplicates
+    // the entire surface (and doubles again at high DPI) even after an idle
+    // window has stopped drawing. StretchDIBits accepts a source rectangle in a
+    // top-down DIB, so the real dirty rectangle remains the transfer unit
+    // without allocating or repacking a second full-size buffer.
     if (hwnd_) {
         if (fullInvalidation_ || hasDirtyRect_) {
+            int32_t left = fullInvalidation_ ? 0 :
+                std::clamp(dirtyLeft_, 0, width_);
             int32_t top = fullInvalidation_ ? 0 : std::clamp(dirtyTop_, 0, height_);
+            int32_t right = fullInvalidation_ ? width_ :
+                std::clamp(dirtyRight_, left, width_);
             int32_t bottom = fullInvalidation_ ? height_ : std::clamp(dirtyBottom_, top, height_);
-            if (bottom > top) {
+            if (right > left && bottom > top) {
                 HDC hdc = GetDC((HWND)hwnd_);
                 if (hdc) {
-                    // A band-local top-down DIB starting at the band's first row
-                    // sidesteps SetDIBitsToDevice's bottom-up ySrc convention.
-                    BITMAPINFO bmi{};
-                    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-                    bmi.bmiHeader.biWidth = width_;
-                    bmi.bmiHeader.biHeight = -(bottom - top); // top-down
-                    bmi.bmiHeader.biPlanes = 1;
-                    bmi.bmiHeader.biBitCount = 32;
-                    bmi.bmiHeader.biCompression = BI_RGB;
-
-                    const uint8_t* bandStart =
-                        fb_.pixels.data() + static_cast<size_t>(top) * width_ * 4;
-                    SetDIBitsToDevice(hdc, 0, top, width_, bottom - top,
-                        0, 0, 0, bottom - top,
-                        bandStart, &bmi, DIB_RGB_COLORS);
+                    BITMAPINFO bitmapInfo{};
+                    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                    bitmapInfo.bmiHeader.biWidth = width_;
+                    bitmapInfo.bmiHeader.biHeight = -(bottom - top);
+                    bitmapInfo.bmiHeader.biPlanes = 1;
+                    bitmapInfo.bmiHeader.biBitCount = 32;
+                    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+                    const uint8_t* bandStart = fb_.pixels.data() +
+                        static_cast<size_t>(top) * width_ * 4u;
+                    const int dirtyWidth = right - left;
+                    const int dirtyHeight = bottom - top;
+                    const int copiedScanLines = StretchDIBits(
+                        hdc,
+                        left, top, dirtyWidth, dirtyHeight,
+                        left, 0, dirtyWidth, dirtyHeight,
+                        bandStart, &bitmapInfo, DIB_RGB_COLORS, SRCCOPY);
+                    if (copiedScanLines == 0 ||
+                        copiedScanLines == static_cast<int>(GDI_ERROR)) {
+                        // Some legacy display drivers do not advertise the
+                        // stretch-DIB path. Preserve presentation correctness
+                        // with the banded SetDIBitsToDevice fallback.
+                        SetDIBitsToDevice(
+                            hdc, 0, top, width_, bottom - top,
+                            0, 0, 0, bottom - top,
+                            bandStart, &bitmapInfo, DIB_RGB_COLORS);
+                    }
                     ReleaseDC((HWND)hwnd_, hdc);
                 }
             }
@@ -1517,10 +4634,16 @@ JaliumResult SoftwareRenderTarget::EndDraw()
     if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_WAYLAND &&
         surfaceDescriptor_.handle0 != 0 && surfaceDescriptor_.handle1 != 0)
     {
+        if (!fullInvalidation_ && !hasDirtyRect_) return JALIUM_OK;
+        const int32_t left = fullInvalidation_ ? 0 : dirtyLeft_;
+        const int32_t top = fullInvalidation_ ? 0 : dirtyTop_;
+        const int32_t right = fullInvalidation_ ? width_ : dirtyRight_;
+        const int32_t bottom = fullInvalidation_ ? height_ : dirtyBottom_;
         if (!waylandPresenter_)
             return JALIUM_ERROR_BACKEND_NOT_AVAILABLE;
         const bool presented = waylandPresenter_->Present(
-            fb_.pixels.data(), width_, height_, width_ * 4);
+            fb_.pixels.data(), width_, height_, width_ * 4,
+            left, top, right, bottom);
         if (presented)
         {
             fullInvalidation_ = false;
@@ -1571,10 +4694,17 @@ JaliumResult SoftwareRenderTarget::EndDraw()
     if (surfaceDescriptor_.platform == JALIUM_PLATFORM_ANDROID &&
         surfaceDescriptor_.handle0 != 0)
     {
+        if (!fullInvalidation_ && !hasDirtyRect_) return JALIUM_OK;
         ANativeWindow* nativeWindow = reinterpret_cast<ANativeWindow*>(surfaceDescriptor_.handle0);
 
+        ARect dirtyBounds{
+            fullInvalidation_ ? 0 : std::clamp(dirtyLeft_, 0, width_),
+            fullInvalidation_ ? 0 : std::clamp(dirtyTop_, 0, height_),
+            fullInvalidation_ ? width_ : std::clamp(dirtyRight_, 0, width_),
+            fullInvalidation_ ? height_ : std::clamp(dirtyBottom_, 0, height_)
+        };
         ANativeWindow_Buffer buffer;
-        int lockResult = ANativeWindow_lock(nativeWindow, &buffer, nullptr);
+        int lockResult = ANativeWindow_lock(nativeWindow, &buffer, &dirtyBounds);
         if (lockResult < 0)
         {
             // The frame never reached the surface. Falling through to
@@ -1598,13 +4728,19 @@ JaliumResult SoftwareRenderTarget::EndDraw()
         int32_t copyHeight = std::min(height_, buffer.height);
         int32_t copyWidth = std::min(width_, buffer.width);
         uint32_t dstStride = buffer.stride * 4; // stride is in pixels
+        const int32_t copyLeft = std::clamp(dirtyBounds.left, 0, copyWidth);
+        const int32_t copyTop = std::clamp(dirtyBounds.top, 0, copyHeight);
+        const int32_t copyRight = std::clamp(dirtyBounds.right, copyLeft, copyWidth);
+        const int32_t copyBottom = std::clamp(dirtyBounds.bottom, copyTop, copyHeight);
 
-        // BGRA → RGBA channel swap + copy (ANativeWindow uses RGBA)
-        for (int32_t y = 0; y < copyHeight; y++)
+        // ANativeWindow may expand the requested damage. Convert only the
+        // returned rectangle; Android preserves the remainder of the buffer.
+        // BGRA -> RGBA channel swap + copy (ANativeWindow uses RGBA).
+        for (int32_t y = copyTop; y < copyBottom; y++)
         {
             const uint8_t* srcRow = src + y * width_ * 4;
             uint8_t* dstRow = dst + y * dstStride;
-            for (int32_t x = 0; x < copyWidth; x++)
+            for (int32_t x = copyLeft; x < copyRight; x++)
             {
                 dstRow[x * 4 + 0] = srcRow[x * 4 + 2]; // R ← B
                 dstRow[x * 4 + 1] = srcRow[x * 4 + 1]; // G ← G
@@ -1625,6 +4761,9 @@ JaliumResult SoftwareRenderTarget::EndDraw()
         {
             LOGI_SW("ANativeWindow_unlockAndPost done");
         }
+        fullInvalidation_ = false;
+        hasDirtyRect_ = false;
+        return JALIUM_OK;
     }
 #endif
 #if !defined(__ANDROID__)
@@ -1643,7 +4782,8 @@ JaliumResult SoftwareRenderTarget::EndDraw()
 
 JaliumResult SoftwareRenderTarget::RequestReadback()
 {
-    if (width_ <= 0 || height_ <= 0 || fb_.pixels.empty())
+    if (width_ <= 0 || height_ <= 0 ||
+        (!compactFramebuffer_.active && fb_.pixels.empty()))
         return JALIUM_ERROR_INVALID_STATE;
     readbackPending_ = true;
     return JALIUM_OK;
@@ -1679,9 +4819,205 @@ JaliumResult SoftwareRenderTarget::FetchReadback(
     return JALIUM_OK;
 }
 
+JaliumResult SoftwareRenderTarget::QueryGpuStats(JaliumGpuStats* out) const
+{
+    if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *out = JaliumGpuStats{};
+
+    if (ellipseFillMaskCache_) {
+        ++out->pathEntries;
+        out->pathBytes += static_cast<int64_t>(ellipseFillMaskCache_->ByteSize());
+    }
+    if (ellipseStrokeMaskCache_) {
+        ++out->pathEntries;
+        out->pathBytes += static_cast<int64_t>(ellipseStrokeMaskCache_->ByteSize());
+    }
+    if (roundedRectMaskCache_) {
+        out->pathEntries += static_cast<int32_t>(roundedRectMaskCache_->EntryCount());
+        out->pathBytes += static_cast<int64_t>(roundedRectMaskCache_->ByteSize());
+    }
+    if (ellipticalRoundedRectMaskCache_) {
+        out->pathEntries += static_cast<int32_t>(
+            ellipticalRoundedRectMaskCache_->EntryCount());
+        out->pathBytes += static_cast<int64_t>(
+            ellipticalRoundedRectMaskCache_->ByteSize());
+    }
+    if (pathRasterCache_) {
+        out->pathEntries += static_cast<int32_t>(pathRasterCache_->EntryCount());
+        out->pathBytes += static_cast<int64_t>(pathRasterCache_->ByteSize());
+    }
+    if (lineRasterCache_) {
+        out->pathEntries += static_cast<int32_t>(lineRasterCache_->EntryCount());
+        out->pathBytes += static_cast<int64_t>(lineRasterCache_->ByteSize());
+    }
+    if (textMaskCache_) {
+        out->glyphSlotsUsed = static_cast<int32_t>(std::min<size_t>(
+            textMaskCache_->EntryCount(), static_cast<size_t>(INT32_MAX)));
+        out->glyphBytes = static_cast<int64_t>(textMaskCache_->ByteSize());
+        const size_t averageBytes = textMaskCache_->EntryCount() > 0
+            ? textMaskCache_->ByteSize() / textMaskCache_->EntryCount()
+            : 0u;
+        out->glyphSlotsTotal = averageBytes > 0
+            ? static_cast<int32_t>((32u * 1024u * 1024u) / averageBytes)
+            : 0;
+    }
+    out->textureCount = 1 + static_cast<int32_t>(retainedLayers_.size());
+    out->textureBytes = static_cast<int64_t>(
+        MainFramebufferOwnedBytes() + retainedLayerBytes_ + blurScratch_.capacity());
+    for (const auto& layer : retainedLayers_) {
+        if (layer && layer->bitmap) {
+            const size_t scaledBytes = layer->bitmap->ScaledCacheBytes();
+            if (scaledBytes > 0) {
+                out->textureBytes += static_cast<int64_t>(scaledBytes);
+            }
+        }
+    }
+    if (textCompositeCache_) {
+        out->textureCount += static_cast<int32_t>(textCompositeCache_->EntryCount());
+        out->textureBytes += static_cast<int64_t>(textCompositeCache_->ByteSize());
+    }
+    if (backdropCache_) {
+        out->textureCount += static_cast<int32_t>(backdropCache_->EntryCount() * 2u);
+        out->textureBytes += static_cast<int64_t>(backdropCache_->ByteSize());
+    }
+    if (liquidGlassCache_) {
+        out->textureCount += static_cast<int32_t>(liquidGlassCache_->EntryCount() * 2u);
+        out->textureBytes += static_cast<int64_t>(liquidGlassCache_->ByteSize());
+    }
+    if (gradientCompositeCache_) {
+        out->textureCount += static_cast<int32_t>(
+            gradientCompositeCache_->EntryCount() * 2u);
+        out->textureBytes += static_cast<int64_t>(
+            gradientCompositeCache_->ByteSize());
+    }
+    if (bitmapCompositeCache_) {
+        out->textureCount += static_cast<int32_t>(
+            bitmapCompositeCache_->EntryCount() * 2u);
+        out->textureBytes += static_cast<int64_t>(
+            bitmapCompositeCache_->ByteSize());
+    }
+    if (effectResultCache_) {
+        out->textureCount += static_cast<int32_t>(effectResultCache_->EntryCount() * 3u);
+        out->textureBytes += static_cast<int64_t>(effectResultCache_->ByteSize());
+    }
+    auto addBuffer = [&](const SoftwareFramebuffer& buffer) {
+        if (!buffer.pixels.empty()) {
+            ++out->textureCount;
+            out->textureBytes += static_cast<int64_t>(buffer.pixels.size());
+        }
+    };
+    addBuffer(effectCaptureFb_);
+    addBuffer(readbackFb_);
+    addBuffer(transitionCaptureFb_[0]);
+    addBuffer(transitionCaptureFb_[1]);
+    addBuffer(desktopCaptureFb_);
+    for (const auto& buffer : retainedCaptureBufferPool_) {
+        if (buffer.pixels.capacity() == 0) continue;
+        ++out->textureCount;
+        out->textureBytes += static_cast<int64_t>(buffer.pixels.capacity());
+    }
+    const size_t resourceCacheBytes = SoftwareResourceCacheBytes();
+    out->textureBytes += static_cast<int64_t>(resourceCacheBytes);
+    out->softwareRasterNs = static_cast<int64_t>(lastRasterNs_);
+    out->softwarePixelsVisited = static_cast<int64_t>(framePixelsVisited_);
+    out->softwarePixelsBlended = static_cast<int64_t>(framePixelsBlended_);
+    out->softwareAaSamples = static_cast<int64_t>(frameAaSamples_);
+    out->softwareClipRejectedPixels =
+        static_cast<int64_t>(frameClipRejectedPixels_);
+    out->softwareParallelNs = static_cast<int64_t>(lastParallelNs_);
+    out->softwareCacheBytes = out->glyphBytes + out->pathBytes + out->textureBytes;
+    if (effectResultCache_) {
+        out->softwareEffectCacheHits =
+            static_cast<int64_t>(effectResultCache_->Hits());
+        out->softwareEffectCacheMisses =
+            static_cast<int64_t>(effectResultCache_->Misses());
+        out->softwareEffectCacheEntries = static_cast<int32_t>(
+            std::min<size_t>(effectResultCache_->EntryCount(), INT32_MAX));
+    }
+    if (gradientCompositeCache_) {
+        out->softwareGradientCacheEntries = static_cast<int32_t>(
+            std::min<size_t>(gradientCompositeCache_->EntryCount(), INT32_MAX));
+    }
+    SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+    out->softwareWorkerCount = workerPool
+        ? static_cast<int32_t>(workerPool->WorkerCount()) : 0;
+    out->softwareWorkerUtilizationPermille = lastRasterNs_ > 0
+        ? static_cast<int32_t>(std::min<uint64_t>(
+            1000u, lastParallelNs_ * 1000u / lastRasterNs_))
+        : 0;
+    // The software target owns one persistent framebuffer rather than a GPU
+    // swap chain. Reporting one lets the common frame-pacing UI distinguish it
+    // from an unavailable snapshot without inventing wait times.
+    out->swapBufferCount = 1;
+    return JALIUM_OK;
+}
+
+JaliumResult SoftwareRenderTarget::ReclaimIdleResources()
+{
+    ellipseFillMaskCache_.reset();
+    ellipseStrokeMaskCache_.reset();
+    if (roundedRectMaskCache_) roundedRectMaskCache_->Clear();
+    if (ellipticalRoundedRectMaskCache_)
+        ellipticalRoundedRectMaskCache_->Clear();
+    if (pathRasterCache_) pathRasterCache_->Clear();
+    if (lineRasterCache_) lineRasterCache_->Clear();
+    if (textMaskCache_) textMaskCache_->Clear();
+    if (textCompositeCache_) textCompositeCache_->Clear();
+    if (backdropCache_) backdropCache_->Clear();
+    if (gradientCompositeCache_) gradientCompositeCache_->Clear();
+    if (bitmapCompositeCache_) bitmapCompositeCache_->Clear();
+    if (effectResultCache_) effectResultCache_->Clear();
+    if (liquidGlassCache_) liquidGlassCache_->Clear();
+    for (const auto& layer : retainedLayers_) {
+        if (layer && layer->bitmap) layer->bitmap->ClearScaledCache();
+    }
+    ReleaseRetainedCaptureBufferPool();
+    std::vector<uint8_t>().swap(blurScratch_);
+    return JALIUM_OK;
+}
+
 void SoftwareRenderTarget::Clear(float r, float g, float b, float a)
 {
-    fb_.Clear(FloatToU8(r), FloatToU8(g), FloatToU8(b), FloatToU8(a));
+    const uint8_t red = FloatToU8(r);
+    const uint8_t green = FloatToU8(g);
+    const uint8_t blue = FloatToU8(b);
+    const uint8_t alpha = FloatToU8(a);
+    const uint32_t packed = static_cast<uint32_t>(blue) |
+        (static_cast<uint32_t>(green) << 8) |
+        (static_cast<uint32_t>(red) << 16) |
+        (static_cast<uint32_t>(alpha) << 24);
+
+    int32_t clearLeft = 0;
+    int32_t clearTop = 0;
+    int32_t clearRight = width_;
+    int32_t clearBottom = height_;
+    if (!fullInvalidation_ && hasDirtyRect_) {
+        clearLeft = std::clamp(dirtyLeft_, 0, width_);
+        clearTop = std::clamp(dirtyTop_, 0, height_);
+        clearRight = std::clamp(dirtyRight_, clearLeft, width_);
+        clearBottom = std::clamp(dirtyBottom_, clearTop, height_);
+    }
+    if (clearRight <= clearLeft || clearBottom <= clearTop) return;
+
+    SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+    const uint64_t pixelCount = static_cast<uint64_t>(clearRight - clearLeft) *
+        static_cast<uint64_t>(clearBottom - clearTop);
+    framePixelsVisited_ += pixelCount;
+    framePixelsBlended_ += pixelCount;
+    if (workerPool && workerPool->CanParallelize() &&
+        pixelCount >= kParallelClearPixelThreshold &&
+        clearBottom - clearTop >= 32) {
+        workerPool->ParallelFor(clearTop, clearBottom, 16,
+            [this, packed, clearLeft, clearRight](int32_t rowBegin, int32_t rowEnd) {
+                for (int32_t row = rowBegin; row < rowEnd; ++row) {
+                    fb_.FillOpaqueSpan(row, clearLeft, clearRight, packed);
+                }
+            });
+        return;
+    }
+    for (int32_t row = clearTop; row < clearBottom; ++row) {
+        fb_.FillOpaqueSpan(row, clearLeft, clearRight, packed);
+    }
 }
 
 bool SoftwareRenderTarget::IsClipped(float px, float py) const
@@ -1757,6 +5093,175 @@ void SoftwareRenderTarget::GetBrushColor(Brush* brush, float px, float py,
     }
 }
 
+SoftwareRenderTarget::PreparedPaint SoftwareRenderTarget::PreparePaint(Brush* brush) const
+{
+    PreparedPaint paint;
+    if (!brush) return paint;
+
+    switch (brush->GetType()) {
+        case JALIUM_BRUSH_SOLID: {
+            const auto* solid = static_cast<const SoftwareSolidBrush*>(brush);
+            paint.kind = PreparedPaintKind::Solid;
+            paint.r = FloatToU8(solid->r);
+            paint.g = FloatToU8(solid->g);
+            paint.b = FloatToU8(solid->b);
+            paint.a = FloatToU8(solid->a * currentOpacity_);
+            paint.packedBgra = static_cast<uint32_t>(paint.b) |
+                (static_cast<uint32_t>(paint.g) << 8) |
+                (static_cast<uint32_t>(paint.r) << 16) |
+                (static_cast<uint32_t>(paint.a) << 24);
+            break;
+        }
+        case JALIUM_BRUSH_LINEAR_GRADIENT:
+            paint.kind = PreparedPaintKind::LinearGradient;
+            paint.linear = static_cast<const SoftwareLinearGradientBrush*>(brush);
+            break;
+        case JALIUM_BRUSH_RADIAL_GRADIENT:
+            paint.kind = PreparedPaintKind::RadialGradient;
+            paint.radial = static_cast<const SoftwareRadialGradientBrush*>(brush);
+            break;
+        default:
+            break;
+    }
+    return paint;
+}
+
+void SoftwareRenderTarget::SamplePaint(
+    const PreparedPaint& paint, float px, float py,
+    uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) const
+{
+    if (paint.kind == PreparedPaintKind::Solid) {
+        r = paint.r; g = paint.g; b = paint.b; a = paint.a;
+        return;
+    }
+
+    float fa = 0.0f;
+    if (paint.kind == PreparedPaintKind::LinearGradient && paint.linear) {
+        paint.linear->SampleColor8(px, py, r, g, b, fa);
+    } else if (paint.kind == PreparedPaintKind::RadialGradient && paint.radial) {
+        paint.radial->SampleColor8(px, py, r, g, b, fa);
+    } else {
+        r = g = b = a = 0;
+        return;
+    }
+    a = FloatToU8(fa * currentOpacity_);
+}
+
+void SoftwareRenderTarget::CompositeSpan(
+    int32_t y, int32_t x0, int32_t x1,
+    const PreparedPaint& paint, uint8_t coverage)
+{
+    if (!paint.IsValid() || coverage == 0 || x1 <= x0) return;
+    x0 = std::max(x0, 0);
+    x1 = std::min(x1, width_);
+    if (x1 <= x0 || y < 0 || y >= height_) return;
+
+    if (paint.IsSolid()) {
+        const uint8_t alpha = coverage == 255
+            ? paint.a
+            : static_cast<uint8_t>(
+                (static_cast<uint32_t>(paint.a) * coverage + 127u) / 255u);
+        fb_.BlendSolidSpan(y, x0, x1, paint.r, paint.g, paint.b, alpha);
+        return;
+    }
+
+    for (int32_t x = x0; x < x1; ++x) {
+        uint8_t r, g, b, a;
+        SamplePaint(paint, static_cast<float>(x) + 0.5f,
+                    static_cast<float>(y) + 0.5f, r, g, b, a);
+        if (coverage != 255) {
+            a = static_cast<uint8_t>(
+                (static_cast<uint32_t>(a) * coverage + 127u) / 255u);
+        }
+        fb_.BlendPixelUnchecked(x, y, r, g, b, a);
+    }
+}
+
+bool SoftwareRenderTarget::TightenToRectClip(
+    int32_t& x0, int32_t& y0, int32_t& x1, int32_t& y1) const
+{
+    const int32_t originalWidth = std::max(x1 - x0, 0);
+    const int32_t originalHeight = std::max(y1 - y0, 0);
+    const uint64_t originalPixels = static_cast<uint64_t>(originalWidth) *
+        static_cast<uint64_t>(originalHeight);
+    x0 = std::max(x0, 0);
+    y0 = std::max(y0, 0);
+    x1 = std::min(x1, width_);
+    y1 = std::min(y1, height_);
+
+    if (!fullInvalidation_ && hasDirtyRect_) {
+        x0 = std::max(x0, dirtyLeft_);
+        y0 = std::max(y0, dirtyTop_);
+        x1 = std::min(x1, dirtyRight_);
+        y1 = std::min(y1, dirtyBottom_);
+    }
+
+    if (!clipStack_.empty()) {
+        const auto& clip = clipStack_.top();
+        // Clip containment is tested at pixel centres. Convert the half-open
+        // float rectangle to the exact half-open integer-centre interval once,
+        // instead of calling Contains for every pixel in every primitive.
+        x0 = std::max(x0, static_cast<int32_t>(std::ceil(clip.x - 0.5f)));
+        y0 = std::max(y0, static_cast<int32_t>(std::ceil(clip.y - 0.5f)));
+        x1 = std::min(x1, static_cast<int32_t>(std::ceil(clip.x + clip.w - 0.5f)));
+        y1 = std::min(y1, static_cast<int32_t>(std::ceil(clip.y + clip.h - 0.5f)));
+    }
+    const int32_t clippedWidth = std::max(x1 - x0, 0);
+    const int32_t clippedHeight = std::max(y1 - y0, 0);
+    const uint64_t clippedPixels = static_cast<uint64_t>(clippedWidth) *
+        static_cast<uint64_t>(clippedHeight);
+    framePixelsVisited_ += originalPixels;
+    framePixelsBlended_ += clippedPixels;
+    if (originalPixels > clippedPixels)
+        frameClipRejectedPixels_ += originalPixels - clippedPixels;
+    return clippedWidth > 0 && clippedHeight > 0;
+}
+
+bool SoftwareRenderTarget::TightenSpanToRoundedClips(
+    int32_t y, int32_t& x0, int32_t& x1) const
+{
+    if (x1 <= x0) return false;
+    const float sampleY = static_cast<float>(y) + 0.5f;
+    for (const auto& clip : roundedClipStack_) {
+        if (sampleY < clip.y || sampleY >= clip.y + clip.h) return false;
+
+        const float halfMin = std::min(clip.w, clip.h) * 0.5f;
+        const float topLeft = std::min(clip.radiusTL, halfMin);
+        const float topRight = std::min(clip.radiusTR, halfMin);
+        const float bottomRight = std::min(clip.radiusBR, halfMin);
+        const float bottomLeft = std::min(clip.radiusBL, halfMin);
+        const float localY = sampleY - clip.y;
+
+        float left = clip.x;
+        if (topLeft > 0.0f && localY < topLeft) {
+            const float dy = (localY - topLeft) / topLeft;
+            left += topLeft *
+                (1.0f - std::sqrt(std::max(0.0f, 1.0f - dy * dy)));
+        } else if (bottomLeft > 0.0f && localY > clip.h - bottomLeft) {
+            const float dy = (localY - (clip.h - bottomLeft)) / bottomLeft;
+            left += bottomLeft *
+                (1.0f - std::sqrt(std::max(0.0f, 1.0f - dy * dy)));
+        }
+
+        float right = clip.x + clip.w;
+        if (topRight > 0.0f && localY < topRight) {
+            const float dy = (localY - topRight) / topRight;
+            right = clip.x + clip.w - topRight +
+                topRight * std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+        } else if (bottomRight > 0.0f && localY > clip.h - bottomRight) {
+            const float dy = (localY - (clip.h - bottomRight)) / bottomRight;
+            right = clip.x + clip.w - bottomRight +
+                bottomRight * std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+        }
+
+        x0 = std::max(x0, static_cast<int32_t>(std::ceil(left - 0.5f)));
+        x1 = std::min(x1,
+            static_cast<int32_t>(std::floor(right - 0.5f)) + 1);
+        if (x1 <= x0) return false;
+    }
+    return true;
+}
+
 void SoftwareRenderTarget::DrawHLine(int32_t x0, int32_t x1, int32_t y,
     uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
@@ -1794,14 +5299,24 @@ void SoftwareRenderTarget::RasterizeCoverageAA(
     constexpr float kStep = 1.0f / kSub;
     constexpr float kInvSamples = 1.0f / (kSub * kSub);
 
-    int32_t px0 = std::max(0, (int32_t)std::floor(devOriginX + localMinX));
-    int32_t py0 = std::max(0, (int32_t)std::floor(devOriginY + localMinY));
-    int32_t px1 = std::min(width_, (int32_t)std::ceil(devOriginX + localMaxX));
-    int32_t py1 = std::min(height_, (int32_t)std::ceil(devOriginY + localMaxY));
+    PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+
+    int32_t px0 = (int32_t)std::floor(devOriginX + localMinX);
+    int32_t py0 = (int32_t)std::floor(devOriginY + localMinY);
+    int32_t px1 = (int32_t)std::ceil(devOriginX + localMaxX);
+    int32_t py1 = (int32_t)std::ceil(devOriginY + localMaxY);
+    const uint64_t aaWidth = static_cast<uint64_t>(std::max(px1 - px0, 0));
+    const uint64_t aaHeight = static_cast<uint64_t>(std::max(py1 - py0, 0));
+    frameAaSamples_ += aaWidth * aaHeight * (kSub * kSub);
+    if (!TightenToRectClip(px0, py0, px1, py1)) return;
+    const bool hasRoundedClip = !roundedClipStack_.empty();
 
     for (int32_t py = py0; py < py1; py++) {
-        for (int32_t px = px0; px < px1; px++) {
-            if (!clipStack_.empty() && IsClipped((float)px + 0.5f, (float)py + 0.5f)) continue;
+        int32_t rowX0 = px0;
+        int32_t rowX1 = px1;
+        if (hasRoundedClip && !TightenSpanToRoundedClips(py, rowX0, rowX1)) continue;
+        for (int32_t px = rowX0; px < rowX1; px++) {
 
             int hits = 0;
             for (int sy = 0; sy < kSub; sy++) {
@@ -1814,18 +5329,21 @@ void SoftwareRenderTarget::RasterizeCoverageAA(
             if (hits == 0) continue;
 
             uint8_t r, g, b, a;
-            GetBrushColor(brush, (float)px + 0.5f, (float)py + 0.5f, r, g, b, a);
+            SamplePaint(paint, (float)px + 0.5f, (float)py + 0.5f, r, g, b, a);
             if (hits < kSub * kSub) {
                 a = (uint8_t)((float)a * ((float)hits * kInvSamples) + 0.5f);
             }
             if (a == 0) continue;
-            fb_.BlendPixel(px, py, r, g, b, a);
+            fb_.BlendPixelUnchecked(px, py, r, g, b, a);
         }
     }
 }
 
 void SoftwareRenderTarget::FillScanlineRect(float x, float y, float w, float h, Brush* brush)
 {
+    PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+
     float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
     currentTransform_.Apply(x + w, y + h, tx2, ty2);
@@ -1839,27 +5357,259 @@ void SoftwareRenderTarget::FillScanlineRect(float x, float y, float w, float h, 
     float top = std::min(ty, ty2), bottom = std::max(ty, ty2);
     if (right - left <= 0.0f || bottom - top <= 0.0f) return;
 
-    int32_t px0 = std::max(0, (int32_t)std::floor(left));
-    int32_t py0 = std::max(0, (int32_t)std::floor(top));
-    int32_t px1 = std::min(width_, (int32_t)std::ceil(right));
-    int32_t py1 = std::min(height_, (int32_t)std::ceil(bottom));
+    int32_t px0 = (int32_t)std::floor(left);
+    int32_t py0 = (int32_t)std::floor(top);
+    int32_t px1 = (int32_t)std::ceil(right);
+    int32_t py1 = (int32_t)std::ceil(bottom);
+    if (!TightenToRectClip(px0, py0, px1, py1)) return;
 
-    for (int32_t row = py0; row < py1; row++) {
+    const bool hasRoundedClip = !roundedClipStack_.empty();
+    const int32_t fullX0 = std::max(px0, static_cast<int32_t>(std::ceil(left)));
+    const int32_t fullX1 = std::min(px1, static_cast<int32_t>(std::floor(right)));
+
+    std::shared_ptr<const SoftwareGradientRaster> gradientRaster;
+    if (paint.kind == PreparedPaintKind::LinearGradient && paint.linear) {
+        gradientRaster = paint.linear->GetOrCreateRaster(
+            left, top, right, bottom, currentOpacity_);
+    } else if (paint.kind == PreparedPaintKind::RadialGradient && paint.radial) {
+        gradientRaster = paint.radial->GetOrCreateRaster(
+            left, top, right, bottom, currentOpacity_);
+    }
+
+    if (gradientRaster) {
+        std::vector<uint8_t> compositeKey;
+        std::vector<uint8_t> destinationBefore;
+        const int32_t panelWidth = px1 - px0;
+        const int32_t panelHeight = py1 - py0;
+        if (!gradientRaster->opaque && panelWidth > 0 && panelHeight > 0) {
+            try {
+                auto appendValue = [&](const auto& value) {
+                    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+                    compositeKey.insert(
+                        compositeKey.end(), bytes, bytes + sizeof(value));
+                };
+                constexpr uint32_t kGradientCompositeTag = 0x47524443u; // "GRDC"
+                appendValue(kGradientCompositeTag);
+                appendValue(px0); appendValue(py0);
+                appendValue(px1); appendValue(py1);
+                const uint32_t roundedCount =
+                    static_cast<uint32_t>(roundedClipStack_.size());
+                appendValue(roundedCount);
+                for (const auto& clip : roundedClipStack_) {
+                    appendValue(clip.x); appendValue(clip.y);
+                    appendValue(clip.w); appendValue(clip.h);
+                    appendValue(clip.radiusTL); appendValue(clip.radiusTR);
+                    appendValue(clip.radiusBR); appendValue(clip.radiusBL);
+                }
+
+                if (!gradientCompositeCache_)
+                    gradientCompositeCache_ =
+                        std::make_unique<SoftwareEffectResultCache>();
+                if (auto* cached = gradientCompositeCache_->FindGradientComposited(
+                        compositeKey, gradientRaster, fb_,
+                        px0, py0, panelWidth, panelHeight)) {
+                    const size_t rowBytes = static_cast<size_t>(panelWidth) * 4u;
+                    for (int32_t row = 0; row < panelHeight; ++row) {
+                        const uint8_t* source = cached->outputPixels.data() +
+                            static_cast<size_t>(row) * rowBytes;
+                        uint8_t* destination = fb_.pixels.data() +
+                            (static_cast<size_t>(py0 + row) * fb_.width + px0) * 4u;
+                        std::memcpy(destination, source, rowBytes);
+                    }
+                    return;
+                }
+
+                const size_t rowBytes = static_cast<size_t>(panelWidth) * 4u;
+                destinationBefore.resize(
+                    rowBytes * static_cast<size_t>(panelHeight));
+                for (int32_t row = 0; row < panelHeight; ++row) {
+                    const uint8_t* source = fb_.pixels.data() +
+                        (static_cast<size_t>(py0 + row) * fb_.width + px0) * 4u;
+                    std::memcpy(
+                        destinationBefore.data() + static_cast<size_t>(row) * rowBytes,
+                        source, rowBytes);
+                }
+            } catch (const std::bad_alloc&) {
+                gradientCompositeCache_.reset();
+                compositeKey.clear();
+                destinationBefore.clear();
+            }
+        }
+
+        auto renderCachedRows = [&](int32_t rowBegin, int32_t rowEnd) {
+            for (int32_t row = rowBegin; row < rowEnd; ++row) {
+                float coverageY = std::min(static_cast<float>(row) + 1.0f, bottom) -
+                    std::max(static_cast<float>(row), top);
+                if (coverageY <= 0.0f) continue;
+                coverageY = std::min(coverageY, 1.0f);
+
+                int32_t rowX0 = px0;
+                int32_t rowX1 = px1;
+                if (hasRoundedClip &&
+                    !TightenSpanToRoundedClips(row, rowX0, rowX1)) continue;
+
+                const int32_t rowFullX0 = std::max(rowX0, fullX0);
+                const int32_t rowFullX1 = std::min(rowX1, fullX1);
+                const size_t rasterRow = static_cast<size_t>(
+                    row - gradientRaster->y) *
+                    static_cast<size_t>(gradientRaster->width) * 4u;
+
+                auto compositePixel = [&](int32_t column, uint8_t alpha) {
+                    if (alpha == 0) return;
+                    const size_t source = rasterRow +
+                        static_cast<size_t>(column - gradientRaster->x) * 4u;
+                    fb_.BlendPixelUnchecked(
+                        column, row,
+                        gradientRaster->pixels[source + 2],
+                        gradientRaster->pixels[source + 1],
+                        gradientRaster->pixels[source], alpha);
+                };
+
+                const uint8_t rowCoverage = FloatToU8(coverageY);
+                if (rowFullX1 > rowFullX0) {
+                    const size_t source = rasterRow +
+                        static_cast<size_t>(rowFullX0 - gradientRaster->x) * 4u;
+                    if (rowCoverage == 255 && gradientRaster->opaque) {
+                        uint8_t* destination = fb_.pixels.data() +
+                            (static_cast<size_t>(row) * fb_.width + rowFullX0) * 4u;
+                        std::memcpy(destination,
+                            gradientRaster->pixels.data() + source,
+                            static_cast<size_t>(rowFullX1 - rowFullX0) * 4u);
+                    } else {
+                        for (int32_t column = rowFullX0;
+                             column < rowFullX1; ++column) {
+                            const size_t pixel = rasterRow +
+                                static_cast<size_t>(column - gradientRaster->x) * 4u;
+                            uint8_t alpha = gradientRaster->pixels[pixel + 3];
+                            if (rowCoverage != 255) {
+                                alpha = static_cast<uint8_t>(
+                                    (static_cast<uint32_t>(alpha) * rowCoverage + 127u) /
+                                    255u);
+                            }
+                            compositePixel(column, alpha);
+                        }
+                    }
+                }
+
+                auto compositeBoundary = [&](int32_t column) {
+                    if (column < rowX0 || column >= rowX1) return;
+                    float coverageX =
+                        std::min(static_cast<float>(column) + 1.0f, right) -
+                        std::max(static_cast<float>(column), left);
+                    if (coverageX <= 0.0f) return;
+                    coverageX = std::min(coverageX, 1.0f);
+                    const size_t pixel = rasterRow +
+                        static_cast<size_t>(column - gradientRaster->x) * 4u;
+                    uint8_t alpha = gradientRaster->pixels[pixel + 3];
+                    const float coverage = coverageX * coverageY;
+                    if (coverage < 1.0f) {
+                        alpha = static_cast<uint8_t>(
+                            static_cast<float>(alpha) * coverage + 0.5f);
+                    }
+                    compositePixel(column, alpha);
+                };
+
+                if (rowFullX1 <= rowFullX0) {
+                    for (int32_t column = rowX0; column < rowX1; ++column) {
+                        compositeBoundary(column);
+                    }
+                } else {
+                    for (int32_t column = rowX0; column < rowFullX0; ++column) {
+                        compositeBoundary(column);
+                    }
+                    for (int32_t column = rowFullX1; column < rowX1; ++column) {
+                        compositeBoundary(column);
+                    }
+                }
+            }
+        };
+
+        const uint64_t pixelWork = static_cast<uint64_t>(px1 - px0) *
+            static_cast<uint64_t>(py1 - py0);
+        SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+        if (!hasRoundedClip && workerPool && workerPool->CanParallelize() &&
+            pixelWork >= 256u * 1024u && py1 - py0 >= 32) {
+            workerPool->ParallelFor(py0, py1, 16, renderCachedRows);
+        } else {
+            renderCachedRows(py0, py1);
+        }
+
+        if (gradientCompositeCache_ && !compositeKey.empty() &&
+            !destinationBefore.empty()) {
+            try {
+                SoftwareEffectResultCache::Entry entry;
+                entry.key = std::move(compositeKey);
+                entry.contextPixels = std::move(destinationBefore);
+                entry.gradientRaster = gradientRaster;
+                entry.panelX = px0;
+                entry.panelY = py0;
+                entry.panelWidth = panelWidth;
+                entry.panelHeight = panelHeight;
+                const size_t rowBytes = static_cast<size_t>(panelWidth) * 4u;
+                entry.outputPixels.resize(
+                    rowBytes * static_cast<size_t>(panelHeight));
+                for (int32_t row = 0; row < panelHeight; ++row) {
+                    const uint8_t* source = fb_.pixels.data() +
+                        (static_cast<size_t>(py0 + row) * fb_.width + px0) * 4u;
+                    std::memcpy(
+                        entry.outputPixels.data() + static_cast<size_t>(row) * rowBytes,
+                        source, rowBytes);
+                }
+                gradientCompositeCache_->Store(std::move(entry));
+            } catch (const std::bad_alloc&) {
+                gradientCompositeCache_.reset();
+            }
+        }
+        return;
+    }
+
+    auto renderRows = [&](int32_t rowBegin, int32_t rowEnd) {
+    for (int32_t row = rowBegin; row < rowEnd; row++) {
         float covY = std::min((float)row + 1.0f, bottom) - std::max((float)row, top);
         if (covY <= 0.0f) continue;
         if (covY > 1.0f) covY = 1.0f;
-        for (int32_t col = px0; col < px1; col++) {
-            if (!clipStack_.empty() && IsClipped((float)col + 0.5f, (float)row + 0.5f)) continue;
+        int32_t rowX0 = px0;
+        int32_t rowX1 = px1;
+        if (hasRoundedClip && !TightenSpanToRoundedClips(row, rowX0, rowX1)) continue;
+        const int32_t rowFullX0 = std::max(rowX0, fullX0);
+        const int32_t rowFullX1 = std::min(rowX1, fullX1);
+
+        // At most one pixel on either side has fractional horizontal
+        // coverage. Everything between them is one contiguous span.
+        const uint8_t rowCoverage = FloatToU8(covY);
+        if (rowFullX1 > rowFullX0) {
+            CompositeSpan(row, rowFullX0, rowFullX1, paint, rowCoverage);
+        }
+
+        auto compositeBoundary = [&](int32_t col) {
+            if (col < rowX0 || col >= rowX1) return;
             float covX = std::min((float)col + 1.0f, right) - std::max((float)col, left);
-            if (covX <= 0.0f) continue;
+            if (covX <= 0.0f) return;
             if (covX > 1.0f) covX = 1.0f;
             float cov = covX * covY;
             uint8_t r, g, b, a;
-            GetBrushColor(brush, (float)col + 0.5f, (float)row + 0.5f, r, g, b, a);
+            SamplePaint(paint, (float)col + 0.5f, (float)row + 0.5f, r, g, b, a);
             if (cov < 1.0f) a = (uint8_t)((float)a * cov + 0.5f);
-            if (a == 0) continue;
-            fb_.BlendPixel(col, row, r, g, b, a);
+            if (a != 0) fb_.BlendPixelUnchecked(col, row, r, g, b, a);
+        };
+
+        if (rowFullX1 <= rowFullX0) {
+            for (int32_t col = rowX0; col < rowX1; ++col) compositeBoundary(col);
+        } else {
+            for (int32_t col = rowX0; col < rowFullX0; ++col) compositeBoundary(col);
+            for (int32_t col = rowFullX1; col < rowX1; ++col) compositeBoundary(col);
         }
+    }
+    };
+
+    const uint64_t pixelWork = static_cast<uint64_t>(px1 - px0) *
+        static_cast<uint64_t>(py1 - py0);
+    SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+    if (!hasRoundedClip && workerPool && workerPool->CanParallelize() &&
+        pixelWork >= 256u * 1024u && py1 - py0 >= 32) {
+        workerPool->ParallelFor(py0, py1, 16, renderRows);
+    } else {
+        renderRows(py0, py1);
     }
 }
 
@@ -1918,26 +5668,88 @@ void SoftwareRenderTarget::DrawBresenhamLine(float x1, float y1, float x2, float
     int32_t px1 = std::min(width_, (int32_t)std::ceil(maxXf));
     int32_t py1 = std::min(height_, (int32_t)std::ceil(maxYf));
 
-    float segDX = tx2 - tx1, segDY = ty2 - ty1;
-    float lenSq = segDX * segDX + segDY * segDY;
+    const SoftwareLineRasterCache::Entry* cached = nullptr;
+    try {
+        if (!lineRasterCache_)
+            lineRasterCache_ = std::make_unique<SoftwareLineRasterCache>();
+        cached = lineRasterCache_->Find(
+            tx1, ty1, tx2, ty2, halfW, width_, height_);
+    } catch (const std::bad_alloc&) {
+        lineRasterCache_.reset();
+    }
 
-    for (int32_t py = py0; py < py1; py++) {
-        float fy = (float)py + 0.5f;
-        for (int32_t px = px0; px < px1; px++) {
-            float fx = (float)px + 0.5f;
-            float t = (lenSq > 0.0f)
-                ? std::clamp(((fx - tx1) * segDX + (fy - ty1) * segDY) / lenSq, 0.0f, 1.0f)
-                : 0.0f;
-            float cxp = tx1 + t * segDX, cyp = ty1 + t * segDY;
-            float ddx = fx - cxp, ddy = fy - cyp;
-            float dist = std::sqrt(ddx * ddx + ddy * ddy);
-            float cov = halfW + 0.5f - dist;
-            if (cov <= 0.0f) continue;
-            if (cov > 1.0f) cov = 1.0f;
-            if (!clipStack_.empty() && IsClipped(fx, fy)) continue;
-            uint8_t aa = (cov < 1.0f) ? (uint8_t)((float)a * cov + 0.5f) : a;
-            if (aa == 0) continue;
-            fb_.BlendPixel(px, py, r, g, b, aa);
+    SoftwareLineRasterCache::Entry uncached;
+    if (!cached) {
+        uncached.x1 = tx1;
+        uncached.y1 = ty1;
+        uncached.x2 = tx2;
+        uncached.y2 = ty2;
+        uncached.halfWidth = halfW;
+        uncached.targetWidth = width_;
+        uncached.targetHeight = height_;
+        uncached.spans.reserve(static_cast<size_t>(std::max(py1 - py0, 0)) * 4u);
+
+        const float segDX = tx2 - tx1;
+        const float segDY = ty2 - ty1;
+        const float lenSq = segDX * segDX + segDY * segDY;
+        for (int32_t py = py0; py < py1; ++py) {
+            const float fy = static_cast<float>(py) + 0.5f;
+            int32_t runStart = px0;
+            float runCoverage = -1.0f;
+            auto flush = [&](int32_t runEnd) {
+                if (runCoverage > 0.0f && runEnd > runStart) {
+                    uncached.spans.push_back({
+                        py, runStart, runEnd - runStart, runCoverage });
+                }
+            };
+            for (int32_t px = px0; px < px1; ++px) {
+                const float fx = static_cast<float>(px) + 0.5f;
+                const float t = lenSq > 0.0f
+                    ? std::clamp(
+                        ((fx - tx1) * segDX + (fy - ty1) * segDY) / lenSq,
+                        0.0f, 1.0f)
+                    : 0.0f;
+                const float closestX = tx1 + t * segDX;
+                const float closestY = ty1 + t * segDY;
+                const float deltaX = fx - closestX;
+                const float deltaY = fy - closestY;
+                const float distance = std::sqrt(
+                    deltaX * deltaX + deltaY * deltaY);
+                const float coverage = std::clamp(
+                    halfW + 0.5f - distance, 0.0f, 1.0f);
+                if (coverage != runCoverage) {
+                    flush(px);
+                    runStart = px;
+                    runCoverage = coverage;
+                }
+            }
+            flush(px1);
+        }
+
+        if (lineRasterCache_) {
+            try {
+                cached = lineRasterCache_->Store(uncached);
+            } catch (const std::bad_alloc&) {
+                lineRasterCache_.reset();
+            }
+        }
+    }
+
+    const auto& spans = cached ? cached->spans : uncached.spans;
+    for (const auto& span : spans) {
+        int32_t spanX0 = span.x;
+        int32_t spanY0 = span.y;
+        int32_t spanX1 = span.x + span.width;
+        int32_t spanY1 = span.y + 1;
+        if (!TightenToRectClip(spanX0, spanY0, spanX1, spanY1)) continue;
+        if (!roundedClipStack_.empty() &&
+            !TightenSpanToRoundedClips(span.y, spanX0, spanX1)) continue;
+        const uint8_t coveredAlpha = span.coverage < 1.0f
+            ? static_cast<uint8_t>(static_cast<float>(a) * span.coverage + 0.5f)
+            : a;
+        if (coveredAlpha != 0) {
+            fb_.BlendSolidSpan(
+                span.y, spanX0, spanX1, r, g, b, coveredAlpha);
         }
     }
 }
@@ -1951,7 +5763,10 @@ void SoftwareRenderTarget::FillRectangle(float x, float y, float w, float h, Bru
 void SoftwareRenderTarget::DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth)
 {
     if (!brush) return;
-    StrokeScanlineRect(x, y, w, h, brush, strokeWidth);
+    // The per-corner ring path restricts work to the four stroke bands instead
+    // of supersampling the empty centre of the rectangle.
+    DrawPerCornerRoundedRectangle(
+        x, y, w, h, 0.0f, 0.0f, 0.0f, 0.0f, brush, strokeWidth);
 }
 
 void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush)
@@ -1959,6 +5774,20 @@ void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float
     if (!brush) return;
     rx = std::min(rx, w * 0.5f);
     ry = std::min(ry, h * 0.5f);
+
+    // UI corner radii are circular in the overwhelmingly common case. Reuse
+    // the exact per-corner scanline implementation when the current transform
+    // preserves that circle; retain the general ellipse predicate below for
+    // anisotropic scaling and explicit rx != ry.
+    const float matrixScaleX = std::abs(currentTransform_.m[0]);
+    const float matrixScaleY = std::abs(currentTransform_.m[3]);
+    if (std::abs(currentTransform_.m[1]) < 1e-6f &&
+        std::abs(currentTransform_.m[2]) < 1e-6f &&
+        std::abs(rx - ry) < 1e-6f &&
+        std::abs(matrixScaleX - matrixScaleY) < 1e-6f) {
+        FillPerCornerRoundedRectangle(x, y, w, h, rx, rx, rx, rx, brush);
+        return;
+    }
 
     float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
@@ -1969,6 +5798,80 @@ void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float
     float sy = (h > 0) ? (th / h) : 1.0f;
     if (tw <= 0.0f || th <= 0.0f) return;
     float trx = rx * sx, try_ = ry * sy;
+
+    const PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+    const int32_t maskX = static_cast<int32_t>(std::floor(tx));
+    const int32_t maskY = static_cast<int32_t>(std::floor(ty));
+    const int32_t maskWidth =
+        static_cast<int32_t>(std::ceil(tx + tw)) - maskX;
+    const int32_t maskHeight =
+        static_cast<int32_t>(std::ceil(ty + th)) - maskY;
+    int32_t px0 = maskX;
+    int32_t py0 = maskY;
+    int32_t px1 = maskX + maskWidth;
+    int32_t py1 = maskY + maskHeight;
+    if (!TightenToRectClip(px0, py0, px1, py1)) return;
+
+    try {
+        if (!ellipticalRoundedRectMaskCache_)
+            ellipticalRoundedRectMaskCache_ =
+                std::make_unique<SoftwareEllipticalRoundedRectMaskCache>();
+        const auto* mask = ellipticalRoundedRectMaskCache_->GetOrBuild(
+            maskWidth, maskHeight,
+            tx - static_cast<float>(maskX),
+            ty - static_cast<float>(maskY),
+            tw, th, trx, try_);
+        if (mask) {
+            for (const auto& span : mask->spans) {
+                const int32_t destinationY = maskY + span.y;
+                if (destinationY < py0 || destinationY >= py1) continue;
+                int32_t destinationX0 = std::max(px0, maskX + span.x);
+                int32_t destinationX1 = std::min(
+                    px1, maskX + span.x + span.width);
+                if (!roundedClipStack_.empty() &&
+                    !TightenSpanToRoundedClips(
+                        destinationY, destinationX0, destinationX1)) continue;
+                if (destinationX1 <= destinationX0) continue;
+
+                if (paint.IsSolid()) {
+                    const uint8_t alpha = span.hits == 16
+                        ? paint.a
+                        : static_cast<uint8_t>(
+                            static_cast<float>(paint.a) *
+                            (static_cast<float>(span.hits) / 16.0f) + 0.5f);
+                    fb_.BlendSolidSpan(
+                        destinationY, destinationX0, destinationX1,
+                        paint.r, paint.g, paint.b, alpha);
+                } else if (span.hits == 16) {
+                    CompositeSpan(
+                        destinationY, destinationX0, destinationX1, paint);
+                } else {
+                    const float coverage =
+                        static_cast<float>(span.hits) / 16.0f;
+                    for (int32_t destinationX = destinationX0;
+                         destinationX < destinationX1; ++destinationX) {
+                        uint8_t red, green, blue, alpha;
+                        SamplePaint(
+                            paint,
+                            static_cast<float>(destinationX) + 0.5f,
+                            static_cast<float>(destinationY) + 0.5f,
+                            red, green, blue, alpha);
+                        alpha = static_cast<uint8_t>(
+                            static_cast<float>(alpha) * coverage + 0.5f);
+                        if (alpha != 0) {
+                            fb_.BlendPixelUnchecked(
+                                destinationX, destinationY,
+                                red, green, blue, alpha);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+    } catch (const std::bad_alloc&) {
+        ellipticalRoundedRectMaskCache_.reset();
+    }
 
     // Sub-pixel + AA fill: feed the float origin (tx,ty) to RasterizeCoverageAA
     // instead of truncating it, so an animated rounded rect tracks its true
@@ -2002,6 +5905,17 @@ void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float
     if (!brush) return;
     rx = std::min(rx, w * 0.5f);
     ry = std::min(ry, h * 0.5f);
+
+    const float matrixScaleX = std::abs(currentTransform_.m[0]);
+    const float matrixScaleY = std::abs(currentTransform_.m[3]);
+    if (std::abs(currentTransform_.m[1]) < 1e-6f &&
+        std::abs(currentTransform_.m[2]) < 1e-6f &&
+        std::abs(rx - ry) < 1e-6f &&
+        std::abs(matrixScaleX - matrixScaleY) < 1e-6f) {
+        DrawPerCornerRoundedRectangle(
+            x, y, w, h, rx, rx, rx, rx, brush, strokeWidth);
+        return;
+    }
 
     float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
@@ -2084,11 +5998,167 @@ void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float
 
     if (tw <= 0.0f || th <= 0.0f) return;
 
-    // Sub-pixel + AA fill of a per-corner rounded rect (float origin, no snap).
-    RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush,
-        [tw, th, ttl, ttr, tbr, tbl](float cx, float cy) -> bool {
-            return IsInsidePerCornerRoundedRect(cx, cy, tw, th, ttl, ttr, tbr, tbl);
-        });
+    if (ttl <= 0.0f && ttr <= 0.0f && tbr <= 0.0f && tbl <= 0.0f) {
+        FillScanlineRect(x, y, w, h, brush);
+        return;
+    }
+
+    PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+
+    int32_t px0 = static_cast<int32_t>(std::floor(tx));
+    int32_t py0 = static_cast<int32_t>(std::floor(ty));
+    int32_t px1 = static_cast<int32_t>(std::ceil(tx + tw));
+    int32_t py1 = static_cast<int32_t>(std::ceil(ty + th));
+    if (!TightenToRectClip(px0, py0, px1, py1)) return;
+
+    if (paint.IsSolid()) {
+        const int32_t maskX = static_cast<int32_t>(std::floor(tx));
+        const int32_t maskY = static_cast<int32_t>(std::floor(ty));
+        const int32_t maskWidth = static_cast<int32_t>(std::ceil(tx + tw)) - maskX;
+        const int32_t maskHeight = static_cast<int32_t>(std::ceil(ty + th)) - maskY;
+        try {
+            if (!roundedRectMaskCache_)
+                roundedRectMaskCache_ = std::make_unique<SoftwareRoundedRectMaskCache>();
+            const auto* mask = roundedRectMaskCache_->GetOrBuild(
+                maskWidth, maskHeight,
+                tx - maskX, ty - maskY,
+                tw, th, ttl, ttr, tbr, tbl,
+                0.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 0.0f,
+                false);
+            if (mask) {
+                for (const auto& span : mask->spans) {
+                    const int32_t destinationY = maskY + span.y;
+                    if (destinationY < py0 || destinationY >= py1) continue;
+                    int32_t destinationX0 = std::max(px0, maskX + span.x);
+                    int32_t destinationX1 = std::min(
+                        px1, maskX + span.x + span.width);
+                    if (!roundedClipStack_.empty() &&
+                        !TightenSpanToRoundedClips(
+                            destinationY, destinationX0, destinationX1)) continue;
+                    if (destinationX1 <= destinationX0) continue;
+                    const uint8_t alpha = span.hits == 16
+                        ? paint.a
+                        : static_cast<uint8_t>(
+                            static_cast<float>(paint.a) *
+                            (static_cast<float>(span.hits) / 16.0f) + 0.5f);
+                    fb_.BlendSolidSpan(
+                        destinationY, destinationX0, destinationX1,
+                        paint.r, paint.g, paint.b, alpha);
+                }
+                return;
+            }
+        } catch (const std::bad_alloc&) {
+            roundedRectMaskCache_.reset();
+        }
+    }
+
+    if (!roundedClipStack_.empty()) {
+        RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush,
+            [tw, th, ttl, ttr, tbr, tbl](float cx, float cy) -> bool {
+                return IsInsidePerCornerRoundedRect(cx, cy, tw, th, ttl, ttr, tbr, tbl);
+            });
+        return;
+    }
+
+    constexpr int kSub = 4;
+    constexpr float kStep = 1.0f / static_cast<float>(kSub);
+    constexpr float kFirstSample = 0.5f * kStep;
+    constexpr float kLastSample = 1.0f - kFirstSample;
+
+    auto intervalAtY = [tw, th, ttl, ttr, tbr, tbl](
+        float localY, float& left, float& right) -> bool {
+        if (localY < 0.0f || localY > th) return false;
+
+        left = 0.0f;
+        if (ttl > 0.0f && localY < ttl) {
+            const float dy = (localY - ttl) / ttl;
+            left = ttl * (1.0f - std::sqrt(std::max(0.0f, 1.0f - dy * dy)));
+        } else if (tbl > 0.0f && localY > th - tbl) {
+            const float dy = (localY - (th - tbl)) / tbl;
+            left = tbl * (1.0f - std::sqrt(std::max(0.0f, 1.0f - dy * dy)));
+        }
+
+        right = tw;
+        if (ttr > 0.0f && localY < ttr) {
+            const float dy = (localY - ttr) / ttr;
+            right = tw - ttr + ttr * std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+        } else if (tbr > 0.0f && localY > th - tbr) {
+            const float dy = (localY - (th - tbr)) / tbr;
+            right = tw - tbr + tbr * std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+        }
+        return right >= left;
+    };
+
+    for (int32_t py = py0; py < py1; ++py) {
+        float rowLeft[kSub] = {};
+        float rowRight[kSub] = {};
+        bool rowValid[kSub] = {};
+        float maxLeft = 0.0f;
+        float minRight = tw;
+        int validSubRows = 0;
+        for (int sy = 0; sy < kSub; ++sy) {
+            const float localY =
+                (static_cast<float>(py) + (sy + 0.5f) * kStep) - ty;
+            float left = 0.0f, right = 0.0f;
+            if (!intervalAtY(localY, left, right)) continue;
+            rowLeft[sy] = left;
+            rowRight[sy] = right;
+            rowValid[sy] = true;
+            maxLeft = validSubRows == 0 ? left : std::max(maxLeft, left);
+            minRight = validSubRows == 0 ? right : std::min(minRight, right);
+            ++validSubRows;
+        }
+        if (validSubRows == 0) continue;
+
+        // Every horizontal sample in [coreX0, coreX1) is inside each valid
+        // sub-row. Its only coverage reduction can therefore be the fractional
+        // top/bottom row, represented by one shared span alpha.
+        int32_t coreX0 = static_cast<int32_t>(
+            std::ceil(tx + maxLeft - kFirstSample));
+        int32_t coreX1 = static_cast<int32_t>(
+            std::floor(tx + minRight - kLastSample)) + 1;
+        coreX0 = std::clamp(coreX0, px0, px1);
+        coreX1 = std::clamp(coreX1, px0, px1);
+
+        const uint8_t coreCoverage = static_cast<uint8_t>(
+            (validSubRows * 255 + kSub / 2) / kSub);
+        if (coreX1 > coreX0) {
+            CompositeSpan(py, coreX0, coreX1, paint, coreCoverage);
+        }
+
+        auto compositeEdgePixel = [&](int32_t px) {
+            int hits = 0;
+            for (int sy = 0; sy < kSub; ++sy) {
+                if (!rowValid[sy]) continue;
+                for (int sx = 0; sx < kSub; ++sx) {
+                    const float localX =
+                        (static_cast<float>(px) + (sx + 0.5f) * kStep) - tx;
+                    if (localX >= rowLeft[sy] && localX <= rowRight[sy]) {
+                        ++hits;
+                    }
+                }
+            }
+            if (hits == 0) return;
+            uint8_t r, g, b, a;
+            SamplePaint(paint, static_cast<float>(px) + 0.5f,
+                        static_cast<float>(py) + 0.5f, r, g, b, a);
+            if (hits < kSub * kSub) {
+                a = static_cast<uint8_t>(
+                    static_cast<float>(a) *
+                    (static_cast<float>(hits) / (kSub * kSub)) + 0.5f);
+            }
+            if (a != 0) fb_.BlendPixelUnchecked(px, py, r, g, b, a);
+        };
+
+        if (coreX1 <= coreX0) {
+            for (int32_t px = px0; px < px1; ++px) compositeEdgePixel(px);
+        } else {
+            for (int32_t px = px0; px < coreX0; ++px) compositeEdgePixel(px);
+            for (int32_t px = coreX1; px < px1; ++px) compositeEdgePixel(px);
+        }
+    }
 }
 
 void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
@@ -2116,15 +6186,225 @@ void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float
     float iBr = std::max(0.0f, tbr - tsw), iBl = std::max(0.0f, tbl - tsw);
     float innerW = tw - tsw * 2.0f, innerH = th - tsw * 2.0f;
 
-    // Sub-pixel + AA stroke ring of a per-corner rounded rect (float origin).
-    RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush,
-        [tw, th, ttl, ttr, tbr, tbl, tsw, iTl, iTr, iBr, iBl, innerW, innerH](float cx, float cy) -> bool {
-            if (!IsInsidePerCornerRoundedRect(cx, cy, tw, th, ttl, ttr, tbr, tbl)) return false;
-            if (innerW > 0.0f && innerH > 0.0f &&
-                IsInsidePerCornerRoundedRect(cx - tsw, cy - tsw, innerW, innerH, iTl, iTr, iBr, iBl))
-                return false;
-            return true;
-        });
+    PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+
+    auto insideStroke = [tw, th, ttl, ttr, tbr, tbl, tsw,
+                         iTl, iTr, iBr, iBl, innerW, innerH](
+        float cx, float cy) -> bool {
+        if (!IsInsidePerCornerRoundedRect(cx, cy, tw, th, ttl, ttr, tbr, tbl)) return false;
+        if (innerW > 0.0f && innerH > 0.0f &&
+            IsInsidePerCornerRoundedRect(
+                cx - tsw, cy - tsw, innerW, innerH, iTl, iTr, iBr, iBl)) {
+            return false;
+        }
+        return true;
+    };
+
+    int32_t px0 = static_cast<int32_t>(std::floor(tx));
+    int32_t py0 = static_cast<int32_t>(std::floor(ty));
+    int32_t px1 = static_cast<int32_t>(std::ceil(tx + tw));
+    int32_t py1 = static_cast<int32_t>(std::ceil(ty + th));
+    if (!TightenToRectClip(px0, py0, px1, py1)) return;
+
+    if (paint.IsSolid()) {
+        const int32_t maskX = static_cast<int32_t>(std::floor(tx));
+        const int32_t maskY = static_cast<int32_t>(std::floor(ty));
+        const int32_t maskWidth = static_cast<int32_t>(std::ceil(tx + tw)) - maskX;
+        const int32_t maskHeight = static_cast<int32_t>(std::ceil(ty + th)) - maskY;
+        try {
+            if (!roundedRectMaskCache_)
+                roundedRectMaskCache_ = std::make_unique<SoftwareRoundedRectMaskCache>();
+            const auto* mask = roundedRectMaskCache_->GetOrBuild(
+                maskWidth, maskHeight,
+                tx - maskX, ty - maskY,
+                tw, th, ttl, ttr, tbr, tbl,
+                tsw, innerW, innerH,
+                iTl, iTr, iBr, iBl,
+                true);
+            if (mask) {
+                for (const auto& span : mask->spans) {
+                    const int32_t destinationY = maskY + span.y;
+                    if (destinationY < py0 || destinationY >= py1) continue;
+                    int32_t destinationX0 = std::max(px0, maskX + span.x);
+                    int32_t destinationX1 = std::min(
+                        px1, maskX + span.x + span.width);
+                    if (!roundedClipStack_.empty() &&
+                        !TightenSpanToRoundedClips(
+                            destinationY, destinationX0, destinationX1)) continue;
+                    if (destinationX1 <= destinationX0) continue;
+                    const uint8_t alpha = span.hits == 16
+                        ? paint.a
+                        : static_cast<uint8_t>(
+                            static_cast<float>(paint.a) *
+                            (static_cast<float>(span.hits) / 16.0f) + 0.5f);
+                    fb_.BlendSolidSpan(
+                        destinationY, destinationX0, destinationX1,
+                        paint.r, paint.g, paint.b, alpha);
+                }
+                return;
+            }
+        } catch (const std::bad_alloc&) {
+            roundedRectMaskCache_.reset();
+        }
+    }
+
+    if (!roundedClipStack_.empty()) {
+        RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush, insideStroke);
+        return;
+    }
+
+    constexpr int kSub = 4;
+    constexpr float kStep = 1.0f / static_cast<float>(kSub);
+
+    auto outerIntervalAtY = [tw, th, ttl, ttr, tbr, tbl](
+        float localY, float& left, float& right) -> bool {
+        if (localY < 0.0f || localY > th) return false;
+        left = 0.0f;
+        if (ttl > 0.0f && localY < ttl) {
+            const float dy = (localY - ttl) / ttl;
+            left = ttl * (1.0f - std::sqrt(std::max(0.0f, 1.0f - dy * dy)));
+        } else if (tbl > 0.0f && localY > th - tbl) {
+            const float dy = (localY - (th - tbl)) / tbl;
+            left = tbl * (1.0f - std::sqrt(std::max(0.0f, 1.0f - dy * dy)));
+        }
+
+        right = tw;
+        if (ttr > 0.0f && localY < ttr) {
+            const float dy = (localY - ttr) / ttr;
+            right = tw - ttr + ttr * std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+        } else if (tbr > 0.0f && localY > th - tbr) {
+            const float dy = (localY - (th - tbr)) / tbr;
+            right = tw - tbr + tbr * std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+        }
+        return right >= left;
+    };
+
+    auto innerIntervalAtY = [innerW, innerH, iTl, iTr, iBr, iBl, tsw](
+        float outerLocalY, float& left, float& right) -> bool {
+        if (innerW <= 0.0f || innerH <= 0.0f) return false;
+        const float localY = outerLocalY - tsw;
+        if (localY < 0.0f || localY > innerH) return false;
+
+        left = tsw;
+        if (iTl > 0.0f && localY < iTl) {
+            const float dy = (localY - iTl) / iTl;
+            left += iTl * (1.0f - std::sqrt(std::max(0.0f, 1.0f - dy * dy)));
+        } else if (iBl > 0.0f && localY > innerH - iBl) {
+            const float dy = (localY - (innerH - iBl)) / iBl;
+            left += iBl * (1.0f - std::sqrt(std::max(0.0f, 1.0f - dy * dy)));
+        }
+
+        right = tsw + innerW;
+        if (iTr > 0.0f && localY < iTr) {
+            const float dy = (localY - iTr) / iTr;
+            right = tsw + innerW - iTr +
+                iTr * std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+        } else if (iBr > 0.0f && localY > innerH - iBr) {
+            const float dy = (localY - (innerH - iBr)) / iBr;
+            right = tsw + innerW - iBr +
+                iBr * std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+        }
+        return right >= left;
+    };
+
+    for (int32_t py = py0; py < py1; ++py) {
+        float outerLeft[kSub] = {};
+        float outerRight[kSub] = {};
+        float innerLeft[kSub] = {};
+        float innerRight[kSub] = {};
+        bool outerValid[kSub] = {};
+        bool innerValid[kSub] = {};
+        bool everySubRowHasInner = true;
+        float maxInnerLeft = 0.0f;
+        float minInnerRight = tw;
+        for (int sy = 0; sy < kSub; ++sy) {
+            const float localY =
+                (static_cast<float>(py) + (sy + 0.5f) * kStep) - ty;
+            outerValid[sy] = outerIntervalAtY(
+                localY, outerLeft[sy], outerRight[sy]);
+            innerValid[sy] = innerIntervalAtY(
+                localY, innerLeft[sy], innerRight[sy]);
+            if (!innerValid[sy]) {
+                everySubRowHasInner = false;
+                continue;
+            }
+            maxInnerLeft = sy == 0
+                ? innerLeft[sy] : std::max(maxInnerLeft, innerLeft[sy]);
+            minInnerRight = sy == 0
+                ? innerRight[sy] : std::min(minInnerRight, innerRight[sy]);
+        }
+
+        int32_t leftEnd = px1;
+        int32_t rightStart = px1;
+        if (everySubRowHasInner && minInnerRight > maxInnerLeft) {
+            // Add one conservative pixel at each side of the inner boundary;
+            // only those bands can contain stroke coverage on this row.
+            leftEnd = std::clamp(
+                static_cast<int32_t>(std::ceil(tx + maxInnerLeft)) + 1,
+                px0, px1);
+            rightStart = std::clamp(
+                static_cast<int32_t>(std::floor(tx + minInnerRight)) - 1,
+                px0, px1);
+        }
+
+        auto compositeRange = [&](int32_t begin, int32_t end) {
+            int32_t solidRunStart = begin;
+            int solidRunHits = -1;
+            auto flushSolidRun = [&](int32_t runEnd) {
+                if (solidRunHits <= 0 || runEnd <= solidRunStart) return;
+                const uint8_t alpha = solidRunHits == kSub * kSub
+                    ? paint.a
+                    : static_cast<uint8_t>(
+                        static_cast<float>(paint.a) *
+                        (static_cast<float>(solidRunHits) / (kSub * kSub)) + 0.5f);
+                fb_.BlendSolidSpan(
+                    py, solidRunStart, runEnd, paint.r, paint.g, paint.b, alpha);
+            };
+
+            for (int32_t px = begin; px < end; ++px) {
+                int hits = 0;
+                for (int sy = 0; sy < kSub; ++sy) {
+                    if (!outerValid[sy]) continue;
+                    for (int sx = 0; sx < kSub; ++sx) {
+                        const float localX =
+                            (static_cast<float>(px) + (sx + 0.5f) * kStep) - tx;
+                        const bool insideOuter =
+                            localX >= outerLeft[sy] && localX <= outerRight[sy];
+                        const bool insideInner = innerValid[sy] &&
+                            localX >= innerLeft[sy] && localX <= innerRight[sy];
+                        if (insideOuter && !insideInner) ++hits;
+                    }
+                }
+                if (paint.IsSolid()) {
+                    if (hits != solidRunHits) {
+                        flushSolidRun(px);
+                        solidRunStart = px;
+                        solidRunHits = hits;
+                    }
+                    continue;
+                }
+                if (hits == 0) continue;
+                uint8_t r, g, b, a;
+                SamplePaint(paint, static_cast<float>(px) + 0.5f,
+                            static_cast<float>(py) + 0.5f, r, g, b, a);
+                if (hits < kSub * kSub) {
+                    a = static_cast<uint8_t>(
+                        static_cast<float>(a) *
+                        (static_cast<float>(hits) / (kSub * kSub)) + 0.5f);
+                }
+                if (a != 0) fb_.BlendPixelUnchecked(px, py, r, g, b, a);
+            }
+            if (paint.IsSolid()) flushSolidRun(end);
+        };
+
+        if (!everySubRowHasInner || rightStart <= leftEnd) {
+            compositeRange(px0, px1);
+        } else {
+            compositeRange(px0, leftEnd);
+            compositeRange(rightStart, px1);
+        }
+    }
 }
 
 void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush)
@@ -2136,13 +6416,136 @@ void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, B
     float trx = tx2 - tx, try_ = ty2 - ty;
     if (trx <= 0.0f || try_ <= 0.0f) return;
 
-    // Sub-pixel + AA fill: origin is the float ellipse centre; samples are taken
-    // relative to it, so an animated ellipse tracks its true position smoothly.
-    RasterizeCoverageAA(tx, ty, -trx, -try_, trx, try_, brush,
-        [trx, try_](float lx, float ly) -> bool {
+    PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+
+    auto insideEllipse = [trx, try_](float lx, float ly) -> bool {
             float ex = lx / trx, ey = ly / try_;
             return ex * ex + ey * ey <= 1.0f;
-        });
+        };
+
+    if (!roundedClipStack_.empty()) {
+        RasterizeCoverageAA(tx, ty, -trx, -try_, trx, try_, brush, insideEllipse);
+        return;
+    }
+
+    int32_t px0 = static_cast<int32_t>(std::floor(tx - trx));
+    int32_t py0 = static_cast<int32_t>(std::floor(ty - try_));
+    int32_t px1 = static_cast<int32_t>(std::ceil(tx + trx));
+    int32_t py1 = static_cast<int32_t>(std::ceil(ty + try_));
+    if (!TightenToRectClip(px0, py0, px1, py1)) return;
+
+    if (paint.IsSolid()) {
+        const int32_t maskX = static_cast<int32_t>(std::floor(tx - trx));
+        const int32_t maskY = static_cast<int32_t>(std::floor(ty - try_));
+        const int32_t maskWidth =
+            static_cast<int32_t>(std::ceil(tx + trx)) - maskX;
+        const int32_t maskHeight =
+            static_cast<int32_t>(std::ceil(ty + try_)) - maskY;
+        try {
+            if (!ellipseFillMaskCache_)
+                ellipseFillMaskCache_ = std::make_unique<SoftwareEllipseMaskCache>();
+            const float localCenterX = tx - static_cast<float>(maskX);
+            const float localCenterY = ty - static_cast<float>(maskY);
+            if (!ellipseFillMaskCache_->Matches(
+                    maskWidth, maskHeight, localCenterX, localCenterY,
+                    trx, try_, 0.0f, 0.0f, false)) {
+                ellipseFillMaskCache_->Build(
+                    maskWidth, maskHeight, localCenterX, localCenterY,
+                    trx, try_, 0.0f, 0.0f, false);
+            }
+            for (const auto& span : ellipseFillMaskCache_->Spans()) {
+                const int32_t destinationY = maskY + span.y;
+                if (destinationY < py0 || destinationY >= py1) continue;
+                const int32_t destinationX0 = std::max(px0, maskX + span.x);
+                const int32_t destinationX1 = std::min(
+                    px1, maskX + span.x + span.width);
+                if (destinationX1 <= destinationX0) continue;
+                const uint8_t alpha = span.hits == 16
+                    ? paint.a
+                    : static_cast<uint8_t>(
+                        static_cast<float>(paint.a) *
+                        (static_cast<float>(span.hits) / 16.0f) + 0.5f);
+                fb_.BlendSolidSpan(
+                    destinationY, destinationX0, destinationX1,
+                    paint.r, paint.g, paint.b, alpha);
+            }
+            return;
+        } catch (const std::bad_alloc&) {
+            ellipseFillMaskCache_.reset();
+            // Fall through to the allocation-free per-row implementation.
+        }
+    }
+
+    constexpr int kSub = 4;
+    constexpr float kStep = 1.0f / static_cast<float>(kSub);
+    constexpr float kFirstSample = 0.5f * kStep;
+    constexpr float kLastSample = 1.0f - kFirstSample;
+
+    for (int32_t py = py0; py < py1; ++py) {
+        float rowLeft[kSub] = {};
+        float rowRight[kSub] = {};
+        bool rowValid[kSub] = {};
+        float maxLeft = -trx;
+        float minRight = trx;
+        int validSubRows = 0;
+        for (int sy = 0; sy < kSub; ++sy) {
+            const float localY =
+                (static_cast<float>(py) + (sy + 0.5f) * kStep) - ty;
+            const float ny = localY / try_;
+            if (ny < -1.0f || ny > 1.0f) continue;
+            const float halfWidth = trx *
+                std::sqrt(std::max(0.0f, 1.0f - ny * ny));
+            const float left = -halfWidth;
+            const float right = halfWidth;
+            rowLeft[sy] = left;
+            rowRight[sy] = right;
+            rowValid[sy] = true;
+            maxLeft = validSubRows == 0 ? left : std::max(maxLeft, left);
+            minRight = validSubRows == 0 ? right : std::min(minRight, right);
+            ++validSubRows;
+        }
+        if (validSubRows == 0) continue;
+
+        int32_t coreX0 = std::clamp(
+            static_cast<int32_t>(std::ceil(tx + maxLeft - kFirstSample)),
+            px0, px1);
+        int32_t coreX1 = std::clamp(
+            static_cast<int32_t>(std::floor(tx + minRight - kLastSample)) + 1,
+            px0, px1);
+        const uint8_t coreCoverage = static_cast<uint8_t>(
+            (validSubRows * 255 + kSub / 2) / kSub);
+        if (coreX1 > coreX0) CompositeSpan(py, coreX0, coreX1, paint, coreCoverage);
+
+        auto compositeEdgePixel = [&](int32_t px) {
+            int hits = 0;
+            for (int sy = 0; sy < kSub; ++sy) {
+                if (!rowValid[sy]) continue;
+                for (int sx = 0; sx < kSub; ++sx) {
+                    const float localX =
+                        (static_cast<float>(px) + (sx + 0.5f) * kStep) - tx;
+                    if (localX >= rowLeft[sy] && localX <= rowRight[sy]) ++hits;
+                }
+            }
+            if (hits == 0) return;
+            uint8_t r, g, b, a;
+            SamplePaint(paint, static_cast<float>(px) + 0.5f,
+                        static_cast<float>(py) + 0.5f, r, g, b, a);
+            if (hits < kSub * kSub) {
+                a = static_cast<uint8_t>(
+                    static_cast<float>(a) *
+                    (static_cast<float>(hits) / (kSub * kSub)) + 0.5f);
+            }
+            if (a != 0) fb_.BlendPixelUnchecked(px, py, r, g, b, a);
+        };
+
+        if (coreX1 <= coreX0) {
+            for (int32_t px = px0; px < px1; ++px) compositeEdgePixel(px);
+        } else {
+            for (int32_t px = px0; px < coreX0; ++px) compositeEdgePixel(px);
+            for (int32_t px = coreX1; px < px1; ++px) compositeEdgePixel(px);
+        }
+    }
 }
 
 void SoftwareRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth)
@@ -2159,19 +6562,182 @@ void SoftwareRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, B
     float innerRx = std::max(0.0f, trx - tsw);
     float innerRy = std::max(0.0f, try_ - tsw);
 
-    // Sub-pixel + AA stroke ring: covered when inside the outer ellipse AND
-    // outside the inner one. Float centre → no whole-pixel snapping when the
-    // ellipse (e.g. a Slider thumb ring, Calendar today-ring) is animated.
-    RasterizeCoverageAA(tx, ty, -trx, -try_, trx, try_, brush,
-        [trx, try_, innerRx, innerRy](float lx, float ly) -> bool {
-            float exo = lx / trx, eyo = ly / try_;
-            if (exo * exo + eyo * eyo > 1.0f) return false;
-            if (innerRx > 0.0f && innerRy > 0.0f) {
-                float exi = lx / innerRx, eyi = ly / innerRy;
-                if (exi * exi + eyi * eyi <= 1.0f) return false;
+    PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+
+    auto insideStroke = [trx, try_, innerRx, innerRy](float lx, float ly) -> bool {
+        float exo = lx / trx, eyo = ly / try_;
+        if (exo * exo + eyo * eyo > 1.0f) return false;
+        if (innerRx > 0.0f && innerRy > 0.0f) {
+            float exi = lx / innerRx, eyi = ly / innerRy;
+            if (exi * exi + eyi * eyi <= 1.0f) return false;
+        }
+        return true;
+    };
+
+    if (!roundedClipStack_.empty()) {
+        RasterizeCoverageAA(tx, ty, -trx, -try_, trx, try_, brush, insideStroke);
+        return;
+    }
+
+    int32_t px0 = static_cast<int32_t>(std::floor(tx - trx));
+    int32_t py0 = static_cast<int32_t>(std::floor(ty - try_));
+    int32_t px1 = static_cast<int32_t>(std::ceil(tx + trx));
+    int32_t py1 = static_cast<int32_t>(std::ceil(ty + try_));
+    if (!TightenToRectClip(px0, py0, px1, py1)) return;
+
+    if (paint.IsSolid()) {
+        const int32_t maskX = static_cast<int32_t>(std::floor(tx - trx));
+        const int32_t maskY = static_cast<int32_t>(std::floor(ty - try_));
+        const int32_t maskWidth =
+            static_cast<int32_t>(std::ceil(tx + trx)) - maskX;
+        const int32_t maskHeight =
+            static_cast<int32_t>(std::ceil(ty + try_)) - maskY;
+        try {
+            if (!ellipseStrokeMaskCache_)
+                ellipseStrokeMaskCache_ = std::make_unique<SoftwareEllipseMaskCache>();
+            const float localCenterX = tx - static_cast<float>(maskX);
+            const float localCenterY = ty - static_cast<float>(maskY);
+            if (!ellipseStrokeMaskCache_->Matches(
+                    maskWidth, maskHeight, localCenterX, localCenterY,
+                    trx, try_, innerRx, innerRy, true)) {
+                ellipseStrokeMaskCache_->Build(
+                    maskWidth, maskHeight, localCenterX, localCenterY,
+                    trx, try_, innerRx, innerRy, true);
             }
-            return true;
-        });
+            for (const auto& span : ellipseStrokeMaskCache_->Spans()) {
+                const int32_t destinationY = maskY + span.y;
+                if (destinationY < py0 || destinationY >= py1) continue;
+                const int32_t destinationX0 = std::max(px0, maskX + span.x);
+                const int32_t destinationX1 = std::min(
+                    px1, maskX + span.x + span.width);
+                if (destinationX1 <= destinationX0) continue;
+                const uint8_t alpha = span.hits == 16
+                    ? paint.a
+                    : static_cast<uint8_t>(
+                        static_cast<float>(paint.a) *
+                        (static_cast<float>(span.hits) / 16.0f) + 0.5f);
+                fb_.BlendSolidSpan(
+                    destinationY, destinationX0, destinationX1,
+                    paint.r, paint.g, paint.b, alpha);
+            }
+            return;
+        } catch (const std::bad_alloc&) {
+            ellipseStrokeMaskCache_.reset();
+        }
+    }
+
+    constexpr int kSub = 4;
+    constexpr float kStep = 1.0f / static_cast<float>(kSub);
+
+    for (int32_t py = py0; py < py1; ++py) {
+        float outerLeft[kSub] = {};
+        float outerRight[kSub] = {};
+        float innerLeft[kSub] = {};
+        float innerRight[kSub] = {};
+        bool outerValid[kSub] = {};
+        bool innerValid[kSub] = {};
+        const bool hasInner = innerRx > 0.0f && innerRy > 0.0f;
+        bool everySubRowHasInner = hasInner;
+        float maxInnerLeft = -innerRx;
+        float minInnerRight = innerRx;
+        for (int sy = 0; sy < kSub; ++sy) {
+            const float localY =
+                (static_cast<float>(py) + (sy + 0.5f) * kStep) - ty;
+            const float outerNy = localY / try_;
+            if (outerNy >= -1.0f && outerNy <= 1.0f) {
+                const float halfWidth = trx *
+                    std::sqrt(std::max(0.0f, 1.0f - outerNy * outerNy));
+                outerLeft[sy] = -halfWidth;
+                outerRight[sy] = halfWidth;
+                outerValid[sy] = true;
+            }
+
+            if (!hasInner) continue;
+            const float innerNy = localY / innerRy;
+            if (innerNy < -1.0f || innerNy > 1.0f) {
+                everySubRowHasInner = false;
+                continue;
+            }
+            const float innerHalfWidth = innerRx *
+                std::sqrt(std::max(0.0f, 1.0f - innerNy * innerNy));
+            innerLeft[sy] = -innerHalfWidth;
+            innerRight[sy] = innerHalfWidth;
+            innerValid[sy] = true;
+            maxInnerLeft = sy == 0
+                ? innerLeft[sy] : std::max(maxInnerLeft, innerLeft[sy]);
+            minInnerRight = sy == 0
+                ? innerRight[sy] : std::min(minInnerRight, innerRight[sy]);
+        }
+
+        int32_t leftEnd = px1;
+        int32_t rightStart = px1;
+        if (everySubRowHasInner && minInnerRight > maxInnerLeft) {
+            leftEnd = std::clamp(
+                static_cast<int32_t>(std::ceil(tx + maxInnerLeft)) + 1,
+                px0, px1);
+            rightStart = std::clamp(
+                static_cast<int32_t>(std::floor(tx + minInnerRight)) - 1,
+                px0, px1);
+        }
+
+        auto compositeRange = [&](int32_t begin, int32_t end) {
+            int32_t solidRunStart = begin;
+            int solidRunHits = -1;
+            auto flushSolidRun = [&](int32_t runEnd) {
+                if (solidRunHits <= 0 || runEnd <= solidRunStart) return;
+                const uint8_t alpha = solidRunHits == kSub * kSub
+                    ? paint.a
+                    : static_cast<uint8_t>(
+                        static_cast<float>(paint.a) *
+                        (static_cast<float>(solidRunHits) / (kSub * kSub)) + 0.5f);
+                fb_.BlendSolidSpan(
+                    py, solidRunStart, runEnd, paint.r, paint.g, paint.b, alpha);
+            };
+
+            for (int32_t px = begin; px < end; ++px) {
+                int hits = 0;
+                for (int sy = 0; sy < kSub; ++sy) {
+                    if (!outerValid[sy]) continue;
+                    for (int sx = 0; sx < kSub; ++sx) {
+                        const float localX =
+                            (static_cast<float>(px) + (sx + 0.5f) * kStep) - tx;
+                        const bool insideOuter =
+                            localX >= outerLeft[sy] && localX <= outerRight[sy];
+                        const bool insideInner = innerValid[sy] &&
+                            localX >= innerLeft[sy] && localX <= innerRight[sy];
+                        if (insideOuter && !insideInner) ++hits;
+                    }
+                }
+                if (paint.IsSolid()) {
+                    if (hits != solidRunHits) {
+                        flushSolidRun(px);
+                        solidRunStart = px;
+                        solidRunHits = hits;
+                    }
+                    continue;
+                }
+                if (hits == 0) continue;
+                uint8_t r, g, b, a;
+                SamplePaint(paint, static_cast<float>(px) + 0.5f,
+                            static_cast<float>(py) + 0.5f, r, g, b, a);
+                if (hits < kSub * kSub) {
+                    a = static_cast<uint8_t>(
+                        static_cast<float>(a) *
+                        (static_cast<float>(hits) / (kSub * kSub)) + 0.5f);
+                }
+                if (a != 0) fb_.BlendPixelUnchecked(px, py, r, g, b, a);
+            }
+            if (paint.IsSolid()) flushSolidRun(end);
+        };
+
+        if (!everySubRowHasInner || rightStart <= leftEnd) {
+            compositeRange(px0, px1);
+        } else {
+            compositeRange(px0, leftEnd);
+            compositeRange(rightStart, px1);
+        }
+    }
 }
 
 void SoftwareRenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth)
@@ -2207,11 +6773,15 @@ void SoftwareRenderTarget::FillPolygon(const float* points, uint32_t pointCount,
     // fill boundary tracks its true sub-pixel position instead of stepping 1px.
     // 4 vertical sub-scanlines + analytic horizontal coverage give edge AA that
     // matches the rest of the backend and the GPU feathered fills.
-    int32_t ix0 = std::max(0, (int32_t)std::floor(minX));
-    int32_t ix1 = std::min(width_, (int32_t)std::ceil(maxX));
-    int32_t iy0 = std::max(0, (int32_t)std::floor(minY));
-    int32_t iy1 = std::min(height_, (int32_t)std::ceil(maxY));
-    if (ix1 <= ix0 || iy1 <= iy0) return;
+    int32_t ix0 = (int32_t)std::floor(minX);
+    int32_t ix1 = (int32_t)std::ceil(maxX);
+    int32_t iy0 = (int32_t)std::floor(minY);
+    int32_t iy1 = (int32_t)std::ceil(maxY);
+    if (!TightenToRectClip(ix0, iy0, ix1, iy1)) return;
+
+    const PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+    const bool hasRoundedClip = !roundedClipStack_.empty();
 
     const bool useWinding = (fillRule == 1);
     constexpr int kSub = 4;
@@ -2281,15 +6851,31 @@ void SoftwareRenderTarget::FillPolygon(const float* points, uint32_t pointCount,
             }
         }
 
-        for (int32_t px = ix0; px < ix1; px++) {
+        for (int32_t px = ix0; px < ix1;) {
             float c = cov[static_cast<size_t>(px - ix0)];
-            if (c <= 0.0f) continue;
-            if (!clipStack_.empty() && IsClipped((float)px + 0.5f, (float)row + 0.5f)) continue;
+            if (c <= 0.0f) { ++px; continue; }
+            if (hasRoundedClip &&
+                IsClipped((float)px + 0.5f, (float)row + 0.5f)) {
+                ++px;
+                continue;
+            }
+
+            if (!hasRoundedClip && c >= 0.99999f) {
+                int32_t runEnd = px + 1;
+                while (runEnd < ix1 &&
+                       cov[static_cast<size_t>(runEnd - ix0)] >= 0.99999f) {
+                    ++runEnd;
+                }
+                CompositeSpan(row, px, runEnd, paint);
+                px = runEnd;
+                continue;
+            }
+
             uint8_t r, g, b, a;
-            GetBrushColor(brush, (float)px + 0.5f, (float)row + 0.5f, r, g, b, a);
+            SamplePaint(paint, (float)px + 0.5f, (float)row + 0.5f, r, g, b, a);
             if (c < 1.0f) a = (uint8_t)((float)a * c + 0.5f);
-            if (a == 0) continue;
-            fb_.BlendPixel(px, row, r, g, b, a);
+            if (a != 0) fb_.BlendPixelUnchecked(px, row, r, g, b, a);
+            ++px;
         }
     }
 }
@@ -2395,7 +6981,7 @@ static void ParsePathToSubPaths(float startX, float startY,
 
 void SoftwareRenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule, int32_t edgeMode)
 {
-    if (!brush) return;
+    if (!brush || (!commands && commandLength > 0)) return;
     if (edgeMode < 0) edgeMode = 2;  // Default = Antialiased.
 
     // Aliased branch: keep the legacy binary scanline (preserves the pixel-art
@@ -2405,28 +6991,61 @@ void SoftwareRenderTarget::FillPath(float startX, float startY, const float* com
         return;
     }
 
-    // Antialiased branch: flatten the command buffer into source-space
-    // contours, transform each contour point into device space, then run
-    // RasterizePathToRects (the analytic-coverage scanline used by every
-    // GPU backend) and blend the resulting rects into the framebuffer.
-    std::vector<Contour> contours = FlattenPathToContours(
-        startX, startY, commands, commandLength, 0.5f);
-    if (contours.empty()) return;
+    FillRule rule = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+    const SoftwarePathRasterCache::Entry* cachedRaster = nullptr;
+    try {
+        if (!pathRasterCache_)
+            pathRasterCache_ = std::make_unique<SoftwarePathRasterCache>();
+        cachedRaster = pathRasterCache_->Find(
+            startX, startY, commands, commandLength,
+            currentTransform_, fillRule);
+    } catch (const std::bad_alloc&) {
+        pathRasterCache_.reset();
+    }
 
-    for (auto& c : contours) {
-        for (size_t i = 0; i + 1 < c.points.size(); i += 2) {
-            float tx = 0.0f, ty = 0.0f;
-            currentTransform_.Apply(c.points[i], c.points[i + 1], tx, ty);
-            c.points[i]     = tx;
-            c.points[i + 1] = ty;
+    std::vector<PixelRect> uncachedRects;
+    if (!cachedRaster) {
+        // Flatten and transform only on a cache miss. Gallery graphs and icons
+        // redraw identical paths for hundreds of frames; caching the final RLE
+        // coverage avoids repeating both curve flattening and scan conversion.
+        std::vector<Contour> contours = FlattenPathToContours(
+            startX, startY, commands, commandLength, 0.5f);
+        if (contours.empty()) return;
+
+        for (auto& contour : contours) {
+            for (size_t index = 0; index + 1 < contour.points.size(); index += 2) {
+                float transformedX = 0.0f;
+                float transformedY = 0.0f;
+                currentTransform_.Apply(
+                    contour.points[index], contour.points[index + 1],
+                    transformedX, transformedY);
+                contour.points[index] = transformedX;
+                contour.points[index + 1] = transformedY;
+            }
+        }
+
+        uncachedRects.reserve(256);
+        RasterizePathToRects(contours, rule, uncachedRects);
+        if (uncachedRects.empty()) return;
+
+        if (pathRasterCache_) {
+            try {
+                cachedRaster = pathRasterCache_->Store(
+                    startX, startY, commands, commandLength,
+                    currentTransform_, fillRule, uncachedRects);
+            } catch (const std::bad_alloc&) {
+                pathRasterCache_.reset();
+            }
         }
     }
 
-    FillRule rule = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
-    std::vector<PixelRect> rects;
-    rects.reserve(256);
-    RasterizePathToRects(contours, rule, rects);
-    if (rects.empty()) return;
+    const std::vector<PixelRect>& rects = cachedRaster
+        ? cachedRaster->rects
+        : uncachedRects;
+
+    const PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+    const bool hasRoundedClip = !roundedClipStack_.empty();
 
     for (const auto& rect : rects) {
         if (rect.w <= 0 || rect.h <= 0) continue;
@@ -2434,13 +7053,52 @@ void SoftwareRenderTarget::FillPath(float startX, float startY, const float* com
         int32_t y0 = std::max(0, rect.y);
         int32_t x1 = std::min(width_,  rect.x + rect.w);
         int32_t y1 = std::min(height_, rect.y + rect.h);
+        if (!fullInvalidation_ && hasDirtyRect_) {
+            x0 = std::max(x0, dirtyLeft_);
+            y0 = std::max(y0, dirtyTop_);
+            x1 = std::min(x1, dirtyRight_);
+            y1 = std::min(y1, dirtyBottom_);
+        }
+        if (!clipStack_.empty()) {
+            const auto& clip = clipStack_.top();
+            // Path coverage is historically sampled at integer pixel
+            // coordinates, so retain that exact half-open clip convention.
+            x0 = std::max(x0, static_cast<int32_t>(std::ceil(clip.x)));
+            y0 = std::max(y0, static_cast<int32_t>(std::ceil(clip.y)));
+            x1 = std::min(x1, static_cast<int32_t>(std::ceil(clip.x + clip.w)));
+            y1 = std::min(y1, static_cast<int32_t>(std::ceil(clip.y + clip.h)));
+        }
+        if (x1 <= x0 || y1 <= y0) continue;
+
+        if (!hasRoundedClip) {
+            if (paint.IsSolid()) {
+                const uint8_t alpha = static_cast<uint8_t>(
+                    std::lround(static_cast<float>(paint.a) * rect.alpha));
+                for (int32_t y = y0; y < y1; ++y) {
+                    fb_.BlendSolidSpan(y, x0, x1, paint.r, paint.g, paint.b, alpha);
+                }
+            } else {
+                for (int32_t y = y0; y < y1; ++y) {
+                    for (int32_t x = x0; x < x1; ++x) {
+                        uint8_t r, g, b, a;
+                        SamplePaint(paint, static_cast<float>(x), static_cast<float>(y),
+                                    r, g, b, a);
+                        const uint8_t aa = static_cast<uint8_t>(
+                            std::lround(static_cast<float>(a) * rect.alpha));
+                        fb_.BlendPixelUnchecked(x, y, r, g, b, aa);
+                    }
+                }
+            }
+            continue;
+        }
+
         for (int32_t y = y0; y < y1; ++y) {
             for (int32_t x = x0; x < x1; ++x) {
-                if (!clipStack_.empty() && IsClipped((float)x, (float)y)) continue;
+                if (IsClipped((float)x, (float)y)) continue;
                 uint8_t r, g, b, a;
-                GetBrushColor(brush, (float)x, (float)y, r, g, b, a);
+                SamplePaint(paint, (float)x, (float)y, r, g, b, a);
                 uint8_t aa = (uint8_t)std::lround(a * rect.alpha);
-                fb_.BlendPixel(x, y, r, g, b, aa);
+                fb_.BlendPixelUnchecked(x, y, r, g, b, aa);
             }
         }
     }
@@ -2552,13 +7210,92 @@ void SoftwareRenderTarget::FillPathAliased(float startX, float startY, const flo
 
 void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount, float dashOffset, int32_t edgeMode)
 {
-    if (!brush) return;
+    if (!brush || (!commands && commandLength > 0)) return;
     if (edgeMode < 0) edgeMode = 2;  // Default = Antialiased.
 
     // Aliased branch: keep the legacy outline-polygon / Bresenham path.
     if (edgeMode == 1) {
         StrokePathAliased(startX, startY, commands, commandLength, brush, strokeWidth, closed, lineJoin, miterLimit, lineCap, dashPattern, dashCount, dashOffset);
         return;
+    }
+
+    const PreparedPaint paint = PreparePaint(brush);
+    if (!paint.IsValid()) return;
+    const bool hasRoundedClip = !roundedClipStack_.empty();
+    auto compositeRects = [&](const std::vector<PixelRect>& rects) {
+        for (const auto& rect : rects) {
+            if (rect.w <= 0 || rect.h <= 0) continue;
+            int32_t x0 = std::max(0, rect.x);
+            int32_t y0 = std::max(0, rect.y);
+            int32_t x1 = std::min(width_, rect.x + rect.w);
+            int32_t y1 = std::min(height_, rect.y + rect.h);
+            if (!fullInvalidation_ && hasDirtyRect_) {
+                x0 = std::max(x0, dirtyLeft_);
+                y0 = std::max(y0, dirtyTop_);
+                x1 = std::min(x1, dirtyRight_);
+                y1 = std::min(y1, dirtyBottom_);
+            }
+            if (!clipStack_.empty()) {
+                const auto& clip = clipStack_.top();
+                x0 = std::max(x0, static_cast<int32_t>(std::ceil(clip.x)));
+                y0 = std::max(y0, static_cast<int32_t>(std::ceil(clip.y)));
+                x1 = std::min(x1, static_cast<int32_t>(std::ceil(clip.x + clip.w)));
+                y1 = std::min(y1, static_cast<int32_t>(std::ceil(clip.y + clip.h)));
+            }
+            if (x1 <= x0 || y1 <= y0) continue;
+
+            if (!hasRoundedClip) {
+                if (paint.IsSolid()) {
+                    const uint8_t alpha = static_cast<uint8_t>(
+                        std::lround(static_cast<float>(paint.a) * rect.alpha));
+                    for (int32_t y = y0; y < y1; ++y) {
+                        fb_.BlendSolidSpan(y, x0, x1,
+                            paint.r, paint.g, paint.b, alpha);
+                    }
+                } else {
+                    for (int32_t y = y0; y < y1; ++y) {
+                        for (int32_t x = x0; x < x1; ++x) {
+                            uint8_t red, green, blue, alpha;
+                            SamplePaint(paint, static_cast<float>(x),
+                                static_cast<float>(y), red, green, blue, alpha);
+                            const uint8_t coveredAlpha = static_cast<uint8_t>(
+                                std::lround(static_cast<float>(alpha) * rect.alpha));
+                            fb_.BlendPixelUnchecked(
+                                x, y, red, green, blue, coveredAlpha);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            for (int32_t y = y0; y < y1; ++y) {
+                for (int32_t x = x0; x < x1; ++x) {
+                    if (IsClipped(static_cast<float>(x), static_cast<float>(y))) continue;
+                    uint8_t red, green, blue, alpha;
+                    SamplePaint(paint, static_cast<float>(x), static_cast<float>(y),
+                        red, green, blue, alpha);
+                    const uint8_t coveredAlpha = static_cast<uint8_t>(
+                        std::lround(static_cast<float>(alpha) * rect.alpha));
+                    fb_.BlendPixelUnchecked(
+                        x, y, red, green, blue, coveredAlpha);
+                }
+            }
+        }
+    };
+
+    const uint32_t keyDashCount = dashPattern ? dashCount : 0u;
+    try {
+        if (!pathRasterCache_)
+            pathRasterCache_ = std::make_unique<SoftwarePathRasterCache>();
+        if (const auto* cached = pathRasterCache_->FindStroke(
+                startX, startY, commands, commandLength, currentTransform_,
+                strokeWidth, closed, lineJoin, miterLimit, lineCap,
+                dashPattern, keyDashCount, dashOffset)) {
+            compositeRects(cached->rects);
+            return;
+        }
+    } catch (const std::bad_alloc&) {
+        pathRasterCache_.reset();
     }
 
     // Antialiased branch: flatten → ExpandStrokePath collect-mode → analytic AA.
@@ -2671,22 +7408,17 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
     RasterizePathToRects(strokeContours, FillRule::NonZero, rects);
     if (rects.empty()) return;
 
-    for (const auto& rect : rects) {
-        if (rect.w <= 0 || rect.h <= 0) continue;
-        int32_t x0 = std::max(0, rect.x);
-        int32_t y0 = std::max(0, rect.y);
-        int32_t x1 = std::min(width_,  rect.x + rect.w);
-        int32_t y1 = std::min(height_, rect.y + rect.h);
-        for (int32_t y = y0; y < y1; ++y) {
-            for (int32_t x = x0; x < x1; ++x) {
-                if (!clipStack_.empty() && IsClipped((float)x, (float)y)) continue;
-                uint8_t r, g, b, a;
-                GetBrushColor(brush, (float)x, (float)y, r, g, b, a);
-                uint8_t aa = (uint8_t)std::lround(a * rect.alpha);
-                fb_.BlendPixel(x, y, r, g, b, aa);
-            }
+    if (pathRasterCache_) {
+        try {
+            pathRasterCache_->StoreStroke(
+                startX, startY, commands, commandLength, currentTransform_,
+                strokeWidth, closed, lineJoin, miterLimit, lineCap,
+                dashPattern, keyDashCount, dashOffset, rects);
+        } catch (const std::bad_alloc&) {
+            pathRasterCache_.reset();
         }
     }
+    compositeRects(rects);
 }
 
 // Legacy outline-polygon stroke kept for EdgeMode.Aliased.
@@ -2756,6 +7488,253 @@ void SoftwareRenderTarget::DrawContentBorder(float x, float y, float w, float h,
         DrawBresenhamLine(x, y + h, x + w, y + h, r, g, b, a, strokeWidth);
         // Right edge
         DrawBresenhamLine(x + w, y, x + w, y + h, r, g, b, a, strokeWidth);
+    }
+}
+
+void* SoftwareRenderTarget::RealizeLayerBegin(
+    void* existingLayer, float x, float y, float w, float h)
+{
+    if (w <= 0.0f || h <= 0.0f || !effectCaptureStack_.empty()) return nullptr;
+
+    constexpr float kEpsilon = 0.0001f;
+    if (std::abs(currentTransform_.m[1]) > kEpsilon ||
+        std::abs(currentTransform_.m[2]) > kEpsilon ||
+        std::abs(currentTransform_.m[0]) <= kEpsilon ||
+        std::abs(currentTransform_.m[3]) <= kEpsilon) {
+        return nullptr;
+    }
+
+    float x0f, y0f, x1f, y1f;
+    currentTransform_.Apply(x, y, x0f, y0f);
+    currentTransform_.Apply(x + w, y + h, x1f, y1f);
+    const int32_t x0 = static_cast<int32_t>(std::floor(std::min(x0f, x1f)));
+    const int32_t y0 = static_cast<int32_t>(std::floor(std::min(y0f, y1f)));
+    const int32_t x1 = static_cast<int32_t>(std::ceil(std::max(x0f, x1f)));
+    const int32_t y1 = static_cast<int32_t>(std::ceil(std::max(y0f, y1f)));
+    if (x0 < 0 || y0 < 0 || x1 > width_ || y1 > height_ || x1 <= x0 || y1 <= y0) {
+        return nullptr;
+    }
+
+    SoftwareRetainedLayer* retained = nullptr;
+    for (const auto& candidate : retainedLayers_) {
+        if (candidate.get() == existingLayer) {
+            retained = candidate.get();
+            break;
+        }
+    }
+
+    constexpr size_t kRetainedMemoryBudget = 128u * 1024u * 1024u;
+    const size_t layerBytes = static_cast<size_t>(x1 - x0) *
+        static_cast<size_t>(y1 - y0) * 4u;
+    const size_t surfaceBytes = static_cast<size_t>(width_) *
+        static_cast<size_t>(height_) * 4u;
+    const size_t captureDepth = retainedCaptureStack_.size();
+    const size_t reusableCapacity =
+        captureDepth < retainedCaptureBufferPool_.size()
+        ? retainedCaptureBufferPool_[captureDepth].pixels.capacity()
+        : 0u;
+    size_t plannedIsolatedCapacity = reusableCapacity;
+    if (surfaceBytes > plannedIsolatedCapacity) {
+        plannedIsolatedCapacity = ComputeFramebufferGrowthCapacity(
+            reusableCapacity, surfaceBytes);
+        if (surfaceBytes <= kRetainedCaptureBufferCacheBudget) {
+            plannedIsolatedCapacity = std::min(
+                plannedIsolatedCapacity, kRetainedCaptureBufferCacheBudget);
+        }
+    }
+    const size_t pooledBytes = RetainedCaptureBufferPoolBytes();
+    const size_t pooledBytesAfterAcquire = pooledBytes >= reusableCapacity
+        ? pooledBytes - reusableCapacity
+        : 0u;
+
+    // The old layer remains valid until capture successfully completes. Count
+    // it, the replacement pixels, active isolated canvases, the next canvas and
+    // idle depth-indexed canvases against the hard 128 MiB transient+cache
+    // budget. The root saved framebuffer is the main target and remains outside
+    // this retained-layer budget, matching the previous policy.
+    size_t retainedBudgetBytes = 0;
+    auto tryAddRetainedBytes = [&](size_t bytes) {
+        if (bytes > kRetainedMemoryBudget - retainedBudgetBytes)
+            return false;
+        retainedBudgetBytes += bytes;
+        return true;
+    };
+    if (!tryAddRetainedBytes(retainedLayerBytes_) ||
+        !tryAddRetainedBytes(layerBytes) ||
+        !tryAddRetainedBytes(pooledBytesAfterAcquire)) {
+        return nullptr;
+    }
+    for (const auto& layer : retainedLayers_) {
+        if (layer && layer->bitmap &&
+            !tryAddRetainedBytes(layer->bitmap->ScaledCacheBytes())) {
+            return nullptr;
+        }
+    }
+    if (captureDepth > 0u &&
+        !tryAddRetainedBytes(fb_.pixels.capacity())) {
+        return nullptr;
+    }
+    for (size_t depth = 1u; depth < captureDepth; ++depth) {
+        if (!tryAddRetainedBytes(
+                retainedCaptureStack_[depth].savedFramebuffer.pixels.capacity())) {
+            return nullptr;
+        }
+    }
+    if (!tryAddRetainedBytes(plannedIsolatedCapacity))
+        return nullptr;
+
+    RetainedCaptureState state;
+    try {
+        state.capturedPixels.resize(layerBytes);
+        retainedCaptureStack_.reserve(captureDepth + 1u);
+    } catch (const std::bad_alloc&) {
+        return nullptr;
+    }
+
+    SoftwareFramebuffer isolated;
+    const bool cacheIsolated = captureDepth < kRetainedCaptureBufferCacheDepth;
+    if (cacheIsolated) {
+        try {
+            if (retainedCaptureBufferPool_.size() <= captureDepth)
+                retainedCaptureBufferPool_.resize(captureDepth + 1u);
+        } catch (const std::bad_alloc&) {
+            return nullptr;
+        }
+        isolated = std::move(retainedCaptureBufferPool_[captureDepth]);
+    }
+
+    try {
+        if (surfaceBytes > isolated.pixels.capacity()) {
+            MaybeFailFramebufferAllocationForTesting();
+            isolated.pixels.reserve(plannedIsolatedCapacity);
+        }
+        isolated.Resize(width_, height_);
+        std::fill(isolated.pixels.begin(), isolated.pixels.end(), 0u);
+    } catch (const std::bad_alloc&) {
+        if (cacheIsolated)
+            CacheRetainedCaptureBuffer(captureDepth, std::move(isolated));
+        return nullptr;
+    }
+
+    if (!retained) {
+        try {
+            auto created = std::make_unique<SoftwareRetainedLayer>();
+            retained = created.get();
+            retainedLayers_.push_back(std::move(created));
+        } catch (const std::bad_alloc&) {
+            if (cacheIsolated)
+                CacheRetainedCaptureBuffer(captureDepth, std::move(isolated));
+            return nullptr;
+        }
+    }
+
+    state.layer = retained;
+    state.x = x0;
+    state.y = y0;
+    state.width = x1 - x0;
+    state.height = y1 - y0;
+    state.savedFramebuffer = std::move(fb_);
+    state.savedClips = std::move(clipStack_);
+    state.savedRoundedClips = std::move(roundedClipStack_);
+    clipStack_ = {};
+    roundedClipStack_.clear();
+    fb_ = std::move(isolated);
+    retainedCaptureStack_.push_back(std::move(state));
+    return retained;
+}
+
+void SoftwareRenderTarget::RealizeLayerEnd(void* layer)
+{
+    if (retainedCaptureStack_.empty()) return;
+
+    const size_t captureDepth = retainedCaptureStack_.size() - 1u;
+    RetainedCaptureState state = std::move(retainedCaptureStack_.back());
+    retainedCaptureStack_.pop_back();
+    SoftwareFramebuffer captured = std::move(fb_);
+    fb_ = std::move(state.savedFramebuffer);
+    clipStack_ = std::move(state.savedClips);
+    roundedClipStack_ = std::move(state.savedRoundedClips);
+
+    if (state.layer != layer || !state.layer ||
+        captured.width != width_ || captured.height != height_) {
+        CacheRetainedCaptureBuffer(captureDepth, std::move(captured));
+        return;
+    }
+
+    const size_t rowBytes = static_cast<size_t>(state.width) * 4u;
+    for (int32_t row = 0; row < state.height; ++row) {
+        const uint8_t* source = captured.pixels.data() +
+            (static_cast<size_t>(state.y + row) * captured.width + state.x) * 4u;
+        uint8_t* destination = state.capturedPixels.data() +
+            static_cast<size_t>(row) * rowBytes;
+        std::memcpy(destination, source, rowBytes);
+    }
+
+    const size_t oldBytes = state.layer->ByteSize();
+    try {
+        auto bitmap = std::make_unique<SoftwareBitmap>(
+            static_cast<uint32_t>(state.width),
+            static_cast<uint32_t>(state.height),
+            std::move(state.capturedPixels),
+            false,
+            24u * 1024u * 1024u,
+            false);
+        state.layer->bitmap = std::move(bitmap);
+        retainedLayerBytes_ = retainedLayerBytes_ - oldBytes + state.layer->ByteSize();
+    } catch (const std::bad_alloc&) {
+        // Keep the previous snapshot valid; managed will retry realization on
+        // the next dirty frame if this capture could not be committed.
+    }
+    CacheRetainedCaptureBuffer(captureDepth, std::move(captured));
+}
+
+void SoftwareRenderTarget::CompositeLayer(
+    void* layer, float x, float y, float w, float h, float opacity)
+{
+    if (!layer || w <= 0.0f || h <= 0.0f || opacity <= 0.0f) return;
+    SoftwareRetainedLayer* retained = nullptr;
+    for (const auto& candidate : retainedLayers_) {
+        if (candidate.get() == layer) {
+            retained = candidate.get();
+            break;
+        }
+    }
+    if (!retained || !retained->bitmap) return;
+    DrawBitmap(retained->bitmap.get(), x, y, w, h, opacity);
+
+    // Transformed snapshots are useful for fractional animation phases, but
+    // multiple retained layers must not each grow an independent cache toward
+    // the global 128 MiB ceiling. Prefer the layer just composited and shed
+    // older layers' transformed variants once their aggregate exceeds 32 MiB.
+    constexpr size_t kRetainedScaledCacheBudget = 32u * 1024u * 1024u;
+    size_t scaledBytes = 0;
+    for (const auto& candidate : retainedLayers_) {
+        if (candidate && candidate->bitmap)
+            scaledBytes += candidate->bitmap->ScaledCacheBytes();
+    }
+    if (scaledBytes > kRetainedScaledCacheBudget) {
+        for (const auto& candidate : retainedLayers_) {
+            if (!candidate || candidate.get() == retained || !candidate->bitmap) continue;
+            candidate->bitmap->ClearScaledCache();
+        }
+        scaledBytes = retained->bitmap->ScaledCacheBytes();
+        if (scaledBytes > kRetainedScaledCacheBudget)
+            retained->bitmap->ClearScaledCache();
+    }
+}
+
+void SoftwareRenderTarget::DestroyRetainedLayer(void* layer)
+{
+    if (!layer) return;
+    for (const auto& capture : retainedCaptureStack_) {
+        if (capture.layer == layer) return;
+    }
+    for (auto iterator = retainedLayers_.begin();
+         iterator != retainedLayers_.end(); ++iterator) {
+        if (iterator->get() != layer) continue;
+        retainedLayerBytes_ -= (*iterator)->ByteSize();
+        retainedLayers_.erase(iterator);
+        return;
     }
 }
 
@@ -3125,6 +8104,11 @@ void SoftwareRenderTarget::RenderTextWithGDI(
     const float m2 = currentTransform_.m[2], m3 = currentTransform_.m[3];
     float axisScaleY = std::sqrt(m2 * m2 + m3 * m3);
     if (!std::isfinite(axisScaleY) || axisScaleY <= 1e-6f) return;
+    const float r00 = m0 / axisScaleY, r01 = m1 / axisScaleY;
+    const float r10 = m2 / axisScaleY, r11 = m3 / axisScaleY;
+    const bool residualIsAxisAligned =
+        std::fabs(r00 - 1.0f) <= 2e-3f && std::fabs(r11 - 1.0f) <= 2e-3f &&
+        std::fabs(r01) <= 2e-3f && std::fabs(r10) <= 2e-3f;
 
     // The DIB is rasterized uniformly at the Y-axis scale (em size and layout
     // box together, so wrap positions stay consistent); any X-axis stretch or
@@ -3132,8 +8116,259 @@ void SoftwareRenderTarget::RenderTextWithGDI(
     // the inverse-mapping blit below — matching the GPU backends, where an
     // anisotropic matrix visibly stretches the glyphs.
     int32_t pw = std::min((int32_t)std::ceil(w * axisScaleY), 16384);
-    int32_t ph = std::min((int32_t)std::ceil(h * axisScaleY), 16384);
-    if (pw <= 0 || ph <= 0) return;
+    int32_t maxPh = std::min((int32_t)std::ceil(h * axisScaleY), 16384);
+    if (pw <= 0 || maxPh <= 0) return;
+
+    // Select the font before allocating the DIB so DT_CALCRECT can reduce a
+    // tall layout slot (often the entire page viewport) to the rows the text
+    // can actually touch. The old pw*ph allocation and scan turned a 16px label
+    // in a 1500x920 slot into 1.38M pixel visits per DrawText call.
+    int fontHeight = -(std::max)(1, (int)(stf->fontSize * axisScaleY + 0.5f));
+    SoftwareTextMaskCache::Key textMaskKey;
+    bool cacheTextMask = residualIsAxisAligned;
+    if (cacheTextMask) {
+        try {
+            if (!textMaskCache_)
+                textMaskCache_ = std::make_unique<SoftwareTextMaskCache>();
+            const SoftwareTextMaskCache::KeyView textMaskView {
+                std::wstring_view(text, textLength),
+                std::wstring_view(stf->fontFamily),
+                pw,
+                maxPh,
+                fontHeight,
+                stf->fontWeight,
+                stf->fontStyle,
+                stf->alignment,
+            };
+
+            if (const auto* cached = textMaskCache_->Find(textMaskView)) {
+                if (cached->width <= 0 || cached->height <= 0) return;
+                const int32_t ix = static_cast<int32_t>(std::floor(tx));
+                const int32_t iy = static_cast<int32_t>(std::floor(ty));
+                const float fracX = tx - static_cast<float>(ix);
+                const float fracY = ty - static_cast<float>(iy);
+                const bool integerPhase =
+                    std::abs(fracX) <= 1e-6f && std::abs(fracY) <= 1e-6f;
+                auto cachedLum = [&](int32_t dibX, int32_t dibY) -> float {
+                    const int32_t localX = dibX - cached->x;
+                    const int32_t localY = dibY - cached->y;
+                    if (localX < 0 || localX >= cached->width ||
+                        localY < 0 || localY >= cached->height) return 0.0f;
+                    const uint16_t sum = cached->channelSums[
+                        static_cast<size_t>(localY) * cached->width + localX];
+                    return static_cast<float>(sum) / 3.0f;
+                };
+
+                int32_t destinationX0 = ix + cached->x;
+                int32_t destinationY0 = iy + cached->y;
+                int32_t destinationX1 = destinationX0 + cached->width +
+                    (integerPhase ? 0 : 1);
+                int32_t destinationY1 = destinationY0 + cached->height +
+                    (integerPhase ? 0 : 1);
+                if (!TightenToRectClip(
+                        destinationX0, destinationY0,
+                        destinationX1, destinationY1)) return;
+                const int32_t rowBegin = destinationY0 - iy;
+                const int32_t rowEnd = destinationY1 - iy;
+                const bool hasRoundedClip = !roundedClipStack_.empty();
+                const int32_t compositeWidth = destinationX1 - destinationX0;
+                const int32_t compositeHeight = destinationY1 - destinationY0;
+                const SoftwareClipRect* activeClip = clipStack_.empty()
+                    ? nullptr : &clipStack_.top();
+                std::vector<uint8_t> destinationBefore;
+                try {
+                    if (!textCompositeCache_)
+                        textCompositeCache_ =
+                            std::make_unique<SoftwareTextCompositeCache>();
+                    if (textCompositeCache_->TryApply(
+                            cached->cacheId, r, g, b, a, fracX, fracY,
+                            destinationX0, destinationY0,
+                            compositeWidth, compositeHeight,
+                            activeClip, roundedClipStack_, fb_)) {
+                        return;
+                    }
+                    const size_t rowBytes =
+                        static_cast<size_t>(compositeWidth) * 4u;
+                    destinationBefore.resize(
+                        rowBytes * static_cast<size_t>(compositeHeight));
+                    for (int32_t compositeRow = 0;
+                         compositeRow < compositeHeight; ++compositeRow) {
+                        const uint8_t* source = fb_.pixels.data() +
+                            (static_cast<size_t>(destinationY0 + compositeRow) *
+                             fb_.width + destinationX0) * 4u;
+                        std::memcpy(
+                            destinationBefore.data() +
+                                static_cast<size_t>(compositeRow) * rowBytes,
+                            source, rowBytes);
+                    }
+                } catch (const std::bad_alloc&) {
+                    textCompositeCache_.reset();
+                    destinationBefore.clear();
+                }
+
+                auto storeComposite = [&] {
+                    if (!textCompositeCache_ || destinationBefore.empty()) return;
+                    try {
+                        SoftwareTextCompositeCache::Entry entry;
+                        entry.maskId = cached->cacheId;
+                        entry.red = r;
+                        entry.green = g;
+                        entry.blue = b;
+                        entry.alpha = a;
+                        entry.phaseX = fracX;
+                        entry.phaseY = fracY;
+                        entry.x = destinationX0;
+                        entry.y = destinationY0;
+                        entry.width = compositeWidth;
+                        entry.height = compositeHeight;
+                        entry.hasClip = activeClip != nullptr;
+                        if (activeClip) entry.clip = *activeClip;
+                        entry.roundedClips = roundedClipStack_;
+                        entry.contextPixels = std::move(destinationBefore);
+                        const size_t rowBytes =
+                            static_cast<size_t>(compositeWidth) * 4u;
+                        entry.outputPixels.resize(
+                            rowBytes * static_cast<size_t>(compositeHeight));
+                        for (int32_t compositeRow = 0;
+                             compositeRow < compositeHeight; ++compositeRow) {
+                            const uint8_t* source = fb_.pixels.data() +
+                                (static_cast<size_t>(destinationY0 + compositeRow) *
+                                 fb_.width + destinationX0) * 4u;
+                            std::memcpy(
+                                entry.outputPixels.data() +
+                                    static_cast<size_t>(compositeRow) * rowBytes,
+                                source, rowBytes);
+                        }
+                        textCompositeCache_->Store(std::move(entry));
+                    } catch (const std::bad_alloc&) {
+                        textCompositeCache_.reset();
+                    }
+                };
+
+                if (integerPhase) {
+
+                    // Runs cover contiguous non-zero GDI mask pixels. Walk the
+                    // sparse list once so static labels spend no time visiting
+                    // whitespace inside their layout boxes.
+                    for (const auto& run : cached->coverageRuns) {
+                        const int32_t destinationY = iy + cached->y + run.y;
+                        if (destinationY < destinationY0 ||
+                            destinationY >= destinationY1) continue;
+                        int32_t runX0 = ix + cached->x + run.x;
+                        int32_t runX1 = runX0 + run.width;
+                        runX0 = std::max(runX0, destinationX0);
+                        runX1 = std::min(runX1, destinationX1);
+                        if (hasRoundedClip && !TightenSpanToRoundedClips(
+                                destinationY, runX0, runX1)) continue;
+                        if (runX1 <= runX0) continue;
+                        const int32_t localX = runX0 - (ix + cached->x);
+                        const uint16_t* mask = cached->channelSums.data() +
+                            static_cast<size_t>(run.y) * cached->width + localX;
+                        uint8_t* destination = fb_.pixels.data() +
+                            (static_cast<size_t>(destinationY) * fb_.width + runX0) * 4u;
+                        for (int32_t destinationX = runX0;
+                             destinationX < runX1;
+                             ++destinationX, ++mask, destination += 4) {
+                            const uint8_t sourceAlpha = TextMaskAlpha(*mask, a);
+                            if (sourceAlpha == 255) {
+                                destination[0] = b;
+                                destination[1] = g;
+                                destination[2] = r;
+                                destination[3] = 255;
+                            } else if (sourceAlpha != 0 && destination[3] == 255) {
+                                const uint32_t inverseAlpha = 255u - sourceAlpha;
+                                destination[0] = static_cast<uint8_t>(
+                                    (static_cast<uint32_t>(b) * sourceAlpha +
+                                     static_cast<uint32_t>(destination[0]) * inverseAlpha) /
+                                    255u);
+                                destination[1] = static_cast<uint8_t>(
+                                    (static_cast<uint32_t>(g) * sourceAlpha +
+                                     static_cast<uint32_t>(destination[1]) * inverseAlpha) /
+                                    255u);
+                                destination[2] = static_cast<uint8_t>(
+                                    (static_cast<uint32_t>(r) * sourceAlpha +
+                                     static_cast<uint32_t>(destination[2]) * inverseAlpha) /
+                                    255u);
+                            } else if (sourceAlpha != 0) {
+                                fb_.BlendPixelUnchecked(
+                                    destinationX, destinationY,
+                                    r, g, b, sourceAlpha);
+                            }
+                        }
+                    }
+
+                    storeComposite();
+                    return;
+                }
+
+                for (int32_t row = rowBegin; row < rowEnd; ++row) {
+                    const int32_t destinationY = iy + row;
+                    int32_t rowDestinationX0 = destinationX0;
+                    int32_t rowDestinationX1 = destinationX1;
+                    if (hasRoundedClip && !TightenSpanToRoundedClips(
+                            destinationY, rowDestinationX0, rowDestinationX1)) continue;
+                    const int32_t rowColBegin = rowDestinationX0 - ix;
+                    const int32_t rowColEnd = rowDestinationX1 - ix;
+
+                    const float sourceY = static_cast<float>(row) - fracY;
+                    const int32_t sourceY0 = static_cast<int32_t>(std::floor(sourceY));
+                    const float fy = sourceY - static_cast<float>(sourceY0);
+                    for (int32_t col = rowColBegin; col < rowColEnd; ++col) {
+                        const int32_t destinationX = ix + col;
+                        const float sourceX = static_cast<float>(col) - fracX;
+                        const int32_t sourceX0 = static_cast<int32_t>(std::floor(sourceX));
+                        const float fx = sourceX - static_cast<float>(sourceX0);
+                        const float lum =
+                            cachedLum(sourceX0, sourceY0) * (1.0f - fx) * (1.0f - fy) +
+                            cachedLum(sourceX0 + 1, sourceY0) * fx * (1.0f - fy) +
+                            cachedLum(sourceX0, sourceY0 + 1) * (1.0f - fx) * fy +
+                            cachedLum(sourceX0 + 1, sourceY0 + 1) * fx * fy;
+                        if (lum <= 0.0f) continue;
+                        const uint8_t sourceAlpha = static_cast<uint8_t>(std::clamp(
+                            (lum / 255.0f) * a + 0.5f, 0.0f, 255.0f));
+                        if (sourceAlpha != 0) {
+                            fb_.BlendPixelUnchecked(
+                                destinationX, destinationY, r, g, b, sourceAlpha);
+                        }
+                    }
+                }
+                storeComposite();
+                return;
+            }
+
+            // Only cache misses take ownership of strings. Hits above perform
+            // heterogeneous lookup directly over the caller's text span.
+            textMaskKey.text.assign(text, text + textLength);
+            textMaskKey.fontFamily = stf->fontFamily;
+            textMaskKey.pixelWidth = pw;
+            textMaskKey.pixelHeight = maxPh;
+            textMaskKey.fontHeight = fontHeight;
+            textMaskKey.fontWeight = stf->fontWeight;
+            textMaskKey.fontStyle = stf->fontStyle;
+            textMaskKey.alignment = stf->alignment;
+        } catch (const std::bad_alloc&) {
+            cacheTextMask = false;
+            textMaskCache_.reset();
+        }
+    }
+    HFONT hFont = CreateFontW(fontHeight, 0, 0, 0,
+        stf->fontWeight, (stf->fontStyle == 1 || stf->fontStyle == 2) ? TRUE : FALSE,
+        FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+        stf->fontFamily.c_str());
+    if (!hFont) return;
+    HGDIOBJ oldFont = SelectObject(hdc, hFont);
+
+    SetTextColor(hdc, RGB(255, 255, 255));
+    SetBkMode(hdc, TRANSPARENT);
+    constexpr UINT baseFlags = DT_WORDBREAK | DT_EXTERNALLEADING | DT_NOPREFIX;
+    RECT measured = { 0, 0, (LONG)pw, (LONG)maxPh };
+    DrawTextW(hdc, text, textLength, &measured, baseFlags | DT_LEFT | DT_CALCRECT);
+    const int32_t measuredWidth = std::clamp<int32_t>(
+        measured.right - measured.left, 1, pw);
+    const int32_t measuredHeight = std::max<int32_t>(
+        measured.bottom - measured.top, 1);
+    int32_t ph = std::min(maxPh, measuredHeight + 1);
 
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -3147,34 +8382,14 @@ void SoftwareRenderTarget::RenderTextWithGDI(
     HBITMAP hbm = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (hbm && bits) {
         HGDIOBJ oldBm = SelectObject(hdc, hbm);
-
-        // fontSize is a DIP em size (DirectWrite convention shared by every
-        // backend); scale straight to physical pixels using the same matrix
-        // decomposition as the DIB sizing above. The previous dpiY_ / 72 form
-        // treated it as a point size, rendering every glyph 4/3 too large and
-        // clipping it against its own line box.
-        int fontHeight = -(std::max)(1, (int)(stf->fontSize * axisScaleY + 0.5f));
-        HFONT hFont = CreateFontW(fontHeight, 0, 0, 0,
-            stf->fontWeight, (stf->fontStyle == 1 || stf->fontStyle == 2) ? TRUE : FALSE,
-            FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
-            stf->fontFamily.c_str());
-        HGDIOBJ oldFont = SelectObject(hdc, hFont);
-
-        // Always rasterize white-on-black: the DIB is consumed purely as a
-        // coverage mask (the blit below turns per-pixel luminance into alpha
-        // and applies the brush colour itself). Drawing with the brush colour
-        // here made coverage proportional to brightness — black text vanished
-        // entirely and dark text turned ghost-translucent.
-        SetTextColor(hdc, RGB(255, 255, 255));
-        SetBkMode(hdc, TRANSPARENT);
+        std::memset(bits, 0, static_cast<size_t>(pw) * ph * 4u);
 
         // DT_EXTERNALLEADING keeps the painted line advance on the same ruler
         // as MeasureText / GetFontMetrics (tmHeight + tmExternalLeading);
         // DT_NOPREFIX keeps literal '&' characters (mnemonics are a managed
         // AccessText concern, not GDI's).
         RECT rc = { 0, 0, (LONG)pw, (LONG)ph };
-        UINT dtFlags = DT_WORDBREAK | DT_EXTERNALLEADING | DT_NOPREFIX;
+        UINT dtFlags = baseFlags;
         switch (stf->alignment) {
             case 1: dtFlags |= DT_RIGHT; break;
             case 2: dtFlags |= DT_CENTER; break;
@@ -3197,11 +8412,73 @@ void SoftwareRenderTarget::RenderTextWithGDI(
             return (textBits[srcIdx + 2] + textBits[srcIdx + 1] + textBits[srcIdx + 0]) / 3.0f;
         };
 
-        const float r00 = m0 / axisScaleY, r01 = m1 / axisScaleY;
-        const float r10 = m2 / axisScaleY, r11 = m3 / axisScaleY;
-        const bool residualIsAxisAligned =
-            std::fabs(r00 - 1.0f) <= 2e-3f && std::fabs(r11 - 1.0f) <= 2e-3f &&
-            std::fabs(r01) <= 2e-3f && std::fabs(r10) <= 2e-3f;
+        if (cacheTextMask && textMaskCache_) {
+            SoftwareTextMaskCache::Entry entry;
+            int32_t minX = bw, minY = bh, maxX = -1, maxY = -1;
+            for (int32_t row = 0; row < bh; ++row) {
+                const uint8_t* source = textBits + static_cast<size_t>(row) * bw * 4u;
+                for (int32_t col = 0; col < bw; ++col, source += 4) {
+                    if (source[0] == 0 && source[1] == 0 && source[2] == 0) continue;
+                    minX = std::min(minX, col);
+                    minY = std::min(minY, row);
+                    maxX = std::max(maxX, col);
+                    maxY = std::max(maxY, row);
+                }
+            }
+
+            if (maxX >= minX && maxY >= minY) {
+                entry.x = minX;
+                entry.y = minY;
+                entry.width = maxX - minX + 1;
+                entry.height = maxY - minY + 1;
+                try {
+                    entry.channelSums.resize(
+                        static_cast<size_t>(entry.width) * entry.height);
+                    for (int32_t row = 0; row < entry.height; ++row) {
+                        for (int32_t col = 0; col < entry.width; ++col) {
+                            const size_t sourceIndex =
+                                (static_cast<size_t>(entry.y + row) * bw + entry.x + col) * 4u;
+                            entry.channelSums[
+                                static_cast<size_t>(row) * entry.width + col] =
+                                static_cast<uint16_t>(textBits[sourceIndex]) +
+                                static_cast<uint16_t>(textBits[sourceIndex + 1]) +
+                                static_cast<uint16_t>(textBits[sourceIndex + 2]);
+                        }
+                    }
+                    entry.coverageRuns.reserve(
+                        static_cast<size_t>(entry.height) * 8u);
+                    for (int32_t row = 0; row < entry.height; ++row) {
+                        int32_t runStart = -1;
+                        for (int32_t col = 0; col < entry.width; ++col) {
+                            const uint16_t sum = entry.channelSums[
+                                static_cast<size_t>(row) * entry.width + col];
+                            if (sum != 0) {
+                                if (runStart < 0) runStart = col;
+                            } else if (runStart >= 0) {
+                                entry.coverageRuns.push_back({
+                                    row, runStart, col - runStart });
+                                runStart = -1;
+                            }
+                        }
+                        if (runStart >= 0) {
+                            entry.coverageRuns.push_back({
+                                row, runStart, entry.width - runStart });
+                        }
+                    }
+                    textMaskCache_->Insert(std::move(textMaskKey), std::move(entry));
+                } catch (const std::bad_alloc&) {
+                    textMaskCache_.reset();
+                    cacheTextMask = false;
+                }
+            } else {
+                try {
+                    textMaskCache_->Insert(std::move(textMaskKey), std::move(entry));
+                } catch (const std::bad_alloc&) {
+                    textMaskCache_.reset();
+                    cacheTextMask = false;
+                }
+            }
+        }
 
         if (residualIsAxisAligned) {
             // The block is sampled with a fractional (bilinear) phase so an
@@ -3222,6 +8499,12 @@ void SoftwareRenderTarget::RenderTextWithGDI(
             int32_t rowEnd = (std::min)(bh, height_ - 1 - iy);
             int32_t colBegin = (std::max)(0, -ix);
             int32_t colEnd = (std::min)(bw, width_ - 1 - ix);
+            int32_t inkLeft = 0;
+            if (stf->alignment == 1) inkLeft = pw - measuredWidth;
+            else if (stf->alignment == 2) inkLeft = (pw - measuredWidth) / 2;
+            constexpr int32_t kInkOverhang = 3;
+            colBegin = std::max(colBegin, inkLeft - kInkOverhang);
+            colEnd = std::min(colEnd, inkLeft + measuredWidth + kInkOverhang);
             for (int32_t row = rowBegin; row <= rowEnd; row++) {
                 int32_t dyy = iy + row;
                 if (dyy < 0 || dyy >= height_) continue;
@@ -3296,11 +8579,11 @@ void SoftwareRenderTarget::RenderTextWithGDI(
             }
         }
 
-        SelectObject(hdc, oldFont);
-        DeleteObject(hFont);
         SelectObject(hdc, oldBm);
         DeleteObject(hbm);
     }
+    SelectObject(hdc, oldFont);
+    DeleteObject(hFont);
 }
 #endif
 
@@ -3604,7 +8887,234 @@ void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w,
     if (sw <= 0 || shh <= 0) return;
     const float invW = 1.0f / w, invH = 1.0f / h;
     const float globalOpacity = opacity * currentOpacity_;
+    if (globalOpacity <= 0.0f) return;
     const bool axisAligned = std::abs(m[1]) < 1.0e-6f && std::abs(m[2]) < 1.0e-6f;
+
+    const bool pixelAlignedAxis = axisAligned && m[0] > 0.0f && m[3] > 0.0f &&
+        std::abs(left - std::round(left)) < 1.0e-4f &&
+        std::abs(top - std::round(top)) < 1.0e-4f;
+    std::shared_ptr<const SoftwareScaledBitmap> scaledBitmap;
+    const uint8_t* fastPixels = nullptr;
+    int32_t fastWidth = 0;
+    int32_t fastHeight = 0;
+    bool fastOpaque = false;
+    bool fastAlphaPrecomposited = false;
+    int32_t fastDestinationLeft = 0;
+    int32_t fastDestinationTop = 0;
+    if (pixelAlignedAxis) {
+        const int32_t destinationWidth = static_cast<int32_t>(std::lround(right - left));
+        const int32_t destinationHeight = static_cast<int32_t>(std::lround(bottom - top));
+        if (destinationWidth == sw && destinationHeight == shh &&
+            (globalOpacity >= 0.999999f || sb->dynamic_)) {
+            fastPixels = sb->pixels_.data();
+            fastWidth = sw;
+            fastHeight = shh;
+            fastOpaque = sb->opaque_;
+            fastDestinationLeft = static_cast<int32_t>(std::round(left));
+            fastDestinationTop = static_cast<int32_t>(std::round(top));
+        }
+    }
+    if (!fastPixels && axisAligned && m[0] > 0.0f && m[3] > 0.0f && !sb->dynamic_) {
+        const int32_t rasterLeft = static_cast<int32_t>(std::floor(left));
+        const int32_t rasterTop = static_cast<int32_t>(std::floor(top));
+        const int32_t rasterWidth = static_cast<int32_t>(std::ceil(right)) - rasterLeft;
+        const int32_t rasterHeight = static_cast<int32_t>(std::ceil(bottom)) - rasterTop;
+        try {
+            scaledBitmap = sb->GetOrCreateScaled(
+                static_cast<uint32_t>(std::max(rasterWidth, 0)),
+                static_cast<uint32_t>(std::max(rasterHeight, 0)),
+                right - left,
+                bottom - top,
+                left - static_cast<float>(rasterLeft),
+                top - static_cast<float>(rasterTop),
+                globalOpacity);
+            if (scaledBitmap) {
+                fastPixels = scaledBitmap->pixels.data();
+                fastWidth = static_cast<int32_t>(scaledBitmap->width);
+                fastHeight = static_cast<int32_t>(scaledBitmap->height);
+                fastOpaque = scaledBitmap->opaque;
+                fastAlphaPrecomposited = true;
+                fastDestinationLeft = rasterLeft;
+                fastDestinationTop = rasterTop;
+            }
+        } catch (const std::bad_alloc&) {
+            scaledBitmap.reset();
+        }
+    }
+    if (fastPixels && globalOpacity > 0.0f) {
+        int32_t fastX0 = px0, fastY0 = py0, fastX1 = px1, fastY1 = py1;
+        if (!TightenToRectClip(fastX0, fastY0, fastX1, fastY1)) return;
+        const bool hasRoundedClip = !roundedClipStack_.empty();
+
+        std::vector<uint8_t> bitmapCompositeKey;
+        std::vector<uint8_t> destinationBefore;
+        const int32_t panelWidth = fastX1 - fastX0;
+        const int32_t panelHeight = fastY1 - fastY0;
+        if (scaledBitmap && !fastOpaque && panelWidth > 0 && panelHeight > 0) {
+            try {
+                auto appendValue = [&](const auto& value) {
+                    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+                    bitmapCompositeKey.insert(
+                        bitmapCompositeKey.end(), bytes, bytes + sizeof(value));
+                };
+                constexpr uint32_t kBitmapCompositeTag = 0x424D5043u; // "BMPC"
+                appendValue(kBitmapCompositeTag);
+                appendValue(fastX0); appendValue(fastY0);
+                appendValue(fastX1); appendValue(fastY1);
+                const uint32_t roundedCount =
+                    static_cast<uint32_t>(roundedClipStack_.size());
+                appendValue(roundedCount);
+                for (const auto& clip : roundedClipStack_) {
+                    appendValue(clip.x); appendValue(clip.y);
+                    appendValue(clip.w); appendValue(clip.h);
+                    appendValue(clip.radiusTL); appendValue(clip.radiusTR);
+                    appendValue(clip.radiusBR); appendValue(clip.radiusBL);
+                }
+                if (!bitmapCompositeCache_)
+                    bitmapCompositeCache_ =
+                        std::make_unique<SoftwareEffectResultCache>();
+                if (auto* cached = bitmapCompositeCache_->FindBitmapComposited(
+                        bitmapCompositeKey, scaledBitmap, fb_,
+                        fastX0, fastY0, panelWidth, panelHeight)) {
+                    RestoreRawRegion(
+                        cached->outputPixels.data(), panelWidth, panelHeight,
+                        fastX0, fastY0);
+                    return;
+                }
+
+                const size_t rowBytes = static_cast<size_t>(panelWidth) * 4u;
+                destinationBefore.resize(
+                    rowBytes * static_cast<size_t>(panelHeight));
+                for (int32_t row = 0; row < panelHeight; ++row) {
+                    const uint8_t* source = fb_.pixels.data() +
+                        (static_cast<size_t>(fastY0 + row) * fb_.width + fastX0) * 4u;
+                    std::memcpy(
+                        destinationBefore.data() + static_cast<size_t>(row) * rowBytes,
+                        source, rowBytes);
+                }
+            } catch (const std::bad_alloc&) {
+                bitmapCompositeCache_.reset();
+                bitmapCompositeKey.clear();
+                destinationBefore.clear();
+            }
+        }
+
+        auto copyRows = [&](int32_t begin, int32_t end) {
+            for (int32_t dy = begin; dy < end; ++dy) {
+                int32_t rowX0 = fastX0;
+                int32_t rowX1 = fastX1;
+                if (hasRoundedClip &&
+                    !TightenSpanToRoundedClips(dy, rowX0, rowX1)) continue;
+                const int32_t sourceY = dy - fastDestinationTop;
+                const int32_t sourceX = rowX0 - fastDestinationLeft;
+                if (sourceY < 0 || sourceY >= fastHeight || sourceX < 0 ||
+                    sourceX + (rowX1 - rowX0) > fastWidth) continue;
+                const uint8_t* source = fastPixels +
+                    (static_cast<size_t>(sourceY) * fastWidth + sourceX) * 4u;
+                uint8_t* destination = fb_.pixels.data() +
+                    (static_cast<size_t>(dy) * fb_.width + rowX0) * 4u;
+                if (fastOpaque && globalOpacity >= 0.999999f) {
+                    std::memcpy(
+                        destination, source,
+                        static_cast<size_t>(rowX1 - rowX0) * 4u);
+                    continue;
+                }
+                if (fastAlphaPrecomposited) {
+                    fb_.BlendBgraSpan(dy, rowX0, rowX1, source);
+                    continue;
+                }
+                int32_t dx = rowX0;
+                while (dx < rowX1) {
+                    const uint8_t sourceAlpha = fastAlphaPrecomposited
+                        ? source[3]
+                        : static_cast<uint8_t>(std::clamp(
+                            source[3] * globalOpacity + 0.5f, 0.0f, 255.0f));
+                    if (sourceAlpha == 255) {
+                        const int32_t runStart = dx;
+                        const uint8_t* runSource = source;
+                        do {
+                            ++dx;
+                            source += 4;
+                            if (dx >= rowX1) break;
+                            const uint8_t nextAlpha = fastAlphaPrecomposited
+                                ? source[3]
+                                : static_cast<uint8_t>(std::clamp(
+                                    source[3] * globalOpacity + 0.5f,
+                                    0.0f, 255.0f));
+                            if (nextAlpha != 255) break;
+                        } while (true);
+                        std::memcpy(
+                            destination + static_cast<size_t>(runStart - rowX0) * 4u,
+                            runSource,
+                            static_cast<size_t>(dx - runStart) * 4u);
+                        continue;
+                    }
+                    if (sourceAlpha != 0) {
+                        uint8_t* destinationPixel = destination +
+                            static_cast<size_t>(dx - rowX0) * 4u;
+                        if (destinationPixel[3] == 255) {
+                            const uint32_t inverseAlpha = 255u - sourceAlpha;
+                            destinationPixel[0] = static_cast<uint8_t>(
+                                (static_cast<uint32_t>(source[0]) * sourceAlpha +
+                                 static_cast<uint32_t>(destinationPixel[0]) * inverseAlpha) /
+                                255u);
+                            destinationPixel[1] = static_cast<uint8_t>(
+                                (static_cast<uint32_t>(source[1]) * sourceAlpha +
+                                 static_cast<uint32_t>(destinationPixel[1]) * inverseAlpha) /
+                                255u);
+                            destinationPixel[2] = static_cast<uint8_t>(
+                                (static_cast<uint32_t>(source[2]) * sourceAlpha +
+                                 static_cast<uint32_t>(destinationPixel[2]) * inverseAlpha) /
+                                255u);
+                        } else {
+                            fb_.BlendPixelUnchecked(
+                                dx, dy, source[2], source[1], source[0], sourceAlpha);
+                        }
+                    }
+                    ++dx;
+                    source += 4;
+                }
+            }
+        };
+
+        SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+        const uint64_t pixelWork = static_cast<uint64_t>(fastX1 - fastX0) *
+            static_cast<uint64_t>(fastY1 - fastY0);
+        if (workerPool && workerPool->CanParallelize() &&
+            pixelWork >= 256u * 1024u) {
+            workerPool->ParallelFor(fastY0, fastY1, 16, copyRows);
+        } else {
+            copyRows(fastY0, fastY1);
+        }
+
+        if (bitmapCompositeCache_ && !bitmapCompositeKey.empty() &&
+            !destinationBefore.empty()) {
+            try {
+                SoftwareEffectResultCache::Entry entry;
+                entry.key = std::move(bitmapCompositeKey);
+                entry.contextPixels = std::move(destinationBefore);
+                entry.scaledBitmap = scaledBitmap;
+                entry.panelX = fastX0;
+                entry.panelY = fastY0;
+                entry.panelWidth = panelWidth;
+                entry.panelHeight = panelHeight;
+                const size_t rowBytes = static_cast<size_t>(panelWidth) * 4u;
+                entry.outputPixels.resize(
+                    rowBytes * static_cast<size_t>(panelHeight));
+                for (int32_t row = 0; row < panelHeight; ++row) {
+                    const uint8_t* source = fb_.pixels.data() +
+                        (static_cast<size_t>(fastY0 + row) * fb_.width + fastX0) * 4u;
+                    std::memcpy(
+                        entry.outputPixels.data() + static_cast<size_t>(row) * rowBytes,
+                        source, rowBytes);
+                }
+                bitmapCompositeCache_->Store(std::move(entry));
+            } catch (const std::bad_alloc&) {
+                bitmapCompositeCache_.reset();
+            }
+        }
+        return;
+    }
 
     auto isInsideDestination = [&](float deviceX, float deviceY) {
         float localX, localY;
@@ -3848,8 +9358,14 @@ void SoftwareRenderTarget::DrawBackdropMaterial(const JaliumBackdropMaterialDesc
     const int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
 
     // Clamp the panel to the framebuffer.
-    const int32_t x0 = std::max(0, ix), y0 = std::max(0, iy);
-    const int32_t x1 = std::min(fb_.width, ix + iw), y1 = std::min(fb_.height, iy + ih);
+    int32_t x0 = std::max(0, ix), y0 = std::max(0, iy);
+    int32_t x1 = std::min(fb_.width, ix + iw), y1 = std::min(fb_.height, iy + ih);
+    if (!fullInvalidation_ && hasDirtyRect_) {
+        x0 = std::max(x0, dirtyLeft_);
+        y0 = std::max(y0, dirtyTop_);
+        x1 = std::min(x1, dirtyRight_);
+        y1 = std::min(y1, dirtyBottom_);
+    }
     const int32_t rw = x1 - x0, rh = y1 - y0;
     if (rw <= 0 || rh <= 0) return;
 
@@ -3882,6 +9398,45 @@ void SoftwareRenderTarget::DrawBackdropMaterial(const JaliumBackdropMaterialDesc
 
     SoftwareFramebuffer blurred;
     CopyRegion(fb_, blurred, sx0, sy0, sw, sh);
+    const bool cacheable = roundedClipStack_.empty();
+    std::vector<uint8_t> backdropSource;
+    if (cacheable) {
+        try {
+            if (!backdropCache_)
+                backdropCache_ = std::make_unique<SoftwareBackdropCache>();
+            const SoftwareClipRect* activeClip =
+                clipStack_.empty() ? nullptr : &clipStack_.top();
+            if (auto* cached = backdropCache_->Find(
+                    m, currentTransform_, currentOpacity_, activeClip, blurred.pixels)) {
+                if (cached->panelX == x0 && cached->panelY == y0 &&
+                    cached->panelWidth == rw && cached->panelHeight == rh &&
+                    cached->outputPixels.size() ==
+                        static_cast<size_t>(rw) * rh * 4u) {
+                    auto copyRows = [&](int32_t begin, int32_t end) {
+                        for (int32_t row = begin; row < end; ++row) {
+                            const uint8_t* source = cached->outputPixels.data() +
+                                static_cast<size_t>(row) * rw * 4u;
+                            uint8_t* destination = fb_.pixels.data() +
+                                (static_cast<size_t>(y0 + row) * fb_.width + x0) * 4u;
+                            std::memcpy(destination, source, static_cast<size_t>(rw) * 4u);
+                        }
+                    };
+                    SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+                    if (workerPool && workerPool->CanParallelize() &&
+                        static_cast<uint64_t>(rw) * rh >= 256u * 1024u) {
+                        workerPool->ParallelFor(0, rh, 16, copyRows);
+                    } else {
+                        copyRows(0, rh);
+                    }
+                    return;
+                }
+            }
+            backdropSource = blurred.pixels;
+        } catch (const std::bad_alloc&) {
+            backdropCache_.reset();
+            backdropSource.clear();
+        }
+    }
     if (boxRadius > 0) {
         BoxBlur(blurred.pixels, sw, sh, boxRadius);
     }
@@ -3919,6 +9474,33 @@ void SoftwareRenderTarget::DrawBackdropMaterial(const JaliumBackdropMaterialDesc
 
             const float outA = std::max(srcA, alphaFloor) * opacity;
             fb_.BlendPixel(px, py, FloatToU8(r), FloatToU8(g), FloatToU8(b), FloatToU8(outA));
+        }
+    }
+
+    if (cacheable && backdropCache_ && !backdropSource.empty()) {
+        try {
+            SoftwareBackdropCache::Entry entry;
+            entry.descriptor = m;
+            std::memcpy(entry.transform, currentTransform_.m, sizeof(entry.transform));
+            entry.ambientOpacity = currentOpacity_;
+            entry.hasClip = !clipStack_.empty();
+            if (entry.hasClip) entry.clip = clipStack_.top();
+            entry.panelX = x0;
+            entry.panelY = y0;
+            entry.panelWidth = rw;
+            entry.panelHeight = rh;
+            entry.sourcePixels = std::move(backdropSource);
+            entry.outputPixels.resize(static_cast<size_t>(rw) * rh * 4u);
+            for (int32_t row = 0; row < rh; ++row) {
+                const uint8_t* source = fb_.pixels.data() +
+                    (static_cast<size_t>(y0 + row) * fb_.width + x0) * 4u;
+                uint8_t* destination = entry.outputPixels.data() +
+                    static_cast<size_t>(row) * rw * 4u;
+                std::memcpy(destination, source, static_cast<size_t>(rw) * 4u);
+            }
+            backdropCache_->Store(std::move(entry));
+        } catch (const std::bad_alloc&) {
+            backdropCache_.reset();
         }
     }
 }
@@ -4043,21 +9625,31 @@ void SoftwareRenderTarget::BeginEffectCapture(float x, float y, float w, float h
     currentTransform_.Apply(x, y, tx, ty);
 
     EffectCaptureState state;
-    state.savedFramebuffer = fb_;
     state.x = tx;
     state.y = ty;
     state.width = w;
     state.height = h;
-    effectCaptureStack_.push_back(std::move(state));
-    effectCaptureReady_ = false;
 
     // Clear the capture region so we render effect content in isolation
     int32_t ix = (int32_t)tx, iy = (int32_t)ty;
     int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
-    for (int32_t row = std::max(0, iy); row < std::min(fb_.height, iy + ih); row++) {
-        for (int32_t col = std::max(0, ix); col < std::min(fb_.width, ix + iw); col++) {
-            fb_.SetPixel(col, row, 0, 0, 0, 0);
-        }
+    state.pixelX = ix;
+    state.pixelY = iy;
+    CopyRegion(fb_, state.savedRegion, ix, iy, iw, ih);
+    effectCaptureStack_.push_back(std::move(state));
+    effectCaptureReady_ = false;
+
+    const int32_t clearLeft = std::max(0, ix);
+    const int32_t clearTop = std::max(0, iy);
+    const int32_t clearRight = std::min(fb_.width, ix + iw);
+    const int32_t clearBottom = std::min(fb_.height, iy + ih);
+    const size_t rowBytes = clearRight > clearLeft
+        ? static_cast<size_t>(clearRight - clearLeft) * 4u
+        : 0u;
+    for (int32_t row = clearTop; row < clearBottom; ++row) {
+        uint8_t* destination = fb_.pixels.data() +
+            (static_cast<size_t>(row) * fb_.width + clearLeft) * 4u;
+        std::memset(destination, 0, rowBytes);
     }
 }
 
@@ -4076,11 +9668,10 @@ void SoftwareRenderTarget::EndEffectCapture()
     int32_t iw = (int32_t)(state.width + 0.5f), ih = (int32_t)(state.height + 0.5f);
     CopyRegion(fb_, effectCaptureFb_, ix, iy, iw, ih);
 
-    // Restore the framebuffer owned by this exact scope. For a nested scope
-    // that is its ancestor's in-progress capture; for the outermost scope it is
-    // the real frame. The just-ended capture remains in effectCaptureFb_ until
-    // its Apply call completes.
-    fb_ = std::move(state.savedFramebuffer);
+    // Restore only the bytes hidden by this scope. The framebuffer outside the
+    // capture never moved or copied; nested captures therefore restore into the
+    // ancestor's in-progress image exactly as before.
+    RestoreRegion(state.savedRegion, state.pixelX, state.pixelY);
     lastEffectCaptureX_ = state.x;
     lastEffectCaptureY_ = state.y;
     lastEffectCaptureW_ = state.width;
@@ -4123,6 +9714,57 @@ void SoftwareRenderTarget::DrawDropShadowEffect(float x, float y, float w, float
     int32_t iw = effectCaptureFb_.width;
     int32_t ih = effectCaptureFb_.height;
 
+    const int32_t shadowX = static_cast<int32_t>(lastEffectCaptureX_ + offsetX);
+    const int32_t shadowY = static_cast<int32_t>(lastEffectCaptureY_ + offsetY);
+    const int32_t originalX = static_cast<int32_t>(lastEffectCaptureX_);
+    const int32_t originalY = static_cast<int32_t>(lastEffectCaptureY_);
+    const int32_t unionX = std::min(shadowX, originalX);
+    const int32_t unionY = std::min(shadowY, originalY);
+    const int32_t unionRight = std::max(shadowX + iw, originalX + iw);
+    const int32_t unionBottom = std::max(shadowY + ih, originalY + ih);
+    const int32_t unionWidth = unionRight - unionX;
+    const int32_t unionHeight = unionBottom - unionY;
+
+    std::vector<uint8_t> cacheKey;
+    try {
+        cacheKey.reserve(64);
+        auto appendValue = [&](const auto& value) {
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+            cacheKey.insert(cacheKey.end(), bytes, bytes + sizeof(value));
+        };
+        constexpr uint32_t kDropShadowTag = 0x44534844u; // "DSHD"
+        appendValue(kDropShadowTag);
+        appendValue(iw); appendValue(ih);
+        appendValue(blurRadius);
+        appendValue(offsetX); appendValue(offsetY);
+        appendValue(r); appendValue(g); appendValue(b); appendValue(a);
+        appendValue(cornerTL); appendValue(cornerTR);
+        appendValue(cornerBR); appendValue(cornerBL);
+        appendValue(currentOpacity_);
+        appendValue(unionX); appendValue(unionY);
+
+        if (!effectResultCache_)
+            effectResultCache_ = std::make_unique<SoftwareEffectResultCache>();
+        if (unionWidth > 0 && unionHeight > 0) {
+            if (auto* cached = effectResultCache_->Find(
+                    cacheKey, effectCaptureFb_.pixels)) {
+                if (cached->panelX == unionX && cached->panelY == unionY &&
+                    cached->panelWidth == unionWidth &&
+                    cached->panelHeight == unionHeight &&
+                    cached->outputPixels.size() ==
+                        static_cast<size_t>(unionWidth) * unionHeight * 4u) {
+                    BlitRawBuffer(
+                        cached->outputPixels.data(), unionWidth, unionHeight,
+                        unionX, unionY, 1.0f);
+                    return;
+                }
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        effectResultCache_.reset();
+        cacheKey.clear();
+    }
+
     // Create shadow mask from captured alpha channel
     SoftwareFramebuffer shadow;
     shadow.Resize(iw, ih);
@@ -4145,14 +9787,35 @@ void SoftwareRenderTarget::DrawDropShadowEffect(float x, float y, float w, float
     }
 
     // Draw shadow (offset)
-    int32_t dstX = (int32_t)(lastEffectCaptureX_ + offsetX);
-    int32_t dstY = (int32_t)(lastEffectCaptureY_ + offsetY);
-    BlitBuffer(shadow, dstX, dstY, currentOpacity_);
+    BlitBuffer(shadow, shadowX, shadowY, currentOpacity_);
 
     // Draw original content on top
-    int32_t origX = (int32_t)lastEffectCaptureX_;
-    int32_t origY = (int32_t)lastEffectCaptureY_;
-    BlitBuffer(effectCaptureFb_, origX, origY, currentOpacity_);
+    BlitBuffer(effectCaptureFb_, originalX, originalY, currentOpacity_);
+
+    if (effectResultCache_ && !cacheKey.empty() &&
+        unionWidth > 0 && unionHeight > 0) {
+        try {
+            SoftwareFramebuffer overlay;
+            overlay.Resize(unionWidth, unionHeight);
+            BlendBufferInto(
+                overlay, shadow,
+                shadowX - unionX, shadowY - unionY, currentOpacity_);
+            BlendBufferInto(
+                overlay, effectCaptureFb_,
+                originalX - unionX, originalY - unionY, currentOpacity_);
+            SoftwareEffectResultCache::Entry entry;
+            entry.key = std::move(cacheKey);
+            entry.sourcePixels = effectCaptureFb_.pixels;
+            entry.panelX = unionX;
+            entry.panelY = unionY;
+            entry.panelWidth = unionWidth;
+            entry.panelHeight = unionHeight;
+            entry.outputPixels = std::move(overlay.pixels);
+            effectResultCache_->Store(std::move(entry));
+        } catch (const std::bad_alloc&) {
+            effectResultCache_.reset();
+        }
+    }
 }
 
 void SoftwareRenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
@@ -4172,6 +9835,50 @@ void SoftwareRenderTarget::DrawOuterGlowEffect(float x, float y, float w, float 
     int32_t expand = (int32_t)(glowSize + 0.5f);
     int32_t gw = iw + expand * 2;
     int32_t gh = ih + expand * 2;
+    const int32_t glowX = static_cast<int32_t>(lastEffectCaptureX_) - expand;
+    const int32_t glowY = static_cast<int32_t>(lastEffectCaptureY_) - expand;
+    const int32_t panelX = glowX;
+    const int32_t panelY = glowY;
+    const int32_t panelWidth = gw;
+    const int32_t panelHeight = gh;
+
+    std::vector<uint8_t> cacheKey;
+    try {
+        auto appendValue = [&](const auto& value) {
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+            cacheKey.insert(cacheKey.end(), bytes, bytes + sizeof(value));
+        };
+        constexpr uint32_t kOuterGlowTag = 0x4F474C57u; // "OGLW"
+        appendValue(kOuterGlowTag);
+        appendValue(iw); appendValue(ih); appendValue(expand);
+        appendValue(glowSize);
+        appendValue(r); appendValue(g); appendValue(b); appendValue(a);
+        appendValue(intensity); appendValue(uvOffsetX); appendValue(uvOffsetY);
+        appendValue(cornerTL); appendValue(cornerTR);
+        appendValue(cornerBR); appendValue(cornerBL);
+        appendValue(currentOpacity_);
+        appendValue(panelX); appendValue(panelY);
+        if (!effectResultCache_)
+            effectResultCache_ = std::make_unique<SoftwareEffectResultCache>();
+        if (panelWidth > 0 && panelHeight > 0) {
+            if (auto* cached = effectResultCache_->Find(
+                    cacheKey, effectCaptureFb_.pixels)) {
+                if (cached->panelX == panelX && cached->panelY == panelY &&
+                    cached->panelWidth == panelWidth &&
+                    cached->panelHeight == panelHeight &&
+                    cached->outputPixels.size() ==
+                        static_cast<size_t>(panelWidth) * panelHeight * 4u) {
+                    BlitRawBuffer(
+                        cached->outputPixels.data(), panelWidth, panelHeight,
+                        panelX, panelY, 1.0f);
+                    return;
+                }
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        effectResultCache_.reset();
+        cacheKey.clear();
+    }
 
     // Create glow mask from alpha, placed centered in expanded buffer
     SoftwareFramebuffer glow;
@@ -4194,13 +9901,36 @@ void SoftwareRenderTarget::DrawOuterGlowEffect(float x, float y, float w, float 
     BoxBlur(glow.pixels, gw, gh, expand);
 
     // Draw glow (shifted by expand)
-    int32_t dstX = (int32_t)lastEffectCaptureX_ - expand;
-    int32_t dstY = (int32_t)lastEffectCaptureY_ - expand;
-    BlitBuffer(glow, dstX, dstY, currentOpacity_);
+    BlitBuffer(glow, glowX, glowY, currentOpacity_);
 
     // Draw original content on top
     BlitBuffer(effectCaptureFb_, (int32_t)lastEffectCaptureX_,
         (int32_t)lastEffectCaptureY_, currentOpacity_);
+
+    if (effectResultCache_ && !cacheKey.empty() &&
+        panelWidth > 0 && panelHeight > 0) {
+        try {
+            SoftwareFramebuffer overlay;
+            overlay.Resize(panelWidth, panelHeight);
+            BlendBufferInto(overlay, glow, 0, 0, currentOpacity_);
+            BlendBufferInto(
+                overlay, effectCaptureFb_,
+                static_cast<int32_t>(lastEffectCaptureX_) - panelX,
+                static_cast<int32_t>(lastEffectCaptureY_) - panelY,
+                currentOpacity_);
+            SoftwareEffectResultCache::Entry entry;
+            entry.key = std::move(cacheKey);
+            entry.sourcePixels = effectCaptureFb_.pixels;
+            entry.outputPixels = std::move(overlay.pixels);
+            entry.panelX = panelX;
+            entry.panelY = panelY;
+            entry.panelWidth = panelWidth;
+            entry.panelHeight = panelHeight;
+            effectResultCache_->Store(std::move(entry));
+        } catch (const std::bad_alloc&) {
+            effectResultCache_.reset();
+        }
+    }
 }
 
 void SoftwareRenderTarget::DrawInnerShadowEffect(float x, float y, float w, float h,
@@ -4214,6 +9944,51 @@ void SoftwareRenderTarget::DrawInnerShadowEffect(float x, float y, float w, floa
     currentTransform_.Apply(x, y, tx, ty);
     int32_t iw = effectCaptureFb_.width;
     int32_t ih = effectCaptureFb_.height;
+
+    const int32_t panelX = std::max(0, static_cast<int32_t>(lastEffectCaptureX_));
+    const int32_t panelY = std::max(0, static_cast<int32_t>(lastEffectCaptureY_));
+    const int32_t panelRight = std::min(
+        fb_.width, static_cast<int32_t>(lastEffectCaptureX_) + iw);
+    const int32_t panelBottom = std::min(
+        fb_.height, static_cast<int32_t>(lastEffectCaptureY_) + ih);
+    const int32_t panelWidth = panelRight - panelX;
+    const int32_t panelHeight = panelBottom - panelY;
+
+    std::vector<uint8_t> cacheKey;
+    SoftwareFramebuffer destinationBefore;
+    try {
+        auto appendValue = [&](const auto& value) {
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+            cacheKey.insert(cacheKey.end(), bytes, bytes + sizeof(value));
+        };
+        constexpr uint32_t kInnerShadowTag = 0x49534844u; // "ISHD"
+        appendValue(kInnerShadowTag);
+        appendValue(iw); appendValue(ih);
+        appendValue(blurRadius); appendValue(offsetX); appendValue(offsetY);
+        appendValue(r); appendValue(g); appendValue(b); appendValue(a);
+        appendValue(cornerTL); appendValue(cornerTR);
+        appendValue(cornerBR); appendValue(cornerBL);
+        appendValue(currentOpacity_);
+        if (!effectResultCache_)
+            effectResultCache_ = std::make_unique<SoftwareEffectResultCache>();
+        if (panelWidth > 0 && panelHeight > 0) {
+            if (auto* cached = effectResultCache_->FindComposited(
+                    cacheKey, effectCaptureFb_.pixels, fb_,
+                    panelX, panelY, panelWidth, panelHeight)) {
+                RestoreRawRegion(
+                    cached->outputPixels.data(), panelWidth, panelHeight,
+                    panelX, panelY);
+                return;
+            }
+            CopyRegion(
+                fb_, destinationBefore,
+                panelX, panelY, panelWidth, panelHeight);
+        }
+    } catch (const std::bad_alloc&) {
+        effectResultCache_.reset();
+        cacheKey.clear();
+        destinationBefore.Resize(0, 0);
+    }
 
     // Draw original content first
     BlitBuffer(effectCaptureFb_, (int32_t)lastEffectCaptureX_,
@@ -4268,6 +10043,26 @@ void SoftwareRenderTarget::DrawInnerShadowEffect(float x, float y, float w, floa
                 fb_.BlendPixel(dx, dy, shadow.pixels[srcIdx + 2],
                     shadow.pixels[srcIdx + 1], shadow.pixels[srcIdx + 0], sa);
             }
+        }
+    }
+
+    if (effectResultCache_ && !cacheKey.empty() &&
+        !destinationBefore.pixels.empty()) {
+        try {
+            SoftwareFramebuffer output;
+            CopyRegion(fb_, output, panelX, panelY, panelWidth, panelHeight);
+            SoftwareEffectResultCache::Entry entry;
+            entry.key = std::move(cacheKey);
+            entry.sourcePixels = effectCaptureFb_.pixels;
+            entry.contextPixels = std::move(destinationBefore.pixels);
+            entry.outputPixels = std::move(output.pixels);
+            entry.panelX = panelX;
+            entry.panelY = panelY;
+            entry.panelWidth = panelWidth;
+            entry.panelHeight = panelHeight;
+            effectResultCache_->Store(std::move(entry));
+        } catch (const std::bad_alloc&) {
+            effectResultCache_.reset();
         }
     }
 }
@@ -4662,12 +10457,83 @@ void SoftwareRenderTarget::DrawLiquidGlass(
     // Step 1: Capture and blur background
     SoftwareFramebuffer blurred;
     CopyRegion(fb_, blurred, x0, y0, rw, rh);
+    std::vector<uint8_t> liquidKey;
+    std::vector<uint8_t> liquidSource;
+    try {
+        auto appendValue = [&](const auto& value) {
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+            liquidKey.insert(liquidKey.end(), bytes, bytes + sizeof(value));
+        };
+        appendValue(x); appendValue(y); appendValue(w); appendValue(h);
+        appendValue(cornerRadius); appendValue(blurRadius);
+        appendValue(refractionAmount); appendValue(chromaticAberration);
+        appendValue(tintR); appendValue(tintG); appendValue(tintB); appendValue(tintOpacity);
+        appendValue(lightX); appendValue(lightY); appendValue(highlightBoost);
+        appendValue(shapeType); appendValue(shapeExponent);
+        appendValue(neighborCount); appendValue(fusionRadius);
+        appendValue(currentOpacity_);
+        for (float component : currentTransform_.m) appendValue(component);
+        const bool hasClip = !clipStack_.empty();
+        appendValue(hasClip);
+        if (hasClip) {
+            const auto& clip = clipStack_.top();
+            appendValue(clip.x); appendValue(clip.y);
+            appendValue(clip.w); appendValue(clip.h);
+        }
+        const uint32_t roundedCount = static_cast<uint32_t>(roundedClipStack_.size());
+        appendValue(roundedCount);
+        for (const auto& clip : roundedClipStack_) {
+            appendValue(clip.x); appendValue(clip.y);
+            appendValue(clip.w); appendValue(clip.h);
+            appendValue(clip.radiusTL); appendValue(clip.radiusTR);
+            appendValue(clip.radiusBR); appendValue(clip.radiusBL);
+        }
+        const int safeNeighborCount = std::clamp(neighborCount, 0, 4);
+        if (neighborData && safeNeighborCount > 0) {
+            const uint8_t* neighborBytes = reinterpret_cast<const uint8_t*>(neighborData);
+            liquidKey.insert(
+                liquidKey.end(), neighborBytes,
+                neighborBytes + static_cast<size_t>(safeNeighborCount) * 5u * sizeof(float));
+        }
+
+        if (!liquidGlassCache_)
+            liquidGlassCache_ = std::make_unique<SoftwareEffectResultCache>();
+        if (auto* cached = liquidGlassCache_->Find(liquidKey, blurred.pixels)) {
+            if (cached->panelX == x0 && cached->panelY == y0 &&
+                cached->panelWidth == rw && cached->panelHeight == rh &&
+                cached->outputPixels.size() == static_cast<size_t>(rw) * rh * 4u) {
+                auto copyRows = [&](int32_t begin, int32_t end) {
+                    for (int32_t row = begin; row < end; ++row) {
+                        const uint8_t* source = cached->outputPixels.data() +
+                            static_cast<size_t>(row) * rw * 4u;
+                        uint8_t* destination = fb_.pixels.data() +
+                            (static_cast<size_t>(y0 + row) * fb_.width + x0) * 4u;
+                        std::memcpy(destination, source, static_cast<size_t>(rw) * 4u);
+                    }
+                };
+                SoftwareWorkerPool* workerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+                if (workerPool && workerPool->CanParallelize() &&
+                    static_cast<uint64_t>(rw) * rh >= 256u * 1024u) {
+                    workerPool->ParallelFor(0, rh, 16, copyRows);
+                } else {
+                    copyRows(0, rh);
+                }
+                return;
+            }
+        }
+        liquidSource = blurred.pixels;
+    } catch (const std::bad_alloc&) {
+        liquidGlassCache_.reset();
+        liquidKey.clear();
+        liquidSource.clear();
+    }
     if (blurRadius > 0) {
         BoxBlur(blurred.pixels, rw, rh, (int32_t)(blurRadius * 0.5f + 0.5f));
     }
 
     // Step 2: Composite: blurred background + refraction distortion + tint + highlight
-    for (int32_t row = 0; row < rh; row++) {
+    auto compositeRows = [&](int32_t rowBegin, int32_t rowEnd) {
+    for (int32_t row = rowBegin; row < rowEnd; row++) {
         for (int32_t col = 0; col < rw; col++) {
             float lx = (float)(x0 + col - ix), ly = (float)(y0 + row - iy);
 
@@ -4724,10 +10590,19 @@ void SoftwareRenderTarget::DrawLiquidGlass(
             fb_.SetPixel(x0 + col, y0 + row, FloatToU8(rr), FloatToU8(rg), FloatToU8(rb), 255);
         }
     }
+    };
+    SoftwareWorkerPool* liquidWorkerPool = backend_ ? backend_->GetWorkerPool() : nullptr;
+    if (liquidWorkerPool && liquidWorkerPool->CanParallelize() &&
+        static_cast<uint64_t>(rw) * rh >= 128u * 1024u) {
+        liquidWorkerPool->ParallelFor(0, rh, 8, compositeRows);
+    } else {
+        compositeRows(0, rh);
+    }
 
     // Step 3: Inner shadow for depth effect
     uint8_t edgeAlpha = FloatToU8(0.15f * currentOpacity_);
-    for (int32_t row = 0; row < rh; row++) {
+    auto shadowRows = [&](int32_t rowBegin, int32_t rowEnd) {
+    for (int32_t row = rowBegin; row < rowEnd; row++) {
         for (int32_t col = 0; col < rw; col++) {
             float lx = (float)(x0 + col - ix), ly = (float)(y0 + row - iy);
             if (cr > 0 && !IsInsidePerCornerRoundedRect(lx, ly, w, h, cr, cr, cr, cr))
@@ -4740,6 +10615,36 @@ void SoftwareRenderTarget::DrawLiquidGlass(
             }
         }
     }
+    };
+    if (liquidWorkerPool && liquidWorkerPool->CanParallelize() &&
+        static_cast<uint64_t>(rw) * rh >= 128u * 1024u) {
+        liquidWorkerPool->ParallelFor(0, rh, 8, shadowRows);
+    } else {
+        shadowRows(0, rh);
+    }
+
+    if (liquidGlassCache_ && !liquidSource.empty() && !liquidKey.empty()) {
+        try {
+            SoftwareEffectResultCache::Entry entry;
+            entry.key = std::move(liquidKey);
+            entry.sourcePixels = std::move(liquidSource);
+            entry.panelX = x0;
+            entry.panelY = y0;
+            entry.panelWidth = rw;
+            entry.panelHeight = rh;
+            entry.outputPixels.resize(static_cast<size_t>(rw) * rh * 4u);
+            for (int32_t row = 0; row < rh; ++row) {
+                const uint8_t* source = fb_.pixels.data() +
+                    (static_cast<size_t>(y0 + row) * fb_.width + x0) * 4u;
+                uint8_t* destination = entry.outputPixels.data() +
+                    static_cast<size_t>(row) * rw * 4u;
+                std::memcpy(destination, source, static_cast<size_t>(rw) * 4u);
+            }
+            liquidGlassCache_->Store(std::move(entry));
+        } catch (const std::bad_alloc&) {
+            liquidGlassCache_.reset();
+        }
+    }
 }
 
 // ============================================================================
@@ -4748,6 +10653,7 @@ void SoftwareRenderTarget::DrawLiquidGlass(
 
 SoftwareBackend::SoftwareBackend()
 {
+    workerPool_ = std::make_unique<SoftwareWorkerPool>();
 #ifdef JALIUM_HAS_TEXT_ENGINE
     textEngine_ = std::make_unique<TextEngine>();
     if (textEngine_->Initialize() != JALIUM_OK)
@@ -4847,9 +10753,46 @@ Bitmap* SoftwareBackend::CreateBitmapFromMemory(const uint8_t* data, uint32_t da
         IID_PPV_ARGS(&wicFactory));
     if (FAILED(hr) || !wicFactory) return nullptr;
 
+    // SHCreateMemStream copied the caller's const buffer into a private stream.
+    // Preserve that ownership contract instead of lending writable access to
+    // IWICStream::InitializeFromMemory: CreateStreamOnHGlobal owns this one-shot
+    // copy after success and frees it when the final IStream reference is released.
+    HGLOBAL streamStorage = GlobalAlloc(GMEM_MOVEABLE, dataSize);
+    if (!streamStorage) return nullptr;
+
+    void* streamBytes = GlobalLock(streamStorage);
+    if (!streamBytes) {
+        GlobalFree(streamStorage);
+        return nullptr;
+    }
+    std::memcpy(streamBytes, data, dataSize);
+    GlobalUnlock(streamStorage);
+
     ComPtr<IStream> stream;
-    stream.Attach(SHCreateMemStream(data, dataSize));
-    if (!stream) return nullptr;
+    IStream* rawStream = nullptr;
+    hr = CreateStreamOnHGlobal(streamStorage, TRUE, &rawStream);
+    if (FAILED(hr)) {
+        if (rawStream)
+            rawStream->Release();
+        else
+            GlobalFree(streamStorage);
+        return nullptr;
+    }
+    if (!rawStream) {
+        GlobalFree(streamStorage);
+        return nullptr;
+    }
+
+    // GlobalAlloc may reserve a block larger than the requested byte count.
+    // Keep the stream's logical length identical to the caller's encoded data.
+    ULARGE_INTEGER streamSize{};
+    streamSize.QuadPart = dataSize;
+    hr = rawStream->SetSize(streamSize);
+    if (FAILED(hr)) {
+        rawStream->Release(); // Also frees streamStorage (fDeleteOnRelease=TRUE).
+        return nullptr;
+    }
+    stream.Attach(rawStream);
 
     ComPtr<IWICBitmapDecoder> decoder;
     hr = wicFactory->CreateDecoderFromStream(

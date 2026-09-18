@@ -18,8 +18,9 @@
 //   * The i16 path-data encoding is never emitted (f32 only), matching what
 //     upstream's PathEncoder emits in 0.10.0.
 //   * Glyph runs are not supported (Jalium has its own text pipeline).
-//   * The large pathtag scan chain is always used (no `pathtag_scan_small`
-//     permutation), so reduced buffers are sized for it unconditionally.
+//   * D3D12/Vulkan select upstream's `pathtag_scan_small` permutation when
+//     eligible, but the large-chain counts and reduced buffers remain
+//     populated unconditionally for backends that have not adopted it yet.
 //   * Elliptical radial gradients are expressed via a synthesized brush
 //     transform (upstream leaves this to the caller).
 
@@ -349,8 +350,14 @@ struct VelloRenderInfo {
     VelloConfig config;
 
     // Dispatch grids (x sizes; y=z=1 unless noted)
+    // Upstream uses the two extra reduce2/scan1 passes only when the first
+    // reduction produces more than one workgroup's worth of monoids. D3D12
+    // and Vulkan use this flag to select the small scan permutation; the
+    // legacy counts/buffer sizes below remain populated so other backends can
+    // keep using the always-large graph until they adopt that permutation.
+    bool useLargePathScan = false;
     uint32_t pathtagReduceWgs = 0;
-    uint32_t pathtagReduce2Wgs = 0;   // = pathtagScan1Wgs (always-large chain)
+    uint32_t pathtagReduce2Wgs = 0;   // = pathtagScan1Wgs; used by large scan only
     uint32_t pathtagScan1Wgs = 0;
     uint32_t pathtagScanWgs = 0;      // = pathtagReduceWgs
     uint32_t bboxClearWgs = 0;
@@ -1044,6 +1051,7 @@ public:
         uint32_t pathTagWgs = pathTagPadded / kVelloPathTagAlign;
         uint32_t reducedSize = VelloAlignUp(std::max(pathTagWgs, 1u), kVelloWorkgroupSize);
 
+        ri.useLargePathScan = pathTagWgs > kVelloWorkgroupSize;
         ri.pathtagReduceWgs = pathTagWgs;
         ri.pathtagScan1Wgs = reducedSize / kVelloWorkgroupSize;
         ri.pathtagReduce2Wgs = ri.pathtagScan1Wgs;

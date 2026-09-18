@@ -33,15 +33,33 @@ public class XmlLanguage
     {
         ArgumentNullException.ThrowIfNull(ietfLanguageTag);
 
+        var hasUppercaseAscii = false;
         for (var i = 0; i < ietfLanguageTag.Length; i++)
         {
-            if (ietfLanguageTag[i] > 0x7f)
+            var character = ietfLanguageTag[i];
+            if (character > 0x7f)
             {
                 throw new ArgumentException("Language tags must contain ASCII characters only.", nameof(ietfLanguageTag));
             }
+
+            if (character is >= 'A' and <= 'Z')
+            {
+                hasUppercaseAscii = true;
+            }
         }
 
-        var normalized = ietfLanguageTag.ToLowerInvariant();
+        var normalized = hasUppercaseAscii
+            ? string.Create(ietfLanguageTag.Length, ietfLanguageTag, static (destination, source) =>
+            {
+                for (var i = 0; i < source.Length; i++)
+                {
+                    var character = source[i];
+                    destination[i] = character is >= 'A' and <= 'Z'
+                        ? (char)(character + ('a' - 'A'))
+                        : character;
+                }
+            })
+            : ietfLanguageTag;
         ValidateTag(normalized, nameof(ietfLanguageTag));
         return s_cache.GetOrAdd(normalized, static tag => new XmlLanguage(tag));
     }

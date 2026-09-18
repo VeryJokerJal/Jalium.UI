@@ -42,7 +42,7 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)bin\native-static\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native-static\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\static\</IntDir>
     <!-- Static archive name. NativeMediaInterop's [LibraryImport("jalium.native.media")]
          is satisfied by NativeAOT's DirectPInvoke registration in Jalium.UI.Build.targets;
@@ -50,7 +50,7 @@
     <TargetName>jalium.native.media.windows.static</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)bin\native-static\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native-static\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\static\</IntDir>
     <TargetName>jalium.native.media.windows.static</TargetName>
   </PropertyGroup>

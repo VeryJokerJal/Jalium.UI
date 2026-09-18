@@ -445,8 +445,16 @@ void main(uint3 global_id : SV_DispatchThreadID, uint3 local_id : SV_GroupThread
           uint3 wg_id : SV_GroupID)
 {
     if (ptcl[0] == ~0u) {
-        // An earlier stage has failed, don't try to render.
-        // We use ptcl[0] for this so we don't use up a binding for bump.
+        // Every dispatched pixel must be written, including failed scenes.
+        // This lets the backends reuse output textures without a separate
+        // clear dispatch and prevents stale pixels after allocator overflow.
+        uint2 origin = uint2(global_id.x * PIXELS_PER_THREAD, global_id.y);
+        for (uint i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
+            uint2 coords = origin + uint2(i, 0u);
+            if (coords.x < target_width && coords.y < target_height) {
+                output[(int2)coords] = 0.0.xxxx;
+            }
+        }
         return;
     }
     float2 xy = float2((float)(global_id.x * PIXELS_PER_THREAD), (float)global_id.y);

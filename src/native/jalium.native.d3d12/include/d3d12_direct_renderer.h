@@ -669,6 +669,7 @@ public:
     void FlushVelloPaths();
     void ApplyScissorToVello();
     void SetVelloEnabled(bool enabled) { velloEnabled_ = enabled; }
+    uint32_t GetVelloDispatchCount() const { return velloDispatchCountThisFrame_; }
 
     // TEST-ONLY (#921 Vello-output regression self-check). Must be called with the
     // command list already open. Reproduces the 'JaliumVelloOutput' orphan and reports
@@ -745,7 +746,9 @@ private:
     bool CreateRootSignature();
     bool CreateFrameResources();
     bool CreateBlurResources();
+    bool EnsureBlurResources();
     bool CreateStencilPathResources();
+    bool EnsureStencilPathResources();
     // Rebuilds only the stencil/cover PSOs against the current
     // pathMsaaSampleCount_ (shaders + root sig + heaps are reused). Called once
     // from CreateStencilPathResources and again whenever the sample count
@@ -935,6 +938,13 @@ public:
     /// no-op when timing is disabled or no slot is available.
     void MarkGpuTimingPoint(GpuTimingCategory category);
 
+    /// Requests GPU timestamp collection for subsequent frames. The request is
+    /// lock-free so diagnostics can issue it from the UI thread; the query heap
+    /// and readback buffers are created later by BeginFrame on the render thread.
+    void RequestGpuTiming() {
+        timingRequested_.store(true, std::memory_order_release);
+    }
+
     struct GpuTimingSnapshot {
         uint64_t totalNs = 0;
         uint64_t categoryNs[static_cast<size_t>(GpuTimingCategory::kCount)] = {};
@@ -949,6 +959,7 @@ public:
     uint64_t GetLastFramePresentToReadyNs() const { return lastFramePresentToReadyNs_; }
     uint64_t GetLastFramePresentBlockNs() const { return lastFramePresentBlockNs_; }
 private:
+    bool EnsureGpuTimingResources();
     // Decode the previous frame's resolved timestamps and update
     // lastGpuTimingSnapshot_. Called from BeginFrame after fence wait
     // confirms the GPU resolved the queries.
@@ -957,6 +968,8 @@ private:
     static constexpr UINT kMaxTimingSlotsPerFrame = 512;
     ComPtr<ID3D12QueryHeap> timingQueryHeap_;
     bool timingSupported_ = false;
+    std::atomic<bool> timingRequested_{false};
+    bool timingInitializationAttempted_ = false;
     uint64_t timestampFrequency_ = 0;
     struct PerFrameTiming {
         ComPtr<ID3D12Resource> readback;
@@ -1107,6 +1120,7 @@ private:
     D3D12_RESOURCE_STATES pathMsaaColorState_   = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES pathResolveTexState_  = D3D12_RESOURCE_STATE_COMMON;
     bool  stencilPathReady_   = false;
+    bool  stencilPathInitAttempted_ = false;
 
     // Per-frame queue of stencil-path draws. DrawBatch references entries by
     // index (DrawBatch::instanceOffset). Cleared each BeginFrame.
@@ -1279,6 +1293,7 @@ private:
     // Vello GPU path renderer
     std::unique_ptr<D3D12VelloRenderer> velloRenderer_;
     bool velloEnabled_ = true;
+    uint32_t velloDispatchCountThisFrame_ = 0;
 
     // Swap chain format (queried at init, used for PSO creation)
     DXGI_FORMAT swapChainFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1403,6 +1418,7 @@ private:
     D3D12_RESOURCE_STATES blurTempAState_ = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES blurTempBState_ = D3D12_RESOURCE_STATE_COMMON;
     bool blurResourcesReady_ = false;
+    bool blurResourcesInitAttempted_ = false;
     bool blurTempsUsedThisFrame_ = false;
     // [#921] Set once the path-stencil MSAA scratch (pathMsaaColor_/Depth_/
     // pathResolveTexture_) has been bound into the open command list this frame;

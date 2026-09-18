@@ -105,6 +105,7 @@ if(JALIUM_PLATFORM_BUILD_TESTS OR
    JALIUM_MEDIA_LINUX_BUILD_TESTS OR
    JALIUM_SOFTWARE_BUILD_TESTS OR
    JALIUM_TEXT_BUILD_TESTS OR
+   JALIUM_D3D12_BUILD_TESTS OR
    JALIUM_METAL_BUILD_TESTS)
     enable_testing()
 endif()
@@ -287,6 +288,7 @@ if(WIN32)
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
+    include(cmake/JaliumWindowsProductInfo.cmake)
 endif()
 
 # Output directories
@@ -483,6 +485,12 @@ if(NOT JALIUM_BUILD_STATIC)
             list(APPEND _jalium_package_targets ${_optional_target})
         endif()
     endforeach()
+
+    if(WIN32)
+        foreach(_package_target ${_jalium_package_targets})
+            jalium_add_windows_product_info(${_package_target})
+        endforeach()
+    endif()
 
     add_custom_target(jalium.native.package.invalidate
         COMMAND ${CMAKE_COMMAND} -E rm -f

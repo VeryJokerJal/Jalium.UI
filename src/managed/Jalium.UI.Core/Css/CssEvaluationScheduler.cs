@@ -14,8 +14,8 @@ internal static class CssEvaluationScheduler
 {
     private sealed class DispatcherState
     {
-        public HashSet<FrameworkElement> SubtreeRoots = new();
-        public HashSet<FrameworkElement> SelfElements = new();
+        public HashSet<CssNode> SubtreeRoots = new();
+        public HashSet<CssNode> SelfElements = new();
         public bool Scheduled;
     }
 
@@ -23,7 +23,7 @@ internal static class CssEvaluationScheduler
 
     private static readonly ConditionalWeakTable<Dispatcher, DispatcherState> s_states = new();
 
-    public static void InvalidateSubtree(FrameworkElement root)
+    public static void InvalidateSubtree(CssNode root)
     {
         var dispatcher = root.Dispatcher;
         var state = s_states.GetValue(dispatcher, static _ => new DispatcherState());
@@ -32,7 +32,7 @@ internal static class CssEvaluationScheduler
     }
 
     /// <summary>Re-evaluates a single element (subject-position pseudo-class flips).</summary>
-    public static void InvalidateElement(FrameworkElement element)
+    public static void InvalidateElement(CssNode element)
     {
         var dispatcher = element.Dispatcher;
         var state = s_states.GetValue(dispatcher, static _ => new DispatcherState());
@@ -41,6 +41,9 @@ internal static class CssEvaluationScheduler
     }
 
     /// <summary>Runs any pending evaluation synchronously (layout entry, tests).</summary>
+    internal static bool HasPending(Dispatcher dispatcher)
+        => s_states.TryGetValue(dispatcher, out var state) && state.Scheduled;
+
     public static void FlushIfPending(Dispatcher dispatcher)
     {
         if (s_states.TryGetValue(dispatcher, out var state) && state.Scheduled)
@@ -75,8 +78,8 @@ internal static class CssEvaluationScheduler
             return;
         }
 
-        state.SubtreeRoots = new HashSet<FrameworkElement>();
-        state.SelfElements = new HashSet<FrameworkElement>();
+        state.SubtreeRoots = new HashSet<CssNode>();
+        state.SelfElements = new HashSet<CssNode>();
 
         foreach (var root in roots)
         {
@@ -99,7 +102,7 @@ internal static class CssEvaluationScheduler
         }
     }
 
-    private static bool HasAncestorIn(FrameworkElement element, HashSet<FrameworkElement> roots)
+    private static bool HasAncestorIn(CssNode element, HashSet<CssNode> roots)
     {
         var depth = 0;
         for (var current = element.FrameworkParent; current is not null && depth++ < MaxChainDepth;
@@ -114,16 +117,16 @@ internal static class CssEvaluationScheduler
         return false;
     }
 
-    internal static void EvaluateSubtree(FrameworkElement root)
+    internal static void EvaluateSubtree(CssNode root)
     {
-        CssEngine.EvaluateElement(root);
-        var count = VisualTreeHelper.GetChildrenCount(root);
-        for (var i = 0; i < count; i++)
+        var visited = new HashSet<CssNode>();
+        var pending = new Stack<CssNode>();
+        pending.Push(root);
+        while (pending.TryPop(out var node))
         {
-            if (VisualTreeHelper.GetChild(root, i) is FrameworkElement child)
-            {
-                EvaluateSubtree(child);
-            }
+            if (!visited.Add(node)) continue;
+            CssEngine.EvaluateElement(node);
+            foreach (var child in node.EnumerateChildren().Reverse()) pending.Push(child);
         }
     }
 }

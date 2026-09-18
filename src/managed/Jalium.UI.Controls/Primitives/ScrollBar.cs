@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Data;
+using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Input.Internal.Gestures;
 using Jalium.UI.Controls.Themes;
@@ -287,6 +287,7 @@ public class ScrollBar : RangeBase
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
         ResourcesChanged += OnResourcesChangedHandler;
+        Unloaded += static (sender, _) => (sender as ScrollBar)?.CompleteInteractionForDetach();
         RegisterScrollCommandBindings();
 
         _autoHideCollapseProgress = IsThumbSlim ? 1.0 : 0.0;
@@ -520,6 +521,25 @@ public class ScrollBar : RangeBase
         ApplyPartStyles();
         ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
         ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
+        if (VisualParent == null) CompleteInteractionForDetach();
+    }
+
+    internal void CompleteInteractionForDetach()
+    {
+        bool transitioning = _autoHideVisualTimer?.IsEnabled == true;
+        StopAutoHideVisualTimer();
+        CompleteOverlayThumbGesture();
+        if (transitioning)
+        {
+            _autoHideCollapseProgress = _autoHideVisualAnimTo;
+            _autoHideVisibilityProgress = _autoHideVisibilityAnimTo;
+            ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
+            ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
+        }
+        _lineUpButton?.CompleteInteractionForDetach();
+        _lineDownButton?.CompleteInteractionForDetach();
+        _track?.DecreaseRepeatButton?.CompleteInteractionForDetach();
+        _track?.IncreaseRepeatButton?.CompleteInteractionForDetach();
     }
 
     private void OnResourcesChangedHandler(object? sender, EventArgs e)
@@ -1453,8 +1473,10 @@ public class ScrollBar : RangeBase
         {
             _autoHideCollapseProgress = targetCollapseProgress;
             _autoHideVisibilityProgress = targetVisibilityProgress;
-            ApplyAutoHideVisualState(_autoHideCollapseProgress);
-            ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
+            // The target values are already painted. Reapplying them is not a
+            // harmless no-op because ApplyAutoHideVisualState invalidates the
+            // ScrollBar unconditionally. Nested ScrollViewer MouseEnter routes
+            // otherwise multiply one pointer sample into redundant dirty work.
             StopAutoHideVisualTimer();
             return;
         }

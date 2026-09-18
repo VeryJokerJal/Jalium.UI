@@ -1,6 +1,7 @@
 using System.Reflection;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
 
@@ -322,6 +323,209 @@ public class ScrollViewerScrollBarMetricsTests
         Assert.Equal(Visibility.Collapsed, verticalScrollBar.Visibility);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ThumbDrag_AtFrozenVerticalMaximum_FollowsExpandedRangeToBottom(
+        bool isDeferredScrollingEnabled)
+    {
+        const double initialExtentHeight = 520;
+        const double expandedExtentHeight = 920;
+        const double viewportHeight = 120;
+
+        var viewer = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            IsScrollBarAutoHideEnabled = false,
+            IsDeferredScrollingEnabled = isDeferredScrollingEnabled
+        };
+        var verticalScrollBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+
+        SetPrivateField(viewer, "_extentHeight", initialExtentHeight);
+        SetPrivateField(viewer, "_viewportHeight", viewportHeight);
+        InvokeUpdateScrollBarMetrics(viewer);
+        Assert.Equal(400, verticalScrollBar.Maximum);
+
+        // Virtualized content can refine its estimated extent while the captured thumb keeps
+        // the pointer-to-value mapping it started with. The thumb is at that frozen maximum,
+        // even though the live scrollable range has already grown behind it.
+        SetPrivateField(verticalScrollBar, "_isDragging", true);
+        verticalScrollBar.Value = verticalScrollBar.Maximum;
+        verticalScrollBar.RaiseEvent(new ScrollEventArgs(
+            ScrollBar.ScrollEvent,
+            ScrollEventType.ThumbTrack,
+            verticalScrollBar.Value)
+        {
+            Source = verticalScrollBar
+        });
+
+        if (isDeferredScrollingEnabled)
+        {
+            Assert.True(GetPrivateField<bool>(viewer, "_isDeferredScrolling"));
+        }
+        else
+        {
+            Assert.Equal(400, GetPrivateField<double>(viewer, "_pendingDragVerticalOffset"));
+            Assert.True(GetPrivateField<bool>(viewer, "_pendingDragVerticalEndAnchor"));
+        }
+
+        SetPrivateField(viewer, "_extentHeight", expandedExtentHeight);
+        InvokeUpdateScrollBarMetrics(viewer);
+
+        Assert.Equal(800, viewer.ScrollableHeight);
+        Assert.Equal(400, verticalScrollBar.Maximum);
+        Assert.Equal(400, verticalScrollBar.Value);
+
+        SetPrivateField(verticalScrollBar, "_isDragging", false);
+        verticalScrollBar.RaiseEvent(new ScrollEventArgs(
+            ScrollBar.ScrollEvent,
+            ScrollEventType.EndScroll,
+            verticalScrollBar.Value)
+        {
+            Source = verticalScrollBar
+        });
+
+        Assert.Equal(800, viewer.VerticalOffset);
+        Assert.Equal(800, verticalScrollBar.Maximum);
+        Assert.Equal(800, verticalScrollBar.Value);
+    }
+
+    [Fact]
+    public void ThumbDrag_EndAnchor_FollowsGrowingExtent_WithFiniteProviderRequests()
+    {
+        const double viewportHeight = 120;
+        var info = new FiniteOnlyScrollInfo
+        {
+            ExtentHeight = 520,
+            ViewportHeight = viewportHeight
+        };
+        var viewer = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            IsScrollBarAutoHideEnabled = false
+        };
+        info.ScrollOwner = viewer;
+        SetPrivateField(viewer, "_scrollInfo", info);
+        SetPrivateField(viewer, "_viewportHeight", viewportHeight);
+        viewer.InvalidateScrollInfo();
+        InvokeUpdateScrollBarMetrics(viewer);
+
+        var verticalScrollBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+        Assert.Equal(400, verticalScrollBar.Maximum);
+
+        SetPrivateField(verticalScrollBar, "_isDragging", true);
+        verticalScrollBar.Value = verticalScrollBar.Maximum;
+        verticalScrollBar.RaiseEvent(new ScrollEventArgs(
+            ScrollBar.ScrollEvent,
+            ScrollEventType.ThumbTrack,
+            verticalScrollBar.Value)
+        {
+            Source = verticalScrollBar
+        });
+
+        viewer.InvalidateScrollInfo();
+        Assert.Equal(400, info.VerticalOffset);
+
+        // A replacement realization window can briefly report no extent. The endpoint anchor
+        // must ignore that contraction instead of interpreting it as a request for the top.
+        info.ExtentHeight = 0;
+        viewer.InvalidateScrollInfo();
+        Assert.Equal(400, info.VerticalOffset);
+
+        // Each notification represents a virtualized measure refining the extent. The frozen
+        // thumb still says 400, but the content must follow the live finite maxima 800 then 1000.
+        info.ExtentHeight = 920;
+        viewer.InvalidateScrollInfo();
+        Assert.Equal(800, info.VerticalOffset);
+
+        info.ExtentHeight = 1120;
+        viewer.InvalidateScrollInfo();
+        Assert.Equal(1000, info.VerticalOffset);
+
+        SetPrivateField(verticalScrollBar, "_isDragging", false);
+        verticalScrollBar.RaiseEvent(new ScrollEventArgs(
+            ScrollBar.ScrollEvent,
+            ScrollEventType.EndScroll,
+            verticalScrollBar.Value)
+        {
+            Source = verticalScrollBar
+        });
+
+        Assert.Equal(1000, viewer.VerticalOffset);
+        Assert.DoesNotContain(info.VerticalOffsetRequests, value => !double.IsFinite(value));
+
+        // Any explicit move away from the end cancels the temporary anchor.
+        viewer.ScrollToVerticalOffset(200);
+        info.ExtentHeight = 1320;
+        viewer.InvalidateScrollInfo();
+        Assert.Equal(200, info.VerticalOffset);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WheelDown_ReachingEstimatedEnd_FollowsGrowingExtent(
+        bool useSmoothInertia)
+    {
+        const double viewportHeight = 120;
+        var info = new FiniteOnlyScrollInfo
+        {
+            ExtentHeight = 520,
+            ViewportHeight = viewportHeight,
+            WheelStep = 100
+        };
+        info.SetVerticalOffset(360);
+
+        var viewer = new ScrollViewer
+        {
+            IsScrollInertiaEnabled = useSmoothInertia,
+            ScrollInertiaDurationMs = 300,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            IsScrollBarAutoHideEnabled = false
+        };
+        info.ScrollOwner = viewer;
+        SetPrivateField(viewer, "_scrollInfo", info);
+        SetPrivateField(viewer, "_viewportHeight", viewportHeight);
+        viewer.InvalidateScrollInfo();
+        InvokeUpdateScrollBarMetrics(viewer);
+
+        var wheel = new MouseWheelEventArgs(
+            UIElement.MouseWheelEvent,
+            new Point(8, 8),
+            delta: -120,
+            leftButton: MouseButtonState.Released,
+            middleButton: MouseButtonState.Released,
+            rightButton: MouseButtonState.Released,
+            xButton1: MouseButtonState.Released,
+            xButton2: MouseButtonState.Released,
+            modifiers: ModifierKeys.None,
+            timestamp: 1);
+        viewer.RaiseEvent(wheel);
+
+        for (var frame = 0;
+             frame < 128 && GetPrivateField<bool>(viewer, "_isSmoothScrolling");
+             frame++)
+        {
+            InvokePrivateMethod(viewer, "AdvanceSmoothScrollByMilliseconds", 16L);
+        }
+
+        Assert.True(wheel.Handled);
+        Assert.Equal(400, info.VerticalOffset);
+        Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
+
+        info.ExtentHeight = 0;
+        viewer.InvalidateScrollInfo();
+        Assert.Equal(400, info.VerticalOffset);
+
+        info.ExtentHeight = 920;
+        viewer.InvalidateScrollInfo();
+        Assert.Equal(800, info.VerticalOffset);
+        Assert.DoesNotContain(info.VerticalOffsetRequests, value => !double.IsFinite(value));
+    }
+
     private static void InvokeConfigureScrollBar(
         ScrollBar scrollBar,
         double maxOffset,
@@ -344,6 +548,18 @@ public class ScrollViewerScrollBarMetricsTests
         Assert.NotNull(method);
 
         method!.Invoke(viewer, null);
+    }
+
+    private static void InvokePrivateMethod(
+        ScrollViewer viewer,
+        string methodName,
+        params object?[] arguments)
+    {
+        var method = typeof(ScrollViewer).GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        method!.Invoke(viewer, arguments);
     }
 
     private static T GetPrivateField<T>(object instance, string fieldName)
@@ -369,6 +585,51 @@ public class ScrollViewerScrollBarMetricsTests
     private sealed class ProbeScrollViewer : ScrollViewer
     {
         public UIElement? DirectContentElement => ContentElement;
+    }
+
+    private sealed class FiniteOnlyScrollInfo : IScrollInfo
+    {
+        public bool CanHorizontallyScroll { get; set; }
+        public bool CanVerticallyScroll { get; set; }
+        public double ExtentWidth { get; set; }
+        public double ExtentHeight { get; set; }
+        public double ViewportWidth { get; set; }
+        public double ViewportHeight { get; set; }
+        public double HorizontalOffset { get; private set; }
+        public double VerticalOffset { get; private set; }
+        public double WheelStep { get; set; } = 48;
+        public List<double> VerticalOffsetRequests { get; } = [];
+        public ScrollViewer? ScrollOwner { get; set; }
+
+        public void LineUp() { }
+        public void LineDown() { }
+        public void LineLeft() { }
+        public void LineRight() { }
+        public void PageUp() { }
+        public void PageDown() { }
+        public void PageLeft() { }
+        public void PageRight() { }
+        public void MouseWheelUp() => SetVerticalOffset(VerticalOffset - WheelStep);
+        public void MouseWheelDown() => SetVerticalOffset(VerticalOffset + WheelStep);
+        public void MouseWheelLeft() { }
+        public void MouseWheelRight() { }
+
+        public void SetHorizontalOffset(double offset)
+        {
+            HorizontalOffset = double.IsFinite(offset)
+                ? Math.Clamp(offset, 0, Math.Max(0, ExtentWidth - ViewportWidth))
+                : 0;
+        }
+
+        public void SetVerticalOffset(double offset)
+        {
+            VerticalOffsetRequests.Add(offset);
+            VerticalOffset = double.IsFinite(offset)
+                ? Math.Clamp(offset, 0, Math.Max(0, ExtentHeight - ViewportHeight))
+                : 0;
+        }
+
+        public Rect MakeVisible(Jalium.UI.Media.Visual visual, Rect rectangle) => rectangle;
     }
 
     private sealed class OverflowMeasureProbe : FrameworkElement

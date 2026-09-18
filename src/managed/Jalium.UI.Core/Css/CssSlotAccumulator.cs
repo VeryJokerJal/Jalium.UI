@@ -23,6 +23,11 @@ internal enum CssSlot : byte
 /// </summary>
 internal sealed class CssSlotAccumulator
 {
+    public Jalium.UI.Media.Brush? ForegroundBrush;
+    public CssTransitionParts? Transitions;
+    public CssGridPlacementParts? GridPlacement;
+    public CssGapParts? Gaps;
+    public CssVisibilityParts? Visibility;
     /// <summary>
     /// Combines box-shadow and filter effects into one Effect (EffectGroup lives in the
     /// Jalium.UI.Media assembly, which Core cannot reference). Injected by the Controls-level
@@ -43,6 +48,14 @@ internal sealed class CssSlotAccumulator
     private BackgroundSlot _background;
     private EffectSlot _effect;
     private LayoutSlot _layout;
+    private bool _borderHidden;
+    private bool _borderStyleFromState;
+
+    public void SetBorderStyle(bool hidden)
+    {
+        _borderHidden = hidden;
+        _borderStyleFromState = CurrentContributionIsState;
+    }
 
     private struct LayoutSlot
     {
@@ -103,12 +116,20 @@ internal sealed class CssSlotAccumulator
         _background = default;
         _effect = default;
         _layout = default;
+        Transitions = null;
+        GridPlacement = null;
+        Gaps = null;
+        Visibility = null;
+        _borderHidden = false;
+        _borderStyleFromState = false;
     }
 
     public void SetLayoutPercent(CssLayoutSlotField field, double fraction)
+        => SetLayoutLength(field, CssLayoutLength.Percent(fraction));
+
+    public void SetLayoutLength(CssLayoutSlotField field, CssLayoutLength length)
     {
         _layout.Touched = true;
-        var length = CssLayoutLength.Percent(fraction);
         switch (field)
         {
             case CssLayoutSlotField.Width: _layout.Width = length; break;
@@ -231,7 +252,8 @@ internal sealed class CssSlotAccumulator
             sink.Set(FrameworkElement.MarginProperty, thickness);
         }
 
-        var paddingIsPercent = _padding.Touched && HasPercentEdge(in _padding);
+        var paddingIsPercent = _padding.Touched && (HasPercentEdge(in _padding) ||
+            context.Element.Target is Jalium.UI.Controls.Panel && CssDependencyPropertyLookup.Find(context.Element.GetType(), "Padding") is null);
         if (_padding.Touched && !paddingIsPercent)
         {
             sink.CurrentValueIsState = _padding.FromState;
@@ -242,6 +264,13 @@ internal sealed class CssSlotAccumulator
         {
             sink.CurrentValueIsState = _borderWidth.FromState;
             FlushNamedThickness(in _borderWidth, in context, sink, "border-width", "BorderThickness", clampNonNegative: true);
+        }
+
+        if (_borderHidden)
+        {
+            sink.CurrentValueIsState = _borderStyleFromState;
+            if (CssDependencyPropertyLookup.Find(context.Element.GetType(), "BorderBrush") is { } brush) sink.Set(brush, null);
+            if (CssDependencyPropertyLookup.Find(context.Element.GetType(), "BorderThickness") is { } thickness) sink.Set(thickness, default(Thickness));
         }
 
         if (_corner.Touched)
@@ -262,16 +291,20 @@ internal sealed class CssSlotAccumulator
             FlushEffect(in context, sink);
         }
 
+        Transitions?.Flush(sink);
+        GridPlacement?.Flush(sink);
+        Gaps?.Flush(context, sink);
+        Visibility?.Flush(sink);
         sink.CurrentValueIsState = false;
 
         FlushLayoutState(in context, sink, marginIsPercent, paddingIsPercent);
     }
 
     private static bool HasPercentEdge(in ThicknessSlot slot)
-        => (slot.HasLeft && slot.Left.Unit == CssUnit.Percent) ||
-           (slot.HasTop && slot.Top.Unit == CssUnit.Percent) ||
-           (slot.HasRight && slot.Right.Unit == CssUnit.Percent) ||
-           (slot.HasBottom && slot.Bottom.Unit == CssUnit.Percent);
+        => (slot.HasLeft && (slot.Left.UsesPercent || slot.Left.Unit == CssUnit.Auto)) ||
+           (slot.HasTop && (slot.Top.UsesPercent || slot.Top.Unit == CssUnit.Auto)) ||
+           (slot.HasRight && (slot.Right.UsesPercent || slot.Right.Unit == CssUnit.Auto)) ||
+           (slot.HasBottom && (slot.Bottom.UsesPercent || slot.Bottom.Unit == CssUnit.Auto));
 
     /// <summary>
     /// Builds the immutable CssLayoutState snapshot (percent sizes, %-margin/padding,
@@ -379,6 +412,9 @@ internal sealed class CssSlotAccumulator
             return CssLayoutLength.Px(0);
         }
 
+        if (length.Unit == CssUnit.Auto) return CssLayoutLength.Auto;
+        if (length.Expression is { } expression)
+            return CssLayoutLength.Math(expression, context.Lengths);
         if (length.Unit == CssUnit.Percent)
         {
             return CssLayoutLength.Percent(length.Value / 100.0);

@@ -833,6 +833,8 @@ public partial class XamlReader
             }
         }
 
+        XamlBuilder.SetXmlIdentity(instance,namespaceUri,elementName,resetAttributes:true);
+
         // Parse attributes before pushing the current element so ResourceDictionary Source
         // can replace the placeholder instance with an x:Class-derived dictionary.
         if (reader.HasAttributes)
@@ -927,8 +929,9 @@ public partial class XamlReader
                 attrNamespaceUri);
 
             // Handle x: directives
-            if (prefix == "x")
+            if (attrNamespaceUri == JalxamlNamespaces.XamlMarkup || attrNamespaceUri == JalxamlNamespaces.WpfXamlMarkup)
             {
+                XamlBuilder.RecordXmlAttribute(currentInstance,attrNamespaceUri,attrName,attrValue);
                 HandleXDirective(currentInstance, attrName, attrValue, context);
                 continue;
             }
@@ -941,6 +944,7 @@ public partial class XamlReader
             else
             {
                 // Regular property
+                XamlBuilder.RecordXmlAttribute(currentInstance,attrNamespaceUri,attrName,attrValue);
                 currentInstance = SetProperty(currentInstance, attrName, attrValue, context, reader);
             }
         }
@@ -1006,6 +1010,7 @@ public partial class XamlReader
         var attachedProperty = instance is DependencyObject
             ? DependencyProperty.FromName(ownerType, propertyName)
             : null;
+        XamlBuilder.RecordXmlAttribute(instance,attributeNamespaceUri,propertyPath,value,ownerType);
 
         // Find the Set method (e.g., Grid.SetRow)
         var setMethod = ownerType.GetMethod($"Set{propertyName}", BindingFlags.Public | BindingFlags.Static);
@@ -1188,7 +1193,7 @@ public partial class XamlReader
                         var explicitKey = TryGetXKey(reader);
                         context.ClearCurrentResourceKey(); // Clear any previous key
                         var child = ParseElement(reader, context);
-                        var resourceKey = context.GetCurrentResourceKey() ?? explicitKey;
+                        var resourceKey = explicitKey ?? context.GetCurrentResourceKey();
 
                         if (ifDirectiveStack.Count > 0)
                         {
@@ -1600,7 +1605,7 @@ public partial class XamlReader
                 var explicitKey = TryGetXKey(reader);
                 context.ClearCurrentResourceKey();
                 var childValue = ParseElement(reader, context);
-                var resourceKey = context.GetCurrentResourceKey() ?? explicitKey;
+                var resourceKey = explicitKey ?? context.GetCurrentResourceKey();
 
                 childValue = ResolveMarkupExtensionValueIfNeeded(childValue, instance, property, context);
 
@@ -1788,8 +1793,8 @@ public partial class XamlReader
 
     private static string? TryGetXKey(XmlReader reader)
     {
-        const string xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
-        return reader.GetAttribute("Key", xamlNamespace);
+        return reader.GetAttribute("Key", JalxamlNamespaces.XamlMarkup)
+            ?? reader.GetAttribute("Key", JalxamlNamespaces.WpfXamlMarkup);
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
@@ -2629,6 +2634,46 @@ public partial class XamlReader
     private static object SetProperty(object instance, string propertyName, object? value, XamlParserContext context, XmlReader? reader = null)
     {
         var type = instance.GetType();
+        // The built-in Source property has a dedicated loader below. Avoid
+        // constructing reflection metadata just to rediscover that property for
+        // every generated merged dictionary. Derived dictionaries may hide Source
+        // or expose a read-only member, and retain the ordinary reflection path.
+        if (type == typeof(ResourceDictionary) &&
+            propertyName == nameof(ResourceDictionary.Source) && value is string builtInSource)
+        {
+            return HandleResourceDictionarySource((ResourceDictionary)instance, builtInSource, context);
+        }
+
+        if (propertyName == nameof(Setter.Property) && value is string builtInPropertyName &&
+            (type == typeof(Setter) || type == typeof(Trigger) || type == typeof(Condition)))
+        {
+            // Preserve the same eager resolution and deferred name fallback as
+            // the general DependencyProperty branch, without reflection metadata
+            // for the framework's three property-declaration types.
+            var targetType = context.FindParent<Style>()?.TargetType;
+            var resolved = targetType == null ? null :
+                XamlParserContext.ResolveDependencyProperty(builtInPropertyName, targetType, context);
+            if (resolved != null)
+            {
+                try
+                {
+                    if (instance is Setter builtInSetter) builtInSetter.Property = resolved;
+                    else if (instance is Trigger builtInTrigger) builtInTrigger.Property = resolved;
+                    else ((Condition)instance).Property = resolved;
+                }
+                catch (Exception exception)
+                {
+                    // Match PropertyInfo.SetValue's exception envelope, including
+                    // read-only dependency-property and sealed-declaration errors.
+                    throw new TargetInvocationException(exception);
+                }
+            }
+            else if (instance is Setter deferredSetter) deferredSetter.PropertyName = builtInPropertyName;
+            else if (instance is Trigger deferredTrigger) deferredTrigger.UnresolvedPropertyName = builtInPropertyName;
+            else ((Condition)instance).UnresolvedPropertyName = builtInPropertyName;
+            return instance;
+        }
+
         var property = type.GetProperty(propertyName);
 
         if (property == null)
@@ -3663,7 +3708,41 @@ public partial class XamlReader
     [RequiresUnreferencedCode("XamlBuilder.AddChild dispatches to the runtime AddChild path which may reflect on ContentPropertyAttribute / IList collections.")]
     internal static void BuilderAddChild(object parent, object child, XamlParserContext context, string? resourceKey = null)
     {
+        var parentType = parent.GetType();
+        if (child is UIElement &&
+            (parentType == typeof(Grid) || parentType == typeof(DockPanel) ||
+             parentType == typeof(StackPanel) || parentType == typeof(WrapPanel) ||
+             parentType == typeof(Canvas)))
+        {
+            // These exact framework types inherit Panel's Children content
+            // contract. Subclasses must still honor their own ContentProperty.
+            ((System.Collections.IList)((Panel)parent).Children).Add(child);
+            return;
+        }
+
+        if (child is SetterBase && TryGetBuiltInSetterCollection(parent, parentType, out var setters))
+        {
+            ((System.Collections.IList)setters).Add(child);
+            return;
+        }
+
         AddChild(parent, child, context, resourceKey);
+    }
+
+    private static bool TryGetBuiltInSetterCollection(
+        object instance, Type type, out SetterBaseCollection setters)
+    {
+        if (type == typeof(Style))
+            setters = ((Style)instance).Setters;
+        else if (type == typeof(Trigger) || type == typeof(MultiTrigger) ||
+                 type == typeof(DataTrigger) || type == typeof(MultiDataTrigger))
+            setters = ((TriggerBase)instance).Setters;
+        else
+        {
+            setters = null!;
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -3686,6 +3765,63 @@ public partial class XamlReader
         string? resourceKey)
     {
         var type = instance.GetType();
+        // Do not resolve an extension here: ProvideValue must still receive the
+        // original PropertyInfo through the general path. Concrete built-in
+        // collection children can use the same public collection directly.
+        if (type == typeof(ResourceDictionary) && childValue is ResourceDictionary builtInDictionary)
+        {
+            var owner = (ResourceDictionary)instance;
+            if (propertyName == nameof(ResourceDictionary.MergedDictionaries))
+            {
+                ((System.Collections.IList)owner.MergedDictionaries).Add(builtInDictionary);
+                return;
+            }
+            if (propertyName == nameof(ResourceDictionary.ThemeDictionaries))
+            {
+                if (resourceKey != null)
+                    owner.ThemeDictionaries[resourceKey] = builtInDictionary;
+                return;
+            }
+        }
+        if (propertyName == nameof(Style.Setters) && childValue is SetterBase &&
+            TryGetBuiltInSetterCollection(instance, type, out var setters))
+        {
+            ((System.Collections.IList)setters).Add(childValue);
+            return;
+        }
+        if (propertyName == nameof(ControlTemplate.Triggers) && childValue is TriggerBase)
+        {
+            if (type == typeof(ControlTemplate))
+            {
+                ((System.Collections.IList)((ControlTemplate)instance).Triggers).Add(childValue);
+                return;
+            }
+            if (type == typeof(Style))
+            {
+                ((System.Collections.IList)((Style)instance).Triggers).Add(childValue);
+                return;
+            }
+        }
+        if (propertyName == nameof(MultiTrigger.Conditions) && childValue is Condition &&
+            type == typeof(MultiTrigger))
+        {
+            ((System.Collections.IList)((MultiTrigger)instance).Conditions).Add(childValue);
+            return;
+        }
+        if (type == typeof(Setter) && propertyName == nameof(Setter.Value) &&
+            childValue is FrameworkTemplate templateValue)
+        {
+            try
+            {
+                ((Setter)instance).Value = templateValue;
+            }
+            catch (Exception exception)
+            {
+                throw new TargetInvocationException(exception);
+            }
+            return;
+        }
+
         var property = type.GetProperty(propertyName);
         if (property == null)
         {
@@ -4017,7 +4153,6 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     // 解析等),不缓存就让那些"失败 typeName"每次都走完整 8-namespace × 50-assembly 反射扫描
     // (每次 ~1ms)。null-cache 把"重复 failure"成本归零。
     private readonly record struct TypeCacheKey(string NamespaceUri, string TypeName, Assembly? SourceAssembly);
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<TypeCacheKey, Type?> s_typeCache = new();
 
     // ResolveTypeInNamespace 内层 fullName cache。多个外层 (ns, name, asm) 触发的 step 4
     // fallback 扫描会反复用相同的 fullName="{clrNamespace}.{typeName}" 调 Assembly.GetType。
@@ -4025,7 +4160,29 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     // 用 (fullName, sourceAssembly) 作 key 缓存,把 8-namespace × 50-assembly 的反射扫描
     // 摊平到一次。null 也 cache(同样的"失败重复"问题)。
     private readonly record struct FullNameCacheKey(string FullName, Assembly? SourceAssembly);
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<FullNameCacheKey, Type?> s_fullNameCache = new();
+
+    // Keep runtime/reflection resolution state out of XamlReader's startup initialization.
+    // Precompiled dictionaries construct known CLR types directly and never need these maps;
+    // the holder is touched only by the dynamic XAML name-resolution path below.
+    private static int s_typeResolutionCachesInitialized;
+
+    internal static bool AreTypeResolutionCachesInitialized =>
+        System.Threading.Volatile.Read(ref s_typeResolutionCachesInitialized) != 0;
+
+    private static class TypeResolutionCacheHolder
+    {
+        // An explicit .cctor keeps this holder from being marked beforefieldinit, so merely
+        // loading XamlParserContext cannot legally allocate the reflection caches ahead of demand.
+        static TypeResolutionCacheHolder()
+        {
+            System.Threading.Volatile.Write(ref s_typeResolutionCachesInitialized, 1);
+        }
+
+        internal static readonly ConcurrentDictionary<TypeCacheKey, Type?> Types = new();
+        internal static readonly ConcurrentDictionary<FullNameCacheKey, Type?> FullNames = new();
+        internal static readonly ConcurrentDictionary<string, XmlnsIndexEntry> XmlnsIndexes =
+            new(StringComparer.Ordinal);
+    }
 
     private readonly Dictionary<string, object> _namedElements = new();
     private readonly Stack<object> _parentStack = new();
@@ -4498,14 +4655,14 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     public Type? ResolveType(string namespaceUri, string typeName)
     {
         var cacheKey = new TypeCacheKey(namespaceUri, typeName, SourceAssembly);
-        if (s_typeCache.TryGetValue(cacheKey, out var cachedType))
+        if (TypeResolutionCacheHolder.Types.TryGetValue(cacheKey, out var cachedType))
         {
             return FilterRestrictiveType(cachedType, typeName);
         }
 
         var resolved = ResolveTypeUncached(namespaceUri, typeName);
-        // null 也 cache —— 见 s_typeCache 注释。
-        s_typeCache.TryAdd(cacheKey, resolved);
+        // null 也 cache —— 见上方缓存说明。
+        TypeResolutionCacheHolder.Types.TryAdd(cacheKey, resolved);
         return FilterRestrictiveType(resolved, typeName);
     }
 
@@ -4568,20 +4725,17 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         ImmutableArray<XmlnsDefinitionRegistry.Mapping> Mappings,
         Dictionary<string, Type> Index);
 
-    private static readonly ConcurrentDictionary<string, XmlnsIndexEntry> s_xmlnsIndex =
-        new(StringComparer.Ordinal);
-
     private static Type? LookupXmlnsIndexedType(string namespaceUri, string typeName)
     {
         var mappings = XmlnsDefinitionRegistry.GetMappings(namespaceUri);
         if (mappings.IsDefaultOrEmpty)
             return null;
 
-        if (!s_xmlnsIndex.TryGetValue(namespaceUri, out var entry) ||
+        if (!TypeResolutionCacheHolder.XmlnsIndexes.TryGetValue(namespaceUri, out var entry) ||
             !entry.Mappings.Equals(mappings))
         {
             entry = new XmlnsIndexEntry(mappings, BuildXmlnsIndex(mappings));
-            s_xmlnsIndex[namespaceUri] = entry;
+            TypeResolutionCacheHolder.XmlnsIndexes[namespaceUri] = entry;
         }
 
         if (!entry.Index.TryGetValue(typeName, out var type))
@@ -4725,7 +4879,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         // fullName 调 Assembly.GetType。这里把反射扫描的结果(命中或 null)按
         // (fullName, sourceAssembly) 缓存。null 也 cache —— failure 路径不重复 scan。
         var fullNameKey = new FullNameCacheKey(fullName, SourceAssembly);
-        if (s_fullNameCache.TryGetValue(fullNameKey, out var cached))
+        if (TypeResolutionCacheHolder.FullNames.TryGetValue(fullNameKey, out var cached))
         {
             if (cached != null)
             {
@@ -4759,7 +4913,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
             result = SourceAssembly.GetType(fullName);
         }
 
-        s_fullNameCache.TryAdd(fullNameKey, result);
+        TypeResolutionCacheHolder.FullNames.TryAdd(fullNameKey, result);
         if (result != null)
         {
             XamlTypeRegistry.RegisterType(typeName, result);
@@ -4776,384 +4930,412 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
 /// </summary>
 public static class XamlTypeRegistry
 {
-    // AOT-safe type registry - types are preserved at compile time
-    private static readonly Dictionary<string, Type> _types = InitializeTypes();
-
-    [UnconditionalSuppressMessage("Trimming", "IL2026:Static field initializer cannot itself declare RequiresUnreferencedCode.", Justification = "This initializer registers Type tokens only; reflective construction happens in XamlReader.Load which carries the RUC contract.")]
-    private static Dictionary<string, Type> InitializeTypes()
+    // Registration made by application/source-generated code must remain cheap during module
+    // initialization. In particular, registering an x:Class/StartupUri or a directly known
+    // element type must not construct the full framework type catalog. Each state family gets
+    // its own nested holder so the CLR initializes it only when that API family is used.
+    private static class ExplicitTypesHolder
     {
-        var types = new Dictionary<string, Type>(StringComparer.Ordinal);
+        static ExplicitTypesHolder() { }
 
-        // Register all known XAML types
-        RegisterCoreTypes(types);
-        RegisterMarkupTypes(types);
-        RegisterControlTypes(types);
-        RegisterMediaTypes(types);
-        RegisterShapeTypes(types);
-        RegisterDataTypes(types);
-        RegisterDocumentTypes(types);
-        RegisterInteractivityTypes(types);
-
-        return types;
+        internal static readonly ConcurrentDictionary<string, Type> Types =
+            new(StringComparer.Ordinal);
     }
 
-    [RequiresUnreferencedCode("Registers core types whose markup-extension ProvideValue overrides are themselves annotated with RequiresUnreferencedCode.")]
-    private static void RegisterCoreTypes(Dictionary<string, Type> types)
+    private static class StartupTypesHolder
     {
-        // Jalium.UI namespace (Core types)
-        Register<DependencyObject>(types);
-        Register<DependencyProperty>(types);
-        Register<FrameworkElement>(types);
-        Register<UIElement>(types);
-        Register<Visual>(types);
-        Register<Style>(types);
-        Register<Setter>(types);
-        Register<Trigger>(types);
-        Register<MultiTrigger>(types);
-        Register<Condition>(types);
-        Register<DataTrigger>(types);
-        Register<EventTrigger>(types);
-        Register<ControlTemplate>(types);
-        Register<DataTemplate>(types);
-        Register<HierarchicalDataTemplate>(types);
-        Register<Jalium.UI.Controls.DataTemplateSelector>(types);
-        Register<Jalium.UI.Controls.ItemsPanelTemplate>(types);
-        Register<ResourceDictionary>(types);
-        Register<Binding>(types);
-        Register<BindingBase>(types);
-        Register<BindingExtension>(types);
-        Register<global::Jalium.UI.StaticResourceExtension>(types);
-        Register<global::Jalium.UI.DynamicResourceExtension>(types);
-        Register<global::Jalium.UI.ThemeDictionaryExtension>(types);
-        Register<global::Jalium.UI.ColorConvertedBitmapExtension>(types);
-        Register<ThemeResourceExtension>(types);
-        Register<TemplateBindingExtension>(types);
-        Register<NullExtension>(types);
-        Register<TypeExtension>(types);
-        Register<StaticExtension>(types);
-        Register<ArrayExtension>(types);
-        Register<string>(types);
-        Register<Thickness>(types);
-        Register<CornerRadius>(types);
-        Register<GridLength>(types);
+        static StartupTypesHolder() { }
+
+        internal static readonly ConcurrentDictionary<string, Type> FullNames =
+            new(StringComparer.Ordinal);
+        internal static readonly ConcurrentDictionary<string, Type> Uris =
+            new(StringComparer.OrdinalIgnoreCase);
     }
 
-    private static void RegisterMarkupTypes(Dictionary<string, Type> types)
-    {
-        Register<Markup.RazorSectionHost>(types);
-
-        // Emitted by the tokenizer for @virtualize, so it has to resolve by name the same way a
-        // hand-written element would.
-        Register<Controls.RazorItemsHost>(types);
-    }
-
-    [RequiresUnreferencedCode("Registers control types whose ctors / ProvideValue overrides are themselves annotated with RequiresUnreferencedCode.")]
-    private static void RegisterControlTypes(Dictionary<string, Type> types)
-    {
-        // Jalium.UI.Controls namespace
-        Register<Application>(types);
-        Register<Window>(types);
-        Register<Page>(types);
-        Register<Frame>(types);
-        Register<Control>(types);
-        Register<AccessText>(types);
-        Register<ContentControl>(types);
-        Register<ContentPresenter>(types);
-        Register<ItemsControl>(types);
-        Register<Jalium.UI.Controls.ItemContainerTemplate>(types);
-        Register<ButtonBase>(types);
-        Register<Button>(types);
-        Register<SplitButton>(types);
-        Register<ToggleButton>(types);
-        Register<TextBlock>(types);
-        Register<TextBox>(types);
-        Register<PasswordBox>(types);
-        Register<NumberBox>(types);
-        Register<RichTextBox>(types);
-        Register<CheckBox>(types);
-        Register<RadioButton>(types);
-        Register<ComboBox>(types);
-        Register<ComboBoxItem>(types);
-        Register<Selector>(types);
-        Register<ListBox>(types);
-        Register<ListBoxItem>(types);
-        Register<ListView>(types);
-        Register<ListViewItem>(types);
-        Register<GridView>(types);
-        Register<Jalium.UI.Controls.GridViewColumn>(types);
-        Register<GridViewColumnHeader>(types);
-        Register<DataGrid>(types);
-        Register<DataGridRow>(types);
-        Register<DataGridCell>(types);
-        Register<Jalium.UI.Controls.Primitives.DataGridColumnHeader>(types);
-        Register<TreeDataGrid>(types);
-        Register<TreeDataGridRow>(types);
-        Register<Slider>(types);
-        Register<RangeSlider>(types);
-        Register<ProgressBar>(types);
-        Register<TabControl>(types);
-        Register<TabItem>(types);
-        Register<Border>(types);
-        Register<Panel>(types);
-        Register<StackPanel>(types);
-        Register<Grid>(types);
-        Register<Canvas>(types);
-        Register<DockPanel>(types);
-        Register<WrapPanel>(types);
-        Register<ScrollViewer>(types);
-        Register<Image>(types);
-        Register<QRCode>(types);
-        Register<ToolTip>(types);
-        Register<ContentDialog>(types);
-        Register<Popup>(types);
-        Register<TreeView>(types);
-        Register<TreeViewItem>(types);
-        Register<TreeSelector>(types);
-        Register<TreeSelectorItem>(types);
-        Register<NavigationView>(types);
-        Register<NavigationViewItem>(types);
-        Register<NavigationViewItemHeader>(types);
-        Register<NavigationViewItemSeparator>(types);
-        Register<TitleBar>(types);
-        Register<TitleBarButton>(types);
-        Register<RowDefinition>(types);
-        Register<ColumnDefinition>(types);
-        Register<ScrollBar>(types);
-        Register<RepeatButton>(types);
-        Register<ToggleSwitch>(types);
-        Register<AutoCompleteBox>(types);
-        Register<HyperlinkButton>(types);
-        Register<Label>(types);
-        Register<InkCanvas>(types);
-        Register<MediaElement>(types);
-        Register<EditControl>(types);
-        Register<Markdown>(types);
-        Register<Calendar>(types);
-        Register<CalendarButton>(types);
-        Register<CalendarDayButton>(types);
-        Register<CalendarItem>(types);
-        Register<DatePicker>(types);
-        Register<DatePickerTextBox>(types);
-        Register<TimePicker>(types);
-        Register<ColorPicker>(types);
-        Register<Jalium.UI.Controls.Primitives.StatusBar>(types);
-        Register<Jalium.UI.Controls.Primitives.StatusBarItem>(types);
-        Register<Separator>(types);
-        Register<InfoBar>(types);
-        Register<Thumb>(types);
-        Register<Expander>(types);
-        Register<GroupBox>(types);
-        Register<Viewbox>(types);
-        Register<GridSplitter>(types);
-        Register<DockLayout>(types);
-        Register<Split>(types);
-        Register<DockSplitPanel>(types);
-        Register<DockTabPanel>(types);
-        Register<DockItem>(types);
-        Register<TransitioningContentControl>(types);
-        Register<JsonTreeViewer>(types);
-        Register<PropertyGrid>(types);
-        Register<MapView>(types);
-        Register<MiniMap>(types);
-        Register<GeographicHeatmap>(types);
-        Register<Terminal>(types);
-        Register<DiffViewer>(types);
-        Register<HexEditor>(types);
-
-        // Icons
-        Register<IconElement>(types);
-        Register<SymbolIcon>(types);
-        Register<FontIcon>(types);
-        Register<PathIcon>(types);
-
-        // Menus & Toolbars controls
-        Register<AppBarButton>(types);
-        Register<AppBarSeparator>(types);
-        Register<AppBarToggleButton>(types);
-        Register<CommandBar>(types);
-        Register<CommandBarFlyout>(types);
-        Register<MenuBar>(types);
-        Register<MenuBarItem>(types);
-        Register<Menu>(types);
-        Register<MenuItem>(types);
-        Register<ContextMenu>(types);
-        Register<MenuFlyout>(types);
-        Register<MenuFlyoutItem>(types);
-        Register<MenuFlyoutSubItem>(types);
-        Register<MenuFlyoutSeparator>(types);
-        Register<ToggleMenuFlyoutItem>(types);
-        Register<SwipeControl>(types);
-        Register<Jalium.UI.Controls.ToolBar>(types);
-        Register<ToolBarTray>(types);
-
-        // Jalium.UI.Controls.Primitives namespace
-        Register<BulletDecorator>(types);
-        Register<DocumentPageView>(types);
-        Register<ItemsPresenter>(types);
-        Register<ResizeGrip>(types);
-        Register<SelectiveScrollingGrid>(types);
-        Register<TabPanel>(types);
-        Register<TickBar>(types);
-        Register<ToolBarOverflowPanel>(types);
-        Register<ToolBarPanel>(types);
-        Register<UniformGrid>(types);
-        // 抽象基类 VirtualizingPanel 也要注册：VirtualizingPanel.IsVirtualizing /
-        // VirtualizationMode / ScrollUnit 等附加属性的 owner 是这个基类，jalxaml 里
-        // <VirtualizingStackPanel VirtualizingPanel.IsVirtualizing="True" /> 解析 owner 时
-        // 需按简单名找到它（否则 SetAttachedProperty 抛 "Cannot resolve attached property owner type"）。
-        Register<VirtualizingPanel>(types);
-        Register<VirtualizingStackPanel>(types);
-        Register<FlexPanel>(types);
-
-        // Static service classes used as attached-property owners
-        RegisterStaticOwner(types, typeof(ContextMenuService));
-        RegisterStaticOwner(types, typeof(Jalium.UI.Styling.Css));
-    }
-
-    private static void RegisterStaticOwner(
-        Dictionary<string, Type> types,
-        [DynamicallyAccessedMembers(
-            DynamicallyAccessedMemberTypes.PublicMethods |
-            DynamicallyAccessedMemberTypes.PublicFields)] Type ownerType)
-    {
-        types[ownerType.Name] = ownerType;
-    }
-
-    private static void RegisterMediaTypes(Dictionary<string, Type> types)
-    {
-        // Jalium.UI.Media namespace
-        Register<Brush>(types);
-        Register<SolidColorBrush>(types);
-        Register<LinearGradientBrush>(types);
-        Register<RadialGradientBrush>(types);
-        Register<GradientStop>(types);
-        Register<Color>(types);
-        Register<ImageSource>(types);
-        Register<Transform>(types);
-        Register<TranslateTransform>(types);
-        Register<RotateTransform>(types);
-        Register<ScaleTransform>(types);
-        Register<Geometry>(types);
-        Register<RectangleGeometry>(types);
-        Register<EllipseGeometry>(types);
-        Register<PathGeometry>(types);
-
-        // Element effects. Keep these explicit instead of relying on runtime
-        // namespace reflection so restrictive/AOT XAML can construct every
-        // built-in effect, not only BlurEffect and DropShadowEffect.
-        Register<Jalium.UI.Media.Effects.BlurEffect>(types);
-        Register<Jalium.UI.Media.Effects.ElementBlurEffect>(types);
-        Register<Jalium.UI.Media.Effects.DropShadowEffect>(types);
-        Register<Jalium.UI.Media.Effects.OuterGlowEffect>(types);
-        Register<Jalium.UI.Media.Effects.InnerShadowEffect>(types);
-        Register<Jalium.UI.Media.Effects.EmbossEffect>(types);
-        Register<Jalium.UI.Media.Effects.ColorMatrixEffect>(types);
-        Register<Jalium.UI.Media.Effects.ColorMatrix>(types);
-        Register<Jalium.UI.Media.Effects.EffectGroup>(types);
-        Register<Jalium.UI.Media.Effects.EffectCollection>(types);
-        Register<Jalium.UI.Media.Effects.PixelShader>(types);
-
-        // Legacy bitmap-effect object elements remain parseable for WPF XAML
-        // compatibility even though UIElement.Effect is the preferred API.
-#pragma warning disable CS0618
-        Register<Jalium.UI.Media.Effects.BlurBitmapEffect>(types);
-        Register<Jalium.UI.Media.Effects.DropShadowBitmapEffect>(types);
-        Register<Jalium.UI.Media.Effects.BevelBitmapEffect>(types);
-        Register<Jalium.UI.Media.Effects.EmbossBitmapEffect>(types);
-        Register<Jalium.UI.Media.Effects.OuterGlowBitmapEffect>(types);
-        Register<Jalium.UI.Media.Effects.BitmapEffectGroup>(types);
-        Register<Jalium.UI.Media.Effects.BitmapEffectCollection>(types);
-        Register<Jalium.UI.Media.Effects.BitmapEffectInput>(types);
-#pragma warning restore CS0618
-
-        // Backdrop effects share a separate rendering pipeline but are XAML
-        // object elements as well, including CompositeBackdropEffect children.
-        Register<BackdropBlurEffect>(types);
-        Register<AcrylicEffect>(types);
-        Register<MicaEffect>(types);
-        Register<FrostedGlassEffect>(types);
-        Register<ColorAdjustmentEffect>(types);
-        Register<CompositeBackdropEffect>(types);
-    }
-
-    private static void RegisterShapeTypes(Dictionary<string, Type> types)
-    {
-        // Jalium.UI.Shapes namespace
-        Register<Shape>(types);
-        Register<Ellipse>(types);
-        Register<Rectangle>(types);
-        Register<Jalium.UI.Shapes.Path>(types);
-        Register<Line>(types);
-        Register<Polygon>(types);
-        Register<Polyline>(types);
-    }
-
-    private static void RegisterDataTypes(Dictionary<string, Type> types)
-    {
-        // Jalium.UI.Data namespace - Converters
-        Register<BooleanToVisibilityConverter>(types);
-        Register<InverseBooleanConverter>(types);
-        Register<NullToBooleanConverter>(types);
-        Register<NullToVisibilityConverter>(types);
-        Register<StringCaseConverter>(types);
-        Register<EqualityConverter>(types);
-        Register<MultiplyConverter>(types);
-        Register<AddConverter>(types);
-        Register<EnumToBooleanConverter>(types);
-        Register<DateTimeFormatConverter>(types);
-
-        // Jalium.UI.Data namespace - Collection support
-        Register<CollectionViewSource>(types);
-    }
-
-    private static void RegisterDocumentTypes(Dictionary<string, Type> types)
-    {
-        // Jalium.UI.Documents namespace
-        Register<FlowDocument>(types);
-        Register<Paragraph>(types);
-        Register<Section>(types);
-        Register<Run>(types);
-        Register<Bold>(types);
-        Register<Italic>(types);
-        Register<Underline>(types);
-        Register<Span>(types);
-        Register<Hyperlink>(types);
-        Register<LineBreak>(types);
-        Register<InlineUIContainer>(types);
-        Register<BlockUIContainer>(types);
-        Register<Table>(types);
-        Register<TableColumn>(types);
-        Register<TableRowGroup>(types);
-        Register<TableRow>(types);
-        Register<TableCell>(types);
-        Register<Jalium.UI.Documents.AdornerDecorator>(types);
-        Register<Jalium.UI.Controls.Decorator>(types);
-    }
-
-    private static void RegisterInteractivityTypes(Dictionary<string, Type> types)
-    {
-        // Jalium.UI.Interactivity namespace
-        Register<BehaviorEventTrigger>(types);
-        Register<InvokeCommandAction>(types);
-        Register<CallMethodAction>(types);
-        Register<ChangePropertyAction>(types);
-    }
-
-    private static void Register<[DynamicallyAccessedMembers(
+    private const DynamicallyAccessedMemberTypes BuiltinTypeMembers =
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
         DynamicallyAccessedMemberTypes.PublicFields |
         DynamicallyAccessedMemberTypes.PublicMethods |
-        DynamicallyAccessedMemberTypes.NonPublicFields)] T>(Dictionary<string, Type> types)
+        DynamicallyAccessedMemberTypes.NonPublicFields;
+
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveBuiltinType(string typeName) =>
+        ResolveCoreBuiltinType(typeName) ??
+        ResolveMarkupBuiltinType(typeName) ??
+        ResolveControlBuiltinType(typeName) ??
+        ResolveMediaBuiltinType(typeName) ??
+        ResolveShapeBuiltinType(typeName) ??
+        ResolveDataBuiltinType(typeName) ??
+        ResolveDocumentBuiltinType(typeName) ??
+        ResolveInteractivityBuiltinType(typeName);
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Direct typeof tokens only preserve the declared XAML member contract; this resolver does not invoke those annotated members.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2111:DynamicallyAccessedMembers",
+        Justification = "Preserving DAM-annotated members is intentional because runtime XAML accesses them after the type name resolves.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Direct typeof tokens do not generate runtime code; they statically root the XAML member contract.")]
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveCoreBuiltinType(string typeName) => typeName switch
     {
-        types[typeof(T).Name] = typeof(T);
-    }
+        "Application" => typeof(global::Jalium.UI.Application),
+        "ColorConvertedBitmapExtension" => typeof(global::Jalium.UI.ColorConvertedBitmapExtension),
+        "Condition" => typeof(global::Jalium.UI.Condition),
+        "CornerRadius" => typeof(global::Jalium.UI.CornerRadius),
+        "DataTemplate" => typeof(global::Jalium.UI.DataTemplate),
+        "DataTrigger" => typeof(global::Jalium.UI.DataTrigger),
+        "DependencyObject" => typeof(global::Jalium.UI.DependencyObject),
+        "DependencyProperty" => typeof(global::Jalium.UI.DependencyProperty),
+        "DynamicResourceExtension" => typeof(global::Jalium.UI.DynamicResourceExtension),
+        "EventTrigger" => typeof(global::Jalium.UI.EventTrigger),
+        "FrameworkElement" => typeof(global::Jalium.UI.FrameworkElement),
+        "GridLength" => typeof(global::Jalium.UI.GridLength),
+        "HierarchicalDataTemplate" => typeof(global::Jalium.UI.HierarchicalDataTemplate),
+        "MultiTrigger" => typeof(global::Jalium.UI.MultiTrigger),
+        "ResourceDictionary" => typeof(global::Jalium.UI.ResourceDictionary),
+        "Setter" => typeof(global::Jalium.UI.Setter),
+        "StaticResourceExtension" => typeof(global::Jalium.UI.StaticResourceExtension),
+        "String" => typeof(global::System.String),
+        "Style" => typeof(global::Jalium.UI.Style),
+        "ThemeDictionaryExtension" => typeof(global::Jalium.UI.ThemeDictionaryExtension),
+        "Thickness" => typeof(global::Jalium.UI.Thickness),
+        "Trigger" => typeof(global::Jalium.UI.Trigger),
+        "UIElement" => typeof(global::Jalium.UI.UIElement),
+        "Window" => typeof(global::Jalium.UI.Window),
+        _ => null,
+    };
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Direct typeof tokens only preserve the declared XAML member contract; this resolver does not invoke those annotated members.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2111:DynamicallyAccessedMembers",
+        Justification = "Preserving DAM-annotated members is intentional because runtime XAML accesses them after the type name resolves.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Direct typeof tokens do not generate runtime code; they statically root the XAML member contract.")]
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveMarkupBuiltinType(string typeName) => typeName switch
+    {
+        "ArrayExtension" => typeof(global::Jalium.UI.Markup.ArrayExtension),
+        "BindingExtension" => typeof(global::Jalium.UI.Markup.BindingExtension),
+        "NullExtension" => typeof(global::Jalium.UI.Markup.NullExtension),
+        "RazorSectionHost" => typeof(global::Jalium.UI.Markup.RazorSectionHost),
+        "StaticExtension" => typeof(global::Jalium.UI.Markup.StaticExtension),
+        "TemplateBindingExtension" => typeof(global::Jalium.UI.Markup.TemplateBindingExtension),
+        "ThemeResourceExtension" => typeof(global::Jalium.UI.Markup.ThemeResourceExtension),
+        "TypeExtension" => typeof(global::Jalium.UI.Markup.TypeExtension),
+        _ => null,
+    };
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Direct typeof tokens only preserve the declared XAML member contract; this resolver does not invoke those annotated members.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2111:DynamicallyAccessedMembers",
+        Justification = "Preserving DAM-annotated members is intentional because runtime XAML accesses them after the type name resolves.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Direct typeof tokens do not generate runtime code; they statically root the XAML member contract.")]
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveControlBuiltinType(string typeName) => typeName switch
+    {
+        "AccessText" => typeof(global::Jalium.UI.Controls.AccessText),
+        "AppBarButton" => typeof(global::Jalium.UI.Controls.AppBarButton),
+        "AppBarSeparator" => typeof(global::Jalium.UI.Controls.AppBarSeparator),
+        "AppBarToggleButton" => typeof(global::Jalium.UI.Controls.AppBarToggleButton),
+        "AutoCompleteBox" => typeof(global::Jalium.UI.Controls.AutoCompleteBox),
+        "BooleanToVisibilityConverter" => typeof(global::Jalium.UI.Controls.BooleanToVisibilityConverter),
+        "Border" => typeof(global::Jalium.UI.Controls.Border),
+        "BulletDecorator" => typeof(global::Jalium.UI.Controls.Primitives.BulletDecorator),
+        "Button" => typeof(global::Jalium.UI.Controls.Button),
+        "ButtonBase" => typeof(global::Jalium.UI.Controls.Primitives.ButtonBase),
+        "Calendar" => typeof(global::Jalium.UI.Controls.Calendar),
+        "CalendarButton" => typeof(global::Jalium.UI.Controls.Primitives.CalendarButton),
+        "CalendarDayButton" => typeof(global::Jalium.UI.Controls.Primitives.CalendarDayButton),
+        "CalendarItem" => typeof(global::Jalium.UI.Controls.Primitives.CalendarItem),
+        "Canvas" => typeof(global::Jalium.UI.Controls.Canvas),
+        "CheckBox" => typeof(global::Jalium.UI.Controls.CheckBox),
+        "ColorPicker" => typeof(global::Jalium.UI.Controls.ColorPicker),
+        "ColumnDefinition" => typeof(global::Jalium.UI.Controls.ColumnDefinition),
+        "ComboBox" => typeof(global::Jalium.UI.Controls.ComboBox),
+        "ComboBoxItem" => typeof(global::Jalium.UI.Controls.ComboBoxItem),
+        "CommandBar" => typeof(global::Jalium.UI.Controls.CommandBar),
+        "CommandBarFlyout" => typeof(global::Jalium.UI.Controls.CommandBarFlyout),
+        "ContentControl" => typeof(global::Jalium.UI.Controls.ContentControl),
+        "ContentDialog" => typeof(global::Jalium.UI.Controls.ContentDialog),
+        "ContentPresenter" => typeof(global::Jalium.UI.Controls.ContentPresenter),
+        "ContextMenu" => typeof(global::Jalium.UI.Controls.ContextMenu),
+        "ContextMenuService" => typeof(global::Jalium.UI.Controls.ContextMenuService),
+        "Control" => typeof(global::Jalium.UI.Controls.Control),
+        "ControlTemplate" => typeof(global::Jalium.UI.Controls.ControlTemplate),
+        "Css" => typeof(global::Jalium.UI.Styling.Css),
+        "DataGrid" => typeof(global::Jalium.UI.Controls.DataGrid),
+        "DataGridCell" => typeof(global::Jalium.UI.Controls.DataGridCell),
+        "DataGridColumnHeader" => typeof(global::Jalium.UI.Controls.Primitives.DataGridColumnHeader),
+        "DataGridRow" => typeof(global::Jalium.UI.Controls.DataGridRow),
+        "DataTemplateSelector" => typeof(global::Jalium.UI.Controls.DataTemplateSelector),
+        "DatePicker" => typeof(global::Jalium.UI.Controls.DatePicker),
+        "DatePickerTextBox" => typeof(global::Jalium.UI.Controls.Primitives.DatePickerTextBox),
+        "Decorator" => typeof(global::Jalium.UI.Controls.Decorator),
+        "DiffViewer" => typeof(global::Jalium.UI.Controls.DiffViewer),
+        "DockItem" => typeof(global::Jalium.UI.Controls.DockItem),
+        "DockLayout" => typeof(global::Jalium.UI.Controls.DockLayout),
+        "DockPanel" => typeof(global::Jalium.UI.Controls.DockPanel),
+        "DockSplitPanel" => typeof(global::Jalium.UI.Controls.DockSplitPanel),
+        "DockTabPanel" => typeof(global::Jalium.UI.Controls.DockTabPanel),
+        "DocumentPageView" => typeof(global::Jalium.UI.Controls.Primitives.DocumentPageView),
+        "EditControl" => typeof(global::Jalium.UI.Controls.EditControl),
+        "Expander" => typeof(global::Jalium.UI.Controls.Expander),
+        "FlexPanel" => typeof(global::Jalium.UI.Controls.FlexPanel),
+        "FontIcon" => typeof(global::Jalium.UI.Controls.FontIcon),
+        "Frame" => typeof(global::Jalium.UI.Controls.Frame),
+        "GeographicHeatmap" => typeof(global::Jalium.UI.Controls.GeographicHeatmap),
+        "Grid" => typeof(global::Jalium.UI.Controls.Grid),
+        "GridSplitter" => typeof(global::Jalium.UI.Controls.GridSplitter),
+        "GridView" => typeof(global::Jalium.UI.Controls.GridView),
+        "GridViewColumn" => typeof(global::Jalium.UI.Controls.GridViewColumn),
+        "GridViewColumnHeader" => typeof(global::Jalium.UI.Controls.GridViewColumnHeader),
+        "GroupBox" => typeof(global::Jalium.UI.Controls.GroupBox),
+        "HexEditor" => typeof(global::Jalium.UI.Controls.HexEditor),
+        "HyperlinkButton" => typeof(global::Jalium.UI.Controls.HyperlinkButton),
+        "IconElement" => typeof(global::Jalium.UI.Controls.IconElement),
+        "Image" => typeof(global::Jalium.UI.Controls.Image),
+        "InfoBar" => typeof(global::Jalium.UI.Controls.InfoBar),
+        "InkCanvas" => typeof(global::Jalium.UI.Controls.InkCanvas),
+        "ItemContainerTemplate" => typeof(global::Jalium.UI.Controls.ItemContainerTemplate),
+        "ItemsControl" => typeof(global::Jalium.UI.Controls.ItemsControl),
+        "ItemsPanelTemplate" => typeof(global::Jalium.UI.Controls.ItemsPanelTemplate),
+        "ItemsPresenter" => typeof(global::Jalium.UI.Controls.ItemsPresenter),
+        "JsonTreeViewer" => typeof(global::Jalium.UI.Controls.JsonTreeViewer),
+        "Label" => typeof(global::Jalium.UI.Controls.Label),
+        "ListBox" => typeof(global::Jalium.UI.Controls.ListBox),
+        "ListBoxItem" => typeof(global::Jalium.UI.Controls.ListBoxItem),
+        "ListView" => typeof(global::Jalium.UI.Controls.ListView),
+        "ListViewItem" => typeof(global::Jalium.UI.Controls.ListViewItem),
+        "MapView" => typeof(global::Jalium.UI.Controls.MapView),
+        "Markdown" => typeof(global::Jalium.UI.Controls.Markdown),
+        "MediaElement" => typeof(global::Jalium.UI.Controls.MediaElement),
+        "Menu" => typeof(global::Jalium.UI.Controls.Menu),
+        "MenuBar" => typeof(global::Jalium.UI.Controls.MenuBar),
+        "MenuBarItem" => typeof(global::Jalium.UI.Controls.MenuBarItem),
+        "MenuFlyout" => typeof(global::Jalium.UI.Controls.MenuFlyout),
+        "MenuFlyoutItem" => typeof(global::Jalium.UI.Controls.MenuFlyoutItem),
+        "MenuFlyoutSeparator" => typeof(global::Jalium.UI.Controls.MenuFlyoutSeparator),
+        "MenuFlyoutSubItem" => typeof(global::Jalium.UI.Controls.MenuFlyoutSubItem),
+        "MenuItem" => typeof(global::Jalium.UI.Controls.MenuItem),
+        "MiniMap" => typeof(global::Jalium.UI.Controls.MiniMap),
+        "NavigationView" => typeof(global::Jalium.UI.Controls.NavigationView),
+        "NavigationViewItem" => typeof(global::Jalium.UI.Controls.NavigationViewItem),
+        "NavigationViewItemHeader" => typeof(global::Jalium.UI.Controls.NavigationViewItemHeader),
+        "NavigationViewItemSeparator" => typeof(global::Jalium.UI.Controls.NavigationViewItemSeparator),
+        "NumberBox" => typeof(global::Jalium.UI.Controls.NumberBox),
+        "Page" => typeof(global::Jalium.UI.Controls.Page),
+        "Panel" => typeof(global::Jalium.UI.Controls.Panel),
+        "PasswordBox" => typeof(global::Jalium.UI.Controls.PasswordBox),
+        "PathIcon" => typeof(global::Jalium.UI.Controls.PathIcon),
+        "Popup" => typeof(global::Jalium.UI.Controls.Primitives.Popup),
+        "ProgressBar" => typeof(global::Jalium.UI.Controls.ProgressBar),
+        "PropertyGrid" => typeof(global::Jalium.UI.Controls.PropertyGrid),
+        "QRCode" => typeof(global::Jalium.UI.Controls.QRCode),
+        "RadioButton" => typeof(global::Jalium.UI.Controls.RadioButton),
+        "RangeSlider" => typeof(global::Jalium.UI.Controls.RangeSlider),
+        "RazorItemsHost" => typeof(global::Jalium.UI.Controls.RazorItemsHost),
+        "RepeatButton" => typeof(global::Jalium.UI.Controls.Primitives.RepeatButton),
+        "ResizeGrip" => typeof(global::Jalium.UI.Controls.Primitives.ResizeGrip),
+        "RichTextBox" => typeof(global::Jalium.UI.Controls.RichTextBox),
+        "RowDefinition" => typeof(global::Jalium.UI.Controls.RowDefinition),
+        "ScrollBar" => typeof(global::Jalium.UI.Controls.Primitives.ScrollBar),
+        "ScrollViewer" => typeof(global::Jalium.UI.Controls.ScrollViewer),
+        "SelectiveScrollingGrid" => typeof(global::Jalium.UI.Controls.Primitives.SelectiveScrollingGrid),
+        "Selector" => typeof(global::Jalium.UI.Controls.Primitives.Selector),
+        "Separator" => typeof(global::Jalium.UI.Controls.Separator),
+        "Slider" => typeof(global::Jalium.UI.Controls.Slider),
+        "Split" => typeof(global::Jalium.UI.Controls.Split),
+        "SplitButton" => typeof(global::Jalium.UI.Controls.SplitButton),
+        "StackPanel" => typeof(global::Jalium.UI.Controls.StackPanel),
+        "StatusBar" => typeof(global::Jalium.UI.Controls.Primitives.StatusBar),
+        "StatusBarItem" => typeof(global::Jalium.UI.Controls.Primitives.StatusBarItem),
+        "SwipeControl" => typeof(global::Jalium.UI.Controls.SwipeControl),
+        "SymbolIcon" => typeof(global::Jalium.UI.Controls.SymbolIcon),
+        "TabControl" => typeof(global::Jalium.UI.Controls.TabControl),
+        "TabItem" => typeof(global::Jalium.UI.Controls.TabItem),
+        "TabPanel" => typeof(global::Jalium.UI.Controls.Primitives.TabPanel),
+        "Terminal" => typeof(global::Jalium.UI.Controls.Terminal),
+        "TextBlock" => typeof(global::Jalium.UI.Controls.TextBlock),
+        "TextBox" => typeof(global::Jalium.UI.Controls.TextBox),
+        "Thumb" => typeof(global::Jalium.UI.Controls.Primitives.Thumb),
+        "TickBar" => typeof(global::Jalium.UI.Controls.Primitives.TickBar),
+        "TimePicker" => typeof(global::Jalium.UI.Controls.TimePicker),
+        "TitleBar" => typeof(global::Jalium.UI.Controls.TitleBar),
+        "TitleBarButton" => typeof(global::Jalium.UI.Controls.TitleBarButton),
+        "ToggleButton" => typeof(global::Jalium.UI.Controls.Primitives.ToggleButton),
+        "ToggleMenuFlyoutItem" => typeof(global::Jalium.UI.Controls.ToggleMenuFlyoutItem),
+        "ToggleSwitch" => typeof(global::Jalium.UI.Controls.ToggleSwitch),
+        "ToolBar" => typeof(global::Jalium.UI.Controls.ToolBar),
+        "ToolBarOverflowPanel" => typeof(global::Jalium.UI.Controls.Primitives.ToolBarOverflowPanel),
+        "ToolBarPanel" => typeof(global::Jalium.UI.Controls.Primitives.ToolBarPanel),
+        "ToolBarTray" => typeof(global::Jalium.UI.Controls.ToolBarTray),
+        "ToolTip" => typeof(global::Jalium.UI.Controls.ToolTip),
+        "TransitioningContentControl" => typeof(global::Jalium.UI.Controls.TransitioningContentControl),
+        "TreeDataGrid" => typeof(global::Jalium.UI.Controls.TreeDataGrid),
+        "TreeDataGridRow" => typeof(global::Jalium.UI.Controls.TreeDataGridRow),
+        "TreeSelector" => typeof(global::Jalium.UI.Controls.TreeSelector),
+        "TreeSelectorItem" => typeof(global::Jalium.UI.Controls.TreeSelectorItem),
+        "TreeView" => typeof(global::Jalium.UI.Controls.TreeView),
+        "TreeViewItem" => typeof(global::Jalium.UI.Controls.TreeViewItem),
+        "UniformGrid" => typeof(global::Jalium.UI.Controls.Primitives.UniformGrid),
+        "Viewbox" => typeof(global::Jalium.UI.Controls.Viewbox),
+        "VirtualizingPanel" => typeof(global::Jalium.UI.Controls.VirtualizingPanel),
+        "VirtualizingStackPanel" => typeof(global::Jalium.UI.Controls.VirtualizingStackPanel),
+        "WrapPanel" => typeof(global::Jalium.UI.Controls.WrapPanel),
+        _ => null,
+    };
+
+#pragma warning disable CS0618 // Preserve legacy bitmap-effect XAML aliases from the frozen catalog.
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Direct typeof tokens only preserve the declared XAML member contract; this resolver does not invoke those annotated members.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2111:DynamicallyAccessedMembers",
+        Justification = "Preserving DAM-annotated members is intentional because runtime XAML accesses them after the type name resolves.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Direct typeof tokens do not generate runtime code; they statically root the XAML member contract.")]
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveMediaBuiltinType(string typeName) => typeName switch
+    {
+        "AcrylicEffect" => typeof(global::Jalium.UI.Media.AcrylicEffect),
+        "BackdropBlurEffect" => typeof(global::Jalium.UI.Media.BackdropBlurEffect),
+        "BevelBitmapEffect" => typeof(global::Jalium.UI.Media.Effects.BevelBitmapEffect),
+        "BitmapEffectCollection" => typeof(global::Jalium.UI.Media.Effects.BitmapEffectCollection),
+        "BitmapEffectGroup" => typeof(global::Jalium.UI.Media.Effects.BitmapEffectGroup),
+        "BitmapEffectInput" => typeof(global::Jalium.UI.Media.Effects.BitmapEffectInput),
+        "BlurBitmapEffect" => typeof(global::Jalium.UI.Media.Effects.BlurBitmapEffect),
+        "BlurEffect" => typeof(global::Jalium.UI.Media.Effects.BlurEffect),
+        "Brush" => typeof(global::Jalium.UI.Media.Brush),
+        "Color" => typeof(global::Jalium.UI.Media.Color),
+        "ColorAdjustmentEffect" => typeof(global::Jalium.UI.Media.ColorAdjustmentEffect),
+        "ColorMatrix" => typeof(global::Jalium.UI.Media.Effects.ColorMatrix),
+        "ColorMatrixEffect" => typeof(global::Jalium.UI.Media.Effects.ColorMatrixEffect),
+        "CompositeBackdropEffect" => typeof(global::Jalium.UI.Media.CompositeBackdropEffect),
+        "DropShadowBitmapEffect" => typeof(global::Jalium.UI.Media.Effects.DropShadowBitmapEffect),
+        "DropShadowEffect" => typeof(global::Jalium.UI.Media.Effects.DropShadowEffect),
+        "EffectCollection" => typeof(global::Jalium.UI.Media.Effects.EffectCollection),
+        "EffectGroup" => typeof(global::Jalium.UI.Media.Effects.EffectGroup),
+        "ElementBlurEffect" => typeof(global::Jalium.UI.Media.Effects.ElementBlurEffect),
+        "EllipseGeometry" => typeof(global::Jalium.UI.Media.EllipseGeometry),
+        "EmbossBitmapEffect" => typeof(global::Jalium.UI.Media.Effects.EmbossBitmapEffect),
+        "EmbossEffect" => typeof(global::Jalium.UI.Media.Effects.EmbossEffect),
+        "FrostedGlassEffect" => typeof(global::Jalium.UI.Media.FrostedGlassEffect),
+        "Geometry" => typeof(global::Jalium.UI.Media.Geometry),
+        "GradientStop" => typeof(global::Jalium.UI.Media.GradientStop),
+        "ImageSource" => typeof(global::Jalium.UI.Media.ImageSource),
+        "InnerShadowEffect" => typeof(global::Jalium.UI.Media.Effects.InnerShadowEffect),
+        "LinearGradientBrush" => typeof(global::Jalium.UI.Media.LinearGradientBrush),
+        "MicaEffect" => typeof(global::Jalium.UI.Media.MicaEffect),
+        "OuterGlowBitmapEffect" => typeof(global::Jalium.UI.Media.Effects.OuterGlowBitmapEffect),
+        "OuterGlowEffect" => typeof(global::Jalium.UI.Media.Effects.OuterGlowEffect),
+        "PathGeometry" => typeof(global::Jalium.UI.Media.PathGeometry),
+        "PixelShader" => typeof(global::Jalium.UI.Media.Effects.PixelShader),
+        "RadialGradientBrush" => typeof(global::Jalium.UI.Media.RadialGradientBrush),
+        "RectangleGeometry" => typeof(global::Jalium.UI.Media.RectangleGeometry),
+        "RotateTransform" => typeof(global::Jalium.UI.Media.RotateTransform),
+        "ScaleTransform" => typeof(global::Jalium.UI.Media.ScaleTransform),
+        "SolidColorBrush" => typeof(global::Jalium.UI.Media.SolidColorBrush),
+        "Transform" => typeof(global::Jalium.UI.Media.Transform),
+        "TranslateTransform" => typeof(global::Jalium.UI.Media.TranslateTransform),
+        "Visual" => typeof(global::Jalium.UI.Media.Visual),
+        _ => null,
+    };
+#pragma warning restore CS0618
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Direct typeof tokens only preserve the declared XAML member contract; this resolver does not invoke those annotated members.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2111:DynamicallyAccessedMembers",
+        Justification = "Preserving DAM-annotated members is intentional because runtime XAML accesses them after the type name resolves.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Direct typeof tokens do not generate runtime code; they statically root the XAML member contract.")]
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveShapeBuiltinType(string typeName) => typeName switch
+    {
+        "Ellipse" => typeof(global::Jalium.UI.Shapes.Ellipse),
+        "Line" => typeof(global::Jalium.UI.Shapes.Line),
+        "Path" => typeof(global::Jalium.UI.Shapes.Path),
+        "Polygon" => typeof(global::Jalium.UI.Shapes.Polygon),
+        "Polyline" => typeof(global::Jalium.UI.Shapes.Polyline),
+        "Rectangle" => typeof(global::Jalium.UI.Shapes.Rectangle),
+        "Shape" => typeof(global::Jalium.UI.Shapes.Shape),
+        _ => null,
+    };
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Direct typeof tokens only preserve the declared XAML member contract; this resolver does not invoke those annotated members.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2111:DynamicallyAccessedMembers",
+        Justification = "Preserving DAM-annotated members is intentional because runtime XAML accesses them after the type name resolves.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Direct typeof tokens do not generate runtime code; they statically root the XAML member contract.")]
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveDataBuiltinType(string typeName) => typeName switch
+    {
+        "AddConverter" => typeof(global::Jalium.UI.Data.AddConverter),
+        "Binding" => typeof(global::Jalium.UI.Data.Binding),
+        "BindingBase" => typeof(global::Jalium.UI.Data.BindingBase),
+        "CollectionViewSource" => typeof(global::Jalium.UI.Data.CollectionViewSource),
+        "DateTimeFormatConverter" => typeof(global::Jalium.UI.Data.DateTimeFormatConverter),
+        "EnumToBooleanConverter" => typeof(global::Jalium.UI.Data.EnumToBooleanConverter),
+        "EqualityConverter" => typeof(global::Jalium.UI.Data.EqualityConverter),
+        "InverseBooleanConverter" => typeof(global::Jalium.UI.Data.InverseBooleanConverter),
+        "MultiplyConverter" => typeof(global::Jalium.UI.Data.MultiplyConverter),
+        "NullToBooleanConverter" => typeof(global::Jalium.UI.Data.NullToBooleanConverter),
+        "NullToVisibilityConverter" => typeof(global::Jalium.UI.Data.NullToVisibilityConverter),
+        "StringCaseConverter" => typeof(global::Jalium.UI.Data.StringCaseConverter),
+        _ => null,
+    };
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Direct typeof tokens only preserve the declared XAML member contract; this resolver does not invoke those annotated members.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2111:DynamicallyAccessedMembers",
+        Justification = "Preserving DAM-annotated members is intentional because runtime XAML accesses them after the type name resolves.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Direct typeof tokens do not generate runtime code; they statically root the XAML member contract.")]
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveDocumentBuiltinType(string typeName) => typeName switch
+    {
+        "AdornerDecorator" => typeof(global::Jalium.UI.Documents.AdornerDecorator),
+        "BlockUIContainer" => typeof(global::Jalium.UI.Documents.BlockUIContainer),
+        "Bold" => typeof(global::Jalium.UI.Documents.Bold),
+        "FlowDocument" => typeof(global::Jalium.UI.Documents.FlowDocument),
+        "Hyperlink" => typeof(global::Jalium.UI.Documents.Hyperlink),
+        "InlineUIContainer" => typeof(global::Jalium.UI.Documents.InlineUIContainer),
+        "Italic" => typeof(global::Jalium.UI.Documents.Italic),
+        "LineBreak" => typeof(global::Jalium.UI.Documents.LineBreak),
+        "Paragraph" => typeof(global::Jalium.UI.Documents.Paragraph),
+        "Run" => typeof(global::Jalium.UI.Documents.Run),
+        "Section" => typeof(global::Jalium.UI.Documents.Section),
+        "Span" => typeof(global::Jalium.UI.Documents.Span),
+        "Table" => typeof(global::Jalium.UI.Documents.Table),
+        "TableCell" => typeof(global::Jalium.UI.Documents.TableCell),
+        "TableColumn" => typeof(global::Jalium.UI.Documents.TableColumn),
+        "TableRow" => typeof(global::Jalium.UI.Documents.TableRow),
+        "TableRowGroup" => typeof(global::Jalium.UI.Documents.TableRowGroup),
+        "Underline" => typeof(global::Jalium.UI.Documents.Underline),
+        _ => null,
+    };
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Direct typeof tokens only preserve the declared XAML member contract; this resolver does not invoke those annotated members.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2111:DynamicallyAccessedMembers",
+        Justification = "Preserving DAM-annotated members is intentional because runtime XAML accesses them after the type name resolves.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Direct typeof tokens do not generate runtime code; they statically root the XAML member contract.")]
+    [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
+    private static Type? ResolveInteractivityBuiltinType(string typeName) => typeName switch
+    {
+        "BehaviorEventTrigger" => typeof(global::Jalium.UI.Interactivity.BehaviorEventTrigger),
+        "CallMethodAction" => typeof(global::Jalium.UI.Interactivity.CallMethodAction),
+        "ChangePropertyAction" => typeof(global::Jalium.UI.Interactivity.ChangePropertyAction),
+        "InvokeCommandAction" => typeof(global::Jalium.UI.Interactivity.InvokeCommandAction),
+        _ => null,
+    };
 
     /// <summary>
     /// Gets a type by its simple name.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2073:DynamicallyAccessedMembers",
-        Justification = "The _types dictionary is populated by DAM-annotated Register<T>/RegisterType entry points (each carries the same PublicConstructors|PublicProperties|PublicFields|PublicMethods|NonPublicFields contract), so every stored Type already has those members preserved. The trimmer cannot propagate DAM through the Dictionary<string,Type> value type, so it cannot statically prove the returned token satisfies the [return: DAM] promise; the promise is upheld by those registration entry points.")]
+        Justification = "Explicit registrations enter through DAM-annotated RegisterType APIs, while builtin resolver methods carry the same return DAM contract and return direct typeof tokens. The trimmer cannot propagate DAM through ConcurrentDictionary value types, so it cannot statically prove the explicit branch satisfies the [return: DAM] promise; the registration entry points uphold it.")]
     [return: DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
@@ -5162,11 +5344,24 @@ public static class XamlTypeRegistry
         DynamicallyAccessedMemberTypes.NonPublicFields)]
     public static Type? GetType(string typeName)
     {
-        var result = _types.GetValueOrDefault(typeName);
-        if (result == null)
+        // Explicit registrations always win. This fast path also lets source-generated
+        // typeof(T) registrations be queried without evaluating any builtin name group.
+        if (ExplicitTypesHolder.Types.TryGetValue(typeName, out var registered))
         {
+            return registered;
         }
-        return result;
+
+        // String switches use ordinal, case-sensitive matching. Each typeof arm executes only
+        // after its exact name has matched, so an unknown or unrelated name does not materialize
+        // the complete RuntimeType catalog.
+        var builtin = ResolveBuiltinType(typeName);
+
+        // A concurrent registration may have completed while the builtin groups were being
+        // searched. Re-check before publishing the builtin result so manual overrides retain
+        // their precedence even on the first lookup racing explicit registration.
+        return ExplicitTypesHolder.Types.TryGetValue(typeName, out registered)
+            ? registered
+            : builtin;
     }
 
     /// <summary>
@@ -5183,7 +5378,7 @@ public static class XamlTypeRegistry
         Type type)
     {
         ArgumentNullException.ThrowIfNull(type);
-        _types[type.Name] = type;
+        ExplicitTypesHolder.Types[type.Name] = type;
     }
 
     /// <summary>
@@ -5196,7 +5391,7 @@ public static class XamlTypeRegistry
         DynamicallyAccessedMemberTypes.PublicMethods |
         DynamicallyAccessedMemberTypes.NonPublicFields)] T>()
     {
-        _types[typeof(T).Name] = typeof(T);
+        ExplicitTypesHolder.Types[typeof(T).Name] = typeof(T);
     }
 
     /// <summary>
@@ -5209,7 +5404,7 @@ public static class XamlTypeRegistry
         DynamicallyAccessedMemberTypes.PublicMethods |
         DynamicallyAccessedMemberTypes.NonPublicFields)] T>(string name)
     {
-        _types[name] = typeof(T);
+        ExplicitTypesHolder.Types[name] = typeof(T);
     }
 
     /// <summary>
@@ -5217,20 +5412,18 @@ public static class XamlTypeRegistry
     /// </summary>
     internal static void RegisterType(string name, Type type)
     {
-        _types[name] = type;
+        ExplicitTypesHolder.Types[name] = type;
     }
 
     // Full-name index for x:Class types (e.g. "Jalium.UI.Gallery.Modules.Main.Views.MainWindow").
     // Keyed by the CLR full name because x:Class is always fully qualified; the simple-name
-    // _types dictionary would collide on duplicate leaf names across namespaces.
+    // simple-name dictionaries would collide on duplicate leaf names across namespaces.
     //
     // Populated by source-generator-emitted ModuleInitializer stubs so that every jalxaml
     // x:Class is both (a) referenced via typeof(T) in IL — preventing the trimmer from
     // removing the type — and (b) discoverable by full name at runtime. StartupUri and any
     // other string→Type lookup path consults this registry first, which is the only
     // AOT-reliable way to recover a user type from a string after trimming.
-    private static readonly Dictionary<string, Type> _classFullNameTypes = new(StringComparer.Ordinal);
-
     /// <summary>
     /// Maps every plausible <c>StartupUri</c> spelling for a SG-registered code-behind type
     /// to the type itself. The runtime entry point (<see cref="ThemeLoader.LoadStartupObjectFromUri"/>)
@@ -5243,8 +5436,6 @@ public static class XamlTypeRegistry
     /// shape a developer wrote in <c>Application.StartupUri="…"</c>. Comparison is case
     /// insensitive to mirror Windows file-system semantics.
     /// </remarks>
-    private static readonly Dictionary<string, Type> _startupUriTypes = new(StringComparer.OrdinalIgnoreCase);
-
     /// <summary>
     /// Registers a user x:Class type by its CLR full name so StartupUri / string-based lookups
     /// can find it after AOT trimming. Emitted automatically by the JALXAML source generator
@@ -5268,7 +5459,7 @@ public static class XamlTypeRegistry
     {
         ArgumentNullException.ThrowIfNull(fullName);
         ArgumentNullException.ThrowIfNull(type);
-        _classFullNameTypes[fullName] = type;
+        StartupTypesHolder.FullNames[fullName] = type;
     }
 
     /// <summary>
@@ -5285,7 +5476,7 @@ public static class XamlTypeRegistry
     public static Type? GetStartupType(string fullName)
     {
         ArgumentNullException.ThrowIfNull(fullName);
-        if (_classFullNameTypes.TryGetValue(fullName, out var type))
+        if (StartupTypesHolder.FullNames.TryGetValue(fullName, out var type))
         {
             return type;
         }
@@ -5314,7 +5505,7 @@ public static class XamlTypeRegistry
     {
         ArgumentNullException.ThrowIfNull(startupUri);
         ArgumentNullException.ThrowIfNull(type);
-        _startupUriTypes[startupUri] = type;
+        StartupTypesHolder.Uris[startupUri] = type;
     }
 
     /// <summary>
@@ -5332,7 +5523,7 @@ public static class XamlTypeRegistry
     public static Type? GetStartupTypeByUri(string startupUri)
     {
         ArgumentNullException.ThrowIfNull(startupUri);
-        return _startupUriTypes.TryGetValue(startupUri, out var type) ? type : null;
+        return StartupTypesHolder.Uris.TryGetValue(startupUri, out var type) ? type : null;
     }
 
     /// <summary>

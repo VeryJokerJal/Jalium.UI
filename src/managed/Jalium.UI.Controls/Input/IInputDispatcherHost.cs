@@ -77,7 +77,15 @@ internal interface IInputDispatcherHost
 
     void InvalidateWindow();
     void RequestFullInvalidation();
-    void RequestTrackMouseLeave();
+    /// <summary>
+    /// Arms native client-area mouse-leave tracking.
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/> when tracking is armed, or when the current platform
+    /// does not require an explicit native registration; otherwise
+    /// <see langword="false"/> so the dispatcher can retry on the next move.
+    /// </returns>
+    bool RequestTrackMouseLeave();
 
     // ── DPI ──
 

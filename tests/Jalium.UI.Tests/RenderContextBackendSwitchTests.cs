@@ -64,6 +64,17 @@ public sealed class RenderContextBackendSwitchTests : IDisposable
 
         Assert.Same(installed, viaAuto);
         Assert.Same(installed, RenderContext.Current);
+        Assert.False(RenderContext.IsBackendSelectionAutomatic(viaAuto));
+    }
+
+    [Fact]
+    public void UnpinnedAutoRequest_IsMarkedForPresentationCompatibilityFallback()
+    {
+        var automatic = RenderContext.GetOrCreateCurrent(
+            RenderBackend.Auto,
+            forceReplace: true);
+
+        Assert.True(RenderContext.IsBackendSelectionAutomatic(automatic));
     }
 
     [RequiresBackendFact(RenderBackend.D3D12)]

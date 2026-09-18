@@ -30,7 +30,8 @@ if ($env:VULKAN_SDK -and (Test-Path (Join-Path $env:VULKAN_SDK 'Bin\dxc.exe'))) 
 if (-not $dxc) { throw "dxc.exe not found (set VULKAN_SDK or put dxc on PATH)" }
 Write-Host "Using dxc: $dxc"
 
-# The 19 Vello 0.10.0 compute stages (file base names, no extension).
+# The Vello 0.10.0 compute shader permutations (file base names, no extension).
+# Both scan variants are compiled; a record executes only one branch.
 $stages = @(
     'vello_backdrop',
     'vello_bbox_clear',
@@ -49,6 +50,7 @@ $stages = @(
     'vello_pathtag_reduce',
     'vello_pathtag_reduce2',
     'vello_pathtag_scan',
+    'vello_pathtag_scan_small',
     'vello_pathtag_scan1',
     'vello_tile_alloc'
 )

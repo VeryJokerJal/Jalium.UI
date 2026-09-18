@@ -7,6 +7,42 @@ namespace Jalium.UI.Tests;
 /// <summary>CSS ↔ FlexPanel wiring: keywords, the flex shorthand, gap, display, interception.</summary>
 public sealed class CssFlexMappingTests
 {
+    [Fact]
+    public void ARejectedNegativeBasis_DoesNotReplaceAnEarlierValidDeclaration()
+    {
+        var child = new Border();
+        Css.SetStyle(child, "flex-basis:20px; flex-basis:-10%");
+        Assert.Equal(20, FlexPanel.GetBasis(child));
+    }
+
+    [Theory]
+    [InlineData("flex-basis:25%", 100)]
+    [InlineData("flex:0 0 25%", 100)]
+    [InlineData("flex:0 0 calc(50% - 10px)", 190)]
+    [InlineData("flex:0 0 2em", 28)]
+    public void PercentageAndMathBasis_AreResolvedDuringFlexLayout(string style, double expected)
+    {
+        var panel = new FlexPanel(); var child = new Border(); panel.Children.Add(child);
+        Css.SetStyle(child, style);
+        CssEvaluationScheduler.FlushIfPending(panel.Dispatcher);
+        panel.Measure(new Size(400, 100)); panel.Arrange(new Rect(0, 0, 400, 100));
+        Assert.Equal(expected, child.ActualWidth, 6);
+    }
+
+    [Fact]
+    public void NativeBasisAndFlowShorthand_PreservePrecedence()
+    {
+        var panel = new FlexPanel(); var child = new Border(); panel.Children.Add(child);
+        FlexPanel.SetBasis(child, 75);
+        Css.SetStyle(child, "flex-basis:50%");
+        Css.SetStyle(panel, "flex-flow:wrap column-reverse");
+        CssEvaluationScheduler.FlushIfPending(panel.Dispatcher);
+        panel.Measure(new Size(400, 200)); panel.Arrange(new Rect(0, 0, 400, 200));
+        Assert.Equal(FlexDirection.ColumnReverse, panel.Direction);
+        Assert.Equal(FlexWrap.Wrap, panel.Wrap);
+        Assert.Equal(75, child.ActualHeight, 6);
+    }
+
     static CssFlexMappingTests()
     {
         System.Runtime.CompilerServices.RuntimeHelpers.RunModuleConstructor(

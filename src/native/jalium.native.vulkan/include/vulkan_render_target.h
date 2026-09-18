@@ -579,15 +579,15 @@ private:
     };
 
     // A shaped text run rendered through the dedicated text-glyph pipeline.
-    // Holds the per-glyph instances as raw floats — 12 per glyph, matching the
-    // 48-byte VkGlyphInstance layout (posX,posY, sizeX,sizeY, uvMinX,uvMinY,
-    // uvMaxX,uvMaxY, colorR,colorG,colorB,colorA; colour PREMULTIPLIED, colorR<0
+    // Holds the per-glyph instances as raw floats — 16 per glyph, matching the
+    // 64-byte VkGlyphInstance layout (position, oriented basis, UV rectangle,
+    // colorR,colorG,colorB,colorA; colour PREMULTIPLIED, colorR<0
     // = colour-emoji sentinel). Stored as raw floats (not VkGlyphInstance) so this
     // header stays free of the Windows-only DirectWrite/atlas types, matching the
     // GpuVcTrianglesCommand convention. DrawReplayFrame uploads them into the glyph
     // SSBO and issues vkCmdDraw(6, glyphCount, ...) sampling the text atlas.
     struct GpuTextRunCommand {
-        std::vector<float> glyphs;     // 12 floats per glyph instance
+        std::vector<float> glyphs;     // 16 floats per glyph instance
         uint32_t glyphCount = 0;
         bool clearType = false;        // select dual-source ClearType pipeline at replay
         bool smoothText = false;       // linear for Animated/rotated text; point for pixel-snapped display text

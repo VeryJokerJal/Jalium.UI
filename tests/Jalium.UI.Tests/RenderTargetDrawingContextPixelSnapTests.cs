@@ -32,6 +32,9 @@ public class RenderTargetDrawingContextPixelSnapTests
     // 2x2, so managed must also keep the live matrix. The two thresholds are
     // deliberately identical — see ShouldPreserveNativeTextScaleDeformation.
     [InlineData(1.28, 0.02, 0.0, 0.82, 1.2801562405, 0.82, true)]
+    // Gallery CSS repro: transform: rotate(-4deg) scale(1.05). The card and
+    // every child text run must take the same live native matrix.
+    [InlineData(1.047442, -0.073244, 0.073244, 1.047442, 1.05, 1.05, true)]
     public void TextScaleDeformation_PreservesAxisAlignedAnisotropicTransforms(
         double m11,
         double m12,

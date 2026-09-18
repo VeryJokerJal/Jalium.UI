@@ -147,6 +147,8 @@ public static class CssMappings
         {
             Name = name,
             Kind = CssPropertyKind.Longhand,
+            TransitionTargetDpName = property.Name,
+            StorageProperty = property,
             Parse = (ref CssTokenReader reader, CssCompileContext _) =>
             {
                 var raw = reader.Remaining.ToString();
@@ -192,6 +194,7 @@ public static class CssMappings
         {
             Name = name,
             Kind = CssPropertyKind.Longhand,
+            TransitionTargetDpName = dependencyPropertyName,
             Parse = (ref CssTokenReader reader, CssCompileContext _) =>
             {
                 var raw = reader.Remaining.ToString();
@@ -332,10 +335,16 @@ internal sealed class CssUserMultiPropertyValue : CssCompiledValue
     public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
     {
         IReadOnlyList<CssPropertyAssignment>? assignments;
+        if (context.Element.Target is not FrameworkElement element)
+        {
+            CssDiagnostics.Report(_cssName, CssDiagnosticReason.TargetPropertyMissing, context.Element.GetType(),
+                "this multi-property converter requires a FrameworkElement target");
+            return false;
+        }
         try
         {
             assignments = _converter.Convert(
-                _rawValue, context.Element, _parameter, CultureInfo.InvariantCulture);
+                _rawValue, element, _parameter, CultureInfo.InvariantCulture);
         }
         catch
         {

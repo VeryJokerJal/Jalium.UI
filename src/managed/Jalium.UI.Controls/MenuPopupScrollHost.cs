@@ -50,6 +50,9 @@ internal sealed class MenuPopupScrollHost : Control
         AddVisualChild(_scrollViewer);
         AddVisualChild(_scrollDownButton);
 
+        // Own native wheel input before the nested viewer can consume it. The bubble
+        // fallback also covers handled wheel events raised over the repeat buttons.
+        AddHandler(PreviewMouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
         AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler), true);
     }
 
@@ -79,10 +82,11 @@ internal sealed class MenuPopupScrollHost : Control
             widthConstraint = 0;
         }
 
-        _itemsPanel.Measure(new Size(widthConstraint, double.PositiveInfinity));
-        _lastMeasuredContentHeight = _itemsPanel.DesiredSize.Height;
-
-        _scrollViewer.Measure(availableSize);
+        // StackPanel is the viewer's IScrollInfo provider. Measuring it separately
+        // with infinite height overwrites its finite viewport and resets its offset;
+        // a cached viewer measure/arrange will not repair that state on later passes.
+        _scrollViewer.Measure(new Size(widthConstraint, availableSize.Height));
+        _lastMeasuredContentHeight = _scrollViewer.ExtentHeight;
         _scrollUpButton.Measure(new Size(widthConstraint, DefaultScrollButtonHeight));
         _scrollDownButton.Measure(new Size(widthConstraint, DefaultScrollButtonHeight));
 

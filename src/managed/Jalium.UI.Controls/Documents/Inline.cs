@@ -64,6 +64,7 @@ public abstract class Inline : TextElement
 public class InlineCollection : TextElementCollection<Inline>
 {
     private readonly TextElement? _parent;
+    private readonly FrameworkElement? _visualOwner;
     private readonly Action _contentChanged;
 
     /// <summary>
@@ -76,10 +77,11 @@ public class InlineCollection : TextElementCollection<Inline>
         _contentChanged = parent.NotifyTextContentChanged;
     }
 
-    internal InlineCollection(Action contentChanged)
+    internal InlineCollection(Action contentChanged, FrameworkElement? visualOwner = null)
     {
         ArgumentNullException.ThrowIfNull(contentChanged);
         _contentChanged = contentChanged;
+        _visualOwner = visualOwner;
     }
 
     internal TextElement? Parent => _parent;
@@ -213,6 +215,7 @@ public class InlineCollection : TextElementCollection<Inline>
         item.OwnerCollection = this;
         item.Parent = _parent;
         _parent?.AddLogicalChild(item);
+        _visualOwner?.AddLogicalChild(item);
         item.TextContentChanged += OnItemTextContentChanged;
     }
 
@@ -220,6 +223,7 @@ public class InlineCollection : TextElementCollection<Inline>
     {
         item.TextContentChanged -= OnItemTextContentChanged;
         _parent?.RemoveLogicalChild(item);
+        _visualOwner?.RemoveLogicalChild(item);
         item.OwnerCollection = null;
         item.Parent = null;
         item.NextInline = null;
@@ -245,6 +249,7 @@ public class InlineCollection : TextElementCollection<Inline>
 /// <summary>
 /// An inline element that contains text.
 /// </summary>
+[ContentProperty(nameof(Text))]
 public sealed class Run : Inline
 {
     /// <summary>

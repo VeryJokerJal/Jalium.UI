@@ -15,6 +15,13 @@ internal sealed class OverlayLayer : Canvas
     private readonly HashSet<PopupRoot> _lightDismissRoots = [];
     private readonly HashSet<UIElement> _modalRoots = [];
 
+    /// <summary>
+    /// Invoked before the first dynamic overlay visual is attached. Window uses
+    /// this seam to leave its provisional empty Software renderer before popup,
+    /// modal, drag, or developer content starts drawing.
+    /// </summary>
+    internal Action? RenderingDemanded { get; set; }
+
     public OverlayLayer()
     {
         // Overlay content should not be clipped — shadows can bleed beyond bounds
@@ -42,6 +49,7 @@ internal sealed class OverlayLayer : Canvas
     /// </summary>
     public void AddPopupRoot(PopupRoot root)
     {
+        RenderingDemanded?.Invoke();
         Children.Add(root);
         _popupRoots.Add(root);
 
@@ -72,6 +80,7 @@ internal sealed class OverlayLayer : Canvas
     /// </summary>
     public void AddModalRoot(UIElement root)
     {
+        RenderingDemanded?.Invoke();
         if (_modalRoots.Add(root))
         {
             Children.Add(root);
@@ -93,6 +102,13 @@ internal sealed class OverlayLayer : Canvas
             InvalidateArrange();
             InvalidateVisual();
         }
+    }
+
+    internal void AddOverlayChild(UIElement child)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+        RenderingDemanded?.Invoke();
+        Children.Add(child);
     }
 
     /// <summary>

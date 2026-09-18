@@ -64,10 +64,12 @@ public sealed class CssLengthTests
     }
 
     [Fact]
-    public void ViewportUnits_FailWithoutViewport()
+    public void ViewportUnits_ResolveZeroSizeAndRejectInvalidDimensions()
     {
         var length = new CssLength(10, CssUnit.Vw);
-        Assert.False(length.TryResolve(CssLengthContext.Default, CssPercentBasis.NotSupported, out _));
+        Assert.True(length.TryResolve(CssLengthContext.Default, CssPercentBasis.NotSupported, out var zero));
+        Assert.Equal(0, zero);
+        Assert.False(length.TryResolve(new CssLengthContext(14, 14, 14, double.NaN, 0), CssPercentBasis.NotSupported, out _));
 
         var context = new CssLengthContext(14, 14, 14, viewportWidth: 800, viewportHeight: 600);
         Assert.True(length.TryResolve(context, CssPercentBasis.NotSupported, out var px));

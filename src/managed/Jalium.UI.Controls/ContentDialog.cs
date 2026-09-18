@@ -149,6 +149,11 @@ public class ContentDialog : ContentControl
     public ContentDialog()
     {
         UseTemplateContentManagement();
+        // Centered cards can otherwise settle on half a device pixel, splitting
+        // their horizontal outline across two rows while the sides stay sharp.
+        // Inherit rounding through the template so its centering panels, border
+        // and content use the same pixel grid. Render transforms remain continuous.
+        UseLayoutRounding = true;
         Visibility = Visibility.Collapsed;
         Focusable = true;
         HorizontalAlignment = HorizontalAlignment.Stretch;

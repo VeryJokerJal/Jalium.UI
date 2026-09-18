@@ -1,0 +1,32 @@
+#pragma code_page(65001)
+#include <winver.h>
+#include "jalium.native.version.generated.h"
+
+1 VERSIONINFO
+ FILEVERSION JALIUM_FILE_VERSION
+ PRODUCTVERSION JALIUM_PRODUCT_VERSION
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", JALIUM_COMPANY_NAME
+            VALUE "FileDescription", JALIUM_FILE_DESCRIPTION
+            VALUE "FileVersion", JALIUM_FILE_VERSION_STRING
+            VALUE "InternalName", JALIUM_INTERNAL_NAME
+            VALUE "LegalCopyright", JALIUM_COPYRIGHT
+            VALUE "OriginalFilename", JALIUM_ORIGINAL_FILENAME
+            VALUE "ProductName", JALIUM_PRODUCT_NAME
+            VALUE "ProductVersion", JALIUM_PRODUCT_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

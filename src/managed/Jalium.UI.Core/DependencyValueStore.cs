@@ -68,7 +68,12 @@ internal sealed class DependencyValueStore
     // Geometry/Freezable objects. Controls normally cross this threshold and get one
     // GlobalIndex lookup instead of a scan or six layer dictionaries.
     private const int IndexedThreshold = 4;
-    private Entry[] _entries = new Entry[IndexedThreshold];
+    // A solid brush and many geometry objects store just one property. Keep that
+    // entry in the store itself rather than allocating four array slots for it.
+    // The array and index retain their existing growth policy once more values
+    // are present, so controls still use the same indexed representation.
+    private Entry _singleEntry;
+    private Entry[]? _entries;
     private Dictionary<int, int>? _indices;
     private int _count;
 
@@ -87,7 +92,7 @@ internal sealed class DependencyValueStore
             return false;
         }
 
-        ref readonly var entry = ref _entries[index];
+        ref readonly var entry = ref GetEntry(index);
         value = entry.EffectiveValue;
         source = entry.EffectiveSource;
         return true;
@@ -96,7 +101,7 @@ internal sealed class DependencyValueStore
     internal bool ContainsLayer(DependencyProperty property, Layer layer)
     {
         var index = FindIndex(property);
-        return index >= 0 && (_entries[index].Mask & ToMask(layer)) != 0;
+        return index >= 0 && (GetEntry(index).Mask & ToMask(layer)) != 0;
     }
 
     internal bool TryGetLayer(
@@ -113,7 +118,7 @@ internal sealed class DependencyValueStore
             return false;
         }
 
-        ref readonly var entry = ref _entries[index];
+        ref readonly var entry = ref GetEntry(index);
         var mask = ToMask(layer);
         if ((entry.Mask & mask) == 0)
         {
@@ -148,7 +153,7 @@ internal sealed class DependencyValueStore
         {
             EnsureCapacity(_count + 1);
             index = _count++;
-            _entries[index] = new Entry
+            GetEntry(index) = new Entry
             {
                 Property = property,
                 Mask = mask,
@@ -164,7 +169,7 @@ internal sealed class DependencyValueStore
             return;
         }
 
-        ref var entry = ref _entries[index];
+        ref var entry = ref GetEntry(index);
         if (entry.Values is null && entry.Mask == mask)
         {
             entry.EffectiveValue = value;
@@ -192,7 +197,7 @@ internal sealed class DependencyValueStore
         if (index < 0)
             return false;
 
-        ref var entry = ref _entries[index];
+        ref var entry = ref GetEntry(index);
         var mask = ToMask(layer);
         if ((entry.Mask & mask) == 0)
             return false;
@@ -221,7 +226,7 @@ internal sealed class DependencyValueStore
         var result = new List<KeyValuePair<DependencyProperty, object?>>();
         for (var i = 0; i < _count; i++)
         {
-            ref readonly var entry = ref _entries[i];
+            ref readonly var entry = ref GetEntry(i);
             if ((entry.Mask & mask) == 0)
                 continue;
 
@@ -239,7 +244,7 @@ internal sealed class DependencyValueStore
         var result = new List<DependencyProperty>(_count);
         for (var i = 0; i < _count; i++)
         {
-            ref readonly var entry = ref _entries[i];
+            ref readonly var entry = ref GetEntry(i);
             var nonCurrentMask = entry.Mask & ~LayerMask.Current;
             if (nonCurrentMask != LayerMask.None)
             {
@@ -269,7 +274,7 @@ internal sealed class DependencyValueStore
 
         for (var i = 0; i < _count; i++)
         {
-            if (ReferenceEquals(_entries[i].Property, property))
+            if (ReferenceEquals(GetEntry(i).Property, property))
                 return i;
         }
 
@@ -278,10 +283,31 @@ internal sealed class DependencyValueStore
 
     private void EnsureCapacity(int required)
     {
+        if (_entries is null)
+        {
+            if (required <= 1)
+                return;
+
+            var entries = new Entry[Math.Max(required, IndexedThreshold)];
+            if (_count != 0)
+                entries[0] = _singleEntry;
+            _singleEntry = default;
+            _entries = entries;
+            return;
+        }
+
         if (required <= _entries.Length)
             return;
 
         Array.Resize(ref _entries, Math.Max(required, _entries.Length * 2));
+    }
+
+    private ref Entry GetEntry(int index)
+    {
+        if (_entries is null)
+            return ref _singleEntry;
+
+        return ref _entries[index];
     }
 
     private void EnsureIndexIfNeeded()
@@ -292,29 +318,34 @@ internal sealed class DependencyValueStore
         var indices = new Dictionary<int, int>(_count);
         for (var i = 0; i < _count; i++)
         {
-            indices[_entries[i].Property.GlobalIndex] = i;
+            indices[GetEntry(i).Property.GlobalIndex] = i;
         }
         _indices = indices;
     }
 
     private void RemoveEntry(int index)
     {
-        var removedGlobalIndex = _entries[index].Property.GlobalIndex;
+        var removedGlobalIndex = GetEntry(index).Property.GlobalIndex;
         var lastIndex = --_count;
         if (index != lastIndex)
         {
-            _entries[index] = _entries[lastIndex];
+            GetEntry(index) = GetEntry(lastIndex);
             if (_indices is not null)
             {
-                _indices[_entries[index].Property.GlobalIndex] = index;
+                _indices[GetEntry(index).Property.GlobalIndex] = index;
             }
         }
 
-        _entries[lastIndex] = default;
+        GetEntry(lastIndex) = default;
         _indices?.Remove(removedGlobalIndex);
         if (_count <= IndexedThreshold)
         {
             _indices = null;
+        }
+
+        if (_count == 0)
+        {
+            _entries = null;
         }
     }
 
@@ -395,7 +426,7 @@ internal sealed class DependencyValueStore
             return false;
         }
 
-        var mask = _entries[index].Mask;
+        var mask = GetEntry(index).Mask;
         if ((mask & LayerMask.Local) != 0) layer = Layer.Local;
         else if ((mask & LayerMask.ParentTemplateTrigger) != 0) layer = Layer.ParentTemplateTrigger;
         else if ((mask & LayerMask.ParentTemplate) != 0) layer = Layer.ParentTemplate;

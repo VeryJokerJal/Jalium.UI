@@ -418,6 +418,8 @@ public partial class ScrollViewer : ContentControl
         _verticalScrollBarShown = false;
         _horizontalScrollBarShown = false;
         _hasCommittedScrollBarVisibility = false;
+        ClearEndAnchor(isVertical: true);
+        ClearEndAnchor(isVertical: false);
         ScrollInfo = null;
         base.OnContentChanged(oldContent, newContent);
         ScrollInfo = ContentElement as IScrollInfo;
@@ -529,6 +531,8 @@ public partial class ScrollViewer : ContentControl
     private double _smoothTargetY;
     private bool _isSmoothScrolling;
     private bool _isApplyingSmoothScrollStep;
+    private bool _smoothVerticalEndAnchorPending;
+    private bool _smoothHorizontalEndAnchorPending;
     private bool _areAutoHideScrollBarsRevealed;
     private bool _hasInitializedOverlayAutoHide;
     private long _lastSmoothTickTime;
@@ -550,6 +554,7 @@ public partial class ScrollViewer : ContentControl
 
     // Deferred scrolling fields
     private bool _isDeferredScrolling;
+    private bool _deferredScrollIsVertical;
     private double _deferredVerticalOffset;
     private double _deferredHorizontalOffset;
 
@@ -562,8 +567,20 @@ public partial class ScrollViewer : ContentControl
     private DispatcherTimer? _dragScrollCoalesceTimer;
     private bool _hasPendingDragVerticalScroll;
     private bool _hasPendingDragHorizontalScroll;
+    private bool _pendingDragVerticalEndAnchor;
+    private bool _pendingDragHorizontalEndAnchor;
     private double _pendingDragVerticalOffset;
     private double _pendingDragHorizontalOffset;
+
+    // A virtualizing IScrollInfo can refine its extent after the thumb has already reached the
+    // maximum that was frozen at drag start. Keep that endpoint intent inside ScrollViewer and
+    // re-apply only finite live maxima until layout settles. Passing a non-finite sentinel through
+    // arbitrary IScrollInfo proxies is unsafe: some valid implementations coerce it to zero.
+    private bool _verticalEndAnchorActive;
+    private bool _horizontalEndAnchorActive;
+    private double _verticalEndAnchorMaximum = double.NaN;
+    private double _horizontalEndAnchorMaximum = double.NaN;
+    private bool _isApplyingEndAnchor;
 
     // Direct viewer-level thumb drag fallback (used by synthetic input paths in tests)
     private bool _isDraggingVerticalThumb;
@@ -610,6 +627,7 @@ public partial class ScrollViewer : ContentControl
     private double _pointerPanningResidualX;
     private double _pointerPanningResidualY;
     private bool _pointerPanningYieldedToAncestor;
+    private bool _isCompletingLifecycleCleanup;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ScrollViewer"/> class.
@@ -653,6 +671,188 @@ public partial class ScrollViewer : ContentControl
 
         // Register for BringIntoView requests
         AddHandler(FrameworkElement.RequestBringIntoViewEvent, new RequestBringIntoViewEventHandler(HandleRequestBringIntoView));
+
+        // A presentation host can unload a subtree without first changing this element's
+        // immediate visual parent. Pair this with OnVisualParentChanged so every lifecycle exit
+        // retires frame-paced timers and transient input state.
+        Unloaded += OnScrollViewerUnloaded;
+    }
+
+    /// <inheritdoc />
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+        if (oldParent != null && VisualParent == null)
+        {
+            CompleteLifecycleCleanup();
+        }
+    }
+
+    private void OnScrollViewerUnloaded(object sender, RoutedEventArgs e)
+    {
+        CompleteLifecycleCleanup();
+    }
+
+    private void CompleteLifecycleCleanup()
+    {
+        if (_isCompletingLifecycleCleanup)
+            return;
+
+        _isCompletingLifecycleCleanup = true;
+        try
+        {
+            // Stop the global frame subscriptions first, while preserving their pending state.
+            // Capture-loss callbacks below can still commit a final thumb value and may restart
+            // an idle timer, so the finally block stops all five timers once more.
+            StopLifecycleTimers();
+            ReleaseLifecycleInputCaptures();
+
+            CompleteDeferredScrollForLifecycle();
+            FlushPendingDragScroll();
+            StopDragScrollCoalesce();
+
+            _pointerPanningCoalesceTimer?.Stop();
+            CompletePendingPointerPanningDelta();
+            ResetPointerPanningState();
+
+            CompleteSmoothScrollForLifecycle();
+        }
+        finally
+        {
+            ResetLifecycleTransitionState();
+            StopLifecycleTimers();
+            _isCompletingLifecycleCleanup = false;
+        }
+    }
+
+    private void StopLifecycleTimers()
+    {
+        _smoothScrollTimer?.Stop();
+        _scrollBarAutoHideTimer?.Stop();
+        _dragScrollCoalesceTimer?.Stop();
+        _pointerPanningCoalesceTimer?.Stop();
+        _bounceTimer?.Stop();
+        _verticalScrollBar?.CompleteInteractionForDetach();
+        _horizontalScrollBar?.CompleteInteractionForDetach();
+    }
+
+    private void ReleaseLifecycleInputCaptures()
+    {
+        var mouseCapture = UIElement.MouseCapturedElement;
+        if (mouseCapture != null && IsVisualDescendantOf(mouseCapture, this))
+        {
+            mouseCapture.ReleaseMouseCapture();
+        }
+
+        // Touch capture is per contact. Snapshot before releasing because each capture-loss
+        // event mutates the global capture table and can finish a Thumb drag synchronously.
+        foreach (var touchDevice in TouchesCapturedWithin.ToArray())
+        {
+            touchDevice.Capture(null);
+        }
+
+        if (Stylus.Captured is UIElement stylusCapture &&
+            IsVisualDescendantOf(stylusCapture, this))
+        {
+            Stylus.Capture(null);
+        }
+    }
+
+    private void CompleteDeferredScrollForLifecycle()
+    {
+        if (!_isDeferredScrolling)
+            return;
+
+        var isVertical = _deferredScrollIsVertical;
+        var deferredValue = isVertical ? _deferredVerticalOffset : _deferredHorizontalOffset;
+        var interactionMaximum = isVertical ? _verticalScrollBar.Maximum : _horizontalScrollBar.Maximum;
+        _isDeferredScrolling = false;
+
+        if (IsScrollBarRangeEnd(deferredValue, interactionMaximum))
+        {
+            ApplyEndAnchorOffset(isVertical);
+        }
+        else
+        {
+            ApplyScrollOffset(isVertical, deferredValue);
+        }
+    }
+
+    private void CompleteSmoothScrollForLifecycle()
+    {
+        if (!_isSmoothScrolling)
+            return;
+
+        var targetY = _smoothVerticalEndAnchorPending
+            ? ScrollableHeight
+            : Math.Clamp(_smoothTargetY, 0, ScrollableHeight);
+        var targetX = _smoothHorizontalEndAnchorPending
+            ? ScrollableWidth
+            : Math.Clamp(_smoothTargetX, 0, ScrollableWidth);
+        var anchorVerticalEnd = _smoothVerticalEndAnchorPending;
+        var anchorHorizontalEnd = _smoothHorizontalEndAnchorPending;
+
+        _isApplyingSmoothScrollStep = true;
+        try
+        {
+            ScrollToVerticalOffset(targetY);
+            ScrollToHorizontalOffset(targetX);
+        }
+        finally
+        {
+            _isApplyingSmoothScrollStep = false;
+        }
+
+        anchorVerticalEnd &= IsAtScrollEnd(isVertical: true);
+        anchorHorizontalEnd &= IsAtScrollEnd(isVertical: false);
+        _smoothScrollTimer?.Stop();
+        _isSmoothScrolling = false;
+        _smoothVerticalEndAnchorPending = false;
+        _smoothHorizontalEndAnchorPending = false;
+
+        if (anchorVerticalEnd)
+            ApplyEndAnchorOffset(isVertical: true);
+        if (anchorHorizontalEnd)
+            ApplyEndAnchorOffset(isVertical: false);
+    }
+
+    private void ResetLifecycleTransitionState()
+    {
+        _isSmoothScrolling = false;
+        _isApplyingSmoothScrollStep = false;
+        _smoothVerticalEndAnchorPending = false;
+        _smoothHorizontalEndAnchorPending = false;
+        _lastSmoothTickTime = 0;
+        _smoothTargetX = _horizontalOffset;
+        _smoothTargetY = _verticalOffset;
+
+        _scrollBarAutoHideDeadlineTick = 0;
+        _areAutoHideScrollBarsRevealed = false;
+        _hasInitializedOverlayAutoHide = false;
+
+        _isDeferredScrolling = false;
+        _deferredScrollIsVertical = false;
+        _deferredVerticalOffset = _verticalOffset;
+        _deferredHorizontalOffset = _horizontalOffset;
+
+        StopDragScrollCoalesce();
+        _pendingDragVerticalOffset = _verticalOffset;
+        _pendingDragHorizontalOffset = _horizontalOffset;
+        _isDraggingVerticalThumb = false;
+        _dragStartMouseY = 0;
+        _dragStartVerticalOffset = _verticalOffset;
+
+        ResetPointerPanningState();
+
+        _bounceStartTicks = 0;
+        _bounceFromX = 0;
+        _bounceFromY = 0;
+        _overscrollX = 0;
+        _overscrollY = 0;
+
+        _isApplyingEndAnchor = false;
+        ClearEndAnchor(isVertical: true);
+        ClearEndAnchor(isVertical: false);
     }
 
     private ScrollBar CreateScrollBar(Orientation orientation)
@@ -734,6 +934,7 @@ public partial class ScrollViewer : ContentControl
             return;
 
         CancelSmoothScroll();
+        ClearEndAnchor(isVertical: true);
         _isDraggingVerticalThumb = true;
         _dragStartMouseY = point.Y;
         _dragStartVerticalOffset = VerticalOffset;
@@ -758,7 +959,14 @@ public partial class ScrollViewer : ContentControl
         var newOffset = _dragStartVerticalOffset + (deltaY / metrics.ScrollRange) * ScrollableHeight;
 
         CancelSmoothScroll();
-        ScrollToVerticalOffset(newOffset);
+        if (newOffset >= ScrollableHeight - 0.01)
+        {
+            ApplyEndAnchorOffset(isVertical: true);
+        }
+        else
+        {
+            ScrollToVerticalOffset(newOffset);
+        }
         e.Handled = true;
     }
 
@@ -2020,6 +2228,10 @@ public partial class ScrollViewer : ContentControl
     public void ScrollToHorizontalOffset(double offset)
     {
         offset = ValidateScrollOffset(offset, nameof(offset));
+        if (!_isApplyingEndAnchor)
+        {
+            ClearEndAnchor(isVertical: false);
+        }
         offset = SnapScrollOffsetToDevicePixels(offset, ScrollableWidth, FrameworkElement.LayoutDpiScale);
 
         if (!_isApplyingSmoothScrollStep)
@@ -2066,8 +2278,16 @@ public partial class ScrollViewer : ContentControl
     /// <param name="offset">The vertical offset.</param>
     public void ScrollToVerticalOffset(double offset)
     {
+        var rawOffset = offset;
         offset = ValidateScrollOffset(offset, nameof(offset));
+        if (!_isApplyingEndAnchor)
+        {
+            ClearEndAnchor(isVertical: true);
+        }
         offset = SnapScrollOffsetToDevicePixels(offset, ScrollableHeight, FrameworkElement.LayoutDpiScale);
+        TraceVerticalState(
+            "set-vertical-request",
+            $"raw={rawOffset:R} snapped={offset:R} applyingEndAnchor={_isApplyingEndAnchor} applyingSmooth={_isApplyingSmoothScrollStep}");
 
         if (!_isApplyingSmoothScrollStep)
         {
@@ -2080,6 +2300,9 @@ public partial class ScrollViewer : ContentControl
             _scrollInfo.SetVerticalOffset(offset);
             _verticalOffset = _scrollInfo.VerticalOffset;
             UpdateRequestedOffsetsFromContent();
+            TraceVerticalState(
+                "set-vertical-provider-commit",
+                $"raw={rawOffset:R} sent={offset:R} old={oldOffset:R}");
 
             if (oldOffset != _verticalOffset)
             {
@@ -2094,6 +2317,9 @@ public partial class ScrollViewer : ContentControl
         var oldOff = _verticalOffset;
         _verticalOffset = Math.Clamp(offset, 0, ScrollableHeight);
         UpdateRequestedOffsetsFromContent();
+        TraceVerticalState(
+            "set-vertical-physical-commit",
+            $"raw={rawOffset:R} sent={offset:R} old={oldOff:R}");
 
         if (oldOff != _verticalOffset)
         {
@@ -2163,6 +2389,7 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void LineUp()
     {
+        ClearEndAnchor(isVertical: true);
         CancelSmoothScroll();
 
         if (_scrollInfo != null)
@@ -2179,6 +2406,7 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void LineDown()
     {
+        ClearEndAnchor(isVertical: true);
         CancelSmoothScroll();
 
         if (_scrollInfo != null)
@@ -2195,6 +2423,7 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void LineLeft()
     {
+        ClearEndAnchor(isVertical: false);
         CancelSmoothScroll();
 
         if (_scrollInfo != null)
@@ -2211,6 +2440,7 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void LineRight()
     {
+        ClearEndAnchor(isVertical: false);
         CancelSmoothScroll();
 
         if (_scrollInfo != null)
@@ -2227,6 +2457,7 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void PageUp()
     {
+        ClearEndAnchor(isVertical: true);
         CancelSmoothScroll();
 
         if (_scrollInfo != null)
@@ -2243,6 +2474,7 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void PageDown()
     {
+        ClearEndAnchor(isVertical: true);
         CancelSmoothScroll();
 
         if (_scrollInfo != null)
@@ -2259,6 +2491,7 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void PageLeft()
     {
+        ClearEndAnchor(isVertical: false);
         CancelSmoothScroll();
 
         if (_scrollInfo != null)
@@ -2275,6 +2508,7 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void PageRight()
     {
+        ClearEndAnchor(isVertical: false);
         CancelSmoothScroll();
 
         if (_scrollInfo != null)
@@ -2303,6 +2537,7 @@ public partial class ScrollViewer : ContentControl
         _horizontalOffset = _scrollInfo.HorizontalOffset;
         _verticalOffset = _scrollInfo.VerticalOffset;
         SyncExtentFromScrollInfo();
+        MaintainEndAnchors(allowCompletion: false);
         if (!_isDeferredScrolling)
         {
             UpdateRequestedOffsetsFromContent();
@@ -2341,7 +2576,8 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void ScrollToEnd()
     {
-        ScrollToHorizontalOffset(ScrollableWidth);
+        ClearEndAnchor(isVertical: false);
+        ApplyEndAnchorOffset(isVertical: false);
     }
 
     /// <summary>
@@ -2357,7 +2593,8 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void ScrollToBottom()
     {
-        ScrollToVerticalOffset(ScrollableHeight);
+        ClearEndAnchor(isVertical: true);
+        ApplyEndAnchorOffset(isVertical: true);
     }
 
     /// <summary>
@@ -2598,6 +2835,8 @@ public partial class ScrollViewer : ContentControl
         {
             _viewportHeight = Math.Max(0, availableSize.Height - gutters.Horizontal);
         }
+
+        MaintainEndAnchors(allowCompletion: false);
 
         // Settle the Auto decision here, from this pass's own numbers: the extent was
         // just produced above and the viewport is availableSize minus a gutter that
@@ -2847,6 +3086,11 @@ public partial class ScrollViewer : ContentControl
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
         }
 
+        // Arrange is the first safe point at which a stable provider can release the temporary
+        // endpoint anchor. If virtualization queued another measure, IsMeasureValid is false and
+        // the anchor survives to follow the next refined finite maximum.
+        MaintainEndAnchors(allowCompletion: true);
+
         // Re-check against the viewport we actually got. Measure decided from
         // availableSize, which a parent that over-constrains us (a star grid row, a
         // fixed height) does not honour.
@@ -2992,7 +3236,21 @@ public partial class ScrollViewer : ContentControl
         if (e.Handled)
             return;
 
+        bool scrollingTowardStart = e.Delta > 0;
+        bool scrollingTowardEnd = e.Delta < 0;
+        if (scrollingTowardStart || e.Delta == 0)
+        {
+            ClearEndAnchor(isVertical: true);
+            ClearEndAnchor(isVertical: false);
+            _smoothVerticalEndAnchorPending = false;
+            _smoothHorizontalEndAnchorPending = false;
+        }
+
         bool useSmoothWheelInertia = IsScrollInertiaEnabled && GetEffectiveScrollInertiaDurationMs() > 0;
+        TraceVerticalState(
+            "wheel-enter",
+            $"delta={e.Delta} useSmooth={useSmoothWheelInertia} " +
+            $"source={e.Source?.GetType().FullName ?? "null"}");
 
         // Delegate to IScrollInfo if available
         if (_scrollInfo != null)
@@ -3011,10 +3269,27 @@ public partial class ScrollViewer : ContentControl
                 _scrollInfo.ExtentHeight - _scrollInfo.ViewportHeight);
             bool atTop = _scrollInfo.VerticalOffset <= 0.5;
             bool atBottom = _scrollInfo.VerticalOffset >= providerMaxOffset - 0.5;
-            bool scrollingUp = e.Delta > 0;
-            bool scrollingDown = e.Delta < 0;
-            if ((scrollingUp && atTop) || (scrollingDown && atBottom) || e.Delta == 0)
+            if (scrollingTowardEnd && atBottom)
             {
+                // A true, settled boundary still bubbles to an ancestor. An active endpoint
+                // intent means this is only the old estimated boundary; keep the event here
+                // while layout resolves the next finite maximum.
+                if (_verticalEndAnchorActive || _smoothVerticalEndAnchorPending)
+                {
+                    MaintainEndAnchors(allowCompletion: false);
+                    e.Handled = true;
+                }
+                TraceVerticalState(
+                    "wheel-provider-boundary",
+                    $"delta={e.Delta} action={(e.Handled ? "retain" : "bubble")}");
+                return;
+            }
+
+            if ((scrollingTowardStart && atTop) || e.Delta == 0)
+            {
+                TraceVerticalState(
+                    "wheel-provider-boundary",
+                    $"delta={e.Delta} action=bubble");
                 return;
             }
 
@@ -3024,18 +3299,32 @@ public partial class ScrollViewer : ContentControl
                 var delta = ComputeMouseWheelDelta(e.Delta, LineScrollAmount, _viewportHeight);
 
                 InitializeSmoothScrollTargetsIfNeeded();
-                _smoothTargetY = Math.Clamp(_smoothTargetY + delta, 0, ScrollableHeight);
+                var nextTarget = _smoothTargetY + delta;
+                _smoothVerticalEndAnchorPending = scrollingTowardEnd &&
+                                                  ScrollableHeight > 0 &&
+                                                  nextTarget >= ScrollableHeight - 0.01;
+                _smoothTargetY = Math.Clamp(nextTarget, 0, ScrollableHeight);
+                TraceVerticalState(
+                    "wheel-smooth-target",
+                    $"delta={e.Delta} computedDelta={delta:R} rawTarget={nextTarget:R}");
                 StartSmoothScroll();
             }
             else
             {
                 // Immediate scroll
                 CancelSmoothScroll();
-                if (e.Delta > 0)
+                if (scrollingTowardStart)
                     _scrollInfo.MouseWheelUp();
-                else if (e.Delta < 0)
+                else if (scrollingTowardEnd)
                     _scrollInfo.MouseWheelDown();
                 SyncFromScrollInfo();
+                if (scrollingTowardEnd && IsAtScrollEnd(isVertical: true))
+                {
+                    ApplyEndAnchorOffset(isVertical: true);
+                }
+                TraceVerticalState(
+                    "wheel-provider-immediate",
+                    $"delta={e.Delta}");
             }
 
             e.Handled = true;
@@ -3048,12 +3337,13 @@ public partial class ScrollViewer : ContentControl
             // This allows nested ScrollViewers to bubble the event to the parent when at bounds.
             bool atTop = _verticalOffset <= 0;
             bool atBottom = _verticalOffset >= ScrollableHeight;
-            bool scrollingUp = e.Delta > 0;
-            bool scrollingDown = e.Delta < 0;
 
-            if ((scrollingUp && atTop) || (scrollingDown && atBottom))
+            if ((scrollingTowardStart && atTop) || (scrollingTowardEnd && atBottom))
             {
                 // At boundary: don't handle, let parent ScrollViewer process it
+                TraceVerticalState(
+                    "wheel-physical-boundary",
+                    $"delta={e.Delta} action=bubble");
             }
             else
             {
@@ -3063,13 +3353,23 @@ public partial class ScrollViewer : ContentControl
                 {
                     // Smooth animated scroll: accumulate target, animate toward it
                     InitializeSmoothScrollTargetsIfNeeded();
-                    _smoothTargetY = Math.Clamp(_smoothTargetY + delta, 0, ScrollableHeight);
+                    var nextTarget = _smoothTargetY + delta;
+                    _smoothVerticalEndAnchorPending = scrollingTowardEnd &&
+                                                      ScrollableHeight > 0 &&
+                                                      nextTarget >= ScrollableHeight - 0.01;
+                    _smoothTargetY = Math.Clamp(nextTarget, 0, ScrollableHeight);
+                    TraceVerticalState(
+                        "wheel-smooth-target",
+                        $"delta={e.Delta} computedDelta={delta:R} rawTarget={nextTarget:R}");
                     StartSmoothScroll();
                 }
                 else
                 {
                     CancelSmoothScroll();
                     ScrollToVerticalOffset(_verticalOffset + delta);
+                    TraceVerticalState(
+                        "wheel-physical-immediate",
+                        $"delta={e.Delta} computedDelta={delta:R}");
                 }
 
                 e.Handled = true;
@@ -3079,10 +3379,8 @@ public partial class ScrollViewer : ContentControl
         {
             bool atLeft = _horizontalOffset <= 0;
             bool atRight = _horizontalOffset >= ScrollableWidth;
-            bool scrollingLeft = e.Delta > 0;
-            bool scrollingRight = e.Delta < 0;
 
-            if ((scrollingLeft && atLeft) || (scrollingRight && atRight))
+            if ((scrollingTowardStart && atLeft) || (scrollingTowardEnd && atRight))
             {
                 // At boundary: don't handle, let parent ScrollViewer process it
             }
@@ -3093,7 +3391,11 @@ public partial class ScrollViewer : ContentControl
                 if (useSmoothWheelInertia)
                 {
                     InitializeSmoothScrollTargetsIfNeeded();
-                    _smoothTargetX = Math.Clamp(_smoothTargetX + delta, 0, ScrollableWidth);
+                    var nextTarget = _smoothTargetX + delta;
+                    _smoothHorizontalEndAnchorPending = scrollingTowardEnd &&
+                                                        ScrollableWidth > 0 &&
+                                                        nextTarget >= ScrollableWidth - 0.01;
+                    _smoothTargetX = Math.Clamp(nextTarget, 0, ScrollableWidth);
                     StartSmoothScroll();
                 }
                 else
@@ -3137,7 +3439,13 @@ public partial class ScrollViewer : ContentControl
                 _isApplyingSmoothScrollStep = false;
             }
 
+            var anchorVerticalEnd = _smoothVerticalEndAnchorPending && IsAtScrollEnd(isVertical: true);
+            var anchorHorizontalEnd = _smoothHorizontalEndAnchorPending && IsAtScrollEnd(isVertical: false);
             StopSmoothScroll();
+            if (anchorVerticalEnd)
+                ApplyEndAnchorOffset(isVertical: true);
+            if (anchorHorizontalEnd)
+                ApplyEndAnchorOffset(isVertical: false);
             return;
         }
 
@@ -3161,6 +3469,8 @@ public partial class ScrollViewer : ContentControl
     {
         _smoothScrollTimer?.Stop();
         _isSmoothScrolling = false;
+        _smoothVerticalEndAnchorPending = false;
+        _smoothHorizontalEndAnchorPending = false;
         if (IsScrollBarAutoHideEnabled)
         {
             RestartScrollBarAutoHideTimer();
@@ -3187,14 +3497,33 @@ public partial class ScrollViewer : ContentControl
         if (!_isSmoothScrolling)
             return;
 
-        _smoothTargetY = Math.Clamp(_smoothTargetY, 0, ScrollableHeight);
-        _smoothTargetX = Math.Clamp(_smoothTargetX, 0, ScrollableWidth);
+        TraceVerticalState(
+            "smooth-tick-enter",
+            $"elapsedMs={elapsedMs}");
+
+        _smoothTargetY = _smoothVerticalEndAnchorPending
+            ? ScrollableHeight
+            : Math.Clamp(_smoothTargetY, 0, ScrollableHeight);
+        _smoothTargetX = _smoothHorizontalEndAnchorPending
+            ? ScrollableWidth
+            : Math.Clamp(_smoothTargetX, 0, ScrollableWidth);
         if (elapsedMs <= 0)
             elapsedMs = Math.Max(1, SmoothScrollIntervalMs);
 
         double dtSeconds = Math.Min(elapsedMs / 1000.0, SmoothScrollMaxDeltaTimeSeconds);
         double alpha = ComputeSmoothAlpha(dtSeconds);
-        double minStep = SmoothScrollMinSpeedPixelsPerSecond * dtSeconds;
+        var dpiScale = FrameworkElement.LayoutDpiScale;
+        var oneDevicePixel = dpiScale > 0 && double.IsFinite(dpiScale)
+            ? 1.0 / dpiScale
+            : 1.0;
+        // Every committed scroll offset is device-pixel snapped. At high refresh rates the
+        // time-based minimum can be less than half a device pixel, so a legitimate 10px+ tail
+        // repeatedly rounds back to the current offset and is mistaken for completion. One
+        // physical pixel is the smallest step that can always make observable progress in both
+        // directions after snapping.
+        double minStep = Math.Max(
+            SmoothScrollMinSpeedPixelsPerSecond * dtSeconds,
+            oneDevicePixel);
 
         bool moved = false;
         var offsetXBefore = _horizontalOffset;
@@ -3211,14 +3540,43 @@ public partial class ScrollViewer : ContentControl
             _isApplyingSmoothScrollStep = false;
         }
 
+        // Realization can grow the extent synchronously inside the setter above. Keep an
+        // endpoint-targeted wheel animation alive and retarget it before the no-progress test
+        // mistakes the old maximum for a completed scroll.
+        bool endTargetExpanded = false;
+        if (_smoothVerticalEndAnchorPending && _smoothTargetY < ScrollableHeight - 0.01)
+        {
+            _smoothTargetY = ScrollableHeight;
+            endTargetExpanded = true;
+        }
+        if (_smoothHorizontalEndAnchorPending && _smoothTargetX < ScrollableWidth - 0.01)
+        {
+            _smoothTargetX = ScrollableWidth;
+            endTargetExpanded = true;
+        }
+
+        TraceVerticalState(
+            "smooth-tick-commit",
+            $"elapsedMs={elapsedMs} moved={moved} endTargetExpanded={endTargetExpanded}");
+
         // The committed offsets are quantized to whole device pixels, so a
         // sub-pixel closing step can round back onto the pixel the offset is
         // already on. StepSmoothAxis still reports intent to move in that case;
         // judging progress by the committed offsets is what guarantees the timer
         // stops instead of spinning on a target it can never get closer to.
-        if (!moved || (_horizontalOffset == offsetXBefore && _verticalOffset == offsetYBefore))
+        if (!endTargetExpanded &&
+            (!moved || (_horizontalOffset == offsetXBefore && _verticalOffset == offsetYBefore)))
         {
+            var anchorVerticalEnd = _smoothVerticalEndAnchorPending && IsAtScrollEnd(isVertical: true);
+            var anchorHorizontalEnd = _smoothHorizontalEndAnchorPending && IsAtScrollEnd(isVertical: false);
+            TraceVerticalState(
+                "smooth-complete",
+                $"anchorVertical={anchorVerticalEnd} anchorHorizontal={anchorHorizontalEnd}");
             StopSmoothScroll();
+            if (anchorVerticalEnd)
+                ApplyEndAnchorOffset(isVertical: true);
+            if (anchorHorizontalEnd)
+                ApplyEndAnchorOffset(isVertical: false);
         }
     }
 
@@ -3293,10 +3651,19 @@ public partial class ScrollViewer : ContentControl
         CancelSmoothScroll();
         RevealOverlayIndicatorForScrollMovement();
 
-        HandleScrollBarValueChange(e, isVertical ? ScrollableHeight : ScrollableWidth, isVertical);
+        var scrollBar = isVertical ? _verticalScrollBar : _horizontalScrollBar;
+        HandleScrollBarValueChange(
+            e,
+            isVertical ? ScrollableHeight : ScrollableWidth,
+            scrollBar.Maximum,
+            isVertical);
     }
 
-    private void HandleScrollBarValueChange(ScrollEventArgs e, double maxValue, bool isVertical)
+    private void HandleScrollBarValueChange(
+        ScrollEventArgs e,
+        double maxValue,
+        double interactionMaximum,
+        bool isVertical)
     {
         var clampedValue = Math.Clamp(e.NewValue, 0, Math.Max(0, maxValue));
 
@@ -3304,7 +3671,9 @@ public partial class ScrollViewer : ContentControl
         // dragged and apply the offset only once, when the thumb is released.
         if (IsDeferredScrollingEnabled && e.ScrollEventType == ScrollEventType.ThumbTrack)
         {
+            ClearEndAnchor(isVertical);
             _isDeferredScrolling = true;
+            _deferredScrollIsVertical = isVertical;
             if (isVertical)
                 _deferredVerticalOffset = clampedValue;
             else
@@ -3315,9 +3684,19 @@ public partial class ScrollViewer : ContentControl
 
         if (IsDeferredScrollingEnabled && e.ScrollEventType == ScrollEventType.EndScroll && _isDeferredScrolling)
         {
+            var deferredValue = isVertical ? _deferredVerticalOffset : _deferredHorizontalOffset;
+            var deferredScrollToRangeEnd = IsScrollBarRangeEnd(deferredValue, interactionMaximum);
             StopDragScrollCoalesce();
-            ApplyScrollOffset(isVertical, isVertical ? _deferredVerticalOffset : _deferredHorizontalOffset);
             _isDeferredScrolling = false;
+            _deferredScrollIsVertical = false;
+            if (deferredScrollToRangeEnd)
+            {
+                ApplyEndAnchorOffset(isVertical);
+            }
+            else
+            {
+                ApplyScrollOffset(isVertical, deferredValue);
+            }
             // The scrollbar mapping is intentionally frozen for the lifetime of thumb capture.
             // Thaw it even when the final content offset did not change (and therefore did not
             // naturally call UpdateScrollBarMetrics).
@@ -3326,6 +3705,7 @@ public partial class ScrollViewer : ContentControl
         }
 
         _isDeferredScrolling = false;
+        _deferredScrollIsVertical = false;
 
         // Live thumb drag (default path): coalesce the content-offset apply to one update per
         // rendered frame, mirroring the wheel's smooth-scroll frame pacing.
@@ -3341,7 +3721,20 @@ public partial class ScrollViewer : ContentControl
         // the thumb itself keeps following the cursor on every move.
         if (e.ScrollEventType == ScrollEventType.ThumbTrack)
         {
-            ScheduleCoalescedDragScroll(isVertical, clampedValue);
+            // Maximum is intentionally frozen while the thumb owns capture. Reaching that
+            // frozen endpoint is nevertheless an endpoint intent, not a request for its stale
+            // numeric value. Keep the intent beside the finite value so it never crosses an
+            // arbitrary IScrollInfo boundary as a non-finite sentinel.
+            var thumbTracksRangeEnd = IsScrollBarRangeEnd(e.NewValue, interactionMaximum);
+            if (thumbTracksRangeEnd)
+            {
+                ActivateEndAnchor(isVertical);
+            }
+            else
+            {
+                ClearEndAnchor(isVertical);
+            }
+            ScheduleCoalescedDragScroll(isVertical, clampedValue, thumbTracksRangeEnd);
             return;
         }
 
@@ -3362,12 +3755,268 @@ public partial class ScrollViewer : ContentControl
 
         // Stop any in-flight drag coalescing first so discrete clicks stay instant and a stale
         // timer tick cannot overwrite the just-committed final position.
+        var scrollToRangeEnd = e.ScrollEventType == ScrollEventType.EndScroll &&
+                               (IsScrollBarRangeEnd(e.NewValue, interactionMaximum) ||
+                                IsScrollBarRangeEnd(finalValue, interactionMaximum) ||
+                                (isVertical
+                                    ? _pendingDragVerticalEndAnchor
+                                    : _pendingDragHorizontalEndAnchor));
         StopDragScrollCoalesce();
-        ApplyScrollOffset(isVertical, finalValue);
+        if (scrollToRangeEnd)
+        {
+            ApplyEndAnchorOffset(isVertical);
+        }
+        else
+        {
+            ApplyScrollOffset(isVertical, finalValue);
+        }
         if (e.ScrollEventType == ScrollEventType.EndScroll)
         {
             UpdateScrollBarMetrics();
         }
+    }
+
+    private static bool IsScrollBarRangeEnd(double value, double interactionMaximum)
+    {
+        if (double.IsNaN(value) || !double.IsFinite(interactionMaximum) || interactionMaximum <= 0)
+            return false;
+
+        return value >= interactionMaximum - 0.01;
+    }
+
+    private bool IsAtScrollEnd(bool isVertical)
+    {
+        if (_scrollInfo != null)
+        {
+            var extent = isVertical ? _scrollInfo.ExtentHeight : _scrollInfo.ExtentWidth;
+            var viewport = isVertical ? _scrollInfo.ViewportHeight : _scrollInfo.ViewportWidth;
+            var offset = isVertical ? _scrollInfo.VerticalOffset : _scrollInfo.HorizontalOffset;
+            var maximum = Math.Max(0, extent - viewport);
+            return maximum > 0 && offset >= maximum - 0.5;
+        }
+
+        var physicalMaximum = isVertical ? ScrollableHeight : ScrollableWidth;
+        var physicalOffset = isVertical ? _verticalOffset : _horizontalOffset;
+        return physicalMaximum > 0 && physicalOffset >= physicalMaximum - 0.5;
+    }
+
+    private void TraceVerticalState(string phase, string details = "")
+    {
+        if (!Jalium.UI.Diagnostics.ScrollDiagnostics.Enabled)
+            return;
+
+        var info = _scrollInfo;
+        var infoType = info?.GetType().FullName ?? "<physical>";
+        var infoOffset = info?.VerticalOffset ?? double.NaN;
+        var infoExtent = info?.ExtentHeight ?? double.NaN;
+        var infoViewport = info?.ViewportHeight ?? double.NaN;
+        var infoMaximum = info == null
+            ? double.NaN
+            : Math.Max(0, infoExtent - infoViewport);
+        var contentMeasureValid = ContentElement?.IsMeasureValid;
+        var payload =
+            $"{details} requested={_requestedVerticalOffset:R} committed={_verticalOffset:R} " +
+            $"extent={_extentHeight:R} viewport={_viewportHeight:R} max={ScrollableHeight:R} " +
+            $"barValue={_verticalScrollBar.Value:R} barMax={_verticalScrollBar.Maximum:R} " +
+            $"barDragging={_verticalScrollBar.IsThumbDragging} smooth={_isSmoothScrolling} " +
+            $"smoothTarget={_smoothTargetY:R} smoothEnd={_smoothVerticalEndAnchorPending} " +
+            $"anchor={_verticalEndAnchorActive} anchorMax={_verticalEndAnchorMaximum:R} " +
+            $"measureValid={contentMeasureValid?.ToString() ?? "null"} provider={infoType} " +
+            $"providerOffset={infoOffset:R} providerExtent={infoExtent:R} " +
+            $"providerViewport={infoViewport:R} providerMax={infoMaximum:R}";
+        Jalium.UI.Diagnostics.ScrollDiagnostics.RecordEvent(
+            Name,
+            System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this),
+            phase,
+            payload);
+    }
+
+    private void ActivateEndAnchor(bool isVertical)
+    {
+        if (_scrollInfo == null)
+            return;
+
+        if (isVertical)
+        {
+            if (!_verticalEndAnchorActive)
+            {
+                _verticalEndAnchorActive = true;
+                _verticalEndAnchorMaximum = double.NaN;
+                TraceVerticalState("anchor-activate");
+            }
+        }
+        else if (!_horizontalEndAnchorActive)
+        {
+            _horizontalEndAnchorActive = true;
+            _horizontalEndAnchorMaximum = double.NaN;
+        }
+    }
+
+    private void ClearEndAnchor(bool isVertical)
+    {
+        if (isVertical)
+        {
+            if (_verticalEndAnchorActive || _pendingDragVerticalEndAnchor)
+            {
+                TraceVerticalState("anchor-clear");
+            }
+            _verticalEndAnchorActive = false;
+            _verticalEndAnchorMaximum = double.NaN;
+            _pendingDragVerticalEndAnchor = false;
+        }
+        else
+        {
+            _horizontalEndAnchorActive = false;
+            _horizontalEndAnchorMaximum = double.NaN;
+            _pendingDragHorizontalEndAnchor = false;
+        }
+    }
+
+    private void ApplyEndAnchorOffset(bool isVertical)
+    {
+        ActivateEndAnchor(isVertical);
+
+        var liveEnd = Math.Max(0, isVertical ? ScrollableHeight : ScrollableWidth);
+        var previousEnd = isVertical ? _verticalEndAnchorMaximum : _horizontalEndAnchorMaximum;
+        // A virtualized measure may briefly publish a zero/smaller extent while replacing its
+        // realization window. Never follow that transient contraction from an input callback;
+        // a completed stable Arrange is the only place allowed to commit a smaller endpoint.
+        var finiteEnd = !double.IsNaN(previousEnd) && liveEnd < previousEnd
+            ? previousEnd
+            : liveEnd;
+        if (isVertical)
+        {
+            TraceVerticalState(
+                "anchor-apply-request",
+                $"liveEnd={liveEnd:R} previousEnd={previousEnd:R} finiteEnd={finiteEnd:R}");
+        }
+        if (isVertical)
+            _verticalEndAnchorMaximum = finiteEnd;
+        else
+            _horizontalEndAnchorMaximum = finiteEnd;
+
+        _isApplyingEndAnchor = true;
+        try
+        {
+            ApplyScrollOffset(isVertical, finiteEnd);
+        }
+        finally
+        {
+            _isApplyingEndAnchor = false;
+        }
+
+        // Exact, non-virtualizing providers generally need only Arrange and already know their
+        // final extent. A virtualizing provider invalidates Measure when it accepts the jump;
+        // keep the anchor only in that case so later extent refinements are followed.
+        if (!IsEndAnchorInteractionActive(isVertical) &&
+            ContentElement is { IsMeasureValid: true })
+        {
+            ClearEndAnchor(isVertical);
+        }
+    }
+
+    private void MaintainEndAnchors(bool allowCompletion)
+    {
+        if (_isApplyingEndAnchor || (!_verticalEndAnchorActive && !_horizontalEndAnchorActive))
+            return;
+
+        if (_scrollInfo == null)
+        {
+            ClearEndAnchor(isVertical: true);
+            ClearEndAnchor(isVertical: false);
+            return;
+        }
+
+        _horizontalOffset = _scrollInfo.HorizontalOffset;
+        _verticalOffset = _scrollInfo.VerticalOffset;
+        SyncExtentFromScrollInfo();
+
+        MaintainEndAnchor(isVertical: true, allowCompletion);
+        MaintainEndAnchor(isVertical: false, allowCompletion);
+        UpdateRequestedOffsetsFromContent();
+    }
+
+    private void MaintainEndAnchor(bool isVertical, bool allowCompletion)
+    {
+        var isActive = isVertical ? _verticalEndAnchorActive : _horizontalEndAnchorActive;
+        if (!isActive || _scrollInfo == null)
+            return;
+
+        var finiteEnd = Math.Max(0, isVertical ? ScrollableHeight : ScrollableWidth);
+        var previousMaximum = isVertical ? _verticalEndAnchorMaximum : _horizontalEndAnchorMaximum;
+        var interactionActive = IsEndAnchorInteractionActive(isVertical);
+        var canCommitShrink = allowCompletion &&
+                              !interactionActive &&
+                              ContentElement is { IsMeasureValid: true };
+        if (!double.IsNaN(previousMaximum) &&
+            finiteEnd < previousMaximum &&
+            !canCommitShrink)
+        {
+            if (isVertical)
+            {
+                TraceVerticalState(
+                    "anchor-ignore-shrink",
+                    $"liveEnd={finiteEnd:R} previousEnd={previousMaximum:R} allowCompletion={allowCompletion} interaction={interactionActive}");
+            }
+            return;
+        }
+        var rangeChanged = double.IsNaN(previousMaximum) || !AreClose(previousMaximum, finiteEnd);
+        var currentOffset = isVertical ? _scrollInfo.VerticalOffset : _scrollInfo.HorizontalOffset;
+
+        if (isVertical)
+            _verticalEndAnchorMaximum = finiteEnd;
+        else
+            _horizontalEndAnchorMaximum = finiteEnd;
+
+        if (rangeChanged || !AreClose(currentOffset, finiteEnd))
+        {
+            if (isVertical)
+            {
+                TraceVerticalState(
+                    "anchor-maintain-request",
+                    $"finiteEnd={finiteEnd:R} previousEnd={previousMaximum:R} current={currentOffset:R} rangeChanged={rangeChanged} allowCompletion={allowCompletion}");
+            }
+            _isApplyingEndAnchor = true;
+            try
+            {
+                if (isVertical)
+                {
+                    _scrollInfo.SetVerticalOffset(finiteEnd);
+                    _verticalOffset = _scrollInfo.VerticalOffset;
+                }
+                else
+                {
+                    _scrollInfo.SetHorizontalOffset(finiteEnd);
+                    _horizontalOffset = _scrollInfo.HorizontalOffset;
+                }
+            }
+            finally
+            {
+                _isApplyingEndAnchor = false;
+            }
+            if (isVertical)
+            {
+                TraceVerticalState("anchor-maintain-commit");
+            }
+        }
+
+        if (allowCompletion &&
+            !rangeChanged &&
+            !interactionActive &&
+            ContentElement is { IsMeasureValid: true })
+        {
+            ClearEndAnchor(isVertical);
+        }
+    }
+
+    private bool IsEndAnchorInteractionActive(bool isVertical)
+    {
+        if (_isDeferredScrolling)
+            return true;
+
+        return isVertical
+            ? _verticalScrollBar.IsThumbDragging || _isDraggingVerticalThumb || _hasPendingDragVerticalScroll
+            : _horizontalScrollBar.IsThumbDragging || _hasPendingDragHorizontalScroll;
     }
 
     private void ApplyScrollOffset(bool isVertical, double value)
@@ -3386,17 +4035,19 @@ public partial class ScrollViewer : ContentControl
     // one-realize-per-frame guarantee. The thumb visual still tracks the cursor on every move
     // (ScrollBar.Value is set per DragDelta); only the expensive content realize is throttled.
 
-    private void ScheduleCoalescedDragScroll(bool isVertical, double value)
+    private void ScheduleCoalescedDragScroll(bool isVertical, double value, bool anchorsEnd = false)
     {
         if (isVertical)
         {
             _pendingDragVerticalOffset = value;
             _hasPendingDragVerticalScroll = true;
+            _pendingDragVerticalEndAnchor = anchorsEnd;
         }
         else
         {
             _pendingDragHorizontalOffset = value;
             _hasPendingDragHorizontalScroll = true;
+            _pendingDragHorizontalEndAnchor = anchorsEnd;
         }
 
         if (_dragScrollCoalesceTimer == null)
@@ -3427,14 +4078,30 @@ public partial class ScrollViewer : ContentControl
         if (_hasPendingDragVerticalScroll)
         {
             _hasPendingDragVerticalScroll = false;
-            ScrollToVerticalOffset(_pendingDragVerticalOffset);
+            if (_pendingDragVerticalEndAnchor)
+            {
+                ApplyEndAnchorOffset(isVertical: true);
+            }
+            else
+            {
+                ScrollToVerticalOffset(_pendingDragVerticalOffset);
+            }
+            _pendingDragVerticalEndAnchor = false;
             applied = true;
         }
 
         if (_hasPendingDragHorizontalScroll)
         {
             _hasPendingDragHorizontalScroll = false;
-            ScrollToHorizontalOffset(_pendingDragHorizontalOffset);
+            if (_pendingDragHorizontalEndAnchor)
+            {
+                ApplyEndAnchorOffset(isVertical: false);
+            }
+            else
+            {
+                ScrollToHorizontalOffset(_pendingDragHorizontalOffset);
+            }
+            _pendingDragHorizontalEndAnchor = false;
             applied = true;
         }
 
@@ -3445,6 +4112,8 @@ public partial class ScrollViewer : ContentControl
     {
         _hasPendingDragVerticalScroll = false;
         _hasPendingDragHorizontalScroll = false;
+        _pendingDragVerticalEndAnchor = false;
+        _pendingDragHorizontalEndAnchor = false;
         _dragScrollCoalesceTimer?.Stop();
     }
 
@@ -3495,6 +4164,7 @@ public partial class ScrollViewer : ContentControl
 
         ApplyScrollBarAutoHideVisualState();
         UpdateScrollMetricDependencyProperties();
+        TraceVerticalState("scrollbar-metrics");
     }
 
     private void SyncExtentFromScrollInfo()
@@ -3522,14 +4192,19 @@ public partial class ScrollViewer : ContentControl
         var oldVertical = _verticalOffset;
         var oldExtentWidth = _extentWidth;
         var oldExtentHeight = _extentHeight;
+        TraceVerticalState("invalidate-scroll-info-enter");
 
         _horizontalOffset = _scrollInfo.HorizontalOffset;
         _verticalOffset = _scrollInfo.VerticalOffset;
         SyncExtentFromScrollInfo();
+        MaintainEndAnchors(allowCompletion: false);
         if (!_isDeferredScrolling)
         {
             UpdateRequestedOffsetsFromContent();
         }
+        TraceVerticalState(
+            "invalidate-scroll-info-sync",
+            $"oldOffset={oldVertical:R} oldExtent={oldExtentHeight:R}");
 
         if (oldHorizontal != _horizontalOffset || oldVertical != _verticalOffset ||
             oldExtentWidth != _extentWidth || oldExtentHeight != _extentHeight)
@@ -3692,7 +4367,13 @@ public partial class ScrollViewer : ContentControl
             _isApplyingSmoothScrollStep = false;
         }
 
+        var anchorVerticalEnd = _smoothVerticalEndAnchorPending && IsAtScrollEnd(isVertical: true);
+        var anchorHorizontalEnd = _smoothHorizontalEndAnchorPending && IsAtScrollEnd(isVertical: false);
         StopSmoothScroll();
+        if (anchorVerticalEnd)
+            ApplyEndAnchorOffset(isVertical: true);
+        if (anchorHorizontalEnd)
+            ApplyEndAnchorOffset(isVertical: false);
     }
 
     private double ComputeSmoothAlpha(double dtSeconds)

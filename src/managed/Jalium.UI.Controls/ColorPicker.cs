@@ -3,6 +3,7 @@ using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Controls;
 
@@ -22,6 +23,8 @@ public class ColorPicker : Control
     private static readonly SolidColorBrush s_grayBorderBrush = new(ThemeColors.ControlBorder);
     private static readonly SolidColorBrush s_checkerLightBrush = new(Color.FromRgb(200, 200, 200));
     private static readonly SolidColorBrush s_checkerDarkBrush = new(Color.FromRgb(150, 150, 150));
+    private static readonly object s_checkerBitmapLock = new();
+    private static readonly Dictionary<(int Width, int Height), BitmapImage> s_checkerBitmaps = new();
 
     #region Dependency Properties
 
@@ -660,6 +663,19 @@ public class ColorPicker : Control
     {
         const double CellSize = 4;
 
+        int pixelWidth = (int)Math.Round(rect.Width);
+        int pixelHeight = (int)Math.Round(rect.Height);
+        bool pixelAligned = pixelWidth > 0 && pixelHeight > 0 &&
+            Math.Abs(rect.X - Math.Round(rect.X)) < 0.0001 &&
+            Math.Abs(rect.Y - Math.Round(rect.Y)) < 0.0001 &&
+            Math.Abs(rect.Width - pixelWidth) < 0.0001 &&
+            Math.Abs(rect.Height - pixelHeight) < 0.0001;
+        if (pixelAligned)
+        {
+            dc.DrawImage(GetCheckerboardBitmap(pixelWidth, pixelHeight), rect);
+            return;
+        }
+
         dc.DrawRectangle(s_checkerLightBrush, null, rect);
 
         var row = 0;
@@ -675,6 +691,38 @@ public class ColorPicker : Control
                     null,
                     new Rect(x, y, Math.Min(CellSize, rect.Right - x), height));
             }
+        }
+    }
+
+    private static BitmapImage GetCheckerboardBitmap(int width, int height)
+    {
+        lock (s_checkerBitmapLock)
+        {
+            if (s_checkerBitmaps.TryGetValue((width, height), out var cached))
+            {
+                return cached;
+            }
+
+            const int cellSize = 4;
+            var pixels = new byte[checked(width * height * 4)];
+            for (int y = 0; y < height; y++)
+            {
+                int cellY = y / cellSize;
+                for (int x = 0; x < width; x++)
+                {
+                    int cellX = x / cellSize;
+                    byte value = ((cellX + cellY) & 1) != 0 ? (byte)150 : (byte)200;
+                    int offset = (y * width + x) * 4;
+                    pixels[offset] = value;
+                    pixels[offset + 1] = value;
+                    pixels[offset + 2] = value;
+                    pixels[offset + 3] = 255;
+                }
+            }
+
+            var bitmap = BitmapImage.FromPixels(pixels, width, height, width * 4);
+            s_checkerBitmaps[(width, height)] = bitmap;
+            return bitmap;
         }
     }
 

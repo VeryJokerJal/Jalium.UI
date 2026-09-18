@@ -521,6 +521,10 @@ public class DevToolsWindowTests
             return false;
         }
 
-        return handlers.GetInvocationList().Any(d => ReferenceEquals(d.Target, target));
+        return handlers.GetInvocationList().Any(d =>
+            ReferenceEquals(d.Target, target) ||
+            (d.Target?.GetType().DeclaringType == typeof(DispatcherTimer) &&
+             ReferenceEquals(d.Target.GetType().GetProperty("Owner",
+                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(d.Target), target)));
     }
 }

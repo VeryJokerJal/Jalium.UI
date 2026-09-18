@@ -16,6 +16,25 @@ internal static class CssEngine
 
     /// <summary>True once any CSS input exists; keeps tree hooks at a single static read otherwise.</summary>
     internal static bool IsActive;
+    private static bool s_structuralSelectors;
+
+    internal static void InvalidateSelectorDependents(CssNode element)
+    {
+        if (!IsActive) return;
+        CssSelectorDependencies.TreeChanged(element);
+        var scope = element;
+        if (s_structuralSelectors)
+        {
+            for (var current = element; current is not null; current = CssMatcher.CssAncestor(current))
+                if (current.CssRuntimeState?.ScopedStyleSheets is { } sheets &&
+                    sheets.Any(sheet => sheet.Rules.Any(rule => rule.HasStructuralDependencies)))
+                    scope = current;
+            if (ApplicationStyleSheetsProvider?.Invoke() is { } application &&
+                application.Any(sheet => sheet.Rules.Any(rule => rule.HasStructuralDependencies)))
+                scope = CssMatcher.Root(element);
+        }
+        CssEvaluationScheduler.InvalidateSubtree(scope);
+    }
 
     /// <summary>Application-level sheets, injected by Jalium.UI.Controls (Core cannot see Application).</summary>
     internal static Func<CssStyleSheetCollection?>? ApplicationStyleSheetsProvider;
@@ -49,10 +68,10 @@ internal static class CssEngine
         CascadeRootsInvalidator?.Invoke();
     }
 
-    internal static CssElementState EnsureState(FrameworkElement element)
+    internal static CssElementState EnsureState(CssNode element)
         => element.CssRuntimeState ??= new CssElementState();
 
-    internal static void OnInlineStyleChanged(FrameworkElement element, string? text)
+    internal static void OnInlineStyleChanged(CssNode element, string? text)
     {
         MarkActive();
         var state = EnsureState(element);
@@ -69,6 +88,7 @@ internal static class CssEngine
         }
 
         EvaluateElement(element);
+        CssEvaluationScheduler.InvalidateSubtree(element);
     }
 
     /// <summary>Compiles an inline declaration block, cached by exact text (list scenarios repeat it).</summary>
@@ -93,7 +113,10 @@ internal static class CssEngine
     // ── Cascade evaluation ─────────────────────────────────────────────────────────────
 
     private readonly record struct MatchedRule(
-        int ScopeRank, int Specificity, int OrderKey, CssRule Rule, bool FromState);
+        int ScopeRank, int Specificity, long OrderKey, CssRule Rule, bool FromState, int[] LayerKey, int Proximity = int.MaxValue);
+
+    private sealed record CascadeCandidate(CssCompiledDeclaration Declaration, bool FromState,
+        int ScopeRank, int Specificity, long Order, int[] Layer, bool Inline, int Proximity = int.MaxValue);
 
     private readonly record struct MergedDeclaration(CssCompiledDeclaration Declaration, bool FromState);
 
@@ -103,12 +126,24 @@ internal static class CssEngine
         public CssStateMask AncestorStates;
         public CssStateMask AnyStates;
         public bool UsesId;
+        public bool Structural;
+        public CssLayerOrder? Layers;
+        public HashSet<string>? AttributeNames;
     }
 
     /// <summary>Re-evaluates one element: match → cascade-sort → merge → apply diff.</summary>
-    internal static void EvaluateElement(FrameworkElement element)
+    internal static void EvaluateElement(CssNode element)
     {
         var state = element.CssRuntimeState;
+        state?.ContainerDependent?.Reset();
+        state?.FontDependency?.Reset();
+        state?.SelectorDependent?.Reset();
+        var registrations = CssRegisteredProperties.For(element);
+        if (registrations.Count > 0 || state?.RegisteredProperties is { Count: > 0 })
+        {
+            state ??= EnsureState(element);
+            state.RegisteredProperties = registrations;
+        }
         if (state?.InlineText is { } inlineText && state.InlineVersion != CssPropertyRegistry.Version)
         {
             state.InlineDeclarations = GetOrCompileInline(inlineText);
@@ -123,11 +158,14 @@ internal static class CssEngine
         {
             matched = CollectMatchedRules(element, ref scopeInfo);
         }
+        state = element.CssRuntimeState;
 
         if ((matched is null || matched.Count == 0) && inline is not { Length: > 0 })
         {
             // Nothing applies; clear whatever CSS previously owned (DP layers AND layout state).
-            if (state?.Applied is { Count: > 0 } || state?.AppliedLayout is not null)
+            if (state?.Applied is { Count: > 0 } || state?.AppliedLayout is not null ||
+                state?.CustomProperties is { Count: > 0 } || registrations.Count > 0 ||
+                CssMatcher.CssAncestor(element)?.CssRuntimeState?.CustomProperties is { Count: > 0 })
             {
                 ApplyMergedDeclarations(element, Array.Empty<MergedDeclaration>());
             }
@@ -145,8 +183,12 @@ internal static class CssEngine
             return;
         }
 
-        var merged = new List<MergedDeclaration>();
-        var indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var candidates = new Dictionary<string, List<CascadeCandidate>>(StringComparer.Ordinal);
+        void AddCandidate(CascadeCandidate candidate)
+        {
+            if (!candidates.TryGetValue(candidate.Declaration.Name, out var group)) candidates[candidate.Declaration.Name] = group = [];
+            group.Add(candidate);
+        }
 
         if (matched is { Count: > 0 })
         {
@@ -165,14 +207,35 @@ internal static class CssEngine
 
             foreach (var match in matched)
             {
-                MergeDeclarations(merged, indexByName, GetCompiledDeclarations(match.Rule), match.FromState);
+                foreach (var declaration in GetCompiledDeclarations(match.Rule))
+                    AddCandidate(new CascadeCandidate(declaration, match.FromState, match.ScopeRank,
+                        match.Specificity, match.OrderKey, match.LayerKey, false, match.Proximity));
             }
         }
 
         if (inline is { Length: > 0 })
         {
             // Inline is the highest cascade origin short of !important.
-            MergeDeclarations(merged, indexByName, inline, fromState: false);
+            foreach (var declaration in inline)
+                AddCandidate(new CascadeCandidate(declaration, false, int.MaxValue, int.MaxValue, long.MaxValue, [], true));
+        }
+
+        var merged = new List<MergedDeclaration>();
+        foreach (var group in candidates.Values)
+        {
+            group.Sort(static (a, b) => CompareCandidates(b, a));
+            while (group.Count > 0)
+            {
+                var winner = group[0];
+                if (winner.Declaration.Value is CssRevertValue revert)
+                {
+                    if (!revert.Layer) break;
+                    group.RemoveAll(candidate => candidate.Layer.SequenceEqual(winner.Layer));
+                    continue;
+                }
+                merged.Add(new MergedDeclaration(winner.Declaration, winner.FromState));
+                break;
+            }
         }
 
         ApplyMergedDeclarations(element, merged);
@@ -181,32 +244,24 @@ internal static class CssEngine
         UpdateDependencyTracking(element, finalState, in scopeInfo);
     }
 
-    private static void MergeDeclarations(
-        List<MergedDeclaration> merged,
-        Dictionary<string, int> indexByName,
-        IReadOnlyList<CssCompiledDeclaration> declarations,
-        bool fromState)
-    {
-        foreach (var declaration in declarations)
-        {
-            if (indexByName.TryGetValue(declaration.Name, out var existing))
-            {
-                if (merged[existing].Declaration.Important && !declaration.Important)
-                {
-                    continue;
-                }
 
-                merged[existing] = new MergedDeclaration(declaration, fromState);
-            }
-            else
-            {
-                indexByName[declaration.Name] = merged.Count;
-                merged.Add(new MergedDeclaration(declaration, fromState));
-            }
-        }
+    private static int CompareCandidates(CascadeCandidate a, CascadeCandidate b)
+    {
+        var comparison = a.Declaration.Important.CompareTo(b.Declaration.Important);
+        if (comparison != 0) return comparison;
+        comparison = a.Inline.CompareTo(b.Inline);
+        if (comparison != 0) return comparison;
+        comparison = CssLayerOrder.Compare(a.Layer, b.Layer);
+        if (comparison != 0) return a.Declaration.Important ? -comparison : comparison;
+        comparison = a.ScopeRank.CompareTo(b.ScopeRank);
+        if (comparison != 0) return comparison;
+        comparison = a.Specificity.CompareTo(b.Specificity);
+        if (comparison != 0) return comparison;
+        comparison = b.Proximity.CompareTo(a.Proximity);
+        return comparison != 0 ? comparison : a.Order.CompareTo(b.Order);
     }
 
-    private static List<MatchedRule>? CollectMatchedRules(FrameworkElement element, ref ScopeInfo scopeInfo)
+    private static List<MatchedRule>? CollectMatchedRules(CssNode element, ref ScopeInfo scopeInfo)
     {
         List<MatchedRule>? matched = null;
         var scopeRank = 0;
@@ -220,12 +275,12 @@ internal static class CssEngine
         scopeRank++;
 
         // Ancestor-scoped sheets: farthest first so nearer scopes rank higher.
-        List<FrameworkElement>? scopedAncestors = null;
+        List<CssNode>? scopedAncestors = null;
         for (var current = element; current is not null; current = CssMatcher.CssAncestor(current))
         {
             if (current.CssRuntimeState?.ScopedStyleSheets is { Count: > 0 })
             {
-                (scopedAncestors ??= new List<FrameworkElement>()).Add(current);
+                (scopedAncestors ??= new List<CssNode>()).Add(current);
             }
         }
 
@@ -234,7 +289,7 @@ internal static class CssEngine
             for (var i = scopedAncestors.Count - 1; i >= 0; i--)
             {
                 MatchSheets(element, scopedAncestors[i].CssRuntimeState!.ScopedStyleSheets!, scopeRank++,
-                    ref matched, ref scopeInfo);
+                    ref matched, ref scopeInfo, scopedAncestors[i]);
             }
         }
 
@@ -242,56 +297,71 @@ internal static class CssEngine
     }
 
     private static void MatchSheets(
-        FrameworkElement element,
+        CssNode element,
         IReadOnlyList<CssStyleSheet> sheets,
         int scopeRank,
         ref List<MatchedRule>? matched,
-        ref ScopeInfo scopeInfo)
+        ref ScopeInfo scopeInfo, CssNode? scopeRoot = null)
     {
+        CssMatchSession? session = null;
         for (var sheetIndex = 0; sheetIndex < sheets.Count; sheetIndex++)
         {
             var sheet = sheets[sheetIndex];
+            var layerOrder = scopeInfo.Layers ??= new CssLayerOrder();
+            foreach (var layer in sheet.Layers)
+                if (layer.Condition is null || layer.Condition.Evaluate(element)) layerOrder.GetKey(layer.Name);
             scopeInfo.AncestorStates |= sheet.AncestorStateUnion;
             scopeInfo.AnyStates |= sheet.AnyStateUnion;
             scopeInfo.UsesId |= sheet.UsesId;
             foreach (var rule in sheet.Rules)
             {
+                if (rule.HasStructuralDependencies)
+                {
+                    scopeInfo.Structural = true;
+                    s_structuralSelectors = true;
+                    foreach (var selector in rule.DependencySelectors)
+                        foreach (var name in selector.AttributeNames()) (scopeInfo.AttributeNames ??= new(StringComparer.Ordinal)).Add(name);
+                }
                 var bestSpecificity = -1;
                 var bestFromState = false;
-                foreach (var selector in rule.Selectors)
+                var bestProximity = int.MaxValue;
+                if (rule.Scope is not null || rule.Selectors.Any(s => s.ContainsNesting)) session ??= new();
+                var observer = rule.HasStructuralDependencies || rule.Selectors.Any(s => s.HasAnyState) ? CssSelectorDependencies.For(element) : null;
+                var baseContext = new CssMatchContext(scopeRoot, scopeRoot, Session: session, Observer: observer);
+                var scopeStates = rule.Scope?.Selectors().Any(s => s.HasAnyState) == true;
+                IEnumerable<CssMatchContext> contexts = rule.Scope is null ? [baseContext]
+                    : rule.Scope.Bindings(element, scopeRoot, true, session!, observer).Select(binding => baseContext with { Scope = binding.Root, Bindings = binding });
+                foreach (var context in contexts)
                 {
-                    if (!selector.HasAnyState)
+                    var proximity = rule.Scope is null ? int.MaxValue : CssScopeRule.Distance(element, context.Scope!);
+                    foreach (var selector in rule.Selectors)
                     {
-                        if (selector.Specificity > bestSpecificity &&
-                            CssMatcher.Matches(element, selector, evaluateStates: false))
+                        var canImprove = selector.Specificity > bestSpecificity || selector.Specificity == bestSpecificity && proximity < bestProximity;
+                        if (!selector.HasAnyState)
                         {
-                            bestSpecificity = selector.Specificity;
-                            bestFromState = false;
+                            if (canImprove && CssMatcher.Matches(element, selector, evaluateStates: false, context))
+                            {
+                                bestSpecificity = selector.Specificity;
+                                bestFromState = scopeStates; bestProximity = proximity;
+                            }
+                            continue;
                         }
 
-                        continue;
-                    }
-
-                    // A structural match registers the dependency whether or not the state is
-                    // currently active — the element must re-evaluate when it flips.
-                    if (!CssMatcher.Matches(element, selector, evaluateStates: false))
-                    {
-                        continue;
-                    }
-
-                    scopeInfo.SelfStates |= selector.RightmostStates;
-                    if (selector.Specificity > bestSpecificity &&
-                        CssMatcher.Matches(element, selector, evaluateStates: true))
-                    {
-                        bestSpecificity = selector.Specificity;
-                        bestFromState = true;
+                        // Track subject states independently of their current truth value.
+                        if (!CssMatcher.Matches(element, selector, evaluateStates: false, context)) continue;
+                        scopeInfo.SelfStates |= selector.RightmostStates;
+                        if (canImprove && CssMatcher.Matches(element, selector, evaluateStates: true, context))
+                        {
+                            bestSpecificity = selector.Specificity;
+                            bestFromState = true; bestProximity = proximity;
+                        }
                     }
                 }
 
-                if (bestSpecificity >= 0)
+                if (bestSpecificity >= 0 && (rule.Condition is null || rule.Condition.Evaluate(element)))
                 {
                     (matched ??= new List<MatchedRule>()).Add(new MatchedRule(
-                        scopeRank, bestSpecificity, (sheetIndex << 20) | rule.RuleIndex, rule, bestFromState));
+                        scopeRank, bestSpecificity, ((long)sheetIndex << 32) | (uint)rule.RuleIndex, rule, bestFromState, layerOrder.GetKey(rule.LayerName), bestProximity));
                 }
             }
         }
@@ -300,11 +370,20 @@ internal static class CssEngine
     // ── Dynamic-state dependency tracking ──────────────────────────────────────────────
 
     private static void UpdateDependencyTracking(
-        FrameworkElement element, CssElementState state, in ScopeInfo scopeInfo)
+        CssNode element, CssElementState state, in ScopeInfo scopeInfo)
     {
         state.SelfStates = scopeInfo.SelfStates;
         state.ScopeAncestorStates = scopeInfo.AncestorStates;
         state.ScopeUsesId = scopeInfo.UsesId;
+        state.StructuralDependencies = scopeInfo.Structural;
+        state.NativeAttributeNames = scopeInfo.AttributeNames;
+        if (scopeInfo.AttributeNames is { Count: > 0 } attributes)
+        {
+            state.NativeAttributeValues ??= new(StringComparer.Ordinal);
+            foreach (var name in attributes)
+                if (CssDependencyPropertyLookup.Find(element.GetType(), name) is { } property)
+                    state.NativeAttributeValues[name] = element.HasLocalValue(property) ? element.GetValue(property) : DependencyProperty.UnsetValue;
+        }
 
         var needed = NeedsTracking(in scopeInfo);
         if (needed)
@@ -333,16 +412,31 @@ internal static class CssEngine
         => scopeInfo.SelfStates != CssStateMask.None ||
            scopeInfo.AncestorStates != CssStateMask.None ||
            (scopeInfo.AnyStates & CssStateMask.Enabled) != 0 ||
-           scopeInfo.UsesId;
+           scopeInfo.UsesId || scopeInfo.Structural;
 
-    private static Action<DependencyProperty, object?, object?> CreateStateHandler(FrameworkElement element)
+    private static Action<DependencyProperty, object?, object?> CreateStateHandler(CssNode element)
         => (dp, _, _) => OnTrackedPropertyChanged(element, dp);
 
-    private static void OnTrackedPropertyChanged(FrameworkElement element, DependencyProperty dp)
+    private static void OnTrackedPropertyChanged(CssNode element, DependencyProperty dp)
     {
         var state = element.CssRuntimeState;
         if (state is null)
         {
+            return;
+        }
+
+        if (state.StructuralDependencies)
+        {
+            if (MapStateMask(dp) != CssStateMask.None || dp.Name == "Name") InvalidateSelectorDependents(element);
+            else if (state.NativeAttributeNames?.Contains(dp.Name) == true)
+            {
+                var current = element.HasLocalValue(dp) ? element.GetValue(dp) : DependencyProperty.UnsetValue;
+                if (state.NativeAttributeValues is null || !state.NativeAttributeValues.TryGetValue(dp.Name, out var previous) || !Equals(current, previous))
+                {
+                    (state.NativeAttributeValues ??= new(StringComparer.Ordinal))[dp.Name] = current;
+                    InvalidateSelectorDependents(element);
+                }
+            }
             return;
         }
 
@@ -430,7 +524,7 @@ internal static class CssEngine
             return cached;
         }
 
-        var compiled = CompileDeclarations(new List<CssDeclaration>(rule.Declarations));
+        var compiled = CompileDeclarations(new List<CssDeclaration>(rule.Declarations), new CssCompileContext { BaseUri = rule.BaseUri });
         rule.ExpandedDeclarations = compiled;
         rule.ExpandedVersion = CssPropertyRegistry.Version;
         return compiled;
@@ -440,8 +534,9 @@ internal static class CssEngine
     /// Compiles syntax-level declarations: registry lookup, shorthand expansion, then a
     /// per-longhand merge (later wins; !important is not displaced by a later normal value).
     /// </summary>
-    internal static CssCompiledDeclaration[] CompileDeclarations(List<CssDeclaration> declarations)
+    internal static CssCompiledDeclaration[] CompileDeclarations(List<CssDeclaration> declarations, CssCompileContext? compileContext = null)
     {
+        compileContext ??= CssCompileContext.Default;
         if (declarations.Count == 0)
         {
             return Array.Empty<CssCompiledDeclaration>();
@@ -451,6 +546,15 @@ internal static class CssEngine
         List<CssCompiledDeclaration>? shorthandBuffer = null;
         foreach (var declaration in declarations)
         {
+            if (declaration.PropertyName.StartsWith("--", StringComparison.Ordinal))
+            {
+                var keyword = CssPropertyMetadata.WideKeyword(declaration.RawValue) ?? declaration.RawValue.Trim();
+                expanded.Add(new CssCompiledDeclaration(declaration.PropertyName,
+                    keyword.Equals("revert", StringComparison.OrdinalIgnoreCase) || keyword.Equals("revert-layer", StringComparison.OrdinalIgnoreCase)
+                        ? new CssRevertValue(keyword.Equals("revert-layer", StringComparison.OrdinalIgnoreCase))
+                        : new CssCustomPropertyValue(declaration.RawValue, compileContext.BaseUri), declaration.Important));
+                continue;
+            }
             var descriptor = CssPropertyRegistry.LookupForCompile(declaration.PropertyName, out var canonicalName);
             if (descriptor is null)
             {
@@ -468,12 +572,30 @@ internal static class CssEngine
                 continue;
             }
 
-            var reader = new CssTokenReader(declaration.RawValue);
+            if (CssPropertyMetadata.WideKeyword(declaration.RawValue) is { } wideKeyword)
+            {
+                foreach (var longhand in CssPropertyMetadata.Longhands(canonicalName))
+                    expanded.Add(new CssCompiledDeclaration(longhand,
+                        wideKeyword.StartsWith("revert", StringComparison.Ordinal)
+                            ? new CssRevertValue(wideKeyword == "revert-layer")
+                            : new CssWideValue(longhand, wideKeyword), declaration.Important));
+                continue;
+            }
+            if (CssCustomProperties.ContainsVariable(declaration.RawValue))
+            {
+                foreach (var longhand in CssPropertyMetadata.Longhands(canonicalName))
+                    expanded.Add(new CssCompiledDeclaration(longhand,
+                        new CssPendingSubstitution(canonicalName, declaration.RawValue, longhand, compileContext), declaration.Important));
+                continue;
+            }
+
+            var numericContext = new CssNumericReadContext(compileContext.NumericLengths);
+            var reader = new CssTokenReader(declaration.RawValue, numericContext);
             if (descriptor.Kind == CssPropertyKind.Shorthand)
             {
                 shorthandBuffer ??= new List<CssCompiledDeclaration>(8);
                 shorthandBuffer.Clear();
-                if (!descriptor.Expand!(ref reader, CssCompileContext.Default, shorthandBuffer))
+                if (!descriptor.Expand!(ref reader, compileContext, shorthandBuffer))
                 {
                     ReportInvalidValue(declaration);
                     continue;
@@ -481,24 +603,28 @@ internal static class CssEngine
 
                 foreach (var longhand in shorthandBuffer)
                 {
-                    expanded.Add(longhand.WithImportant(declaration.Important));
+                    expanded.Add(numericContext.RequiresRuntime
+                        ? new CssCompiledDeclaration(longhand.Name,
+                            new CssNumericDeclarationValue(canonicalName, declaration.RawValue, longhand.Name, compileContext.BaseUri), declaration.Important)
+                        : longhand.WithImportant(declaration.Important));
                 }
             }
             else
             {
-                var value = descriptor.Parse!(ref reader, CssCompileContext.Default);
+                var value = descriptor.Parse!(ref reader, compileContext);
                 if (value is null)
                 {
                     ReportInvalidValue(declaration);
                     continue;
                 }
 
-                expanded.Add(new CssCompiledDeclaration(canonicalName, value, declaration.Important));
+                expanded.Add(new CssCompiledDeclaration(canonicalName, numericContext.RequiresRuntime
+                    ? new CssNumericDeclarationValue(canonicalName, declaration.RawValue, canonicalName, compileContext.BaseUri) : value, declaration.Important));
             }
         }
 
         // Per-longhand merge within one declaration block: later wins, !important protected.
-        var indexByName = new Dictionary<string, int>(expanded.Count, StringComparer.OrdinalIgnoreCase);
+        var indexByName = new Dictionary<string, int>(expanded.Count, StringComparer.Ordinal);
         var merged = new List<CssCompiledDeclaration>(expanded.Count);
         foreach (var declaration in expanded)
         {
@@ -533,13 +659,57 @@ internal static class CssEngine
 
     // ── Application of merged declarations ─────────────────────────────────────────────
 
-    private static void ApplyMergedDeclarations(FrameworkElement element, IReadOnlyList<MergedDeclaration> declarations)
+    private static void ApplyMergedDeclarations(CssNode element, IReadOnlyList<MergedDeclaration> declarations)
     {
+        var custom = new Dictionary<string, CssCustomPropertyValue>(StringComparer.Ordinal);
+        foreach (var declaration in declarations)
+            if (declaration.Declaration.Value is CssCustomPropertyValue property)
+                custom[declaration.Declaration.Name] = property;
+        var parent = CssMatcher.CssAncestor(element);
+        var state = EnsureState(element);
+        var previousCustomProperties = state.CustomProperties;
+        var lengths = declarations.Count > 0 || state.RegisteredProperties is { Count: > 0 } ? BuildLengthContext(element) : CssLengthContext.Default;
+        CssRegisteredComputation? computation = null;
+        if (state.RegisteredProperties is { Count: > 0 } registry)
+        {
+            state.CustomProperties = computation = new(element, parent?.CssRuntimeState?.CustomProperties, custom, registry, lengths,
+                declarations.FirstOrDefault(d => d.Declaration.Name == "font-size").Declaration.Value,
+                declarations.FirstOrDefault(d => d.Declaration.Name == "color").Declaration.Value,
+                declarations.FirstOrDefault(d => d.Declaration.Name == "line-height").Declaration.Value,
+                declarations.Where(d => d.Declaration.Name is "font-family" or "font-weight" or "font-style")
+                    .ToDictionary(d => d.Declaration.Name, d => d.Declaration.Value));
+            state.CustomProperties = computation.Compute();
+            state.RegisteredValues = computation.TypedValues;
+        }
+        else
+        {
+            state.CustomProperties = CssCustomProperties.Compute(parent?.CssRuntimeState?.CustomProperties,
+                custom.ToDictionary(pair => pair.Key, pair => pair.Value.RawValue, StringComparer.Ordinal));
+            state.RegisteredValues = null;
+        }
+        CssContainerQueries.CustomPropertiesChanged(element, previousCustomProperties, state.CustomProperties);
         var collector = new CssSetterCollector();
         if (declarations.Count > 0)
         {
             var slots = new CssSlotAccumulator();
-            var lengths = BuildLengthContext(element);
+
+            // Font-family/weight/style establish the rulers for ex/cap/ch/ic.
+            // Probe CSS layers without disturbing native local values or bindings.
+            var fontContext = lengths.Fonts ?? CssFontContext.Initial;
+            foreach (var fontName in new[] { "font-family", "font-weight", "font-style" })
+            {
+                var merged = declarations.FirstOrDefault(d => d.Declaration.Name == fontName);
+                if (merged.Declaration.Value is null) continue;
+                var nativeName = fontName == "font-family" ? "FontFamily" : fontName == "font-weight" ? "FontWeight" : "FontStyle";
+                if (CssDependencyPropertyLookup.Find(element.GetType(), nativeName) is { } native && element.HasLocalOrAnimatedValue(native)) continue;
+                var fontSink = new CssSetterCollector();
+                var faceValue = computation?.FontPropertyCycle(fontName) == true ? new CssWideValue(fontName, "unset") : merged.Declaration.Value;
+                faceValue.TryApply(new CssApplyContext(element, lengths, slots), fontSink);
+                foreach (var entry in fontSink.Values)
+                    fontContext = fontContext with { Element = fontContext.Element.With(entry.Key.Name, entry.Value.Value) };
+                if (fontContext.IsRoot) fontContext = fontContext with { Root = fontContext.Element };
+                lengths = lengths.WithFonts(fontContext);
+            }
 
             // Pre-pass: a font-size declaration in this set establishes the em basis for the
             // other declarations (line-height: 1.5 next to font-size: 16px must use 16).
@@ -550,9 +720,13 @@ internal static class CssEngine
                     continue;
                 }
 
+                if (CssDependencyPropertyLookup.Find(element.GetType(), "FontSize") is { } fontDp &&
+                    element.HasLocalOrAnimatedValue(fontDp)) break;
+
                 var probeSink = new CssSetterCollector();
                 var probeContext = new CssApplyContext(element, lengths, slots);
-                if (merged.Declaration.Value.TryApply(in probeContext, probeSink))
+                var fontValue = computation?.FontCycle == true ? new CssWideValue("font-size", "unset") : merged.Declaration.Value;
+                if (fontValue.TryApply(in probeContext, probeSink))
                 {
                     foreach (var applied in probeSink.Values.Values)
                     {
@@ -566,12 +740,46 @@ internal static class CssEngine
                 break;
             }
 
+            var lineDeclaration = declarations.FirstOrDefault(d => d.Declaration.Name == "line-height").Declaration.Value;
+            if (lineDeclaration is not null && !(CssDependencyPropertyLookup.Find(element.GetType(), "LineHeight") is { } lineProperty &&
+                element.HasLocalOrAnimatedValue(lineProperty)))
+            {
+                var lineSink = new CssSetterCollector();
+                var lineValueSource = computation?.LineCycle == true ? new CssWideValue("line-height", "unset") : lineDeclaration;
+                lineValueSource.TryApply(new CssApplyContext(element, lengths, slots), lineSink);
+                if (lineSink.Values.TryGetValue(CssComputedLineHeightValue.Property, out var line) && line.Value is CssLineHeight lineValue)
+                {
+                    fontContext = (lengths.Fonts ?? CssFontContext.Initial) with { ElementLine = lineValue };
+                    if (fontContext.IsRoot) fontContext = fontContext with { RootLine = lineValue };
+                    lengths = lengths.WithFonts(fontContext);
+                }
+            }
+
+            foreach (var merged in declarations)
+            {
+                if (merged.Declaration.Name != "color") continue;
+                var foreground = CssDependencyPropertyLookup.Find(element.GetType(), "Foreground");
+                if (foreground is not null && element.HasLocalOrAnimatedValue(foreground)) break;
+                var colorSink = new CssSetterCollector();
+                var colorContext = new CssApplyContext(element, lengths, slots);
+                var colorValue = computation?.ColorCycle == true ? new CssWideValue("color", "unset") : merged.Declaration.Value;
+                colorValue.TryApply(in colorContext, colorSink);
+                foreach (var applied in colorSink.Values.Values)
+                    if (applied.Value is Jalium.UI.Media.Brush brush) slots.ForegroundBrush = brush;
+                break;
+            }
+
             var context = new CssApplyContext(element, lengths, slots);
             foreach (var merged in declarations)
             {
                 collector.CurrentValueIsState = merged.FromState;
                 slots.CurrentContributionIsState = merged.FromState;
-                merged.Declaration.Value.TryApply(in context, collector);
+                if (computation?.FontCycle == true && merged.Declaration.Name == "font-size" ||
+                    computation?.ColorCycle == true && merged.Declaration.Name == "color" ||
+                    computation?.LineCycle == true && merged.Declaration.Name == "line-height" ||
+                    computation?.FontPropertyCycle(merged.Declaration.Name) == true)
+                    new CssWideValue(merged.Declaration.Name, "unset").TryApply(context, collector);
+                else merged.Declaration.Value.TryApply(in context, collector);
             }
 
             collector.CurrentValueIsState = false;
@@ -582,8 +790,20 @@ internal static class CssEngine
         ApplyDiff(element, collector.Values, collector.LayoutState);
     }
 
-    internal static CssLengthContext BuildLengthContext(FrameworkElement element)
+    internal static CssLengthContext BuildLengthContext(CssNode element, CssNode? dependent = null)
     {
+        for (var current = element; current is not null; current = current.FrameworkParent)
+        {
+            var inheritedState = EnsureState(current);
+            if (inheritedState.ObservesTypography) continue;
+            inheritedState.ObservesTypography = true;
+            var observed = current;
+            current.PropertyChangedInternal += (property, _, _) =>
+            {
+                if (property.Name is "FontSize" or "FontFamily" or "FontWeight" or "FontStyle" or "FontStretch" or "LineHeight" or "CssLineHeight" or "Foreground" or "Visibility")
+                    CssEvaluationScheduler.InvalidateSubtree(observed);
+            };
+        }
         var elementFontSize = ReadFontSize(element);
         var inheritedFontSize = element.FrameworkParent is { } parent
             ? ReadFontSize(parent)
@@ -596,10 +816,34 @@ internal static class CssEngine
         }
 
         var rootFontSize = ReferenceEquals(root, element) ? elementFontSize : ReadFontSize(root);
-        return new CssLengthContext(elementFontSize, inheritedFontSize, rootFontSize, 0, 0);
+        var rootState = EnsureState(root);
+        rootState.ObservesViewport = true;
+        var viewports = element.GetValue(Css.ViewportMetricsProperty) as CssViewportMetrics ?? CssViewportMetrics.Uniform(ViewportSize(root));
+        var viewportWidth = viewports.Large.Width;
+        var viewportHeight = viewports.Large.Height;
+        var inherited = element.FrameworkParent;
+        var fonts = new CssFontContext(CssFontInfo.Read(element), inherited is null ? CssFontInfo.Initial : CssFontInfo.Read(inherited),
+            CssFontInfo.Read(root), CssComputedLineHeightValue.Inherited(element),
+            inherited is null ? default : CssComputedLineHeightValue.Inherited(inherited), CssComputedLineHeightValue.Inherited(root),
+            ReferenceEquals(root, element), EnsureState(dependent ?? element).FontDependency ??= new(dependent ?? element),
+            Jalium.UI.Interop.TextMeasurement.MetricsCacheEpoch);
+        return new CssLengthContext(elementFontSize, inheritedFontSize, rootFontSize, viewportWidth, viewportHeight,
+            CssContainerUnitContext.Create(element, dependent ?? element, viewports.Small.Width, viewports.Small.Height), fonts, viewports);
     }
 
-    private static double ReadFontSize(FrameworkElement element)
+    internal static Size ViewportSize(CssNode root) => root.CssRuntimeState?.ViewportAllocation ?? new Size(
+        root.ActualWidth > 0 ? root.ActualWidth : double.IsFinite(root.Width) ? root.Width : 0,
+        root.ActualHeight > 0 ? root.ActualHeight : double.IsFinite(root.Height) ? root.Height : 0);
+
+    internal static void RecordViewportAllocation(FrameworkElement root, Size size)
+    {
+        if (root.FrameworkParent is not null || root.CssRuntimeState is not { ObservesViewport: true } state ||
+            !double.IsFinite(size.Width) || !double.IsFinite(size.Height) || state.ViewportAllocation == size) return;
+        state.ViewportAllocation = size;
+        CssEvaluationScheduler.InvalidateSubtree(root);
+    }
+
+    private static double ReadFontSize(CssNode element)
     {
         var dp = CssDependencyPropertyLookup.Find(element.GetType(), "FontSize");
         if (dp is not null && dp.PropertyType == typeof(double) &&
@@ -617,7 +861,7 @@ internal static class CssEngine
     /// changed values are written, identical values are skipped entirely.
     /// </summary>
     private static void ApplyDiff(
-        FrameworkElement element,
+        CssNode element,
         Dictionary<DependencyProperty, AppliedCssValue> newValues,
         CssLayoutState? newLayout)
     {
@@ -655,7 +899,7 @@ internal static class CssEngine
         if (hasNew)
         {
             newApplied = new Dictionary<DependencyProperty, AppliedCssValue>(newValues.Count);
-            foreach (var (dp, incoming) in newValues)
+            foreach (var (dp, incoming) in newValues.OrderBy(pair => CssTransitions.IsConfiguration(pair.Key) ? 0 : 1))
             {
                 if (oldApplied is not null && oldApplied.TryGetValue(dp, out var previous))
                 {
@@ -690,11 +934,25 @@ internal static class CssEngine
         public bool CurrentValueIsState { get; set; }
 
         public void Set(DependencyProperty property, object? value)
-            => Values[property] = new AppliedCssValue(
-                CurrentValueIsState
-                    ? DependencyObject.LayerValueSource.CssState
-                    : DependencyObject.LayerValueSource.CssBase,
-                value);
+        {
+            try
+            {
+                if (!property.IsValidType(value) || !property.IsValidValue(value))
+                {
+                    CssDiagnostics.Report(property.Name, CssDiagnosticReason.InvalidValue, null,
+                        "CSS value was rejected by the target property validation");
+                    return;
+                }
+            }
+            catch (Exception)
+            {
+                CssDiagnostics.Report(property.Name, CssDiagnosticReason.InvalidValue, null,
+                    "target property validation failed; CSS declaration skipped");
+                return;
+            }
+            Values[property] = new AppliedCssValue(CurrentValueIsState
+                ? DependencyObject.LayerValueSource.CssState : DependencyObject.LayerValueSource.CssBase, value);
+        }
 
         public void SetLayoutState(CssLayoutState state) => LayoutState = state;
     }

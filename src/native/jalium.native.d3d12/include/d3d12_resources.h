@@ -143,10 +143,9 @@ private:
 /// hits its fast path and never tries to upload from pixelData_ (which stays
 /// empty — there is no CPU staging on this path).
 ///
-/// Cross-device synchronization (keyed mutex acquire/release between D3D12
-/// reader and D3D11 MF writer) is left to a later iteration; the current
-/// implementation relies on the MF side's Flush + ReleaseSync to ensure the
-/// shared texture's pixels are coherent at the moment Wrap returns.
+/// Only GPU-complete immutable allocations are accepted. The producer never
+/// recycles them; OpenSharedHandle and the renderer's submission-fence resource
+/// references keep the pixels alive independently of the decoder and surface.
 class ImportedD3D12VideoSurface : public VideoSurface {
 public:
     ImportedD3D12VideoSurface(D3D12Backend* backend,
@@ -161,19 +160,8 @@ public:
     bool Lock(uint8_t** outPtr, uint32_t* outStride) override;
     bool Unlock(const JaliumVideoSurfaceDirtyRect* dirty) override;
 
-    /// Stage 3b.3 reader-side sync. Called by D3D12RenderTarget::DrawVideoSurface
-    /// before/after sampling. Acquires reader key (1), then releases writer key
-    /// (0) to let MF write the next frame. When the imported resource doesn't
-    /// surface IDXGIKeyedMutex (driver / SHARED_KEYEDMUTEX flag absent), both
-    /// calls are no-ops and we fall back to the in-order-execution assumption
-    /// stage 3b.2 relied on.
-    void AcquireReaderLock();
-    void ReleaseReaderLock();
-
     ComPtr<ID3D12Resource>  importedTexture;
-    ComPtr<IDXGIKeyedMutex> keyedMutex;     // null if driver doesn't expose it
     D3D12Bitmap             bitmap;
-    bool                    holdsReaderLock = false;
 };
 
 /// Video surface implementation: a thin wrapper around a D3D12Bitmap that
@@ -201,7 +189,7 @@ public:
 };
 
 /// DirectWrite text format wrapper.
-class D3D12TextFormat : public TextFormat {
+class D3D12TextFormat : public TextFormat, public FontUnitMetricsProvider {
 public:
     D3D12TextFormat(IDWriteFactory* factory,
                     const wchar_t* fontFamily,
@@ -225,6 +213,7 @@ public:
         JaliumTextMetrics* metrics) override;
 
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+    JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) override;
 
     JaliumResult HitTestPoint(
         const wchar_t* text, uint32_t textLength,

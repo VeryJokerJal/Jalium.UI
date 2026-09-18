@@ -287,6 +287,18 @@ typedef struct JaliumTextMetrics {
     float widthIncludingTrailingWhitespace; ///< Width including trailing whitespace advances
 } JaliumTextMetrics;
 
+/// Font-relative CSS rulers in DIPs; independent of text layout and line-spacing overrides.
+typedef struct JaliumFontUnitMetrics {
+    uint32_t structSize;
+    float xHeight;
+    float capHeight;
+    float zeroAdvance;
+    float ideographicAdvance;
+    float ascent;
+    float lineHeight;
+    uint32_t available; ///< Bits 0..3: measured x/cap/zero/ideographic ruler; bit 4: native face metrics.
+} JaliumFontUnitMetrics;
+
 /// Information about the selected GPU adapter.
 typedef struct JaliumAdapterInfo {
     uint16_t name[128];             ///< Null-terminated UTF-16 adapter description; fixed-width on every platform
@@ -383,10 +395,25 @@ typedef struct JaliumGpuStats {
     // is zero-initialised by D3D12RenderTarget::QueryGpuStats before fill).
     int64_t frameGpuWaitNs;          ///< UI-thread wall time spent inside fence waits across BeginFrame attempts for the most recently completed frame (sum across retried attempts). On D3D12 this is close to 0 when the swap-chain waitable handle is doing the actual blocking instead.
     int32_t swapBufferCount;         ///< Back-buffer count of the swap chain (2 / 3).
-    int32_t reserved0;               ///< Padding for 8-byte alignment of the next int64_t.
+    int32_t reserved0;               ///< D3D12 Vello compute dispatches recorded in the current frame (keeps the historical ABI slot/size).
     int64_t lastFramePresentToReadyNs; ///< Wall time between previous EndFrame's queue Signal and this frame's first observed fence completion. **Not** pure GPU work — includes DWM composition, DXGI runtime queue latency, swap-chain back-pressure. The hardware-timestamp GPU breakdown (see JaliumGpuTimingStats.totalGpuNs) is the canonical "what did the GPU actually do" number.
     int64_t frameWaitableWaitNs;     ///< UI-thread wall time spent waiting on the swap-chain frame-latency waitable across BeginFrame attempts. Captures the OS / DWM portion of present-to-ready latency that fence waits miss.
     int64_t presentBlockNs;          ///< Wall time the most recent EndDraw spent blocked inside the swap-chain Present call itself. Under a slow compositor (occlusion throttling, remote/virtual displays) Present(1) stalls until the DWM retires the previous frame — this field separates that stall from genuine CPU encode work in the EndDraw timing row.
+
+    // Software-only diagnostics. GPU backends leave these appended fields 0.
+    int64_t softwareRasterNs;
+    int64_t softwarePixelsVisited;
+    int64_t softwarePixelsBlended;
+    int64_t softwareAaSamples;
+    int64_t softwareClipRejectedPixels;
+    int64_t softwareParallelNs;
+    int64_t softwareCacheBytes;
+    int64_t softwareEffectCacheHits;
+    int64_t softwareEffectCacheMisses;
+    int32_t softwareWorkerCount;
+    int32_t softwareWorkerUtilizationPermille;
+    int32_t softwareEffectCacheEntries;
+    int32_t softwareGradientCacheEntries;
 } JaliumGpuStats;
 
 /// Per-frame GPU work breakdown by draw-call category, sourced from

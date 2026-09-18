@@ -11,6 +11,11 @@ public class ArrowKeyNavigationTests
     public void Window_RightAndLeftArrow_ShouldMoveFocusBetweenUnhandledControls()
     {
         ResetInputState();
+        // The test injects WM_KEYDOWN rather than physical input. Its modifier
+        // state must be synthetic too, not whichever keys the desktop user or
+        // a preceding native message loop happens to leave in GetKeyState.
+        Window.SetKeyStateProviderForTesting(static _ => 0);
+        Window? window = null;
 
         try
         {
@@ -23,7 +28,7 @@ public class ArrowKeyNavigationTests
             panel.Children.Add(left);
             panel.Children.Add(right);
 
-            var window = new Window
+            window = new Window
             {
                 TitleBarStyle = WindowTitleBarStyle.Native,
                 Width = 240,
@@ -42,6 +47,7 @@ public class ArrowKeyNavigationTests
         }
         finally
         {
+            window?.Close();
             ResetInputState();
         }
     }

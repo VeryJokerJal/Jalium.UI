@@ -34,6 +34,11 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
 {
+    private static readonly FieldInfo ActiveResourceCountField =
+        typeof(RenderContext).GetField(
+            "_activeRenderTargetCount",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
     public InkLayerBitmapContextLifetimeTests() => DrainAllContexts();
 
     public void Dispose() => DrainAllContexts();
@@ -187,29 +192,109 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
     }
 
     [Fact]
-    public void FinalizedNonCurrentContext_LeavesBackendAliveForLegacyWrapper()
+    public void NativeTextFormat_PinsTemporaryContext_UntilFormatRelease()
     {
-        // Keep a different context current so the temporary context below is
-        // not rooted by RenderContext.Current and can genuinely be finalized.
+        // Keep a different context current so the temporary context below has
+        // no root other than the live text format's backend-resource lease.
         using var current = RenderContext.GetOrCreateCurrent(RenderBackend.Software);
         var (format, weakContext, nativeContextHandle) =
             CreateLegacyWrapperOnTemporaryContext();
 
         ForceFinalizers();
 
-        Assert.False(weakContext.TryGetTarget(out _));
+        Assert.True(weakContext.TryGetTarget(out var ownerContext));
+        Assert.True(ownerContext.IsValid);
+        Assert.Equal(nativeContextHandle, ownerContext.Handle);
 
-        // NativeTextFormat intentionally does not retain/pin RenderContext. Its
-        // native DWrite/backend state must remain usable after the context's
-        // leak-safe finalizer; explicit context disposal is the deterministic
-        // teardown path until every legacy wrapper participates in pinning.
         _ = format.GetFontMetrics();
+
+        ownerContext.Dispose();
+
+        Assert.False(ownerContext.IsValid);
+        Assert.Equal(nativeContextHandle, ownerContext.Handle);
+        _ = format.GetFontMetrics();
+
         format.Dispose();
 
-        // The finalizer deliberately detached (rather than destroyed) this
-        // native context. Reclaim it explicitly so the regression itself does
-        // not leak process resources in the test host.
-        NativeMethods.ContextDestroy(nativeContextHandle);
+        Assert.Equal(nint.Zero, ownerContext.Handle);
+    }
+
+    [Fact]
+    public void NativeTextFormat_CreateFailure_ReleasesContextPin()
+    {
+        var first = RenderContext.GetOrCreateCurrent(RenderBackend.Software);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            first.CreateTextFormat("Segoe UI", 0f));
+
+        var second = RenderContext.GetOrCreateCurrent(
+            RenderBackend.Software,
+            forceReplace: true);
+
+        Assert.NotSame(first, second);
+        Assert.False(first.IsValid);
+    }
+
+    [Fact]
+    public void FinalizedNativeTextFormat_ReleasesItsRetiredContextPin()
+    {
+        var first = RenderContext.GetOrCreateCurrent(RenderBackend.Software);
+        var weakFormat = CreateAbandonedTextFormat(first);
+
+        var second = RenderContext.GetOrCreateCurrent(
+            RenderBackend.Software,
+            forceReplace: true);
+
+        Assert.NotSame(first, second);
+        Assert.True(first.IsValid);
+
+        ForceFinalizers();
+
+        Assert.False(weakFormat.TryGetTarget(out _));
+        Assert.False(first.IsValid);
+    }
+
+    [Fact]
+    public async Task NativeTextFormat_ConcurrentDispose_DefersCleanupAndReleasesContextPinOnce()
+    {
+        var context = new RenderContext(RenderBackend.Software);
+        var format = context.CreateTextFormat("Segoe UI", 12f);
+        var nativeContextHandle = context.Handle;
+        Assert.Equal(1, GetActiveResourceCount(context));
+
+        context.Dispose();
+        Assert.Equal(nativeContextHandle, context.Handle);
+
+        using var nativeUseEntered = new ManualResetEventSlim(initialState: false);
+        using var releaseNativeUse = new ManualResetEventSlim(initialState: false);
+        var inFlightUse = Task.Run(() =>
+            format.InvokeWithNativeUseForTesting(_ =>
+            {
+                nativeUseEntered.Set();
+                Assert.True(releaseNativeUse.Wait(TimeSpan.FromSeconds(10)));
+            }));
+
+        Assert.True(nativeUseEntered.Wait(TimeSpan.FromSeconds(10)));
+
+        var disposals = Enumerable.Range(0, 8)
+            .Select(_ => Task.Run(format.Dispose))
+            .ToArray();
+        await Task.WhenAll(disposals).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(format.IsValid);
+        Assert.NotEqual(nint.Zero, format.Handle);
+        Assert.Equal(nativeContextHandle, context.Handle);
+        Assert.Equal(1, GetActiveResourceCount(context));
+
+        releaseNativeUse.Set();
+        await inFlightUse.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(nint.Zero, format.Handle);
+        Assert.Equal(nint.Zero, context.Handle);
+        Assert.Equal(0, GetActiveResourceCount(context));
+
+        format.Dispose();
+        Assert.Equal(0, GetActiveResourceCount(context));
     }
 
     /// <summary>
@@ -453,6 +538,16 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
         var format = context.CreateTextFormat("Segoe UI", 12f);
         return (format, new WeakReference<RenderContext>(context), context.Handle);
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<NativeTextFormat> CreateAbandonedTextFormat(RenderContext context)
+    {
+        var format = context.CreateTextFormat("Segoe UI", 12f);
+        return new WeakReference<NativeTextFormat>(format);
+    }
+
+    private static int GetActiveResourceCount(RenderContext context)
+        => Assert.IsType<int>(ActiveResourceCountField.GetValue(context));
 
     /// <summary>
     /// Requests disposal of the current and any retired contexts so the shared

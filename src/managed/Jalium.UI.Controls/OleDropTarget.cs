@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
+using Jalium.UI.Threading;
 using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI;
@@ -12,17 +13,87 @@ namespace Jalium.UI;
 /// </summary>
 internal static unsafe class OleDropTarget
 {
+    // Keep all registration dictionaries, GUID parsing, and other static state behind
+    // the first actual OLE use. The explicit constructor prevents beforefieldinit from
+    // letting NativeAOT realize this type during an otherwise empty Window startup.
+    static OleDropTarget()
+    {
+    }
+
     // Shared vtable (allocated once, lives for process lifetime)
     private static nint _vtable;
+
+    private const int S_OK = 0;
+    private const int E_POINTER = unchecked((int)0x80004003);
+    private const int E_NOINTERFACE = unchecked((int)0x80004002);
+    private const int DRAGDROP_E_NOTREGISTERED = unchecked((int)0x80040100);
+
+    [ThreadStatic]
+    private static OleApartmentState? t_oleApartment;
+
+    private sealed class OleApartmentState
+    {
+        internal int LeaseCount;
+        internal nint DropHelper;
+        internal bool DropHelperTried;
+    }
+
+    /// <summary>
+    /// One logical OLE consumer on the current UI thread. OleInitialize is called
+    /// exactly once for the first consumer and OleUninitialize exactly once after
+    /// the last consumer (registered Window or explicit Shell drag) releases it.
+    /// </summary>
+    internal sealed class OleApartmentLease : IDisposable
+    {
+        private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
+        private readonly Dispatcher _ownerDispatcher = Dispatcher.CurrentDispatcher;
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            if (Environment.CurrentManagedThreadId == _ownerThreadId)
+            {
+                ReleaseOleApartmentOnCurrentThread();
+                return;
+            }
+
+            // COM normally releases the apartment-bound drop target on its owning
+            // STA. Keep the backstop for an unusual cross-thread Release: OLE must
+            // still be uninitialized on the exact thread that initialized it.
+            try
+            {
+                _ownerDispatcher.BeginInvoke(ReleaseOleApartmentOnCurrentThread);
+            }
+            catch
+            {
+                // Calling OleUninitialize on the wrong thread is worse than retaining
+                // the lease until dispatcher shutdown, so intentionally do nothing.
+            }
+        }
+    }
 
     // Per-window managed state, prevented from GC by a GCHandle stored in the COM object.
     private sealed class DropTargetState
     {
-        public required Window Window;
+        public Window? Window;
         public UIElement? CurrentTarget;
         public DataObject? CurrentData;
         public nint ComObject;
         public GCHandle SelfHandle;
+        public nint Hwnd;
+        public OleApartmentLease? OleLease;
+        public int RefCount = 1; // owner reference held while present in _states
+        public int Destroyed;
+        public int RevokeInProgress;
+        public bool Registered;
+        public bool PendingRevoke;
+        public bool Closing;
+        public bool DragActive;
 
         // The originating native IDataObject*, AddRef'd for the duration of a drag
         // so DragOver (which is not handed the data object) can still annotate it
@@ -34,47 +105,231 @@ internal static unsafe class OleDropTarget
         public bool DropDescriptionSet;
     }
 
-    // Shell IDropTargetHelper* (CLSID_DragDropHelper), created lazily on the UI
-    // thread and cached for the process lifetime. Renders the system drag image
-    // over the window automatically.
-    private static nint _dropHelper;
-    private static bool _dropHelperTried;
-
     // Registered clipboard format id for "DropDescription" (lazy).
     private static uint _cfDropDescription;
 
+    private static readonly object _statesGate = new();
     private static readonly Dictionary<nint, DropTargetState> _states = new();
 
+    internal static int CurrentThreadOleLeaseCountForTesting =>
+        t_oleApartment?.LeaseCount ?? 0;
+
+    internal static bool IsWindowRegisteredForTesting(nint hwnd)
+    {
+        lock (_statesGate)
+        {
+            return _states.TryGetValue(hwnd, out var state) && state.Registered;
+        }
+    }
+
+    internal static nint GetWindowComObjectForTesting(nint hwnd)
+    {
+        lock (_statesGate)
+        {
+            return _states.TryGetValue(hwnd, out var state) ? state.ComObject : nint.Zero;
+        }
+    }
+
     /// <summary>
-    /// Initializes the OLE subsystem. Must be called once on the UI thread.
+    /// Acquires OLE for one operation on the current thread. A failed OleInitialize
+    /// call leaves no latched state, so a later attempt can retry.
     /// </summary>
-    internal static void Initialize() => Win32.OleInitialize(nint.Zero);
+    internal static OleApartmentLease? TryAcquireOleApartment()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        OleApartmentState? apartment = t_oleApartment;
+        bool initializedHere = false;
+        if (apartment is null)
+        {
+            int hr = Win32.OleInitialize(nint.Zero);
+            if (hr < 0)
+            {
+                return null;
+            }
+
+            initializedHere = true;
+            try
+            {
+                apartment = new OleApartmentState();
+                t_oleApartment = apartment;
+            }
+            catch
+            {
+                Win32.OleUninitialize();
+                throw;
+            }
+        }
+
+        try
+        {
+            // Construct first because Dispatcher.CurrentDispatcher may allocate. If
+            // that throws after our first OleInitialize, roll the apartment back
+            // without ever publishing a phantom lease count.
+            var lease = new OleApartmentLease();
+            checked
+            {
+                apartment.LeaseCount++;
+            }
+            return lease;
+        }
+        catch
+        {
+            if (initializedHere && apartment.LeaseCount == 0 &&
+                ReferenceEquals(t_oleApartment, apartment))
+            {
+                t_oleApartment = null;
+                Win32.OleUninitialize();
+            }
+            throw;
+        }
+    }
+
+    private static void ReleaseOleApartmentOnCurrentThread()
+    {
+        OleApartmentState? apartment = t_oleApartment;
+        if (apartment is null || apartment.LeaseCount <= 0)
+        {
+            return;
+        }
+
+        apartment.LeaseCount--;
+        if (apartment.LeaseCount != 0)
+        {
+            return;
+        }
+
+        ReleaseDropHelper(apartment);
+        t_oleApartment = null;
+        Win32.OleUninitialize();
+    }
 
     #region Registration
 
-    internal static void RegisterWindow(Window window)
+    internal static bool RegisterWindow(Window window)
     {
-        EnsureVtable();
-
-        // COM object layout: [vtable_ptr, gc_handle_intptr]
-        var comObj = (nint*)Marshal.AllocHGlobal(nint.Size * 2);
-
-        var state = new DropTargetState { Window = window, ComObject = (nint)comObj };
-        state.SelfHandle = GCHandle.Alloc(state);
-
-        comObj[0] = _vtable;
-        comObj[1] = GCHandle.ToIntPtr(state.SelfHandle);
-
-        int hr = Win32.RegisterDragDrop(window.Handle, (nint)comObj);
-        if (hr == 0) // S_OK
+        nint hwnd = window.Handle;
+        if (hwnd == nint.Zero)
         {
-            _states[window.Handle] = state;
-            AllowElevatedDragDrop(window.Handle);
+            return false;
         }
-        else
+
+        lock (_statesGate)
         {
-            state.SelfHandle.Free();
-            Marshal.FreeHGlobal((nint)comObj);
+            if (_states.TryGetValue(hwnd, out var existing))
+            {
+                if (existing.Closing)
+                {
+                    return false;
+                }
+
+                existing.Window = window;
+                existing.PendingRevoke = false;
+                return existing.Registered;
+            }
+        }
+
+        OleApartmentLease? lease = TryAcquireOleApartment();
+        if (lease is null)
+        {
+            return false;
+        }
+
+        DropTargetState? state = null;
+        try
+        {
+            EnsureVtable();
+
+            // COM object layout: [vtable_ptr, gc_handle_intptr]
+            var comObj = (nint*)Marshal.AllocHGlobal(nint.Size * 2);
+            state = new DropTargetState
+            {
+                Window = window,
+                Hwnd = hwnd,
+                ComObject = (nint)comObj,
+                OleLease = lease,
+            };
+            state.SelfHandle = GCHandle.Alloc(state);
+
+            comObj[0] = _vtable;
+            comObj[1] = GCHandle.ToIntPtr(state.SelfHandle);
+
+            int hr;
+            bool duplicateRegistration;
+            bool duplicateRegistered = false;
+            lock (_statesGate)
+            {
+                // HWND ownership is apartment-affine, so two callers should not race in
+                // practice. Recheck under the gate to keep duplicate COM blocks impossible
+                // even when tests or multiple UI threads call this path concurrently.
+                duplicateRegistration = _states.TryGetValue(hwnd, out var existing);
+                if (duplicateRegistration)
+                {
+                    existing!.Window = window;
+                    existing.PendingRevoke = false;
+                    duplicateRegistered = existing.Registered;
+                    hr = S_OK;
+                }
+                else
+                {
+                    hr = Win32.RegisterDragDrop(hwnd, (nint)comObj);
+                    if (hr == S_OK)
+                    {
+                        state.Registered = true;
+                        _states.Add(hwnd, state);
+                    }
+                }
+            }
+
+            if (duplicateRegistration)
+            {
+                ReleaseStateReference(state);
+                state = null;
+                return duplicateRegistered;
+            }
+
+            if (hr != S_OK)
+            {
+                // The owner reference is the only reference left after a failed native
+                // registration. Releasing it also balances the apartment lease.
+                ReleaseStateReference(state);
+                state = null;
+                return false;
+            }
+
+            AllowElevatedDragDrop(hwnd);
+            return true;
+        }
+        catch
+        {
+            if (state is not null)
+            {
+                if (state.Registered)
+                {
+                    try { _ = Win32.RevokeDragDrop(hwnd); }
+                    catch { }
+                    state.Registered = false;
+
+                    lock (_statesGate)
+                    {
+                        if (_states.TryGetValue(hwnd, out var current) &&
+                            ReferenceEquals(current, state))
+                        {
+                            _states.Remove(hwnd);
+                        }
+                    }
+                }
+
+                ReleaseStateReference(state);
+            }
+            else
+            {
+                lease.Dispose();
+            }
+            throw;
         }
     }
 
@@ -113,25 +368,102 @@ internal static unsafe class OleDropTarget
     /// </summary>
     internal static void RevokeWindow(nint hwnd, bool nativeWindowAlive)
     {
-        if (hwnd == nint.Zero || !_states.Remove(hwnd, out var state))
-            return;
+        _ = RequestRevokeWindowCore(hwnd, nativeWindowAlive, closing: true);
+    }
 
+    /// <summary>
+    /// Requests revocation because a live Window no longer contains an AllowDrop
+    /// target. During an active external drag the request is deferred until Leave or
+    /// Drop, avoiding a re-entrant revoke while OLE is dispatching target callbacks.
+    /// Returns true while a native/managed registration state still remains.
+    /// </summary>
+    internal static bool RequestRevokeWindow(nint hwnd, bool nativeWindowAlive)
+    {
+        return RequestRevokeWindowCore(hwnd, nativeWindowAlive, closing: false);
+    }
+
+    private static bool RequestRevokeWindowCore(nint hwnd, bool nativeWindowAlive, bool closing)
+    {
+        if (hwnd == nint.Zero)
+        {
+            return false;
+        }
+
+        DropTargetState? state;
+        lock (_statesGate)
+        {
+            if (!_states.TryGetValue(hwnd, out state))
+            {
+                return false;
+            }
+
+            // Synthetic states used by lifetime tests predate the explicit HWND
+            // field. The dictionary key remains the source of truth.
+            if (state.Hwnd == nint.Zero)
+            {
+                state.Hwnd = hwnd;
+            }
+            state.PendingRevoke = true;
+            if (closing)
+            {
+                state.Closing = true;
+                state.Window = null;
+            }
+        }
+
+        if (!closing && state.DragActive)
+        {
+            return true;
+        }
+
+        return !TryFinalizeRevoke(state, nativeWindowAlive, closing);
+    }
+
+    private static bool TryFinalizeRevoke(
+        DropTargetState state,
+        bool nativeWindowAlive,
+        bool closing)
+    {
+        if (Interlocked.Exchange(ref state.RevokeInProgress, 1) != 0)
+        {
+            return false;
+        }
+
+        bool canReleaseOwner = false;
         try
         {
-            if (nativeWindowAlive)
+            if (state.Registered && nativeWindowAlive)
             {
-                _ = Win32.RevokeDragDrop(hwnd);
+                int hr = Win32.RevokeDragDrop(state.Hwnd);
+                if (hr != S_OK && hr != DRAGDROP_E_NOTREGISTERED && !closing)
+                {
+                    return false;
+                }
             }
+
+            state.Registered = false;
+            state.PendingRevoke = false;
+            state.Window = null;
+            ResetDragState(state, dismissShellImage: true);
+
+            lock (_statesGate)
+            {
+                if (_states.TryGetValue(state.Hwnd, out var current) &&
+                    ReferenceEquals(current, state))
+                {
+                    _states.Remove(state.Hwnd);
+                    canReleaseOwner = true;
+                }
+            }
+
+            return canReleaseOwner;
         }
         finally
         {
-            ReleaseNativeData(state);
-            if (state.SelfHandle.IsAllocated)
-                state.SelfHandle.Free();
-            if (state.ComObject != nint.Zero)
+            Volatile.Write(ref state.RevokeInProgress, 0);
+            if (canReleaseOwner)
             {
-                Marshal.FreeHGlobal(state.ComObject);
-                state.ComObject = nint.Zero;
+                ReleaseStateReference(state);
             }
         }
     }
@@ -148,11 +480,46 @@ internal static unsafe class OleDropTarget
         vt[4] = (nint)(delegate* unmanaged[Stdcall]<nint, uint, long, uint*, int>)&OnDragOver;
         vt[5] = (nint)(delegate* unmanaged[Stdcall]<nint, int>)&OnDragLeave;
         vt[6] = (nint)(delegate* unmanaged[Stdcall]<nint, nint, uint, long, uint*, int>)&OnDrop;
-        _vtable = (nint)vt;
+        nint allocated = (nint)vt;
+        nint winner = Interlocked.CompareExchange(ref _vtable, allocated, nint.Zero);
+        if (winner != nint.Zero)
+        {
+            Marshal.FreeHGlobal(allocated);
+        }
     }
 
     private static DropTargetState GetState(nint pThis) =>
         (DropTargetState)GCHandle.FromIntPtr(((nint*)pThis)[1]).Target!;
+
+    private static uint AddStateReference(DropTargetState state) =>
+        (uint)Interlocked.Increment(ref state.RefCount);
+
+    private static uint ReleaseStateReference(DropTargetState state)
+    {
+        int remaining = Interlocked.Decrement(ref state.RefCount);
+        if (remaining == 0 && Interlocked.Exchange(ref state.Destroyed, 1) == 0)
+        {
+            ResetDragState(state, dismissShellImage: false);
+            state.Window = null;
+
+            nint block = state.ComObject;
+            state.ComObject = nint.Zero;
+            if (state.SelfHandle.IsAllocated)
+            {
+                state.SelfHandle.Free();
+            }
+            if (block != nint.Zero)
+            {
+                Marshal.FreeHGlobal(block);
+            }
+
+            OleApartmentLease? lease = state.OleLease;
+            state.OleLease = null;
+            lease?.Dispose();
+        }
+
+        return (uint)Math.Max(remaining, 0);
+    }
 
     #endregion
 
@@ -164,20 +531,26 @@ internal static unsafe class OleDropTarget
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static int QueryInterface(nint pThis, Guid* riid, nint* ppv)
     {
+        if (riid == null || ppv == null)
+        {
+            return E_POINTER;
+        }
+
         if (*riid == IID_IUnknown || *riid == IID_IDropTarget)
         {
             *ppv = pThis;
-            return 0; // S_OK
+            _ = AddStateReference(GetState(pThis));
+            return S_OK;
         }
         *ppv = nint.Zero;
-        return unchecked((int)0x80004002); // E_NOINTERFACE
+        return E_NOINTERFACE;
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
-    private static uint AddRef(nint pThis) => 1;
+    private static uint AddRef(nint pThis) => AddStateReference(GetState(pThis));
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
-    private static uint Release(nint pThis) => 1;
+    private static uint Release(nint pThis) => ReleaseStateReference(GetState(pThis));
 
     #endregion
 
@@ -186,16 +559,36 @@ internal static unsafe class OleDropTarget
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static int OnDragEnter(nint pThis, nint pDataObj, uint grfKeyState, long pt, uint* pdwEffect)
     {
+        if (pdwEffect == null)
+        {
+            return E_POINTER;
+        }
+
+        DropTargetState? s = null;
         try
         {
-            var s = GetState(pThis);
+            s = GetState(pThis);
+            _ = AddStateReference(s); // keep the native block alive through re-entrant Close/Revoke
+            if (s.DragActive)
+            {
+                ResetDragState(s, dismissShellImage: true);
+            }
+
+            Window? window = s.Window;
+            if (window is null || s.Closing)
+            {
+                *pdwEffect = 0;
+                return S_OK;
+            }
+
+            s.DragActive = true;
             CacheNativeData(s, pDataObj);
             s.CurrentData = ExtractDataObject(pDataObj);
-            var pos = PointFromScreen(s.Window, pt);
+            var pos = PointFromScreen(window, pt);
             var keys = MapKeyStates(grfKeyState);
             var allowed = MapEffects(*pdwEffect);
 
-            var hit = (s.Window as FrameworkElement)?.HitTest(pos)?.VisualHit as UIElement;
+            var hit = window.HitTest(pos)?.VisualHit as UIElement;
             s.CurrentTarget = DragDropPlatform.FindDropTargetElement(hit);
 
             if (s.CurrentTarget != null)
@@ -209,26 +602,62 @@ internal static unsafe class OleDropTarget
                 *pdwEffect = 0;
             }
 
-            // Let the Shell render the system drag image over this window.
-            ShellHelperDragEnter(s, pDataObj, pt, *pdwEffect);
+            if (s.Closing || s.Window is null)
+            {
+                *pdwEffect = 0;
+            }
+            else
+            {
+                // Let the Shell render the system drag image over this window.
+                if (pDataObj != nint.Zero)
+                {
+                    ShellHelperDragEnter(s, pDataObj, pt, *pdwEffect);
+                }
+            }
         }
-        catch { *pdwEffect = 0; }
-        return 0;
+        catch
+        {
+            *pdwEffect = 0;
+            if (s is not null)
+            {
+                CompleteDragSession(s, shellImageAlreadyDismissed: false);
+            }
+        }
+        finally
+        {
+            if (s is not null)
+            {
+                _ = ReleaseStateReference(s);
+            }
+        }
+        return S_OK;
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static int OnDragOver(nint pThis, uint grfKeyState, long pt, uint* pdwEffect)
     {
+        if (pdwEffect == null)
+        {
+            return E_POINTER;
+        }
+
+        DropTargetState? s = null;
         try
         {
-            var s = GetState(pThis);
-            if (s.CurrentData == null) { *pdwEffect = 0; return 0; }
+            s = GetState(pThis);
+            _ = AddStateReference(s);
+            Window? window = s.Window;
+            if (window is null || s.Closing || s.CurrentData == null)
+            {
+                *pdwEffect = 0;
+                return S_OK;
+            }
 
-            var pos = PointFromScreen(s.Window, pt);
+            var pos = PointFromScreen(window, pt);
             var keys = MapKeyStates(grfKeyState);
             var allowed = MapEffects(*pdwEffect);
 
-            var hit = (s.Window as FrameworkElement)?.HitTest(pos)?.VisualHit as UIElement;
+            var hit = window.HitTest(pos)?.VisualHit as UIElement;
             var newTarget = DragDropPlatform.FindDropTargetElement(hit);
 
             if (newTarget != s.CurrentTarget)
@@ -257,49 +686,91 @@ internal static unsafe class OleDropTarget
                 *pdwEffect = 0;
             }
 
-            // Keep the Shell drag image following the pointer with the resolved effect.
-            ShellHelperDragOver(pt, *pdwEffect);
+            if (s.Closing || s.Window is null)
+            {
+                *pdwEffect = 0;
+            }
+            else
+            {
+                // Keep the Shell drag image following the pointer with the resolved effect.
+                ShellHelperDragOver(pt, *pdwEffect);
+            }
         }
         catch { *pdwEffect = 0; }
-        return 0;
+        finally
+        {
+            if (s is not null)
+            {
+                _ = ReleaseStateReference(s);
+            }
+        }
+        return S_OK;
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static int OnDragLeave(nint pThis)
     {
+        DropTargetState? s = null;
         try
         {
-            var s = GetState(pThis);
+            s = GetState(pThis);
+            _ = AddStateReference(s);
             if (s.CurrentTarget != null && s.CurrentData != null)
             {
                 RaiseDragEvent(s, s.CurrentTarget, DragDrop.PreviewDragLeaveEvent, DragDrop.DragLeaveEvent,
                     s.CurrentData, DragDropKeyStates.None, DragDropEffects.None, default);
             }
-
-            ShellHelperDragLeave();
-            ClearDropDescriptionIfSet(s);
-            ReleaseNativeData(s);
-            s.CurrentTarget = null;
-            s.CurrentData = null;
         }
         catch { }
-        return 0;
+        finally
+        {
+            if (s is not null)
+            {
+                CompleteDragSession(s, shellImageAlreadyDismissed: false);
+                _ = ReleaseStateReference(s);
+            }
+        }
+        return S_OK;
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static int OnDrop(nint pThis, nint pDataObj, uint grfKeyState, long pt, uint* pdwEffect)
     {
+        if (pdwEffect == null)
+        {
+            return E_POINTER;
+        }
+
+        DropTargetState? s = null;
+        bool shellImageDismissed = false;
         try
         {
-            var s = GetState(pThis);
+            s = GetState(pThis);
+            _ = AddStateReference(s);
+            Window? window = s.Window;
+            if (window is null || s.Closing)
+            {
+                *pdwEffect = 0;
+                return S_OK;
+            }
+
             CacheNativeData(s, pDataObj);
             var data = ExtractDataObject(pDataObj);
-            var pos = PointFromScreen(s.Window, pt);
+            var pos = PointFromScreen(window, pt);
             var keys = MapKeyStates(grfKeyState);
             var allowed = MapEffects(*pdwEffect);
 
-            var hit = (s.Window as FrameworkElement)?.HitTest(pos)?.VisualHit as UIElement;
-            var target = DragDropPlatform.FindDropTargetElement(hit) ?? s.CurrentTarget;
+            var hit = window.HitTest(pos)?.VisualHit as UIElement;
+            var target = DragDropPlatform.FindDropTargetElement(hit);
+            if (target is null && s.CurrentTarget is { } previousTarget &&
+                DragDrop.GetAllowDrop(previousTarget) &&
+                ReferenceEquals(Window.GetWindow(previousTarget), window))
+            {
+                // A final Drop can arrive without another DragOver. Reuse the previous
+                // target only while it is still attached to this Window and still has
+                // an effective AllowDrop value; late removal must not receive a drop.
+                target = previousTarget;
+            }
 
             if (target != null)
             {
@@ -314,13 +785,43 @@ internal static unsafe class OleDropTarget
 
             // Dismiss the Shell drag image and release the drag's native data object.
             ShellHelperDrop(pDataObj, pt, *pdwEffect);
-            ClearDropDescriptionIfSet(s);
-            ReleaseNativeData(s);
-            s.CurrentTarget = null;
-            s.CurrentData = null;
+            shellImageDismissed = true;
         }
         catch { *pdwEffect = 0; }
-        return 0;
+        finally
+        {
+            if (s is not null)
+            {
+                CompleteDragSession(s, shellImageAlreadyDismissed: shellImageDismissed);
+                _ = ReleaseStateReference(s);
+            }
+        }
+        return S_OK;
+    }
+
+    private static void CompleteDragSession(
+        DropTargetState state,
+        bool shellImageAlreadyDismissed)
+    {
+        ResetDragState(state, dismissShellImage: !shellImageAlreadyDismissed);
+        if (state.PendingRevoke && !state.Closing)
+        {
+            _ = TryFinalizeRevoke(state, nativeWindowAlive: true, closing: false);
+        }
+    }
+
+    private static void ResetDragState(DropTargetState state, bool dismissShellImage)
+    {
+        if (dismissShellImage && state.DragActive)
+        {
+            ShellHelperDragLeaveIfCreated();
+        }
+
+        ClearDropDescriptionIfSet(state);
+        ReleaseNativeData(state);
+        state.CurrentTarget = null;
+        state.CurrentData = null;
+        state.DragActive = false;
     }
 
     /// <summary>
@@ -359,21 +860,39 @@ internal static unsafe class OleDropTarget
 
     /// <summary>
     /// Lazily creates the Shell <c>IDropTargetHelper</c> that renders the system
-    /// drag image over the window. Cached for the process lifetime; a single
-    /// failed attempt disables it so we never retry every drag.
+    /// drag image over the window. The helper is apartment-bound and therefore
+    /// lives only until the current UI thread's final OLE lease is released.
     /// </summary>
     private static nint GetDropHelper()
     {
-        if (_dropHelper != nint.Zero) return _dropHelper;
-        if (_dropHelperTried) return nint.Zero;
-        _dropHelperTried = true;
+        OleApartmentState? apartment = t_oleApartment;
+        if (apartment is null || apartment.LeaseCount == 0)
+        {
+            return nint.Zero;
+        }
+
+        if (apartment.DropHelper != nint.Zero) return apartment.DropHelper;
+        if (apartment.DropHelperTried) return nint.Zero;
+        apartment.DropHelperTried = true;
 
         Guid clsid = CLSID_DragDropHelper;
         Guid iid = IID_IDropTargetHelper;
         int hr = Win32.CoCreateInstance(ref clsid, nint.Zero, CLSCTX_INPROC_SERVER, ref iid, out nint p);
         if (hr == 0 && p != nint.Zero)
-            _dropHelper = p;
-        return _dropHelper;
+            apartment.DropHelper = p;
+        return apartment.DropHelper;
+    }
+
+    private static void ReleaseDropHelper(OleApartmentState apartment)
+    {
+        nint helper = apartment.DropHelper;
+        apartment.DropHelper = nint.Zero;
+        apartment.DropHelperTried = false;
+        if (helper != nint.Zero)
+        {
+            try { _ = ComRelease(helper); }
+            catch { }
+        }
     }
 
     // IDropTargetHelper vtable: 3 DragEnter, 4 DragOver, 5 DragLeave, 6 Drop, 7 Show.
@@ -385,7 +904,7 @@ internal static unsafe class OleDropTarget
         {
             POINT p = PointFromLong(pt);
             var fn = (delegate* unmanaged[Stdcall]<nint, nint, nint, POINT*, uint, int>)(*(nint*)(*(nint*)helper + 3 * nint.Size));
-            _ = fn(helper, s.Window.Handle, pDataObj, &p, effect);
+            _ = fn(helper, s.Hwnd, pDataObj, &p, effect);
         }
         catch { }
     }
@@ -403,9 +922,9 @@ internal static unsafe class OleDropTarget
         catch { }
     }
 
-    private static void ShellHelperDragLeave()
+    private static void ShellHelperDragLeaveIfCreated()
     {
-        nint helper = GetDropHelper();
+        nint helper = t_oleApartment?.DropHelper ?? nint.Zero;
         if (helper == nint.Zero) return;
         try
         {
@@ -700,6 +1219,9 @@ internal static unsafe class OleDropTarget
     {
         [DllImport("ole32.dll")]
         internal static extern int OleInitialize(nint pvReserved);
+
+        [DllImport("ole32.dll")]
+        internal static extern void OleUninitialize();
 
         [DllImport("ole32.dll")]
         internal static extern int RegisterDragDrop(nint hwnd, nint pDropTarget);

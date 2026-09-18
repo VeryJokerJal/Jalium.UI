@@ -10,10 +10,12 @@ internal static partial class CssCoreProperties
         RegisterLonghand("background-color", (ref CssTokenReader reader, CssCompileContext ctx_) =>
         {
             if (!CssColorParser.TryParse(ref reader, out var color, out var isCurrentColor) ||
-                isCurrentColor || !reader.AtEnd)
+                !reader.AtEnd)
             {
                 return null;
             }
+
+            if (isCurrentColor) return new CssCurrentColorValue("background-color");
 
             var brush = FreezeIfPossible(new SolidColorBrush(color));
             return new CssSlotActionValue(slots => slots.SetBackgroundColor(brush));
@@ -29,12 +31,12 @@ internal static partial class CssCoreProperties
             while (!reader.AtEnd)
             {
                 var probe = reader;
-                if (CssColorParser.TryParse(ref probe, out var color, out var isCurrentColor) && !isCurrentColor)
+                if (CssColorParser.TryParse(ref probe, out var color, out var isCurrentColor))
                 {
                     reader = probe;
                     var brush = FreezeIfPossible(new SolidColorBrush(color));
                     output.Add(new CssCompiledDeclaration(
-                        "background-color", new CssSlotActionValue(slots => slots.SetBackgroundColor(brush)), false));
+                        "background-color", isCurrentColor ? new CssCurrentColorValue("background-color") : new CssSlotActionValue(slots => slots.SetBackgroundColor(brush)), false));
                     sawAnything = true;
                     continue;
                 }
@@ -127,12 +129,12 @@ internal static partial class CssCoreProperties
         RegisterLonghand("color", (ref CssTokenReader reader, CssCompileContext ctx_) =>
         {
             if (!CssColorParser.TryParse(ref reader, out var color, out var isCurrentColor) ||
-                isCurrentColor || !reader.AtEnd)
+                !reader.AtEnd)
             {
                 return null;
             }
 
-            return new CssNamedValue("color", "Foreground", FreezeIfPossible(new SolidColorBrush(color)));
+            return isCurrentColor ? new CssWideValue("color", "inherit") : new CssNamedValue("color", "Foreground", FreezeIfPossible(new SolidColorBrush(color)));
         });
 
         RegisterBorder();
@@ -231,7 +233,8 @@ internal static partial class CssCoreProperties
         RegisterShorthand("border-width",
             (ref CssTokenReader reader, CssCompileContext ctx_, List<CssCompiledDeclaration> output) =>
         {
-            Span<CssLength> parts = stackalloc CssLength[4];
+            CssLengthBuffer buffer = default;
+            Span<CssLength> parts = buffer;
             var count = 0;
             while (!reader.AtEnd)
             {
@@ -270,7 +273,7 @@ internal static partial class CssCoreProperties
 
         RegisterLonghand("border-color", (ref CssTokenReader reader, CssCompileContext ctx_) =>
         {
-            if (!CssColorParser.TryParse(ref reader, out var color, out var isCurrentColor) || isCurrentColor)
+            if (!CssColorParser.TryParse(ref reader, out var color, out var isCurrentColor))
             {
                 return null;
             }
@@ -291,7 +294,7 @@ internal static partial class CssCoreProperties
                 }
             }
 
-            return new CssNamedValue("border-color", "BorderBrush", FreezeIfPossible(new SolidColorBrush(color)));
+            return isCurrentColor ? new CssCurrentColorValue("border-color") : new CssNamedValue("border-color", "BorderBrush", FreezeIfPossible(new SolidColorBrush(color)));
         });
 
         RegisterLonghand("border-style", (ref CssTokenReader reader, CssCompileContext ctx_) =>
@@ -350,10 +353,10 @@ internal static partial class CssCoreProperties
                 }
 
                 probe = reader;
-                if (CssColorParser.TryParse(ref probe, out var color, out var isCurrentColor) && !isCurrentColor)
+                if (CssColorParser.TryParse(ref probe, out var color, out var isCurrentColor))
                 {
                     reader = probe;
-                    colorValue = new CssNamedValue("border", "BorderBrush", FreezeIfPossible(new SolidColorBrush(color)));
+                    colorValue = isCurrentColor ? new CssCurrentColorValue("border-color") : new CssNamedValue("border", "BorderBrush", FreezeIfPossible(new SolidColorBrush(color)));
                     sawAnything = true;
                     continue;
                 }
@@ -376,13 +379,10 @@ internal static partial class CssCoreProperties
 
             // Color first, then style: an omitted style resets to `none` (BorderBrush = null)
             // and must win over the color, matching the CSS initial-value semantics.
-            if (colorValue is not null)
-            {
-                output.Add(new CssCompiledDeclaration("border-color", colorValue, false));
-            }
+            output.Add(new CssCompiledDeclaration("border-color", colorValue ?? new CssCurrentColorValue("border-color"), false));
 
             output.Add(new CssCompiledDeclaration(
-                "border-style", styleValue ?? new CssNamedValue("border", "BorderBrush", null), false));
+                "border-style", styleValue ?? new CssSlotActionValue(static slots => slots.SetBorderStyle(true)), false));
             return true;
         });
 
@@ -414,7 +414,7 @@ internal static partial class CssCoreProperties
         if (ident.Equals("none", StringComparison.OrdinalIgnoreCase) ||
             ident.Equals("hidden", StringComparison.OrdinalIgnoreCase))
         {
-            return new CssNamedValue("border-style", "BorderBrush", null);
+            return new CssSlotActionValue(static slots => slots.SetBorderStyle(true));
         }
 
         if (TryClassifyBorderStyleKeyword(ident, out _))
@@ -467,7 +467,8 @@ internal static partial class CssCoreProperties
         RegisterShorthand("border-radius",
             (ref CssTokenReader reader, CssCompileContext ctx_, List<CssCompiledDeclaration> output) =>
         {
-            Span<CssLength> parts = stackalloc CssLength[4];
+            CssLengthBuffer buffer = default;
+            Span<CssLength> parts = buffer;
             var count = 0;
             while (!reader.AtEnd)
             {

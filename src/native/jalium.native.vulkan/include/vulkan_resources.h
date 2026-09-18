@@ -197,7 +197,7 @@ private:
     std::atomic<bool> needsInitialTransition_{true};
 };
 
-class VulkanTextFormat : public TextFormat {
+class VulkanTextFormat : public TextFormat, public FontUnitMetricsProvider {
 public:
 #ifdef _WIN32
     VulkanTextFormat(
@@ -231,6 +231,7 @@ public:
         JaliumTextMetrics* metrics) override;
 
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+    JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) override;
 
     JaliumResult HitTestPoint(
         const wchar_t* text, uint32_t textLength,

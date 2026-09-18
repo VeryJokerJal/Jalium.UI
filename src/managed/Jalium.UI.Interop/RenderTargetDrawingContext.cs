@@ -49,7 +49,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     private readonly RenderTarget _renderTarget;
     private readonly RenderContext _context;
-    private readonly Dictionary<Brush, NativeBrush> _brushCache = new();
+    private readonly Dictionary<BrushCacheKey, NativeBrush> _brushCache = new();
     private readonly Dictionary<TextFormatCacheKey, NativeTextFormat> _textFormatCache = new();
     private readonly Dictionary<ImageSource, BitmapCacheEntry> _bitmapCache = new();
     private readonly Stack<DrawingState> _stateStack = new();
@@ -175,6 +175,34 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private long _brushCacheSequence;
     private long _textFormatCacheSequence;
     private bool _closed;
+
+    /// <summary>
+    /// A relative gradient's native coordinates depend on the destination
+    /// bounds. Keying only by managed brush identity made a shared gradient
+    /// thrash between every differently-positioned control on every frame.
+    /// Keep reference identity semantics while retaining one native resource
+    /// per distinct mapping rectangle.
+    /// </summary>
+    private readonly struct BrushCacheKey : IEquatable<BrushCacheKey>
+    {
+        public BrushCacheKey(Brush brush, long boundsKey)
+        {
+            Brush = brush;
+            BoundsKey = boundsKey;
+        }
+
+        public Brush Brush { get; }
+        public long BoundsKey { get; }
+
+        public bool Equals(BrushCacheKey other) =>
+            ReferenceEquals(Brush, other.Brush) && BoundsKey == other.BoundsKey;
+
+        public override bool Equals(object? obj) =>
+            obj is BrushCacheKey other && Equals(other);
+
+        public override int GetHashCode() =>
+            HashCode.Combine(RuntimeHelpers.GetHashCode(Brush), BoundsKey);
+    }
 
     private readonly record struct TextFormatCacheKey(
         string FontFamily,
@@ -627,7 +655,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (layer == 0) return 0;
 
         _inLayerCapture = true;
-        _layerCaptureClipBounds = worldBounds;
+        // D3D12 captures on the physical pixel grid. Use its actual origin for
+        // culling and nested-transform compensation, not the fractional layout
+        // origin; the native layer retains the padding for later composites.
+        _layerCaptureClipBounds = _renderTarget.Backend == RenderBackend.D3D12
+            ? ComputeScreenEffectCaptureRect(worldBounds, Matrix.Identity,
+                _renderTarget.DpiScaleX, _renderTarget.DpiScaleX)
+            : worldBounds;
         return layer;
     }
 
@@ -1510,7 +1544,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // already an integer so snapping is a no-op, but the weight degradation matters
         // for small-size bold that's blurry regardless of scale.
         var fontScale = 1.0;
-        var preserveNativeScaleDeformation = _nativeTextTransformDepth > 0;
+        // D3D12 rasterizes transformed glyphs at the final device resolution.
+        // Keep its original layout and pass the matrix through: recreating a
+        // layout at the scaled font size rounds fallback baselines differently
+        // from the surrounding geometry (a 1px jump during a 1.00 -> 1.03 zoom).
+        var preserveNativeScaleDeformation = _nativeTextTransformDepth > 0 ||
+            _renderTarget.Backend == RenderBackend.D3D12;
         if (!isIdentity)
         {
             var scaleX = Math.Sqrt(nm11 * nm11 + nm12 * nm12);
@@ -3502,10 +3541,33 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 _currentNativeMatrix[0], _currentNativeMatrix[1],
                 _currentNativeMatrix[2], _currentNativeMatrix[3],
                 _currentNativeMatrix[4], _currentNativeMatrix[5]);
-            Jalium.UI.Media.Matrix toNative;
-            if (current.TryInvert(out var currentInv))
+            // D3D12 offscreen captures add a native-only translation from surface
+            // coordinates to the capture origin. Include it in the conjugation so
+            // a child's local scale/rotation does not transform that translation.
+            // Keep the managed mirror in surface space for offsets and culling.
+            var nativeCurrent = current;
+            if (_inLayerCapture && _renderTarget.Backend == RenderBackend.D3D12 &&
+                _layerCaptureClipBounds is Rect layerBounds)
             {
-                toNative = currentInv * incoming * current;
+                nativeCurrent *= new Jalium.UI.Media.Matrix(
+                    1, 0, 0, 1, -layerBounds.X, -layerBounds.Y);
+            }
+            else if (_renderTarget.Backend == RenderBackend.D3D12 &&
+                _effectCaptureFrameStack.Count > 0)
+            {
+                // Native effect captures cannot nest: inner effect scopes draw
+                // into the first capture, so its origin remains authoritative.
+                // Omitting this translation rotates children around the window
+                // origin instead of their position in a shadow/blur texture.
+                var capture = _effectCaptureFrameStack.Last();
+                nativeCurrent *= new Jalium.UI.Media.Matrix(
+                    1, 0, 0, 1, -capture.ScreenX, -capture.ScreenY);
+            }
+
+            Jalium.UI.Media.Matrix toNative;
+            if (nativeCurrent.TryInvert(out var currentInv))
+            {
+                toNative = currentInv * incoming * nativeCurrent;
             }
             else
             {
@@ -4533,11 +4595,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         if (brush is SolidColorBrush solidBrush)
         {
+            var cacheKey = new BrushCacheKey(brush, 0);
             var color = solidBrush.Color;
             double opacity = Math.Clamp(solidBrush.Opacity, 0.0, 1.0);
             // Cache based on (brush reference, current color) to invalidate
             // when the same brush object's color or opacity changes.
-            if (_brushCache.TryGetValue(brush, out var cached))
+            if (_brushCache.TryGetValue(cacheKey, out var cached))
             {
                 if (cached.CachedColor == color &&
                     cached.CachedOpacity == opacity)
@@ -4547,7 +4610,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 }
                 // Color changed — dispose old native brush and recreate
                 cached.Dispose();
-                _brushCache.Remove(brush);
+                _brushCache.Remove(cacheKey);
             }
 
             // Pass sRGB values to native: D2D expects sRGB, and the direct D3D12
@@ -4560,7 +4623,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             nb.CachedColor = color;
             nb.CachedOpacity = opacity;
             nb.LastAccessSequence = ++_brushCacheSequence;
-            _brushCache[brush] = nb;
+            _brushCache[cacheKey] = nb;
             return nb;
         }
 
@@ -4571,7 +4634,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 linear.MappingMode == BrushMappingMode.RelativeToBoundingBox
                     ? ComputeGradientBoundsKey(bx, by, bw, bh)
                     : 0;
-            if (_brushCache.TryGetValue(brush, out var cachedLinear) &&
+            var cacheKey = new BrushCacheKey(brush, boundsKey);
+            if (_brushCache.TryGetValue(cacheKey, out var cachedLinear) &&
                 cachedLinear.CachedGradientContentHash == contentHash &&
                 cachedLinear.CachedBoundsKey == boundsKey)
             {
@@ -4588,7 +4652,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 radial.MappingMode == BrushMappingMode.RelativeToBoundingBox
                     ? ComputeGradientBoundsKey(bx, by, bw, bh)
                     : 0;
-            if (_brushCache.TryGetValue(brush, out var cachedRadial) &&
+            var cacheKey = new BrushCacheKey(brush, boundsKey);
+            if (_brushCache.TryGetValue(cacheKey, out var cachedRadial) &&
                 cachedRadial.CachedGradientContentHash == contentHash &&
                 cachedRadial.CachedBoundsKey == boundsKey)
             {
@@ -4626,7 +4691,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// </remarks>
     private NativeBrush? GetImageBrushStrokeFallback(ImageBrush imageBrush)
     {
-        if (_brushCache.TryGetValue(imageBrush, out var cached))
+        var cacheKey = new BrushCacheKey(imageBrush, 0);
+        if (_brushCache.TryGetValue(cacheKey, out var cached))
         {
             // CachedSourceRef tracks the ImageSource the brush was sampled from.
             // When the brush points at a different source, drop the stale entry
@@ -4637,7 +4703,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 return cached;
             }
             cached.Dispose();
-            _brushCache.Remove(imageBrush);
+            _brushCache.Remove(cacheKey);
         }
 
         var color = SampleAverageColor(imageBrush.ImageSource) ?? Color.FromArgb(0, 0, 0, 0);
@@ -4651,7 +4717,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         nb.CachedColor = Color.FromArgb((byte)(alpha * 255f), color.R, color.G, color.B);
         nb.CachedImageSource = imageBrush.ImageSource;
         nb.LastAccessSequence = ++_brushCacheSequence;
-        _brushCache[imageBrush] = nb;
+        _brushCache[cacheKey] = nb;
         return nb;
     }
 
@@ -5048,11 +5114,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             brush.MappingMode == BrushMappingMode.RelativeToBoundingBox
                 ? ComputeGradientBoundsKey(bx, by, bw, bh)
                 : 0;
+        var cacheKey = new BrushCacheKey(brush, nb.CachedBoundsKey);
 
         // Replace previous cached entry if any
-        if (_brushCache.TryGetValue(brush, out var old))
+        if (_brushCache.TryGetValue(cacheKey, out var old))
             old.Dispose();
-        _brushCache[brush] = nb;
+        _brushCache[cacheKey] = nb;
         return nb;
     }
 
@@ -5098,11 +5165,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             brush.MappingMode == BrushMappingMode.RelativeToBoundingBox
                 ? ComputeGradientBoundsKey(bx, by, bw, bh)
                 : 0;
+        var cacheKey = new BrushCacheKey(brush, nb.CachedBoundsKey);
 
         // Replace previous cached entry if any
-        if (_brushCache.TryGetValue(brush, out var old))
+        if (_brushCache.TryGetValue(cacheKey, out var old))
             old.Dispose();
-        _brushCache[brush] = nb;
+        _brushCache[cacheKey] = nb;
         return nb;
     }
 

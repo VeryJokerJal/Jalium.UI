@@ -1,9 +1,9 @@
 // Vello GPU Pipeline V3 — pathtag_reduce2
 // Port of vello 0.10.0 shader/pathtag_reduce2.wgsl.
 // Second-level reduction of the pathtag monoid for the large scan path.
-// Jalium always uses the large scan path (no pathtag_scan_small permutation),
-// but dispatches exactly ceil(reduced_size / 256) workgroups instead of a fixed
-// 256 so no out-of-logical-range elements are ever read.
+// D3D12/Vulkan dispatch this only when the first reduction exceeds 256
+// workgroups. The count is exactly ceil(reduced_size / 256), so no
+// out-of-logical-range elements are ever read.
 //
 // Bindings: t0 reduced_in | u0 reduced
 // Dispatch: (align_up(path_tag_wgs, 256) / 256, 1, 1)

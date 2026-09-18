@@ -10,10 +10,10 @@ namespace Jalium.UI.Styling;
 public readonly struct CssDeclarationSetter
 {
     private readonly ICssSetterSink _sink;
-    private readonly FrameworkElement _element;
+    private readonly CssNode _element;
     private readonly string _cssName;
 
-    internal CssDeclarationSetter(ICssSetterSink sink, FrameworkElement element, string cssName)
+    internal CssDeclarationSetter(ICssSetterSink sink, CssNode element, string cssName)
     {
         _sink = sink;
         _element = element;

@@ -86,9 +86,16 @@ typedef enum {
     JALIUM_VS_FORMAT_NV12          = 1,
     JALIUM_VS_FORMAT_P010          = 2,
     JALIUM_VS_FORMAT_RGB10A2       = 3,
+    /// Packed BGRX8 video. X is unused, and sampling must return alpha = 1.
+    JALIUM_VS_FORMAT_BGRX8         = 4,
 } JaliumVideoSurfaceFormat;
 
 #define JALIUM_VIDEO_SURFACE_MAX_PLANES 4u
+
+// For D3D11 shared imports: all producer writes are complete and the allocation
+// is immutable until every consumer releases it. An unfenced, reusable texture
+// cannot be sampled safely by D3D12 merely because OpenSharedHandle succeeded.
+#define JALIUM_VS_FLAG_IMMUTABLE_READY (1u << 16)
 
 typedef struct {
     int32_t  fd;             ///< Borrowed dma-buf fd; -1 when unused.

@@ -111,6 +111,7 @@ public struct PresentInfo
 internal static class NativeGpuMethods
 {
     private const string CoreLib = JaliumNativeLibraryNames.Core;
+    private const string D3D12Lib = JaliumNativeLibraryNames.D3D12;
 
     [DllImport(CoreLib, EntryPoint = "jalium_context_set_gpu_preference", ExactSpelling = true)]
     internal static extern int ContextSetGpuPreference(nint context, GpuPreference gpuPreference);
@@ -120,4 +121,7 @@ internal static class NativeGpuMethods
 
     [DllImport(CoreLib, EntryPoint = "jalium_render_target_get_present_info", ExactSpelling = true)]
     internal static extern int RenderTargetGetPresentInfo(nint renderTarget, out PresentInfo info);
+
+    [DllImport(D3D12Lib, EntryPoint = "jalium_d3d12_render_target_uses_software_display_route", ExactSpelling = true)]
+    internal static extern int RenderTargetUsesSoftwareDisplayRoute(nint renderTarget);
 }

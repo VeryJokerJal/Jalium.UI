@@ -45,6 +45,7 @@ public class Grid : Panel
     private int _solvedChildrenCount = -1;
     private Size _solvedConstraint;
     private bool _hasSolvedLayout;
+    private bool _usesOverlayLayout;
     private double _correctionMeasureWidth = double.NaN;
     private double _correctionArrangeWidth = double.NaN;
 
@@ -401,14 +402,14 @@ public class Grid : Panel
         var columnSlots = _columnSlots!;
         var rowOffsets = _rowOffsets!;
         var columnOffsets = _columnOffsets!;
-        var rowSpacing = SanitizeSpacing(RowSpacing);
-        var columnSpacing = SanitizeSpacing(ColumnSpacing);
+        var rowSpacing = _usesOverlayLayout ? 0 : SanitizeSpacing(RowSpacing);
+        var columnSpacing = _usesOverlayLayout ? 0 : SanitizeSpacing(ColumnSpacing);
         var queuedWidthCorrection = false;
 
         for (var index = 0; index < _cellCount; index++)
         {
             ref readonly var cell = ref _cells![index];
-            var rect = new Rect(
+            var rect = _usesOverlayLayout ? new Rect(finalSize) : new Rect(
                 columnOffsets[cell.Column],
                 rowOffsets[cell.Row],
                 GetTrackSpanSize(
@@ -454,6 +455,12 @@ public class Grid : Panel
 
     private void ResolveArrangeTracks(Size finalSize)
     {
+        if (_usesOverlayLayout)
+        {
+            _solvedConstraint = finalSize;
+            return;
+        }
+
         var rowCount = Math.Max(1, _rowDefinitions?.Count ?? 0);
         var columnCount =
             Math.Max(1, _columnDefinitions?.Count ?? 0);
@@ -548,6 +555,12 @@ public class Grid : Panel
 
         var explicitRows = _rowDefinitions;
         var explicitColumns = _columnDefinitions;
+        if ((explicitRows is null || explicitRows.Count == 0) &&
+            (explicitColumns is null || explicitColumns.Count == 0))
+        {
+            return MeasureOverlay(constraint);
+        }
+        _usesOverlayLayout = false;
         var rowCount = Math.Max(1, explicitRows?.Count ?? 0);
         var columnCount = Math.Max(1, explicitColumns?.Count ?? 0);
 
@@ -808,6 +821,31 @@ public class Grid : Panel
                 unboundedHeight));
     }
 
+    private Size MeasureOverlay(Size constraint)
+    {
+        // Template roots commonly use Grid only to layer children. With one
+        // implicit star cell there are no tracks to distribute or shared sizes
+        // to solve. Keep the normal cell snapshot/arrange correction contract,
+        // while avoiding repeated default-definition property reads per row.
+        _usesOverlayLayout = true;
+        BuildCells(1, 1);
+        double width = 0, height = 0;
+        for (int index = 0; index < _cellCount; index++)
+        {
+            ref var cell = ref _cells![index];
+            cell.Element.Measure(constraint);
+            cell.MeasuredWidth = constraint.Width;
+            width = Math.Max(width, SanitizeDesired(cell.Element.DesiredSize.Width));
+            height = Math.Max(height, SanitizeDesired(cell.Element.DesiredSize.Height));
+        }
+
+        _solvedConstraint = constraint;
+        _solvedVersion = _layoutVersion;
+        _solvedChildrenCount = Children.Count;
+        _hasSolvedLayout = true;
+        return new Size(width, height);
+    }
+
     private void BuildCells(int rowCount, int columnCount)
     {
         var childCount = Children.Count;
@@ -821,16 +859,16 @@ public class Grid : Panel
             if (IsCssAbsolute(child))
                 continue;
 
-            var row = Math.Clamp(GetRow(child), 0, rowCount - 1);
-            var column = Math.Clamp(
+            var row = rowCount == 1 ? 0 : Math.Clamp(GetRow(child), 0, rowCount - 1);
+            var column = columnCount == 1 ? 0 : Math.Clamp(
                 GetColumn(child),
                 0,
                 columnCount - 1);
-            var rowSpan = Math.Clamp(
+            var rowSpan = rowCount - row == 1 ? 1 : Math.Clamp(
                 GetRowSpan(child),
                 1,
                 rowCount - row);
-            var columnSpan = Math.Clamp(
+            var columnSpan = columnCount - column == 1 ? 1 : Math.Clamp(
                 GetColumnSpan(child),
                 1,
                 columnCount - column);

@@ -73,6 +73,7 @@ public sealed class ScrollViewerOffsetDeviceSnapTests
         Assert.Equal(1000.0, info.VerticalOffset, 12);
 
         viewer.ScrollToBottom();
+        Assert.Equal(1000.4, info.LastVerticalOffsetRequest, 12);
         Assert.Equal(1000.4, info.VerticalOffset, 12);
         Assert.True(viewer.IsAtVerticalEnd);
     }
@@ -131,6 +132,8 @@ public sealed class ScrollViewerOffsetDeviceSnapTests
         public double ViewportHeight { get; set; }
         public double HorizontalOffset { get; set; }
         public double VerticalOffset { get; set; }
+        public double LastHorizontalOffsetRequest { get; private set; }
+        public double LastVerticalOffsetRequest { get; private set; }
         public ScrollViewer? ScrollOwner { get; set; }
 
         public void LineUp() { }
@@ -145,8 +148,21 @@ public sealed class ScrollViewerOffsetDeviceSnapTests
         public void MouseWheelDown() { }
         public void MouseWheelLeft() { }
         public void MouseWheelRight() { }
-        public void SetHorizontalOffset(double offset) => HorizontalOffset = offset;
-        public void SetVerticalOffset(double offset) => VerticalOffset = offset;
+        public void SetHorizontalOffset(double offset)
+        {
+            LastHorizontalOffsetRequest = offset;
+            HorizontalOffset = double.IsFinite(offset)
+                ? Math.Clamp(offset, 0, Math.Max(0, ExtentWidth - ViewportWidth))
+                : 0;
+        }
+
+        public void SetVerticalOffset(double offset)
+        {
+            LastVerticalOffsetRequest = offset;
+            VerticalOffset = double.IsFinite(offset)
+                ? Math.Clamp(offset, 0, Math.Max(0, ExtentHeight - ViewportHeight))
+                : 0;
+        }
         public Rect MakeVisible(Visual visual, Rect rectangle) => rectangle;
     }
 }

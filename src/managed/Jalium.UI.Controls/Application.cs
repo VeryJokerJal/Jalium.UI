@@ -457,14 +457,6 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             Dispatcher.EnsureNativeWake();
         }
 
-        // Touch native GPU state only when an actual application is being created.
-        // This still overlaps device creation with theme and MainWindow construction,
-        // while build tools and managed-only hosts can load the framework safely.
-        using (StartupDiagnostics.Begin("Application.ScheduleGpuPrewarm", blocksUiThread: true))
-        {
-            GpuPrewarmInitializer.Prewarm();
-        }
-
         _current = this;
         CurrentChanged?.Invoke(this, EventArgs.Empty);
 
@@ -617,7 +609,13 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         Justification = "The reflected 'InitializeComponent' is the private method emitted by the JALXAML source generator onto the Application subclass codebehind. The generator pins it via [DynamicDependency(DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.NonPublicMethods, typeof(<className>))] on that class's [ModuleInitializer] (JalxamlSourceGenerator emits this so the trimmer keeps all instance method metadata of the codebehind). Since the registration ModuleInitializer is always reachable, the target method survives trimming. The runtime Type here comes from object.GetType() and cannot carry the matching DynamicallyAccessedMembers annotation, so the preservation is guaranteed by that named DynamicDependency rather than by flow analysis at this site.")]
     private void CallInitializeComponent()
     {
-        var initMethod = GetType().GetMethod("InitializeComponent",
+        var applicationType = GetType();
+        if (applicationType == typeof(Application))
+        {
+            return;
+        }
+
+        var initMethod = applicationType.GetMethod("InitializeComponent",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
             Type.EmptyTypes);
         if (initMethod != null && initMethod.DeclaringType != typeof(Application))
@@ -1087,9 +1085,28 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         // keeps them alive after Run() returns. JaliumApp.Dispose() disposes the underlying IHost.
         DetachHost();
 
-        // Clear application reference
-        _current = null;
-        CurrentChanged?.Invoke(null, EventArgs.Empty);
+        // Break the application -> window edge before detaching theme dictionaries. Their
+        // collection notifications must not walk a window that is already being torn down.
+        _mainWindow = null;
+        ThemeManager.Cleanup(this);
+
+        // Resource lookup caches are thread-local and can otherwise retain the old visual tree,
+        // application dictionaries, and resolved resource values until this UI thread exits.
+        ResourceLookup.ClearThreadCache();
+        ResourceDictionary.ClearThreadCache();
+        FrameworkElement.ClearScopelessResourceThreadCache();
+
+        // A stale Application finishing cleanup after a replacement was installed must not clear
+        // that replacement's callbacks or Current reference.
+        if (ReferenceEquals(_current, this))
+        {
+            ResourceLookup.ApplicationResourceLookup = null;
+            ResourceLookup.ApplicationResourceLookupWithSource = null;
+            ResourceLookup.AncestorRedirectLookup = null;
+
+            _current = null;
+            CurrentChanged?.Invoke(null, EventArgs.Empty);
+        }
     }
 
     private bool HandleLinuxSessionEnding(ReasonSessionEnding reason)

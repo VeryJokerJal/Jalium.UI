@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media.Animation;
+using Jalium.UI.Media.Animation;
 using Jalium.UI;
 using System.ComponentModel;
 using System.Globalization;
@@ -120,6 +120,7 @@ public sealed partial class FormattedText
     /// </summary>
     public FormattedText(string text, string fontFamily, double fontSize)
     {
+        _culture = CultureInfo.CurrentCulture;
         ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(fontFamily);
         ValidateEmSize(fontSize, nameof(fontSize));
@@ -182,7 +183,7 @@ public sealed partial class FormattedText
     private double[]? _maxTextWidths;
     private double _pixelsPerDip = 1.0;
     private int _maxLineCount = int.MaxValue;
-    private CultureInfo _culture = CultureInfo.CurrentCulture;
+    private CultureInfo _culture;
     private Typeface? _typeface;
     private NumberSubstitution? _numberSubstitution;
     private CharacterFormat[]? _characterFormats;
@@ -618,9 +619,8 @@ public sealed partial class FormattedText
         // Simple text uses one immutable-by-convention format for every character.
         // Range setters detach the affected entries in ApplyToRange, so the common
         // rendering path does not need one heap object per character.
-        var defaultFormat = new CharacterFormat
+        var defaultFormat = new CharacterFormat(_culture)
         {
-            Culture = _culture,
             FontFamily = typeface.FontFamily,
             EmSize = FontSize,
             Weight = typeface.Weight,
@@ -983,7 +983,12 @@ public sealed partial class FormattedText
 
     private sealed class CharacterFormat
     {
-        public CultureInfo Culture { get; set; } = CultureInfo.CurrentCulture;
+        public CharacterFormat(CultureInfo culture)
+        {
+            Culture = culture;
+        }
+
+        public CultureInfo Culture { get; set; }
         public FontFamily FontFamily { get; set; } = null!;
         public double EmSize { get; set; }
         public FontWeight Weight { get; set; }
@@ -993,9 +998,8 @@ public sealed partial class FormattedText
         public NumberSubstitution? NumberSubstitution { get; set; }
         public global::Jalium.UI.TextDecorationCollection? TextDecorations { get; set; }
 
-        public CharacterFormat Clone() => new()
+        public CharacterFormat Clone() => new(Culture)
         {
-            Culture = Culture,
             FontFamily = FontFamily,
             EmSize = EmSize,
             Weight = Weight,

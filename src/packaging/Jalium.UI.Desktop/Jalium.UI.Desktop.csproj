@@ -36,7 +36,9 @@
 
   <!-- Include build tools -->
   <ItemGroup>
-    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" PrivateAssets="none" />
+    <!-- Keep the build-tool dependency for restore/pack without rebuilding a task
+         assembly that source consumers may already have loaded into MSBuild. -->
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" BuildReference="false" ReferenceOutputAssembly="false" PrivateAssets="none" />
     <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj" BuildReference="false" ReferenceOutputAssembly="false" PrivateAssets="none" UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers;IsTrimmable;IsAotCompatible" />
   </ItemGroup>
 

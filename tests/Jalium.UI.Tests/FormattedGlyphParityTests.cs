@@ -73,6 +73,45 @@ public sealed class FormattedGlyphParityTests
     }
 
     [Fact]
+    public void FormattedTextConstructorsCaptureAmbientOrExplicitCulture()
+    {
+        CultureInfo originalCulture = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+            CultureInfo ambientCulture = CultureInfo.CurrentCulture;
+            var ambientText = new FormattedText("ab", "Test Sans", 10);
+
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("ja-JP");
+            ambientText.SetFontSize(11, 0, 1);
+
+            Assert.Same(
+                ambientCulture,
+                GetCharacterFormatCulture(GetCharacterFormats(ambientText).GetValue(0)!));
+
+            CultureInfo explicitCulture = CultureInfo.GetCultureInfo("ar-SA");
+            var explicitText = new FormattedText(
+                "ab",
+                explicitCulture,
+                FlowDirection.LeftToRight,
+                new Typeface(new FontFamily("Test Sans")),
+                10,
+                Brushes.Black);
+
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
+            explicitText.SetFontSize(11, 0, 1);
+
+            Assert.Same(
+                explicitCulture,
+                GetCharacterFormatCulture(GetCharacterFormats(explicitText).GetValue(0)!));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+        }
+    }
+
+    [Fact]
     public void FormattedTextMetricRecomputeDoesNotAllocateLayoutCollections()
     {
         var text = new FormattedText("alpha beta gamma\r\nsecond line", "Test Sans", 12);
@@ -127,6 +166,11 @@ public sealed class FormattedGlyphParityTests
     private static double GetCharacterFormatEmSize(object format)
         => (double)format.GetType()
             .GetProperty("EmSize", BindingFlags.Instance | BindingFlags.Public)!
+            .GetValue(format)!;
+
+    private static CultureInfo GetCharacterFormatCulture(object format)
+        => (CultureInfo)format.GetType()
+            .GetProperty("Culture", BindingFlags.Instance | BindingFlags.Public)!
             .GetValue(format)!;
 
     [Fact]

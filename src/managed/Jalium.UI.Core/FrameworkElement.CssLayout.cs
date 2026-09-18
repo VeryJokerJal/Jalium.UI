@@ -10,6 +10,43 @@ public partial class FrameworkElement
     /// the CSS engine's apply diff (which also calls InvalidateMeasure).
     /// </summary>
     internal CssLayoutState? CssLayout;
+    internal CssDisplayMode CssDisplayMode;
+    internal bool CssInlineOuter;
+    internal CssParentBoxContext? CssParentBox, LastCssMeasureBox, LastCssArrangeBox;
+    internal double CssPreferredWidth(double basis) => ResolveEffectiveWidth(CssLayout, basis);
+    internal double CssPreferredHeight(double basis) => ResolveEffectiveHeight(CssLayout, basis);
+    internal (double Min, double Max) CssWidthBounds(double basis) => ResolveEffectiveWidthBounds(CssLayout, basis);
+    internal (double Min, double Max) CssHeightBounds(double basis) => ResolveEffectiveHeightBounds(CssLayout, basis);
+    internal (CssBoxAlignment Horizontal, CssBoxAlignment Vertical)? CssParentAlignment;
+    internal (CssBoxAlignment Horizontal, CssBoxAlignment Vertical)? LastCssParentAlignment;
+
+    private HorizontalAlignment ResolveCssParentHorizontalAlignment(CssLayoutState? layout, double basis)
+    {
+        if (CssParentAlignment is not { } alignment || HasLocalOrAnimatedValue(HorizontalAlignmentProperty)) return HorizontalAlignment;
+        if (alignment.Horizontal == CssBoxAlignment.Normal &&
+            GetValueSourceInternal(HorizontalAlignmentProperty).BaseValueSource != BaseValueSource.Default) return HorizontalAlignment;
+        return alignment.Horizontal switch
+        {
+            CssBoxAlignment.Center => HorizontalAlignment.Center,
+            CssBoxAlignment.End => HorizontalAlignment.Right,
+            CssBoxAlignment.Normal or CssBoxAlignment.Stretch when double.IsNaN(ResolveEffectiveWidth(layout, basis)) => HorizontalAlignment.Stretch,
+            _ => HorizontalAlignment.Left,
+        };
+    }
+
+    private VerticalAlignment ResolveCssParentVerticalAlignment(CssLayoutState? layout, double basis)
+    {
+        if (CssParentAlignment is not { } alignment || HasLocalOrAnimatedValue(VerticalAlignmentProperty)) return VerticalAlignment;
+        if (alignment.Vertical == CssBoxAlignment.Normal &&
+            GetValueSourceInternal(VerticalAlignmentProperty).BaseValueSource != BaseValueSource.Default) return VerticalAlignment;
+        return alignment.Vertical switch
+        {
+            CssBoxAlignment.Center => VerticalAlignment.Center,
+            CssBoxAlignment.End => VerticalAlignment.Bottom,
+            CssBoxAlignment.Normal or CssBoxAlignment.Stretch when double.IsNaN(ResolveEffectiveHeight(layout, basis)) => VerticalAlignment.Stretch,
+            _ => VerticalAlignment.Top,
+        };
+    }
 
     /// <summary>
     /// The element's chance to consume a CSS declaration by name — the interception
@@ -40,13 +77,14 @@ public partial class FrameworkElement
     /// </summary>
     private double ResolveEffectiveWidth(CssLayoutState? layout, double basisWidth)
     {
+        if (!HasLocalOrAnimatedValue(WidthProperty) && CssDisplayLayout.IsSubgridded(this, false)) return double.NaN;
         var width = Width;
-        if (double.IsNaN(width) && layout is not null && layout.Width.IsSet)
+        if (double.IsNaN(width) && !HasLocalOrAnimatedValue(WidthProperty) && layout is not null && layout.Width.IsSet)
         {
-            width = layout.Width.Resolve(basisWidth, double.NaN);
+            width = Math.Max(0, layout.Width.Resolve(basisWidth, double.NaN));
         }
 
-        if (!double.IsNaN(width) && layout is { BoxSizing: CssBoxSizing.ContentBox })
+        if (!double.IsNaN(width) && !HasLocalOrAnimatedValue(WidthProperty) && layout is { BoxSizing: CssBoxSizing.ContentBox })
         {
             width += GetContentBoxChromeX();
         }
@@ -56,13 +94,14 @@ public partial class FrameworkElement
 
     private double ResolveEffectiveHeight(CssLayoutState? layout, double basisHeight)
     {
+        if (!HasLocalOrAnimatedValue(HeightProperty) && CssDisplayLayout.IsSubgridded(this, true)) return double.NaN;
         var height = Height;
-        if (double.IsNaN(height) && layout is not null && layout.Height.IsSet)
+        if (double.IsNaN(height) && !HasLocalOrAnimatedValue(HeightProperty) && layout is not null && layout.Height.IsSet)
         {
-            height = layout.Height.Resolve(basisHeight, double.NaN);
+            height = Math.Max(0, layout.Height.Resolve(basisHeight, double.NaN));
         }
 
-        if (!double.IsNaN(height) && layout is { BoxSizing: CssBoxSizing.ContentBox })
+        if (!double.IsNaN(height) && !HasLocalOrAnimatedValue(HeightProperty) && layout is { BoxSizing: CssBoxSizing.ContentBox })
         {
             height += GetContentBoxChromeY();
         }
@@ -72,46 +111,58 @@ public partial class FrameworkElement
 
     private (double Min, double Max) ResolveEffectiveWidthBounds(CssLayoutState? layout, double basisWidth)
     {
+        if (CssDisplayLayout.IsSubgridded(this, false))
+            return (HasLocalOrAnimatedValue(MinWidthProperty) ? MinWidth : 0,
+                Math.Max(HasLocalOrAnimatedValue(MinWidthProperty) ? MinWidth : 0,
+                    HasLocalOrAnimatedValue(MaxWidthProperty) ? MaxWidth : double.PositiveInfinity));
         var min = MinWidth;
         var max = MaxWidth;
         if (layout is not null)
         {
             var chrome = layout.BoxSizing == CssBoxSizing.ContentBox ? GetContentBoxChromeX() : 0;
-            if (min == 0 && layout.MinWidth.IsSet)
+            if (!HasLocalOrAnimatedValue(MinWidthProperty) && min == 0 && layout.MinWidth.IsSet)
             {
-                min = Math.Max(0, layout.MinWidth.Resolve(basisWidth, 0) + chrome);
+                min = Math.Max(0, layout.MinWidth.Resolve(basisWidth, 0));
             }
 
-            if (double.IsPositiveInfinity(max) && layout.MaxWidth.IsSet)
+            if (!HasLocalOrAnimatedValue(MaxWidthProperty) && double.IsPositiveInfinity(max) && layout.MaxWidth.IsSet)
             {
                 var resolved = layout.MaxWidth.Resolve(basisWidth, double.PositiveInfinity);
-                max = double.IsPositiveInfinity(resolved) ? resolved : Math.Max(0, resolved + chrome);
+                max = double.IsPositiveInfinity(resolved) ? resolved : Math.Max(0, resolved);
             }
+            if (!HasLocalOrAnimatedValue(MinWidthProperty)) min += chrome;
+            if (!HasLocalOrAnimatedValue(MaxWidthProperty)) max += chrome;
         }
 
-        return (min, max);
+        return (min, Math.Max(min, max));
     }
 
     private (double Min, double Max) ResolveEffectiveHeightBounds(CssLayoutState? layout, double basisHeight)
     {
+        if (CssDisplayLayout.IsSubgridded(this, true))
+            return (HasLocalOrAnimatedValue(MinHeightProperty) ? MinHeight : 0,
+                Math.Max(HasLocalOrAnimatedValue(MinHeightProperty) ? MinHeight : 0,
+                    HasLocalOrAnimatedValue(MaxHeightProperty) ? MaxHeight : double.PositiveInfinity));
         var min = MinHeight;
         var max = MaxHeight;
         if (layout is not null)
         {
             var chrome = layout.BoxSizing == CssBoxSizing.ContentBox ? GetContentBoxChromeY() : 0;
-            if (min == 0 && layout.MinHeight.IsSet)
+            if (!HasLocalOrAnimatedValue(MinHeightProperty) && min == 0 && layout.MinHeight.IsSet)
             {
-                min = Math.Max(0, layout.MinHeight.Resolve(basisHeight, 0) + chrome);
+                min = Math.Max(0, layout.MinHeight.Resolve(basisHeight, 0));
             }
 
-            if (double.IsPositiveInfinity(max) && layout.MaxHeight.IsSet)
+            if (!HasLocalOrAnimatedValue(MaxHeightProperty) && double.IsPositiveInfinity(max) && layout.MaxHeight.IsSet)
             {
                 var resolved = layout.MaxHeight.Resolve(basisHeight, double.PositiveInfinity);
-                max = double.IsPositiveInfinity(resolved) ? resolved : Math.Max(0, resolved + chrome);
+                max = double.IsPositiveInfinity(resolved) ? resolved : Math.Max(0, resolved);
             }
+            if (!HasLocalOrAnimatedValue(MinHeightProperty)) min += chrome;
+            if (!HasLocalOrAnimatedValue(MaxHeightProperty)) max += chrome;
         }
 
-        return (min, max);
+        return (min, Math.Max(min, max));
     }
 
     /// <summary>aspect-ratio = width/height. Derives the auto axis from the determinate one.</summary>
@@ -157,6 +208,7 @@ public partial class FrameworkElement
         var dp = CssDependencyPropertyLookup.Find(GetType(), "Padding");
         if (dp is null)
         {
+            if (CssDisplayLayout.HasBoxFormatter(this)) return;
             CssDiagnostics.Report(
                 "padding", CssDiagnosticReason.TargetPropertyMissing, GetType(),
                 "no dependency property 'Padding' on this element type; declaration skipped here");
@@ -180,6 +232,11 @@ public partial class FrameworkElement
 
     private double GetContentBoxChromeX()
     {
+        if (CssDisplayLayout.HasBoxFormatter(this))
+        {
+            var insets = CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? double.NaN);
+            return insets.Left + insets.Right;
+        }
         double chrome = 0;
         if (CssDependencyPropertyLookup.Find(GetType(), "Padding") is { } paddingDp &&
             GetValue(paddingDp) is Thickness padding)
@@ -198,6 +255,11 @@ public partial class FrameworkElement
 
     private double GetContentBoxChromeY()
     {
+        if (CssDisplayLayout.HasBoxFormatter(this))
+        {
+            var insets = CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? double.NaN);
+            return insets.Top + insets.Bottom;
+        }
         double chrome = 0;
         if (CssDependencyPropertyLookup.Find(GetType(), "Padding") is { } paddingDp &&
             GetValue(paddingDp) is Thickness padding)

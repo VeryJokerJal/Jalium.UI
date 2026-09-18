@@ -78,13 +78,8 @@ public sealed class GpuSmallIconStrokeRenderingTests
         // its source bounds (8,4)-(22,20), StrokeThickness=1.8, into 18x18,
         // then translates the slot to (7,7) in this capture.
         float[] transform = [1.0125f, 0f, 0f, 1.0125f, 0.8125f, 3.85f];
-        float[] commands =
-        [
-            0f, 8f, 12f,
-            0f, 18f, 20f,
-            2f, 8f, 12f,
-            0f, 22f, 12f,
-        ];
+        float[] chevron = [18f, 4f, 8f, 12f, 18f, 20f];
+        float[] shaft = [8f, 12f, 22f, 12f];
 
         for (var frame = 0; frame < 2; frame++)
         {
@@ -92,17 +87,14 @@ public sealed class GpuSmallIconStrokeRenderingTests
             Assert.True(TryBeginDrawWithRetry(target));
             target.Clear(0f, 0f, 0f);
             target.PushTransform(transform);
-            target.StrokePath(
-                18f,
-                4f,
-                commands,
-                white,
-                strokeWidth: 1.8f,
-                closed: false,
-                lineJoin: 0,
-                miterLimit: 10f,
-                lineCap: 0,
-                edgeMode: -1);
+            // This is the actual managed straight-figure specialization:
+            // DrawPathFigurePolygon emits one DrawPolygon call per figure.
+            target.DrawPolygon(
+                chevron, white, strokeWidth: 1.8f, closed: false,
+                lineJoin: 0, miterLimit: 10f);
+            target.DrawPolygon(
+                shaft, white, strokeWidth: 1.8f, closed: false,
+                lineJoin: 0, miterLimit: 10f);
             target.PopTransform();
             if (frame == 1)
                 Assert.Equal(JaliumResult.Ok, target.RequestReadback());

@@ -34,7 +34,7 @@ namespace Jalium.UI.Media.Imaging;
 /// </para>
 /// <para>
 /// Known limitations, all deliberate: text and glyph runs need the native glyph rasterizer and are
-/// skipped; <see cref="DrawImage"/> and backdrop effects are skipped; tile brushes (image / drawing
+    /// skipped; backdrop effects are skipped; tile brushes (image / drawing
 /// / visual) paint nothing; a square clip degrades to its device-space bounding box under a
 /// rotation, which is what the GPU scissor path does too.
 /// </para>
@@ -364,9 +364,89 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     }
 
     /// <inheritdoc />
-    /// <remarks>Bitmap compositing is not implemented; image content is skipped.</remarks>
+    /// <remarks>BitmapImage pixel snapshots are composited with bilinear sampling.</remarks>
     public override void DrawImage(ImageSource imageSource, Rect rect)
     {
+        if (_closed || _opacity <= 0 || rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+        {
+            return;
+        }
+        if (imageSource is not BitmapImage bitmap ||
+            !bitmap.TryGetPixelSnapshot(out var snapshot) || snapshot is null ||
+            snapshot.Width <= 0 || snapshot.Height <= 0)
+        {
+            return;
+        }
+        if (!_matrix.TryInvert(out var inverse)) return;
+
+        var localRect = Translate(rect);
+        var deviceBounds = Rect.Intersect(TransformBounds(localRect), _clipBounds);
+        if (deviceBounds.IsEmpty) return;
+        var x0 = Math.Max(0, (int)Math.Floor(deviceBounds.X));
+        var y0 = Math.Max(0, (int)Math.Floor(deviceBounds.Y));
+        var x1 = Math.Min(_target.PixelWidth, (int)Math.Ceiling(deviceBounds.Right));
+        var y1 = Math.Min(_target.PixelHeight, (int)Math.Ceiling(deviceBounds.Bottom));
+
+        var pixels = snapshot.Pixels;
+        var sourceWidth = snapshot.Width;
+        var sourceHeight = snapshot.Height;
+        var stride = snapshot.Stride;
+        bool rgba = snapshot.Format == NativePixelFormat.Rgba8;
+
+        for (var y = y0; y < y1; y++)
+        {
+            for (var x = x0; x < x1; x++)
+            {
+                var local = inverse.Transform(new Point(x + 0.5, y + 0.5));
+                if (local.X < localRect.X || local.X >= localRect.Right ||
+                    local.Y < localRect.Y || local.Y >= localRect.Bottom)
+                {
+                    continue;
+                }
+
+                var u = ((local.X - localRect.X) / localRect.Width * sourceWidth) - 0.5;
+                var v = ((local.Y - localRect.Y) / localRect.Height * sourceHeight) - 0.5;
+                var ux = Math.Floor(u);
+                var vy = Math.Floor(v);
+                var sx0 = Math.Clamp((int)ux, 0, sourceWidth - 1);
+                var sx1 = Math.Clamp((int)ux + 1, 0, sourceWidth - 1);
+                var sy0 = Math.Clamp((int)vy, 0, sourceHeight - 1);
+                var sy1 = Math.Clamp((int)vy + 1, 0, sourceHeight - 1);
+                var fx = u - ux;
+                var fy = v - vy;
+
+                (double R, double G, double B, double A) Sample(int sx, int sy)
+                {
+                    int offset = (sy * stride) + (sx * 4);
+                    double first = pixels[offset] / 255.0;
+                    double green = pixels[offset + 1] / 255.0;
+                    double third = pixels[offset + 2] / 255.0;
+                    return rgba
+                        ? (first, green, third, pixels[offset + 3] / 255.0)
+                        : (third, green, first, pixels[offset + 3] / 255.0);
+                }
+
+                var c00 = Sample(sx0, sy0);
+                var c10 = Sample(sx1, sy0);
+                var c01 = Sample(sx0, sy1);
+                var c11 = Sample(sx1, sy1);
+                var w00 = (1.0 - fx) * (1.0 - fy);
+                var w10 = fx * (1.0 - fy);
+                var w01 = (1.0 - fx) * fy;
+                var w11 = fx * fy;
+                var clip = ClipCoverage(x, y);
+                if (clip <= 0) continue;
+
+                BlendPixel(
+                    x,
+                    y,
+                    (c00.R * w00) + (c10.R * w10) + (c01.R * w01) + (c11.R * w11),
+                    (c00.G * w00) + (c10.G * w10) + (c01.G * w01) + (c11.G * w11),
+                    (c00.B * w00) + (c10.B * w10) + (c01.B * w01) + (c11.B * w11),
+                    ((c00.A * w00) + (c10.A * w10) + (c01.A * w01) + (c11.A * w11)) *
+                    _opacity * clip);
+            }
+        }
     }
 
     /// <inheritdoc />

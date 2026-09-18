@@ -24,7 +24,7 @@ public sealed class CssTokenReaderTests
     }
 
     [Theory]
-    [InlineData("10vmin")]
+    [InlineData("10unknown")]
     [InlineData("abc")]
     [InlineData("")]
     [InlineData("-")]

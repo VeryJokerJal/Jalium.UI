@@ -37,6 +37,58 @@ bool VelloPerfEnabled()
     return enabled;
 }
 
+bool VelloSmallScanEnabled()
+{
+    static const bool enabled = [] {
+        char buf[16];
+        size_t n = 0;
+        if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VELLO_SMALL_SCAN") != 0 || n == 0) {
+            return true;
+        }
+        return buf[0] != '0';
+    }();
+    return enabled;
+}
+
+bool VelloBatchBarriersEnabled()
+{
+    static const bool enabled = [] {
+        char buf[16];
+        size_t n = 0;
+        if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VELLO_BATCH_BARRIERS") != 0 || n == 0) {
+            return true;
+        }
+        return buf[0] != '0';
+    }();
+    return enabled;
+}
+
+bool VelloStagePerfRequested()
+{
+    static const bool enabled = [] {
+        char buf[16];
+        size_t n = 0;
+        if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VELLO_STAGE_PERF") != 0 || n == 0) {
+            return false;
+        }
+        return buf[0] != '0';
+    }();
+    return enabled;
+}
+
+bool VelloCpuTagScanEnabled()
+{
+    static const bool enabled = [] {
+        char buf[16];
+        size_t n = 0;
+        if (getenv_s(&n, buf, sizeof(buf), "JALIUM_VELLO_CPU_TAG_SCAN") != 0 || n == 0) {
+            return false;
+        }
+        return buf[0] != '0';
+    }();
+    return enabled;
+}
+
 struct VelloPerfStats {
     uint64_t frames = 0;
     uint64_t dispatches = 0;
@@ -49,6 +101,11 @@ struct VelloPerfStats {
     uint64_t drawObjs = 0;
     uint64_t sceneWords = 0;
     uint64_t fineWorkgroups = 0;
+    uint64_t cpuScans = 0;
+    uint64_t smallScans = 0;
+    uint64_t largeScans = 0;
+    uint64_t outputCreates = 0;
+    uint64_t outputReuses = 0;
     std::chrono::steady_clock::time_point lastDump = std::chrono::steady_clock::now();
 };
 
@@ -87,7 +144,8 @@ void VelloPerfBeginFrame()
         std::fprintf(stderr,
                      "[VelloPerf] %.1f fps | dispatch/frame=%.1f | cpu/frame=%.2fms "
                      "(%.0fus/dispatch: encode=%.0f buffers=%.0f desc=%.0f record=%.0f) | "
-                     "tags/frame=%llu drawobj/frame=%llu sceneKB/frame=%.1f fineWG/frame=%llu\n",
+                     "tags/frame=%llu drawobj/frame=%llu sceneKB/frame=%.1f fineWG/frame=%llu "
+                     "scan/frame=%.1fC/%.1fS/%.1fL output/frame=%.1fnew/%.1freused\n",
                      g_perf.frames / elapsed,
                      (double)g_perf.dispatches / (double)g_perf.frames,
                      g_perf.cpuMicros / 1000.0 / (double)g_perf.frames,
@@ -97,7 +155,12 @@ void VelloPerfBeginFrame()
                      (unsigned long long)(g_perf.pathTagBytes / g_perf.frames),
                      (unsigned long long)(g_perf.drawObjs / g_perf.frames),
                      (double)g_perf.sceneWords * 4.0 / 1024.0 / (double)g_perf.frames,
-                     (unsigned long long)(g_perf.fineWorkgroups / g_perf.frames));
+                     (unsigned long long)(g_perf.fineWorkgroups / g_perf.frames),
+                     (double)g_perf.cpuScans / (double)g_perf.frames,
+                     (double)g_perf.smallScans / (double)g_perf.frames,
+                     (double)g_perf.largeScans / (double)g_perf.frames,
+                     (double)g_perf.outputCreates / (double)g_perf.frames,
+                     (double)g_perf.outputReuses / (double)g_perf.frames);
         std::fprintf(stderr,
                      "[VelloGate] skip/frame=%.1f hitB/frame=%.1f unb/frame=%.1f reroute/frame=%.1f "
                      "hitSites[rect=%llu text=%llu poly=%llu ellipse=%llu line=%llu bitmap=%llu other=%llu]\n",
@@ -139,8 +202,10 @@ struct StageShader {
 // Lifetime
 // ============================================================================
 
-D3D12VelloRenderer::D3D12VelloRenderer(ID3D12Device* device, ShaderBlobCache* /*shaderCache*/)
-    : device_(device)
+D3D12VelloRenderer::D3D12VelloRenderer(ID3D12Device* device,
+                                       ShaderBlobCache* /*shaderCache*/,
+                                       uint64_t timestampFrequency)
+    : device_(device), timestampFrequency_(timestampFrequency)
 {
 }
 
@@ -152,13 +217,7 @@ bool D3D12VelloRenderer::Initialize()
     descriptorSize_ =
         device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    D3D12_DESCRIPTOR_HEAP_DESC cpuHeapDesc = {};
-    cpuHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    cpuHeapDesc.NumDescriptors = 1;
-    cpuHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    if (FAILED(device_->CreateDescriptorHeap(&cpuHeapDesc, IID_PPV_ARGS(&cpuUavHeap_)))) {
-        return false;
-    }
+    stageProfilerEnabled_ = InitializeStageProfiler();
 
     initialized_ = true;
     // PSO creation is deferred to the first Dispatch (keeps startup fast when
@@ -169,6 +228,171 @@ bool D3D12VelloRenderer::Initialize()
 void D3D12VelloRenderer::BeginFrame(uint32_t viewportWidth, uint32_t viewportHeight)
 {
     encoder_.BeginFrame(viewportWidth, viewportHeight);
+}
+
+bool D3D12VelloRenderer::InitializeStageProfiler()
+{
+    if (!VelloStagePerfRequested() || timestampFrequency_ == 0) return false;
+
+    D3D12_QUERY_HEAP_DESC queryDesc = {};
+    queryDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    queryDesc.Count = kMaxFrames * kMaxStageProfileQueriesPerFrame;
+    if (FAILED(device_->CreateQueryHeap(&queryDesc, IID_PPV_ARGS(&stageProfileQueryHeap_)))) {
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES heap = {};
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC buffer = {};
+    buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer.Width = sizeof(uint64_t) * kMaxStageProfileQueriesPerFrame;
+    buffer.Height = 1;
+    buffer.DepthOrArraySize = 1;
+    buffer.MipLevels = 1;
+    buffer.SampleDesc.Count = 1;
+    buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    for (uint32_t frame = 0; frame < kMaxFrames; frame++) {
+        if (FAILED(device_->CreateCommittedResource(
+                &heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr, IID_PPV_ARGS(&stageProfileReadback_[frame])))) {
+            stageProfileQueryHeap_.Reset();
+            for (auto& readback : stageProfileReadback_) readback.Reset();
+            return false;
+        }
+        stageProfileReadback_[frame]->SetName(L"JaliumVelloStageTimingReadback");
+        stageProfileRecords_[frame].reserve(kMaxStageProfileDispatches);
+    }
+    stageProfileLastDumpMs_ = GetTickCount64();
+    return true;
+}
+
+D3D12VelloRenderer::StageProfileRecord* D3D12VelloRenderer::BeginStageProfile(
+    ID3D12GraphicsCommandList* cmdList, uint32_t frameIndex)
+{
+    if (!stageProfilerEnabled_ || !cmdList || !stageProfileQueryHeap_) return nullptr;
+    const uint32_t frame = frameIndex % kMaxFrames;
+    uint32_t& cursor = stageProfileQueryCursor_[frame];
+    if (cursor + kStageCount + 1 > kMaxStageProfileQueriesPerFrame) return nullptr;
+
+    auto& records = stageProfileRecords_[frame];
+    if (records.size() >= kMaxStageProfileDispatches) return nullptr;
+    records.emplace_back();
+    StageProfileRecord& record = records.back();
+    record.firstQuery = cursor;
+    record.stages.reserve(kStageCount);
+
+    const uint32_t query = frame * kMaxStageProfileQueriesPerFrame + cursor++;
+    cmdList->EndQuery(stageProfileQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query);
+    return &record;
+}
+
+void D3D12VelloRenderer::MarkStageProfile(ID3D12GraphicsCommandList* cmdList,
+                                          uint32_t frameIndex,
+                                          StageProfileRecord* record,
+                                          Stage stage)
+{
+    if (!record) return;
+    const uint32_t frame = frameIndex % kMaxFrames;
+    uint32_t& cursor = stageProfileQueryCursor_[frame];
+    if (cursor >= kMaxStageProfileQueriesPerFrame) return;
+    const uint32_t query = frame * kMaxStageProfileQueriesPerFrame + cursor++;
+    cmdList->EndQuery(stageProfileQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query);
+    record->stages.push_back(stage);
+}
+
+void D3D12VelloRenderer::ResolveStageProfile(ID3D12GraphicsCommandList* cmdList,
+                                             uint32_t frameIndex,
+                                             StageProfileRecord* record)
+{
+    if (!record || record->stages.empty()) return;
+    const uint32_t frame = frameIndex % kMaxFrames;
+    const uint32_t queryCount = (uint32_t)record->stages.size() + 1;
+    const uint32_t firstQuery = frame * kMaxStageProfileQueriesPerFrame + record->firstQuery;
+    cmdList->ResolveQueryData(
+        stageProfileQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstQuery, queryCount,
+        stageProfileReadback_[frame].Get(), (uint64_t)record->firstQuery * sizeof(uint64_t));
+}
+
+void D3D12VelloRenderer::DecodeStageProfile(uint32_t frameIndex)
+{
+    if (!stageProfilerEnabled_) return;
+    const uint32_t frame = frameIndex % kMaxFrames;
+    auto& records = stageProfileRecords_[frame];
+    uint32_t& cursor = stageProfileQueryCursor_[frame];
+    if (records.empty() || cursor == 0) {
+        records.clear();
+        cursor = 0;
+        return;
+    }
+
+    void* mapped = nullptr;
+    D3D12_RANGE readRange = {0, (SIZE_T)cursor * sizeof(uint64_t)};
+    if (FAILED(stageProfileReadback_[frame]->Map(0, &readRange, &mapped)) || !mapped) {
+        records.clear();
+        cursor = 0;
+        return;
+    }
+
+    const auto* timestamps = static_cast<const uint64_t*>(mapped);
+    for (const StageProfileRecord& record : records) {
+        for (size_t i = 0; i < record.stages.size(); i++) {
+            uint64_t begin = timestamps[record.firstQuery + i];
+            uint64_t end = timestamps[record.firstQuery + i + 1];
+            if (end <= begin) continue;
+            const uint32_t stage = (uint32_t)record.stages[i];
+            stageProfileTicks_[stage] += end - begin;
+            stageProfileSamples_[stage]++;
+        }
+    }
+    stageProfileReadback_[frame]->Unmap(0, nullptr);
+    stageProfileFrames_++;
+    stageProfileDispatches_ += records.size();
+    records.clear();
+    cursor = 0;
+
+    const uint64_t nowMs = GetTickCount64();
+    if (nowMs - stageProfileLastDumpMs_ < 1000 || stageProfileFrames_ == 0) return;
+
+    uint64_t totalTicks = 0;
+    for (uint32_t stage = 0; stage < kStageCount; stage++) {
+        totalTicks += stageProfileTicks_[stage];
+    }
+    auto stageUs = [&](Stage stage) {
+        const uint32_t ix = (uint32_t)stage;
+        if (stageProfileSamples_[ix] == 0) return 0.0;
+        return (double)stageProfileTicks_[ix] * 1'000'000.0 /
+               (double)timestampFrequency_ / (double)stageProfileSamples_[ix];
+    };
+    const double gpuMsPerFrame = (double)totalTicks * 1000.0 /
+                                 (double)timestampFrequency_ /
+                                 (double)stageProfileFrames_;
+    std::fprintf(stderr,
+                 "[VelloStagePerf] frames=%llu dispatch/frame=%.1f stage-gpu/frame=%.3fms\n",
+                 (unsigned long long)stageProfileFrames_,
+                 (double)stageProfileDispatches_ / (double)stageProfileFrames_,
+                 gpuMsPerFrame);
+    std::fprintf(stderr,
+                 "[VelloStagePerf] us/dispatch reduce=%.1f reduce2=%.1f scan1=%.1f "
+                 "scanL=%.1f scanS=%.1f bbox=%.1f flatten=%.1f drawR=%.1f drawL=%.1f "
+                 "clipR=%.1f clipL=%.1f bin=%.1f tile=%.1f countSetup=%.1f count=%.1f "
+                 "backdrop=%.1f coarse=%.1f tilingSetup=%.1f tiling=%.1f fine=%.1f\n",
+                 stageUs(kStagePathtagReduce), stageUs(kStagePathtagReduce2),
+                 stageUs(kStagePathtagScan1), stageUs(kStagePathtagScan),
+                 stageUs(kStagePathtagScanSmall), stageUs(kStageBboxClear),
+                 stageUs(kStageFlatten), stageUs(kStageDrawReduce),
+                 stageUs(kStageDrawLeaf), stageUs(kStageClipReduce),
+                 stageUs(kStageClipLeaf), stageUs(kStageBinning),
+                 stageUs(kStageTileAlloc), stageUs(kStagePathCountSetup),
+                 stageUs(kStagePathCount), stageUs(kStageBackdrop),
+                 stageUs(kStageCoarse), stageUs(kStagePathTilingSetup),
+                 stageUs(kStagePathTiling), stageUs(kStageFine));
+    std::fflush(stderr);
+    stageProfileFrames_ = 0;
+    stageProfileDispatches_ = 0;
+    std::memset(stageProfileTicks_, 0, sizeof(stageProfileTicks_));
+    std::memset(stageProfileSamples_, 0, sizeof(stageProfileSamples_));
+    stageProfileLastDumpMs_ = nowMs;
 }
 
 // ============================================================================
@@ -227,6 +451,7 @@ bool D3D12VelloRenderer::CreatePipelines()
         {kPathtagReduce2, kPathtagReduce2Size},  // kStagePathtagReduce2
         {kPathtagScan1, kPathtagScan1Size},      // kStagePathtagScan1
         {kPathtagScan, kPathtagScanSize},        // kStagePathtagScan
+        {kPathtagScanSmall, kPathtagScanSmallSize}, // kStagePathtagScanSmall
         {kBboxClear, kBboxClearSize},            // kStageBboxClear
         {kFlatten, kFlattenSize},                // kStageFlatten
         {kDrawReduce, kDrawReduceSize},          // kStageDrawReduce
@@ -500,10 +725,13 @@ bool D3D12VelloRenderer::EnsureOutputTexture(uint32_t w, uint32_t h)
     for (size_t i = 0; i < outputFreeList_.size(); i++) {
         if (outputFreeList_[i].w == w && outputFreeList_[i].h == h) {
             outputTexture_ = std::move(outputFreeList_[i].tex);
+            outputAllocationBytes_ = outputFreeList_[i].allocationBytes;
+            outputFreeBytes_ -= outputAllocationBytes_;
             outputFreeList_[i] = std::move(outputFreeList_.back());
             outputFreeList_.pop_back();
             outputW_ = w;
             outputH_ = h;
+            if (VelloPerfEnabled()) g_perf.outputReuses++;
             return true;
         }
     }
@@ -528,6 +756,8 @@ bool D3D12VelloRenderer::EnsureOutputTexture(uint32_t w, uint32_t h)
     outputTexture_->SetName(L"JaliumVelloOutput");
     outputW_ = w;
     outputH_ = h;
+    outputAllocationBytes_ = device_->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+    if (VelloPerfEnabled()) g_perf.outputCreates++;
     return true;
 }
 
@@ -761,22 +991,37 @@ void D3D12VelloRenderer::ForceNewOutputTexture(uint32_t frameIndex)
         pooled.tex = std::move(outputTexture_);
         pooled.w = outputW_;
         pooled.h = outputH_;
+        pooled.allocationBytes = outputAllocationBytes_;
         outputInFlight_[frameIndex % kMaxFrames].push_back(std::move(pooled));
         outputTexture_.Reset();
     }
     outputW_ = 0;
     outputH_ = 0;
+    outputAllocationBytes_ = 0;
 }
 
 void D3D12VelloRenderer::RecycleFrameResources(uint32_t frameIndex)
 {
     uint32_t slot = frameIndex % kMaxFrames;
-    // Bounded pool: a pathological frame must not pin textures forever.
-    constexpr size_t kMaxPooled = 64;
+    if (stageProfilerEnabled_) DecodeStageProfile(slot);
+    // Icon/text interleaving regularly exceeds 64 sub-scenes. A count-only
+    // limit of 64 forced committed allocations every frame even when all
+    // outputs together occupied only a few MiB. Bound actual GPU allocation
+    // bytes (including placement alignment), with a secondary object limit.
+    constexpr uint64_t kMaxPooledBytes = 64ull * 1024 * 1024;
+    constexpr size_t kMaxPooled = 512;
     for (auto& pooled : outputInFlight_[slot]) {
-        if (outputFreeList_.size() < kMaxPooled) {
-            outputFreeList_.push_back(std::move(pooled));
+        if (pooled.allocationBytes > kMaxPooledBytes) continue;
+        // Make room for returning sizes after resize/scene changes instead
+        // of keeping an unused, full pool that prevents new sizes converging.
+        while (!outputFreeList_.empty() &&
+               (outputFreeList_.size() >= kMaxPooled ||
+                outputFreeBytes_ + pooled.allocationBytes > kMaxPooledBytes)) {
+            outputFreeBytes_ -= outputFreeList_.front().allocationBytes;
+            outputFreeList_.erase(outputFreeList_.begin());
         }
+        outputFreeBytes_ += pooled.allocationBytes;
+        outputFreeList_.push_back(std::move(pooled));
     }
     outputInFlight_[slot].clear();
     frameUploads_[slot].offset = 0;
@@ -903,6 +1148,25 @@ void Transition(ID3D12GraphicsCommandList* cl, ID3D12Resource* res,
     cl->ResourceBarrier(1, &b);
 }
 
+template <size_t N>
+void TransitionMany(ID3D12GraphicsCommandList* cl, ID3D12Resource* const (&resources)[N],
+                    D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after,
+                    ID3D12Resource* alternateResource = nullptr,
+                    D3D12_RESOURCE_STATES alternateBefore = D3D12_RESOURCE_STATE_COMMON)
+{
+    D3D12_RESOURCE_BARRIER barriers[N] = {};
+    for (size_t i = 0; i < N; i++) {
+        barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[i].Transition.pResource = resources[i];
+        barriers[i].Transition.StateBefore = resources[i] == alternateResource
+                                                 ? alternateBefore
+                                                 : before;
+        barriers[i].Transition.StateAfter = after;
+        barriers[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    }
+    cl->ResourceBarrier((UINT)N, barriers);
+}
+
 void UavBarrier(ID3D12GraphicsCommandList* cl)
 {
     D3D12_RESOURCE_BARRIER b = {};
@@ -930,6 +1194,53 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
 
     const VelloPackedScene& packed = encoder_.Pack();
     VelloRenderInfo ri = encoder_.BuildRenderInfo();
+    const bool useSmallPathScan = !ri.useLargePathScan && VelloSmallScanEnabled();
+    const bool batchBarriers = VelloBatchBarriersEnabled();
+    constexpr uint32_t kCpuTagScanMaxWgs = 4;
+    const bool useCpuTagScan = useSmallPathScan &&
+                               ri.pathtagReduceWgs <= kCpuTagScanMaxWgs &&
+                               VelloCpuTagScanEnabled();
+
+    // For tiny scenes, mirror vello_encoding::PathMonoid::new/combine on the
+    // CPU and upload the exclusive prefix directly. At <=4 workgroups this is
+    // at most 1,024 tag words / 20 KiB of output and costs less than recording
+    // two dependent GPU dispatches. Larger scenes retain the GPU scan paths.
+    if (useCpuTagScan) {
+        cpuTagMonoids_.resize(ri.tagMonoidsSize);
+        CpuTagMonoid prefix = {};
+        constexpr uint32_t kRepeatedByteBits = 0x01010101u;
+        constexpr uint32_t kStyleSizeWords = sizeof(VelloStyle) / sizeof(uint32_t);
+        auto popcount32 = [](uint32_t value) {
+            value -= (value >> 1u) & 0x55555555u;
+            value = (value & 0x33333333u) + ((value >> 2u) & 0x33333333u);
+            value = (value + (value >> 4u)) & 0x0f0f0f0fu;
+            return (value * 0x01010101u) >> 24u;
+        };
+        for (uint32_t i = 0; i < ri.tagMonoidsSize; i++) {
+            cpuTagMonoids_[i] = prefix;
+            const uint32_t tagWord = packed.data[packed.pathTagBase + i];
+            const uint32_t pointCount = tagWord & 0x03030303u;
+            CpuTagMonoid item = {};
+            item.pathsegIx = popcount32((pointCount * 7u) & 0x04040404u);
+            item.transIx = popcount32(
+                tagWord & ((uint32_t)kVelloPathTagTransform * kRepeatedByteBits));
+            const uint32_t nPoints = pointCount + ((tagWord >> 2u) & kRepeatedByteBits);
+            uint32_t dataWords = nPoints +
+                                 (nPoints & (((tagWord >> 3u) & kRepeatedByteBits) * 15u));
+            dataWords += dataWords >> 8u;
+            dataWords += dataWords >> 16u;
+            item.pathsegOffset = dataWords & 0xffu;
+            item.pathIx = popcount32(
+                tagWord & ((uint32_t)kVelloPathTagPath * kRepeatedByteBits));
+            item.styleIx = popcount32(
+                tagWord & ((uint32_t)kVelloPathTagStyle * kRepeatedByteBits)) * kStyleSizeWords;
+            prefix.transIx += item.transIx;
+            prefix.pathsegIx += item.pathsegIx;
+            prefix.pathsegOffset += item.pathsegOffset;
+            prefix.styleIx += item.styleIx;
+            prefix.pathIx += item.pathIx;
+        }
+    }
     const auto perfT1 = perf ? std::chrono::steady_clock::now() : perfT0;
 
     // Render only the region this sub-scene covers. An empty region means the
@@ -949,12 +1260,16 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
 
     uint64_t sceneBytes = (uint64_t)packed.data.size() * 4;
     uint64_t rampBytes = (uint64_t)scene.rampData.size() * 4;
+    uint64_t cpuTagBytes = useCpuTagScan
+                               ? (uint64_t)cpuTagMonoids_.size() * sizeof(CpuTagMonoid)
+                               : 0;
 
     // One linear arena allocation per sub-scene instead of committed
     // resources: scene | config (256-aligned for the root CBV) | ramps |
     // bump-zero.
     uint64_t arenaNeed = ((sceneBytes + 255) & ~255ull) + 256 +
-                         ((rampBytes + 511) & ~511ull) + 256;
+                         ((rampBytes + 511) & ~511ull) +
+                         ((cpuTagBytes + 255) & ~255ull) + 256;
     FrameUploads& fuSlot = frameUploads_[frameIndex % kMaxFrames];
     if (!EnsureFrameArena(frameIndex, fuSlot.offset + arenaNeed)) return false;
 
@@ -963,8 +1278,12 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
     UploadSlice rampSlice = rampBytes > 0
                                 ? ArenaAlloc(frameIndex, rampBytes, 512)
                                 : UploadSlice{};
+    UploadSlice cpuTagSlice = useCpuTagScan
+                                  ? ArenaAlloc(frameIndex, cpuTagBytes, 256)
+                                  : UploadSlice{};
     UploadSlice bumpZeroSlice = ArenaAlloc(frameIndex, sizeof(VelloBumpAllocators), 256);
     if (!sceneSlice.Valid() || !configSlice.Valid() || !bumpZeroSlice.Valid() ||
+        (useCpuTagScan && !cpuTagSlice.Valid()) ||
         (rampBytes > 0 && !rampSlice.Valid())) {
         return false;
     }
@@ -973,6 +1292,9 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
     std::memset(configSlice.cpu, 0, 256);
     std::memcpy(configSlice.cpu, &ri.config, sizeof(VelloConfig));
     if (rampBytes > 0) std::memcpy(rampSlice.cpu, scene.rampData.data(), (size_t)rampBytes);
+    if (useCpuTagScan) {
+        std::memcpy(cpuTagSlice.cpu, cpuTagMonoids_.data(), (size_t)cpuTagBytes);
+    }
     std::memset(bumpZeroSlice.cpu, 0, sizeof(VelloBumpAllocators));
     const auto perfT2 = perf ? std::chrono::steady_clock::now() : perfT0;
 
@@ -987,6 +1309,12 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
                               sceneBytes);
     cmdList->CopyBufferRegion(bumpBuffer_.Get(), 0, bumpZeroSlice.resource,
                               bumpZeroSlice.offset, sizeof(VelloBumpAllocators));
+    if (useCpuTagScan) {
+        Transition(cmdList, tagMonoidBuffer_.Get(), D3D12_RESOURCE_STATE_COMMON,
+                   D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->CopyBufferRegion(tagMonoidBuffer_.Get(), 0, cpuTagSlice.resource,
+                                  cpuTagSlice.offset, cpuTagBytes);
+    }
 
     bool uploadRamps = rampBytes > 0;
     if (uploadRamps) {
@@ -1031,9 +1359,19 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
         segmentBuffer_.Get(),   ptclBuffer_.Get(),      blendSpillBuffer_.Get(),
         indirectBuffer_.Get(),
     };
-    for (ID3D12Resource* r : uavResources) {
-        Transition(cmdList, r, D3D12_RESOURCE_STATE_COMMON,
-                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (batchBarriers) {
+        TransitionMany(cmdList, uavResources, D3D12_RESOURCE_STATE_COMMON,
+                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       useCpuTagScan ? tagMonoidBuffer_.Get() : nullptr,
+                       D3D12_RESOURCE_STATE_COPY_DEST);
+    } else {
+        for (ID3D12Resource* r : uavResources) {
+            Transition(cmdList, r,
+                       useCpuTagScan && r == tagMonoidBuffer_.Get()
+                           ? D3D12_RESOURCE_STATE_COPY_DEST
+                           : D3D12_RESOURCE_STATE_COMMON,
+                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
     }
     Transition(cmdList, outputTexture_.Get(), D3D12_RESOURCE_STATE_COMMON,
                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -1046,7 +1384,7 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
     // the per-sub-scene output texture and therefore always needs fresh slots
     // (a recorded dispatch's descriptors must never be mutated).
     const uint32_t kSharedDescCount = kStageFine * kSlotsPerStage;
-    const uint32_t kFineDescCount = kSlotsPerStage + 1;  // + the clear UAV slot
+    const uint32_t kFineDescCount = kSlotsPerStage;
     const uint32_t frameSlot = frameIndex % kMaxFrames;
 
     bool sharedValid = (cachedSharedFrame_ == frameSlot) &&
@@ -1145,6 +1483,14 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
             w.SrvStructured(b + 0, sceneBuffer_.Get(), 4, nScene);
             w.SrvStructured(b + 1, reducedScanBuffer_.Get(), kVelloStrideTagMonoid,
                             nReducedScan);
+            w.UavStructured(b + 5, tagMonoidBuffer_.Get(), kVelloStrideTagMonoid,
+                            nTagMonoids);
+        }
+        {
+            uint32_t b = stageBase(kStagePathtagScanSmall);
+            w.SrvStructured(b + 0, sceneBuffer_.Get(), 4, nScene);
+            w.SrvStructured(b + 1, reducedBuffer_.Get(), kVelloStrideTagMonoid,
+                            nReduced);
             w.UavStructured(b + 5, tagMonoidBuffer_.Get(), kVelloStrideTagMonoid,
                             nTagMonoids);
         }
@@ -1281,27 +1627,13 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
         cachedSharedBase_ = sharedBase;
     }
 
-    // Output-clear UAV: the slot reserved at the end of this dispatch's fine
-    // block, plus the CPU-only mirror in cpuUavHeap_.
-    uint32_t clearSlot = fineBase + kSlotsPerStage;
-    w.UavTexture(clearSlot, outputTexture_.Get());
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
-        d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        device_->CreateUnorderedAccessView(outputTexture_.Get(), nullptr, &d,
-                                           cpuUavHeap_->GetCPUDescriptorHandleForHeapStart());
-    }
-
     const auto perfT3 = perf ? std::chrono::steady_clock::now() : perfT0;
 
     cmdList->SetDescriptorHeaps(1, &heapPtr);
 
-    const float clearColor[4] = {0, 0, 0, 0};
-    cmdList->ClearUnorderedAccessViewFloat(
-        w.Gpu(clearSlot), cpuUavHeap_->GetCPUDescriptorHandleForHeapStart(),
-        outputTexture_.Get(), clearColor, 0, nullptr);
-    UavBarrier(cmdList);
+    // Fine writes every pixel in the region, including empty tiles and the
+    // allocator-failure path. Recycled output needs no separate UAV clear.
+    StageProfileRecord* stageProfile = BeginStageProfile(cmdList, frameIndex);
 
     // ------------------------------------------------------------------
     // The dispatch graph
@@ -1316,15 +1648,29 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
         cmdList->SetComputeRootDescriptorTable(2, w.Gpu(stageBase(s) + kSrvSlots));
         cmdList->Dispatch(x, y, z);
         UavBarrier(cmdList);
+        if (stageProfile) MarkStageProfile(cmdList, frameIndex, stageProfile, s);
     };
 
-    runStage(kStagePathtagReduce, ri.pathtagReduceWgs, 1, 1);
-    runStage(kStagePathtagReduce2, ri.pathtagReduce2Wgs, 1, 1);
-    runStage(kStagePathtagScan1, ri.pathtagScan1Wgs, 1, 1);
-    runStage(kStagePathtagScan, ri.pathtagScanWgs, 1, 1);
+    if (!useCpuTagScan) {
+        // Small scan's group zero uses the identity parent and does not read
+        // reduced[]. The large permutation still needs the complete chain.
+        if (!useSmallPathScan || ri.pathtagReduceWgs > 1) {
+            runStage(kStagePathtagReduce, ri.pathtagReduceWgs, 1, 1);
+        }
+        if (!useSmallPathScan) {
+            runStage(kStagePathtagReduce2, ri.pathtagReduce2Wgs, 1, 1);
+            runStage(kStagePathtagScan1, ri.pathtagScan1Wgs, 1, 1);
+            runStage(kStagePathtagScan, ri.pathtagScanWgs, 1, 1);
+        } else {
+            runStage(kStagePathtagScanSmall, ri.pathtagScanWgs, 1, 1);
+        }
+    }
     runStage(kStageBboxClear, ri.bboxClearWgs, 1, 1);
     runStage(kStageFlatten, ri.flattenWgs, 1, 1);
-    runStage(kStageDrawReduce, ri.drawReduceWgs, 1, 1);
+    // draw_leaf also reads reduced[] only for preceding workgroups.
+    if (ri.drawReduceWgs > 1) {
+        runStage(kStageDrawReduce, ri.drawReduceWgs, 1, 1);
+    }
     runStage(kStageDrawLeaf, ri.drawReduceWgs, 1, 1);
     if (ri.clipReduceWgs > 0) {
         runStage(kStageClipReduce, ri.clipReduceWgs, 1, 1);
@@ -1347,6 +1693,9 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
     UavBarrier(cmdList);
     Transition(cmdList, indirectBuffer_.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (stageProfile) {
+        MarkStageProfile(cmdList, frameIndex, stageProfile, kStagePathCount);
+    }
 
     runStage(kStageBackdrop, ri.backdropWgs, 1, 1);
     runStage(kStageCoarse, ri.widthInBins, ri.heightInBins, 1);
@@ -1363,16 +1712,25 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
     UavBarrier(cmdList);
     Transition(cmdList, indirectBuffer_.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (stageProfile) {
+        MarkStageProfile(cmdList, frameIndex, stageProfile, kStagePathTiling);
+    }
 
     runStage(kStageFine, cfg.width_in_tiles, cfg.height_in_tiles, 1);
+    if (stageProfile) ResolveStageProfile(cmdList, frameIndex, stageProfile);
 
     // ------------------------------------------------------------------
     // Return everything to COMMON (mid-frame dispatches share one
     // ExecuteCommandLists, so no implicit state decay happens in between).
     // ------------------------------------------------------------------
-    for (ID3D12Resource* r : uavResources) {
-        Transition(cmdList, r, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                   D3D12_RESOURCE_STATE_COMMON);
+    if (batchBarriers) {
+        TransitionMany(cmdList, uavResources, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       D3D12_RESOURCE_STATE_COMMON);
+    } else {
+        for (ID3D12Resource* r : uavResources) {
+            Transition(cmdList, r, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       D3D12_RESOURCE_STATE_COMMON);
+        }
     }
     Transition(cmdList, bumpBuffer_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                D3D12_RESOURCE_STATE_COMMON);
@@ -1398,6 +1756,9 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
         g_perf.drawObjs += cfg.n_drawobj;
         g_perf.sceneWords += (uint64_t)packed.data.size();
         g_perf.fineWorkgroups += (uint64_t)cfg.width_in_tiles * cfg.height_in_tiles;
+        if (useCpuTagScan) g_perf.cpuScans++;
+        else if (useSmallPathScan) g_perf.smallScans++;
+        else g_perf.largeScans++;
         auto us = [](auto a2, auto b2) {
             return std::chrono::duration<double, std::micro>(b2 - a2).count();
         };

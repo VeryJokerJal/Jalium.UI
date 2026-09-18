@@ -162,6 +162,35 @@ float4 PSMain(VSOut input) : SV_TARGET {
 // Resource creation
 // ============================================================================
 
+bool D3D12DirectRenderer::EnsureStencilPathResources()
+{
+    if (stencilPathReady_) return true;
+    if (stencilPathInitAttempted_) return false;
+
+    stencilPathInitAttempted_ = true;
+    if (CreateStencilPathResources()) return true;
+
+    // Creation publishes shaders, root signatures, PSOs and heaps in stages.
+    // Release any partial optional pipeline so a failed fallback does not retain
+    // memory for the rest of the render target's lifetime.
+    stencilPathRootSig_.Reset();
+    psoStencilFillNonZero_.Reset();
+    psoStencilFillEvenOdd_.Reset();
+    psoStencilCover_.Reset();
+    stencilPathVS_.Reset();
+    stencilPathPS_.Reset();
+    pathResolveRootSig_.Reset();
+    psoPathResolve_.Reset();
+    pathResolveVS_.Reset();
+    pathResolvePS_.Reset();
+    pathMsaaRtvHeap_.Reset();
+    stencilDsvHeap_.Reset();
+    stencilPathReady_ = false;
+    OutputDebugStringA(
+        "[D3D12DirectRenderer] Lazy stencil path init failed; using analytic fallback\n");
+    return false;
+}
+
 bool D3D12DirectRenderer::CreateStencilPathResources()
 {
     if (!device_) return false;
@@ -748,7 +777,7 @@ bool D3D12DirectRenderer::AddStencilPath(
     float r, float g, float b, float a,
     int32_t fillRule)
 {
-    if (!stencilPathReady_ || !inFrame_) return false;
+    if (!inFrame_ || !EnsureStencilPathResources()) return false;
     if (!geom || geom->fillTriangles.empty() || geom->coverTriangles.empty()) {
         return true;
     }

@@ -44,11 +44,12 @@ public sealed class CssInlineStyleTests
     }
 
     [Fact]
-    public void Margin_AutoDegradesToZero()
+    public void Margin_AutoIsDeferredToLayout()
     {
         var border = new Border();
         Css.SetStyle(border, "margin: 0 auto");
         Assert.Equal(new Thickness(0, 0, 0, 0), border.Margin);
+        Assert.True(border.CssLayout!.MarginLeft.IsAuto);
     }
 
     [Fact]

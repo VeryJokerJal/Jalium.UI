@@ -48,15 +48,17 @@ public sealed class CssParserTests
     }
 
     [Fact]
-    public void AtRules_AreSkippedWholesale()
+    public void ConditionalRules_AreRetainedAndImportsAreDeferred()
     {
         var sheet = CssStyleSheet.Parse(
             "@import url('x.css');\n" +
             "@media (min-width: 600px) { Button { color: red } }\n" +
             "TextBlock { color: blue }");
-        var rule = Assert.Single(sheet.Rules);
-        Assert.Equal("TextBlock", rule.Selectors[0].Compounds[0].TypeName);
-        Assert.Equal(2, sheet.Diagnostics.Count);
+        Assert.Equal(2, sheet.Rules.Length);
+        Assert.NotNull(sheet.Rules[0].Condition);
+        Assert.Equal("TextBlock", sheet.Rules[1].Selectors[0].Compounds[0].TypeName);
+        Assert.Single(sheet.Imports);
+        Assert.Single(sheet.Diagnostics);
         Assert.All(sheet.Diagnostics, d => Assert.Equal(CssDiagnosticSeverity.Info, d.Severity));
     }
 
@@ -74,7 +76,7 @@ public sealed class CssParserTests
     [Fact]
     public void InvalidSelector_DropsWholeRuleAndRecovers()
     {
-        var sheet = CssStyleSheet.Parse("Button[attr=x] { color: red } TextBlock { color: blue }");
+        var sheet = CssStyleSheet.Parse("Button[attr=] { color: red } TextBlock { color: blue }");
         var rule = Assert.Single(sheet.Rules);
         Assert.Equal("TextBlock", rule.Selectors[0].Compounds[0].TypeName);
     }
@@ -95,11 +97,13 @@ public sealed class CssParserTests
     }
 
     [Fact]
-    public void SiblingCombinators_AreRejected()
+    public void SiblingCombinators_AreParsed()
     {
         var sheet = CssStyleSheet.Parse("A ~ B { color: red } A + B { color: red } A > B { color: blue }");
-        var rule = Assert.Single(sheet.Rules);
-        Assert.Equal(CssCombinator.Child, rule.Selectors[0].Combinators[0]);
+        Assert.Equal(3, sheet.Rules.Length);
+        Assert.Equal(CssCombinator.GeneralSibling, sheet.Rules[0].Selectors[0].Combinators[0]);
+        Assert.Equal(CssCombinator.AdjacentSibling, sheet.Rules[1].Selectors[0].Combinators[0]);
+        Assert.Equal(CssCombinator.Child, sheet.Rules[2].Selectors[0].Combinators[0]);
     }
 
     [Fact]
@@ -220,7 +224,7 @@ public sealed class CssParserTests
     [Fact]
     public void LineNumbers_AreTracked()
     {
-        var sheet = CssStyleSheet.Parse("Button { color: red }\n\n@media x { }\n");
+        var sheet = CssStyleSheet.Parse("Button { color: red }\n\n@unknown x { }\n");
         var diag = Assert.Single(sheet.Diagnostics);
         Assert.Equal(3, diag.Line);
     }

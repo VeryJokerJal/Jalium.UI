@@ -73,6 +73,25 @@ public class ScrollViewerInertiaTests
     }
 
     [Fact]
+    public void SmoothScroll_HighRefreshFrames_ReachesWholePixelTarget()
+    {
+        var viewer = CreateConfiguredViewer(initialVerticalOffset: 0);
+        SetPrivateField(viewer, "_smoothTargetY", 160.0);
+        SetPrivateField(viewer, "_smoothTargetX", 0.0);
+        SetPrivateField(viewer, "_isSmoothScrolling", true);
+
+        for (var frame = 0;
+             frame < 512 && GetPrivateField<bool>(viewer, "_isSmoothScrolling");
+             frame++)
+        {
+            InvokePrivateMethod(viewer, "AdvanceSmoothScrollByMilliseconds", 4L);
+        }
+
+        Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
+        Assert.Equal(160.0, viewer.VerticalOffset, precision: 3);
+    }
+
+    [Fact]
     public void ScrollViewer_WheelOverScrollBarTrack_ShouldMatchContentWheelDistance()
     {
         var contentViewer = CreateConfiguredViewer(initialVerticalOffset: 100);

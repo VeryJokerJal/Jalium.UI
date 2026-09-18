@@ -129,6 +129,27 @@ public static class ScrollDiagnostics
         Append($"offset name={viewerName} src={source} x={F(offsetX)} y={F(offsetY)}");
     }
 
+    /// <summary>
+    /// Records a detailed phase in the input/metrics/provider pipeline. Callers should
+    /// guard expensive detail construction with <see cref="Enabled"/>.
+    /// </summary>
+    public static void RecordEvent(
+        string elementName,
+        int elementId,
+        string phase,
+        string details)
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        var safeName = string.IsNullOrEmpty(elementName) ? "<unnamed>" : elementName;
+        Append(
+            $"event tick={Environment.TickCount64} thread={Environment.CurrentManagedThreadId} " +
+            $"element={safeName} id={elementId:x8} phase={phase} {details}");
+    }
+
     private static string F(double value)
         => value.ToString("F1", CultureInfo.InvariantCulture);
 

@@ -68,23 +68,28 @@ Transform two_point_to_unit_line(float2 p0, float2 p1)
 [numthreads(256, 1, 1)]
 void main(uint3 local_id : SV_GroupThreadID, uint3 wg_id : SV_GroupID)
 {
-    // Reduce prefix of workgroups up to this one
+    // The first workgroup has an identity prefix and never reads `reduced`.
+    // Avoid scanning 256 identities (and allow the host to omit draw_reduce
+    // when only this workgroup runs). This branch is workgroup-uniform.
+    DrawMonoid prefix = draw_monoid_identity();
     DrawMonoid agg = draw_monoid_identity();
-    if (local_id.x < wg_id.x) {
-        agg = reduced[local_id.x];
-    }
-    sh_scratch[local_id.x] = agg;
-    for (uint i = 0u; i < LG_WG_SIZE; i += 1u) {
-        GroupMemoryBarrierWithGroupSync();
-        if (local_id.x + (1u << i) < WG_SIZE) {
-            DrawMonoid other = sh_scratch[local_id.x + (1u << i)];
-            agg = combine_draw_monoid(agg, other);
+    if (wg_id.x != 0u) {
+        if (local_id.x < wg_id.x) {
+            agg = reduced[local_id.x];
+        }
+        sh_scratch[local_id.x] = agg;
+        for (uint i = 0u; i < LG_WG_SIZE; i += 1u) {
+            GroupMemoryBarrierWithGroupSync();
+            if (local_id.x + (1u << i) < WG_SIZE) {
+                DrawMonoid other = sh_scratch[local_id.x + (1u << i)];
+                agg = combine_draw_monoid(agg, other);
+            }
+            GroupMemoryBarrierWithGroupSync();
+            sh_scratch[local_id.x] = agg;
         }
         GroupMemoryBarrierWithGroupSync();
-        sh_scratch[local_id.x] = agg;
+        prefix = sh_scratch[0];
     }
-    GroupMemoryBarrierWithGroupSync();
-    DrawMonoid prefix = sh_scratch[0];
 
     // This is the same division of work as draw_reduce.
     uint num_blocks_total = (n_drawobj + WG_SIZE - 1u) / WG_SIZE;

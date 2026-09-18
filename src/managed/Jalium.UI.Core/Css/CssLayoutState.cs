@@ -29,9 +29,28 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
     public const byte KindUnset = 0;
     public const byte KindPx = 1;
     public const byte KindPercent = 2;
+    public const byte KindExpression = 3;
+    public const byte KindAuto = 4;
+    public const byte KindNormal = 5;
 
     public readonly double Value;
     public readonly byte Kind;
+    public readonly CssMathExpression? Expression;
+    public readonly CssLengthContext Context;
+
+    private CssLayoutLength(CssMathExpression expression, CssLengthContext context)
+    {
+        Kind = KindExpression;
+        Value = 0;
+        Expression = expression;
+        Context = context;
+    }
+
+    public static CssLayoutLength Math(CssMathExpression expression, CssLengthContext context)
+    {
+        expression.ObserveContainerDependencies(context);
+        return new(expression, context);
+    }
 
     private CssLayoutLength(double value, byte kind)
     {
@@ -40,6 +59,10 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
     }
 
     public static CssLayoutLength Unset => default;
+    public static CssLayoutLength Auto => new(0, KindAuto);
+    public static CssLayoutLength Normal => new(0, KindNormal);
+    public bool IsNormal => Kind == KindNormal;
+    public bool IsAuto => Kind == KindAuto;
 
     public static CssLayoutLength Px(double value) => new(value, KindPx);
 
@@ -48,7 +71,7 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
 
     public bool IsSet => Kind != KindUnset;
 
-    public bool IsPercent => Kind == KindPercent;
+    public bool IsPercent => Kind == KindPercent || Expression?.UsesPercent == true;
 
     /// <summary>
     /// Resolves against the containing-block basis. A percentage against an infinite or
@@ -59,6 +82,8 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
     {
         switch (Kind)
         {
+            case KindExpression:
+                return Expression!.TryEvaluate(Context, basis, out var value) ? value : infinityFallback;
             case KindPx:
                 return Value;
             case KindPercent:
@@ -73,11 +98,12 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
         }
     }
 
-    public bool Equals(CssLayoutLength other) => Kind == other.Kind && Value.Equals(other.Value);
+    public bool Equals(CssLayoutLength other) => Kind == other.Kind && Value.Equals(other.Value) &&
+        Equals(Expression, other.Expression) && Context.Equals(other.Context);
 
     public override bool Equals(object? obj) => obj is CssLayoutLength other && Equals(other);
 
-    public override int GetHashCode() => HashCode.Combine(Value, Kind);
+    public override int GetHashCode() => HashCode.Combine(Value, Kind, Expression, Context);
 }
 
 /// <summary>
@@ -113,6 +139,7 @@ internal sealed class CssLayoutState : IEquatable<CssLayoutState>
 
     // ── Per-layout mutable caches (not part of equality) ──
     internal Thickness MeasureMarginCache;
+    internal double ContainingWidthCache = double.NaN;
     internal bool ArrangeCorrectionQueued;
 
     internal void Seal()

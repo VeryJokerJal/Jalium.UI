@@ -116,8 +116,10 @@ struct GlyphInstance
 {
     float2 position;
     float2 size;
+    float2 skew;
     float2 uvMin;
     float2 uvMax;
+    float2 padding;
     float4 color;
 };
 
@@ -144,7 +146,9 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
 
     GlyphInstance g = glyphs[instanceId + baseInstanceOffset];
     float2 corner = corners[vertexId];
-    float2 pixelPos = g.position + corner * g.size;
+    float2 pixelPos = g.position +
+        corner.x * float2(g.size.x, g.skew.y) +
+        corner.y * float2(g.skew.x, g.size.y);
 
     VsOutput o;
     o.clipPos = float4(

@@ -8,6 +8,7 @@ namespace Jalium.UI.Documents;
 /// <summary>
 /// Represents a flow document that hosts rich flow content.
 /// </summary>
+[ContentProperty(nameof(Blocks))]
 public partial class FlowDocument : FrameworkContentElement, IServiceProvider, IDocumentPaginatorSource, IAddChild
 {
     private Typography? _typography;

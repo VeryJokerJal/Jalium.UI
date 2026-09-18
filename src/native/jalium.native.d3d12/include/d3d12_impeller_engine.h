@@ -92,6 +92,11 @@ public:
     JaliumRenderingEngine GetType() const override { return JALIUM_ENGINE_IMPELLER; }
     bool Initialize() override;
 
+    /// Initializes only the CPU path encoder used by D3D12RenderTarget's hybrid
+    /// path. The standalone GPU executor remains unallocated until Execute or
+    /// ExecuteOnCommandList is actually called.
+    bool InitializeEncoder();
+
     void BeginFrame(uint32_t viewportWidth, uint32_t viewportHeight) override;
     void SetScissorRect(float left, float top, float right, float bottom) override;
     void ClearScissorRect() override;
@@ -447,7 +452,8 @@ private:
 
     ID3D12Device* device_;
     DXGI_FORMAT rtvFormat_;
-    bool initialized_ = false;
+    bool initialized_ = false;             // CPU encoder is ready
+    bool gpuResourcesInitialized_ = false; // standalone GPU executor is ready
 
     uint32_t viewportW_ = 0, viewportH_ = 0;
 

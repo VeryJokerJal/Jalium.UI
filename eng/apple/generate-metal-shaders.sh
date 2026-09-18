@@ -42,7 +42,7 @@ mkdir -p "$work" "$out"
 spv_root="$repo_root/src/native/jalium.native.vulkan/shaders/vello_spv"
 reflection_root="$work/reflection"
 mkdir -p "$reflection_root"
-stages=(pathtag_reduce pathtag_reduce2 pathtag_scan1 pathtag_scan bbox_clear \
+stages=(pathtag_reduce pathtag_reduce2 pathtag_scan1 pathtag_scan pathtag_scan_small bbox_clear \
   flatten draw_reduce draw_leaf clip_reduce clip_leaf binning tile_alloc \
   path_count_setup path_count backdrop coarse path_tiling_setup path_tiling fine)
 air_files=()
@@ -84,7 +84,7 @@ manifest = {
     "rid": sys.argv[2],
     "libraries": {},
     "velloStages": [
-        "pathtag_reduce", "pathtag_reduce2", "pathtag_scan1", "pathtag_scan",
+        "pathtag_reduce", "pathtag_reduce2", "pathtag_scan1", "pathtag_scan", "pathtag_scan_small",
         "bbox_clear", "flatten", "draw_reduce", "draw_leaf", "clip_reduce",
         "clip_leaf", "binning", "tile_alloc", "path_count_setup", "path_count",
         "backdrop", "coarse", "path_tiling_setup", "path_tiling", "fine",

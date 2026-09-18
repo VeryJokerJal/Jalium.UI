@@ -44,7 +44,8 @@ if ($FxcPath) {
 if (-not $fxc) { throw 'fxc.exe not found (install a Windows 10/11 SDK or pass -FxcPath)' }
 Write-Host "Using fxc: $fxc"
 
-# The 19 Vello 0.10.0 compute stages, in dispatch order.
+# The Vello 0.10.0 compute shader permutations, in dispatch order. Both scan
+# variants are compiled; a render executes either the small or large branch.
 # Symbol names MUST stay in sync with the consumers in d3d12_vello.cpp
 # (CreateGPUPipeline references vello_bytecode::k*).
 $stages = @(
@@ -52,6 +53,7 @@ $stages = @(
     @{ File = 'vello_pathtag_reduce2';   Symbol = 'kPathtagReduce2' },
     @{ File = 'vello_pathtag_scan1';     Symbol = 'kPathtagScan1' },
     @{ File = 'vello_pathtag_scan';      Symbol = 'kPathtagScan' },
+    @{ File = 'vello_pathtag_scan_small'; Symbol = 'kPathtagScanSmall' },
     @{ File = 'vello_bbox_clear';        Symbol = 'kBboxClear' },
     @{ File = 'vello_flatten';           Symbol = 'kFlatten' },
     @{ File = 'vello_draw_reduce';       Symbol = 'kDrawReduce' },

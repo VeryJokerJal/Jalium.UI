@@ -30,17 +30,19 @@
 namespace jalium {
 
 // ============================================================================
-// Glyph instance for text shader (48 bytes)
+// Glyph instance for text shader (64 bytes)
 // ============================================================================
 
 struct VkGlyphInstance {
     float posX, posY;       // screen position
-    float sizeX, sizeY;     // quad size
+    float sizeX, sizeY;     // basis diagonal: X-axis.x, Y-axis.y
+    float skewX, skewY;     // basis off-diagonal: Y-axis.x, X-axis.y
     float uvMinX, uvMinY;   // atlas UV top-left
     float uvMaxX, uvMaxY;   // atlas UV bottom-right
+    float padX, padY;       // align float4 color to SPIR-V/std430 offset 48
     float colorR, colorG, colorB, colorA; // premultiplied RGBA
 };
-static_assert(sizeof(VkGlyphInstance) == 48, "VkGlyphInstance must be 48 bytes");
+static_assert(sizeof(VkGlyphInstance) == 64, "VkGlyphInstance must be 64 bytes");
 
 // ============================================================================
 // Glyph Atlas entry — cached position in the atlas bitmap
@@ -146,8 +148,8 @@ struct GlyphKey {
     int16_t  xf21Q = 0;
     int16_t  xf22Q = 0;
 
-    /// True when this key carries a real rotation / skew, i.e. RasterizeGlyph
-    /// must hand DirectWrite the full 2x2 above instead of the aspect matrix.
+    /// True when this key carries a real rotation / skew. RasterizeGlyph keeps
+    /// the strike upright; GenerateGlyphs uses this 2x2 for the oriented basis.
     bool HasGlyphRotation() const {
         return (xf11Q | xf12Q | xf21Q | xf22Q) != 0;
     }
@@ -298,15 +300,13 @@ public:
         // scaleX/scaleY alone and the glyphs are rasterized upright.
         //
         // When it carries a real rotation / skew the run switches to the
-        // ROTATED path: DirectWrite rasterizes each glyph THROUGH the matrix
-        // (so the bitmap in the atlas is already the rotated ink), and the pen
-        // walk is mapped through the same matrix, so the emitted quads are
-        // screen-axis-aligned boxes over pre-rotated ink. Those quads are
-        // already final — the caller must NOT re-magnify them by scaleX/scaleY
-        // (see VulkanRenderTarget's RenderText).
+        // ROTATED path: atlas strikes remain upright, while the pen and both
+        // glyph-quad basis vectors are mapped through the matrix. The oriented
+        // quads are already final — the caller must NOT re-magnify them by
+        // scaleX/scaleY (see VulkanRenderTarget::RenderText).
         const float* linear2x2 = nullptr,
         // Optional {x, y} origin for the emitted TextDecorationRects. Glyph
-        // quads bake their ink into the atlas, so they need the POST-transform
+        // quads carry their oriented basis, so they need the POST-transform
         // origin; decorations are drawn as plain rects that run through the
         // ambient transform again, so they need the PRE-transform one — which
         // is also what makes an underline rotate along with its text. Pass

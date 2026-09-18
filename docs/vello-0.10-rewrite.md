@@ -23,14 +23,14 @@
 
 ## 二、重写内容
 
-### Shader（19 个 compute stage，WGSL→HLSL 逐行移植）
+### Shader（19 个逻辑 compute stage + 1 个 small-scan permutation，WGSL→HLSL 逐行移植）
 
 `src/native/jalium.native.d3d12/shaders/vello_*.cs.hlsl` + `vello_shared.hlsli` + `vello_blend.hlsli`。
 单一 HLSL 源双编译：fxc `/T cs_5_1`（DXBC，`gen_vello_bytecode.ps1` → `d3d12_vello_bytecode.h`）
 和 dxc `-spirv -T cs_6_0 -fvk-use-dx-layout`（`gen_vello_spv.ps1` → `vulkan_vello_shaders.h`）。
 **改任何 vello_*.hlsl 后必须两个生成器都重跑。**
 
-派发序：pathtag_reduce → pathtag_reduce2 → pathtag_scan1 → pathtag_scan →
+派发序：pathtag_reduce → [pathtag_scan_small 或 pathtag_reduce2 → pathtag_scan1 → pathtag_scan] →
 bbox_clear → flatten → draw_reduce → draw_leaf → [clip_reduce → clip_leaf] →
 binning → tile_alloc → path_count_setup → path_count(indirect) → backdrop(dyn) →
 coarse → path_tiling_setup → path_tiling(indirect) → fine(area)。
@@ -54,10 +54,10 @@ CPU 虚线展开、SVG 弧→cubic、打包（pathtag 按 1024 字节零填充�
 ### 后端
 
 - **D3D12**（`d3d12_vello.h/.cpp`，5265 行→约 1240 行）：单根签名（root CBV b0 + SRV 表 t0-t4 + UAV 表 u0-u3），
-  19 PSO 预编译 DXBC，ExecuteIndirect x2，逐派发新建描述符堆并立即 park（#921 纪律原样保留：
+  20 PSO（含 small/large scan 两个 permutation）预编译 DXBC，ExecuteIndirect x2，逐派发新建描述符堆并立即 park（#921 纪律原样保留：
   pendingRetiredResources_/Heaps_ → FlushVelloPaths DrainRetired；ForceNewOutputTexture 停靠语义不变）。
   公共 API 保持所有真实调用点兼容；删除全部死代码（CSS filter 图、mask、COLR、路径缓存、CPU 管线）。
-- **Vulkan**（`vulkan_vello_compute.h/.cpp`）：19 stage 描述符表**按 spirv-dis 实测存活绑定**书写
+- **Vulkan**（`vulkan_vello_compute.h/.cpp`）：20 stage/permutation 描述符表**按 spirv-dis 实测存活绑定**书写
   （shift b→N/t→N+16/u→N+48）；渐变 ramp 变为 sampled image（staging + CopyBufferToImage）；
   输出 storage image 从 RGBA32F 降为 **R8G8B8A8_UNORM**（配合 fine 的
   `[[vk::image_format("rgba8")]]`，该属性用 `-D JALIUM_SPIRV` 门控以免 fxc 报错）；
@@ -77,15 +77,16 @@ CPU 虚线展开、SVG 弧→cubic、打包（pathtag 按 1024 字节零填充�
 
 1. fine 末端**保留 premultiplied 输出**（上游 un-premultiply）—— Jalium 两端合成均预乘约定。
 2. 仅移植 `fine_area` 变体；MSAA8/16 permutation 未移植（上游 Area 同为完整模式）。
-3. pathtag 恒走 large 扫描链（无 `pathtag_scan_small` permutation）；reduce2/scan1 按
-   `align_up(path_tag_wgs,256)/256` 精确派发，pad 区垃圾经论证无害（见编码器头注释）。
+3. D3D12/Vulkan 已按上游阈值选择 `pathtag_scan_small`；Metal 暂仍走 large 链。
+   large 路径的 reduce2/scan1 继续按 `align_up(path_tag_wgs,256)/256` 精确派发，
+   pad 区垃圾经论证无害（见编码器头注释）。
 4. 渐变 ramp 即时解析（无跨帧 RampCache epoch 缓存）；每帧上限 512 条。
 5. 图像笔刷暂不路由 Vello（image 笔刷 EncodeFillPathBrush 返回 false → CPU 三角化回退，行为同旧版）。
 6. `bump` 溢出 failed 位按上游协议整帧丢弃（上游 0.10.0 亦未实现重试；readback 自适应扩容为后续 TODO）。
 
 ## 四、验证
 
-- fxc(cs_5_1) + dxc(spirv) 双编译 19/19 通过；native Debug/Release 全目标零错误。
+- fxc(cs_5_1) + dxc(spirv) 双编译 20/20 通过；native Debug/Release 全目标零错误。
 - `Jalium.UI.Tests` 过滤 Gradient/Brush/RenderContext/Vello：180/180 通过。
 - 视觉：`DesktopDemo` 新增 `VelloTestWindow`（`JALIUM_DEMO_WINDOW=vellotest` +
   `JALIUM_RENDERING_ENGINE=vello`，Program.cs 已接 env），静态特性矩阵
@@ -424,3 +425,207 @@ Impeller 的覆盖分布一致，并达到/超过 Chromium 基准。
 新增 `GpuSmallIconStrokeRenderingTests`：按 Gallery 的真实 stretch 矩阵、stroke 参数和
 4× Path MSAA 设置，在 D3D12/Vulkan × Impeller/Vello 四组合中要求 ≥70 个部分覆盖像素，
 同时验证可见面积、实心核心和水平 shaft；相关 stroke/stencil/effect 回归 57/57 通过。
+
+## 十三、直线 Path 的 DrawPolygon 绕过 Vello（2026-09-01）
+
+真实 Gallery 复测发现 Vello 箭头仍是纯二值，而低层 `StrokePath` 回归已是平滑覆盖。
+两张截图的原始像素统计给出决定性证据：Vello 图只有背景+箭头 **2 种颜色**，正常图有
+**36 个灰度等级**。当前进程加载的 D3D12 DLL 哈希与最新构建一致，排除了旧文件。
+
+根因在更上层：`RenderTargetDrawingContext.DrawPathGeometry` 会把没有曲线的每个
+`PathFigure` 专门化为 `DrawPolygon`。返回箭头因此不是一次 `StrokePath`，而是 chevron
+和 shaft 两次 `DrawPolygon`：
+
+- D3D12 的 `TryEncodePolygonIntoPendingVello` 要求 encoder 已有工作且新图元与 pending
+  bbox 相交；首个/独立 icon 永远不满足，直接落到无 AA 的 triangle/polyline fallback；
+- Vulkan 的 solid `DrawPolygon` 同样绕过 active engine，仅 gradient 才回到 `StrokePath`；
+- 原回归直接调用 `StrokePath`，因此没有覆盖 UI 的真实专门化分支。
+
+修复：
+
+1. D3D12 小型 polygon Vello 路由允许开启新 scene，不再要求 pending overlap；
+2. D3D12 `FillPolygon` 在 Vello 活跃时对 solid/gradient 一视同仁；
+3. Vulkan `DrawPolygon` 的 solid/gradient 都重表达为 line-command stream 后交给
+   `StrokePath`，复用 active engine、capture fallback、clip sync 与 AA 策略；
+4. `GpuSmallIconStrokeRenderingTests` 改为真实的两次 `DrawPolygon`，修复前
+   D3D12/Vello、Vulkan/Vello、Vulkan/Impeller 均稳定得到 0 个部分覆盖像素；修复后
+   四组合全部 ≥70；`GpuSmallIconPathRenderingTests` 追加真实 `FillPolygon` 四组合。
+
+验证：UI 等价 stroke 4/4、直线 fill + cubic path 8/8，且 Vello compute 诊断出现
+`[VkCut]/[VkSpan]`，证明 Vulkan 用例确实经过 compute sub-scene 而非 legacy fallback。
+
+## 十四、小场景 scan 快路 + D3D12 barrier batching（2026-09-03）
+
+前几轮已经把全屏 fine、每段 committed resource 和描述符堆风暴消掉；剩余稳态场景却仍
+对每个很小的子场景固定执行 large pathtag 链。MillionScroll 实测每帧 3 个子场景、合计
+仅约 113 个 path-tag 字节；Jalium.One 滚动时也几乎全是几十字节的小图标，而上游只有
+`path_tag_wgs > 256`（即 tag 流超过约 256 KiB）才需要 reduce2/scan1。
+
+### 修复
+
+1. 移植上游 `pathtag_scan.wgsl` 的 `small` permutation 到
+   `vello_pathtag_scan_small.cs.hlsl`，D3D12/Vulkan 在阈值内从
+   `reduce → reduce2 → scan1 → large-scan` 改为 `reduce → small-scan`；大场景仍走原链。
+   `JALIUM_VELLO_SMALL_SCAN=0` 可在两个后端强制旧链做 A/B/逃生。
+2. D3D12 把 22 个 scratch buffer 的同源/同目标 transition 合成一次
+   `ResourceBarrier(N, ...)` 调用（状态语义不变），减少每子场景 42 次驱动入口；
+   `JALIUM_VELLO_BATCH_BARRIERS=0` 可恢复逐条提交。
+3. `JALIUM_VELLO_PERF` 增加 `scan/frame=C/S/L`，可直接证明真实 workload 走了
+   CPU/small/large 哪个分支；
+   Vello Dispatch 前补 `GpuTimingCategory::Path`，不再把 compute 时间错误归到前一批 SDF。
+4. MillionScroll 的 JSON 增加 GPU total/path/SDF/text/bitmap/other 分位数；默认渲染线程
+   的 EndDraw worker 补发硬件 timestamp（此前只有 inline 路径发布，默认模式恒 0 样本）。
+5. Jalium.One 保持 Vello 为默认，同时支持 `JALIUM_RENDERING_ENGINE=impeller` A/B；
+   `JALIUM_FRAME_PERF=1` 每秒输出实际完成帧数，不需要打开 DevTools。
+
+### 结果
+
+Release、相同二进制、MillionScroll 1,000,000 行、120 px/tick、5 s 预热 + 15 s 采样，
+small-scan 开/关各两轮的均值如下（FPS 被 16 ms 驱动定时器封顶，故看帧耗时）：
+
+| 指标 | large scan | small scan | 变化 |
+|---|---:|---:|---:|
+| frame p50 | 4.030 ms | **3.688 ms** | **-8.5%** |
+| frame p95 | 5.364 ms | **4.812 ms** | **-10.3%** |
+| render p50 | 1.203 ms | **1.089 ms** | **-9.5%** |
+| present p50 | 1.505 ms | **1.373 ms** | **-8.8%** |
+| GPU total p50（inline timestamp A/B） | 0.321 ms | **0.309 ms** | **-3.5%** |
+
+barrier batching 的反向顺序干净配对中，frame p50 4.374 → **4.157 ms**、render p50
+1.254 → **1.158 ms**、present p50 1.767 → **1.534 ms**；另一配对的关闭组受系统抖动
+污染而剔除，不用它夸大收益。
+
+真实 Jalium.One（1600×900、打开本仓 `.slnx`、12 s 加载预热 + 同一 12 s 定向滚轮
++ 2 s 收尾；完成帧为整次进程累计，CPU 为滚轮开始后的 14 s 区间）：
+
+| 路径 | 完成帧 | 滚动段进程 CPU |
+|---|---:|---:|
+| Vello，small/barrier 都关闭 | 2,275 | 2.422 s |
+| Vello，默认优化 | **2,300** | **2.062 s** |
+| Impeller | 2,328 | 2.031 s |
+
+即本轮让 Vello 的 CPU 消耗下降约 **14.9%**、完成帧增加约 **1.1%**；优化后相对
+Impeller 仅少约 **1.2%** 帧、CPU 多约 **1.5%**，该真实滚动场景已基本追平。
+
+### 验证
+
+- fxc/DXBC 与 dxc/SPIR-V 20/20 编译；新 SPIR-V 经 `spirv-val`，反射绑定
+  `{0,16,17,48}`、workgroup `256×1×1` 与上游一致；
+- native Release/Debug 全目标构建通过；D3D12/Vulkan 的 small 与强制 large 分支均执行；
+- Vello/Gradient/小图标像素回归 55/55；
+- 扩展 RenderTarget/Backend/Rendering 回归 272/272；
+- Vulkan + `VK_LAYER_KHRONOS_validation` 自动滚动 8 s，validation warning/error **0**。
+
+经典 Vello compute 的 GPU p50 在小场景仍高于 Impeller；下一节继续用按 stage timestamp
+拆解剩余固定 dispatch，而不是再猜 CPU 侧资源分配。
+
+## 十五、按 stage GPU timestamp + tiny-scene CPU pathtag scan（2026-09-03）
+
+新增 `JALIUM_VELLO_STAGE_PERF=1`：D3D12 Vello 懒创建独立 timestamp query heap，
+每个实际执行的 stage 后写一个 query；结果 Resolve 到当前 frame slot，只有该槽 fence
+完成、被下一帧复用时才 Map。常态不开启时不创建 query/readback 资源，仅保留一次 false
+分支。该探针也在 Debug + D3D12 调试层下跑过资源生命周期回归。
+
+MillionScroll（3 subscene/frame）的稳定区间：
+
+- small scan：stage 合计约 **0.30–0.34 ms/frame**；
+- 强制 large scan：约 **0.41–0.47 ms/frame**，直接证明第十四节不是 CPU 假优化；
+- 单段热点并不集中：`flatten`/`coarse` 各约 14–16 µs，`fine` 约 10–12 µs，
+  small-scan 约 7–8 µs，其余多为 2–7 µs。结论是小场景主要受多次 dispatch 的固定延迟支配。
+
+上游 CPU shader 已提供 pathtag monoid 算法。D3D12 因此新增更短的 tiny-scene 路径：
+
+1. 当 `path_tag_wgs <= 4`（tag 流 ≤4 KiB、monoid 输出 ≤20 KiB）时，CPU 对 packed tag
+   word 做完全相同的 exclusive prefix scan；
+2. 结果从既有 frame upload arena 分配并一次 CopyBufferRegion 到 tag-monoid buffer；
+3. GPU 跳过 `pathtag_reduce + pathtag_scan_small` 两个 stage；5–20 KiB 的拷贝换掉两次
+   dispatch/UAV barrier。超过 4 WG 仍走 GPU small scan，超过 256 WG 仍走 large scan；
+4. 该路径保留为 opt-in 实验，`JALIUM_VELLO_CPU_TAG_SCAN=1` 开启；真实可见窗口的
+   高密度 path/text 交错负载出现回退反馈后，不再把隐藏窗口基准的收益外推为默认策略；
+   `JALIUM_VELLO_SMALL_SCAN=0` 优先级更高，会强制整个旧 large 链以便回归。
+
+### A/B 结果
+
+MillionScroll、同二进制、15 s × 两轮反向顺序均值：
+
+| 指标 | GPU small scan | CPU tag scan | 变化 |
+|---|---:|---:|---:|
+| frame p50 | 2.826 ms | **2.735 ms** | **-3.2%** |
+| frame p95 | 4.253 ms | **3.981 ms** | **-6.4%** |
+| render p50 | 0.758 ms | **0.733 ms** | **-3.2%** |
+| present p50 | 1.085 ms | **1.039 ms** | **-4.3%** |
+| Vello CPU/dispatch | 48 µs | **约 42 µs** | **约 -12.5%** |
+
+GPU total p50 两组均约 1.42 ms（差 <1%，噪声级），符合“省的是 command submission
+固定成本而非 shader 吞吐”的判断。3-WG PathPerf 的 12 s 进程 CPU 3.266 → **3.062 s**
+（-6.2%），证明阈值不只对单-WG 图标有效。
+
+真实 Jalium.One 隐藏窗口同一滚动序列在 opt-in 下变为 **2,314 帧 / 1.859 s CPU**：相对本轮最初旧链
+的 2,275 / 2.422 s，完成帧 +1.7%、CPU -23.2%；相对 Impeller 的 2,328 / 2.031 s，
+只少约 0.6% 帧且进程 CPU 低约 8.5%。
+
+验证：Release 广泛渲染回归 272/272；opt-in CPU scan、默认 GPU small scan、强制 large scan
+均分别执行；Debug + D3D12 调试层 + stage profiler 55/55；Vulkan validation 仍为零发现。
+
+## 十六、密集交错绘制：单工作组归约与纹理池容量（2026-09-05）
+
+继续对照本地 `vello-0.10.0/vello_shaders/shader/pathtag_scan.wgsl`、
+`draw_leaf.wgsl` 和 `fine.wgsl`，针对实际 UI 常见的 path/text 交错场景优化，
+保留 Vello compute 渲染和原来的覆盖精度。
+
+### 改动
+
+1. **单工作组不再执行无用 reduce**（D3D12/Vulkan）：small pathtag scan 的
+   第 0 个工作组只需要单位元前缀，完全不读 `reduced`；当 tag 流 ≤1024 字节时
+   省掉 `pathtag_reduce`。`draw_leaf` 同理，draw object ≤256 时省掉 `draw_reduce`。
+   多工作组仍正常归约；`JALIUM_VELLO_SMALL_SCAN=0` 仍保留完整 large pathtag 链。
+2. **着色器跳过第 0 组的零前缀扫描**：两个 leaf/scan 着色器使用工作组一致的
+   `wg_id.x != 0` 分支，跳过全零共享内存扫描及同步；其他工作组仍读取前序归约。
+3. **取消每段输出清屏**（D3D12/Vulkan）：fine 本来就覆盖区域内所有像素，包括
+   空 tile。为保持溢出语义，`ptcl[0] == ~0u` 分支改为写透明像素再返回，
+   不依赖提前清屏。Vulkan 的输出图可能大于当前区域，取消整图 clear 也避免为
+   前面大子场景的尺寸反复付费；合成仍限制在当前区域内。
+4. **D3D12 输出池按实际分配字节限额**：原池最多 64 张，74 段/帧的固定负载中
+   至少 10 张/帧必须重新创建，无法进入零分配稳态。改为最多 **64 MiB / 512 张**，
+   字节数使用 `GetResourceAllocationInfo`，包含显存对齐开销。回收仍在帧槽 fence
+   完成后进行；池满时让返回的新尺寸替换旧尺寸，避免 resize 后持续 miss。
+   `JALIUM_VELLO_PERF` 增加 `output/frame=Nnew/Mreused`，用于确认是否真正复用。
+
+### A/B 证据与适用范围
+
+1600×900 固定渲染探针：367 个混合 fill/stroke path/polygon、456 次文本绘制，
+每 5 个路径插入一次有重叠的文本，稳定 **74 个 Vello 子场景/帧**。
+同一份 managed 探针，替换本轮修改前/后的 Release native DLL；90 帧预热、
+240 帧采样，按 old → new → new → old 顺序执行，计时阶段关闭 profiler。
+下表是两轮分位数的平均值，所有采样帧均成功。
+
+| 指标 | 修改前 | 修改后 | 变化 |
+|---|---:|---:|---:|
+| CPU 绘制记录 p50 | 5.955 ms | 2.130 ms | -64.2% |
+| CPU 绘制记录 p95 | 6.697 ms | 2.953 ms | -55.9% |
+| 探针帧耗时 p50 | 12.818 ms | 6.827 ms | -46.7% |
+| 探针帧耗时 p95 | 13.851 ms | 8.042 ms | -41.9% |
+| GPU total p50 | 4.583 ms | 4.217 ms | -8.0% |
+| Vello dispatch/帧 | 74 | 74 | 相同工作量 |
+
+这是隐藏 HWND 的固定 GPU 渲染负载，用于隔离管线开销；**不能把耗时倒数当作
+实际可见项目 FPS，也不能据此声称已消除用户报告的全部 20–40 FPS 差距**。
+CPU 降幅明显大于 GPU 降幅，与消除纹理池溢出后持续分配的方向一致。
+独立 profiler 运行确认稳态为 `output/frame=0.0new/74.0reused`，
+`reduce` 和 `drawR` 的 GPU stage 样本均为零，证明上述工作确实被移除。
+
+### 回归入口
+
+- `VelloWorkgroupRenderingTests`：D3D12/Vulkan 均覆盖 1、64、128、255、256、257、
+  512 个对象，交替实心/EvenOdd 孔洞、颜色和变换；大场景后再次渲染小场景，
+  检查前缀、空像素和复用输出。
+- 原生 `vello_fine_output_tests`：直接运行已嵌入的 fine DXBC，预置脏纹理，分别
+  输入空 tile 和失败毒标；逐 RGBA 通道验证目标区域全部变透明，区域外保持原值。
+  配置 `-DJALIUM_D3D12_BUILD_TESTS=ON`，构建 `vello_fine_output_tests` 后运行
+  `ctest --test-dir build_x64_vs18 -C Release -R vello_fine_output --output-on-failure`。
+
+验证结果：D3D12/Vulkan 的 Release、Debug 构建通过；DXBC/SPIR-V 各 20 个
+stage/permutation 重新生成；SPIR-V 验证与全部
+反射绑定/workgroup 检查通过；Release 扩展渲染回归 **408/408**，强制 large scan
+分支的新增像素回归 **2/2**，原生 fine 输出测试 **1/1**（同时检查 D3D12 debug
+layer 错误）。测试目录 DLL 哈希与本轮构建产物一致。

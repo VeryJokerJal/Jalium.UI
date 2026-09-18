@@ -48,6 +48,10 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     private int _cachedFontWeight;
     private int _cachedFontStyle;
     private int _cachedFontStretch;
+    private double? _cachedLineHeight;
+    private int _lineHeightContextGeneration;
+    private long _lineHeightMetricsEpoch;
+    private (long Family, long Size, long Weight, long Style, long Height, long Stacking, long Tree) _lineHeightInputVersions;
 
     private int _selectionStart;
     private int _selectionLength;
@@ -302,7 +306,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         {
             if (_inlines is null)
             {
-                var inlines = new InlineCollection(OnInlinesChanged);
+                var inlines = new InlineCollection(OnInlinesChanged, this);
                 _inlines = inlines;
                 if (!_inlinesExplicitlyModified && _displayText.Length > 0)
                 {
@@ -860,6 +864,10 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // Explicit invalidation can reflect a changed coercion input; only
+        // constraint-only remeasures may reuse the resolved line metrics.
+        if (!IsMeasureValid) _cachedLineHeight = null;
+
         // Negative Padding is legal; the Size constructor is not — clamp both the
         // empty-text fast path and the measured-text sink below.
         var horizontalPadding = Padding.Left + Padding.Right;
@@ -2224,6 +2232,21 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private double GetLineHeight()
     {
+        var contextGeneration = RenderContext.Current is { IsValid: true } context ? context.Generation : 0;
+        var metricsEpoch = TextMeasurement.MetricsCacheEpoch;
+        var inputVersions = (FontFamilyProperty.InheritanceVersion, FontSizeProperty.InheritanceVersion,
+            FontWeightProperty.InheritanceVersion, FontStyleProperty.InheritanceVersion,
+            LineHeightProperty.InheritanceVersion, LineStackingStrategyProperty.InheritanceVersion,
+            FrameworkElement.InheritanceTreeVersion);
+        if (_cachedLineHeight is double cached &&
+            _lineHeightContextGeneration == contextGeneration &&
+            _lineHeightMetricsEpoch == metricsEpoch && _lineHeightInputVersions == inputVersions)
+            return cached;
+
+        _lineHeightContextGeneration = contextGeneration;
+        _lineHeightMetricsEpoch = metricsEpoch;
+        _lineHeightInputVersions = inputVersions;
+
         var fontFamily = FontFamily.Source;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var naturalLineHeight = TextMeasurement.GetLineHeight(
@@ -2233,12 +2256,15 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             FontStyle.ToOpenTypeStyle());
         if (double.IsNaN(LineHeight))
         {
+            _cachedLineHeight = naturalLineHeight;
             return naturalLineHeight;
         }
 
-        return LineStackingStrategy == LineStackingStrategy.MaxHeight
+        var lineHeight = LineStackingStrategy == LineStackingStrategy.MaxHeight
             ? Math.Max(naturalLineHeight, LineHeight)
             : Math.Max(0, LineHeight);
+        _cachedLineHeight = lineHeight;
+        return lineHeight;
     }
 
     private static bool EndsWithLineBreak(string text)
@@ -2254,6 +2280,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private void InvalidateCaches()
     {
+        _cachedLineHeight = null;
         _layoutDirty = true;
         _formattedLinesCacheDirty = true;
         _layoutText = null;
@@ -2485,4 +2512,3 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         double WidthIncludingTrailingWhitespace,
         FormattedText? FormattedText);
 }
-

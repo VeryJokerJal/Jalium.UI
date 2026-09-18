@@ -8,7 +8,7 @@ namespace Jalium.UI.Styling;
 /// equivalent of HTML's &lt;style&gt;), <c>Css.StyleSheets</c> — the same scope as a collection
 /// of pre-parsed sheets.
 /// </summary>
-public static class Css
+public static partial class Css
 {
     public static readonly DependencyProperty StyleProperty =
         DependencyProperty.RegisterAttached(
@@ -84,13 +84,15 @@ public static class Css
 
     private static void OnStyleSheetTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is not FrameworkElement element)
+        if (d is not (FrameworkElement or FrameworkContentElement))
         {
             return;
         }
 
+        var element = CssNode.Get(d);
+
         var state = CssEngine.EnsureState(element);
-        var sheets = GetStyleSheets(element);
+        var sheets = GetStyleSheets(element.Target);
         if (state.DeclaredStyleSheet is { } previous)
         {
             sheets.Remove(previous);
@@ -107,46 +109,61 @@ public static class Css
 
     private static void OnStyleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is FrameworkElement element)
+        if (d is FrameworkElement or FrameworkContentElement)
         {
-            CssEngine.OnInlineStyleChanged(element, e.NewValue as string);
+            CssEngine.OnInlineStyleChanged(CssNode.Get(d), e.NewValue as string);
         }
     }
 
     private static void OnClassChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is not FrameworkElement element)
+        if (d is not (FrameworkElement or FrameworkContentElement))
         {
             return;
         }
+
+        var element = CssNode.Get(d);
 
         var state = CssEngine.EnsureState(element);
         state.Classes = ParseClassList(e.NewValue as string);
         if (CssEngine.IsActive)
         {
             // The element may be an ancestor-position class in a combinator; refresh its subtree.
-            CssEvaluationScheduler.InvalidateSubtree(element);
+            CssEngine.InvalidateSelectorDependents(element);
         }
     }
 
     private static void OnStyleSheetsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is not FrameworkElement element)
+        if (d is not (FrameworkElement or FrameworkContentElement))
         {
             return;
         }
 
+        var element = CssNode.Get(d);
+
         var state = CssEngine.EnsureState(element);
+        if (state.ScopedStyleSheets is { } oldCollection && state.StyleSheetsChangedHandler is { } oldHandler)
+            oldCollection.Changed -= oldHandler;
         state.ScopedStyleSheets = e.NewValue as CssStyleSheetCollection;
         if (state.ScopedStyleSheets is { } collection)
         {
             CssEngine.MarkActive();
-            collection.Changed += () =>
+            var weakElement = new WeakReference<CssNode>(element);
+            Action? handler = null;
+            handler = () =>
             {
+                if (!weakElement.TryGetTarget(out var target))
+                {
+                    collection.Changed -= handler;
+                    return;
+                }
                 CssEngine.MarkActive();
                 CssEngine.NotifyCascadeChanged();
-                CssEvaluationScheduler.InvalidateSubtree(element);
+                CssEvaluationScheduler.InvalidateSubtree(target);
             };
+            state.StyleSheetsChangedHandler = handler;
+            collection.Changed += handler;
         }
 
         CssEngine.NotifyCascadeChanged();

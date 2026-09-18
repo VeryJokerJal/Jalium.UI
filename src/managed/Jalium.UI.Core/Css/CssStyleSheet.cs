@@ -40,6 +40,13 @@ internal sealed class CssRule
     public required CssSelector[] Selectors;
     public required CssDeclaration[] Declarations;
     public int RuleIndex;
+    public Uri? BaseUri;
+    public CssCondition? Condition;
+    public string? LayerName;
+    public CssScopeRule? Scope;
+
+    internal IEnumerable<CssSelector> DependencySelectors => Scope is null ? Selectors : Selectors.Concat(Scope.Selectors());
+    internal bool HasStructuralDependencies => Scope is not null || Selectors.Any(s => s.HasStructuralDependencies);
 
     /// <summary>Longhand-expanded declarations, populated lazily by the apply pipeline.</summary>
     internal object? ExpandedDeclarations;
@@ -52,11 +59,14 @@ internal sealed class CssRule
 /// A parsed CSS style sheet. Instances are immutable after parsing and can be shared
 /// across elements, windows, and threads.
 /// </summary>
-public sealed class CssStyleSheet
+public sealed partial class CssStyleSheet
 {
     private readonly CssParseDiagnostic[] _diagnostics;
 
     internal CssRule[] Rules { get; }
+    internal CssImport[] Imports { get; }
+    internal CssLayerDeclaration[] Layers { get; }
+    internal CssPropertyRegistration[] Properties { get; }
 
     internal CssStateMask AncestorStateUnion { get; }
 
@@ -76,9 +86,14 @@ public sealed class CssStyleSheet
     /// </summary>
     internal static Func<Uri, Stream?>? UriStreamResolver { get; set; }
 
-    internal CssStyleSheet(CssRule[] rules, CssParseDiagnostic[] diagnostics, string? sourceLabel)
+    internal CssStyleSheet(CssRule[] rules, CssParseDiagnostic[] diagnostics, string? sourceLabel, CssImport[]? imports = null,
+        CssLayerDeclaration[]? layers = null, CssPropertyRegistration[]? properties = null)
     {
         Rules = rules;
+        Imports = imports ?? [];
+        Layers = layers ?? [];
+        Properties = properties ?? [];
+        if (Properties.Length > 0) CssRegisteredProperties.IsActive = true;
         _diagnostics = diagnostics;
         SourceLabel = sourceLabel;
 
@@ -88,7 +103,7 @@ public sealed class CssStyleSheet
         var usesId = false;
         foreach (var rule in rules)
         {
-            foreach (var selector in rule.Selectors)
+            foreach (var selector in rule.DependencySelectors)
             {
                 ancestorStates |= selector.AncestorStates;
                 anyStates |= selector.RightmostStates | selector.AncestorStates;
@@ -112,6 +127,14 @@ public sealed class CssStyleSheet
         return CssParser.Parse(cssText, sourceLabel);
     }
 
+    public static CssStyleSheet Parse(string cssText, string? sourceLabel, Uri? baseUri)
+    {
+        var sheet = Parse(cssText, sourceLabel);
+        foreach (var rule in sheet.Rules) rule.BaseUri = baseUri;
+        foreach (var property in sheet.Properties) property.BaseUri = baseUri;
+        return sheet;
+    }
+
     public static CssStyleSheet FromStream(Stream stream, string? sourceLabel = null)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -133,7 +156,8 @@ public sealed class CssStyleSheet
 
         using (stream)
         {
-            return FromStream(stream, uri.ToString());
+            using var reader = new StreamReader(stream);
+            return Parse(reader.ReadToEnd(), uri.ToString(), uri);
         }
     }
 }

@@ -194,7 +194,7 @@ public static class ThemeLoader
 
             if (TryParsePackComponentUri(sourceUriText, out var packAssemblyName, out var componentPath))
             {
-                assembly = ResolveAssembly(packAssemblyName);
+                assembly = ResolveAssembly(packAssemblyName, sourceAssembly);
                 if (assembly == null)
                 {
                     LogResourceDictionaryLoadFailure(sourceUri, $"Pack component assembly '{packAssemblyName}' could not be loaded.");
@@ -207,7 +207,7 @@ public static class ThemeLoader
                      sourceUri.Scheme.Equals("resource", StringComparison.OrdinalIgnoreCase))
             {
                 var (resourceAssembly, resourcePath) = ParseResourceUri(sourceUri.AbsoluteUri);
-                assembly = ResolveAssembly(resourceAssembly);
+                assembly = ResolveAssembly(resourceAssembly, sourceAssembly);
                 if (assembly == null)
                 {
                     LogResourceDictionaryLoadFailure(sourceUri, $"Resource assembly '{resourceAssembly}' could not be loaded.");
@@ -815,10 +815,22 @@ public static class ThemeLoader
         return dictionary;
     }
 
-    private static Assembly? ResolveAssembly(string assemblyName)
+    private static Assembly? ResolveAssembly(string assemblyName, Assembly? sourceAssembly = null)
     {
         if (string.IsNullOrWhiteSpace(assemblyName))
             return null;
+
+        // Generated framework dictionaries already carry the exact implementation
+        // assembly that registered their builders. Resolving their nested Source
+        // URIs must not enumerate and materialize every assembly in the process.
+        // Keep the historical discovery order for external/application resources,
+        // where several load contexts may contain the same simple assembly name.
+        var controlsAssembly = ThemeManager.ControlsAssembly;
+        if (ReferenceEquals(sourceAssembly, controlsAssembly) &&
+            string.Equals(controlsAssembly.GetName().Name, assemblyName, StringComparison.Ordinal))
+        {
+            return controlsAssembly;
+        }
 
         var loaded = AppDomain.CurrentDomain.GetAssemblies()
             .FirstOrDefault(a => string.Equals(a.GetName().Name, assemblyName, StringComparison.Ordinal));

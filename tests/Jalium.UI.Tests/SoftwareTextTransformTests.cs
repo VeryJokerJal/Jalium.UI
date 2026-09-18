@@ -45,6 +45,44 @@ public sealed class SoftwareTextTransformTests
             $"a 90°-rotated wide run must be tall, not upright (w={w}px, h={h}px)");
     }
 
+    [RequiresWindowsBackendFact(RenderBackend.Software)]
+    public void Software_GdiMaskCache_IsByteIdenticalToFirstRender()
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(RenderBackend.Software);
+        using var renderTarget = context.CreateRenderTarget(window.Hwnd, Width, Height);
+        using var white = context.CreateSolidBrush(0.85f, 0.92f, 1f, 0.8f);
+        using var format = context.CreateTextFormat("Segoe UI", 18f);
+
+        byte[] first = RenderAndRead();
+        byte[] cached = RenderAndRead();
+        Assert.Equal(first, cached);
+
+        byte[] RenderAndRead()
+        {
+            Assert.True(renderTarget.TryBeginDraw());
+            renderTarget.Clear(0.02f, 0.03f, 0.05f, 1f);
+            renderTarget.DrawText(
+                "Cached text — 中文 123",
+                format,
+                17.25f,
+                21.5f,
+                280f,
+                160f,
+                white);
+            Assert.Equal(JaliumResult.Ok, renderTarget.RequestReadback());
+            Assert.Equal(JaliumResult.Ok, renderTarget.TryEndDraw());
+            var pixels = new byte[Width * Height * 4];
+            Assert.Equal(
+                JaliumResult.Ok,
+                renderTarget.FetchReadback(
+                    pixels, Width * 4u, out int capturedWidth, out int capturedHeight));
+            Assert.Equal(Width, capturedWidth);
+            Assert.Equal(Height, capturedHeight);
+            return pixels;
+        }
+    }
+
     private static byte[] RenderText(float[]? matrix)
     {
         using var window = new HiddenNativeWindow(Width, Height);

@@ -30,6 +30,30 @@ public sealed class GpuTextDpiRenderingTests
     public void Vulkan_AnisotropicSmallText_PreservesGlyphHeightAndStems() =>
         AssertAnisotropicSmallTextContract(RenderBackend.Vulkan);
 
+    [RequiresWindowsBackendFact(RenderBackend.D3D12)]
+    public void D3D12_RotatedText_SnapsTheRunAsOneUnit() =>
+        AssertRotatedTextUsesOnePixelPhase(RenderBackend.D3D12);
+
+    [RequiresWindowsBackendFact(RenderBackend.Vulkan)]
+    public void Vulkan_RotatedText_SnapsTheRunAsOneUnit() =>
+        AssertRotatedTextUsesOnePixelPhase(RenderBackend.Vulkan);
+
+    [RequiresWindowsBackendFact(RenderBackend.D3D12)]
+    public void D3D12_StaticRotatedText_PreservesSharpCoreCoverage() =>
+        AssertStaticRotatedTextSharpness(RenderBackend.D3D12);
+
+    [RequiresWindowsBackendFact(RenderBackend.Vulkan)]
+    public void Vulkan_StaticRotatedText_PreservesSharpCoreCoverage() =>
+        AssertStaticRotatedTextSharpness(RenderBackend.Vulkan);
+
+    [RequiresWindowsBackendFact(RenderBackend.D3D12)]
+    public void D3D12_RotationTurnsTheGlyphOutlineItself() =>
+        AssertRotationTurnsTheGlyphOutline(RenderBackend.D3D12);
+
+    [RequiresWindowsBackendFact(RenderBackend.Vulkan)]
+    public void Vulkan_RotationTurnsTheGlyphOutlineItself() =>
+        AssertRotationTurnsTheGlyphOutline(RenderBackend.Vulkan);
+
     [RequiresWindowsBackendFact(RenderBackend.Vulkan)]
     public void Vulkan_AtlasGrowth_ReemitsGlyphsDroppedByFullInitialAtlas() =>
         AssertAtlasGrowthReemitsDroppedGlyphs(RenderBackend.Vulkan);
@@ -46,6 +70,8 @@ public sealed class GpuTextDpiRenderingTests
         using var blackBrush = context.CreateSolidBrush(0f, 0f, 0f, 1f);
         using var whiteBrush = context.CreateSolidBrush(1f, 1f, 1f, 1f);
         using var sentinelFormat = context.CreateTextFormat("Consolas", 20f);
+
+        var initialGlyphCapacity = 0;
 
         const string warmupText =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -77,6 +103,17 @@ public sealed class GpuTextDpiRenderingTests
                     // remains invisible on the black capture background.
                     target.DrawText(
                         warmupText, format, 0f, 0f, Width, Height, blackBrush);
+
+                    // Vulkan creates its atlas on the first text draw. Capture
+                    // the actual initial capacity before any frame-boundary
+                    // growth instead of assuming a backend's startup size.
+                    if (initialGlyphCapacity == 0)
+                    {
+                        Assert.True(target.TryQueryGpuStats(out var initialStats));
+                        initialGlyphCapacity = initialStats.GlyphSlotsTotal;
+                        Assert.True(initialGlyphCapacity > 0,
+                            $"{backend}: the first text draw did not initialize the glyph atlas.");
+                    }
                 }
 
                 // This glyph is deliberately requested after the warm-up has
@@ -104,9 +141,9 @@ public sealed class GpuTextDpiRenderingTests
                 {
                     Assert.True(target.TryQueryGpuStats(out var stats));
                     Assert.True(
-                        stats.GlyphSlotsTotal > 1024,
+                        stats.GlyphSlotsTotal > initialGlyphCapacity,
                         $"{backend}: stress run did not grow the initial atlas " +
-                        $"(capacity={stats.GlyphSlotsTotal}).");
+                        $"(initial={initialGlyphCapacity}, capacity={stats.GlyphSlotsTotal}).");
                 }
             }
 
@@ -372,6 +409,195 @@ public sealed class GpuTextDpiRenderingTests
             ? new PixelBounds(minX, minY, maxX - minX + 1, maxY - minY + 1)
             : new PixelBounds(0, 0, 0, 0);
         return new TextCapture(pixels, bounds);
+    }
+
+    private static void AssertRotatedTextUsesOnePixelPhase(RenderBackend backend)
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(backend);
+        using var target = context.CreateRenderTarget(window.Hwnd, Width, Height);
+        using var brush = context.CreateSolidBrush(1f, 1f, 1f, 1f);
+        using var format = context.CreateTextFormat("Microsoft YaHei UI", 14f);
+
+        format.SetTextRenderingMode(2);
+        format.SetTextHintingMode(1);
+
+        // Gallery repro: transform: rotate(-4deg) scale(1.05). Construct five
+        // local origins whose transformed run origins all round to the same
+        // physical pixel (30, 6). A run-level phase therefore produces five
+        // byte-identical captures. Per-glyph AABB snapping does not: different
+        // glyphs cross their own half-pixel boundary at different origins and
+        // the rotated baseline turns into a staircase.
+        const double angle = -4.0 * Math.PI / 180.0;
+        const double scale = 1.05;
+        var m11 = Math.Cos(angle) * scale;
+        var m12 = Math.Sin(angle) * scale;
+        var m21 = -Math.Sin(angle) * scale;
+        var m22 = Math.Cos(angle) * scale;
+        float[] transform =
+        [
+            (float)m11, (float)m12,
+            (float)m21, (float)m22,
+            0f, 0f,
+        ];
+
+        const float y = 8f;
+        var transformedOriginFractions = new[] { 0.08, 0.18, 0.28, 0.38, 0.48 };
+        var captures = transformedOriginFractions
+            .Select(fraction =>
+            {
+                var transformedX = 30.0 + fraction;
+                var localX = (transformedX - m21 * y) / m11;
+                return RenderCapture(
+                    target, brush, format, dpi: 96f,
+                    x: (float)localX, y,
+                    text: "transform 不影响布局 MWMW",
+                    transform: transform);
+            })
+            .ToArray();
+
+        Assert.True(captures[0].Bounds.Width > 0 && captures[0].Bounds.Height > 0,
+            $"{backend}: rotated text produced no visible pixels.");
+        for (var i = 1; i < captures.Length; i++)
+        {
+            Assert.Equal(captures[0].Pixels, captures[i].Pixels);
+        }
+    }
+
+    private static void AssertStaticRotatedTextSharpness(RenderBackend backend)
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(backend);
+        using var target = context.CreateRenderTarget(window.Hwnd, Width, Height);
+        using var brush = context.CreateSolidBrush(1f, 1f, 1f, 1f);
+        using var staticFormat = context.CreateTextFormat("Microsoft YaHei UI", 14f);
+
+        staticFormat.SetTextRenderingMode(2);
+        // Leave TextHintingMode at Auto: this is the normal TextBlock/CSS path
+        // from the Gallery repro.
+
+        const double angle = -4.0 * Math.PI / 180.0;
+        const double scale = 1.05;
+        float[] transform =
+        [
+            (float)(Math.Cos(angle) * scale),
+            (float)(Math.Sin(angle) * scale),
+            (float)(-Math.Sin(angle) * scale),
+            (float)(Math.Cos(angle) * scale),
+            0f, 0f,
+        ];
+
+        var staticCapture = RenderCapture(target, brush, staticFormat, 96f,
+            28.08f, 8f, "transform 不影响布局 MWMW", transform);
+        var staticSharpness = MeasureTextSharpness(staticCapture);
+        Assert.True(
+            staticSharpness.CoreRatio >= 0.30,
+            $"{backend}: static rotated text lost its solid stroke cores " +
+            $"(core ratio={staticSharpness.CoreRatio:F4}).");
+        Assert.True(
+            staticSharpness.Variation >= 1.20,
+            $"{backend}: static rotated text was still bilinear-softened " +
+            $"(variation={staticSharpness.Variation:F4}).");
+    }
+
+    private static (double CoreRatio, double Variation) MeasureTextSharpness(TextCapture capture)
+    {
+        long ink = 0;
+        long coreInk = 0;
+        long variation = 0;
+        var bounds = capture.Bounds;
+        for (var y = bounds.Y; y < bounds.Y + bounds.Height; y++)
+        {
+            for (var x = bounds.X; x < bounds.X + bounds.Width; x++)
+            {
+                var intensity = PixelIntensity(capture.Pixels, x, y);
+                ink += intensity;
+                if (intensity >= 224)
+                {
+                    coreInk += intensity;
+                }
+                if (x + 1 < Width)
+                {
+                    variation += Math.Abs(intensity - PixelIntensity(capture.Pixels, x + 1, y));
+                }
+                if (y + 1 < Height)
+                {
+                    variation += Math.Abs(intensity - PixelIntensity(capture.Pixels, x, y + 1));
+                }
+            }
+        }
+
+        Assert.True(ink > 0, "Sharpness capture contained no ink.");
+        return (coreInk / (double)ink, variation / (double)ink);
+    }
+
+    private static void AssertRotationTurnsTheGlyphOutline(RenderBackend backend)
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(backend);
+        using var target = context.CreateRenderTarget(window.Hwnd, Width, Height);
+        using var brush = context.CreateSolidBrush(1f, 1f, 1f, 1f);
+        using var format = context.CreateTextFormat("Consolas", 28f);
+
+        format.SetTextRenderingMode(2);
+        var upright = RenderCapture(target, brush, format, 96f,
+            12f, 12f, "I");
+        var rotated = RenderCapture(target, brush, format, 96f,
+            12f, 12f, "I", [0f, 1f, -1f, 0f, 96f, 0f]);
+        using var smallFormat = context.CreateTextFormat("Consolas", 14f);
+        smallFormat.SetTextRenderingMode(2);
+        const double smallAngle = -4.0 * Math.PI / 180.0;
+        var smallRotated = RenderCapture(target, brush, smallFormat, 96f,
+            24f, 12f, "I",
+            [
+                (float)Math.Cos(smallAngle), (float)Math.Sin(smallAngle),
+                (float)-Math.Sin(smallAngle), (float)Math.Cos(smallAngle),
+                0f, 0f,
+            ]);
+
+        Assert.True(upright.Bounds.Height > upright.Bounds.Width * 1.5,
+            $"{backend}: upright probe glyph was not vertical " +
+            $"({upright.Bounds.Width}x{upright.Bounds.Height}).");
+        Assert.True(rotated.Bounds.Width > rotated.Bounds.Height * 1.5,
+            $"{backend}: a 90-degree transform moved the glyph pen but left " +
+            $"the glyph outline upright ({rotated.Bounds.Width}x{rotated.Bounds.Height}).");
+        var smallAngleShear = MeasureVerticalStrokeShear(smallRotated);
+        Assert.True(smallAngleShear > 0.05,
+            $"{backend}: -4-degree glyph outline had no measurable clockwise " +
+            $"shear (delta={smallAngleShear:F4}px).");
+    }
+
+    private static double MeasureVerticalStrokeShear(TextCapture capture)
+    {
+        var bounds = capture.Bounds;
+        var bandHeight = Math.Max(1, bounds.Height / 3);
+        static double Centroid(TextCapture c, int firstY, int lastY)
+        {
+            double weightedX = 0;
+            double weight = 0;
+            for (var y = firstY; y < lastY; y++)
+            {
+                for (var x = c.Bounds.X; x < c.Bounds.X + c.Bounds.Width; x++)
+                {
+                    var intensity = PixelIntensity(c.Pixels, x, y);
+                    weightedX += x * intensity;
+                    weight += intensity;
+                }
+            }
+            return weight > 0 ? weightedX / weight : 0;
+        }
+
+        var top = Centroid(capture, bounds.Y, bounds.Y + bandHeight);
+        var bottom = Centroid(capture,
+            bounds.Y + bounds.Height - bandHeight,
+            bounds.Y + bounds.Height);
+        return bottom - top;
+    }
+
+    private static int PixelIntensity(byte[] pixels, int x, int y)
+    {
+        var offset = (y * Width + x) * 4;
+        return Math.Max(pixels[offset], Math.Max(pixels[offset + 1], pixels[offset + 2]));
     }
 
     private static bool TryBeginDrawWithRetry(RenderTarget target)

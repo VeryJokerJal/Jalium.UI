@@ -54,7 +54,14 @@ internal static partial class CssCoreProperties
             else if (Eq(ident, "center")) { alignment = TextAlignment.Center; }
             else if (Eq(ident, "justify")) { alignment = TextAlignment.Justify; }
 
-            return alignment is null ? null : new CssNamedValue("text-align", "TextAlignment", alignment);
+            if (alignment is null) return null;
+            var flow = ident.ToString().ToLowerInvariant() switch
+            {
+                "start" => CssFlowTextAlignment.Start, "end" => CssFlowTextAlignment.End,
+                "right" => CssFlowTextAlignment.Right, "center" => CssFlowTextAlignment.Center,
+                "justify" => CssFlowTextAlignment.Justify, _ => CssFlowTextAlignment.Left,
+            };
+            return new CssFlowTextAlignmentValue(flow);
         });
 
         RegisterLonghand("text-overflow", (ref CssTokenReader reader, CssCompileContext ctx_) =>
@@ -205,7 +212,7 @@ internal static partial class CssCoreProperties
         return new CssDeferredValue(cssName, "FontSize",
             (in CssApplyContext ctx, out object? value) =>
             {
-                var basis = ctx.Lengths.WithElementFontSize(ctx.Lengths.InheritedFontSize);
+                var basis = ctx.Lengths.ForFontProperty();
                 var ok = captured.TryResolve(basis, CssPercentBasis.ElementFontSize, out var px) && px > 0;
                 value = px;
                 return ok;
@@ -295,12 +302,19 @@ internal static partial class CssCoreProperties
             if (Eq(ident, "normal") && probe.AtEnd)
             {
                 reader = probe;
-                return new CssNamedValue("line-height", "LineHeight", double.NaN);
+                return new CssComputedLineHeightValue(default);
             }
 
             return null;
         }
 
+        probe = reader;
+        if (probe.TryReadLength(out var length) && probe.AtEnd && length.Unit != CssUnit.None)
+        {
+            if (length.Expression is null && length.Value < 0) return null;
+            reader = probe;
+            return new CssLengthLineHeightValue(length);
+        }
         if (!reader.TryReadNumber(out var value, out var unit) || !reader.AtEnd)
         {
             return null;
@@ -316,28 +330,9 @@ internal static partial class CssCoreProperties
             return null;
         }
 
-        switch (unit)
-        {
-            case CssUnit.None:
-            case CssUnit.Percent:
-            case CssUnit.Em:
-                // Multiplier semantics: resolve against the element's font size at apply time.
-                var factor = unit == CssUnit.Percent ? value / 100.0 : value;
-                return new CssDeferredValue("line-height", "LineHeight",
-                    (in CssApplyContext ctx, out object? result) =>
-                    {
-                        result = factor * ctx.Lengths.ElementFontSize;
-                        return true;
-                    });
-            default:
-                var length = new CssLength(value, unit);
-                if (!length.IsAbsolute)
-                {
-                    return null;
-                }
-
-                return new CssNamedValue("line-height", "LineHeight", length.ToPxAbsolute());
-        }
+        if (unit == CssUnit.None) return new CssComputedLineHeightValue(new(CssLineHeightKind.Number, value));
+        var length = new CssLength(value, unit);
+        return length.IsLengthUnit || unit == CssUnit.Percent ? new CssLengthLineHeightValue(length) : null;
     }
 
     private static bool ExpandFontShorthand(
@@ -402,7 +397,7 @@ internal static partial class CssCoreProperties
             return false;
         }
 
-        CssCompiledValue lineHeightValue = new CssNamedValue("font", "LineHeight", double.NaN);
+        CssCompiledValue lineHeightValue = new CssComputedLineHeightValue(default);
         if (reader.TryReadSlash())
         {
             if (!reader.TryReadNumber(out var lhValue, out var lhUnit))

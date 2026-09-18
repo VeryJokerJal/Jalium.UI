@@ -8,7 +8,8 @@ namespace Jalium.UI.Interop;
 public sealed class NativeBitmap : IDisposable
 {
     private nint _handle;
-    private bool _disposed;
+    private int _disposed;
+    private RenderContext.BackendResourceLease? _contextLease;
 
     /// <summary>
     /// Gets the native handle.
@@ -18,7 +19,9 @@ public sealed class NativeBitmap : IDisposable
     /// <summary>
     /// Gets whether the bitmap is valid.
     /// </summary>
-    public bool IsValid => _handle != nint.Zero && !_disposed;
+    public bool IsValid =>
+        _handle != nint.Zero &&
+        Volatile.Read(ref _disposed) == 0;
 
     /// <summary>
     /// Gets the width of the bitmap.
@@ -35,14 +38,27 @@ public sealed class NativeBitmap : IDisposable
         if (imageData == null || imageData.Length == 0)
             throw new ArgumentException("Image data cannot be null or empty", nameof(imageData));
 
-        _handle = NativeMethods.BitmapCreateFromMemory(context.Handle, imageData, (uint)imageData.Length);
-        if (_handle == nint.Zero)
+        RenderContext.BackendResourceLease? lease = context.AcquireBackendResourceLease();
+        try
         {
-            throw new InvalidOperationException("Failed to create bitmap from image data");
-        }
+            _handle = NativeMethods.BitmapCreateFromMemory(context.Handle, imageData, (uint)imageData.Length);
+            if (_handle == nint.Zero)
+            {
+                throw new InvalidOperationException("Failed to create bitmap from image data");
+            }
 
-        Width = NativeMethods.BitmapGetWidth(_handle);
-        Height = NativeMethods.BitmapGetHeight(_handle);
+            // Publish the pin before any later native metadata query. If such a
+            // query throws, the partially-constructed finalizable wrapper still
+            // destroys the bitmap while its creating backend is alive.
+            _contextLease = lease;
+            lease = null;
+            Width = NativeMethods.BitmapGetWidth(_handle);
+            Height = NativeMethods.BitmapGetHeight(_handle);
+        }
+        finally
+        {
+            lease?.Dispose();
+        }
     }
 
     internal NativeBitmap(RenderContext context, byte[] pixelData, int width, int height, int stride)
@@ -63,20 +79,30 @@ public sealed class NativeBitmap : IDisposable
             throw new ArgumentException("Pixel buffer is smaller than the specified dimensions and stride.", nameof(pixelData));
         }
 
-        _handle = NativeMethods.BitmapCreateFromPixels(context.Handle, pixelData, (uint)width, (uint)height, (uint)stride);
-        if (_handle == nint.Zero)
+        RenderContext.BackendResourceLease? lease = context.AcquireBackendResourceLease();
+        try
         {
-            var bmpBytes = EncodeBgraPixelsAsBmp(pixelData, width, height, stride);
-            _handle = NativeMethods.BitmapCreateFromMemory(context.Handle, bmpBytes, (uint)bmpBytes.Length);
-        }
+            _handle = NativeMethods.BitmapCreateFromPixels(context.Handle, pixelData, (uint)width, (uint)height, (uint)stride);
+            if (_handle == nint.Zero)
+            {
+                var bmpBytes = EncodeBgraPixelsAsBmp(pixelData, width, height, stride);
+                _handle = NativeMethods.BitmapCreateFromMemory(context.Handle, bmpBytes, (uint)bmpBytes.Length);
+            }
 
-        if (_handle == nint.Zero)
+            if (_handle == nint.Zero)
+            {
+                throw new InvalidOperationException("Failed to create bitmap from raw pixel data");
+            }
+
+            _contextLease = lease;
+            lease = null;
+            Width = NativeMethods.BitmapGetWidth(_handle);
+            Height = NativeMethods.BitmapGetHeight(_handle);
+        }
+        finally
         {
-            throw new InvalidOperationException("Failed to create bitmap from raw pixel data");
+            lease?.Dispose();
         }
-
-        Width = NativeMethods.BitmapGetWidth(_handle);
-        Height = NativeMethods.BitmapGetHeight(_handle);
     }
 
     private static byte[] EncodeBgraPixelsAsBmp(byte[] pixelData, int width, int height, int stride)
@@ -135,7 +161,7 @@ public sealed class NativeBitmap : IDisposable
     /// </summary>
     public bool TryUpdatePixels(byte[] pixelData, int width, int height, int stride)
     {
-        if (_disposed || _handle == nint.Zero) return false;
+        if (Volatile.Read(ref _disposed) != 0 || _handle == nint.Zero) return false;
         ArgumentNullException.ThrowIfNull(pixelData);
         if (width <= 0 || height <= 0) return false;
         if (width > int.MaxValue / PixelBufferLayout.BytesPerPixel) return false;
@@ -152,25 +178,48 @@ public sealed class NativeBitmap : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-        if (_handle != nint.Zero)
+        try
         {
-            NativeMethods.BitmapDestroy(_handle);
-            _handle = nint.Zero;
+            var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+            if (handle != nint.Zero)
+            {
+                NativeMethods.BitmapDestroy(handle);
+            }
         }
-
-        GC.SuppressFinalize(this);
+        finally
+        {
+            ReleaseContextLease();
+            GC.SuppressFinalize(this);
+        }
     }
 
     ~NativeBitmap()
     {
-        if (_handle != nint.Zero)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            NativeMethods.BitmapDestroy(_handle);
+            return;
         }
-        _handle = nint.Zero;
-        _disposed = true;
+
+        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+        try
+        {
+            if (handle != nint.Zero)
+            {
+                NativeMethods.BitmapDestroy(handle);
+            }
+        }
+        catch
+        {
+            // Finalizers must never surface native cleanup failures.
+        }
+        finally
+        {
+            ReleaseContextLease();
+        }
     }
+
+    private void ReleaseContextLease()
+        => Interlocked.Exchange(ref _contextLease, null)?.Dispose();
 }

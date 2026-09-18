@@ -76,6 +76,16 @@ internal static class DynamicResourceBindingOperations
     private static readonly object RegistryGate = new();
     private static int _inactiveTargetCount;
 
+    // Collected targets disappear from the ConditionalWeakTables automatically, but the
+    // process-wide refresh registry and key index deliberately keep only weak registrations.
+    // Without an occasional sweep those small metadata records survive forever even though the
+    // visual tree itself is collectible. Piggy-back cleanup on natural GC progress plus registry
+    // growth: no forced collection, no timer/thread, and no full-table scan on every registration.
+    private const int AutomaticCompactionMinimumGrowth = 64;
+    private const int AutomaticCompactionMaximumGrowth = 1024;
+    private static int _lastRegistryCompactionGen0Count = GC.CollectionCount(0);
+    private static int _nextAutomaticCompactionTargetCount = AutomaticCompactionMinimumGrowth;
+
     /// <summary>
     /// 资源键 → 使用它的订阅槽位。定向刷新据此只碰真正引用了变更键的订阅。
     /// </summary>
@@ -566,6 +576,8 @@ internal static class DynamicResourceBindingOperations
             TargetRegistrations.Clear();
             KeyIndex.Clear();
             _inactiveTargetCount = 0;
+            _lastRegistryCompactionGen0Count = GC.CollectionCount(0);
+            _nextAutomaticCompactionTargetCount = AutomaticCompactionMinimumGrowth;
         }
 
         foreach (var registration in registrations)
@@ -618,7 +630,8 @@ internal static class DynamicResourceBindingOperations
             TargetRegistrations.Add(target, registration);
             RegisteredTargets.Add(registration);
 
-            if (_inactiveTargetCount >= 64 && _inactiveTargetCount * 2 >= RegisteredTargets.Count)
+            if ((_inactiveTargetCount >= 64 && _inactiveTargetCount * 2 >= RegisteredTargets.Count) ||
+                ShouldCompactAfterNaturalCollectionNoLock())
             {
                 CompactRegistryNoLock();
             }
@@ -691,7 +704,7 @@ internal static class DynamicResourceBindingOperations
             for (var readIndex = 0; readIndex < entries.Count; readIndex++)
             {
                 var entry = entries[readIndex];
-                if (!entry.IsActive || !entry.Registration.IsActive)
+                if (!IsCurrentKeyIndexEntryNoLock(entry))
                 {
                     continue;
                 }
@@ -722,11 +735,7 @@ internal static class DynamicResourceBindingOperations
                 return;
 
             TargetRegistrations.Remove(target);
-            if (registration.IsActive)
-            {
-                registration.IsActive = false;
-                _inactiveTargetCount++;
-            }
+            DeactivateRegistrationNoLock(registration);
 
             if (_inactiveTargetCount >= 64 && _inactiveTargetCount * 2 >= RegisteredTargets.Count)
             {
@@ -750,7 +759,10 @@ internal static class DynamicResourceBindingOperations
         for (var readIndex = 0; readIndex < RegisteredTargets.Count; readIndex++)
         {
             var registration = RegisteredTargets[readIndex];
-            if (!registration.IsActive || !registration.Target.TryGetTarget(out _))
+            if (!registration.IsActive ||
+                !registration.Target.TryGetTarget(out var target) ||
+                !Subscriptions.TryGetValue(target, out var subscriptions) ||
+                subscriptions.Count == 0)
             {
                 registration.IsActive = false;
                 continue;
@@ -764,7 +776,91 @@ internal static class DynamicResourceBindingOperations
             RegisteredTargets.RemoveRange(writeIndex, RegisteredTargets.Count - writeIndex);
         }
 
+        CompactKeyIndexNoLock();
         _inactiveTargetCount = 0;
+        _lastRegistryCompactionGen0Count = GC.CollectionCount(0);
+
+        // Sweep at most once per observed collection and only after meaningful growth. Small
+        // registries react within 64 additions; large live pages raise the interval gradually,
+        // capped so churn cannot leave an unbounded tail of dead weak metadata behind.
+        var growth = Math.Clamp(
+            RegisteredTargets.Count / 2,
+            AutomaticCompactionMinimumGrowth,
+            AutomaticCompactionMaximumGrowth);
+        _nextAutomaticCompactionTargetCount = RegisteredTargets.Count > int.MaxValue - growth
+            ? int.MaxValue
+            : RegisteredTargets.Count + growth;
+    }
+
+    private static bool ShouldCompactAfterNaturalCollectionNoLock()
+    {
+        return RegisteredTargets.Count >= _nextAutomaticCompactionTargetCount &&
+               GC.CollectionCount(0) != _lastRegistryCompactionGen0Count;
+    }
+
+    private static void CompactKeyIndexNoLock()
+    {
+        foreach (var pair in KeyIndex.ToArray())
+        {
+            var entries = pair.Value;
+            var writeIndex = 0;
+            for (var readIndex = 0; readIndex < entries.Count; readIndex++)
+            {
+                var entry = entries[readIndex];
+                if (!IsCurrentKeyIndexEntryNoLock(entry))
+                {
+                    continue;
+                }
+
+                entries[writeIndex++] = entry;
+            }
+
+            if (writeIndex < entries.Count)
+            {
+                entries.RemoveRange(writeIndex, entries.Count - writeIndex);
+            }
+
+            if (entries.Count == 0)
+            {
+                KeyIndex.Remove(pair.Key);
+            }
+        }
+    }
+
+    private static bool IsCurrentKeyIndexEntryNoLock(KeyIndexEntry entry)
+    {
+        if (!entry.IsActive || !entry.Registration.IsActive)
+        {
+            entry.IsActive = false;
+            return false;
+        }
+
+        if (!entry.Registration.Target.TryGetTarget(out var target))
+        {
+            entry.IsActive = false;
+            DeactivateRegistrationNoLock(entry.Registration);
+            return false;
+        }
+
+        if (!Subscriptions.TryGetValue(target, out var subscriptions) ||
+            !subscriptions.TryGetValue(entry.SubscriptionKey, out var subscription) ||
+            !ReferenceEquals(subscription.IndexEntry, entry) ||
+            !Equals(subscription.ResourceKey, entry.ResourceKey))
+        {
+            entry.IsActive = false;
+            return false;
+        }
+
+        return true;
+    }
+
+    private static void DeactivateRegistrationNoLock(DynamicResourceTargetRegistration registration)
+    {
+        if (!registration.IsActive)
+            return;
+
+        registration.IsActive = false;
+        _inactiveTargetCount++;
     }
 
     private static void RefreshDynamicResource(FrameworkElement target, SubscriptionKey key)

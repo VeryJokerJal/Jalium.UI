@@ -469,6 +469,7 @@ public abstract class Visual : DependencyObject
 
         OnVisualChildrenChanged(child, null);
         child.OnVisualParentChanged(oldParent);
+        DragDrop.VisualTreeChangedOverride?.Invoke(child);
         Diagnostics.VisualDiagnostics.NotifyVisualChildChanged(
             this,
             child,
@@ -529,6 +530,7 @@ public abstract class Visual : DependencyObject
 
         OnVisualChildrenChanged(null, child);
         child.OnVisualParentChanged(oldParent);
+        DragDrop.VisualTreeChangedOverride?.Invoke(child);
         Diagnostics.VisualDiagnostics.NotifyVisualChildChanged(
             this,
             child,
@@ -787,6 +789,13 @@ public abstract class Visual : DependencyObject
 
     internal virtual Rect ContentBoundsCore =>
         this is UIElement element ? new Rect(element.RenderSize) : Rect.Empty;
+
+    /// <summary>
+    /// Whether descendants may paint beyond this visual's layout bounds. Such a
+    /// subtree cannot be rejected or captured into a texture using RenderSize alone.
+    /// Its individual descendants still participate in ordinary viewport culling.
+    /// </summary>
+    internal virtual bool HasUnboundedContent => false;
 
     /// <summary>Returns retained vector content for VisualTreeHelper.GetDrawing.</summary>
     internal virtual DrawingGroup? DrawingCore => null;
@@ -1107,6 +1116,15 @@ public abstract class Visual : DependencyObject
             return true;
         }
 
+        if (clipBounds.Width <= 0 || clipBounds.Height <= 0)
+            return false;
+
+        // Canvas layout bounds describe its arrange slot, not the extent of its
+        // absolutely positioned children. Panning that slot offscreen must not
+        // discard children that have been brought into view by the same transform.
+        if (child.HasUnboundedContent)
+            return true;
+
         // CurrentClipBounds is expressed in the drawing context's CURRENT managed
         // coordinate space. RenderTargetDrawingContext keeps clips in surface space
         // internally, but maps them back through the inverse native transform while a
@@ -1344,7 +1362,7 @@ public abstract class Visual : DependencyObject
             effectContext.IsElementEffectCaptureEnabled;
         // Extra ink (outline ring) paints outside RenderSize, but the retained layer
         // texture is sized exactly (childOffset, RenderSize) — capturing would clip it.
-        if (!child.ParticipatesInRenderCache ||
+        if (!child.ParticipatesInRenderCache || child.HasUnboundedContent ||
             (elementEffectsEnabled && child.Effect is IEffect ce && ce.HasEffect) ||
             child.GetExtraDirtyPadding() > 0)
         {

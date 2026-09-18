@@ -89,3 +89,14 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.d3d12"
     DEBUG_POSTFIX ""
 )
+
+option(JALIUM_D3D12_BUILD_TESTS "Build D3D12 Vello shader contract tests" OFF)
+if(JALIUM_D3D12_BUILD_TESTS)
+    add_executable(vello_fine_output_tests tests/vello_fine_output_tests.cpp)
+    target_include_directories(vello_fine_output_tests PRIVATE
+        include ../jalium.native.core/include)
+    target_compile_definitions(vello_fine_output_tests PRIVATE NOMINMAX)
+    target_link_libraries(vello_fine_output_tests PRIVATE d3d12 dxgi)
+    add_test(NAME vello_fine_output COMMAND vello_fine_output_tests)
+    set_tests_properties(vello_fine_output PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+endif()

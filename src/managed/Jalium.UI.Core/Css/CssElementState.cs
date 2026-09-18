@@ -6,6 +6,26 @@ namespace Jalium.UI.Styling;
 /// </summary>
 internal sealed class CssElementState
 {
+    // Computed token streams, including inherited custom properties. Names are case-sensitive.
+    public IReadOnlyDictionary<string, string>? CustomProperties;
+    public IReadOnlyDictionary<string, CssPropertyRegistration>? RegisteredProperties;
+    public IReadOnlyDictionary<string, CssTypedValue>? RegisteredValues;
+    public CssContainerDependent? ContainerDependent;
+    public CssFontDependency? FontDependency;
+    public CssSelectorDependent? SelectorDependent;
+    public CssQueryContainer? QueryContainer;
+    public bool ObservesViewport;
+    public Size? ViewportAllocation;
+    public bool ObservesTypography;
+    public bool ObservesOwnSize;
+    public string? TransformSource;
+    public Size TransformReferenceSize;
+    public CssLengthContext TransformLengths;
+    public Jalium.UI.Media.Transform? ContextTransform;
+    public System.Collections.Specialized.NotifyCollectionChangedEventHandler? AttributesChanged;
+    public bool StructuralDependencies;
+    public HashSet<string>? NativeAttributeNames;
+    public Dictionary<string, object?>? NativeAttributeValues;
     public static readonly string[] EmptyClasses = Array.Empty<string>();
 
     /// <summary>Parsed Css.Class values (sorted, deduplicated).</summary>
@@ -22,6 +42,7 @@ internal sealed class CssElementState
 
     /// <summary>Element-scoped style sheets (Css.StyleSheets), applying to this element's subtree.</summary>
     public CssStyleSheetCollection? ScopedStyleSheets;
+    public Action? StyleSheetsChangedHandler;
 
     /// <summary>The sheet parsed from <c>Css.StyleSheet</c>, tracked so a re-set can replace it.</summary>
     public CssStyleSheet? DeclaredStyleSheet;

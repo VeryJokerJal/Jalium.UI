@@ -38,19 +38,24 @@ public enum TextTrimmingMode
 /// </summary>
 public sealed class NativeTextFormat : IDisposable
 {
+    private readonly object _lifetimeGate = new();
     private nint _handle;
-    private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for thread-safety)
+    private int _disposed; // 0 = live, 1 = logically disposed; writes are serialized by _lifetimeGate
+    private int _activeNativeUses;
+    private RenderContext.BackendResourceLease? _contextLease;
     private TextTrimmingMode? _currentTrimming;
 
     /// <summary>
     /// Gets the native handle.
     /// </summary>
-    public nint Handle => _handle;
+    public nint Handle => Volatile.Read(ref _handle);
 
     /// <summary>
     /// Gets whether the text format is valid.
     /// </summary>
-    public bool IsValid => _handle != nint.Zero && Volatile.Read(ref _disposed) == 0;
+    public bool IsValid =>
+        Volatile.Read(ref _handle) != nint.Zero &&
+        Volatile.Read(ref _disposed) == 0;
 
     /// <summary>
     /// Gets the font family name.
@@ -84,10 +89,21 @@ public sealed class NativeTextFormat : IDisposable
         FontWeight = fontWeight;
         FontStyle = fontStyle;
 
-        _handle = NativeMethods.TextFormatCreate(context.Handle, fontFamily, fontSize, fontWeight, fontStyle);
-        if (_handle == nint.Zero)
+        RenderContext.BackendResourceLease? lease = context.AcquireBackendResourceLease();
+        try
         {
-            throw new InvalidOperationException("Failed to create text format");
+            _handle = NativeMethods.TextFormatCreate(context.Handle, fontFamily, fontSize, fontWeight, fontStyle);
+            if (_handle == nint.Zero)
+            {
+                throw new InvalidOperationException("Failed to create text format");
+            }
+
+            _contextLease = lease;
+            lease = null;
+        }
+        finally
+        {
+            lease?.Dispose();
         }
     }
 
@@ -97,8 +113,8 @@ public sealed class NativeTextFormat : IDisposable
     /// <param name="alignment">The text alignment. Mapped directly to DWRITE_TEXT_ALIGNMENT (Left=Leading, Right=Trailing, Center, Justify=Justified).</param>
     public void SetTextAlignment(TextAlignment alignment)
     {
-        ThrowIfDisposed();
-        NativeMethods.TextFormatSetAlignment(_handle, (int)alignment);
+        using var nativeUse = AcquireNativeUse();
+        NativeMethods.TextFormatSetAlignment(nativeUse.Handle, (int)alignment);
     }
 
     /// <summary>
@@ -107,8 +123,8 @@ public sealed class NativeTextFormat : IDisposable
     /// <param name="alignment">The paragraph alignment.</param>
     public void SetParagraphAlignment(ParagraphAlignment alignment)
     {
-        ThrowIfDisposed();
-        NativeMethods.TextFormatSetParagraphAlignment(_handle, (int)alignment);
+        using var nativeUse = AcquireNativeUse();
+        NativeMethods.TextFormatSetParagraphAlignment(nativeUse.Handle, (int)alignment);
     }
 
     /// <summary>
@@ -117,13 +133,13 @@ public sealed class NativeTextFormat : IDisposable
     /// <param name="trimming">The trimming mode.</param>
     public void SetTrimming(TextTrimmingMode trimming)
     {
-        ThrowIfDisposed();
+        using var nativeUse = AcquireNativeUse();
         if (_currentTrimming == trimming)
         {
             return;
         }
         _currentTrimming = trimming;
-        NativeMethods.TextFormatSetTrimming(_handle, (int)trimming);
+        NativeMethods.TextFormatSetTrimming(nativeUse.Handle, (int)trimming);
     }
 
     /// <summary>
@@ -137,8 +153,8 @@ public sealed class NativeTextFormat : IDisposable
     /// </summary>
     public void SetTextRenderingMode(int mode)
     {
-        ThrowIfDisposed();
-        NativeMethods.TextFormatSetTextRenderingMode(_handle, mode);
+        using var nativeUse = AcquireNativeUse();
+        NativeMethods.TextFormatSetTextRenderingMode(nativeUse.Handle, mode);
     }
 
     /// <summary>
@@ -150,8 +166,8 @@ public sealed class NativeTextFormat : IDisposable
     /// </summary>
     public void SetTextFormattingMode(int mode)
     {
-        ThrowIfDisposed();
-        NativeMethods.TextFormatSetTextFormattingMode(_handle, mode);
+        using var nativeUse = AcquireNativeUse();
+        NativeMethods.TextFormatSetTextFormattingMode(nativeUse.Handle, mode);
     }
 
     /// <summary>
@@ -163,8 +179,8 @@ public sealed class NativeTextFormat : IDisposable
     /// </summary>
     public void SetTextHintingMode(int mode)
     {
-        ThrowIfDisposed();
-        NativeMethods.TextFormatSetTextHintingMode(_handle, mode);
+        using var nativeUse = AcquireNativeUse();
+        NativeMethods.TextFormatSetTextHintingMode(nativeUse.Handle, mode);
     }
 
     /// <summary>
@@ -177,8 +193,8 @@ public sealed class NativeTextFormat : IDisposable
     /// </summary>
     public void SetSubpixelPositioning(bool enabled)
     {
-        ThrowIfDisposed();
-        NativeMethods.TextFormatSetSubpixelPositioning(_handle, enabled ? 1 : 0);
+        using var nativeUse = AcquireNativeUse();
+        NativeMethods.TextFormatSetSubpixelPositioning(nativeUse.Handle, enabled ? 1 : 0);
     }
 
     /// <summary>
@@ -190,14 +206,20 @@ public sealed class NativeTextFormat : IDisposable
     /// <returns>Text metrics including width, height, line height, and font metrics.</returns>
     public TextMetrics MeasureText(string text, float maxWidth, float maxHeight)
     {
-        ThrowIfDisposed();
+        using var nativeUse = AcquireNativeUse();
         if (string.IsNullOrEmpty(text))
         {
             // Return font metrics only for empty text
-            return GetFontMetrics();
+            return GetFontMetricsCore(nativeUse.Handle);
         }
 
-        var result = NativeMethods.TextFormatMeasureText(_handle, text, text.Length, maxWidth, maxHeight, out var metrics);
+        var result = NativeMethods.TextFormatMeasureText(
+            nativeUse.Handle,
+            text,
+            text.Length,
+            maxWidth,
+            maxHeight,
+            out var metrics);
 
         if (result != 0)
         {
@@ -235,12 +257,20 @@ public sealed class NativeTextFormat : IDisposable
     /// <returns>True if the hit test succeeded.</returns>
     public bool HitTestPoint(string text, float maxWidth, float maxHeight, float pointX, float pointY, out TextHitTestResult result)
     {
-        ThrowIfDisposed();
+        using var nativeUse = AcquireNativeUse();
         result = default;
         if (string.IsNullOrEmpty(text))
             return false;
 
-        var hr = NativeMethods.TextFormatHitTestPoint(_handle, text, text.Length, maxWidth, maxHeight, pointX, pointY, out result);
+        var hr = NativeMethods.TextFormatHitTestPoint(
+            nativeUse.Handle,
+            text,
+            text.Length,
+            maxWidth,
+            maxHeight,
+            pointX,
+            pointY,
+            out result);
         return hr == 0;
     }
 
@@ -256,12 +286,20 @@ public sealed class NativeTextFormat : IDisposable
     /// <returns>True if the query succeeded.</returns>
     public bool HitTestTextPosition(string text, float maxWidth, float maxHeight, uint textPosition, bool isTrailingHit, out TextHitTestResult result)
     {
-        ThrowIfDisposed();
+        using var nativeUse = AcquireNativeUse();
         result = default;
         if (string.IsNullOrEmpty(text))
             return false;
 
-        var hr = NativeMethods.TextFormatHitTestTextPosition(_handle, text, text.Length, maxWidth, maxHeight, textPosition, isTrailingHit ? 1 : 0, out result);
+        var hr = NativeMethods.TextFormatHitTestTextPosition(
+            nativeUse.Handle,
+            text,
+            text.Length,
+            maxWidth,
+            maxHeight,
+            textPosition,
+            isTrailingHit ? 1 : 0,
+            out result);
         return hr == 0;
     }
 
@@ -272,8 +310,13 @@ public sealed class NativeTextFormat : IDisposable
     /// <returns>Font metrics including ascent, descent, line gap, and natural line height.</returns>
     public TextMetrics GetFontMetrics()
     {
-        ThrowIfDisposed();
-        var result = NativeMethods.TextFormatGetFontMetrics(_handle, out var metrics);
+        using var nativeUse = AcquireNativeUse();
+        return GetFontMetricsCore(nativeUse.Handle);
+    }
+
+    private TextMetrics GetFontMetricsCore(nint handle)
+    {
+        var result = NativeMethods.TextFormatGetFontMetrics(handle, out var metrics);
         if (result != 0)
         {
             // Fallback to approximate values on error
@@ -292,31 +335,207 @@ public sealed class NativeTextFormat : IDisposable
         return metrics;
     }
 
-    private void ThrowIfDisposed()
+    /// <summary>Gets the x/cap heights and the unshaped zero/ideograph advances.</summary>
+    public FontUnitMetrics GetFontUnitMetrics()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        using var nativeUse = AcquireNativeUse();
+        var metrics = new FontUnitMetrics { StructSize = 32 };
+        try
+        {
+            if (NativeMethods.TextFormatGetFontUnitMetrics(nativeUse.Handle, ref metrics) == 0) return metrics;
+        }
+        catch (EntryPointNotFoundException) { }
+        var line = GetFontMetricsCore(nativeUse.Handle);
+        return FontUnitMetrics.Fallback(FontSize, line.Ascent, line.LineHeight);
+    }
+
+    internal void InvokeWithNativeUseForTesting(Action<nint> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        using var nativeUse = AcquireNativeUse();
+        action(nativeUse.Handle);
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
-        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
-
-        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
-        if (handle != nint.Zero)
+        nint handle = nint.Zero;
+        RenderContext.BackendResourceLease? contextLease = null;
+        lock (_lifetimeGate)
         {
-            NativeMethods.TextFormatDestroy(handle);
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            Volatile.Write(ref _disposed, 1);
+            if (_activeNativeUses == 0)
+            {
+                DetachNativeResourcesLocked(out handle, out contextLease);
+            }
         }
 
-        GC.SuppressFinalize(this);
+        try
+        {
+            ReleaseNativeResources(handle, contextLease, suppressExceptions: false);
+        }
+        finally
+        {
+            GC.SuppressFinalize(this);
+        }
     }
 
     ~NativeTextFormat()
     {
-        // Do NOT call native destroy from finalizer.
-        // The native context (DWrite factory) may already be destroyed,
-        // causing stack overflow or access violation during shutdown.
-        Volatile.Write(ref _disposed, 1);
-        Volatile.Write(ref _handle, nint.Zero);
+        // Field initialization may fail before a native format is created. Such
+        // an object is still finalizable, but has neither a gate nor resources.
+        var lifetimeGate = _lifetimeGate;
+        if (lifetimeGate == null)
+        {
+            return;
+        }
+
+        nint handle = nint.Zero;
+        RenderContext.BackendResourceLease? contextLease = null;
+        lock (lifetimeGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            Volatile.Write(ref _disposed, 1);
+            if (_activeNativeUses == 0)
+            {
+                DetachNativeResourcesLocked(out handle, out contextLease);
+            }
+        }
+
+        ReleaseNativeResources(handle, contextLease, suppressExceptions: true);
+    }
+
+    private NativeUse AcquireNativeUse()
+    {
+        if (!TryAcquireNativeUse(out var nativeUse))
+        {
+            throw new ObjectDisposedException(nameof(NativeTextFormat));
+        }
+        return nativeUse;
+    }
+
+    /// <summary>
+    /// Pins the format through a caller's synchronous native operation. Drawing
+    /// uses the non-throwing result to preserve its existing disposed-format no-op.
+    /// </summary>
+    internal bool TryAcquireNativeUse(out NativeUse nativeUse)
+    {
+        lock (_lifetimeGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0 || _handle == nint.Zero)
+            {
+                nativeUse = default;
+                return false;
+            }
+
+            _activeNativeUses++;
+            nativeUse = new NativeUse(this, _handle);
+            return true;
+        }
+    }
+
+    private void ReleaseNativeUse()
+    {
+        nint handle = nint.Zero;
+        RenderContext.BackendResourceLease? contextLease = null;
+        lock (_lifetimeGate)
+        {
+            if (_activeNativeUses <= 0)
+            {
+                return;
+            }
+
+            _activeNativeUses--;
+            if (_activeNativeUses == 0 && Volatile.Read(ref _disposed) != 0)
+            {
+                DetachNativeResourcesLocked(out handle, out contextLease);
+            }
+        }
+
+        // Dispose may have logically retired the format while this call was in
+        // flight. The last caller performs the deferred native destroy, but must
+        // not turn a successful native operation into a cleanup exception.
+        ReleaseNativeResources(handle, contextLease, suppressExceptions: true);
+    }
+
+    private void DetachNativeResourcesLocked(
+        out nint handle,
+        out RenderContext.BackendResourceLease? contextLease)
+    {
+        handle = Interlocked.Exchange(ref _handle, nint.Zero);
+        contextLease = Interlocked.Exchange(ref _contextLease, null);
+    }
+
+    private static void ReleaseNativeResources(
+        nint handle,
+        RenderContext.BackendResourceLease? contextLease,
+        bool suppressExceptions)
+    {
+        if (suppressExceptions)
+        {
+            try
+            {
+                if (handle != nint.Zero)
+                {
+                    NativeMethods.TextFormatDestroy(handle);
+                }
+            }
+            catch
+            {
+                // Deferred/finalizer cleanup must not surface native failures.
+            }
+
+            try
+            {
+                contextLease?.Dispose();
+            }
+            catch
+            {
+                // Keep finalizer and in-flight-call cleanup exception-free.
+            }
+
+            return;
+        }
+
+        try
+        {
+            if (handle != nint.Zero)
+            {
+                NativeMethods.TextFormatDestroy(handle);
+            }
+        }
+        finally
+        {
+            contextLease?.Dispose();
+        }
+    }
+
+    internal ref struct NativeUse
+    {
+        private NativeTextFormat? _owner;
+
+        internal NativeUse(NativeTextFormat owner, nint handle)
+        {
+            _owner = owner;
+            Handle = handle;
+        }
+
+        internal nint Handle { get; }
+
+        public void Dispose()
+        {
+            var owner = _owner;
+            _owner = null;
+            owner?.ReleaseNativeUse();
+        }
     }
 }

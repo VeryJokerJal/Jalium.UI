@@ -57,6 +57,13 @@ public enum FlexContentAlign
 /// </summary>
 public class FlexPanel : Panel
 {
+    private readonly Panel? _cssLayoutHost;
+    public FlexPanel() { }
+    internal FlexPanel(Panel cssLayoutHost) => _cssLayoutHost = cssLayoutHost;
+    private UIElementCollection LayoutChildren => _cssLayoutHost?.InternalChildren ?? InternalChildren;
+    private object? LayoutValue(DependencyProperty property) => (_cssLayoutHost ?? this).GetValue(property);
+    internal Size MeasureCssLayout(Size available) => MeasureOverride(available);
+    internal Size ArrangeCssLayout(Size finalSize) => ArrangeOverride(finalSize);
     public static readonly DependencyProperty DirectionProperty =
         DependencyProperty.Register(nameof(Direction), typeof(FlexDirection), typeof(FlexPanel),
             new PropertyMetadata(FlexDirection.Row, OnMeasurePropertyChanged));
@@ -89,43 +96,43 @@ public class FlexPanel : Panel
 
     public FlexDirection Direction
     {
-        get => (FlexDirection)(GetValue(DirectionProperty) ?? FlexDirection.Row);
+        get => (FlexDirection)(LayoutValue(DirectionProperty) ?? FlexDirection.Row);
         set => SetValue(DirectionProperty, value);
     }
 
     public FlexWrap Wrap
     {
-        get => (FlexWrap)(GetValue(WrapProperty) ?? FlexWrap.NoWrap);
+        get => (FlexWrap)(LayoutValue(WrapProperty) ?? FlexWrap.NoWrap);
         set => SetValue(WrapProperty, value);
     }
 
     public FlexJustify JustifyContent
     {
-        get => (FlexJustify)(GetValue(JustifyContentProperty) ?? FlexJustify.FlexStart);
+        get => (FlexJustify)(LayoutValue(JustifyContentProperty) ?? FlexJustify.FlexStart);
         set => SetValue(JustifyContentProperty, value);
     }
 
     public FlexAlign AlignItems
     {
-        get => (FlexAlign)(GetValue(AlignItemsProperty) ?? FlexAlign.Stretch);
+        get => (FlexAlign)(LayoutValue(AlignItemsProperty) ?? FlexAlign.Stretch);
         set => SetValue(AlignItemsProperty, value);
     }
 
     public FlexContentAlign AlignContent
     {
-        get => (FlexContentAlign)(GetValue(AlignContentProperty) ?? FlexContentAlign.Stretch);
+        get => (FlexContentAlign)(LayoutValue(AlignContentProperty) ?? FlexContentAlign.Stretch);
         set => SetValue(AlignContentProperty, value);
     }
 
     public double RowSpacing
     {
-        get => (double)(GetValue(RowSpacingProperty) ?? 0.0);
+        get => (double)(LayoutValue(RowSpacingProperty) ?? 0.0);
         set => SetValue(RowSpacingProperty, value);
     }
 
     public double ColumnSpacing
     {
-        get => (double)(GetValue(ColumnSpacingProperty) ?? 0.0);
+        get => (double)(LayoutValue(ColumnSpacingProperty) ?? 0.0);
         set => SetValue(ColumnSpacingProperty, value);
     }
 
@@ -143,6 +150,10 @@ public class FlexPanel : Panel
     public static readonly DependencyProperty BasisProperty =
         DependencyProperty.RegisterAttached("Basis", typeof(double), typeof(FlexPanel),
             new PropertyMetadata(double.NaN, OnItemPropertyChanged), FrameworkElement.IsWidthHeightValid);
+
+    internal static readonly DependencyProperty CssBasisProperty =
+        DependencyProperty.RegisterAttached("CssBasis", typeof(Jalium.UI.Styling.CssLength?), typeof(FlexPanel),
+            new PropertyMetadata(null, OnItemPropertyChanged));
 
     public static readonly DependencyProperty AlignSelfProperty =
         DependencyProperty.RegisterAttached("AlignSelf", typeof(FlexAlign), typeof(FlexPanel),
@@ -217,7 +228,7 @@ public class FlexPanel : Panel
 
     private static void OnMeasurePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is FlexPanel panel)
+        if (d is FrameworkElement panel)
         {
             panel.InvalidateMeasure();
         }
@@ -225,7 +236,7 @@ public class FlexPanel : Panel
 
     private static void OnArrangePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is FlexPanel panel)
+        if (d is FrameworkElement panel)
         {
             panel.InvalidateArrange();
         }
@@ -238,10 +249,10 @@ public class FlexPanel : Panel
             return;
         }
 
-        var parent = child.VisualParent as FlexPanel;
+        var parent = child.VisualParent as Panel;
         if (parent is null && child is FrameworkElement fe)
         {
-            parent = fe.Parent as FlexPanel;
+            parent = fe.Parent as Panel;
         }
 
         parent?.InvalidateMeasure();
@@ -308,15 +319,17 @@ public class FlexPanel : Panel
         var axis = new FlexAxis(Direction);
         var mainAvailable = axis.Main(availableSize);
         var crossAvailable = axis.Cross(availableSize);
-        var mainGap = SanitizeSpacing(axis.MainGap(RowSpacing, ColumnSpacing));
-        var crossGap = SanitizeSpacing(axis.CrossGap(RowSpacing, ColumnSpacing));
+        var rowGap = Jalium.UI.Styling.CssGapProperties.Resolve(_cssLayoutHost ?? this, true, availableSize.Height);
+        var columnGap = Jalium.UI.Styling.CssGapProperties.Resolve(_cssLayoutHost ?? this, false, availableSize.Width);
+        var mainGap = SanitizeSpacing(axis.MainGap(rowGap, columnGap));
+        var crossGap = SanitizeSpacing(axis.CrossGap(rowGap, columnGap));
         var alignItems = AlignItems;
         if (alignItems == FlexAlign.Auto)
         {
             alignItems = FlexAlign.Stretch;
         }
 
-        CollectItems(axis, crossAvailable, alignItems);
+        CollectItems(axis, mainAvailable, crossAvailable, alignItems);
         BreakLinesPreservingItems(mainAvailable, mainGap);
 
         var items = _items!;
@@ -365,7 +378,7 @@ public class FlexPanel : Panel
             desiredCross += crossGap * (_lineCount - 1);
         }
 
-        MeasureCssAbsoluteChildren(availableSize);
+        (_cssLayoutHost ?? this).MeasureCssLayoutAbsoluteChildren(availableSize);
 
         _measuredAvailable = availableSize;
         return axis.Size(desiredMain, desiredCross);
@@ -376,12 +389,14 @@ public class FlexPanel : Panel
         var axis = new FlexAxis(Direction);
         var mainFinal = axis.Main(finalSize);
         var crossFinal = axis.Cross(finalSize);
-        var mainGap = SanitizeSpacing(axis.MainGap(RowSpacing, ColumnSpacing));
-        var crossGap = SanitizeSpacing(axis.CrossGap(RowSpacing, ColumnSpacing));
+        var rowGap = Jalium.UI.Styling.CssGapProperties.Resolve(_cssLayoutHost ?? this, true, finalSize.Height);
+        var columnGap = Jalium.UI.Styling.CssGapProperties.Resolve(_cssLayoutHost ?? this, false, finalSize.Width);
+        var mainGap = SanitizeSpacing(axis.MainGap(rowGap, columnGap));
+        var crossGap = SanitizeSpacing(axis.CrossGap(rowGap, columnGap));
 
         if (_items is null || _lines is null || _itemCount == 0)
         {
-            ArrangeCssAbsoluteChildren(finalSize);
+            (_cssLayoutHost ?? this).ArrangeCssLayoutAbsoluteChildren(finalSize);
             return finalSize;
         }
 
@@ -533,7 +548,7 @@ public class FlexPanel : Panel
             }
         }
 
-        ArrangeCssAbsoluteChildren(finalSize);
+        (_cssLayoutHost ?? this).ArrangeCssLayoutAbsoluteChildren(finalSize);
         return finalSize;
     }
 
@@ -560,9 +575,9 @@ public class FlexPanel : Panel
         };
     }
 
-    private void CollectItems(FlexAxis axis, double crossAvailable, FlexAlign alignItems)
+    private void CollectItems(FlexAxis axis, double mainAvailable, double crossAvailable, FlexAlign alignItems)
     {
-        var childCount = Children.Count;
+        var childCount = LayoutChildren.Count;
         if (_items is null || _items.Length < childCount)
         {
             _items = new FlexItem[Math.Max(4, childCount)];
@@ -571,7 +586,7 @@ public class FlexPanel : Panel
 
         _itemCount = 0;
         var index = 0;
-        foreach (var child in Children.EnumerateStruct())
+        foreach (var child in LayoutChildren.EnumerateStruct())
         {
             index++;
             if (child.Visibility == Visibility.Collapsed || IsCssAbsolute(child))
@@ -581,6 +596,15 @@ public class FlexPanel : Panel
 
             var fe = child as FrameworkElement;
             var basis = GetBasis(child);
+            if (!child.HasLocalValue(BasisProperty) && child.GetValue(CssBasisProperty) is Jalium.UI.Styling.CssLength cssBasis && fe is not null)
+            {
+                var context = Jalium.UI.Styling.CssEngine.BuildLengthContext(fe);
+                if (cssBasis.UsesPercent && !double.IsFinite(mainAvailable)) basis = double.NaN;
+                else if (cssBasis.Expression is { } expression)
+                    basis = expression.TryEvaluate(context, mainAvailable, out var calculated) ? Math.Max(0, calculated) : double.NaN;
+                else if (cssBasis.Unit == Jalium.UI.Styling.CssUnit.Percent) basis = Math.Max(0, cssBasis.Value / 100 * mainAvailable);
+                else basis = cssBasis.TryResolve(context, Jalium.UI.Styling.CssPercentBasis.NotSupported, out var pixels) ? Math.Max(0, pixels) : double.NaN;
+            }
             var autoBasis = double.IsNaN(basis);
             var minMain = fe is null ? 0 : axis.MinMain(fe);
             var maxMain = fe is null ? double.PositiveInfinity : axis.MaxMain(fe);

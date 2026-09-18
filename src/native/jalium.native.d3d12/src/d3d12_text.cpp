@@ -1,5 +1,6 @@
 #include "d3d12_resources.h"
 #include "jalium_text_stats.h"
+#include "jalium_dwrite_font_units.h"
 
 namespace jalium {
 
@@ -504,6 +505,11 @@ JaliumResult D3D12TextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     metrics->baseline = metrics->ascent;
 
     return JALIUM_OK;
+}
+
+JaliumResult D3D12TextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)
+{
+    return font_units::Read(factory_, format_.Get(), fontSize_, metrics);
 }
 
 JaliumResult D3D12TextFormat::HitTestPoint(

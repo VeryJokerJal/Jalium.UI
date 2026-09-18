@@ -44,12 +44,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.media.core</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.media.core</TargetName>
   </PropertyGroup>

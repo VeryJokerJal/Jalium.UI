@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
@@ -28,7 +28,7 @@ namespace Jalium.UI;
 /// <summary>
 /// Represents a window in the Jalium.UI framework.
 /// </summary>
-public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, IInputDispatcherHost, IAdornerLayerHost
+public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, IInputDispatcherHost, IAdornerLayerHost, IInputTreeLifetimeHost
 {
     bool IWindowHost.ShouldTrackLayoutDirtyBounds =>
         !_elideUiThreadDirtyRectsDuringFullLayout;
@@ -164,11 +164,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     // ── Debug HUD ──
     private readonly RenderDebugHud _debugHud = new();
-    private readonly DebugHudOverlay _debugHudOverlay = new();
+    private DebugHudOverlay? _debugHudOverlay;
     private sealed class RenderDebugHud
     {
         // ── Enabled flag (off by default, toggle with F3) ──
         public bool Enabled { get; set; }
+
+        private int _shutdown;
 
         // ── Timing ──
         private readonly System.Diagnostics.Stopwatch _intervalSw = System.Diagnostics.Stopwatch.StartNew();
@@ -208,7 +210,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         private int _gcGen0, _gcGen1, _gcGen2;
 
         // ── Events ──
-        public void OnRenderFrame() { _renderFrameCalls++; _frameSw.Restart(); }
+        public void OnRenderFrame()
+        {
+            if (Volatile.Read(ref _shutdown) != 0) return;
+            _renderFrameCalls++;
+            _frameSw.Restart();
+        }
         public void OnPaint() => _paintCalls++;
         public void OnProcessRender() => _processRenderCalls++;
         public void OnBeginFail() => _beginDrawFails++;
@@ -216,6 +223,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public void OnSkipped() => _skippedFrames++;
         public void OnFull() { _fullFrames++; _renderPath = "Full"; }
         public void OnPartial() { _partialFrames++; _renderPath = "Partial"; }
+        public void OnCached() => _renderPath = "Cached pixels";
         public void OnPromoted() { _promotedFrames++; _renderPath = "Promoted→Full"; }
         public void OnCapacityExceeded() => _capacityExceeded++;
         public void MarkLayout() => _layoutMs = _frameSw.Elapsed.TotalMilliseconds;
@@ -260,6 +268,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         public void OnDeferredPresent(double layoutMs, double renderMs, double presentMs, int dirtyElements)
         {
+            if (Volatile.Read(ref _shutdown) != 0) return;
+
             double total = layoutMs + renderMs + presentMs;
             _deferredLayoutMs = layoutMs;
             _deferredRenderMs = layoutMs + renderMs;
@@ -273,6 +283,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         public void OnEndDraw()
         {
+            if (Volatile.Read(ref _shutdown) != 0) return;
+
             _deferredPresentMs = 0;
             _presentMs = _frameSw.Elapsed.TotalMilliseconds;
             _lastFrameMs = _presentMs;
@@ -343,9 +355,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             (_dFullFrames, _dPartialFrames, _dPromotedFrames, _dSkippedFrames,
              _dCapacityExceeded, _dDirtyRectCount, _dDirtyCoverageRatio);
 
-        public void UpdateOverlay(DebugHudOverlay overlay)
+        public void UpdateOverlay(DebugHudOverlay? overlay)
         {
-            if (!Enabled) return;
+            if (Volatile.Read(ref _shutdown) != 0 || !Enabled || overlay == null) return;
             FlushInterval();
 
             double layoutMs = _dLayoutMs;
@@ -365,6 +377,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 _dPromotedFrames, _dCapacityExceeded,
                 _dDirtyRectCount, _dDirtyCoverageRatio);
         }
+
+        public void Shutdown()
+        {
+            Enabled = false;
+            if (Interlocked.Exchange(ref _shutdown, 1) != 0) return;
+
+            _intervalSw.Stop();
+            _frameSw.Stop();
+        }
+    }
+
+    private void ReleaseDebugHudResources()
+    {
+        _debugHud.Shutdown();
+
+        var overlay = _debugHudOverlay;
+        _debugHudOverlay = null;
+        if (overlay != null)
+        {
+            overlay.Visibility = Visibility.Collapsed;
+            OverlayLayer.Children.Remove(overlay);
+        }
+
+        // OverlayLayer can outlive a closed Window when retained by user code.
+        // Drop its callback so that external references cannot keep the Window
+        // rooted or re-latch rendering demand after teardown.
+        OverlayLayer.RenderingDemanded = null;
+        _emptyRenderingDemand &= ~EmptyRenderingDemand.DeveloperOverlay;
     }
 
     private bool _isFirstLayout = true;
@@ -411,10 +451,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // in RenderFrame; a flush frame NEVER re-arms it (isFlushFrame guard), so it
     // decreases strictly to 0 — no render loop. UI-thread only (RenderFrame).
     private int _partialPresentsToFlush;
-    // Alternate-buffer convergence is queued for the very next dispatcher turn.
-    // It is never held behind a resize quiet-period: every WM_SIZE can publish the
-    // newest layout immediately, while the normal scheduled-render gate lets that
-    // newer frame supersede a now-redundant convergence replay.
+    // Alternate-buffer convergence uses a short idle grace outside live resize.
+    // A real frame replaces the armed timer, so continuous hover/animation work
+    // does not spend an extra Present after every useful Present. Once activity
+    // settles, the final dirty-history replay still converges the remaining
+    // buffers. Live resize keeps the immediate path because exposed resize bands
+    // must become coherent without waiting for a quiet period.
     // Live swap-chain back-buffer count, refreshed from the GPU stats query in
     // CompleteEndDrawOrHandleFailure. Defaults to kDefaultSwapBufferCount (2) so the
     // first arm is correct before any stats arrive; a JALIUM_SWAPCHAIN_BUFFERS=3
@@ -569,6 +611,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // starvation; the frame clock runs on its own dedicated thread and cannot.
     private const int FrameClockRenderTargetRetryIntervalMs = 1000;
     private const string D3D12ForceWarpEnvironmentVariable = "JALIUM_D3D12_FORCE_WARP";
+    private const string D3D12AllowBasicDisplayRouteEnvironmentVariable =
+        "JALIUM_D3D12_ALLOW_BASIC_DISPLAY_ROUTE";
 
     private static bool IsEnvironmentSwitchEnabled(string variableName)
     {
@@ -1346,7 +1390,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     protected override void OnContentChanged(object? oldContent, object? newContent)
     {
+        var oldElement = ContentElement;
         base.OnContentChanged(oldContent, newContent);
+        if (oldElement != null && !IsElementAttachedToThisWindow(oldElement))
+        {
+            if (_hitMemoElement != null && WindowInputDispatcher.IsDescendantOf(_hitMemoElement, oldElement))
+            {
+                _hitMemoElement = null;
+                _hitMemoLayoutGeneration = -1;
+            }
+            _inputDispatcher.HandleSubtreeDetached(oldElement);
+        }
+        if (newContent != null)
+        {
+            RequestFullRendering(EmptyRenderingDemand.Content);
+        }
+        else
+        {
+            RequestAutomaticEmptyRenderingIfEligible();
+        }
         InvalidateMeasure();
         RequestFullInvalidation();
     }
@@ -1354,6 +1416,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
+        if (Template != null || HasCustomWindowTemplateLifecycle())
+        {
+            RequestFullRendering(EmptyRenderingDemand.CustomDrawing);
+        }
         InvalidateMeasure();
     }
 
@@ -1432,6 +1498,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     protected override void OnVisualChildrenChanged(Visual? visualAdded, Visual? visualRemoved)
     {
         base.OnVisualChildrenChanged(visualAdded, visualRemoved);
+        if (UsesAutomaticEmptySoftwareContext &&
+            VisualChildrenCount > (TitleBar == null ? 2 : 3))
+        {
+            RequestFullRendering(EmptyRenderingDemand.CustomDrawing);
+        }
         InvalidateMeasure();
     }
 
@@ -1457,12 +1528,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     protected override void OnBackdropEffectChanged(IBackdropEffect? oldValue, IBackdropEffect? newValue)
     {
         base.OnBackdropEffectChanged(oldValue, newValue);
+        if (newValue != null)
+        {
+            RequestFullRendering(EmptyRenderingDemand.Effect);
+        }
         RequestFullInvalidation();
     }
 
     protected override void OnEffectChanged(object? oldValue, object? newValue)
     {
         base.OnEffectChanged(oldValue, newValue);
+        if (newValue != null)
+        {
+            RequestFullRendering(EmptyRenderingDemand.Effect);
+        }
         RequestFullInvalidation();
     }
 
@@ -1515,11 +1594,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         AddVisualChild(AdornerLayer);
 
         // Create overlay layer for popup hosting (must be created before title bar)
-        OverlayLayer = new OverlayLayer();
+        OverlayLayer = new OverlayLayer
+        {
+            RenderingDemanded = () =>
+                RequestFullRendering(EmptyRenderingDemand.DeveloperOverlay),
+        };
         AddVisualChild(OverlayLayer);
-
-        // Debug HUD overlay (F3 to toggle, rendered as a normal control in the overlay layer)
-        OverlayLayer.Children.Add(_debugHudOverlay);
 
         // Ensure keyboard focus visuals materialize as adorners whenever focus moves.
         FocusVisualManager.EnsureInitialized();
@@ -1690,14 +1770,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void ApplyTitleBarPresentation()
     {
-        using (StartupDiagnostics.Begin("Window.AutoIconInitialize", blocksUiThread: true))
-        {
-            EnsureAutoWindowIcon();
-        }
-        
         if (TitleBar == null)
         {
             return;
+        }
+
+        // Object initializers can still select native chrome or hide the icon
+        // after Window's constructor. Only load custom-chrome pixels once a
+        // native window exists and those pixels can actually be displayed.
+        if (Handle != nint.Zero && IsShowTitleBar && IsShowIcon)
+        {
+            using (StartupDiagnostics.Begin("Window.AutoIconInitialize", blocksUiThread: true))
+            {
+                EnsureAutoWindowIcon();
+            }
         }
 
         TitleBar.Height = GetEffectiveTitleBarHeightDip();
@@ -1726,6 +1812,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void ClearTitleBarInteractionState()
     {
+        _nonClientMouseLeaveWindow = nint.Zero;
         _inputDispatcher.ClearTitleBarInteractionState();
     }
 
@@ -1738,17 +1825,37 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _attemptedAutoWindowIcon = true;
         var dispatcher = Dispatcher;
-        var extractionTask = Task.Run(static () =>
+        var extractionTask = s_defaultWindowIconPixels.Value;
+        _ = QueueAutoWindowIconApplyAsync(
+            extractionTask,
+            dispatcher,
+            new WeakReference<Window>(this));
+    }
+
+    // The executable's icon is identical for every window. Share the extraction
+    // and immutable source pixels; each WindowIcon still owns its BitmapImage so
+    // replacing or disposing it cannot affect another window.
+    private static readonly Lazy<Task<Controls.Helpers.ProcessIconPixels?>> s_defaultWindowIconPixels =
+        new(CreateDefaultWindowIconPixelsTask);
+
+    private static Task<Controls.Helpers.ProcessIconPixels?> CreateDefaultWindowIconPixelsTask()
+    {
+        // There is no file extraction work to offload for an executable without
+        // an icon group. Keep application of the bitmap queued on the dispatcher
+        // below, but avoid starting the thread pool solely to fetch the stock icon.
+        using (StartupDiagnostics.Begin("Window.AutoIconFastProbe", blocksUiThread: true))
+        {
+            if (Controls.Helpers.IconHelper.TryGetDefaultProcessIconPixelsSynchronously(out var pixels))
+                return Task.FromResult(pixels);
+        }
+
+        return Task.Run(static () =>
         {
             using var extraction = StartupDiagnostics.Begin(
                 "Window.AutoIconExtract",
                 blocksUiThread: false);
             return TryExtractDefaultWindowIconPixels();
         });
-        _ = QueueAutoWindowIconApplyAsync(
-            extractionTask,
-            dispatcher,
-            new WeakReference<Window>(this));
     }
 
     private static async Task QueueAutoWindowIconApplyAsync(
@@ -2271,6 +2378,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return hitTest == HTMINBUTTON || hitTest == HTMAXBUTTON || hitTest == HTCLOSE;
     }
 
+    private nint _nonClientMouseLeaveWindow;
+
     private void OnNcMouseMove(nint wParam, nint lParam)
     {
         _ = wParam;
@@ -2296,6 +2405,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // would continually reset the DefWindowProc-owned hover timer that
         // Windows 11 uses to arm the Snap Layouts flyout. DefWindowProc will
         // register its own hover tracking via the standard message flow.
+        if (_nonClientMouseLeaveWindow == Handle && Handle != nint.Zero)
+            return;
+
         TRACKMOUSEEVENT tme = new()
         {
             cbSize = (uint)Marshal.SizeOf<TRACKMOUSEEVENT>(),
@@ -2303,11 +2415,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             hwndTrack = Handle,
             dwHoverTime = HOVER_DEFAULT
         };
-        _ = TrackMouseEvent(ref tme);
+        if (TrackMouseEvent(ref tme))
+            _nonClientMouseLeaveWindow = Handle;
     }
 
     private void OnNcMouseLeave()
     {
+        _nonClientMouseLeaveWindow = nint.Zero;
         _inputDispatcher.UpdateTitleBarButtonHover(null);
     }
 
@@ -2745,6 +2859,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual void Show()
     {
+        if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
+            throw new InvalidOperationException("A closing or closed window cannot be shown again.");
+
         using var show = StartupDiagnostics.Begin("Window.Show", blocksUiThread: true);
         bool isMainWindow = ReferenceEquals(Application.Current?.MainWindow, this);
 
@@ -2773,7 +2890,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         _dispatcher = Dispatcher.CurrentDispatcher;
-        CompositionTarget.FrameStarting += OnFrameStarting;
 
         // Capture desired state before EnsureHandle, because Win32 calls inside
         // EnsureHandle (SetWindowPos for DPI / frame-change) can trigger WM_SIZE
@@ -2784,6 +2900,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             EnsureHandle();
         }
+
+        SetFrameStartingSubscription(true);
+
+        ApplyTitleBarPresentation();
 
         // Detect monitor refresh rate and update CompositionTarget for adaptive frame rate
         UpdateRefreshRateForCurrentMonitor(force: true);
@@ -3307,6 +3427,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _managedTeardownCompleted;
     private bool _isSyncingWindowState;
     private bool _registeredAsRenderable;
+    private bool _frameStartingSubscribed;
+
+    private void SetFrameStartingSubscription(bool subscribed)
+    {
+        if (_frameStartingSubscribed == subscribed) return;
+        _frameStartingSubscribed = subscribed;
+        if (subscribed)
+            CompositionTarget.FrameStarting += OnFrameStarting;
+        else
+            CompositionTarget.FrameStarting -= OnFrameStarting;
+    }
+
     // Tracks whether the native HWND has been driven to a hidden state
     // (SW_HIDE) outside the Visibility DP path. WPF-style Hide() does not
     // mutate Visibility, so we cannot rely on the DP alone to know whether
@@ -3354,21 +3486,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_isClosing || _managedTeardownCompleted) return;
         _isClosing = true;
 
-        CompositionTarget.FrameStarting -= OnFrameStarting;
+        CancelDeferredRender();
+        bool wasFrameStartingSubscribed = _frameStartingSubscribed;
+        SetFrameStartingSubscription(false);
         // Decrement renderable count now — closing windows cannot present
         // frames even before WM_DESTROY tears the HWND down.
         UpdateRenderableRegistration();
 
         var closingArgs = new System.ComponentModel.CancelEventArgs();
-        OnClosing(closingArgs);
-        if (closingArgs.Cancel)
+        bool closingCallbackCompleted = false;
+        try
         {
-            _isClosing = false;
-            CompositionTarget.FrameStarting += OnFrameStarting;
-            // Cancelled — restore the renderable registration we just dropped.
-            UpdateRenderableRegistration();
-            return;
+            OnClosing(closingArgs);
+            closingCallbackCompleted = true;
         }
+        finally
+        {
+            // Cancellation and a user callback exception both leave the original
+            // window alive. Restore its previous subscription, including the
+            // unshown case where no frame subscription ever existed.
+            if ((!closingCallbackCompleted || closingArgs.Cancel) && !_managedTeardownStarted)
+            {
+                _isClosing = false;
+                SetFrameStartingSubscription(wasFrameStartingSubscribed);
+                UpdateRenderableRegistration();
+                if (wasFrameStartingSubscribed) InvalidateWindow();
+            }
+        }
+        if (closingArgs.Cancel) return;
 
         // Exit ShowDialog only after Closing accepted the close. A cancelled
         // modal close must leave its nested dispatcher frame running.
@@ -3391,7 +3536,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _isClosing = true;
         _isModal = false;
-        CompositionTarget.FrameStarting -= OnFrameStarting;
+        SetFrameStartingSubscription(false);
         UpdateRenderableRegistration();
         CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: false);
         return _managedTeardownCompleted && Handle == nint.Zero && _platformWindow == null;
@@ -3449,20 +3594,38 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void CompleteManagedTeardownCore(nint nativeHandle, bool nativeDestroyed)
     {
 
+        if (!nativeDestroyed)
+        {
+            ReleaseTaskbarRelaunchProperties(nativeHandle != nint.Zero ? nativeHandle : Handle);
+        }
+
         // Tell the compositor to tear down any active text-input session while
         // the platform window is still callable. This also covers Close()
         // paths where the managed window keeps keyboard focus until teardown.
         DisableLinuxImeContext(force: true);
 
-        CompositionTarget.FrameStarting -= OnFrameStarting;
+        SetFrameStartingSubscription(false);
         UpdateRenderableRegistration();
 
         StopRenderRecoveryRetry();
 
-        var throttleTimer = Interlocked.Exchange(ref _renderThrottleTimer, null);
-        try { throttleTimer?.Dispose(); }
-        catch { /* queued callbacks also observe _isClosing */ }
+        StopEmptyStorageCompaction();
+
+        CancelDeferredRender();
         ClearRenderFlag(RenderFlag_Scheduled | RenderFlag_Requested | RenderFlag_DirtyBetween);
+
+        _hitMemoElement = null;
+        _hitMemoLayoutGeneration = -1;
+        CancelPendingInputDetachChecks();
+        try { _inputDispatcher.HandleSubtreeDetached(this); }
+        catch (Exception ex)
+        {
+            // Input cancellation invokes application handlers. Native teardown
+            // still has to complete when one of those handlers fails.
+            Debug.WriteLine($"Window input teardown handler failed: {ex.Message}");
+        }
+
+        ReleaseDebugHudResources();
 
         if (ActiveContentDialog != null)
         {
@@ -3522,7 +3685,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (handleToRelease != nint.Zero)
         {
             if (PlatformFactory.IsWindows)
-                OleDropTarget.RevokeWindow(handleToRelease, nativeWindowAlive: !nativeDestroyed);
+                CloseNativeDropTarget(handleToRelease, nativeWindowAlive: !nativeDestroyed);
             else if (PlatformFactory.IsLinux)
                 LinuxDropTarget.RevokeWindow(this);
         }
@@ -3620,6 +3783,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void OnNativeDestroyed(nint nativeHandle)
     {
+        _nonClientMouseLeaveWindow = nint.Zero;
+        // WM_DESTROY still has a valid HWND. Clear the Shell's window properties
+        // now, even when an in-flight render defers the remaining managed teardown.
+        ReleaseTaskbarRelaunchProperties(nativeHandle);
         CompleteManagedTeardown(nativeHandle, nativeDestroyed: true);
     }
 
@@ -3837,8 +4004,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
         }
 
-        bool supportsDirectComposition = CompositionSurfacePolicy.BackendSupportsDirectComposition(
-            CompositionSurfacePolicy.ResolveHostBackend(RenderBackend.Auto));
+        // Classify the untouched Windows Auto window before resolving the host
+        // backend. ResolveHostBackend(Auto) materializes the process GPU context;
+        // an eligible empty window instead starts on the shared Software context
+        // and promotes later when real content/composition demand appears.
+        bool usesAutomaticEmptySoftware = TryPrepareAutomaticEmptyRendering();
+        bool supportsDirectComposition = !usesAutomaticEmptySoftware &&
+            CompositionSurfacePolicy.BackendSupportsDirectComposition(
+                CompositionSurfacePolicy.ResolveHostBackend(RenderBackend.Auto));
 
         uint dwExStyle = ComputeWin32ExStyle(
             TitleBarStyle, ShowInTaskbar, AllowsTransparency, Topmost, supportsDirectComposition);
@@ -3874,6 +4047,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (Handle == nint.Zero)
         {
+            ReleaseEmptyRenderingAfterRenderResources();
             throw new InvalidOperationException("Failed to create window.");
         }
 
@@ -3949,8 +4123,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ApplySystemBackdrop(SystemBackdrop);
         }
 
-        // Register OLE drop target for external drag-and-drop (e.g. files from Explorer)
-        OleDropTarget.RegisterWindow(this);
+        // Register for external OLE drag-and-drop only when this Window currently
+        // contains an effective AllowDrop target.
+        OnNativeHandleReadyForDropTargets();
 
         UpdateInputMethodAssociation();
 
@@ -5627,20 +5802,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool ShouldUseCompositionRenderTarget()
     {
-        // Normal D3D12 HWNDs use a DirectComposition presentation visual even
-        // when the managed window is opaque. This decouples the swap-chain
-        // allocation from the HWND client size, allowing 1:1 live resize without
-        // either ResizeBuffers stalls or DWM rubber-sheet scaling. The render
-        // worker is composition-aware: native resize, replay and DComp commit are
-        // all performed by that worker, so enabling it must not silently switch
-        // the window back to an HWND swap chain.
-        if (RenderTarget?.Backend == RenderBackend.D3D12)
-        {
-            return true;
-        }
-
-        return HasNoRedirectionBitmapStyle();
+        return ShouldUseCompositionRenderTarget(
+            AllowsTransparency,
+            HasNoRedirectionBitmapStyle(),
+            RenderTarget?.IsCompositionTarget == true);
     }
+
+    /// <summary>
+    /// Selects the surface kind independently of the rendering backend. Ordinary
+    /// opaque windows keep DWM's HWND redirection surface; only windows that need
+    /// per-pixel alpha, already carry the no-redirection style, or have already
+    /// upgraded for embedded composition content use a composition target.
+    /// </summary>
+    internal static bool ShouldUseCompositionRenderTarget(
+        bool allowsTransparency,
+        bool hasNoRedirectionBitmapStyle,
+        bool currentTargetIsComposition) =>
+        allowsTransparency ||
+        hasNoRedirectionBitmapStyle ||
+        currentTargetIsComposition;
 
     private bool HasNoRedirectionBitmapStyle()
     {
@@ -5700,6 +5880,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return false;
     }
 
+    /// <summary>
+    /// D3D12 only supports flip-model HWND swap chains. When DXGI says the HWND's
+    /// monitor is owned by Microsoft Basic Render Driver, a frame rendered on a
+    /// hardware adapter must cross into that software route before DWM can retire
+    /// it. On affected hybrid/MUX states the frame-latency waitable signals at
+    /// roughly 5-9 Hz even though the GPU work itself takes less than a millisecond.
+    /// The redirected software HWND path avoids that cross-adapter flip entirely.
+    /// </summary>
+    internal static bool ShouldFallbackFromD3D12SoftwareDisplayRoute(
+        RenderBackend backend,
+        bool backendSelectionWasAutomatic,
+        bool isCompositionTarget,
+        bool usesSoftwareDisplayRoute,
+        bool allowBasicDisplayRoute)
+        => backendSelectionWasAutomatic &&
+           backend == RenderBackend.D3D12 &&
+           !isCompositionTarget &&
+           usesSoftwareDisplayRoute &&
+           !allowBasicDisplayRoute;
+
     private void EnableD3D12WarpFallback()
     {
         _renderBackendOverride = RenderBackend.D3D12;
@@ -5734,7 +5934,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         RenderContext context;
         using (StartupDiagnostics.Begin("Window.RenderContextWaitOrCreate", blocksUiThread: true))
         {
-            context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
+            if (!TryGetAutomaticEmptyRenderingContext(
+                    requestedBackend,
+                    forceNewContext,
+                    out context))
+            {
+                context = RenderContext.GetOrCreateCurrent(
+                    requestedBackend,
+                    forceReplace: forceNewContext);
+            }
         }
         GpuPreference? fallbackGpuPreference =
             RenderBackendSelector.GetFallbackGpuPreference(context.GpuPreference);
@@ -5747,7 +5955,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             try
             {
-                RenderTarget = CreateRenderTargetForPlatform(context, physicalWidth, physicalHeight);
+                var candidate = CreateRenderTargetForPlatform(context, physicalWidth, physicalHeight);
+                bool allowBasicDisplayRoute =
+                    IsEnvironmentSwitchEnabled(D3D12AllowBasicDisplayRouteEnvironmentVariable) ||
+                    IsEnvironmentSwitchEnabled(D3D12ForceWarpEnvironmentVariable);
+                if (ShouldFallbackFromD3D12SoftwareDisplayRoute(
+                        candidate.Backend,
+                        RenderContext.IsBackendSelectionAutomatic(context),
+                        candidate.IsCompositionTarget,
+                        candidate.UsesSoftwareDisplayRoute,
+                        allowBasicDisplayRoute) &&
+                    IsBackendAvailable(RenderBackend.Software))
+                {
+                    candidate.Dispose();
+                    _exhaustedRenderBackends.Add(RenderBackend.D3D12);
+                    _renderBackendOverride = RenderBackend.Software;
+                    Debug.WriteLine(
+                        "[EnsureRenderTarget] Auto-selected D3D12 HWND is routed through Microsoft Basic; " +
+                        "falling back to the redirected Software/GDI target. Set " +
+                        $"{D3D12AllowBasicDisplayRouteEnvironmentVariable}=1 to keep cross-adapter D3D12.");
+                    context = RenderContext.GetOrCreateCurrent(
+                        RenderBackend.Software, GpuPreference.Auto, forceReplace: true);
+                    fallbackGpuPreference = null;
+                    retriedWithFallbackGpu = true;
+                    continue;
+                }
+
+                RenderTarget = candidate;
+                TrackAutomaticRenderingContext(context);
                 break;
             }
             catch (Exception ex)
@@ -5794,6 +6029,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // cost on weak GPUs, so this is the biggest single quality/perf lever.
         RenderTarget?.SetPathMsaaSampleCount(Jalium.UI.Hosting.RenderQualityOptions.Current.ResolvePathMsaaSampleCount());
 
+        // Publish the capability before choosing the steady-state present owner.
+        // RenderingMode.Performance promises the damage-scoped inline path; without
+        // this bridge DamageScopedAvailable stayed false forever and, more
+        // importantly, StartRenderThreadIfSupported ignored AllowRenderThread and
+        // started the full-frame worker anyway.  On a high-refresh display that
+        // turned every hover transition into a whole-window GPU replay despite the
+        // application explicitly selecting the low-power mode.
+        // The lightweight Software target is a per-window implementation detail.
+        // Do not overwrite the process-wide rendering-mode capability while other
+        // windows may already be using a damage-capable GPU target. Promotion (or
+        // a normal target) publishes the real application capability below.
+        if (!UsesAutomaticEmptySoftwareContext)
+        {
+            ConfigureRenderingModeForTarget(
+                Jalium.UI.Hosting.RenderingModeOptions.Current,
+                RenderTarget?.SupportsPartialPresentation == true);
+        }
+
         // VSync default: ON. With FRAME_LATENCY_WAITABLE_OBJECT +
         // SetMaximumFrameLatency(1) the swap chain already aligns CPU pacing
         // to vsync, and Present(1) lets the BeginDraw waitable wait collapse
@@ -5809,6 +6062,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // After StartRenderThreadIfSupported — render-thread mode keeps native
         // pacing (it is the waitable's sole consumer there); this no-ops then.
         StartExternalPresentPacingIfSupported();
+
+        // Also completes retries after a promotion target failed transiently and
+        // RenderFrame/FrameStarting recreated it later. The guard retains the
+        // lease when this target still depends on an auxiliary Software context.
+        if (_emptyRenderingState == EmptyRenderingState.FullRequested)
+        {
+            CompleteFullRenderingTransition();
+        }
     }
 
     /// <summary>
@@ -5822,11 +6083,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return context.CreateRenderTarget(surface, width, height);
         }
 
-        // AllowsTransparency always wants a premultiplied-alpha surface, even when the
-        // HWND kept its redirection bitmap because the backend cannot present through
-        // DirectComposition — asking for a composition target is what makes Vulkan pick
-        // VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR.
-        if (context.Backend == RenderBackend.D3D12 || AllowsTransparency || ShouldUseCompositionRenderTarget())
+        if (context.Backend == RenderBackend.D3D12 &&
+            (_preserveGdiPresentation || ShouldPreserveGdiPresentation(
+                PlatformFactory.IsWindows, context.Backend,
+                RenderContext.IsBackendSelectionAutomatic(context))))
+        {
+            var target = context.CreateRenderTargetForComposition(Handle, width, height);
+            _preserveGdiPresentation = true;
+            return target;
+        }
+
+        // Other opaque targets use the backend's native HWND surface. Automatic
+        // D3D12 above preserves GDI compatibility through detachable composition;
+        // transparency and embedded composition content use the existing path.
+        // On Vulkan, asking for a composition surface also selects a compatible
+        // premultiplied-alpha WSI format while retaining the HWND redirection surface.
+        if (ShouldUseCompositionRenderTarget())
             return context.CreateRenderTargetForComposition(Handle, width, height);
 
         return context.CreateRenderTarget(Handle, width, height);
@@ -5838,6 +6110,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     internal bool EnsureCompositionRenderTargetForEmbeddedContent()
     {
+        // Embedded child visuals require the ordinary GPU/composition contract.
+        // Latch the demand even before HWND creation so a later first target never
+        // starts on the empty-window Software path.
+        RequireFullRendering(EmptyRenderingDemand.EmbeddedSurface);
+
         if (Handle == nint.Zero)
             return false;
 
@@ -5851,6 +6128,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             try
             {
                 RenderTarget.DestroyWebViewCompositionVisual(existingVisual);
+                CompleteFullRenderingTransition();
                 return true;
             }
             catch (RenderPipelineException)
@@ -5894,6 +6172,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // skips composition swap chains.)
             StopExternalPresentPacing();
             oldRenderTarget?.Dispose();
+            CompleteFullRenderingTransition();
 
             // Now safe to change window style — any WM_PAINT during SetWindowPos
             // will see RenderTarget == null and skip rendering.
@@ -5911,6 +6190,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             int physicalHeight = Math.Max(1, (int)Math.Ceiling(heightDip * _dpiScale));
 
             RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
+
+            ConfigureRenderingModeForTarget(
+                Jalium.UI.Hosting.RenderingModeOptions.Current,
+                RenderTarget.SupportsPartialPresentation);
 
             float dpi = (float)(_dpiScale * 96.0);
             RenderTarget.SetDpi(dpi, dpi);
@@ -6102,6 +6385,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (d is Window window)
         {
+            if (e.NewValue != null)
+            {
+                window.RequestFullRendering(EmptyRenderingDemand.CustomDrawing);
+            }
             window.ResolveAndApplyTitleBarStyle();
         }
     }
@@ -6141,6 +6428,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (d is Window window && e.NewValue is WindowBackdropType backdropType)
         {
+            if (backdropType != WindowBackdropType.None)
+            {
+                window.RequestFullRendering(EmptyRenderingDemand.SystemBackdrop);
+            }
             window.ApplySystemBackdrop(backdropType);
         }
     }
@@ -6181,6 +6472,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (e.Property == WindowIconProperty)
         {
             window.UpdatePlatformWindowIcon();
+        }
+
+        if ((e.Property == LeftWindowCommandsProperty ||
+             e.Property == RightWindowCommandsProperty) &&
+            e.NewValue != null)
+        {
+            window.RequestFullRendering(EmptyRenderingDemand.Content);
         }
 
         window.ApplyTitleBarPresentation();
@@ -6858,8 +7156,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                             // WVR_REDRAW invalidates the HWND update region. Jalium's
                             // retained renderer is dispatcher-driven, so explicitly
                             // queue its matching full frame as well; the later WM_SIZE
-                            // updates layout and the DComp logical viewport before that
-                            // dispatcher operation can run.
+                            // updates layout and queues the matching native target resize
+                            // before that dispatcher operation can run.
                             window.RequestFullInvalidation();
                             window.InvalidateWindow();
                         }
@@ -7295,6 +7593,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     window.OnPaint();
                     return nint.Zero;
 
+                case EmptyStorageTimerMessage when (nuint)wParam == EmptyStorageTimerId:
+                    window.OnEmptyStorageTimer();
+                    return nint.Zero;
+
                 // Keyboard input
                 case WM_KEYDOWN:
                     if (IsShellReservedVirtualKey(wParam))
@@ -7471,6 +7773,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
                 case WM_CAPTURECHANGED:
                     // lParam = 即将拿到捕获的窗口；等于自己时不算丢捕获，理由见 HandleNativeCaptureChanged。
+                    if (lParam != hWnd) window._nonClientMouseLeaveWindow = nint.Zero;
                     window._inputDispatcher.HandleNativeCaptureChanged(lParam, hWnd);
                     return nint.Zero;
 
@@ -7691,11 +7994,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
 
         // Latest-size-wins. Interactive WM_SIZE messages update managed layout
-        // immediately. D3D12's reserved DirectComposition visual already covers
-        // its full 1:1 swap-chain capacity, so this call only advances the logical
-        // viewport; the HWND clips the reserve while the next frame paints the
-        // new layout. Backends that recreate buffers remain coalesced at a frame
-        // boundary.
+        // immediately. A D3D12 composition target can advance its logical viewport
+        // inside an existing reserved allocation; the normal HWND target coalesces
+        // ResizeBuffers to a safe frame boundary like the other native-window
+        // backends.
         QueueLatestRenderTargetResize(
             physicalWidth,
             physicalHeight,
@@ -7822,9 +8124,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // chain — see their guards.
         _resizeInProgress = true;
 
-        // Park the render thread before changing the native target size. The
-        // common D3D12 path only changes its 1:1 composition clip, but a capacity
-        // miss can still fall through to ResizeBuffers and discard the buffers.
+        // Park the render thread before changing the native target size. A D3D12
+        // composition target may only change its 1:1 clip, while the normal HWND
+        // target uses ResizeBuffers and discards the old buffers.
         // (No-op when the render thread is disabled, which is the default.)
         // FIX #5: if it didn't park in time (a hung present), do NOT ResizeBuffers
         // under an in-flight frame — skip this resize and let a later tick retry.
@@ -8547,6 +8849,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (endResult == JaliumResult.Ok)
         {
             Interlocked.Increment(ref _successfulPresentCount);
+            ScheduleEmptyStorageCompaction(renderTarget);
             _debugHud.OnEndDraw();
             // This frame's BeginDraw blocking wait (swap-chain frame-latency
             // waitable + GPU fence) in ns — peeled out of the "BeginDraw"
@@ -8575,7 +8878,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     Jalium.UI.Diagnostics.RenderDiagnostics.PublishGpuSnapshot(
                         gpuStats.GlyphSlotsUsed, gpuStats.GlyphSlotsTotal, gpuStats.GlyphBytes,
                         gpuStats.PathEntries, gpuStats.PathBytes,
-                        gpuStats.TextureCount, gpuStats.TextureBytes);
+                        gpuStats.TextureCount, gpuStats.TextureBytes,
+                        gpuStats.VelloDispatchCount,
+                        gpuStats.SoftwareRasterNs,
+                        gpuStats.SoftwarePixelsVisited,
+                        gpuStats.SoftwarePixelsBlended,
+                        gpuStats.SoftwareAaSamples,
+                        gpuStats.SoftwareClipRejectedPixels,
+                        gpuStats.SoftwareParallelNs,
+                        gpuStats.SoftwareCacheBytes,
+                        gpuStats.SoftwareEffectCacheHits,
+                        gpuStats.SoftwareEffectCacheMisses,
+                        gpuStats.SoftwareWorkerCount,
+                        gpuStats.SoftwareWorkerUtilizationPermille,
+                        gpuStats.SoftwareEffectCacheEntries,
+                        gpuStats.SoftwareGradientCacheEntries);
                     // Frame-pacing: roll up the managed BeginDraw attempt counters
                     // (incremented inside RenderTarget.TryBeginDraw) with the
                     // native backend's fence-wait + GPU work timings so DevTools
@@ -8840,8 +9157,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // bypass resize coalescing. The frame clock will apply the latest
             // queued size and render once at its next safe point.
             EndPaint(Handle, ref ps);
-            RequestFullInvalidation();
-            InvalidateWindow();
+            // A full Software frame can have validated this region after the
+            // OS queued WM_PAINT. An empty paint must not create another full
+            // invalidation; already pending framework work keeps its own wake.
+            if (ps.rcPaint.right > ps.rcPaint.left && ps.rcPaint.bottom > ps.rcPaint.top)
+            {
+                if (!TryPresentUnchangedSoftwareResizeFrame())
+                {
+                    RequestFullInvalidation();
+                    InvalidateWindow();
+                }
+            }
             return;
         }
         RenderFrame();
@@ -8860,15 +9186,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// immediately after all ticks in the same batch 鈥?no WM_PAINT starvation.
     /// </summary>
     private void ProcessRender()
-    { _debugHud.OnProcessRender();
-        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PR);
+    {
         ClearRenderFlag(RenderFlag_Scheduled);
         if (_isClosing || Handle == nint.Zero) return;
-
-        // Dispose any pending throttle timer from a previous rate-limit cycle.
-        var throttleTimer = _renderThrottleTimer;
-        _renderThrottleTimer = null;
-        throttleTimer?.Dispose();
+        CancelDeferredRender();
+        _debugHud.OnProcessRender();
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PR);
 
         // Skip the whole render pipeline while minimized — DWM is not picking
         // up presents anyway, so layout / dirty-region / present cost is pure
@@ -8897,30 +9220,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // worse perceived responsiveness. The pacer code below is kept
         // behind an env-var gate for future experimentation.
         //
-        // RenderFlag_Scheduled is claimed when the timer FIRES, not here: this
-        // System.Threading.Timer runs at the ~15.6 ms OS resolution (the process
-        // holds no timeBeginPeriod), so claiming the flag at arm time would block
-        // every animation tick's InvalidateWindow for a random 0–15.6 ms slice
-        // after each present — the direct cause of the visible present-cadence
-        // stutter in continuous partial-present animations (DevTools tree
-        // reveal). Claiming at fire time keeps real invalidations scheduling
-        // immediately; if the fire loses the race (flag already set), a real
-        // frame is already queued and this retry's purpose is served.
-        var deferredTimer = new Timer(_ =>
+        // A pending timer does not own the frame clock's Scheduled flag. Normal
+        // animation/input frames remain free to run and cancel the obsolete retry.
+        // The timer posts at most one operation for this generation; replacement
+        // and Close abort it, and its UI callback verifies that it is still current.
+        (Timer? Timer, DispatcherOperation? Operation) previous = default;
+        try
         {
-            if (_isClosing || Handle == nint.Zero)
+            lock (_renderLifecycleGate)
             {
-                return;
+                if (_isClosing || _managedTeardownStarted || Handle == nint.Zero) return;
+                previous = DetachDeferredRenderLocked();
+                long generation = _deferredRenderGeneration;
+                // Publish ownership before arming: a short timer must not race its
+                // own registration or a replacement/close on the UI thread.
+                _renderThrottleTimer = new Timer(
+                    _ => OnDeferredRenderTimer(generation), null, Timeout.Infinite, Timeout.Infinite);
+                _renderThrottleTimer.Change(Math.Max(1, delayMs), Timeout.Infinite);
             }
-
-            if (TrySetRenderFlag(RenderFlag_Scheduled))
-            {
-                _dispatcher?.BeginInvokeCritical(ProcessRender);
-            }
-        }, null, Math.Max(1, delayMs), Timeout.Infinite);
-
-        var previousTimer = Interlocked.Exchange(ref _renderThrottleTimer, deferredTimer);
-        previousTimer?.Dispose();
+        }
+        finally { ReleaseDeferredRender(previous); }
     }
 
     // ── Frame-latency pacer thread ──────────────────────────────────────
@@ -9068,17 +9387,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void StartRenderThreadIfSupported()
     {
-        if (!EnableRenderThread || _renderThread != null) return;
+        if (!ShouldUseRenderThread(
+                EnableRenderThread,
+                Jalium.UI.Hosting.RenderingModeOptions.Current) ||
+            _renderThread != null)
+        {
+            return;
+        }
         if (_nativeWindowHidden) return;
         if (_renderThreadDisabledForSchemaGap) return;  // latched off after un-recordable content — don't flap back on RT recreate
-        // The render thread is Windows/HWND-only by design (it owns the swap-chain
-        // present). On non-Windows _platformWindow drives rendering, and
-        // ShouldUseCompositionRenderTarget()'s user32 GetWindowLong P/Invoke would
-        // throw DllNotFoundException there — bail BEFORE touching it.
+        // The render thread is Windows-only by design (it owns the swap-chain
+        // present). On non-Windows _platformWindow drives rendering, so bail
+        // before touching any HWND-specific state.
         if (_platformWindow != null) return;
-        // D3D12 DirectComposition swap chains are worker-safe. Keeping this
-        // target type preserves exact live-resize geometry while moving the
-        // expensive native replay/present off the message pump.
+        // Both D3D12 HWND and opt-in DirectComposition swap chains are worker-safe;
+        // move their expensive native replay/present off the message pump.
         if (RenderTarget?.Backend != RenderBackend.D3D12) return;
         if (Visual.RenderCacheHost == null) return;                              // no whole-frame capture
         _renderThreadStop = false;
@@ -9088,6 +9411,33 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _renderThread = t;
         _rtActive = true;
         t.Start();
+    }
+
+    /// <summary>
+    /// Synchronizes the native target capability with the public rendering-mode
+    /// policy. Kept as a small deterministic seam so the mode-to-window wiring is
+    /// regression-testable without creating a native swap chain.
+    /// </summary>
+    internal static void ConfigureRenderingModeForTarget(
+        Jalium.UI.Hosting.RenderingModeOptions options,
+        bool supportsPartialPresentation)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.DamageScopedAvailable = supportsPartialPresentation;
+    }
+
+    /// <summary>
+    /// Resolves whether the full-frame render worker may own this window. The
+    /// environment/default preference is necessary but not sufficient:
+    /// Performance mode is contractually inline because the current worker calls
+    /// SetFullInvalidation for every capture and therefore defeats dirty rendering.
+    /// </summary>
+    internal static bool ShouldUseRenderThread(
+        bool renderThreadEnabled,
+        Jalium.UI.Hosting.RenderingModeOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return renderThreadEnabled && options.AllowRenderThread;
     }
 
     private bool StopRenderThread()
@@ -9168,10 +9518,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void ReleaseRenderResourcesAfterRenderThreadStopped()
     {
-        // Release large image resources before dropping the drawing context.
-        // Avoid full ClearCache during shutdown because text/brush ordering is
-        // still sensitive.
-        try { ReleaseDrawingContextBeforeRenderTargetDisposal(clearAllCaches: false); }
+        // The worker has joined, and the target/backend still own their native
+        // state. Release every per-window cache at this boundary: brush and text
+        // format finalizers deliberately do not destroy their native handles.
+        try { ReleaseDrawingContextBeforeRenderTargetDisposal(clearAllCaches: true); }
         catch { /* shutdown cleanup is best effort */ }
 
         // Both waiters borrow HANDLEs owned by the swap chain and must be gone
@@ -9179,10 +9529,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         StopFramePacer();
         StopExternalPresentPacing();
 
+        // This is final window teardown after the render worker has exited.
+        // These synchronization objects are per-window and are no longer read
+        // by the worker; release their handles even if the Window remains held
+        // by application code after Closed.
+        Interlocked.Exchange(ref _rtFrameAvailable, null)?.Dispose();
+        Interlocked.Exchange(ref _rtIdle, null)?.Dispose();
+
         var renderTarget = RenderTarget;
         RenderTarget = null;
         try { renderTarget?.Dispose(); }
         catch { /* never surface deferred/native teardown failures */ }
+
+        // The lease is released only after every target/drawing-context resource
+        // has drained. This path is shared by immediate close and the deferred
+        // stalled-render-thread cleanup, so neither can strand the Software pool.
+        ReleaseEmptyRenderingAfterRenderResources();
     }
 
     private void ScheduleDeferredRenderResourceRelease(Thread stalledRenderThread)
@@ -9242,30 +9604,48 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void RenderThreadLoop()
     {
-        var wake = _rtFrameAvailable;
-        while (!_renderThreadStop)
+        try
         {
-            wake?.WaitOne(250);   // short poll: keeps the loop alive even with no frames queued
-            if (_renderThreadStop) break;
-            if (_rtPause) { _rtIdle?.Set(); continue; }   // drain barrier — parked for lifecycle ops
-            FrameCapture? cap;
-            lock (_rtChannelLock) { cap = _rtPendingFrame; _rtPendingFrame = null; }
-            if (cap == null) continue;
-            try { PresentCaptureOnRenderThread(cap); }
-            catch (RenderPipelineException ex) { MarshalRenderRecovery(ex); }
+            var wake = _rtFrameAvailable;
+            while (!_renderThreadStop)
+            {
+                wake?.WaitOne(250);   // short poll: keeps the loop alive even with no frames queued
+                if (_renderThreadStop) break;
+                if (_rtPause) { _rtIdle?.Set(); continue; }   // drain barrier — parked for lifecycle ops
+                FrameCapture? cap;
+                lock (_rtChannelLock) { cap = _rtPendingFrame; _rtPendingFrame = null; }
+                if (cap == null) continue;
+                try { PresentCaptureOnRenderThread(cap); }
+                catch (RenderPipelineException ex) { MarshalRenderRecovery(ex); }
+                catch (Exception ex)
+                {
+                    if (IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD_DIAGNOSTICS"))
+                    {
+                        Console.Error.WriteLine($"[Jalium.Render] Frame replay failed: {ex}");
+                    }
+                    // The capture is lost and dirty was already cleared at publish
+                    // time — without re-invalidation a static scene would keep the
+                    // stale frame on screen until the next external invalidation.
+                    // Marshal a full invalidation back to the UI thread so the
+                    // scene re-records and re-publishes.
+                    try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
+                    catch { /* shutting down */ }
+                }
+            }
+        }
+        finally
+        {
+            // DrawingContext inherits DispatcherObject and implicitly registers
+            // a dispatcher on this dedicated worker. Its global registry holds
+            // the Thread strongly, even after Join succeeds. Retire that private
+            // dispatcher on its owner thread, before native thread teardown, so
+            // repeated GPU/Software transitions cannot accumulate dead threads
+            // and message-window resources. Do not create a dispatcher just to
+            // dispose one when this worker never received a frame.
+            try { DispatcherCore.CurrentDispatcher?.Dispose(); }
             catch (Exception ex)
             {
-                if (IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD_DIAGNOSTICS"))
-                {
-                    Console.Error.WriteLine($"[Jalium.Render] Frame replay failed: {ex}");
-                }
-                // The capture is lost and dirty was already cleared at publish
-                // time — without re-invalidation a static scene would keep the
-                // stale frame on screen until the next external invalidation.
-                // Marshal a full invalidation back to the UI thread so the
-                // scene re-records and re-publishes.
-                try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
-                catch { /* shutting down */ }
+                Debug.WriteLine($"[Jalium.Render] Dispatcher cleanup failed: {ex.Message}");
             }
         }
     }
@@ -9305,8 +9685,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         // Native resize is part of the worker-owned frame transaction. Managed
         // Width/Height and layout were already updated synchronously by WM_SIZE;
-        // this only advances the D3D12/DComp logical viewport immediately before
-        // drawing that matching layout. It never blocks the UI thread.
+        // this advances the D3D12 HWND buffers or composition logical viewport
+        // immediately before drawing that matching layout. It never blocks the UI thread.
         if (cap.ResizeVersion != 0 &&
             cap.ResizeVersion > Interlocked.Read(ref _rtCommittedResizeVersion))
         {
@@ -9399,8 +9779,58 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 bool publishWorkerDiagnostics =
                     ended && Jalium.UI.Diagnostics.RenderDiagnostics.ShouldPublishFor(this);
+                long beginBlockingWaitNs = 0;
+                long presentBlockNs = 0;
+                if (ended && rt.TryQueryGpuStats(out var gpuStats))
+                {
+                    beginBlockingWaitNs = gpuStats.FrameWaitableWaitNs +
+                        gpuStats.FrameGpuWaitNs;
+                    presentBlockNs = gpuStats.PresentBlockNs;
+                    if (publishWorkerDiagnostics)
+                    {
+                        Jalium.UI.Diagnostics.RenderDiagnostics.PublishGpuSnapshot(
+                            gpuStats.GlyphSlotsUsed, gpuStats.GlyphSlotsTotal,
+                            gpuStats.GlyphBytes,
+                            gpuStats.PathEntries, gpuStats.PathBytes,
+                            gpuStats.TextureCount, gpuStats.TextureBytes,
+                            gpuStats.VelloDispatchCount,
+                            gpuStats.SoftwareRasterNs,
+                            gpuStats.SoftwarePixelsVisited,
+                            gpuStats.SoftwarePixelsBlended,
+                            gpuStats.SoftwareAaSamples,
+                            gpuStats.SoftwareClipRejectedPixels,
+                            gpuStats.SoftwareParallelNs,
+                            gpuStats.SoftwareCacheBytes,
+                            gpuStats.SoftwareEffectCacheHits,
+                            gpuStats.SoftwareEffectCacheMisses,
+                            gpuStats.SoftwareWorkerCount,
+                            gpuStats.SoftwareWorkerUtilizationPermille,
+                            gpuStats.SoftwareEffectCacheEntries,
+                            gpuStats.SoftwareGradientCacheEntries);
+                        Jalium.UI.Diagnostics.RenderDiagnostics.PublishFramePacing(
+                            gpuStats.FrameGpuWaitNs,
+                            gpuStats.SwapBufferCount,
+                            gpuStats.LastFramePresentToReadyNs,
+                            gpuStats.FrameWaitableWaitNs);
+                    }
+                }
                 Jalium.UI.Diagnostics.RenderDiagnostics.PublishAndResetApiStats(
-                    publishWorkerDiagnostics, 0, 0);
+                    publishWorkerDiagnostics, beginBlockingWaitNs, presentBlockNs);
+                // The inline EndDraw path publishes the previous completed
+                // frame's hardware timestamps, but render-thread frames used
+                // to publish only Draw-API counters. Query here while this
+                // worker still owns the target so default-thread benchmarks
+                // and DevTools receive the same GPU breakdown without racing
+                // the UI thread against native renderer state.
+                if (publishWorkerDiagnostics && rt.TryQueryGpuTiming(out var gpuTiming))
+                {
+                    Jalium.UI.Diagnostics.RenderDiagnostics.PublishGpuTiming(
+                        gpuTiming.TimingValid,
+                        gpuTiming.TotalGpuNs,
+                        gpuTiming.SdfRectNs, gpuTiming.TextNs, gpuTiming.BitmapNs, gpuTiming.PathNs,
+                        gpuTiming.BackdropNs, gpuTiming.LiquidGlassNs, gpuTiming.OtherNs,
+                        gpuTiming.BatchCount);
+                }
             }
             if (ended && _consecutiveRecoverableRenderFailures != 0)
             {
@@ -9909,7 +10339,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_renderPendingOnSwap)
         {
             _renderPendingOnSwap = false;
-            try { _dispatcher?.BeginInvokeCritical(ProcessRender); } catch { /* shutting down */ }
+            // Consume the frame-clock handoff bit together with this waitable
+            // handoff. Scheduled is claimed atomically so a simultaneous frame
+            // tick cannot enqueue a duplicate ProcessRender.
+            ClearRenderFlag(RenderFlag_DirtyBetween);
+            if (TrySetRenderFlag(RenderFlag_Scheduled))
+            {
+                try { _dispatcher?.BeginInvokeCritical(ProcessRender); } catch { /* shutting down */ }
+            }
         }
     }
 
@@ -10499,6 +10936,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         DiscardFrameDirty(frameFullSeq);
                         frameDirtySwapped = false;
                     }
+                    ValidateSoftwareResizePaint(frameRenderTarget, frameFullSeq);
                     // A full present refreshes only the CURRENT back buffer; arm the
                     // follow-up flush so the alternate FLIP buffer(s) converge before the
                     // idle-skip stops further frames. (isFlushFrame is always false on the
@@ -10982,6 +11420,43 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    private void ValidateSoftwareResizePaint(RenderTarget target, long capturedFullSeq)
+    {
+        // Software presents through GetDC/StretchDIBits, outside WM_PAINT. A
+        // frame-clock resize can therefore paint the entire client while its
+        // native update region is still pending. Leaving that region invalid
+        // schedules a second full frame when WM_PAINT finally reaches the pump.
+        // Only acknowledge a successful, current, full Software resize frame;
+        // a new invalidation/size or a failed present must retain its own work.
+        if (!_isSizing || !OperatingSystem.IsWindows() || Handle == nint.Zero ||
+            _isClosing || _managedTeardownStarted || _hasPendingResize ||
+            !target.IsValid || target.Backend != RenderBackend.Software ||
+            !ReferenceEquals(RenderTarget, target))
+        {
+            return;
+        }
+
+        if (!GetClientRect(Handle, out RECT client) ||
+            client.right - client.left != target.Width ||
+            client.bottom - client.top != target.Height)
+        {
+            return;
+        }
+
+        lock (_dirtyLock)
+        {
+            if (capturedFullSeq == _fullInvalidationSeq && !_fullInvalidation &&
+                _dirtyElements.Count == 0 && _dirtyFreeRects.Count == 0)
+            {
+                _ = ValidatePaintedClient(Handle, nint.Zero);
+            }
+        }
+    }
+
+    [LibraryImport("user32.dll", EntryPoint = "ValidateRect")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ValidatePaintedClient(nint window, nint rect);
+
     /// <summary>
     /// RC4-a：未成功 present 的事务回滚——把捕获集并回活动集，与帧中新到的注册合并
     /// 后等下一次尝试。_fullInvalidation 不动（swap 不曾清它；失败路径若需要整窗兜底
@@ -11128,7 +11603,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         => supportsPartialPresentation && backend == RenderBackend.D3D12;
 
     internal static int ComputeBackBufferConvergenceDelayMs(bool isSizing)
-        => 1;
+    {
+        if (isSizing)
+        {
+            return 1;
+        }
+
+        // Two nominal frames is long enough for the next real interaction frame
+        // to cancel/replace this timer, yet short enough that an isolated update
+        // converges before it can be perceived. Clamp unusual refresh reports so
+        // the quiet grace stays bounded on both very-high-Hz and low-Hz displays.
+        return Math.Clamp(CompositionTarget.FrameIntervalMs * 2, 8, 50);
+    }
 
     private void HandlePresentedFrameFlush(bool isFlushFrame)
     {
@@ -11540,6 +12026,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (_isClosing || Handle == nint.Zero) return;
 
+        ProcessPendingInputDetachesForFrame();
+        // Leave/capture callbacks can close the window while retiring a subtree.
+        if (_isClosing || Handle == nint.Zero) return;
+
         // While the window is minimized there is no surface to present to —
         // any dirty work just has to be replayed when the window is restored
         // (RequestFullInvalidation runs on resize anyway). Holding the dirty
@@ -11593,12 +12083,48 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (HasRenderFlag(RenderFlag_DirtyBetween))
         {
+            // Once the D3D12 waitable owns pacing, keep a dirty frame banked
+            // until a present credit exists. Scheduling on every frame-clock
+            // tick only makes RenderFrame rediscover the same missing credit;
+            // high-rate pointer input then becomes a 60+ Hz credit-miss storm.
+            if (ShouldWaitForSwapCreditBeforeSchedulingFrame())
+            {
+                return;
+            }
+
             ClearRenderFlag(RenderFlag_DirtyBetween);
             if (TrySetRenderFlag(RenderFlag_Scheduled))
             {
                 _dispatcher?.BeginInvokeCritical(ProcessRender);
             }
         }
+    }
+
+    private bool ShouldWaitForSwapCreditBeforeSchedulingFrame()
+    {
+        if (!_swapPacingActive)
+        {
+            return false;
+        }
+
+        if (Volatile.Read(ref _swapCredit) > 0)
+        {
+            _renderPendingOnSwap = false;
+            return false;
+        }
+
+        // Publish intent before arming the wait. The second read closes the
+        // signal-between-check-and-register race: either proceed now, or let
+        // OnSwapWaitableSignaled schedule the latest banked frame.
+        _renderPendingOnSwap = true;
+        EnsureSwapWaitRegistered();
+        if (Volatile.Read(ref _swapCredit) > 0)
+        {
+            _renderPendingOnSwap = false;
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -11978,6 +12504,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (activateState == WA_INACTIVE)
         {
+            _nonClientMouseLeaveWindow = nint.Zero;
             if (IsActive)
             {
                 SetIsActive(false);
@@ -12005,6 +12532,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void OnCancelMode()
     {
+        _nonClientMouseLeaveWindow = nint.Zero;
         _inputDispatcher.HandleCancelMode();
     }
 
@@ -14095,17 +14623,36 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     void IInputDispatcherHost.ActivateDevToolsPicker() => _devToolsWindow?.ActivatePicker();
 
     bool IInputDispatcherHost.CanToggleDebugHud
-        => Jalium.UI.Hosting.DeveloperToolsResolver.IsDebugHudEnabled;
+        => !_managedTeardownStarted &&
+           Jalium.UI.Hosting.DeveloperToolsResolver.IsDebugHudEnabled;
 
     bool IInputDispatcherHost.DebugHudEnabled
     {
         get => _debugHud.Enabled;
-        set => _debugHud.Enabled = value;
+        set => _debugHud.Enabled = !_managedTeardownStarted && value;
     }
 
     Visibility IInputDispatcherHost.DebugHudOverlayVisibility
     {
-        set => _debugHudOverlay.Visibility = value;
+        set
+        {
+            if (_managedTeardownStarted)
+            {
+                return;
+            }
+
+            if (_debugHudOverlay == null && value == Visibility.Visible)
+            {
+                RequestFullRendering(EmptyRenderingDemand.DeveloperOverlay);
+                _debugHudOverlay = new DebugHudOverlay();
+                OverlayLayer.AddOverlayChild(_debugHudOverlay);
+            }
+
+            if (_debugHudOverlay != null)
+            {
+                _debugHudOverlay.Visibility = value;
+            }
+        }
     }
 
     /// <summary>
@@ -14120,6 +14667,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void SetRenderingEngineOverride(Jalium.UI.Interop.RenderingEngine engine)
     {
+        if (engine != Jalium.UI.Interop.RenderingEngine.Auto)
+        {
+            RequestFullRendering(EmptyRenderingDemand.RenderingEngine);
+        }
         RenderTarget?.SetRenderingEngine(engine);
         RequestFullInvalidation();
         InvalidateWindow();
@@ -14147,9 +14698,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     void IInputDispatcherHost.InvalidateWindow() => InvalidateWindow();
     void IInputDispatcherHost.RequestFullInvalidation() => RequestFullInvalidation();
 
-    void IInputDispatcherHost.RequestTrackMouseLeave()
+    bool IInputDispatcherHost.RequestTrackMouseLeave()
     {
-        if (PlatformFactory.IsWindows && Handle != nint.Zero)
+        if (!PlatformFactory.IsWindows) return true;
+        if (Handle != nint.Zero)
         {
             TRACKMOUSEEVENT tme = new()
             {
@@ -14158,8 +14710,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 hwndTrack = Handle,
                 dwHoverTime = 0
             };
-            _ = TrackMouseEvent(ref tme);
+            return TrackMouseEvent(ref tme);
         }
+        return false;
     }
 
     void IInputDispatcherHost.SetPlatformCursor(int cursorType)
@@ -14347,7 +14900,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             nameof(AllowsTransparency),
             typeof(bool),
             typeof(Window),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnAllowsTransparencyChanged));
+
+    private static void OnAllowsTransparencyChanged(
+        DependencyObject d,
+        DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Window window && e.NewValue is true)
+        {
+            window.RequestFullRendering(EmptyRenderingDemand.Transparency);
+        }
+    }
 
     private static readonly DependencyPropertyKey IsActivePropertyKey =
         DependencyProperty.RegisterReadOnly(
@@ -14411,13 +14974,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private const ushort VT_LPWSTR = 31;
     private const int MaxAppUserModelIdLength = 128;
-    private const string AppUserModelIdPropertyName = "System.AppUserModel.ID";
-    private const string RelaunchCommandPropertyName = "System.AppUserModel.RelaunchCommand";
-    private const string RelaunchDisplayNamePropertyName = "System.AppUserModel.RelaunchDisplayNameResource";
-    private const string RelaunchIconPropertyName = "System.AppUserModel.RelaunchIconResource";
+    // Stable PKEY_AppUserModel_* values from the Windows SDK's propkey.h.
+    // Resolving these four known keys by name initializes the property schema
+    // catalog on every process' first window for no additional information.
+    private static readonly Guid AppUserModelPropertyFormat = new("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+    private const uint AppUserModelIdPropertyId = 5;
+    private const uint RelaunchCommandPropertyId = 2;
+    private const uint RelaunchDisplayNamePropertyId = 4;
+    private const uint RelaunchIconPropertyId = 3;
     private static readonly Guid IPropertyStoreGuid = new("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
     private static readonly object s_taskbarIdentityLock = new();
     private static string? s_processAppUserModelId;
+    private int _taskbarRelaunchPropertyMask;
 
     private void PrepareTaskbarRelaunchIdentity()
     {
@@ -14431,13 +14999,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     private void ApplyTaskbarRelaunchProperties()
+        => ApplyTaskbarRelaunchProperties(
+            BuildTaskbarRelaunchInfo(Environment.ProcessPath, Environment.GetCommandLineArgs(), Title));
+
+    internal void ApplyTaskbarRelaunchProperties(TaskbarRelaunchInfo info)
     {
         if (Handle == nint.Zero)
         {
             return;
         }
 
-        var info = BuildTaskbarRelaunchInfo(Environment.ProcessPath, Environment.GetCommandLineArgs(), Title);
         if (string.IsNullOrWhiteSpace(info.AppUserModelId) ||
             string.IsNullOrWhiteSpace(info.Command) ||
             string.IsNullOrWhiteSpace(info.DisplayName) ||
@@ -14448,24 +15019,70 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         using (propertyStore)
         {
-            if (!TrySetTaskbarProperty(propertyStore, AppUserModelIdPropertyName, info.AppUserModelId))
-            {
-                return;
-            }
-
-            var hasRelaunchCommand = TrySetTaskbarProperty(propertyStore, RelaunchCommandPropertyName, info.Command);
-            var hasRelaunchDisplayName = TrySetTaskbarProperty(propertyStore, RelaunchDisplayNamePropertyName, info.DisplayName);
-            if (!hasRelaunchCommand || !hasRelaunchDisplayName)
-            {
-                return;
-            }
+            // The Shell can reject an overlong relaunch command. Preserve the
+            // window's grouping identity even when optional relaunch data fails.
+            TrackTaskbarProperty(propertyStore, RelaunchCommandPropertyId, info.Command);
+            TrackTaskbarProperty(propertyStore, RelaunchDisplayNamePropertyId, info.DisplayName);
 
             if (!string.IsNullOrWhiteSpace(info.IconResource))
             {
-                _ = TrySetTaskbarProperty(propertyStore, RelaunchIconPropertyName, info.IconResource);
+                TrackTaskbarProperty(propertyStore, RelaunchIconPropertyId, info.IconResource);
+            }
+
+            // Setting the ID notifies the taskbar. Publish it after the relaunch
+            // properties so that notification observes a complete window identity.
+            if (!TrackTaskbarProperty(propertyStore, AppUserModelIdPropertyId, info.AppUserModelId))
+            {
+                return;
             }
 
             _ = propertyStore.Commit();
+        }
+    }
+
+    private bool TrackTaskbarProperty(PropertyStoreHandle store, uint propertyId, string value)
+    {
+        if (!TrySetTaskbarProperty(store, propertyId, value))
+        {
+            return false;
+        }
+
+        _taskbarRelaunchPropertyMask |= 1 << (int)propertyId;
+        return true;
+    }
+
+    internal void ReleaseTaskbarRelaunchProperties(nint nativeHandle)
+    {
+        if (_taskbarRelaunchPropertyMask == 0 || nativeHandle == nint.Zero ||
+            !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // SHGetPropertyStoreForWindow requires VT_EMPTY before the HWND goes
+        // away; releasing IPropertyStore alone does not free its window values.
+        // Only remove keys successfully published by this Window. A never-shown
+        // window therefore does not load Shell libraries just to clean up.
+        int properties = Interlocked.Exchange(ref _taskbarRelaunchPropertyMask, 0);
+        if (!TryGetWindowPropertyStore(nativeHandle, out var propertyStore))
+        {
+            return;
+        }
+
+        using (propertyStore)
+        {
+            for (uint propertyId = RelaunchCommandPropertyId;
+                 propertyId <= AppUserModelIdPropertyId; propertyId++)
+            {
+                if ((properties & (1 << (int)propertyId)) == 0)
+                {
+                    continue;
+                }
+
+                var key = new PROPERTYKEY { fmtid = AppUserModelPropertyFormat, pid = propertyId };
+                PROPVARIANT empty = default;
+                _ = propertyStore.SetValue(ref key, ref empty);
+            }
         }
     }
 
@@ -14535,7 +15152,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             BuildTaskbarIconResource(displayNameSource));
     }
 
-    private static bool TryGetWindowPropertyStore(nint hwnd, out PropertyStoreHandle propertyStore)
+    private static unsafe bool TryGetWindowPropertyStore(nint hwnd, out PropertyStoreHandle propertyStore)
     {
         propertyStore = default;
         if (hwnd == nint.Zero)
@@ -14543,27 +15160,48 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return false;
         }
 
-        var propertyStoreGuid = IPropertyStoreGuid;
-        if (SHGetPropertyStoreForWindow(hwnd, ref propertyStoreGuid, out var propertyStorePointer) < 0 ||
-            propertyStorePointer == nint.Zero)
+        // A P/Invoke stub caches its library for the process lifetime. These
+        // startup operations only need Shell while the property-store interface
+        // is in use. Own one loader reference and release it after COM Release;
+        // any other Shell consumer keeps its independent reference untouched.
+        nint library = NativeLibrary.Load("shell32.dll", typeof(Window).Assembly, DllImportSearchPath.System32);
+        try
         {
-            return false;
-        }
+            var getStore = (delegate* unmanaged[Stdcall]<nint, Guid*, nint*, int>)
+                NativeLibrary.GetExport(library, "SHGetPropertyStoreForWindow");
+            var propertyStoreGuid = IPropertyStoreGuid;
+            nint propertyStorePointer = nint.Zero;
+            int result = getStore(hwnd, &propertyStoreGuid, &propertyStorePointer);
+            if (propertyStorePointer == nint.Zero)
+            {
+                return false;
+            }
 
-        propertyStore = new PropertyStoreHandle(propertyStorePointer);
-        return true;
+            propertyStore = new PropertyStoreHandle(propertyStorePointer, library);
+            library = nint.Zero; // Ownership transfers with the live COM pointer.
+            if (result < 0)
+            {
+                propertyStore.Dispose();
+                propertyStore = default;
+                return false;
+            }
+            return true;
+        }
+        finally
+        {
+            if (library != nint.Zero) NativeLibrary.Free(library);
+        }
     }
 
-    private static bool TrySetTaskbarProperty(PropertyStoreHandle propertyStore, string propertyName, string value)
+    private static bool TrySetTaskbarProperty(PropertyStoreHandle propertyStore, uint propertyId, string value)
     {
         if (propertyStore.IsInvalid ||
-            string.IsNullOrWhiteSpace(propertyName) ||
-            string.IsNullOrWhiteSpace(value) ||
-            PSGetPropertyKeyFromName(propertyName, out var propertyKey) < 0)
+            string.IsNullOrWhiteSpace(value))
         {
             return false;
         }
 
+        var propertyKey = new PROPERTYKEY { fmtid = AppUserModelPropertyFormat, pid = propertyId };
         var propVariant = PROPVARIANT.FromString(value);
         try
         {
@@ -14571,7 +15209,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         finally
         {
-            _ = PropVariantClear(ref propVariant);
+            // SetValue copies this input. This helper only creates VT_LPWSTR
+            // values and owns their CoTaskMem allocation, so no generic OLE
+            // variant cleanup or property-system initialization is needed.
+            Marshal.FreeCoTaskMem(propVariant.pszVal);
         }
     }
 
@@ -14758,17 +15399,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return builder.ToString();
     }
 
-    [LibraryImport("shell32.dll")]
-    private static partial int SHGetPropertyStoreForWindow(nint hwnd, ref Guid riid, out nint ppv);
-
-    [LibraryImport("shell32.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int SetCurrentProcessExplicitAppUserModelID(string appID);
-
-    [LibraryImport("propsys.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int PSGetPropertyKeyFromName(string pszCanonicalName, out PROPERTYKEY propkey);
-
-    [LibraryImport("ole32.dll")]
-    private static partial int PropVariantClear(ref PROPVARIANT pvar);
+    private static unsafe int SetCurrentProcessExplicitAppUserModelID(string appID)
+    {
+        nint library = NativeLibrary.Load("shell32.dll", typeof(Window).Assembly, DllImportSearchPath.System32);
+        try
+        {
+            var setId = (delegate* unmanaged[Stdcall]<char*, int>)
+                NativeLibrary.GetExport(library, "SetCurrentProcessExplicitAppUserModelID");
+            fixed (char* value = appID)
+            {
+                return setId(value);
+            }
+        }
+        finally
+        {
+            NativeLibrary.Free(library);
+        }
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PROPERTYKEY
@@ -14795,6 +15442,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         [FieldOffset(8)]
         public nint pszVal;
 
+        // The native union includes counted pointers even when this instance
+        // stores only VT_LPWSTR: 16-byte union on x64, 8-byte union on x86.
+        // Keep the complete ABI size so native copies cannot read past it.
+        [FieldOffset(8)]
+        private CountedPointer _unionStorage;
+
         public static PROPVARIANT FromString(string value)
         {
             return new PROPVARIANT
@@ -14805,13 +15458,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CountedPointer
+    {
+        public uint Count;
+        public nint Pointer;
+    }
+
     private readonly unsafe struct PropertyStoreHandle : IDisposable
     {
         private readonly nint _instance;
+        private readonly nint _library;
 
-        public PropertyStoreHandle(nint instance)
+        public PropertyStoreHandle(nint instance, nint library)
         {
             _instance = instance;
+            _library = library;
         }
 
         public bool IsInvalid => _instance == nint.Zero;
@@ -14841,9 +15503,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 return;
             }
 
-            var vtable = *(nint**)_instance;
-            var release = (delegate* unmanaged[Stdcall]<nint, uint>)vtable[2];
-            _ = release(_instance);
+            try
+            {
+                var vtable = *(nint**)_instance;
+                var release = (delegate* unmanaged[Stdcall]<nint, uint>)vtable[2];
+                _ = release(_instance);
+            }
+            finally
+            {
+                if (_library != nint.Zero) NativeLibrary.Free(_library);
+            }
         }
     }
 

@@ -44,12 +44,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.core</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.core</TargetName>
   </PropertyGroup>
@@ -102,6 +102,8 @@
     <ClInclude Include="include\jalium_stencil_path.h" />
     <ClInclude Include="include\jalium_string_util.h" />
     <ClInclude Include="include\jalium_text_options.h" />
+    <ClInclude Include="include\jalium_dwrite_font_units.h" />
+    <None Include="tests\**\*" />
     <ClInclude Include="include\jalium_text_stats.h" />
     <ClInclude Include="include\jalium_triangulate.h" />
     <ClInclude Include="include\jalium_types.h" />

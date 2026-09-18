@@ -22,6 +22,8 @@ internal sealed class CssPropertyDescriptor
     public CssExpandDelegate? Expand { get; init; }
     public string? UnsupportedReason { get; init; }
     public string? TransitionTargetDpName { get; init; }
+    public DependencyProperty? StorageProperty { get; init; }
+    public bool IsFallback { get; init; }
 }
 
 /// <summary>
@@ -181,6 +183,7 @@ internal static class CssPropertyRegistry
         return new CssPropertyDescriptor
         {
             Name = cssName,
+            IsFallback = true,
             Kind = CssPropertyKind.Longhand,
             Parse = (ref CssTokenReader reader, CssCompileContext _) =>
             {

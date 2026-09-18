@@ -659,6 +659,42 @@ JaliumResult JaliumTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     return JALIUM_OK;
 }
 
+JaliumResult JaliumTextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)
+{
+    if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *metrics = {sizeof(JaliumFontUnitMetrics), fontSizePx_ * .5f, ascent_,
+        fontSizePx_ * .5f, fontSizePx_, ascent_, lineHeight_, 0};
+    if (!face_) return JALIUM_OK;
+    metrics->available = 16;
+    const float scale = fontSizePx_ / face_->UnitsPerEm();
+    const auto os2 = face_->GetTable(font::kTag_OS2);
+    auto height = [&](uint32_t codepoint, size_t offset) {
+        if (os2.Size() >= 90 && os2.U16(0) >= 2 && os2.S16(offset) > 0)
+            return static_cast<float>(os2.S16(offset));
+        GlyphOutline outline;
+        const auto glyph = face_->GetGlyphIndex(codepoint);
+        if (glyph && face_->GetGlyphContours(glyph, 1.f, outline) && outline.hasInk)
+            return outline.yMax + (std::min)(0.f, outline.yMin);
+        return 0.f;
+    };
+    const auto xHeight = height('x', 86);
+    const auto capHeight = height('O', 88);
+    if (xHeight > 0) { metrics->xHeight = xHeight * scale; metrics->available |= 1; }
+    if (capHeight > 0) { metrics->capHeight = capHeight * scale; metrics->available |= 2; }
+    auto advance = [&](uint32_t codepoint, float& result, uint32_t flag) {
+        uint64_t fontId = 0;
+        auto* face = ChooseFaceForCluster({codepoint}, fontId);
+        if (!face) return;
+        const auto glyph = face->GetGlyphIndex(codepoint);
+        if (!glyph) return;
+        result = face->GetAdvance(glyph) * fontSizePx_ / face->UnitsPerEm();
+        metrics->available |= flag;
+    };
+    advance('0', metrics->zeroAdvance, 4);
+    advance(0x6c34, metrics->ideographicAdvance, 8);
+    return JALIUM_OK;
+}
+
 JaliumResult JaliumTextFormat::HitTestPoint(
     const wchar_t* text, uint32_t textLength,
     float maxWidth, float maxHeight,

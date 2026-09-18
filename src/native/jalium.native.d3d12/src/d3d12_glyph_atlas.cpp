@@ -487,6 +487,8 @@ public:
         ComPtr<IDWriteFontFace> fontFace;  // prevent dangling pointer via AddRef
         float fontSize;
         float baselineX, baselineY;
+        BOOL isSideways;
+        UINT32 bidiLevel;
         std::vector<uint16_t> glyphIndices;
         std::vector<float> glyphAdvances;
         std::vector<DWRITE_GLYPH_OFFSET> glyphOffsets;
@@ -541,6 +543,8 @@ public:
         run.fontSize = glyphRun->fontEmSize;
         run.baselineX = baselineOriginX;
         run.baselineY = baselineOriginY;
+        run.isSideways = glyphRun->isSideways;
+        run.bidiLevel = glyphRun->bidiLevel;
         run.glyphIndices.assign(glyphRun->glyphIndices, glyphRun->glyphIndices + glyphRun->glyphCount);
         if (glyphRun->glyphAdvances)
             run.glyphAdvances.assign(glyphRun->glyphAdvances, glyphRun->glyphAdvances + glyphRun->glyphCount);
@@ -1286,17 +1290,13 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     // stems unnaturally thin.
     const float glyphAspectX = key.scaleXQ /
         (float)std::max<uint8_t>(key.scaleYQ, 1);
-    // A rotated / skewed run carries its whole quantized 2x2 in the key, so
-    // DirectWrite rasterizes the ROTATED ink and reports the rotated ink box.
-    // An axis-aligned run keeps the historical X:Y aspect matrix untouched.
+    // Rotation/skew is carried by the oriented GPU quad. Keep the cached strike
+    // upright here (at the final X:Y resolution) so a shallow angle cannot be
+    // quantized independently inside every tiny glyph bitmap.
     const bool keyRotated = key.HasGlyphRotation();
-    const float invXformQ = 1.0f / (float)kGlyphXformQuant;
-    const DWRITE_MATRIX glyphXform = keyRotated
-        ? DWRITE_MATRIX{ key.xf11Q * invXformQ, key.xf12Q * invXformQ,
-                         key.xf21Q * invXformQ, key.xf22Q * invXformQ,
-                         0.0f, 0.0f }
-        : DWRITE_MATRIX{ glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
-    const bool hasGlyphXform = keyRotated || (key.scaleXQ != key.scaleYQ);
+    const DWRITE_MATRIX glyphXform =
+        { glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+    const bool hasGlyphXform = key.scaleXQ != key.scaleYQ;
 
     // ── Primary path: IDWriteGlyphRunAnalysis ──
     // Use CLEARTYPE_3x1 alpha texture for ClearType mode, ALIASED_1x1 for
@@ -1717,17 +1717,12 @@ bool D3D12GlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entry
     const float subpixelOffset = key.subpixelX / 8.0f;
     const float glyphAspectX = key.scaleXQ /
         (float)std::max<uint8_t>(key.scaleYQ, 1);
-    // Same split as the mono rasterizer: a rotated / skewed key hands
-    // DirectWrite its full quantized 2x2 so the colour layers come back rotated
-    // and the layer-union ink box below is measured on the rotated shape.
+    // Match the mono path: colour layers stay upright in the atlas and the GPU
+    // instance basis applies rotation/skew to the composed emoji as one quad.
     const bool keyRotated = key.HasGlyphRotation();
-    const float invXformQ = 1.0f / (float)kGlyphXformQuant;
-    const DWRITE_MATRIX glyphXform = keyRotated
-        ? DWRITE_MATRIX{ key.xf11Q * invXformQ, key.xf12Q * invXformQ,
-                         key.xf21Q * invXformQ, key.xf22Q * invXformQ,
-                         0.0f, 0.0f }
-        : DWRITE_MATRIX{ glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
-    const bool hasGlyphXform = keyRotated || (key.scaleXQ != key.scaleYQ);
+    const DWRITE_MATRIX glyphXform =
+        { glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+    const bool hasGlyphXform = key.scaleXQ != key.scaleYQ;
 
     // Translate into per-layer sub-runs. DWRITE_E_NOCOLOR signals "this
     // specific glyph has no colour layers" — common when a colour font holds
@@ -2217,18 +2212,11 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
                               scaleYQ != (uint8_t)kGlyphScaleQuant);
 
     // ── Rotated / skewed runs ────────────────────────────────────────────────
-    // The axis-aligned path folds the vertical scale into the ppem, keeps only
-    // the X:Y aspect in DirectWrite's glyph matrix, and lets the CALLER reapply
-    // scaleX/scaleY to the emitted quads. That cannot express a rotation: the
-    // quads are screen-axis-aligned boxes, so a rotation reapplied by the
-    // caller would only move them, never turn the ink — which is exactly the
-    // "card is tilted, its label is not" artifact.
-    //
-    // So when the caller hands us a genuine rotation/skew we rasterize THROUGH
-    // it: DirectWrite gets the full 2x2 (normalized by the vertical scale that
-    // went into the ppem), returns already-rotated ink with an already-rotated
-    // ink box, and the pen walk is mapped through the same matrix. The emitted
-    // quads then sit in FINAL screen DIPs and the caller must not scale them
+    // The axis-aligned path folds vertical scale into ppem and lets the caller
+    // reapply scaleX/scaleY. A rotation cannot be represented by position+size
+    // alone, so the rotated path keeps an upright final-resolution strike and
+    // maps the pen plus BOTH quad basis vectors through the 2x2. The emitted
+    // oriented quads sit in FINAL screen DIPs and the caller must not scale them
     // again (D3D12DirectRenderer::AddText honours that).
     float lin11 = 1.0f, lin12 = 0.0f, lin21 = 0.0f, lin22 = 1.0f;
     if (linear2x2) {
@@ -2275,7 +2263,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     // glyph phases use. Deformed runs keep their single-phase policy (a
     // moving deform would otherwise flood the atlas — see the EXCEPTION note
     // in the glyph loop), so the mode is only honoured at unit scale buckets.
-    const bool subpixelRun = subpixelPositioning && !deformedOrRotated;
+    bool subpixelRun = subpixelPositioning && !deformedOrRotated;
     uint8_t originPhaseX = 0;
     float originPhaseOffset = 0.0f;   // physical px, == originPhaseX / 8
     if (subpixelRun) {
@@ -2310,6 +2298,31 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     if (effectiveHintingMode < 0 || effectiveHintingMode > 2) {
         effectiveHintingMode = 0;
     }
+
+    // Ideal grayscale text uses the same layout-relative coverage at rest,
+    // during scrolling, and during uniform zoom. Switching to per-glyph
+    // phases/rounding at unit scale makes individual characters jump as the
+    // origin crosses pixel boundaries. Explicit Fixed/Display/Aliased modes
+    // retain their pixel-grid contract.
+    const bool continuousRun = !rotated && subpixelPositioning &&
+        effectiveHintingMode != 1 && effectiveAaMode == JALIUM_TEXT_AA_GRAYSCALE &&
+        std::abs(scaleX - scaleY) <= 1e-6f * linScaleRef;
+    if (continuousRun) {
+        // The run is moved as a unit at replay, so a screen-X phase must not
+        // choose a different strike or cache entry. Colour/fallback glyphs
+        // below also use a fixed strike with a continuous pen position.
+        subpixelRun = false;
+        originPhaseX = 0;
+        originPhaseOffset = 0.0f;
+    }
+    // Keep one high-resolution strike across small zoom changes. Rebuilding
+    // every glyph's coverage at each animation tick makes different stems
+    // change phase on different frames. The exact live scale is still applied
+    // to the quads by AddText; only raster resolution uses a stable level.
+    const float continuousRasterScale = continuousRun
+        ? std::exp2(std::floor(std::log2(scaleX) + 0.5f)) : 1.0f;
+    const float cacheScaleX = continuousRun ? continuousRasterScale : sxR;
+    const float cacheScaleY = continuousRun ? continuousRasterScale : syR;
 
     // Apply this call's premultiplied colour + screen-origin translation to a
     // colour-neutral, origin-relative run (cached or freshly built) and
@@ -2399,7 +2412,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     if (layoutKey != 0) {
         const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
                                             effectiveAaMode, effectiveHintingMode,
-                                            sxR, syR, crispAxisAligned,
+                                            cacheScaleX, cacheScaleY, crispAxisAligned,
                                             originPhaseX, subpixelRun,
                                             rotated ? xformQ : nullptr);
         auto mit = instMap_.find(ck);
@@ -2440,13 +2453,153 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     layout->Draw(nullptr, &collector, 0.0f, 0.0f);
 
     CachedGlyphRun built;
+    built.requiresSmoothSampling = continuousRun;
     float invW = 1.0f / static_cast<float>(atlasW_);
     float invH = 1.0f / static_cast<float>(atlasH_);
 
     uint64_t glyphRasterHitsThisRun = 0;
     uint64_t glyphRasterMissesThisRun = 0;
 
-    for (auto& run : collector.runs) {
+    // A transformed DirectWrite analysis over the WHOLE fallback run keeps
+    // glyph advances, CJK fallback baselines and ink bounds in the exact same
+    // coordinate system as layout measurement. Per-glyph bearing/ppem rounding
+    // is deliberately bypassed for rotation/skew and continuous text motion.
+    // Track fallback runs independently: an emoji must not force the Latin,
+    // CJK, or Arabic runs next to it back onto per-character positioning.
+    std::vector<bool> wholeRuns(collector.runs.size(), false);
+    std::vector<std::pair<size_t, size_t>> runSpans(collector.runs.size());
+    if ((rotated || continuousRun) && dwriteFactory3_ &&
+        effectiveAaMode != JALIUM_TEXT_AA_ALIASED) {
+        auto appendWholeRun = [&](const auto& run) -> bool {
+            if (!run.fontFace || run.glyphIndices.empty()) return true;
+            ComPtr<IDWriteFontFace2> face2;
+            if (SUCCEEDED(run.fontFace.As(&face2)) && face2 && face2->IsColorFont()) {
+                return false; // retain authored colour layers in the glyph path
+            }
+
+            const float finalPpem = run.fontSize * dpiScale_ *
+                (continuousRun ? continuousRasterScale : std::max(scaleX, scaleY));
+            const float rasterFactor =
+                finalPpem <= 32.0f && effectiveAaMode != JALIUM_TEXT_AA_ALIASED
+                ? 2.0f : 1.0f;
+            const float rasterRatio = continuousRun ? continuousRasterScale / scaleX : 1.0f;
+            const float matrixScale = dpiScale_ * rasterFactor * rasterRatio;
+            const DWRITE_MATRIX runTransform {
+                lin11 * matrixScale, lin12 * matrixScale,
+                lin21 * matrixScale, lin22 * matrixScale,
+                0.0f, 0.0f };
+            DWRITE_GLYPH_RUN glyphRun {};
+            glyphRun.fontFace = run.fontFace.Get();
+            glyphRun.fontEmSize = run.fontSize;
+            glyphRun.glyphCount = static_cast<UINT32>(run.glyphIndices.size());
+            glyphRun.glyphIndices = run.glyphIndices.data();
+            glyphRun.glyphAdvances = run.glyphAdvances.empty()
+                ? nullptr : run.glyphAdvances.data();
+            glyphRun.glyphOffsets = run.glyphOffsets.empty()
+                ? nullptr : run.glyphOffsets.data();
+            glyphRun.isSideways = run.isSideways;
+            glyphRun.bidiLevel = run.bidiLevel;
+
+            ComPtr<IDWriteGlyphRunAnalysis> analysis;
+            HRESULT hr = dwriteFactory3_->CreateGlyphRunAnalysis(
+                &glyphRun, &runTransform,
+                DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+                DWRITE_MEASURING_MODE_NATURAL,
+                DWRITE_GRID_FIT_MODE_DISABLED,
+                DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+                run.baselineX, run.baselineY, &analysis);
+            RECT bounds {};
+            if (FAILED(hr) || !analysis ||
+                FAILED(analysis->GetAlphaTextureBounds(
+                    DWRITE_TEXTURE_ALIASED_1x1, &bounds))) {
+                return false;
+            }
+            const int runW = bounds.right - bounds.left;
+            const int runH = bounds.bottom - bounds.top;
+            if (runW <= 0 || runH <= 0) return true;
+            if (runW > 65535 || runH > 65535) {
+                return false;
+            }
+
+            // Tile long runs instead of switching back to hinted glyphs
+            // when they exceed the atlas width. Each tile stores a 1-texel
+            // neighbour gutter for bilinear sampling, while its quad covers
+            // only the interior, so adjacent tiles neither gap nor overlap.
+            const int tileW = static_cast<int>(atlasW_) - 4;
+            const int tileH = static_cast<int>(atlasH_) - 4;
+            if (tileW <= 0 || tileH <= 0) return false;
+            const float divisor = dpiScale_ * rasterFactor;
+            const float divisorX = divisor * (continuousRun ? continuousRasterScale : 1.0f);
+            const float divisorY = divisor * (continuousRun ? continuousRasterScale : 1.0f);
+            for (int top = bounds.top; top < bounds.bottom; top += tileH) {
+                for (int left = bounds.left; left < bounds.right; left += tileW) {
+                    const int right = std::min(left + tileW, static_cast<int>(bounds.right));
+                    const int bottom = std::min(top + tileH, static_cast<int>(bounds.bottom));
+                    const RECT textureBounds {
+                        std::max(left - 1, static_cast<int>(bounds.left)),
+                        std::max(top - 1, static_cast<int>(bounds.top)),
+                        std::min(right + 1, static_cast<int>(bounds.right)),
+                        std::min(bottom + 1, static_cast<int>(bounds.bottom)) };
+                    const int textureW = textureBounds.right - textureBounds.left;
+                    const int textureH = textureBounds.bottom - textureBounds.top;
+                    std::vector<uint8_t> alpha(static_cast<size_t>(textureW) * textureH);
+                    if (FAILED(analysis->CreateAlphaTexture(
+                            DWRITE_TEXTURE_ALIASED_1x1, &textureBounds,
+                            alpha.data(), static_cast<UINT32>(alpha.size())))) return false;
+                    uint16_t atlasX = 0, atlasY = 0;
+                    if (!AllocateAtlasRect(static_cast<uint16_t>(textureW),
+                            static_cast<uint16_t>(textureH), atlasX, atlasY)) return false;
+                    for (int row = 0; row < textureH; ++row) {
+                        for (int col = 0; col < textureW; ++col) {
+                            const uint8_t coverage = alpha[static_cast<size_t>(row) * textureW + col];
+                            const size_t dst = (static_cast<size_t>(atlasY + row) * atlasW_ + atlasX + col) * 4u;
+                            atlasBitmap_[dst + 0] = coverage;
+                            atlasBitmap_[dst + 1] = coverage;
+                            atlasBitmap_[dst + 2] = coverage;
+                            atlasBitmap_[dst + 3] = coverage;
+                        }
+                    }
+                    dirty_ = true;
+                    dirtyMinY_ = std::min(dirtyMinY_, atlasY);
+                    dirtyMaxY_ = std::max(dirtyMaxY_, static_cast<uint16_t>(atlasY + textureH));
+                    // Bilinear coverage extends beyond the ink bitmap.
+                    // Include the transparent atlas padding at the run's
+                    // outer edges; otherwise the quad itself cuts off that
+                    // coverage each time its origin crosses a half pixel.
+                    const int quadLeft = left == bounds.left ? left - 1 : left;
+                    const int quadTop = top == bounds.top ? top - 1 : top;
+                    const int quadRight = right == bounds.right ? right + 1 : right;
+                    const int quadBottom = bottom == bounds.bottom ? bottom + 1 : bottom;
+                    const float texelX = atlasX + quadLeft - textureBounds.left;
+                    const float texelY = atlasY + quadTop - textureBounds.top;
+                    GlyphQuadInstance inst {};
+                    inst.posX = quadLeft / divisorX;
+                    inst.posY = quadTop / divisorY;
+                    inst.sizeX = (quadRight - quadLeft) / divisorX;
+                    inst.sizeY = (quadBottom - quadTop) / divisorY;
+                    inst.uvMinX = texelX * invW;
+                    inst.uvMinY = texelY * invH;
+                    inst.uvMaxX = (texelX + quadRight - quadLeft) * invW;
+                    inst.uvMaxY = (texelY + quadBottom - quadTop) * invH;
+                    built.instances.push_back(inst);
+                }
+            }
+            built.requiresSmoothSampling |= continuousRun || rasterFactor > 1.0f;
+            glyphRasterMissesThisRun += run.glyphIndices.size();
+            return true;
+        };
+        for (size_t runIndex = 0; runIndex < collector.runs.size(); ++runIndex) {
+            const size_t start = built.instances.size();
+            wholeRuns[runIndex] = appendWholeRun(collector.runs[runIndex]);
+            if (!wholeRuns[runIndex]) built.instances.resize(start);
+            else runSpans[runIndex] = { start, built.instances.size() - start };
+        }
+    }
+
+    for (size_t runIndex = 0; runIndex < collector.runs.size(); ++runIndex) {
+        if (wholeRuns[runIndex]) continue;
+        auto& run = collector.runs[runIndex];
+        const size_t glyphRunStart = built.instances.size();
         float penX = run.baselineX;
         // Quantize the ordinary DPI-scaled ppem exactly as the identity path
         // has always done, then fold the vertical deformation into the em.
@@ -2458,7 +2611,10 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
         basePpemLong = std::clamp(basePpemLong, 1L, 65535L);
         const uint16_t basePpem = (uint16_t)basePpemLong;
 
-        long finalPpemLong = std::lround(basePpem * syR);
+        const float glyphRasterY = continuousRun ? continuousRasterScale : syR;
+        const uint8_t glyphScaleXQ = continuousRun ? quantScale(continuousRasterScale) : scaleXQ;
+        const uint8_t glyphScaleYQ = continuousRun ? quantScale(continuousRasterScale) : scaleYQ;
+        long finalPpemLong = std::lround(basePpem * glyphRasterY);
         finalPpemLong = std::clamp(finalPpemLong, 1L, 65535L);
         const uint16_t fontSize = (uint16_t)finalPpemLong;
 
@@ -2478,26 +2634,41 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
             fontSize <= kSymbolSupersampleMaxPpem &&
             effectiveAaMode != JALIUM_TEXT_AA_ALIASED;
 
+        // At small UI sizes a shallow rotation moves the top and bottom of one
+        // glyph by less than one final pixel. Rasterizing that glyph directly at
+        // 12-14 ppem quantizes most stems back to an upright-looking mask even
+        // though the pen walk is correctly rotated. Build a 2x transformed
+        // strike and resolve it once through the smooth sampler: the glyph
+        // outline itself retains the angle without the 1x bilinear softening.
+        constexpr uint16_t kRotatedSupersampleMaxPpem = 32;
+        constexpr uint32_t kRotatedSupersampleFactor = 2;
+        const bool rotatedSupersampled =
+            rotated && fontSize <= kRotatedSupersampleMaxPpem &&
+            effectiveAaMode != JALIUM_TEXT_AA_ALIASED;
+
         // Strike-size policy: small symbol fonts rasterize above final size and
         // shrink; oversized text rasterizes at most kMaxGlyphRasterPpem and
         // grows. strikeToFinalScale handles both directions. Above the cap
         // every ppem shares one strike per glyph, so deep zoom neither floods
         // the atlas with size buckets nor hits the oversized-ink rejection
         // that used to make big text vanish. Pen walk/layout stay at fontSize.
+        const uint32_t supersampleFactor = symbolSupersampled
+            ? kSymbolSupersampleFactor
+            : (rotatedSupersampled ? kRotatedSupersampleFactor : 1u);
         const uint32_t requestedRasterPpem =
-            (uint32_t)fontSize * (symbolSupersampled ? kSymbolSupersampleFactor : 1u);
+            (uint32_t)fontSize * supersampleFactor;
         const uint16_t rasterPpem = (uint16_t)(std::min<uint32_t>)(
             requestedRasterPpem, kMaxGlyphRasterPpem);
         const float strikeToFinalScale = fontSize / (float)rasterPpem;
         const bool ppemCapped = rasterPpem < fontSize;
-        built.requiresSmoothSampling |= symbolSupersampled;
+        built.requiresSmoothSampling |= symbolSupersampled || rotatedSupersampled;
         if (AtlasTraceEnabled()) {
             AtlasTraceLog("[atlas] run ppem=%u raster=%u glyphs=%zu\n",
                     fontSize, rasterPpem, run.glyphIndices.size());
         }
         // An upscaled strike magnifies ClearType's 1px RGB fringes into a
         // visible colour halo — capped runs drop to grayscale coverage.
-        const uint8_t runAaMode = ((ppemCapped || symbolSupersampled) &&
+        const uint8_t runAaMode = ((ppemCapped || symbolSupersampled || rotatedSupersampled) &&
                                    effectiveAaMode == JALIUM_TEXT_AA_CLEARTYPE)
             ? (uint8_t)JALIUM_TEXT_AA_GRAYSCALE
             : (uint8_t)effectiveAaMode;
@@ -2506,7 +2677,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
         // both divisors from the exact cached raster so clean transforms map
         // atlas texels to screen pixels without an avoidable resample.
         const float rasterScaleY = fontSize / (float)basePpem;
-        const float glyphAspectX = scaleXQ / (float)scaleYQ;
+        const float glyphAspectX = glyphScaleXQ / (float)glyphScaleYQ;
         const float rasterScaleX = rasterScaleY * glyphAspectX;
 
         float invDpi = 1.0f / dpiScale_;
@@ -2605,7 +2776,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
             // A capped run also pins phase 0: sub-pixel phases are invisible
             // once the strike is upscaled, and 8 variants of the biggest
             // glyphs would multiply the very atlas load the cap bounds.
-            uint8_t subpixelQuant = (deformedOrRotated || !useSubpixelPhases ||
+            uint8_t subpixelQuant = (continuousRun || deformedOrRotated || !useSubpixelPhases ||
                                      ppemCapped || symbolSupersampled)
                 ? (uint8_t)0
                 : (uint8_t)std::min((int)(subpixelF * 8.0f), 7);
@@ -2617,8 +2788,8 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
             key.subpixelX = subpixelQuant;
             // Y is folded into fontSize; RasterizeGlyph treats the two scale
             // buckets as an X:Y aspect ratio.
-            key.scaleXQ = scaleXQ;
-            key.scaleYQ = scaleYQ;
+            key.scaleXQ = glyphScaleXQ;
+            key.scaleYQ = glyphScaleYQ;
             // The effective AA + hinting modes are baked into the key so the
             // same glyph rasterized in ClearType for one element doesn't get
             // re-emitted for a different element that asked for Grayscale or
@@ -2626,10 +2797,9 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
             // key and skips the SyncAntialiasMode() fallback when set.
             key.aaMode = runAaMode;
             key.hintingMode = static_cast<uint8_t>(effectiveHintingMode);
-            // Rotated / skewed: hand the rasterizer the whole quantized 2x2 so
-            // it produces already-rotated ink. Left at 0 on the axis-aligned
-            // path, which keeps those keys — and the strikes they name — exactly
-            // as they were.
+            // Rotated / skewed: retain the quantized 2x2 for the oriented
+            // instance basis and cache key. RasterizeGlyph intentionally keeps
+            // the atlas strike upright.
             if (rotated) {
                 key.xf11Q = xformQ[0]; key.xf12Q = xformQ[1];
                 key.xf21Q = xformQ[2]; key.xf22Q = xformQ[3];
@@ -2687,7 +2857,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
                 // across a line. Round instead: the residual becomes +/-0.5 px
                 // and averages out.
                 float penXForPos;
-                if (deformedOrRotated && !crispAxisAligned) {
+                if (continuousRun || (deformedOrRotated && !crispAxisAligned)) {
                     penXForPos = penXPhysical;
                 } else if (!deformedOrRotated && !useSubpixelPhases) {
                     penXForPos = std::round(penXPhysical);
@@ -2705,31 +2875,34 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
                 // them back to final-ppem pixels: the run-level ppem cap plus
                 // the per-glyph oversized-ink shrink (entry.scale).
                 const float upscale = strikeToFinalScale * entry.scale;
+                const float padding = (continuousRun || effectiveHintingMode == 2 ||
+                    symbolSupersampled || rotatedSupersampled ||
+                    (rotated && runAaMode != JALIUM_TEXT_AA_ALIASED)) ? 1.0f : 0.0f;
                 float glyphX, glyphY, quadW, quadH;
+                float skewX = 0.0f, skewY = 0.0f;
                 if (rotated) {
-                    // ROTATED: entry.* is ALREADY the rotated ink measured in
-                    // final screen pixels, so the quad is a screen-axis-aligned
-                    // box over pre-rotated ink — dividing by dpi is the whole
-                    // conversion, and no raster-scale divide belongs here (the
-                    // caller will not re-scale these quads).
-                    //
-                    // Only the PEN needs the matrix: map the layout-local
-                    // baseline point through the effective linear map so the
-                    // run advances along the ROTATED baseline instead of
-                    // marching horizontally under a tilted box.
-                    const float localX = penX + offsetX;
-                    const float localY = run.baselineY - offsetY;
-                    const float penScreenX = localX * eff11 + localY * eff21;
-                    const float penScreenY = localX * eff12 + localY * eff22;
-                    glyphX = penScreenX + entry.bearingX * upscale * invDpi;
-                    glyphY = penScreenY - entry.bearingY * upscale * invDpi;
-                    quadW = (float)entry.w * upscale * invDpi;
-                    quadH = (float)entry.h * upscale * invDpi;
+                    // The atlas strike is upright. Build its local top-left and
+                    // dimensions exactly like the axis-aligned path, then map
+                    // BOTH quad basis vectors through the effective 2x2. The VS
+                    // therefore rotates/shears the character outline itself,
+                    // not merely the glyph pen positions.
+                    const float localX = penX + offsetX +
+                        (entry.bearingX - padding) * upscale * invDpi * invRasterX;
+                    const float localY = run.baselineY - offsetY -
+                        (entry.bearingY + padding) * upscale * invDpi * invRasterY;
+                    const float localW = (entry.w + 2.0f * padding) * upscale * invDpi * invRasterX;
+                    const float localH = (entry.h + 2.0f * padding) * upscale * invDpi * invRasterY;
+                    glyphX = localX * eff11 + localY * eff21;
+                    glyphY = localX * eff12 + localY * eff22;
+                    quadW = localW * eff11;
+                    skewY = localW * eff12;
+                    skewX = localH * eff21;
+                    quadH = localH * eff22;
                 } else {
-                    glyphX = penXForPos * invDpi + entry.bearingX * upscale * invDpi * invRasterX;
-                    glyphY = run.baselineY - offsetY - entry.bearingY * upscale * invDpi * invRasterY;
-                    quadW = (float)entry.w * upscale * invDpi * invRasterX;
-                    quadH = (float)entry.h * upscale * invDpi * invRasterY;
+                    glyphX = penXForPos * invDpi + (entry.bearingX - padding) * upscale * invDpi * invRasterX;
+                    glyphY = run.baselineY - offsetY - (entry.bearingY + padding) * upscale * invDpi * invRasterY;
+                    quadW = (entry.w + 2.0f * padding) * upscale * invDpi * invRasterX;
+                    quadH = (entry.h + 2.0f * padding) * upscale * invDpi * invRasterY;
                 }
 
                 GlyphQuadInstance inst;
@@ -2737,10 +2910,13 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
                 inst.posY = glyphY;
                 inst.sizeX = quadW;
                 inst.sizeY = quadH;
-                inst.uvMinX = entry.x * invW;
-                inst.uvMinY = entry.y * invH;
-                inst.uvMaxX = (entry.x + entry.w) * invW;
-                inst.uvMaxY = (entry.y + entry.h) * invH;
+                inst.skewX = skewX;
+                inst.skewY = skewY;
+                inst.uvMinX = (entry.x - padding) * invW;
+                inst.uvMinY = (entry.y - padding) * invH;
+                inst.uvMaxX = (entry.x + entry.w + padding) * invW;
+                inst.uvMaxY = (entry.y + entry.h + padding) * invH;
+                inst.padX = inst.padY = 0.0f;
                 // Colour applied at emit so one cached run serves any colour.
                 // Colour-emoji glyphs get a -1 sentinel in R so emit() and the
                 // pixel shader can keep them out of the per-channel ClearType
@@ -2760,6 +2936,21 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
             if (i < run.glyphAdvances.size())
                 penX += run.glyphAdvances[i];
         }
+        runSpans[runIndex] = { glyphRunStart, built.instances.size() - glyphRunStart };
+    }
+
+    // Whole-run masks and colour glyphs are built in separate passes. Restore
+    // DirectWrite's painter order when both occur in one layout, including
+    // overlapping combining marks and colour-font fallback runs.
+    if (std::any_of(wholeRuns.begin(), wholeRuns.end(), [](bool v) { return v; }) &&
+        !std::all_of(wholeRuns.begin(), wholeRuns.end(), [](bool v) { return v; })) {
+        std::vector<GlyphQuadInstance> ordered;
+        ordered.reserve(built.instances.size());
+        for (const auto& span : runSpans) {
+            ordered.insert(ordered.end(), built.instances.begin() + span.first,
+                built.instances.begin() + span.first + span.second);
+        }
+        built.instances = std::move(ordered);
     }
 
     // Build decorations unconditionally so the memo stays correct even if a
@@ -2788,7 +2979,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
         built.gen = atlasGeneration_;
         const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
                                             effectiveAaMode, effectiveHintingMode,
-                                            sxR, syR, crispAxisAligned,
+                                            cacheScaleX, cacheScaleY, crispAxisAligned,
                                             originPhaseX, subpixelRun,
                                             rotated ? xformQ : nullptr);
         if (auto ex = instMap_.find(ck); ex != instMap_.end()) {

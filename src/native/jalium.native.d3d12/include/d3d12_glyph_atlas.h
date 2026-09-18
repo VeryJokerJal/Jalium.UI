@@ -10,17 +10,19 @@
 namespace jalium {
 
 // ============================================================================
-// Glyph instance for text shader (48 bytes)
+// Glyph instance for text shader (64 bytes)
 // ============================================================================
 
 struct GlyphQuadInstance {
     float posX, posY;       // screen position
-    float sizeX, sizeY;     // quad size
+    float sizeX, sizeY;     // basis diagonal: X-axis.x, Y-axis.y
+    float skewX, skewY;     // basis off-diagonal: Y-axis.x, X-axis.y
     float uvMinX, uvMinY;   // atlas UV top-left
     float uvMaxX, uvMaxY;   // atlas UV bottom-right
+    float padX, padY;       // align float4 color to SPIR-V/std430 offset 48
     float colorR, colorG, colorB, colorA; // premultiplied RGBA
 };
-static_assert(sizeof(GlyphQuadInstance) == 48, "GlyphQuadInstance must be 48 bytes");
+static_assert(sizeof(GlyphQuadInstance) == 64, "GlyphQuadInstance must be 64 bytes");
 
 // ============================================================================
 // Glyph Atlas entry — cached position in the atlas texture
@@ -126,8 +128,8 @@ struct GlyphKey {
     int16_t  xf21Q = 0;
     int16_t  xf22Q = 0;
 
-    /// True when this key carries a real rotation / skew, i.e. RasterizeGlyph
-    /// must hand DirectWrite the full 2x2 above instead of the aspect matrix.
+    /// True when this key carries a real rotation / skew. RasterizeGlyph keeps
+    /// the strike upright; GenerateGlyphs uses this 2x2 for the oriented basis.
     bool HasGlyphRotation() const {
         return (xf11Q | xf12Q | xf21Q | xf22Q) != 0;
     }
@@ -263,17 +265,9 @@ public:
         // exact stems. Rotated/skewed text leaves this false and keeps the
         // continuous pen + bilinear PSO so it animates without per-glyph jitter.
         bool crispAxisAligned = false,
-        // Sub-pixel positioning (TextFormat::GetSubpixelPositioning): keep the
-        // 1/8-pixel phases for EVERY run (grid-fitted sizes included) and
-        // measure them from the final screen position — the run origin's own
-        // fraction is folded into the pen before the phase is taken, so the
-        // emitted quad + the caller's whole-pixel snap land each glyph within
-        // 1/8 px of its true place. Without it a run that slides or scales
-        // sub-pixel has every glyph cross its own pixel boundary at a
-        // different instant (the "characters tremble" artifact under a live
-        // ScaleTransform). Ignored for deformed (non-unit scale-bucket) runs,
-        // which keep their single-phase policy. Origin-dependent: the
-        // instance memo is keyed by the origin phase as well.
+        // Ideal grayscale text retains layout-relative coverage and moves the
+        // cached run continuously. The other rendering modes retain their
+        // per-glyph 1/8-pixel phases, keyed by the screen origin's phase.
         bool subpixelPositioning = false,
         // Full 2x2 linear part of the caller's transform, row-major
         // (m11, m12, m21, m22). Pass nullptr — or an axis-aligned matrix — to
@@ -281,15 +275,13 @@ public:
         // scaleX/scaleY alone and the glyphs are rasterized upright.
         //
         // When it carries a real rotation / skew the run switches to the
-        // ROTATED path: DirectWrite rasterizes each glyph THROUGH the matrix
-        // (so the bitmap in the atlas is already the rotated ink), and the pen
-        // walk is mapped through the same matrix, so the emitted quads are
-        // screen-axis-aligned boxes over pre-rotated ink. Those quads are
-        // already in final screen DIPs — the caller must NOT re-apply
-        // scaleX/scaleY to them (see D3D12DirectRenderer::AddText).
+        // ROTATED path: atlas strikes remain upright, while the pen and both
+        // glyph-quad basis vectors are mapped through the matrix. The resulting
+        // oriented quads are already in final screen DIPs — the caller must NOT
+        // re-apply scaleX/scaleY (see D3D12DirectRenderer::AddText).
         const float* linear2x2 = nullptr,
         // Optional {x, y} origin for the emitted TextDecorationRects. Glyph
-        // quads bake their ink into the atlas, so they need the POST-transform
+        // quads carry their oriented basis, so they need the POST-transform
         // origin; decorations are drawn as plain rects that run through the
         // ambient transform again, so they need the PRE-transform one — which
         // is also what makes an underline rotate along with its text. Pass
@@ -463,7 +455,7 @@ private:
 
     // Atlas texture — starts at kInitialAtlasDim and grows ×2 up to kMaxAtlasDim
     // on overflow.  Sized lazily so an idle UI keeps a 1 MB atlas instead of 64 MB.
-    static constexpr uint32_t kInitialAtlasDim = 512;
+    static constexpr uint32_t kInitialAtlasDim = 256;
     static constexpr uint32_t kMaxAtlasDim = 4096;
     uint32_t atlasW_ = kInitialAtlasDim;
     uint32_t atlasH_ = kInitialAtlasDim;

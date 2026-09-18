@@ -265,6 +265,8 @@ public:
         Microsoft::WRL::ComPtr<IDWriteFontFace> fontFace;  // prevent dangling pointer via AddRef
         float fontSize;
         float baselineX, baselineY;
+        BOOL isSideways;
+        UINT32 bidiLevel;
         std::vector<uint16_t> glyphIndices;
         std::vector<float> glyphAdvances;
         std::vector<DWRITE_GLYPH_OFFSET> glyphOffsets;
@@ -319,6 +321,8 @@ public:
         run.fontSize = glyphRun->fontEmSize;
         run.baselineX = baselineOriginX;
         run.baselineY = baselineOriginY;
+        run.isSideways = glyphRun->isSideways;
+        run.bidiLevel = glyphRun->bidiLevel;
         run.glyphIndices.assign(glyphRun->glyphIndices, glyphRun->glyphIndices + glyphRun->glyphCount);
         if (glyphRun->glyphAdvances)
             run.glyphAdvances.assign(glyphRun->glyphAdvances, glyphRun->glyphAdvances + glyphRun->glyphCount);
@@ -1058,17 +1062,13 @@ bool VulkanGlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     // compressed Latin stems.
     const float glyphAspectX = key.scaleXQ /
         (float)std::max<uint8_t>(key.scaleYQ, 1);
-    // A rotated / skewed run carries its whole quantized 2x2 in the key, so
-    // DirectWrite rasterizes the ROTATED ink and reports the rotated ink box.
-    // An axis-aligned run keeps the historical X:Y aspect matrix untouched.
+    // Rotation/skew is represented by the GPU glyph basis. Keep the atlas mask
+    // upright at final X:Y resolution so shallow angles remain continuous
+    // across the whole character instead of quantizing per tiny bitmap.
     const bool keyRotated = key.HasGlyphRotation();
-    const float invXformQ = 1.0f / (float)kGlyphXformQuant;
-    const DWRITE_MATRIX glyphXform = keyRotated
-        ? DWRITE_MATRIX{ key.xf11Q * invXformQ, key.xf12Q * invXformQ,
-                         key.xf21Q * invXformQ, key.xf22Q * invXformQ,
-                         0.0f, 0.0f }
-        : DWRITE_MATRIX{ glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
-    const bool hasGlyphXform = keyRotated || (key.scaleXQ != key.scaleYQ);
+    const DWRITE_MATRIX glyphXform =
+        { glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+    const bool hasGlyphXform = key.scaleXQ != key.scaleYQ;
 
     // ── Primary path: IDWriteGlyphRunAnalysis ──
     // Use CLEARTYPE_3x1 alpha texture for ClearType mode, ALIASED_1x1 for
@@ -1438,17 +1438,12 @@ bool VulkanGlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entr
     const float subpixelOffset = key.subpixelX / 8.0f;
     const float glyphAspectX = key.scaleXQ /
         (float)std::max<uint8_t>(key.scaleYQ, 1);
-    // Same split as the mono rasterizer: a rotated / skewed key hands
-    // DirectWrite its full quantized 2x2 so the colour layers come back rotated
-    // and the layer-union ink box below is measured on the rotated shape.
+    // Match the mono path: keep the composed colour glyph upright in the atlas;
+    // the oriented GPU instance applies rotation/skew to the finished emoji.
     const bool keyRotated = key.HasGlyphRotation();
-    const float invXformQ = 1.0f / (float)kGlyphXformQuant;
-    const DWRITE_MATRIX glyphXform = keyRotated
-        ? DWRITE_MATRIX{ key.xf11Q * invXformQ, key.xf12Q * invXformQ,
-                         key.xf21Q * invXformQ, key.xf22Q * invXformQ,
-                         0.0f, 0.0f }
-        : DWRITE_MATRIX{ glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
-    const bool hasGlyphXform = keyRotated || (key.scaleXQ != key.scaleYQ);
+    const DWRITE_MATRIX glyphXform =
+        { glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+    const bool hasGlyphXform = key.scaleXQ != key.scaleYQ;
 
     // Translate into per-layer sub-runs. DWRITE_E_NOCOLOR signals "this
     // specific glyph has no colour layers" — common when a colour font holds
@@ -1936,19 +1931,12 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
                               scaleYQ != (uint8_t)kGlyphScaleQuant);
 
     // ── Rotated / skewed runs ────────────────────────────────────────────────
-    // The axis-aligned path folds the vertical scale into the ppem, keeps only
-    // the X:Y aspect in DirectWrite's glyph matrix, and lets the CALLER reapply
-    // scaleX/scaleY to the emitted quads. That cannot express a rotation: the
-    // quads are screen-axis-aligned boxes, so a rotation reapplied by the
-    // caller would only move them, never turn the ink — which is exactly the
-    // "card is tilted, its label is not" artifact.
-    //
-    // So when the caller hands us a genuine rotation/skew we rasterize THROUGH
-    // it: DirectWrite gets the full 2x2 (normalized by the vertical scale that
-    // went into the ppem), returns already-rotated ink with an already-rotated
-    // ink box, and the pen walk is mapped through the same matrix. The emitted
-    // quads then sit in FINAL space and the caller must not re-magnify them
-    // (VulkanRenderTarget's RenderText honours that).
+    // The axis-aligned path folds vertical scale into ppem and lets the caller
+    // reapply scaleX/scaleY. A rotation cannot be represented by position+size
+    // alone, so the rotated path keeps an upright final-resolution strike and
+    // maps the pen plus BOTH quad basis vectors through the 2x2. The emitted
+    // oriented quads sit in FINAL space and the caller must not re-magnify them
+    // (VulkanRenderTarget::RenderText honours that).
     float lin11 = 1.0f, lin12 = 0.0f, lin21 = 0.0f, lin22 = 1.0f;
     if (linear2x2) {
         lin11 = linear2x2[0]; lin12 = linear2x2[1];
@@ -2165,6 +2153,120 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
     uint64_t glyphRasterHitsThisRun = 0;
     uint64_t glyphRasterMissesThisRun = 0;
 
+    // Rasterize each complete DirectWrite fallback run under the final 2x2.
+    // Measurement, fallback baseline, advances and actual CJK ink therefore
+    // share one transform; no per-glyph bearing rounding can accumulate.
+    bool wholeRunBuilt = false;
+    if (rotated && dwriteFactory3_ &&
+        effectiveAaMode != JALIUM_TEXT_AA_ALIASED) {
+        wholeRunBuilt = true;
+        for (const auto& run : collector.runs) {
+            Microsoft::WRL::ComPtr<IDWriteFontFace2> face2;
+            if (SUCCEEDED(run.fontFace.As(&face2)) && face2 && face2->IsColorFont()) {
+                wholeRunBuilt = false;
+                break;
+            }
+        }
+
+        if (wholeRunBuilt) {
+            for (const auto& run : collector.runs) {
+                if (!run.fontFace || run.glyphIndices.empty()) continue;
+
+                const float finalPpem = run.fontSize * std::max(scaleX, scaleY);
+                const float rasterFactor =
+                    finalPpem <= 32.0f && effectiveAaMode != JALIUM_TEXT_AA_ALIASED
+                    ? 2.0f : 1.0f;
+                const DWRITE_MATRIX runTransform {
+                    lin11 * rasterFactor, lin12 * rasterFactor,
+                    lin21 * rasterFactor, lin22 * rasterFactor,
+                    0.0f, 0.0f };
+                DWRITE_GLYPH_RUN glyphRun {};
+                glyphRun.fontFace = run.fontFace.Get();
+                glyphRun.fontEmSize = run.fontSize;
+                glyphRun.glyphCount = static_cast<UINT32>(run.glyphIndices.size());
+                glyphRun.glyphIndices = run.glyphIndices.data();
+                glyphRun.glyphAdvances = run.glyphAdvances.empty()
+                    ? nullptr : run.glyphAdvances.data();
+                glyphRun.glyphOffsets = run.glyphOffsets.empty()
+                    ? nullptr : run.glyphOffsets.data();
+                glyphRun.isSideways = run.isSideways;
+                glyphRun.bidiLevel = run.bidiLevel;
+
+                Microsoft::WRL::ComPtr<IDWriteGlyphRunAnalysis> analysis;
+                HRESULT hr = dwriteFactory3_->CreateGlyphRunAnalysis(
+                    &glyphRun, &runTransform,
+                    DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                    DWRITE_GRID_FIT_MODE_DISABLED,
+                    DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+                    run.baselineX, run.baselineY, &analysis);
+                RECT bounds {};
+                if (FAILED(hr) || !analysis ||
+                    FAILED(analysis->GetAlphaTextureBounds(
+                        DWRITE_TEXTURE_ALIASED_1x1, &bounds))) {
+                    wholeRunBuilt = false;
+                    break;
+                }
+                const int runW = bounds.right - bounds.left;
+                const int runH = bounds.bottom - bounds.top;
+                if (runW <= 0 || runH <= 0) continue;
+                if (runW > 65535 || runH > 65535 ||
+                    runW > static_cast<int>(atlasW_) ||
+                    runH > static_cast<int>(atlasH_)) {
+                    wholeRunBuilt = false;
+                    break;
+                }
+
+                std::vector<uint8_t> alpha(static_cast<size_t>(runW) * runH);
+                if (FAILED(analysis->CreateAlphaTexture(
+                        DWRITE_TEXTURE_ALIASED_1x1, &bounds,
+                        alpha.data(), static_cast<UINT32>(alpha.size())))) {
+                    wholeRunBuilt = false;
+                    break;
+                }
+                uint16_t atlasX = 0, atlasY = 0;
+                if (!AllocateAtlasRect(
+                        static_cast<uint16_t>(runW), static_cast<uint16_t>(runH),
+                        atlasX, atlasY)) {
+                    wholeRunBuilt = false;
+                    break;
+                }
+                for (int row = 0; row < runH; ++row) {
+                    for (int col = 0; col < runW; ++col) {
+                        const uint8_t coverage = alpha[
+                            static_cast<size_t>(row) * runW + col];
+                        const size_t dst = (
+                            static_cast<size_t>(atlasY + row) * atlasW_ +
+                            atlasX + col) * 4u;
+                        atlasBitmap_[dst + 0] = coverage;
+                        atlasBitmap_[dst + 1] = coverage;
+                        atlasBitmap_[dst + 2] = coverage;
+                        atlasBitmap_[dst + 3] = coverage;
+                    }
+                }
+                dirty_ = true;
+                dirtyMinY_ = std::min(dirtyMinY_, atlasY);
+                dirtyMaxY_ = std::max(
+                    dirtyMaxY_, static_cast<uint16_t>(atlasY + runH));
+
+                VkGlyphInstance inst {};
+                inst.posX = bounds.left / rasterFactor;
+                inst.posY = bounds.top / rasterFactor;
+                inst.sizeX = runW / rasterFactor;
+                inst.sizeY = runH / rasterFactor;
+                inst.uvMinX = atlasX * invW;
+                inst.uvMinY = atlasY * invH;
+                inst.uvMaxX = (atlasX + runW) * invW;
+                inst.uvMaxY = (atlasY + runH) * invH;
+                built.instances.push_back(inst);
+                built.requiresSmoothSampling |= rasterFactor > 1.0f;
+                glyphRasterMissesThisRun += run.glyphIndices.size();
+            }
+            if (!wholeRunBuilt) built.instances.clear();
+        }
+    }
+
+    if (!wholeRunBuilt)
     for (auto& run : collector.runs) {
         float penX = run.baselineX;
         // Quantize the ordinary DPI-scaled ppem exactly as the identity path
@@ -2193,22 +2295,35 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
             fontSize <= kSymbolSupersampleMaxPpem &&
             effectiveAaMode != JALIUM_TEXT_AA_ALIASED;
 
+        // A shallow angle displaces a 12-14px glyph by less than one final
+        // pixel, so a 1x transformed strike can look upright while only the pen
+        // positions reveal the rotation. Preserve the outline angle in a 2x
+        // transformed strike, then resolve that coverage once at draw time.
+        constexpr uint16_t kRotatedSupersampleMaxPpem = 32;
+        constexpr uint32_t kRotatedSupersampleFactor = 2;
+        const bool rotatedSupersampled =
+            rotated && fontSize <= kRotatedSupersampleMaxPpem &&
+            effectiveAaMode != JALIUM_TEXT_AA_ALIASED;
+
         // Strike-size policy: small symbol fonts rasterize above final size and
         // shrink; oversized text rasterizes at most kMaxGlyphRasterPpem and
         // grows. strikeToFinalScale handles both directions. Above the cap
         // every ppem shares one strike per glyph, so deep zoom neither floods
         // the atlas with size buckets nor hits the oversized-ink rejection
         // that used to make big text vanish. Pen walk/layout stay at fontSize.
+        const uint32_t supersampleFactor = symbolSupersampled
+            ? kSymbolSupersampleFactor
+            : (rotatedSupersampled ? kRotatedSupersampleFactor : 1u);
         const uint32_t requestedRasterPpem =
-            (uint32_t)fontSize * (symbolSupersampled ? kSymbolSupersampleFactor : 1u);
+            (uint32_t)fontSize * supersampleFactor;
         const uint16_t rasterPpem = (uint16_t)(std::min<uint32_t>)(
             requestedRasterPpem, kMaxGlyphRasterPpem);
         const float strikeToFinalScale = fontSize / (float)rasterPpem;
         const bool ppemCapped = rasterPpem < fontSize;
-        built.requiresSmoothSampling |= symbolSupersampled;
+        built.requiresSmoothSampling |= symbolSupersampled || rotatedSupersampled;
         // An upscaled strike magnifies ClearType's 1px RGB fringes into a
         // visible colour halo — capped runs drop to grayscale coverage.
-        const uint8_t runAaMode = ((ppemCapped || symbolSupersampled) &&
+        const uint8_t runAaMode = ((ppemCapped || symbolSupersampled || rotatedSupersampled) &&
                                    effectiveAaMode == JALIUM_TEXT_AA_CLEARTYPE)
             ? (uint8_t)JALIUM_TEXT_AA_GRAYSCALE
             : (uint8_t)effectiveAaMode;
@@ -2330,10 +2445,9 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
             // buckets as an X:Y aspect ratio.
             key.scaleXQ = scaleXQ;
             key.scaleYQ = scaleYQ;
-            // Rotated / skewed: hand the rasterizer the whole quantized 2x2 so
-            // it produces already-rotated ink. Left at 0 on the axis-aligned
-            // path, which keeps those keys — and the strikes they name — exactly
-            // as they were.
+            // Rotated / skewed: retain the quantized 2x2 for the oriented
+            // instance basis and cache key. RasterizeGlyph keeps the strike
+            // upright.
             if (rotated) {
                 key.xf11Q = xformQ[0]; key.xf12Q = xformQ[1];
                 key.xf21Q = xformQ[2]; key.xf22Q = xformQ[3];
@@ -2412,25 +2526,24 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
                 // the per-glyph oversized-ink shrink (entry.scale).
                 const float upscale = strikeToFinalScale * entry.scale;
                 float glyphX, glyphY, quadW, quadH;
+                float skewX = 0.0f, skewY = 0.0f;
                 if (rotated) {
-                    // ROTATED: entry.* is ALREADY the rotated ink measured in
-                    // final pixels, so the quad is an axis-aligned box over
-                    // pre-rotated ink — dividing by dpi is the whole conversion,
-                    // and no raster-scale divide belongs here (the caller will
-                    // not re-magnify these quads).
-                    //
-                    // Only the PEN needs the matrix: map the layout-local
-                    // baseline point through the effective linear map so the run
-                    // advances along the ROTATED baseline instead of marching
-                    // horizontally under a tilted box.
-                    const float localX = penX + offsetX;
-                    const float localY = run.baselineY - offsetY;
-                    const float penScreenX = localX * eff11 + localY * eff21;
-                    const float penScreenY = localX * eff12 + localY * eff22;
-                    glyphX = penScreenX + entry.bearingX * upscale * invDpi;
-                    glyphY = penScreenY - entry.bearingY * upscale * invDpi;
-                    quadW = (float)entry.w * upscale * invDpi;
-                    quadH = (float)entry.h * upscale * invDpi;
+                    // Keep the atlas mask upright and transform its top-left
+                    // plus both basis vectors. The glyph quad itself now carries
+                    // the rotation/skew, so individual characters cannot remain
+                    // upright while only their pen positions move.
+                    const float localX = penX + offsetX +
+                        entry.bearingX * upscale * invDpi * invRasterX;
+                    const float localY = run.baselineY - offsetY -
+                        entry.bearingY * upscale * invDpi * invRasterY;
+                    const float localW = (float)entry.w * upscale * invDpi * invRasterX;
+                    const float localH = (float)entry.h * upscale * invDpi * invRasterY;
+                    glyphX = localX * eff11 + localY * eff21;
+                    glyphY = localX * eff12 + localY * eff22;
+                    quadW = localW * eff11;
+                    skewY = localW * eff12;
+                    skewX = localH * eff21;
+                    quadH = localH * eff22;
                 } else {
                     glyphX = penXForPos * invDpi + entry.bearingX * upscale * invDpi * invRasterX;
                     glyphY = run.baselineY - offsetY - entry.bearingY * upscale * invDpi * invRasterY;
@@ -2443,10 +2556,13 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
                 inst.posY = glyphY;
                 inst.sizeX = quadW;
                 inst.sizeY = quadH;
+                inst.skewX = skewX;
+                inst.skewY = skewY;
                 inst.uvMinX = entry.x * invW;
                 inst.uvMinY = entry.y * invH;
                 inst.uvMaxX = (entry.x + entry.w) * invW;
                 inst.uvMaxY = (entry.y + entry.h) * invH;
+                inst.padX = inst.padY = 0.0f;
                 // Colour applied at emit so one cached run serves any colour.
                 // Colour-emoji glyphs get a -1 sentinel in R so emit() and the
                 // pixel shader can keep them out of the per-channel ClearType

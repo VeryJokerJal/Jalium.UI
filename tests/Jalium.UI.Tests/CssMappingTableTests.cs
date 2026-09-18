@@ -103,7 +103,7 @@ public sealed class CssMappingTableTests
         // Per CSS, `border: 2px red` has style=none → no visible border.
         Css.SetStyle(border, "border: 2px red");
         Assert.Null(border.BorderBrush);
-        Assert.Equal(new Thickness(2), border.BorderThickness);
+        Assert.Equal(default, border.BorderThickness);
     }
 
     [Fact]
@@ -375,7 +375,7 @@ public sealed class CssMappingTableTests
     public void Filter_UnsupportedFunctionDropsWholeDeclaration()
     {
         var border = new Border();
-        Css.SetStyle(border, "filter: blur(5px) brightness(1.2)");
+        Css.SetStyle(border, "filter: blur(5px) unknown-filter(1.2)");
         Assert.Null(border.Effect);
     }
 

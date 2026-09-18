@@ -8,8 +8,36 @@ namespace Jalium.UI.Styling;
 /// </summary>
 internal static class CssTransformParser
 {
+    internal static CssLength[] RelativeLengths(ReadOnlySpan<char> text)
+    {
+        var result = new List<CssLength>();
+        Read(text, result, 0);
+        return result.ToArray();
+
+        static void Read(ReadOnlySpan<char> text, List<CssLength> result, int depth)
+        {
+            if (depth > 64) return;
+            var reader = new CssTokenReader(text);
+            while (!reader.AtEnd)
+            {
+                var probe = reader;
+                if (probe.TryReadLength(out var length))
+                {
+                    if (!length.IsAbsolute) result.Add(length);
+                    reader = probe; continue;
+                }
+                probe = reader;
+                if (probe.TryReadFunction(out _, out var arguments))
+                { Read(arguments.Remaining, result, depth + 1); reader = probe; continue; }
+                if (reader.TryReadIdent(out _)) continue;
+                reader = new CssTokenReader(reader.Remaining[1..]);
+            }
+        }
+    }
+
     /// <summary>Returns the parsed transform, null for "none", or false on failure.</summary>
-    public static bool TryParseTransformList(ref CssTokenReader reader, out Transform? transform)
+    public static bool TryParseTransformList(ref CssTokenReader reader, out Transform? transform,
+        CssLengthContext? lengths = null, Size referenceSize = default)
     {
         transform = null;
         var probe = reader;
@@ -29,7 +57,7 @@ internal static class CssTransformParser
         while (!reader.AtEnd)
         {
             if (!reader.TryReadFunction(out var name, out var args) ||
-                !TryParseFunction(name, ref args, out var parsed))
+                !TryParseFunction(name, ref args, out var parsed, lengths, referenceSize))
             {
                 return false;
             }
@@ -71,18 +99,19 @@ internal static class CssTransformParser
         return false;
     }
 
-    private static bool TryParseFunction(ReadOnlySpan<char> name, ref CssTokenReader args, out Transform transform)
+    private static bool TryParseFunction(ReadOnlySpan<char> name, ref CssTokenReader args, out Transform transform,
+        CssLengthContext? lengths, Size referenceSize)
     {
         transform = null!;
         if (Eq(name, "translate"))
         {
-            if (!TryReadAbsoluteLength(ref args, out var x))
+            if (!TryReadTranslationLength(ref args, lengths, referenceSize.Width, out var x))
             {
                 return false;
             }
 
             var y = 0.0;
-            if (args.TryReadComma() && !TryReadAbsoluteLength(ref args, out y))
+            if (args.TryReadComma() && !TryReadTranslationLength(ref args, lengths, referenceSize.Height, out y))
             {
                 return false;
             }
@@ -91,7 +120,7 @@ internal static class CssTransformParser
         }
         else if (Eq(name, "translatex"))
         {
-            if (!TryReadAbsoluteLength(ref args, out var x))
+            if (!TryReadTranslationLength(ref args, lengths, referenceSize.Width, out var x))
             {
                 return false;
             }
@@ -100,7 +129,7 @@ internal static class CssTransformParser
         }
         else if (Eq(name, "translatey"))
         {
-            if (!TryReadAbsoluteLength(ref args, out var y))
+            if (!TryReadTranslationLength(ref args, lengths, referenceSize.Height, out var y))
             {
                 return false;
             }
@@ -212,16 +241,19 @@ internal static class CssTransformParser
     }
 
     /// <summary>Percentages (self-size-relative) and font-relative units cannot be resolved; absolute only.</summary>
-    private static bool TryReadAbsoluteLength(ref CssTokenReader reader, out double px)
+    private static bool TryReadTranslationLength(ref CssTokenReader reader, CssLengthContext? context, double basis, out double px)
     {
         px = 0;
-        if (!reader.TryReadLength(out var length) || !length.IsAbsolute)
+        if (!reader.TryReadLength(out var length))
         {
             return false;
         }
 
-        px = length.ToPxAbsolute();
-        return true;
+        if (length.IsAbsolute) { px = length.ToPxAbsolute(); return double.IsFinite(px); }
+        if (context is null) return true; // Syntax validation; the owning element resolves this value later.
+        if (length.Expression is { } expression) return expression.TryEvaluate(context.Value, basis, out px);
+        if (length.Unit == CssUnit.Percent) { px = length.Value / 100 * basis; return double.IsFinite(px); }
+        return length.TryResolve(context.Value, CssPercentBasis.NotSupported, out px);
     }
 
     private static bool Eq(ReadOnlySpan<char> text, string candidate)

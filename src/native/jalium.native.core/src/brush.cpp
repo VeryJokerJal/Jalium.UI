@@ -302,4 +302,19 @@ JALIUM_API JaliumResult jalium_text_format_get_font_metrics(
     return reinterpret_cast<jalium::TextFormat*>(format)->GetFontMetrics(metrics);
 }
 
+JALIUM_API JaliumResult jalium_text_format_get_font_unit_metrics(
+    JaliumTextFormat* format, JaliumFontUnitMetrics* metrics)
+{
+    if (!format || !metrics || metrics->structSize < sizeof(JaliumFontUnitMetrics))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::FontUnitMetricsProvider*>(reinterpret_cast<jalium::TextFormat*>(format));
+        return provider ? provider->GetFontUnitMetrics(metrics) : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (...) {
+        *metrics = {};
+        metrics->structSize = sizeof(JaliumFontUnitMetrics);
+        return JALIUM_ERROR_UNKNOWN;
+    }
+}
+
 } // extern "C"
