@@ -4,6 +4,13 @@ namespace Jalium.UI.Styling;
 internal sealed class CssNamespaceContext
 {
     private readonly Dictionary<string,string> _prefixes = new(StringComparer.Ordinal);
+    internal CssNamespaceContext() { }
+    internal CssNamespaceContext(string? defaultNamespace, IEnumerable<(string Prefix, string Uri)> prefixes)
+    {
+        DefaultNamespace = defaultNamespace;
+        foreach (var (prefix, uri) in prefixes) _prefixes.Add(prefix, uri);
+    }
+    internal IReadOnlyDictionary<string, string> Prefixes => _prefixes;
     internal string? DefaultNamespace { get; private set; }
     internal bool TryResolve(string prefix,out string namespaceUri) => _prefixes.TryGetValue(prefix,out namespaceUri!);
 

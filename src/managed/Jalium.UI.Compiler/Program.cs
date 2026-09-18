@@ -26,6 +26,7 @@ internal sealed class Program
 {
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--compile-css") return CssCompiler.Run(args[1]);
         if (args.Length == 0 || args.Contains("-h") || args.Contains("--help"))
         {
             PrintHelp();

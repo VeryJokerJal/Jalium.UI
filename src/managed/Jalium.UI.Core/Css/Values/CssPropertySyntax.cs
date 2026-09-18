@@ -45,10 +45,11 @@ internal sealed class CssPropertyValueContext(
 /// <summary>The intentionally restricted syntax-string grammar defined by Properties and Values API 1.</summary>
 internal sealed class CssPropertySyntax
 {
-    private sealed record Component(string Name, bool Type, char Multiplier);
+    internal sealed record Component(string Name, bool Type, char Multiplier);
     private readonly Component[] _components;
+    internal IReadOnlyList<Component> Components => _components;
     internal bool Universal { get; }
-    private CssPropertySyntax(Component[] components, bool universal = false) { _components = components; Universal = universal; }
+    internal CssPropertySyntax(Component[] components, bool universal = false) { _components = components; Universal = universal; }
 
     internal static CssPropertySyntax? Parse(string syntax)
     {

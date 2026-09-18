@@ -146,6 +146,7 @@ public sealed partial class CssStyleSheet
     public static CssStyleSheet FromUri(Uri uri)
     {
         ArgumentNullException.ThrowIfNull(uri);
+        if (CssCompiledStyleRegistry.TryCreateResource(uri, out var compiled)) return compiled;
         var resolver = UriStreamResolver;
         var stream = resolver?.Invoke(uri);
         if (stream is null)

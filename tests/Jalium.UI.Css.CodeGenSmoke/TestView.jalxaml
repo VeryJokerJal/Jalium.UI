@@ -1,0 +1,8 @@
+<StackPanel xmlns="http://schemas.jalium.ui/2024"
+            xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+            x:Class="Jalium.CssCodeGenSmoke.TestView"
+            Css.StyleSheet=".markup-card { height: 23px; }">
+    @if (1 < 2) {
+        <Border Css.Class="markup-card" Css.Style="width: 31px; opacity: .61" />
+    }
+</StackPanel>

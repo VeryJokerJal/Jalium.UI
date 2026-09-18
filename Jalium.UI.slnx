@@ -89,6 +89,7 @@
     <Project Path="tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj" />
     <Project Path="tests/Jalium.UI.Media.LinuxSmoke/Jalium.UI.Media.LinuxSmoke.csproj" />
     <Project Path="tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj" />
+    <Project Path="tests/Jalium.UI.Css.CodeGenSmoke/Jalium.UI.Css.CodeGenSmoke.csproj" />
   </Folder>
   <!-- NuGet consumer tests intentionally remain standalone: their NuGet.config
        requires JALIUM_NUGET_FEED to point at packages produced by the current

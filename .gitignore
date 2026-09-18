@@ -42,6 +42,10 @@ bld/
 
 # CMake build output
 build/
+# The CSS build integration is source, not generated build output.
+!src/managed/Jalium.UI.Build/build/
+src/managed/Jalium.UI.Build/build/*
+!src/managed/Jalium.UI.Build/build/Jalium.UI.Css.targets
 build_x64*/
 
 # Jalium temporary build/test artifacts

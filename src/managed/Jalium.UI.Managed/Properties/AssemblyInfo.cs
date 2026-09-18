@@ -8,6 +8,7 @@ using Jalium.UI.Markup;
 [assembly: InternalsVisibleTo("Jalium.UI.Media")]
 [assembly: InternalsVisibleTo("Jalium.UI.DeviceLostHarness")]
 [assembly: InternalsVisibleTo("Jalium.UI.Tests")]
+[assembly: InternalsVisibleTo("jalxamlc")]
 [assembly: InternalsVisibleTo("Jalium.UI.Gallery.Modules.Main.Tests")]
 [assembly: InternalsVisibleTo("ReactiveUI.Wpf")]
 [assembly: InternalsVisibleTo("Jalium.UI.Desktop")]

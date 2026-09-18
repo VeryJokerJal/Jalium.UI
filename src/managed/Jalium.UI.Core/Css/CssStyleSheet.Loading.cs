@@ -92,6 +92,13 @@ public sealed partial class CssStyleSheet
         async Task<LoadedCssResource> Fetch(Uri reference)
         {
             if (cache.TryGetValue(reference,out var cached)) return cached;
+            // Explicit resolvers remain authoritative, including hot reload.
+            if (ReferenceEquals(resolver, s_defaultResolver) && CssCompiledStyleRegistry.TryCreateResource(reference, out var compiled))
+            {
+                var generated = new LoadedCssResource(compiled, reference);
+                cache[reference] = generated;
+                return generated;
+            }
             var resource=await resolver.ResolveAsync(reference,cancellationToken).ConfigureAwait(false);
             ArgumentNullException.ThrowIfNull(resource.Content);
             string text;

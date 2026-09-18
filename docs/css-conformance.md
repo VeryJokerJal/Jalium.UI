@@ -57,6 +57,34 @@ control internals; it does not claim the still-pending splittable Run/text inlin
 
 ## Verification
 
+### Generated CSS C#
+
+The CSS build compiler reuses the runtime parser and emits factories for parsed
+syntax graphs. It does not precompute all property values or eliminate runtime
+condition/value processing; see [the precompilation boundary](css-styling.md#build-time-css-to-c).
+
+The Windows generation validation passed 1196 CSS tests (including 18 code-generation
+cases) with the `FullyQualifiedName~Jalium.UI.Tests.Css` filter. The generated-code
+tests compile and execute emitted C#, checking syntax graph round trips, shared
+nesting/scope nodes, namespace attributes, registrations, dynamic state, native local
+values, anonymous-layer identity, imports, resolver overrides, Razor markup and
+dynamic-text fallback. Evidence is in
+`artifacts/css-codegen-validation/test-results/css-regressions-final.trx`.
+
+`Jalium.UI.Css.CodeGenSmoke` passed as a managed application and as a published
+`win-x64` NativeAOT executable, printing `CSS generated C# smoke passed`. The AOT
+publish log is `artifacts/css-codegen-aot/publish-final.log`, and the executable's
+output is in `artifacts/css-codegen-aot/run-final.log`. Eight build integration
+checks also passed: initial generation, unchanged output/timestamp, CSS edits,
+additions, removal, removal of all inputs, linked resource metadata and the opt-out.
+Their results are recorded in
+`artifacts/css-codegen-validation/incremental-fixture-final/verification.json`.
+Existing framework
+trimming/AOT warnings remain; this smoke does not establish warning-free publication,
+other-platform code-generation qualification or native-rendering coverage.
+
+### Existing platform verification
+
 Use a dedicated build root; do not replace existing build outputs or unrelated working changes:
 
 ```powershell

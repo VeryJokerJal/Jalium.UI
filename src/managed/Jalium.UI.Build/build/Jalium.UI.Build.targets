@@ -731,4 +731,5 @@
              Text="Jalium NativeAOT: stripped @(_JaliumDllsStripped->'%(Filename)%(Extension)', ', ') (linked statically)." />
   </Target>
 
+  <Import Project="Jalium.UI.Css.targets" />
 </Project>

@@ -99,7 +99,9 @@ internal static class CssEngine
             return cached;
         }
 
-        var declarations = CssParser.ParseInlineDeclarations(text, null);
+        var declarations = CssCompiledStyleRegistry.TryCreateText(text, true, null, out var precompiled)
+            ? precompiled.Rules.SelectMany(rule => rule.Declarations).ToList()
+            : CssParser.ParseInlineDeclarations(text, null);
         var compiled = CompileDeclarations(declarations);
         if (s_inlineCache.Count >= InlineCacheCapacity)
         {

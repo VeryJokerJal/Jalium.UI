@@ -53,7 +53,7 @@ Application.Current.StyleSheets.Add(CssStyleSheet.Parse("""
     Button:hover { background-color: #2563eb }
     .card > TextBlock { font-size: 1.1em; color: #e5e7eb }
     """));
-// or from a pack resource:
+// or from generated CSS (with an embedded pack resource as the fallback):
 Application.Current.StyleSheets.Add(
     CssStyleSheet.FromUri(new Uri("/MyApp;component/styles/app.css", UriKind.Relative)));
 ```
@@ -82,6 +82,111 @@ Classes come from the `Css.Class` attached property (space-separated):
 
 ```xml
 <StackPanel Css.Class="card elevated">…</StackPanel>
+```
+
+## Build-time CSS to C#
+
+Projects importing `Jalium.UI.Build` now compile CSS into C# by default, in both
+Debug and Release, including NativeAOT publication. The build discovers project
+`*.css` files recursively (excluding build outputs and `node_modules`) as
+`JaliumCss` items. It also compiles static `Css.Style` and `Css.StyleSheet`
+**attributes** from the effective JALXAML inputs after the existing Razor transform.
+Bindings and other markup extensions keep their runtime behavior.
+Documents containing non-XML Razor syntax use the existing JALXAML parser's
+lowering rules for CSS extraction. If it cannot provide a static tree, `JALCSS003`
+reports that the document keeps its runtime CSS path.
+
+For example, put this in `styles/app.css`:
+
+```css
+.card { padding: 16px; border-radius: 8px; background-color: #1f2937; }
+.card:hover { background-color: #374151; }
+```
+
+Load it using the assembly-qualified component URI, with the assembly name and
+resource path matching the project:
+
+```csharp
+using Jalium.UI.Styling;
+
+var sheet = CssStyleSheet.FromUri(
+    new Uri("/MyApp;component/styles/app.css", UriKind.Relative));
+Css.GetStyleSheets(page).Add(sheet);
+// Application.Current.StyleSheets.Add(sheet) applies the same sheet globally.
+```
+
+Generated resources do not need an `EmbeddedResource` entry or a deployed `.css`
+file. Registration alone does not apply a stylesheet: attach it to the desired
+subtree or application as above. Existing `Css.Class`, `Css.Style` and
+`Css.StyleSheet` markup continues to work without changing the call sites.
+
+The output is `$(JalxamlIntermediateOutputPath)Css/Jalium.Css.g.cs`, normally under
+the configuration/framework-specific `obj` directory. `CssGeneratedOutputPath`
+can override it. A module initializer registers lazy factories; those factories
+directly construct selector graphs, declaration records, scopes, namespace bindings,
+layers, imports and registered-property syntax through `CssStyleSheetBuilder`.
+The generated factories do not call `CssStyleSheet.Parse`. Shared nesting nodes,
+source order and specificity are retained, and anonymous layers receive fresh
+identities each time a factory creates a sheet.
+
+Use `LoadAsync` when the sheet contains `@import`:
+
+```csharp
+var sheet = await CssStyleSheet.LoadAsync(
+    new Uri("/MyApp;component/styles/app.css", UriKind.Relative));
+```
+
+The existing import loader resolves generated resources first, preserving relative
+base URIs, conditional imports, layers, cancellation and cycle recovery. `FromUri`
+retains its existing single-sheet behavior and does not expand imports. Build-time
+compilation performs no network fetching. An explicitly supplied
+`ICssResourceResolver` remains authoritative and bypasses the generated-resource
+lookup, allowing callers to load changed files or remote styles.
+
+To choose inputs explicitly, disable discovery and declare `JaliumCss` items. For
+linked files, `ResourcePath` sets the path after `;component/`; `Link` metadata is
+also accepted when `ResourcePath` is absent:
+
+```xml
+<PropertyGroup>
+  <EnableDefaultCssItems>false</EnableDefaultCssItems>
+</PropertyGroup>
+<ItemGroup>
+  <JaliumCss Include="styles/app.css" />
+  <JaliumCss Include="../Shared/theme.css" ResourcePath="styles/theme.css" />
+</ItemGroup>
+```
+
+`<EnableCssCodeGeneration>false</EnableCssCodeGeneration>` disables this build
+step. In that mode, resource-based loading needs the original embedded resources
+or a caller-supplied stream/resolver. `CssStyleSheet.Parse` and `FromStream` always
+remain available for runtime CSS. Static strings written only in C# and XAML
+property-element syntax are not discovered by this build step; they continue
+through the runtime paths.
+
+The build tracks the complete input list and content hashes, including the compiler
+and parser binaries. Unchanged inputs leave the generated file untouched; edits,
+additions and removals update it, including removal of the last CSS file. Generated
+files and their manifest/cache are registered with MSBuild for cleaning. Source
+checkout builds isolate the portable compiler's outputs from application RID/AOT
+outputs so its restore does not overwrite application assets.
+
+**Precompilation boundary:** stylesheet syntax, declaration splitting and selector
+parsing move to build time. Property value conversion, custom mapping lookup,
+shorthand expansion, condition-query compilation, dynamic values, selector matching
+and cascade evaluation still use the existing runtime engine and its caches.
+Consequently this does not remove every parser or make every property a C# constant.
+It preserves runtime `CssMappings` changes, bindings, transitions and the native
+local-value precedence described above. CSS parse-recovery diagnostics appear as
+`JALCSS001` build warnings; portable-compiler failures use `JALCSS002` errors.
+
+`tests/Jalium.UI.Css.CodeGenSmoke` demonstrates standalone CSS, imports, generated
+JALXAML attributes and dynamic fallback. Its CSS files deliberately are not embedded,
+so its resource checks require generated factories. Run it normally or publish it:
+
+```powershell
+dotnet run --project tests/Jalium.UI.Css.CodeGenSmoke -c Release
+dotnet publish tests/Jalium.UI.Css.CodeGenSmoke -c Release -r win-x64 -p:PublishAot=true
 ```
 
 ## Selectors

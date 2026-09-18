@@ -101,7 +101,8 @@ public static partial class Css
 
         if (e.NewValue is string text && !string.IsNullOrWhiteSpace(text))
         {
-            var sheet = CssStyleSheet.Parse(text, "Css.StyleSheet");
+            var sheet = CssCompiledStyleRegistry.TryCreateText(text, false, "Css.StyleSheet", out var compiled)
+                ? compiled : CssStyleSheet.Parse(text, "Css.StyleSheet");
             state.DeclaredStyleSheet = sheet;
             sheets.Add(sheet);
         }
