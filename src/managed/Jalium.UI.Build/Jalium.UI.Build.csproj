@@ -71,7 +71,10 @@
   </ItemGroup>
 
   <Target Name="BuildJalxamlCompilerBeforePack" BeforeTargets="_GetPackageFiles">
-    <MSBuild Projects="..\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj" Targets="Restore;Build" Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false">
+    <MSBuild Projects="..\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj"
+             Targets="Restore;Build"
+             RemoveProperties="JaliumPlatform;RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;IsTrimmable;IsAotCompatible"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false">
       <Output TaskParameter="TargetOutputs" ItemName="_JalxamlCompilerTargetPath" />
     </MSBuild>
 
