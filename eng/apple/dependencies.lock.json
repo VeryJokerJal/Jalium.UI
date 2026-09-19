@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "dependencies": {
+    "DirectXShaderCompiler": {
+      "repository": "https://github.com/microsoft/DirectXShaderCompiler.git",
+      "revision": "4c7c497bfe9d156610c0b1b6bf503309a579d32b",
+      "purpose": "Runtime SourceHlsl to SPIR-V compiler."
+    },
+    "SPIRV-Cross": {
+      "repository": "https://github.com/KhronosGroup/SPIRV-Cross.git",
+      "revision": "cd3fcb2603ede297edb90ab5a679e4ac814055e2",
+      "purpose": "SPIR-V reflection and MSL generation."
+    }
+  }
+}

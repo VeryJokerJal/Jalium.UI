@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;SelfContained;RuntimeIdentifier;IsTrimmable;IsAotCompatible" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />

@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
 
@@ -29,12 +30,13 @@ namespace Jalium.UI.Media.Rendering;
 /// the published Drawing carries immutable snapshots.
 /// </para>
 /// <para>
-/// Per-frame-mutating GPU resources (a <see cref="WriteableBitmap"/> used as an
-/// image or image-brush source — e.g. video) cannot be cheaply value-copied, so
-/// they trip <see cref="DrawingContext.MarkCurrentFrameUnrecordable"/> and the
-/// frame falls back to a direct render. Mutable <see cref="Geometry"/> instances
-/// are cloned at their current value and frozen before publication so collection
-/// reads on the render worker never cross a dispatcher boundary.
+/// Per-frame-mutating GPU resources (a <see cref="WriteableBitmap"/> or
+/// <see cref="D3DImage"/> used as an image or image-brush source — e.g. video)
+/// cannot be cheaply value-copied, so they trip
+/// <see cref="DrawingContext.MarkCurrentFrameUnrecordable"/> and the frame falls
+/// back to a direct render. Mutable <see cref="Geometry"/> instances are cloned
+/// at their current value and frozen before publication so collection reads on
+/// the render worker never cross a dispatcher boundary.
 /// </para>
 /// </remarks>
 internal static class DrawInputSnapshotter
@@ -51,7 +53,7 @@ internal static class DrawInputSnapshotter
     /// <summary>
     /// Returns a render-thread-safe snapshot of <paramref name="brush"/>:
     /// solid/null pass through, gradients are memoised value copies, an image
-    /// brush backed by a <see cref="WriteableBitmap"/> trips a fallback.
+    /// brush backed by a live mutable image source trips a fallback.
     /// </summary>
     public static Brush? SnapshotBrush(Brush? brush)
     {
@@ -63,9 +65,11 @@ internal static class DrawInputSnapshotter
             case GradientBrush g:
                 return SnapshotGradient(g);
             case ImageBrush ib:
-                // Static image brushes are effectively immutable; a WriteableBitmap
-                // source mutates per frame and can't be value-copied cheaply.
-                if (ib.ImageSource is WriteableBitmap)
+                // Static image brushes are effectively immutable. WriteableBitmap
+                // mutates its CPU back buffer, while D3DImage references a mutable,
+                // caller-owned native resource. Neither can be published safely to
+                // the render worker by retaining the ImageSource reference.
+                if (IsLiveImageSource(ib.ImageSource))
                     DrawingContext.MarkCurrentFrameUnrecordable();
                 return brush;
             default:
@@ -194,14 +198,18 @@ internal static class DrawInputSnapshotter
         return snapshot;
     }
 
+    private static bool IsLiveImageSource(ImageSource? image) =>
+        image is WriteableBitmap or D3DImage;
+
     /// <summary>
     /// Returns <paramref name="image"/> unchanged, but trips a frame fallback for
-    /// a <see cref="WriteableBitmap"/> (per-frame-mutating back buffer that a
-    /// recorded handle would replay as a torn/stale surface on the render thread).
+    /// live mutable sources whose current pixels/native handle cannot be captured
+    /// by value. Replaying either source later could observe a torn buffer, a newer
+    /// frame, or a native surface that the UI thread has already released.
     /// </summary>
     public static ImageSource SnapshotImage(ImageSource image)
     {
-        if (image is WriteableBitmap)
+        if (IsLiveImageSource(image))
             DrawingContext.MarkCurrentFrameUnrecordable();
         return image;
     }

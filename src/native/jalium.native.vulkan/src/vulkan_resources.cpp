@@ -1,5 +1,6 @@
 #include "vulkan_resources.h"
 #include "jalium_bitmap_stats.h"
+#include "jalium_dwrite_font_units.h"
 
 #ifndef _WIN32
 #include "text_engine.h"
@@ -771,6 +772,16 @@ JaliumResult VulkanTextFormat::MeasureText(
         metrics->height = std::max(metrics->height, metrics->lineHeight);
     }
     return JALIUM_OK;
+}
+
+JaliumResult VulkanTextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)
+{
+#ifdef _WIN32
+    return font_units::Read(GetSharedDWriteFactory(), dwFormat_.Get(), fontSize_, metrics);
+#else
+    if (ftTextFormat_) return ftTextFormat_->GetFontUnitMetrics(metrics);
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
 }
 
 JaliumResult VulkanTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)

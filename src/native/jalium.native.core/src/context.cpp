@@ -426,6 +426,13 @@ JALIUM_API JaliumResult jalium_render_target_query_gpu_timing(
     return reinterpret_cast<jalium::RenderTarget*>(rt)->QueryGpuTiming(out);
 }
 
+JALIUM_API JaliumResult jalium_render_target_wait_for_completion(
+    JaliumRenderTarget* rt)
+{
+    if (!rt) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->WaitForCompletion();
+}
+
 JALIUM_API intptr_t jalium_render_target_get_frame_latency_waitable(
     JaliumRenderTarget* rt)
 {
@@ -438,6 +445,28 @@ JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(
 {
     if (!rt) return JALIUM_ERROR_INVALID_ARGUMENT;
     return reinterpret_cast<jalium::RenderTarget*>(rt)->ReclaimIdleResources();
+}
+
+JALIUM_API JaliumResult jalium_render_target_compact_idle_framebuffer_storage(
+    JaliumRenderTarget* rt)
+{
+    if (!rt) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto* target = reinterpret_cast<jalium::RenderTarget*>(rt);
+    auto* provider = dynamic_cast<jalium::CpuFramebufferStorageProvider*>(target);
+    return provider ? provider->CompactIdleFramebufferStorage() : JALIUM_OK;
+}
+
+JALIUM_API JaliumResult jalium_render_target_query_main_framebuffer_owned_bytes(
+    JaliumRenderTarget* rt,
+    uint64_t* out_bytes)
+{
+    if (out_bytes) *out_bytes = 0;
+    if (!rt || !out_bytes) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto* target = reinterpret_cast<jalium::RenderTarget*>(rt);
+    auto* provider = dynamic_cast<jalium::CpuFramebufferStorageProvider*>(target);
+    return provider
+        ? provider->QueryMainFramebufferOwnedBytes(out_bytes)
+        : JALIUM_ERROR_NOT_SUPPORTED;
 }
 
 // Two-phase back-buffer readback (backend parity verification). Request only

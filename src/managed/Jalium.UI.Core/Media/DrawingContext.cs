@@ -209,7 +209,7 @@ public abstract class DrawingContext : DispatcherObject, IDisposable, IClipDrawi
     /// <summary>
     /// Creates a PathGeometry for a rounded rectangle with non-uniform corner radii.
     /// </summary>
-    private static PathGeometry CreateRoundedRectGeometry(Rect rect, CornerRadius cornerRadius)
+    internal static PathGeometry CreateRoundedRectGeometry(Rect rect, CornerRadius cornerRadius)
     {
         var geometry = new PathGeometry();
         var figure = new PathFigure();

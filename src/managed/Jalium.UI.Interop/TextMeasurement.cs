@@ -8,7 +8,7 @@ namespace Jalium.UI.Interop;
 /// <summary>
 /// Provides text measurement services using native DirectWrite font metrics.
 /// </summary>
-public static class TextMeasurement
+public static partial class TextMeasurement
 {
     // Cache text formats to avoid recreating them for every measurement.
     // Keep this bounded to prevent unbounded native memory growth over long sessions.
@@ -132,6 +132,8 @@ public static class TextMeasurement
         }
     }
 
+    internal static long MetricsCacheEpoch => Volatile.Read(ref _metricsCacheState).Epoch;
+
     private sealed class MetricsCacheState
     {
         public MetricsCacheState(long epoch, Dictionary<FontMetricsKey, TextMetrics> entries)
@@ -216,6 +218,7 @@ public static class TextMeasurement
     private static readonly ConcurrentDictionary<MeasureKey, MeasureCacheEntry> _measureCache = new();
     private static readonly LinkedList<MeasureKey> _measureLruKeys = new();
     private static readonly object _measureLock = new();
+    private static long _measureCacheEpoch;
     [ThreadStatic]
     private static int t_measureCacheHits;
 
@@ -240,8 +243,9 @@ public static class TextMeasurement
             return false;
         }
 
-        var format = GetOrCreateFormat(context, formattedText.FontFamily, (float)formattedText.FontSize, formattedText.FontWeight, formattedText.FontStyle);
-        if (format == null || !format.IsValid)
+        var fontFamily = formattedText.FontFamily ?? string.Empty;
+        var format = GetOrCreateFormat(context, fontFamily, (float)formattedText.FontSize, formattedText.FontWeight, formattedText.FontStyle);
+        if (format == null)
         {
             ApproximateMeasurement(formattedText);
             return false;
@@ -259,7 +263,7 @@ public static class TextMeasurement
         // 先查测量结果缓存：命中即免去一次 DirectWrite CreateTextLayout + 整形（虚拟化滚动的主成本）。
         var measureKey = new MeasureKey(
             formattedText.Text,
-            formattedText.FontFamily ?? string.Empty,
+            fontFamily,
             (float)formattedText.FontSize,
             formattedText.FontWeight,
             formattedText.FontStyle,
@@ -294,15 +298,32 @@ public static class TextMeasurement
             return true;
         }
 
-        var metrics = NormalizeTrailingWhitespaceMetrics(
-            format,
-            formattedText.Text,
-            (float)maxWidth,
-            (float)maxHeight);
+        // Only misses need an epoch. Warm result hits above keep their existing
+        // lock-free path and allocation profile.
+        var capturedMeasureEpoch = Volatile.Read(ref _measureCacheEpoch);
+        if (!TryInvokeFormatWithDisposedRetry(
+                context,
+                fontFamily,
+                (float)formattedText.FontSize,
+                formattedText.FontWeight,
+                formattedText.FontStyle,
+                format,
+                (Text: formattedText.Text, MaxWidth: (float)maxWidth, MaxHeight: (float)maxHeight),
+                static (candidate, request) => NormalizeTrailingWhitespaceMetrics(
+                    candidate,
+                    request.Text,
+                    request.MaxWidth,
+                    request.MaxHeight),
+                out var metrics))
+        {
+            ApproximateMeasurement(formattedText);
+            return false;
+        }
 
         lock (_measureLock)
         {
-            if (!_measureCache.ContainsKey(measureKey))
+            if (_measureCacheEpoch == capturedMeasureEpoch &&
+                !_measureCache.ContainsKey(measureKey))
             {
                 var lruNode = _measureLruKeys.AddLast(measureKey);
                 _measureCache[measureKey] = new MeasureCacheEntry(metrics, lruNode);
@@ -435,7 +456,16 @@ public static class TextMeasurement
         }
 
         var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle);
-        if (format == null || !format.IsValid)
+        if (!TryInvokeFormatWithDisposedRetry(
+                context,
+                fontFamily,
+                (float)fontSize,
+                fontWeight,
+                fontStyle,
+                format,
+                state: 0,
+                static (candidate, _) => candidate.GetFontMetrics(),
+                out var metrics))
         {
             return new TextMetrics
             {
@@ -447,7 +477,6 @@ public static class TextMeasurement
             };
         }
 
-        var metrics = format.GetFontMetrics();
         lock (_metricsWriteLock)
         {
             // 上限保护：配置种类极少（一个 UI 通常就几种字体×字号），正常远不到上限；满了就不再增长。
@@ -535,10 +564,32 @@ public static class TextMeasurement
             return false;
 
         var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, 400);
-        if (format == null || !format.IsValid)
+        if (!TryInvokeFormatWithDisposedRetry(
+                context,
+                fontFamily,
+                (float)fontSize,
+                400,
+                0,
+                format,
+                (Text: text, MaxWidth: 100000f, MaxHeight: 100000f, PointX: pointX, PointY: 0f),
+                static (candidate, request) =>
+                {
+                    var success = candidate.HitTestPoint(
+                        request.Text,
+                        request.MaxWidth,
+                        request.MaxHeight,
+                        request.PointX,
+                        request.PointY,
+                        out var hit);
+                    return (Success: success, Result: hit);
+                },
+                out var invocation))
+        {
             return false;
+        }
 
-        return format.HitTestPoint(text, 100000f, 100000f, pointX, 0f, out result);
+        result = invocation.Result;
+        return invocation.Success;
     }
 
     /// <summary>
@@ -568,10 +619,32 @@ public static class TextMeasurement
             return false;
 
         var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle);
-        if (format == null || !format.IsValid)
+        if (!TryInvokeFormatWithDisposedRetry(
+                context,
+                fontFamily,
+                (float)fontSize,
+                fontWeight,
+                fontStyle,
+                format,
+                (Text: text, MaxWidth: maxWidth, MaxHeight: 100000f, PointX: pointX, PointY: pointY),
+                static (candidate, request) =>
+                {
+                    var success = candidate.HitTestPoint(
+                        request.Text,
+                        request.MaxWidth,
+                        request.MaxHeight,
+                        request.PointX,
+                        request.PointY,
+                        out var hit);
+                    return (Success: success, Result: hit);
+                },
+                out var invocation))
+        {
             return false;
+        }
 
-        return format.HitTestPoint(text, maxWidth, 100000f, pointX, pointY, out result);
+        result = invocation.Result;
+        return invocation.Success;
     }
 
     /// <summary>
@@ -596,10 +669,32 @@ public static class TextMeasurement
             return false;
 
         var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, 400);
-        if (format == null || !format.IsValid)
+        if (!TryInvokeFormatWithDisposedRetry(
+                context,
+                fontFamily,
+                (float)fontSize,
+                400,
+                0,
+                format,
+                (Text: text, MaxWidth: 100000f, MaxHeight: 100000f, TextPosition: textPosition, IsTrailingHit: isTrailingHit),
+                static (candidate, request) =>
+                {
+                    var success = candidate.HitTestTextPosition(
+                        request.Text,
+                        request.MaxWidth,
+                        request.MaxHeight,
+                        request.TextPosition,
+                        request.IsTrailingHit,
+                        out var hit);
+                    return (Success: success, Result: hit);
+                },
+                out var invocation))
+        {
             return false;
+        }
 
-        return format.HitTestTextPosition(text, 100000f, 100000f, textPosition, isTrailingHit, out result);
+        result = invocation.Result;
+        return invocation.Success;
     }
 
     /// <summary>
@@ -629,12 +724,96 @@ public static class TextMeasurement
             return false;
 
         var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle);
-        if (format == null || !format.IsValid)
+        if (!TryInvokeFormatWithDisposedRetry(
+                context,
+                fontFamily,
+                (float)fontSize,
+                fontWeight,
+                fontStyle,
+                format,
+                (Text: text, MaxWidth: maxWidth, MaxHeight: 100000f, TextPosition: textPosition, IsTrailingHit: isTrailingHit),
+                static (candidate, request) =>
+                {
+                    var success = candidate.HitTestTextPosition(
+                        request.Text,
+                        request.MaxWidth,
+                        request.MaxHeight,
+                        request.TextPosition,
+                        request.IsTrailingHit,
+                        out var hit);
+                    return (Success: success, Result: hit);
+                },
+                out var invocation))
+        {
             return false;
+        }
 
-        // Height is intentionally unbounded — we only care about horizontal
-        // wrapping; height clipping would truncate the y of later rows.
-        return format.HitTestTextPosition(text, maxWidth, 100000f, textPosition, isTrailingHit, out result);
+        result = invocation.Result;
+        return invocation.Success;
+    }
+
+    private static bool TryInvokeFormatWithDisposedRetry<TState, TResult>(
+        RenderContext context,
+        string fontFamily,
+        float fontSize,
+        int fontWeight,
+        int fontStyle,
+        NativeTextFormat? initialFormat,
+        TState state,
+        Func<NativeTextFormat, TState, TResult> operation,
+        out TResult result)
+    {
+        if (initialFormat != null && initialFormat.IsValid)
+        {
+            try
+            {
+                result = operation(initialFormat, state);
+                return true;
+            }
+            catch (ObjectDisposedException)
+            {
+                // ClearCache/eviction won the race after the lock-free snapshot
+                // lookup. Re-resolve once while holding the cache gate below.
+            }
+        }
+
+        lock (_lock)
+        {
+            var currentContext = RenderContext.Current;
+            var retryContext = ReferenceEquals(context, currentContext)
+                ? context
+                : currentContext;
+            if (retryContext == null || !retryContext.IsValid)
+            {
+                result = default!;
+                return false;
+            }
+
+            var replacement = GetOrCreateFormat(
+                retryContext,
+                fontFamily,
+                fontSize,
+                fontWeight,
+                fontStyle);
+            if (replacement == null || !replacement.IsValid)
+            {
+                result = default!;
+                return false;
+            }
+
+            try
+            {
+                // ClearCache and LRU eviction use the same gate, so the retry's
+                // format cannot be disposed until this native operation returns.
+                result = operation(replacement, state);
+                return true;
+            }
+            catch (ObjectDisposedException)
+            {
+                result = default!;
+                return false;
+            }
+        }
     }
 
     /// <summary>
@@ -663,6 +842,9 @@ public static class TextMeasurement
         {
             _measureCache.Clear();
             _measureLruKeys.Clear();
+            Volatile.Write(
+                ref _measureCacheEpoch,
+                unchecked(_measureCacheEpoch + 1));
         }
 
         // Font-face metrics (ascent / descent / lineHeight) are font-derived as well,
@@ -674,7 +856,9 @@ public static class TextMeasurement
             Volatile.Write(
                 ref _metricsCacheState,
                 new MetricsCacheState(currentState.Epoch + 1, new()));
+            Volatile.Write(ref _fontUnitMetricsCache, new FontUnitCache(currentState.Epoch + 1, new()));
         }
+        Jalium.UI.Styling.CssFontDependency.FontsChanged();
     }
 
     /// <summary>
@@ -752,6 +936,14 @@ public static class TextMeasurement
 
         lock (_lock)
         {
+            // Every caller of this private cache captures RenderContext.Current.
+            // A delayed miss from a retired generation must not repopulate the
+            // process-wide cache and thereby become a new backend lifetime pin.
+            if (!CanPopulateGlobalFormatCache(context))
+            {
+                return null;
+            }
+
             if (_formatCache.TryGetValue(key, out var cached))
             {
                 if (cached.Format.IsValid)
@@ -776,6 +968,12 @@ public static class TextMeasurement
             try
             {
                 var format = CreateTextFormatFromFamilyList(context, fontFamily, fontSize, fontWeight, fontStyle);
+                if (!CanPopulateGlobalFormatCache(context))
+                {
+                    format.Dispose();
+                    return null;
+                }
+
                 // 冷却期满后的重试成功了（或换代后同 key 恢复）——撤销负缓存。
                 _failedFormatKeys.Remove(key);
                 var lruNode = _lruKeys.AddLast(key);
@@ -786,6 +984,14 @@ public static class TextMeasurement
             }
             catch (Exception ex)
             {
+                // Context replacement can race the native create. The old
+                // generation is no longer a cache candidate, and its failure
+                // must not seed a process-wide negative entry either.
+                if (!CanPopulateGlobalFormatCache(context))
+                {
+                    return null;
+                }
+
                 bool firstFailure = !_failedFormatKeys.ContainsKey(key);
                 if (firstFailure && _failedFormatKeys.Count >= MaxFailedFormatEntries)
                 {
@@ -812,6 +1018,9 @@ public static class TextMeasurement
             }
         }
     }
+
+    private static bool CanPopulateGlobalFormatCache(RenderContext context)
+        => context.IsValid && ReferenceEquals(context, RenderContext.Current);
 
     /// <summary>
     /// Removes negative-cache entries whose retry cooldown has elapsed (stale

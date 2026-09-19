@@ -17,6 +17,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
+    <ProjectReference Include="..\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers;IsTrimmable;IsAotCompatible" />
+    <Compile Include="..\Shared\CssCompilationManifest.cs" Link="CssCompilationManifest.cs" />
   </ItemGroup>
 
 </Project>

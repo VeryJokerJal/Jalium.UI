@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Automation;
 using Jalium.UI.Automation.Peers;
@@ -142,6 +142,7 @@ public sealed class VideoFrameBuffer : IDisposable
 {
     private readonly BlockingCollection<VideoFrame> _frameQueue;
     private readonly int _maxSize;
+    private int _disposed;
 
     public VideoFrameBuffer(int maxSize = 3)
     {
@@ -151,14 +152,33 @@ public sealed class VideoFrameBuffer : IDisposable
 
     public bool TryAdd(VideoFrame frame, int timeoutMs = 0)
     {
+        ArgumentNullException.ThrowIfNull(frame);
+        if (Volatile.Read(ref _disposed) != 0 || _frameQueue.IsAddingCompleted)
+            return false;
+
         if (timeoutMs > 0)
         {
-            return _frameQueue.TryAdd(frame, timeoutMs);
+            try
+            {
+                return _frameQueue.TryAdd(frame, timeoutMs);
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
         }
         try
         {
             _frameQueue.Add(frame);
             return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
         }
         catch (InvalidOperationException)
         {
@@ -176,6 +196,10 @@ public sealed class VideoFrameBuffer : IDisposable
         {
             return null;
         }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
         catch (InvalidOperationException)
         {
             return null;
@@ -184,7 +208,31 @@ public sealed class VideoFrameBuffer : IDisposable
 
     public bool TryTake(out VideoFrame? frame)
     {
-        return _frameQueue.TryTake(out frame);
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            frame = null;
+            return false;
+        }
+
+        try
+        {
+            return _frameQueue.TryTake(out frame);
+        }
+        catch (ObjectDisposedException)
+        {
+            frame = null;
+            return false;
+        }
+    }
+
+    public void CompleteAdding()
+    {
+        if (Volatile.Read(ref _disposed) != 0 || _frameQueue.IsAddingCompleted)
+            return;
+
+        try { _frameQueue.CompleteAdding(); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
     }
 
     public void Clear()
@@ -195,11 +243,428 @@ public sealed class VideoFrameBuffer : IDisposable
         }
     }
 
-    public int Count => _frameQueue.Count;
+    public int Count
+    {
+        get
+        {
+            if (Volatile.Read(ref _disposed) != 0) return 0;
+            try { return _frameQueue.Count; }
+            catch (ObjectDisposedException) { return 0; }
+        }
+    }
+
+    public bool IsCompleted
+    {
+        get
+        {
+            if (Volatile.Read(ref _disposed) != 0) return true;
+            try { return _frameQueue.IsCompleted; }
+            catch (ObjectDisposedException) { return true; }
+        }
+    }
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try { _frameQueue.CompleteAdding(); } catch { }
         Clear();
+        _frameQueue.Dispose();
+    }
+}
+
+#endregion
+
+#region 播放会话
+
+/// <summary>
+/// Immutable inputs for one MediaElement playback generation.  Every worker loop
+/// reads only these captured values; replacing fields on the owning control can no
+/// longer redirect an older worker into a newer decoder, frame queue, clock, or
+/// audio player.
+/// </summary>
+internal sealed record MediaElementPlaybackSessionOptions(
+    int Generation,
+    INativeVideoDecoder? Decoder,
+    Func<TimeSpan>? ReadAudioPosition,
+    TimeSpan StartPosition,
+    double FrameDelayMs,
+    double SpeedRatio,
+    TimeSpan Duration,
+    Func<nint> GetRenderContextHandle,
+    Func<MediaElementPlaybackSession, VideoFrame, bool> PresentFrame,
+    Action<MediaElementPlaybackSession, TimeSpan>? PositionChanged = null,
+    Action<MediaElementPlaybackSession, Exception>? Failed = null,
+    Action<MediaElementPlaybackSession>? Ended = null,
+    Action<MediaElementPlaybackSession>? StatisticsChanged = null,
+    Func<bool>? AudioHasEnded = null);
+
+/// <summary>
+/// Owns the decode, render, and audio-position workers for exactly one playback
+/// generation.  Cancellation and EOF close the frame producer explicitly, and
+/// all frame ownership transfers are paired with a guaranteed Dispose fallback.
+/// </summary>
+internal sealed class MediaElementPlaybackSession : IDisposable
+{
+    private readonly MediaElementPlaybackSessionOptions _options;
+    private readonly CancellationTokenSource _cancellation = new();
+    private readonly VideoFrameBuffer _frames = new(3);
+    private readonly AVSyncClock _clock = new();
+    private readonly TaskCompletionSource _completion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _started;
+    private int _failed;
+    private int _ended;
+    private int _cleaned;
+    private int _framesAwaitingPresentation;
+    private TimeSpan _completedMediaTime;
+
+    internal MediaElementPlaybackSession(MediaElementPlaybackSessionOptions options)
+    {
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        if (options.Decoder is null && options.ReadAudioPosition is null)
+            throw new ArgumentException("A playback session requires video or audio.", nameof(options));
+        if (options.FrameDelayMs <= 0 || double.IsNaN(options.FrameDelayMs) || double.IsInfinity(options.FrameDelayMs))
+            throw new ArgumentOutOfRangeException(nameof(options), "Frame delay must be finite and positive.");
+        ArgumentNullException.ThrowIfNull(options.GetRenderContextHandle);
+        ArgumentNullException.ThrowIfNull(options.PresentFrame);
+        _clock.SpeedRatio = options.SpeedRatio;
+    }
+
+    internal int Generation => _options.Generation;
+    internal INativeVideoDecoder? Decoder => _options.Decoder;
+    internal Task Completion => _completion.Task;
+    internal TimeSpan MediaTime => Volatile.Read(ref _cleaned) != 0 ? _completedMediaTime : _clock.GetMediaTime();
+    internal double SpeedRatio
+    {
+        set => _clock.SpeedRatio = value;
+    }
+    internal int FramesRendered { get; private set; }
+    internal int FramesDropped { get; private set; }
+    internal int FramesLate { get; private set; }
+    internal int FramesAwaitingPresentation => Volatile.Read(ref _framesAwaitingPresentation);
+
+    internal void Start()
+    {
+        if (Interlocked.Exchange(ref _started, 1) != 0)
+            throw new InvalidOperationException("The playback session has already started.");
+        try
+        {
+            _clock.Start(_options.StartPosition);
+            var token = _cancellation.Token;
+            var workers = new List<Task>(3);
+            if (_options.Decoder is not null)
+            {
+                workers.Add(Task.Run(() => DecodeLoop(token)));
+                workers.Add(Task.Run(() => RenderLoopAsync(token)));
+            }
+
+            if (_options.ReadAudioPosition is not null)
+            {
+                workers.Add(_options.Decoder is null
+                    ? Task.Run(() => AudioOnlyPositionLoopAsync(token))
+                    : Task.Run(() => AudioSyncLoop(token)));
+            }
+
+            _ = CompleteAsync(workers);
+        }
+        catch
+        {
+            Cleanup();
+            _completion.TrySetResult();
+            throw;
+        }
+    }
+
+    internal void Cancel()
+    {
+        try { _cancellation.Cancel(); } catch (ObjectDisposedException) { }
+        _frames.CompleteAdding();
+    }
+
+    public void Dispose()
+    {
+        Cancel();
+        if (Volatile.Read(ref _started) == 0)
+        {
+            Cleanup();
+            _completion.TrySetResult();
+        }
+    }
+
+    private async Task CompleteAsync(IReadOnlyCollection<Task> workers)
+    {
+        try
+        {
+            await Task.WhenAll(workers).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            Fail(exception);
+        }
+        finally
+        {
+            Cleanup();
+            _completion.TrySetResult();
+        }
+    }
+
+    private void DecodeLoop(CancellationToken token)
+    {
+        var decoder = _options.Decoder!;
+        try
+        {
+            long frameIndex = 0;
+            double startTimeMs = _options.StartPosition.TotalMilliseconds;
+            while (!token.IsCancellationRequested)
+            {
+                VideoFrame? frame = null;
+                if (decoder is INativeGpuVideoDecoder gpuDecoder && gpuDecoder.MayHaveGpuOutput)
+                {
+                    var result = gpuDecoder.TryReadGpuFrame(
+                        _options.GetRenderContextHandle(),
+                        out var directSurface,
+                        out var directPts);
+                    if (result == GpuVideoFrameReadResult.EndOfStream)
+                        break;
+                    if (result == GpuVideoFrameReadResult.FellBackToCpu)
+                        continue;
+                    if (result == GpuVideoFrameReadResult.Frame)
+                    {
+                        if (directSurface is null)
+                            throw new InvalidDataException("The video decoder reported a GPU frame without a surface.");
+                        double timestamp = directPts.TotalMilliseconds;
+                        if (timestamp <= 0)
+                            timestamp = startTimeMs + frameIndex * _options.FrameDelayMs;
+                        frame = new VideoFrame(directSurface, (long)timestamp, checked((int)frameIndex));
+                    }
+                }
+
+                if (frame is null)
+                {
+                    if (!decoder.TryReadFrame(out var mediaFrame))
+                        break;
+                    if (mediaFrame is null)
+                        throw new InvalidDataException("The video decoder returned success without a frame.");
+
+                    double pts = mediaFrame.PresentationTime.TotalMilliseconds;
+                    if (pts <= 0)
+                        pts = startTimeMs + frameIndex * _options.FrameDelayMs;
+
+                    NativeVideoSurface? gpuSurface = null;
+                    try
+                    {
+                        nint context = _options.GetRenderContextHandle();
+                        if (context != nint.Zero)
+                            gpuSurface = decoder.AcquireGpuSurface(context);
+                    }
+                    catch
+                    {
+                        // Optional legacy surface acquisition may fail independently
+                        // of CPU decoding; retain the valid CPU frame as fallback.
+                    }
+
+                    if (gpuSurface is not null)
+                    {
+                        mediaFrame.Dispose();
+                        frame = new VideoFrame(gpuSurface, (long)pts, checked((int)frameIndex));
+                    }
+                    else
+                    {
+                        frame = new VideoFrame(mediaFrame, (long)pts, checked((int)frameIndex));
+                    }
+                }
+
+                if (token.IsCancellationRequested)
+                {
+                    frame.Dispose();
+                    break;
+                }
+
+                if (!_frames.TryAdd(frame, 50))
+                {
+                    if (_frames.TryTake(out var oldFrame))
+                        oldFrame?.Dispose();
+                    if (!_frames.TryAdd(frame))
+                        frame.Dispose();
+                }
+
+                frameIndex++;
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            Fail(exception);
+        }
+        finally
+        {
+            _frames.CompleteAdding();
+        }
+    }
+
+    private async Task RenderLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                VideoFrame? frame = _frames.Take(token);
+                if (frame is null)
+                {
+                    if (token.IsCancellationRequested)
+                        return;
+                    if (_frames.IsCompleted)
+                        break;
+                    continue;
+                }
+
+                bool transferred = false;
+                Interlocked.Increment(ref _framesAwaitingPresentation);
+                try
+                {
+                    TimeSpan delay = _clock.CalculateVideoDelay(frame.TimestampMs);
+                    if (delay < TimeSpan.FromMilliseconds(-AVSyncClock.VideoCatchUpThresholdMs))
+                    {
+                        FramesDropped++;
+                        NotifyStatisticsChanged();
+                        continue;
+                    }
+
+                    if (delay < TimeSpan.Zero)
+                    {
+                        FramesLate++;
+                        NotifyStatisticsChanged();
+                    }
+                    else if (delay > TimeSpan.FromMilliseconds(2))
+                    {
+                        do
+                        {
+                            await PreciseDelayAsync(TimeSpan.FromMilliseconds(Math.Min(10, delay.TotalMilliseconds)), token).ConfigureAwait(false);
+                            delay = _clock.CalculateVideoDelay(frame.TimestampMs);
+                        } while (delay > TimeSpan.FromMilliseconds(2));
+                    }
+
+                    token.ThrowIfCancellationRequested();
+                    TimeSpan position = _clock.GetMediaTime();
+                    _options.PositionChanged?.Invoke(this, position);
+                    FramesRendered++;
+                    NotifyStatisticsChanged();
+                    transferred = _options.PresentFrame(this, frame);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _framesAwaitingPresentation);
+                    if (!transferred)
+                        frame.Dispose();
+                }
+            }
+
+            while (!token.IsCancellationRequested && _options.AudioHasEnded is { } ended && !ended())
+                await Task.Delay(20, token).ConfigureAwait(false);
+            if (!token.IsCancellationRequested && Volatile.Read(ref _failed) == 0)
+                SignalEnded();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            Fail(exception);
+        }
+    }
+
+    private void AudioSyncLoop(CancellationToken token)
+    {
+        try
+        {
+            if (token.WaitHandle.WaitOne(50)) return;
+            while (!token.IsCancellationRequested)
+            {
+                if (_options.AudioHasEnded?.Invoke() == true) return;
+                TimeSpan position = _options.ReadAudioPosition!();
+                _clock.UpdateAudioPosition(position.TotalSeconds);
+                _options.PositionChanged?.Invoke(this, position);
+                if (token.WaitHandle.WaitOne(20)) break;
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            Fail(exception);
+        }
+    }
+
+    private async Task AudioOnlyPositionLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                TimeSpan position = _options.ReadAudioPosition!();
+                _options.PositionChanged?.Invoke(this, position);
+                if (_options.AudioHasEnded?.Invoke() == true ||
+                    (_options.AudioHasEnded is null && _options.Duration > TimeSpan.Zero && position >= _options.Duration))
+                {
+                    SignalEnded();
+                    return;
+                }
+                await Task.Delay(100, token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            Fail(exception);
+        }
+    }
+
+    private void Fail(Exception exception)
+    {
+        if (Interlocked.Exchange(ref _failed, 1) != 0) return;
+        try { _options.Failed?.Invoke(this, exception); }
+        catch { }
+        Cancel();
+    }
+
+    private void SignalEnded()
+    {
+        if (Interlocked.Exchange(ref _ended, 1) != 0 || Volatile.Read(ref _failed) != 0)
+            return;
+        try { _options.Ended?.Invoke(this); }
+        catch { }
+        Cancel();
+    }
+
+    private void NotifyStatisticsChanged()
+    {
+        try { _options.StatisticsChanged?.Invoke(this); } catch { }
+    }
+
+    private void Cleanup()
+    {
+        _completedMediaTime = _clock.GetMediaTime();
+        if (Interlocked.Exchange(ref _cleaned, 1) != 0) return;
+        _frames.Dispose();
+        _clock.Dispose();
+        _cancellation.Dispose();
+    }
+
+    internal static async Task PreciseDelayAsync(TimeSpan delay, CancellationToken token)
+    {
+        if (delay <= TimeSpan.Zero) return;
+
+        // Short cancellable slices let the caller re-read the A/V clock after
+        // rate changes without burning a CPU core in a per-frame spin loop.
+        await Task.Delay(delay, token).ConfigureAwait(false);
     }
 }
 
@@ -276,7 +741,7 @@ public sealed class AVSyncClock : IDisposable
             if (_isRunning)
             {
                 // 暂停时，将已运行时间累加到基准时间
-                _baseMediaTime += TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks / _speedRatio));
+                _baseMediaTime += TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks * _speedRatio));
                 _systemClock.Stop();
                 _isRunning = false;
             }
@@ -313,22 +778,36 @@ public sealed class AVSyncClock : IDisposable
             if (!_isRunning)
                 return _baseMediaTime;
 
-            var elapsed = TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks / _speedRatio));
+            var elapsed = TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks * _speedRatio));
             return _baseMediaTime + elapsed;
         }
     }
 
     public double SpeedRatio
     {
-        get => _speedRatio;
-        set => _speedRatio = Math.Clamp(value, 0.1, 10.0);
+        get { lock (_lock) return _speedRatio; }
+        set
+        {
+            if (!double.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(value));
+            lock (_lock)
+            {
+                if (_isRunning)
+                {
+                    _baseMediaTime = GetMediaTime();
+                    _systemClock.Restart();
+                }
+                _speedRatio = Math.Clamp(value, 0.1, 10.0);
+            }
+        }
     }
 
     public TimeSpan CalculateVideoDelay(double framePresentationTimeMs)
     {
-        var currentTime = GetMediaTime().TotalMilliseconds;
-        var delay = framePresentationTimeMs - currentTime;
-        return TimeSpan.FromMilliseconds(delay);
+        lock (_lock)
+        {
+            var delay = framePresentationTimeMs - GetMediaTime().TotalMilliseconds;
+            return TimeSpan.FromMilliseconds(delay / _speedRatio);
+        }
     }
 
     public bool ShouldDropFrame(double framePresentationTimeMs)
@@ -381,8 +860,8 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     private INativeVideoDecoder? _videoDecoder;
     private AudioPlayer? _audioManager;
-    private VideoFrameBuffer? _frameBuffer;
     private string? _mediaPath;
+    private Uri? _openedSource;
     private MediaClock? _clock;
     private Uri? _baseUri;
     private double _downloadProgress;
@@ -393,10 +872,15 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     private bool _isPaused;
     private bool _hasVideo;
     private bool _hasAudio;
-    private CancellationTokenSource? _playbackCts;
-    private Task? _videoDecodeTask;
-    private Task? _videoRenderTask;
-    private Task? _audioSyncTask;
+    private MediaElementPlaybackSession? _playbackSession;
+    private Task _playbackTail = Task.CompletedTask;
+    private Task _resourceCleanupTail = Task.CompletedTask;
+    private Task _openTask = Task.CompletedTask;
+    private bool _isOpening;
+    private bool _replayOnPlay;
+    private MediaState? _requestedOpenState;
+    private int _playbackGeneration;
+    private int _pendingPlaybackStartGeneration;
     private CancellationTokenSource? _subtitleCts;
     private Task? _subtitleTask;
     private string? _subtitleText;
@@ -431,8 +915,6 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     private double _currentVolume = 1;
     private bool _isMuted;
-
-    private AVSyncClock? _syncClock;
 
     private double _displayScale = 1.0;
     private Size _arrangedSize;
@@ -775,19 +1257,15 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         ++_trackSwitchGeneration;
         DetachClock(_clock);
         _clock = null;
-        StopPlayback();
+        var playbackTail = StopPlayback();
         DropPendingDisplayFrame();
-        _syncClock?.Dispose();
-        _videoDecoder?.Dispose();
-        _frameBuffer?.Dispose();
-        _audioManager?.Dispose();
+        var audioManager = _audioManager;
+        _audioManager = null;
+        DisposeAfterPlayback(playbackTail, audioManager);
         _d3dImage?.SetBackBuffer((NativeVideoSurface?)null);
         _d3dImage?.Dispose();
         _videoSurface?.Dispose();
-        _syncClock = null;
-        _videoDecoder = null;
-        _frameBuffer = null;
-        _audioManager = null;
+        _openedSource = null;
         _d3dImage = null;
         _videoSurface = null;
     }
@@ -803,7 +1281,24 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     public void Play()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_isOpening) { _requestedOpenState = MediaState.Play; return; }
         if (_isPlaying) return;
+        if (!_hasVideo && !_hasAudio && _clock is null)
+        {
+            if (Source is { } source)
+            {
+                OpenSource(source, _baseUri);
+                if (_isOpening) _requestedOpenState = MediaState.Play;
+            }
+            return;
+        }
+
+        if (_replayOnPlay)
+        {
+            _position = TimeSpan.Zero;
+            _replayOnPlay = false;
+        }
 
         if (_isPaused)
         {
@@ -818,6 +1313,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     public void Pause()
     {
+        if (_isOpening) { _requestedOpenState = MediaState.Pause; return; }
         if (!_isPlaying || _isPaused) return;
 
         _isPlaying = false;
@@ -827,6 +1323,8 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     public void Stop()
     {
+        if (_isOpening) _requestedOpenState = MediaState.Stop;
+        _replayOnPlay = false;
         _isPlaying = false;
         _isPaused = false;
         _pendingPlay = false;
@@ -844,13 +1342,25 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         CloseMedia();
     }
 
+    /// <summary>Closes media and waits until its native decoders, audio pumps and pending opens are retired.</summary>
+    public async Task CloseAsync()
+    {
+        Close();
+        Task opening;
+        lock (_lock) opening = _openTask;
+        await opening.ConfigureAwait(false);
+        Task cleanup;
+        lock (_lock) cleanup = Task.WhenAll(_playbackTail, _resourceCleanupTail);
+        await cleanup.ConfigureAwait(false);
+    }
+
     #endregion
 
     #region 布局与渲染
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        if (!_hasVideo || _videoWidth <= 0 || _videoHeight <= 0)
+        if ((!_hasVideo && !_isOpening) || _videoWidth <= 0 || _videoHeight <= 0)
         {
             return new Size(0, 0);
         }
@@ -956,7 +1466,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         // jalium_render_target_draw_video_surface — no WriteableBitmap, no
         // managed back buffer copy.
         var surfaceImage = _d3dImage;
-        if (surfaceImage != null && surfaceImage.IsFrontBufferAvailable && _hasVideo)
+        if (surfaceImage != null && surfaceImage.IsFrontBufferAvailable && surfaceImage.NativeHandle != nint.Zero && _hasVideo)
         {
             var frameSize = new Size(surfaceImage.PixelWidth, surfaceImage.PixelHeight);
             var scaledSize = ComputeScaledSize(rect.Size, frameSize);
@@ -1207,6 +1717,17 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     private void OpenSource(Uri source, Uri? baseUri)
     {
         var resolvedSource = ResolveSourceUri(source, baseUri);
+        if (_openedSource is not null && _openedSource.Equals(resolvedSource))
+        {
+            // Reparenting a Manual MediaElement (for example an F11 fullscreen
+            // hand-off) can replay the same resolved Source through the property
+            // pipeline.  Keep the live decoder/session instead of probing and
+            // reopening identical media.
+            _mediaPath = resolvedSource.IsFile ? resolvedSource.LocalPath : resolvedSource.AbsoluteUri;
+            return;
+        }
+
+        _openedSource = resolvedSource;
         _mediaPath = resolvedSource.IsFile ? resolvedSource.LocalPath : resolvedSource.AbsoluteUri;
         Volatile.Write(ref _downloadProgress, 0.0);
         OpenMedia(_mediaPath);
@@ -1293,10 +1814,12 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         if (d is MediaElement media)
         {
             var ratio = (double)e.NewValue!;
-            if (media._syncClock != null)
+            MediaElementPlaybackSession? session;
+            lock (media._lock)
             {
-                media._syncClock.SpeedRatio = ratio;
+                session = media._playbackSession;
             }
+            if (session is not null) session.SpeedRatio = ratio;
             if (media._audioManager != null)
             {
                 media._audioManager.SpeedRatio = ratio;
@@ -1326,6 +1849,18 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         // 这些字段在 probe 完成的 BeginInvoke 中一次性更新到新视频尺寸。
         // StopPlayback 已经把 _videoDecoder 设 null 并放后台 dispose — 不需要再手动 Dispose。
         StopPlayback();
+        _isOpening = true;
+        _requestedOpenState = null;
+        _isPaused = false;
+        _replayOnPlay = false;
+        _position = TimeSpan.Zero;
+        _duration = TimeSpan.Zero;
+        _hasVideo = false;
+        _hasAudio = false;
+        _d3dImage?.SetBackBuffer((NativeVideoSurface?)null);
+        _videoSurface?.Dispose();
+        _videoSurface = null;
+        _videoSurfacePathUnsupported = false;
         _frameBitmap = null;
         DropPendingDisplayFrame();
         InvalidateVisual();
@@ -1334,6 +1869,8 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         ++_trackSwitchGeneration;
         var dispatcher = Dispatcher.MainDispatcher;
         var requestedAudioTrack = _selectedAudioTrackIndex;
+        var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_lock) _openTask = _openTask.IsCompleted ? opened.Task : Task.WhenAll(_openTask, opened.Task);
         TrackDiscoveryError = null;
         _audioTracks = Array.Empty<MediaTrackInfo>();
         _subtitleTracks = Array.Empty<MediaTrackInfo>();
@@ -1349,6 +1886,8 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             var probeHasAudio = false;
             var audioDurationSeconds = 0.0;
             Exception? probeError = null;
+            Exception? videoError = null;
+            Exception? audioError = null;
             Exception? trackDiscoveryError = null;
             IReadOnlyList<MediaTrackInfo> discoveredAudio = Array.Empty<MediaTrackInfo>();
             IReadOnlyList<MediaTrackInfo> discoveredSubtitles = Array.Empty<MediaTrackInfo>();
@@ -1386,8 +1925,9 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                     probeFps = probe.Fps > 0 ? probe.Fps : 30.0;
                     probeDuration = probe.Duration.TotalSeconds;
                 }
-                catch
+                catch (Exception exception)
                 {
+                    videoError = exception;
                     probe.Dispose();
                     probe = null;
                 }
@@ -1397,6 +1937,8 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                 // _audioManager here let an older generation close or reopen
                 // the newer source after it had won the generation check.
                 var audioCandidate = new AudioPlayer();
+                EventHandler<AudioPlayerErrorEventArgs> captureAudioError = (_, e) => audioError = e.ErrorException;
+                audioCandidate.MediaFailed += captureAudioError;
                 try
                 {
                     audioCandidate.AudioTrackIndex = discoveredAudio.Count == 0
@@ -1413,13 +1955,17 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                         audioCandidate = null!;
                     }
                 }
-                catch
+                catch (Exception exception)
                 {
+                    audioError = exception;
                 }
                 finally
                 {
+                    (audioCandidate ?? openedAudio)!.MediaFailed -= captureAudioError;
                     audioCandidate?.Dispose();
                 }
+                if (!probeHasVideo && !probeHasAudio)
+                    probeError = videoError ?? audioError ?? new InvalidDataException("No decodable audio or video stream was found.");
             }
             catch (Exception ex)
             {
@@ -1432,39 +1978,47 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
             var capturedDecoder = probe;
             var capturedAudio = openedAudio;
-            if (dispatcher is null)
+            if (dispatcher is null || _disposed || generation != Volatile.Read(ref _openMediaGeneration))
             {
-                capturedDecoder?.Dispose();
-                capturedAudio?.Dispose();
+                DisposeAfterPlayback(Task.CompletedTask, capturedDecoder);
+                DisposeAfterPlayback(Task.CompletedTask, capturedAudio);
+                opened.TrySetResult();
                 return;
             }
             dispatcher?.BeginInvoke(() =>
             {
-                // 期间用户切换了 Source — 旧探测结果作废。
-                if (generation != _openMediaGeneration)
+                try
                 {
-                    capturedDecoder?.Dispose();
-                    capturedAudio?.Dispose();
+                // 期间用户切换了 Source — 旧探测结果作废。
+                if (_disposed || generation != _openMediaGeneration)
+                {
+                    DisposeAfterPlayback(Task.CompletedTask, capturedDecoder);
+                    DisposeAfterPlayback(Task.CompletedTask, capturedAudio);
                     return;
                 }
 
                 if (probeError != null)
                 {
-                    capturedAudio?.Dispose();
+                    _isOpening = false;
+                    _openedSource = null;
+                    DisposeAfterPlayback(Task.CompletedTask, capturedDecoder);
+                    DisposeAfterPlayback(Task.CompletedTask, capturedAudio);
                     RaiseMediaFailed(probeError);
                     return;
                 }
 
-                _videoDecoder = capturedDecoder;
+                lock (_lock)
+                {
+                    _videoDecoder = capturedDecoder;
+                }
                 var previousAudio = _audioManager;
                 _audioManager = capturedAudio ?? new AudioPlayer();
+                _audioManager.MediaFailed += OnAudioPlaybackFailed;
                 if (previousAudio != null &&
                     !ReferenceEquals(previousAudio, _audioManager))
                 {
-                    Task.Run(() =>
-                    {
-                        try { previousAudio.Dispose(); } catch { }
-                    });
+                    previousAudio.MediaFailed -= OnAudioPlaybackFailed;
+                    DisposeAfterPlayback(CapturePlaybackTail(), previousAudio);
                 }
                 TrackDiscoveryError = trackDiscoveryError;
                 _audioTracks = discoveredAudio;
@@ -1481,21 +2035,10 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                 _videoHeight = probeHeight;
                 _videoFps = probeFps;
 
-                var totalDuration = probeDuration;
-                if (totalDuration <= 0 && audioDurationSeconds > 0)
-                {
-                    totalDuration = audioDurationSeconds;
-                }
+                var totalDuration = Math.Max(probeDuration, audioDurationSeconds);
                 _duration = TimeSpan.FromSeconds(totalDuration);
                 _frameDelayMs = 1000.0 / _videoFps;
                 _videoStartTimeMs = 0;
-
-                _syncClock?.Dispose();
-                _syncClock = new AVSyncClock();
-                _syncClock.SpeedRatio = SpeedRatio;
-
-                _frameBuffer?.Dispose();
-                _frameBuffer = new VideoFrameBuffer(3);
 
                 if (_hasVideo)
                 {
@@ -1504,15 +2047,22 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                 }
 
                 Volatile.Write(ref _downloadProgress, 1.0);
+                _isOpening = false;
+                var playbackGeneration = _playbackGeneration;
                 RaiseMediaOpened();
+                if (_disposed || generation != _openMediaGeneration || playbackGeneration != _playbackGeneration || _isPlaying)
+                    return;
                 if (_clock != null)
                 {
                     ApplyClockState();
                 }
                 else
                 {
-                    ApplyLoadedBehavior(LoadedBehavior);
+                    ApplyLoadedBehavior(_requestedOpenState ?? LoadedBehavior);
                 }
+                _requestedOpenState = null;
+                }
+                finally { opened.TrySetResult(); }
             });
         });
     }
@@ -1532,6 +2082,16 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     #endregion
 
     #region 播放控制
+
+    private readonly record struct PlaybackOperationSnapshot(
+        string? MediaPath,
+        INativeVideoDecoder? Decoder,
+        AudioPlayer? Audio,
+        TimeSpan Position,
+        TimeSpan Duration,
+        bool HasVideo,
+        bool HasAudio,
+        double FrameDelayMs);
 
     private void StartPlaybackInternal()
     {
@@ -1559,9 +2119,6 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     private void StartPlaybackWithSize(Size targetSize)
     {
-        _playbackCts = new CancellationTokenSource();
-        var token = _playbackCts.Token;
-
         _framesRendered = 0;
         _framesDropped = 0;
         _framesLate = 0;
@@ -1573,142 +2130,28 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         // 首次播放或Stop后，从0开始
         _videoStartTimeMs = _position.TotalMilliseconds;
 
-        if (_hasAudio && _audioManager != null)
-        {
-            _audioManager.Volume = _currentVolume;
-            _audioManager.IsMuted = _isMuted;
-            _audioManager.Balance = Balance;
-            _audioManager.SpeedRatio = SpeedRatio;
-
-            if (_position > TimeSpan.Zero)
-                _audioManager.Seek(_position);
-
-            _audioManager.Play();
-            // 音频启动延迟
-            Thread.Sleep(1);
-        }
-
-        _syncClock?.Start(_position);
-
-        if (_hasAudio)
-        {
-            _audioSyncTask = Task.Run(() => AudioSyncLoop(token), token);
-        }
-
-        if (_hasVideo && videoWidth > 0 && videoHeight > 0)
-        {
-            StartVideoPlayback(token, videoWidth, videoHeight);
-        }
-
-        if (!_hasVideo && _hasAudio)
-        {
-            _videoRenderTask = Task.Run(() => AudioOnlyPositionLoop(token), token);
-        }
-
-
-        StartSubtitlePlayback();
-    }
-
-    private void StartVideoPlayback(CancellationToken token, int videoWidth, int videoHeight)
-    {
-        try
-        {
-            EnsureVideoDecoderForPlayback();
-        }
-        catch (Exception ex)
-        {
-            RaiseMediaFailed(ex);
+        if (_hasVideo && (videoWidth <= 0 || videoHeight <= 0))
             return;
-        }
 
-        if (_position > TimeSpan.Zero)
-        {
-            try { _videoDecoder!.Seek(_position); }
-            catch { }
-        }
-
-        _videoDecodeTask = Task.Run(() => VideoDecodeLoop(token, videoWidth, videoHeight), token);
-        _videoRenderTask = Task.Run(() => VideoRenderLoop(token), token);
-    }
-
-    private void EnsureVideoDecoderForPlayback()
-    {
-        if (_videoDecoder is null)
-        {
-            _videoDecoder = GetVideoDecoderFactory().Create();
-            _videoDecoder.Open(BuildSourceUri(_mediaPath!));
-        }
+        EnqueuePlaybackOperation(
+            marksPlaybackStart: true,
+            (generation, snapshot) => StartPlaybackOperationAsync(
+                generation,
+                snapshot,
+                videoWidth,
+                videoHeight));
     }
 
     /// <summary>
-    /// 不阻塞 UI 线程的 Resume — 旧 task 的退出 + decoder Seek + 启动新 task 全部
-    /// 在 ThreadPool 上完成，UI 线程几个字段赋值就返回。
-    /// IMFSourceReader 支持 SetCurrentPosition 后继续 ReadSample — 不再每次重建 decoder。
+    /// Resume is queued behind the previous immutable session.  The decoder is
+    /// not sought until every old worker that captured it has exited.
     /// </summary>
     private void ResumePlayback()
     {
-        var oldCts = _playbackCts;
-        var oldDecodeTask = _videoDecodeTask;
-        var oldRenderTask = _videoRenderTask;
-        var oldAudioTask = _audioSyncTask;
-
-        var newCts = new CancellationTokenSource();
-        var token = newCts.Token;
-        _playbackCts = newCts;
-        _videoDecodeTask = null;
-        _videoRenderTask = null;
-        _audioSyncTask = null;
         _videoStartTimeMs = _position.TotalMilliseconds;
         _isPlaying = true;
         _isPaused = false;
-
-        // audio.Play 是 lock 包裹的轻量调用 — 安全在 UI 线程上做。
-        if (_hasAudio && _audioManager != null)
-        {
-            _audioManager.Play();
-        }
-        _syncClock?.Resume();
-        _frameBuffer?.Clear();
-        StartSubtitlePlayback();
-
-        var resumeWidth = _targetWidth;
-        var resumeHeight = _targetHeight;
-        var resumePosition = _position;
-        var hasVideo = _hasVideo;
-        var hasAudio = _hasAudio;
-
-        Task.Run(async () =>
-        {
-            try { oldCts?.Cancel(); } catch { }
-            try { if (oldDecodeTask != null) await oldDecodeTask.ConfigureAwait(false); } catch { }
-            try { if (oldRenderTask != null) await oldRenderTask.ConfigureAwait(false); } catch { }
-            try { if (oldAudioTask != null) await oldAudioTask.ConfigureAwait(false); } catch { }
-            try { oldCts?.Dispose(); } catch { }
-
-            if (token.IsCancellationRequested) return;
-
-            // 老 task 已退，_videoDecoder 现在是单线程访问。Seek 安全。
-            try
-            {
-                _videoDecoder?.Seek(resumePosition);
-            }
-            catch
-            {
-                return;
-            }
-
-            if (token.IsCancellationRequested) return;
-
-            if (hasVideo && resumeWidth > 0 && resumeHeight > 0 && _videoDecoder != null)
-            {
-                _videoDecodeTask = Task.Run(() => VideoDecodeLoop(token, resumeWidth, resumeHeight), token);
-                _videoRenderTask = Task.Run(() => VideoRenderLoop(token), token);
-            }
-            if (hasAudio)
-            {
-                _audioSyncTask = Task.Run(() => AudioSyncLoop(token), token);
-            }
-        });
+        StartPlaybackInternal();
     }
 
     /// <summary>
@@ -1717,95 +2160,77 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     /// </summary>
     private void PausePlayback()
     {
-        _syncClock?.Pause();
-        if (_syncClock != null)
+        MediaElementPlaybackSession? session;
+        lock (_lock)
         {
-            _position = _syncClock.GetMediaTime();
+            ++_playbackGeneration;
+            _pendingPlaybackStartGeneration = 0;
+            session = _playbackSession;
+            _playbackSession = null;
         }
 
-        // audio 的 Pause 是 lock 包裹的 SoundPlayer.Pause — 几个微秒级别，安全在 UI 线程。
-        _audioManager?.Pause();
+        if (session is not null)
+            _position = session.MediaTime;
 
-        // cancel token 让 VideoRenderLoop 从 BlockingCollection.Take 立即醒来。
-        _playbackCts?.Cancel();
+        _audioManager?.Pause();
+        session?.Cancel();
+        DropPendingDisplayFrame();
         StopSubtitlePlayback();
     }
 
     /// <summary>
-    /// 不阻塞 UI 线程。把 decoder / 老 task 的 dispose 工作扔到 ThreadPool。
+    /// Detaches the current generation synchronously, then retires its decoder
+    /// only after all already-admitted playback operations and worker loops end.
     /// </summary>
-    private void StopPlayback()
+    private Task StopPlayback()
     {
-        var oldCts = _playbackCts;
-        var oldDecodeTask = _videoDecodeTask;
-        var oldRenderTask = _videoRenderTask;
-        var oldAudioTask = _audioSyncTask;
-        var oldDecoder = _videoDecoder;
+        MediaElementPlaybackSession? session;
+        INativeVideoDecoder? decoder;
+        Task tail;
+        lock (_lock)
+        {
+            ++_playbackGeneration;
+            _pendingPlaybackStartGeneration = 0;
+            session = _playbackSession;
+            _playbackSession = null;
+            decoder = _videoDecoder;
+            _videoDecoder = null;
+            tail = _playbackTail;
+        }
 
-        _playbackCts = null;
-        _videoDecodeTask = null;
-        _videoRenderTask = null;
-        _audioSyncTask = null;
-        _videoDecoder = null;
+        session?.Cancel();
         _isPlaying = false;
         _pendingPlay = false;
-        _syncClock?.Stop();
-        _frameBuffer?.Clear();
         DropPendingDisplayFrame();
         _audioManager?.Stop();
         StopSubtitlePlayback();
 
-        if (oldCts == null && oldDecoder == null) return;
-
-        try { oldCts?.Cancel(); } catch { }
-
-        if (oldDecodeTask == null && oldRenderTask == null && oldAudioTask == null)
-        {
-            try { oldCts?.Dispose(); } catch { }
-            try { oldDecoder?.Dispose(); } catch { }
-            return;
-        }
-
-        // 后台等老 task 退出再 dispose 资源；UI 线程立即返回。
-        Task.Run(async () =>
-        {
-            try { if (oldDecodeTask != null) await oldDecodeTask.ConfigureAwait(false); } catch { }
-            try { if (oldRenderTask != null) await oldRenderTask.ConfigureAwait(false); } catch { }
-            try { if (oldAudioTask != null) await oldAudioTask.ConfigureAwait(false); } catch { }
-            try { oldCts?.Dispose(); } catch { }
-            try { oldDecoder?.Dispose(); } catch { }
-        });
+        DisposeAfterPlayback(tail, decoder);
+        return tail;
     }
 
     private void CloseMedia()
     {
+        _isOpening = false;
+        _requestedOpenState = null;
+        _replayOnPlay = false;
         ++_openMediaGeneration;
         ++_trackSwitchGeneration;
-        StopPlayback();
+        var tail = StopPlayback();
+        _openedSource = null;
 
         // Detach the player before closing it. A subsequent OpenMedia uses an
         // independent candidate, so a slow native close from this generation
         // can never tear down the next source.
         var audioMgr = _audioManager;
         _audioManager = new AudioPlayer();
-        if (audioMgr != null)
-        {
-            Task.Run(() =>
-            {
-                try { audioMgr.Dispose(); } catch { }
-            });
-        }
-
-        _frameBuffer?.Dispose();
-        _frameBuffer = null;
+        DisposeAfterPlayback(tail, audioMgr);
         DropPendingDisplayFrame();
         _d3dImage?.SetBackBuffer((NativeVideoSurface?)null);
         _videoSurface?.Dispose();
         _videoSurface = null;
 
         _frameBitmap = null;
-        _syncClock?.Dispose();
-        _syncClock = null;
         _position = TimeSpan.Zero;
         _duration = TimeSpan.Zero;
         _hasVideo = false;
@@ -1827,6 +2252,394 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
         InvalidateMeasure();
         InvalidateVisual();
+    }
+
+    private int EnqueuePlaybackOperation(
+        bool marksPlaybackStart,
+        Func<int, PlaybackOperationSnapshot, Task> operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        var launchGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task previous;
+        Task queued;
+        PlaybackOperationSnapshot snapshot;
+        int generation;
+
+        lock (_lock)
+        {
+            if (_disposed ||
+                (marksPlaybackStart &&
+                 (_playbackSession is not null || _pendingPlaybackStartGeneration != 0)))
+            {
+                return 0;
+            }
+
+            generation = ++_playbackGeneration;
+            if (marksPlaybackStart)
+                _pendingPlaybackStartGeneration = generation;
+            previous = _playbackTail.IsCompleted
+                ? Task.CompletedTask
+                : _playbackTail;
+            snapshot = new PlaybackOperationSnapshot(
+                _mediaPath,
+                _videoDecoder,
+                _audioManager,
+                _position,
+                _duration,
+                _hasVideo,
+                _hasAudio,
+                _frameDelayMs > 0 ? _frameDelayMs : 1000.0 / 30.0);
+
+            queued = Task.Run(async () =>
+            {
+                await launchGate.Task.ConfigureAwait(false);
+                await ObservePlaybackTaskAsync(previous).ConfigureAwait(false);
+                try
+                {
+                    await operation(generation, snapshot).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    ReportPlaybackOperationFailure(generation, exception);
+                }
+                finally
+                {
+                    if (marksPlaybackStart)
+                    {
+                        lock (_lock)
+                        {
+                            if (_pendingPlaybackStartGeneration == generation)
+                                _pendingPlaybackStartGeneration = 0;
+                        }
+                    }
+                }
+            });
+            _playbackTail = queued;
+        }
+
+        launchGate.TrySetResult();
+        return generation;
+    }
+
+    private async Task StartPlaybackOperationAsync(
+        int generation,
+        PlaybackOperationSnapshot snapshot,
+        int videoWidth,
+        int videoHeight)
+    {
+        if (!IsPlaybackOperationCurrent(generation, snapshot.MediaPath, requirePlaying: true))
+            return;
+
+        INativeVideoDecoder? decoder = snapshot.Decoder;
+        bool createdDecoder = false;
+        bool adoptedDecoder = false;
+        try
+        {
+            if (snapshot.HasVideo && decoder is null)
+            {
+                if (string.IsNullOrEmpty(snapshot.MediaPath))
+                    throw new InvalidOperationException("The video source is unavailable.");
+                decoder = GetVideoDecoderFactory().Create();
+                createdDecoder = true;
+                decoder.Open(BuildSourceUri(snapshot.MediaPath));
+            }
+
+            if (!IsPlaybackOperationCurrent(generation, snapshot.MediaPath, requirePlaying: true))
+                return;
+
+            if (decoder is not null)
+                decoder.Seek(snapshot.Position);
+            if (snapshot.HasAudio && snapshot.Audio is not null)
+                snapshot.Audio.Seek(snapshot.Position);
+
+            await InvokeOnUiAsync(() =>
+            {
+                Func<TimeSpan>? readAudioPosition = snapshot.Audio is not null && snapshot.HasAudio
+                    ? () => snapshot.Audio.Position
+                    : null;
+                var session = new MediaElementPlaybackSession(
+                    new MediaElementPlaybackSessionOptions(
+                        generation,
+                        snapshot.HasVideo ? decoder : null,
+                        readAudioPosition,
+                        snapshot.Position,
+                        snapshot.FrameDelayMs,
+                        SpeedRatio,
+                        snapshot.Duration,
+                        static () => RenderContext.GetOrCreateCurrent().Handle,
+                        PresentPlaybackFrame,
+                        OnPlaybackPositionChanged,
+                        OnPlaybackSessionFailed,
+                        OnPlaybackSessionEnded,
+                        OnPlaybackStatisticsChanged,
+                        snapshot.HasAudio && snapshot.Audio is not null
+                            ? () => snapshot.Audio.State == NativePlaybackState.Ended
+                            : null));
+
+                try
+                {
+                    lock (_lock)
+                    {
+                        if (_disposed ||
+                            _playbackGeneration != generation ||
+                            !_isPlaying ||
+                            !string.Equals(_mediaPath, snapshot.MediaPath, StringComparison.Ordinal))
+                        {
+                            session.Dispose();
+                            return;
+                        }
+
+                        if (createdDecoder)
+                        {
+                            _videoDecoder = decoder;
+                            adoptedDecoder = true;
+                        }
+
+                        _playbackSession = session;
+                        _playbackTail = _playbackTail.IsCompleted
+                            ? session.Completion
+                            : Task.WhenAll(_playbackTail, session.Completion);
+
+                        if (snapshot.Audio is not null && snapshot.HasAudio)
+                        {
+                            snapshot.Audio.Volume = _currentVolume;
+                            snapshot.Audio.IsMuted = _isMuted;
+                            snapshot.Audio.Balance = Balance;
+                            snapshot.Audio.SpeedRatio = SpeedRatio;
+                            snapshot.Audio.Play();
+                        }
+
+                        session.Start();
+                    }
+                }
+                catch
+                {
+                    lock (_lock)
+                    {
+                        if (ReferenceEquals(_playbackSession, session))
+                            _playbackSession = null;
+                    }
+                    try { snapshot.Audio?.Stop(); } catch { }
+                    session.Dispose();
+                    throw;
+                }
+
+                StartSubtitlePlayback();
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (createdDecoder && !adoptedDecoder)
+            {
+                try { decoder?.Dispose(); } catch { }
+            }
+        }
+    }
+
+    private void QueueSeekWithoutPlayback(TimeSpan position)
+    {
+        bool scrub = ScrubbingEnabled;
+        EnqueuePlaybackOperation(
+            marksPlaybackStart: false,
+            async (generation, snapshot) =>
+            {
+                if (!IsPlaybackOperationCurrent(generation, snapshot.MediaPath, requirePlaying: false))
+                    return;
+                snapshot.Decoder?.Seek(position);
+                if (snapshot.HasAudio)
+                    snapshot.Audio?.Seek(position);
+                if (!scrub || snapshot.Decoder is null || !snapshot.HasVideo) return;
+                if (!snapshot.Decoder.TryReadFrame(out var mediaFrame) || mediaFrame is null) return;
+                using var frame = new VideoFrame(mediaFrame, (long)mediaFrame.PresentationTime.TotalMilliseconds, 0);
+                await InvokeOnUiAsync(() =>
+                {
+                    if (!IsPlaybackOperationCurrent(generation, snapshot.MediaPath, requirePlaying: false) || _isPlaying) return;
+                    UpdateFrameBitmap(frame);
+                }).ConfigureAwait(false);
+            });
+    }
+
+    private bool PresentPlaybackFrame(MediaElementPlaybackSession session, VideoFrame frame)
+    {
+        VideoFrame? oldPending;
+        lock (_lock)
+        {
+            if (_disposed ||
+                !ReferenceEquals(_playbackSession, session) ||
+                _playbackGeneration != session.Generation ||
+                !_isPlaying)
+            {
+                return false;
+            }
+            oldPending = Interlocked.Exchange(ref _pendingDisplayFrame, frame);
+        }
+        oldPending?.Dispose();
+        RequestUiRefresh();
+        return true;
+    }
+
+    private void OnPlaybackPositionChanged(MediaElementPlaybackSession session, TimeSpan position)
+    {
+        lock (_lock)
+        {
+            if (_disposed ||
+                !ReferenceEquals(_playbackSession, session) ||
+                _playbackGeneration != session.Generation)
+            {
+                return;
+            }
+            _position = position;
+        }
+    }
+
+    private void OnPlaybackStatisticsChanged(MediaElementPlaybackSession session)
+    {
+        lock (_lock)
+        {
+            if (_disposed ||
+                !ReferenceEquals(_playbackSession, session) ||
+                _playbackGeneration != session.Generation)
+            {
+                return;
+            }
+            _framesRendered = session.FramesRendered;
+            _framesDropped = session.FramesDropped;
+            _framesLate = session.FramesLate;
+        }
+    }
+
+    private void OnPlaybackSessionFailed(MediaElementPlaybackSession session, Exception exception)
+    {
+        PostPlaybackCallback(() =>
+        {
+            if (!IsCurrentPlaybackSession(session)) return;
+            _isPlaying = false;
+            _isPaused = false;
+            StopPlayback();
+            RaiseMediaFailed(exception);
+        });
+    }
+
+    private void OnPlaybackSessionEnded(MediaElementPlaybackSession session)
+    {
+        PostPlaybackCallback(() =>
+        {
+            lock (_lock)
+            {
+                if (!ReferenceEquals(_playbackSession, session) ||
+                    _playbackGeneration != session.Generation)
+                {
+                    return;
+                }
+                ++_playbackGeneration;
+                _playbackSession = null;
+                _pendingPlaybackStartGeneration = 0;
+            }
+
+            _isPlaying = false;
+            _isPaused = false;
+            if (_duration > TimeSpan.Zero) _position = _duration;
+            _replayOnPlay = true;
+            _audioManager?.Stop();
+            StopSubtitlePlayback();
+            RaiseMediaEnded();
+        });
+    }
+
+    private bool IsCurrentPlaybackSession(MediaElementPlaybackSession session)
+    {
+        lock (_lock)
+        {
+            return !_disposed &&
+                   ReferenceEquals(_playbackSession, session) &&
+                   _playbackGeneration == session.Generation;
+        }
+    }
+
+    private bool IsPlaybackOperationCurrent(
+        int generation,
+        string? mediaPath,
+        bool requirePlaying)
+    {
+        lock (_lock)
+        {
+            return !_disposed &&
+                   _playbackGeneration == generation &&
+                   string.Equals(_mediaPath, mediaPath, StringComparison.Ordinal) &&
+                   (!requirePlaying || _isPlaying);
+        }
+    }
+
+    private void ReportPlaybackOperationFailure(int generation, Exception exception)
+    {
+        PostPlaybackCallback(() =>
+        {
+            lock (_lock)
+            {
+                if (_disposed || _playbackGeneration != generation)
+                    return;
+            }
+            _isPlaying = false;
+            _isPaused = false;
+            StopPlayback();
+            RaiseMediaFailed(exception);
+        });
+    }
+
+    private void PostPlaybackCallback(Action callback)
+    {
+        var dispatcher = Dispatcher.MainDispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            callback();
+            return;
+        }
+        dispatcher.BeginInvoke(callback);
+    }
+
+    private static Task InvokeOnUiAsync(Action callback)
+    {
+        var dispatcher = Dispatcher.MainDispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            callback();
+            return Task.CompletedTask;
+        }
+        return dispatcher.InvokeAsync(callback).Task;
+    }
+
+    private static async Task ObservePlaybackTaskAsync(Task task)
+    {
+        try { await task.ConfigureAwait(false); }
+        catch { }
+    }
+
+    private void DisposeAfterPlayback(Task playbackTail, IDisposable? resource)
+    {
+        if (resource is null) return;
+        if (resource is AudioPlayer audio) audio.MediaFailed -= OnAudioPlaybackFailed;
+        var cleanup = Task.Run(async () =>
+        {
+            await ObservePlaybackTaskAsync(playbackTail).ConfigureAwait(false);
+            try { resource.Dispose(); } catch { }
+            if (resource is AudioPlayer player) await player.PendingCleanup.ConfigureAwait(false);
+        });
+        lock (_lock) _resourceCleanupTail = _resourceCleanupTail.IsCompleted ? cleanup : Task.WhenAll(_resourceCleanupTail, cleanup);
+    }
+
+    private void OnAudioPlaybackFailed(object? sender, AudioPlayerErrorEventArgs e)
+    {
+        PostPlaybackCallback(() =>
+        {
+            if (_disposed || !ReferenceEquals(sender, _audioManager)) return;
+            StopPlayback();
+            RaiseMediaFailed(e.ErrorException);
+        });
+    }
+
+    private Task CapturePlaybackTail()
+    {
+        lock (_lock) return _playbackTail;
     }
 
     private (int width, int height) CalculateVideoRenderSize(Size availableSize)
@@ -1852,159 +2665,6 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     #endregion
 
     #region 播放循环
-
-    /// <summary>
-    /// 视频解码循环 — 使用 <see cref="INativeVideoDecoder"/> (Windows MF / Android MediaCodec)
-    /// 直出 BGRA8 帧。GPU 采样器在 OnRender 时承担缩放，CPU 不再做 resize。
-    /// </summary>
-    private void VideoDecodeLoop(CancellationToken token, int targetWidth, int targetHeight)
-    {
-        if (_videoDecoder is null) return;
-
-        try
-        {
-            var frameIndex = 0L;
-            var startTimeMs = _videoStartTimeMs;
-
-            while (!token.IsCancellationRequested && _isPlaying)
-            {
-                VideoFrame? frame = null;
-
-                // Linux VAAPI/GStreamer can pull the next frame directly as
-                // dma-buf. Probe this before TryReadFrame so a successful
-                // import performs no CPU frame allocation or pixel copy.
-                if (_videoDecoder is INativeGpuVideoDecoder gpuDecoder &&
-                    gpuDecoder.MayHaveGpuOutput)
-                {
-                    try
-                    {
-                        var context = RenderContext.GetOrCreateCurrent().Handle;
-                        var result = gpuDecoder.TryReadGpuFrame(
-                            context, out var directSurface, out var directPts);
-                        if (result == GpuVideoFrameReadResult.EndOfStream)
-                            break;
-                        if (result == GpuVideoFrameReadResult.FellBackToCpu)
-                            continue;
-                        if (result == GpuVideoFrameReadResult.Frame &&
-                            directSurface is not null)
-                        {
-                            var timestamp = directPts.TotalMilliseconds;
-                            if (timestamp <= 0)
-                                timestamp = startTimeMs + frameIndex * _frameDelayMs;
-                            frame = new VideoFrame(
-                                directSurface, (long)timestamp, (int)frameIndex);
-                        }
-                    }
-                    catch
-                    {
-                        break;
-                    }
-                }
-
-                if (frame is null)
-                {
-                    MediaFrame? mediaFrame = null;
-                    bool hasFrame;
-                    try
-                    {
-                        hasFrame = _videoDecoder.TryReadFrame(out mediaFrame);
-                    }
-                    catch
-                    {
-                        break;
-                    }
-
-                    if (!hasFrame || mediaFrame is null) break;
-
-                    var pts = mediaFrame.PresentationTime.TotalMilliseconds;
-                    if (pts <= 0)
-                    {
-                        // 容器没给 PTS — 退化为按 fps 推算
-                        pts = startTimeMs + frameIndex * _frameDelayMs;
-                    }
-
-                    // Legacy external paths (DXVA/AHardwareBuffer) acquire a
-                    // GPU surface after the platform decoder's CPU-shaped read.
-                    NativeVideoSurface? gpuSurface = null;
-                    try
-                    {
-                        var ctx = RenderContext.GetOrCreateCurrent().Handle;
-                        gpuSurface = _videoDecoder.AcquireGpuSurface(ctx);
-                    }
-                    catch { gpuSurface = null; }
-
-                    if (gpuSurface is not null)
-                    {
-                        mediaFrame.Dispose();
-                        frame = new VideoFrame(
-                            gpuSurface, (long)pts, (int)frameIndex);
-                    }
-                    else
-                    {
-                        frame = new VideoFrame(
-                            mediaFrame, (long)pts, (int)frameIndex);
-                    }
-                }
-
-                if (!_frameBuffer!.TryAdd(frame, 50))
-                {
-                    if (_frameBuffer.TryTake(out var oldFrame))
-                    {
-                        oldFrame?.Dispose();
-                    }
-                    if (!_frameBuffer.TryAdd(frame))
-                    {
-                        // 缓冲在我们丢弃旧帧后被关闭 — 归还当前帧避免泄漏。
-                        frame.Dispose();
-                    }
-                }
-
-                frameIndex++;
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch { }
-    }
-
-    private async Task VideoRenderLoop(CancellationToken token)
-    {
-        try
-        {
-            while (!token.IsCancellationRequested && _isPlaying)
-            {
-                var frame = _frameBuffer?.Take(token);
-                if (frame == null) continue;
-
-                var delay = _syncClock!.CalculateVideoDelay(frame.TimestampMs);
-
-                // 如果帧时间戳落后太多，直接丢弃，避免追赶造成卡顿
-                if (delay < TimeSpan.FromMilliseconds(-AVSyncClock.VideoCatchUpThresholdMs))
-                {
-                    _framesDropped++;
-                    frame.Dispose();
-                    continue;
-                }
-
-                // 如果延迟很小，直接渲染，不等待
-                if (delay > TimeSpan.FromMilliseconds(2))
-                {
-                    await PreciseDelay(delay, token);
-                }
-
-                _position = _syncClock.GetMediaTime();
-                _framesRendered++;
-
-                // 把当前帧 atomic 换入显示槽，旧帧立即归还 ArrayPool。
-                // 这样无论 UI 线程多卡，内存上限永远是 _frameBuffer (3) + 槽位 (1) = 4 帧。
-                var oldPending = Interlocked.Exchange(ref _pendingDisplayFrame, frame);
-                oldPending?.Dispose();
-
-                RequestUiRefresh();
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch { }
-    }
 
     /// <summary>
     /// 节流的 UI 重绘请求 — 同一时刻 Dispatcher 队列里最多一个 ApplyPendingFrame delegate。
@@ -2033,6 +2693,11 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         {
             UpdateFrameBitmap(pending);
         }
+        catch (Exception exception)
+        {
+            StopPlayback();
+            RaiseMediaFailed(exception);
+        }
         finally
         {
             pending.Dispose();
@@ -2043,99 +2708,6 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     {
         var pending = Interlocked.Exchange(ref _pendingDisplayFrame, null);
         pending?.Dispose();
-    }
-
-    private void AudioSyncLoop(CancellationToken token)
-    {
-        try
-        {
-            // 减少初始延迟
-            Thread.Sleep(50);
-
-            while (!token.IsCancellationRequested && _isPlaying)
-            {
-                if (_audioManager != null && _syncClock != null)
-                {
-                    // 使用音频实际位置更新同步时钟
-                    var audioPos = _audioManager.Position.TotalSeconds;
-                    _syncClock.UpdateAudioPosition(audioPos);
-                    _position = _audioManager.Position;
-                }
-
-                // 降低同步频率，减少CPU占用
-                Thread.Sleep(20);
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch { }
-    }
-
-    private async Task AudioOnlyPositionLoop(CancellationToken token)
-    {
-        try
-        {
-            while (!token.IsCancellationRequested && _isPlaying)
-            {
-                if (_audioManager != null)
-                {
-                    _position = _audioManager.Position;
-                }
-
-                if (_duration > TimeSpan.Zero && _position >= _duration)
-                {
-                    Dispatcher.MainDispatcher?.BeginInvoke(() => RaiseMediaEnded());
-                    break;
-                }
-
-                try
-                {
-                    await Task.Delay(100, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-            }
-        }
-        catch (OperationCanceledException) { }
-    }
-
-    #endregion
-
-    #region 辅助方法
-
-    private async Task PreciseDelay(TimeSpan delay, CancellationToken token)
-    {
-        if (delay <= TimeSpan.Zero) return;
-
-        const int taskDelayThresholdMs = 16; // 降低到一帧的时间
-
-        if (delay.TotalMilliseconds > taskDelayThresholdMs)
-        {
-            var remaining = delay - TimeSpan.FromMilliseconds(taskDelayThresholdMs);
-            try
-            {
-                await Task.Delay(remaining, token);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-
-            var sw = Stopwatch.StartNew();
-            while (sw.Elapsed < delay - remaining && !token.IsCancellationRequested)
-            {
-                Thread.SpinWait(1);
-            }
-        }
-        else
-        {
-            var sw = Stopwatch.StartNew();
-            while (sw.Elapsed < delay && !token.IsCancellationRequested)
-            {
-                Thread.SpinWait(1);
-            }
-        }
     }
 
     #endregion
@@ -2154,8 +2726,8 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     {
         var width = frame.Width;
         var height = frame.Height;
-        if (width <= 0 || height <= 0) return;
-        if (width > 8192 || height > 8192) return;
+        if (width <= 0 || height <= 0 || width > 8192 || height > 8192)
+            throw new InvalidDataException("The decoded video frame dimensions are invalid or unsupported.");
 
         // ── Stage 3 fast path:decoder 已给 GPU-resident surface(DXVA / MediaCodec /
         //   AVAssetReader 等硬件解码)。绕开所有 CPU staging,直接把 surface bind 到
@@ -2187,7 +2759,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         }
 
         var pixels = frame.Pixels;
-        if (pixels.IsEmpty) return;
+        if (pixels.IsEmpty) throw new InvalidDataException("The decoded video frame has no pixels.");
 
         // ── Stage 1+2 path:NativeVideoSurface direct GPU staging ──
         // Software backend already supports this end-to-end as of stage 2;
@@ -2215,7 +2787,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             catch
             {
                 _frameBitmap = null;
-                return;
+                throw;
             }
         }
 
@@ -2224,7 +2796,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             _frameBitmap!.WritePixels(new Int32Rect(0, 0, width, height), pixels, frame.Stride);
             InvalidateVisual();
         }
-        catch { }
+        catch (Exception exception) { throw new InvalidOperationException("Video frame upload failed.", exception); }
     }
 
     /// <summary>
@@ -2239,6 +2811,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     {
         bool needsRebuild = _videoSurface is null ||
                             _videoSurface.IsDisposed ||
+                            _videoSurface.Kind != NativeVideoSurfaceKind.Bgra8Cpu ||
                             _videoSurface.PixelWidth != width ||
                             _videoSurface.PixelHeight != height;
 
@@ -2351,40 +2924,32 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     /// </summary>
     private void SeekToPosition(TimeSpan position)
     {
+        position = position < TimeSpan.Zero ? TimeSpan.Zero : position;
+        if (_duration > TimeSpan.Zero && position > _duration) position = _duration;
+        _replayOnPlay = false;
         var wasPlaying = _isPlaying;
         var wasPaused = _isPaused;
 
-        if (_isPlaying)
-        {
-            StopPlayback();
-        }
+        // Retire the current immutable session but retain its decoder.  A queued
+        // seek/start operation waits for that session before touching the decoder.
+        _isPlaying = false;
+        PausePlayback();
 
         _position = position;
         _videoStartTimeMs = position.TotalMilliseconds;
 
-        var willResume = wasPlaying || wasPaused;
-        var audioMgr = _audioManager;
-        var dispatcher = Dispatcher.MainDispatcher;
-
-        Task.Run(() =>
+        if (wasPlaying)
         {
-            try { audioMgr?.Seek(position); } catch { }
-
-            if (!willResume) return;
-
-            dispatcher?.BeginInvoke(() =>
-            {
-                if (_clock != null)
-                {
-                    ApplyClockState();
-                    return;
-                }
-
-                _isPlaying = true;
-                _isPaused = false;
-                StartPlaybackInternal();
-            });
-        });
+            _isPlaying = true;
+            _isPaused = false;
+            StartPlaybackInternal();
+        }
+        else
+        {
+            _isPlaying = false;
+            _isPaused = wasPaused;
+            QueueSeekWithoutPlayback(position);
+        }
     }
 
     #endregion
@@ -2471,10 +3036,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                 candidate = null;
                 if (previousAudio != null)
                 {
-                    Task.Run(() =>
-                    {
-                        try { previousAudio.Dispose(); } catch { }
-                    });
+                    DisposeAfterPlayback(CapturePlaybackTail(), previousAudio);
                 }
                 _hasAudio = true;
                 _position = position;
@@ -2584,7 +3146,10 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         {
             try { return _audioManager.Position; } catch { }
         }
-        return _syncClock?.GetMediaTime() ?? _position;
+        lock (_lock)
+        {
+            return _playbackSession?.MediaTime ?? _position;
+        }
     }
 
     private void PostSubtitleText(string? text, CancellationToken token)

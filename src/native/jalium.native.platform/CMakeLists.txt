@@ -213,12 +213,9 @@ elseif(UNIX AND NOT APPLE)
         message(STATUS "Wayland development stack incomplete; building X11-only platform backend")
     endif()
 elseif(APPLE)
-    # No macOS backend exists yet. Referencing a nonexistent
-    # src/platform_macos.mm made every Apple configure fail with a
-    # misleading missing-file error; fail honestly instead.
-    message(FATAL_ERROR
-        "jalium.native.platform has no macOS backend yet. "
-        "Supported window systems: Win32, X11/Wayland, Android.")
+    set(PLATFORM_SOURCES
+        src/platform_apple.mm
+    )
 endif()
 
 set(SOURCES
@@ -325,13 +322,21 @@ elseif(UNIX AND NOT APPLE)
         endif()
     endif()
 elseif(APPLE)
-    find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
     find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
     target_link_libraries(${PROJECT_NAME}
         PRIVATE
-            ${COCOA_FRAMEWORK}
             ${QUARTZCORE_FRAMEWORK}
+            ${COREFOUNDATION_FRAMEWORK}
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${APPKIT_FRAMEWORK})
+    else()
+        find_library(UIKIT_FRAMEWORK UIKit REQUIRED)
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${UIKIT_FRAMEWORK})
+    endif()
+    target_compile_options(${PROJECT_NAME} PRIVATE -fobjc-arc)
 endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES

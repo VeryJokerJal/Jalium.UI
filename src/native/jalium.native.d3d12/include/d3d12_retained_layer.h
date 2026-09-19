@@ -124,6 +124,30 @@ public:
     uint32_t                    PixelWidth()  const { return pw_; }
     uint32_t                    PixelHeight() const { return ph_; }
     DXGI_FORMAT                 Format()  const { return format_; }
+
+    // Capture includes device-pixel padding around the requested DIP bounds.
+    // Keep that padding with the texture so reusing/moving the layer preserves
+    // its texel size and content position instead of stretching it back down.
+    void SetCaptureBounds(float offsetX, float offsetY, float width, float height,
+                          float contentWidth, float contentHeight)
+    {
+        captureOffsetX_ = offsetX;
+        captureOffsetY_ = offsetY;
+        captureWidth_ = width;
+        captureHeight_ = height;
+        contentWidth_ = contentWidth;
+        contentHeight_ = contentHeight;
+    }
+
+    void MapCompositeBounds(float& x, float& y, float& width, float& height) const
+    {
+        const float scaleX = width / contentWidth_;
+        const float scaleY = height / contentHeight_;
+        x += captureOffsetX_ * scaleX;
+        y += captureOffsetY_ * scaleY;
+        width = captureWidth_ * scaleX;
+        height = captureHeight_ * scaleY;
+    }
     // Creating device — generation marker for device-lost recovery. A layer
     // whose Device() differs from the renderer's current device must never be
     // sampled or re-targeted by that renderer (foreign-device resources in a
@@ -166,6 +190,10 @@ private:
     uint32_t                     pw_ = 0;
     uint32_t                     ph_ = 0;
     DXGI_FORMAT                  format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+    float captureOffsetX_ = 0, captureOffsetY_ = 0;
+    float captureWidth_ = 0, captureHeight_ = 0;
+    float contentWidth_ = 1, contentHeight_ = 1;
 
     ComPtr<ID3D12DescriptorHeap> rtvHeap_;
     D3D12_CPU_DESCRIPTOR_HANDLE  rtvCpu_ = {};

@@ -42,12 +42,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)bin\native-static\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native-static\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\static\</IntDir>
     <TargetName>jalium.native.d3d12.static</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)bin\native-static\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native-static\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\static\</IntDir>
     <TargetName>jalium.native.d3d12.static</TargetName>
   </PropertyGroup>
@@ -97,6 +97,7 @@
     <ClInclude Include="include\d3dx12.h" />
     <ClInclude Include="include\liquid_glass_effects.h" />
     <ClInclude Include="include\transition_shader_effect.h" />
+    <ClInclude Include="include\d3d12_retained_layer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\d3d12_backend.cpp" />
@@ -119,9 +120,9 @@
     <ClCompile Include="src\transition_shader_effect.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="shaders\rounded_clip.hlsli" />
-    <None Include="shaders\sdf_rect.ps.hlsl" />
-    <None Include="shaders\sdf_rect.vs.hlsl" />
+    <None Include="shaders\**\*" />
+    <None Include="tests\**\*" />
+    <None Include="src\d3d12_pipeline_stubs.cpp" />
     <None Include="..\jalium.native.core\shaders\continuous_corner.hlsli">
       <Link>shaders\continuous_corner.hlsli</Link>
     </None>

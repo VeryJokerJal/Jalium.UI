@@ -9,7 +9,7 @@ namespace Jalium.UI.Media.Native;
 /// </summary>
 internal static partial class NativeVideoSurfaceInterop
 {
-    internal const string CoreLib = "jalium.native.core";
+    internal const string CoreLib = JaliumNativeLibraryNames.Core;
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativeVideoSurfacePlaneDescriptor

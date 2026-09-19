@@ -391,6 +391,11 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
 
         _logicalChildren.Add(child);
         ResourceLookup.InvalidateResourceCache();
+        if (Jalium.UI.Styling.CssEngine.IsActive)
+        {
+            Jalium.UI.Styling.CssEngine.InvalidateSelectorDependents(this);
+            Jalium.UI.Styling.CssRegisteredProperties.Invalidate(this);
+        }
     }
 
     public virtual void BeginInit()
@@ -553,6 +558,14 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
         if (child is null || !_logicalChildren.Remove(child))
         {
             return;
+        }
+
+        if (Jalium.UI.Styling.CssEngine.IsActive)
+        {
+            Jalium.UI.Styling.CssEngine.InvalidateSelectorDependents(this);
+            Jalium.UI.Styling.CssRegisteredProperties.Invalidate(this);
+            if (child is FrameworkElement or FrameworkContentElement)
+                Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(Jalium.UI.Styling.CssNode.Get((DependencyObject)child));
         }
 
         if (child is FrameworkContentElement contentChild && ReferenceEquals(contentChild.Parent, this))

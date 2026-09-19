@@ -4,6 +4,7 @@
 #include "d3d12_shader_source.h"
 #include "d3d12_shader_bytecode.h"
 #include "d3d12_liquid_glass_bytecode.h"
+#include "jalium_text_options.h"
 #include <d3dcompiler.h>
 #include <cassert>
 #include <algorithm>
@@ -282,14 +283,9 @@ bool D3D12DirectRenderer::Initialize(IDXGISwapChain3* swapChain, UINT frameCount
     if (!CreateFrameResources()) return false;
     if (!CreateRootSignature()) return false;
     if (!CreatePSOs()) return false;
-    if (!CreateBlurResources()) {
-        OutputDebugStringA("[D3D12DirectRenderer] Blur resources init failed (non-fatal)\n");
-        // Non-fatal: blur will fall back to semi-transparent overlay
-    }
-    if (!CreateStencilPathResources()) {
-        OutputDebugStringA("[D3D12DirectRenderer] Stencil path init failed (non-fatal, falls back to Impeller scanline)\n");
-        // Non-fatal: AddStencilPath returns false → D3D12RenderTarget routes to ImpellerEngine.
-    }
+    // Blur and stencil-path pipelines are optional and relatively expensive
+    // (PSOs, descriptor heaps, and runtime shader compilation). Their first
+    // real draw creates them through EnsureBlurResources / EnsureStencilPathResources.
 
     // Initialize glyph atlas for text rendering
     auto dwriteFactory = backend_->GetDWriteFactory();
@@ -307,34 +303,12 @@ bool D3D12DirectRenderer::Initialize(IDXGISwapChain3* swapChain, UINT frameCount
     // eager 创建纯属浪费 GPU/驱动内存与启动期 PSO 编译。active engine 真是
     // Vello 时,首帧 BeginFrame 会按需 EnsureVelloRenderer()。
 
-    // ── GPU timestamp infrastructure ────────────────────────────────────
-    // One TIMESTAMP query heap across all frames (frameCount × slots-per-
-    // frame) plus per-frame readback buffer (uint64_t × slots-per-frame).
-    // Failure here is non-fatal: timingSupported_ stays false and the
-    // breakdown remains zero-valued; the renderer continues working.
+    // Timestamp frequency is lightweight and is also consumed by Vello's own
+    // diagnostics. The query heap/readback buffers remain unallocated until a
+    // caller explicitly asks QueryGpuTiming for a breakdown.
     if (auto* cmdQueue = backend_->GetCommandQueue()) {
-        if (SUCCEEDED(cmdQueue->GetTimestampFrequency(&timestampFrequency_)) && timestampFrequency_ > 0) {
-            D3D12_QUERY_HEAP_DESC qhDesc = {};
-            qhDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-            qhDesc.Count = kMaxTimingSlotsPerFrame * frameCount_;
-            HRESULT hr = device_->CreateQueryHeap(&qhDesc, IID_PPV_ARGS(&timingQueryHeap_));
-            if (SUCCEEDED(hr)) {
-                bool allReadbackOk = true;
-                for (UINT i = 0; i < frameCount_; ++i) {
-                    auto rbHeapProps = MakeHeapProps(D3D12_HEAP_TYPE_READBACK);
-                    auto rbBufDesc = MakeBufferDesc(sizeof(uint64_t) * kMaxTimingSlotsPerFrame);
-                    if (FAILED(device_->CreateCommittedResource(
-                            &rbHeapProps, D3D12_HEAP_FLAG_NONE, &rbBufDesc,
-                            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                            IID_PPV_ARGS(&timing_[i].readback)))) {
-                        allReadbackOk = false;
-                        break;
-                    }
-                    timing_[i].readback->SetName(L"JaliumTimingReadback");  // [JALIUM-921 diag]
-                    timing_[i].spanCategories.reserve(kMaxTimingSlotsPerFrame);
-                }
-                timingSupported_ = allReadbackOk;
-            }
+        if (FAILED(cmdQueue->GetTimestampFrequency(&timestampFrequency_))) {
+            timestampFrequency_ = 0;
         }
     }
 
@@ -347,7 +321,7 @@ bool D3D12DirectRenderer::EnsureVelloRenderer() {
     if (!velloEnabled_) return false;          // active engine 非 Vello → 不创建
     if (!device_) return false;
 
-    auto vr = std::make_unique<D3D12VelloRenderer>(device_, nullptr);
+    auto vr = std::make_unique<D3D12VelloRenderer>(device_, nullptr, timestampFrequency_);
     if (!vr->Initialize()) {
         OutputDebugStringA("[D3D12DirectRenderer] Vello lazy init failed (non-fatal, falling back to CPU triangulation)\n");
         return false;                          // 保持 velloRenderer_ 为空,后续不再重试本帧
@@ -1383,7 +1357,7 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     // stays 0 otherwise -> skipped) and at most one realloc per swap-chain
     // generation afterwards (EnsureBlurTemps early-returns when temps already fit;
     // it only WaitForGpuIdle+reallocs on the frame offscreenW_ first ratchets up).
-    if (offscreenW_ > 0 && offscreenH_ > 0) {
+    if (blurResourcesReady_ && offscreenW_ > 0 && offscreenH_ > 0) {
         (void)EnsureBlurTemps(offscreenW_, offscreenH_);
     }
 
@@ -1394,7 +1368,13 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     // Begin Vello frame (skipped when Impeller is active). velloEnabled_ 为真
     // (active engine==Vello)时按需懒创建 Vello 子系统;Impeller 下整条跳过,
     // velloRenderer_ 永远为空,零开销。
+    velloDispatchCountThisFrame_ = 0;
     if (velloEnabled_ && EnsureVelloRenderer()) {
+        VelloPerfBeginFrame();  // JALIUM_VELLO_PERF stats tick (no-op when unset)
+        // The fence for this slot has been observed above, so the sub-scene
+        // output textures it had in flight can go back on the pool and the
+        // linear upload arena can rewind.
+        velloRenderer_->RecycleFrameResources(currentFrame_);
         velloRenderer_->BeginFrame(width, height);
     }
 
@@ -1404,6 +1384,7 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     // valid data. We then reset the per-frame timing state and emit the
     // initial timestamp tagged with "Other" so any work before the first
     // explicit MarkGpuTimingPoint gets a category.
+    (void)EnsureGpuTimingResources();
     if (timingSupported_) {
         DecodeGpuTimingForCompletedFrame(currentFrame_);
         auto& tf = timing_[currentFrame_];
@@ -2124,6 +2105,57 @@ JaliumResult D3D12DirectRenderer::FetchBackBufferReadback(
 // GPU timing
 // ============================================================================
 
+bool D3D12DirectRenderer::EnsureGpuTimingResources()
+{
+    if (timingSupported_) return true;
+    if (!timingRequested_.load(std::memory_order_acquire) ||
+        timingInitializationAttempted_) {
+        return false;
+    }
+
+    timingInitializationAttempted_ = true;
+    if (!device_ || frameCount_ == 0) return false;
+
+    if (timestampFrequency_ == 0) {
+        auto* queue = backend_ ? backend_->GetCommandQueue() : nullptr;
+        if (!queue || FAILED(queue->GetTimestampFrequency(&timestampFrequency_)) ||
+            timestampFrequency_ == 0) {
+            timestampFrequency_ = 0;
+            return false;
+        }
+    }
+
+    D3D12_QUERY_HEAP_DESC queryDesc = {};
+    queryDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    queryDesc.Count = kMaxTimingSlotsPerFrame * frameCount_;
+
+    ComPtr<ID3D12QueryHeap> queryHeap;
+    if (FAILED(device_->CreateQueryHeap(&queryDesc, IID_PPV_ARGS(&queryHeap)))) {
+        return false;
+    }
+
+    ComPtr<ID3D12Resource> readbacks[kMaxFrames];
+    for (UINT i = 0; i < frameCount_; ++i) {
+        auto readbackHeap = MakeHeapProps(D3D12_HEAP_TYPE_READBACK);
+        auto readbackDesc = MakeBufferDesc(sizeof(uint64_t) * kMaxTimingSlotsPerFrame);
+        if (FAILED(device_->CreateCommittedResource(
+                &readbackHeap, D3D12_HEAP_FLAG_NONE, &readbackDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&readbacks[i])))) {
+            return false;
+        }
+        readbacks[i]->SetName(L"JaliumTimingReadback");
+    }
+
+    timingQueryHeap_ = std::move(queryHeap);
+    for (UINT i = 0; i < frameCount_; ++i) {
+        timing_[i].readback = std::move(readbacks[i]);
+        timing_[i].spanCategories.reserve(kMaxTimingSlotsPerFrame);
+    }
+    timingSupported_ = true;
+    return true;
+}
+
 void D3D12DirectRenderer::MarkGpuTimingPoint(GpuTimingCategory category)
 {
     if (!timingSupported_ || !timingQueryHeap_) return;
@@ -2427,25 +2459,24 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
 
     // A transform with no rotation / shear (m12 == m21 == 0) is axis-aligned:
     // its only effect on text is a per-axis scale (uniform zoom OR non-uniform
-    // liquid-glass squeeze) plus a translation. That class can stay on the CRISP
-    // point path — rasterize the glyph at the EXACT scale, integer-snap the
-    // on-screen quad, and point-sample it 1:1 — instead of the soft bilinear
-    // path. Only genuine rotation / skew (m12 or m21 significantly non-zero)
-    // needs bilinear so its continuously-moving sub-pixel edges don't shimmer.
+    // liquid-glass squeeze) plus a translation. That class keeps the existing
+    // exact-scale, integer-snapped path. Genuine rotation / skew is classified
+    // separately so GenerateGlyphs can put the full 2x2 into each oriented
+    // glyph basis; sampler selection happens after the atlas walk.
     // The scale magnitudes fold rotation into m11..m22, so test the raw
     // off-diagonal against a scale-relative epsilon (a 1px error over a 100px
     // glyph is ~0.01 rad — comfortably below visible rotation).
     const float scaleRef = std::max({scaleX, scaleY, 1.0f});
     const bool axisAligned = std::abs(t.m12) <= 1e-3f * scaleRef &&
                              std::abs(t.m21) <= 1e-3f * scaleRef;
-    const bool scaled = (std::abs(scaleX - 1.0f) > 0.001f ||
-                         std::abs(scaleY - 1.0f) > 0.001f);
-    // Fixed/Auto axis-aligned text is a display bitmap, including the common
-    // identity-transform case.  At high DPI the atlas texels are already
-    // generated at fontSize*dpiScale_, so leaving the final quad at a
-    // fractional PHYSICAL-pixel origin only shifts that pixel-exact bitmap off
-    // the screen grid.  Snap it just like axis-aligned scaled text.  Animated
-    // hinting intentionally stays continuous and uses the smooth sampler.
+    // Match the exact-scale atlas path even at the start/end of an animation.
+    // A 0.001 threshold skipped scaling its already-divided quads while the
+    // atlas was still rasterizing through the smaller non-identity matrix.
+    const bool scaled = (std::abs(scaleX - 1.0f) > 1e-6f ||
+                         std::abs(scaleY - 1.0f) > 1e-6f);
+    // Pixel-aligned strikes request snapping. GenerateGlyphs separately marks
+    // continuous Ideal text and supersampled runs so their positions retain
+    // the subpixel translation and are resolved by the smooth sampler below.
     const bool crispAxisAligned = axisAligned && hintingMode != 2;
 
     // Collect glyph instances and text decorations
@@ -2455,16 +2486,37 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // the final screen pen (tx folded in) so the snap lands it within 1/8 px
     // of its true place instead of a whole pixel — no per-glyph stepping when
     // the run's layout scales or slides sub-pixel.
+    //
+    // The full 2x2 goes with it. Axis-aligned runs behave exactly as before;
+    // rotated/skewed runs return oriented quads already in final screen DIPs,
+    // so the loop below must leave them alone (`rotatedText` gates that).
+    const float linear2x2[4] = { t.m11, t.m12, t.m21, t.m22 };
+    const bool rotatedText = !axisAligned;
+    // Decorations are emitted as SDF rects at the bottom of this function, and
+    // AddSdfRect applies the ambient transform to them — so they must be handed
+    // the UNtransformed origin, or they get transformed twice. (Before this,
+    // they shared the glyph origin and a scaled/rotated run's underline drifted
+    // away from its text.) Routing them through the transform is also what
+    // rotates the bar along with the baseline.
+    const float decorationOrigin[2] = { x, y };
+    bool requiresSmoothSampling = false;
     uint32_t count = glyphAtlas_->GenerateGlyphs(layout, tx, ty, r, g, b, effectiveA,
                                                   textInstances_, &decorations,
                                                   layoutKey,
                                                   aaMode, hintingMode,
                                                   scaleX, scaleY,
                                                   crispAxisAligned,
-                                                  subpixelPositioning);
+                                                  subpixelPositioning,
+                                                  linear2x2,
+                                                  decorationOrigin,
+                                                  &requiresSmoothSampling);
     if (count > 0) {
         glyphAtlasUsedThisFrame_ = true;
     }
+    // Rotated glyphs use oriented texture quads. Resolve those (and explicit
+    // supersampled strikes) with the smooth PSO; Aliased text remains point.
+    const bool smoothText = hintingMode == 2 || requiresSmoothSampling ||
+        (rotatedText && aaMode != JALIUM_TEXT_AA_ALIASED);
 
     // Apply transform scaling to each glyph instance.
     // GenerateGlyphs emits BASE-DIP quads (the effective atlas raster scales
@@ -2473,7 +2525,7 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // base-DIP quad to its on-screen size; because the atlas bitmap was already
     // rasterized for the quantized final transform, the magnified quad stays
     // crisp instead of mosaicking.
-    if (count > 0) {
+    if (count > 0 && !rotatedText) {
         const float dpi = dpiScale_ > 0.0f ? dpiScale_ : 1.0f;
         const float invDpi = 1.0f / dpi;
         for (uint32_t i = startIdx; i < startIdx + count; i++) {
@@ -2497,10 +2549,34 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
             // independently costs <=0.5px of inter-glyph spacing (WPF Display-mode
             // behaviour) — the accepted "slight integer stepping" during a scale
             // animation, traded for static/scrolled crispness.
-            if (crispAxisAligned) {
+            // Supersampled/exact-scale runs already carry their continuous
+            // coverage. Snapping them here would reintroduce the one-pixel
+            // baseline jump the smooth rasterization was meant to avoid.
+            if (crispAxisAligned && !requiresSmoothSampling) {
                 g.posX = std::round(g.posX * dpi) * invDpi;
                 g.posY = std::round(g.posY * dpi) * invDpi;
             }
+        }
+    }
+
+    // Rotated runs skip the re-magnify above — their quads already came back in
+    // final screen DIPs. Snap the RUN ORIGIN once, then apply the same delta to
+    // every glyph. Snapping each oriented glyph independently changes every
+    // glyph by a different vector as its transformed pen crosses a half pixel:
+    // the baseline becomes a staircase, spacing changes, and a -4deg card can
+    // visibly disagree with its label. A shared phase keeps every relative
+    // glyph vector intact while still removing the run-wide half-texel offset.
+    float rotatedSnapDx = 0.0f;
+    float rotatedSnapDy = 0.0f;
+    if (rotatedText) {
+        const float dpi = dpiScale_ > 0.0f ? dpiScale_ : 1.0f;
+        const float invDpi = 1.0f / dpi;
+        rotatedSnapDx = std::round(tx * dpi) * invDpi - tx;
+        rotatedSnapDy = std::round(ty * dpi) * invDpi - ty;
+        for (uint32_t i = startIdx; i < startIdx + count; i++) {
+            auto& g = textInstances_[i];
+            g.posX += rotatedSnapDx;
+            g.posY += rotatedSnapDy;
         }
     }
 
@@ -2514,7 +2590,7 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
         // frame where the panel under investigation is finally populated.
         static uint32_t seen = 0;
         static uint32_t lines = 0;
-        const bool interesting = !crispAxisAligned || (++seen % 500u == 0u);
+        const bool interesting = smoothText || (++seen % 500u == 0u);
         if (interesting && lines < 20000u) {
             if (FILE* tf = TextTraceFile()) {
                 const float qy = (count > 0) ? textInstances_[startIdx].posY : 0.0f;
@@ -2526,7 +2602,7 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
                         ++lines, (unsigned long long)layoutKey, tx, ty,
                         t.m11, t.m12, t.m21, t.m22, t.dx, t.dy,
                         scaleX, scaleY, axisAligned ? 1 : 0, scaled ? 1 : 0,
-                        crispAxisAligned ? 1 : 0, crispAxisAligned ? 0 : 1,
+                        crispAxisAligned ? 1 : 0, smoothText ? 1 : 0,
                         hintingMode, aaMode, subpixelPositioning ? 1 : 0,
                         dpiScale_, count, qy, qh);
                 fflush(tf);
@@ -2534,7 +2610,7 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
         }
     }
 
-    // ── Gradient foreground: recolour each glyph quad from the brush ──────────
+    // ── Gradient foreground: colour the shared glyph coverage ────────────────
     //
     // Runs AFTER the loop above so every quad's position/size is final; sampling
     // before the scale + pixel snap would read the gradient at the wrong place.
@@ -2549,8 +2625,65 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
         std::vector<float> stopData;
         FlattenGradientStops(*gradientBrush, stopData);
         if (!stopData.empty()) {
+            // A brush must not choose a different glyph rasterizer. Whole-run
+            // masks keep small/fractional text crisp and stable; split only
+            // their draw quads into colour cells that keep the same atlas UVs.
+            // The old individual-glyph fallback rounded 11.5px strikes to whole
+            // ppem and then filtered them again, blurring gradient captions.
+            std::vector<GlyphQuadInstance> colourQuads;
+            colourQuads.reserve(count);
+            const float cellPixels = 8.0f;
+            const float dpi = dpiScale_ > 0.0f ? dpiScale_ : 1.0f;
+            for (uint32_t i = startIdx; i < startIdx + count; ++i) {
+                const auto q = textInstances_[i];
+                if (q.colorR < 0.0f) {
+                    colourQuads.push_back(q); // authored colour emoji
+                    continue;
+                }
+                const int columns = std::clamp(static_cast<int>(std::ceil(
+                    std::hypot(q.sizeX, q.skewY) * dpi / cellPixels)), 1, 64);
+                const int rows = std::clamp(static_cast<int>(std::ceil(
+                    std::hypot(q.skewX, q.sizeY) * dpi / cellPixels)), 1, 64);
+                for (int row = 0; row < rows; ++row) {
+                    const float v0 = row / static_cast<float>(rows);
+                    const float v1 = (row + 1) / static_cast<float>(rows);
+                    for (int column = 0; column < columns; ++column) {
+                        const float u0 = column / static_cast<float>(columns);
+                        const float u1 = (column + 1) / static_cast<float>(columns);
+                        auto cell = q;
+                        cell.posX = q.posX + u0 * q.sizeX + v0 * q.skewX;
+                        cell.posY = q.posY + u0 * q.skewY + v0 * q.sizeY;
+                        cell.sizeX = q.sizeX * (u1 - u0);
+                        cell.skewY = q.skewY * (u1 - u0);
+                        cell.skewX = q.skewX * (v1 - v0);
+                        cell.sizeY = q.sizeY * (v1 - v0);
+                        cell.uvMinX = q.uvMinX + u0 * (q.uvMaxX - q.uvMinX);
+                        cell.uvMaxX = q.uvMinX + u1 * (q.uvMaxX - q.uvMinX);
+                        cell.uvMinY = q.uvMinY + v0 * (q.uvMaxY - q.uvMinY);
+                        cell.uvMaxY = q.uvMinY + v1 * (q.uvMaxY - q.uvMinY);
+                        colourQuads.push_back(cell);
+                    }
+                }
+            }
+            textInstances_.resize(startIdx);
+            textInstances_.insert(textInstances_.end(), colourQuads.begin(), colourQuads.end());
+            count = static_cast<uint32_t>(colourQuads.size());
+
             const float invSx = (scaled && std::abs(scaleX) > 1e-6f) ? 1.0f / scaleX : 1.0f;
             const float invSy = (scaled && std::abs(scaleY) > 1e-6f) ? 1.0f / scaleY : 1.0f;
+            // Per-axis reciprocals ARE the inverse for an axis-aligned
+            // transform. Under rotation they are not, so invert the real 2x2 —
+            // otherwise the gradient reads at a sheared position and a rotated
+            // gradient caption picks up visibly wrong colours.
+            float i11 = invSx, i12 = 0.0f, i21 = 0.0f, i22 = invSy;
+            if (rotatedText) {
+                const float det = t.m11 * t.m22 - t.m12 * t.m21;
+                if (std::abs(det) > 1e-9f) {
+                    const float invDet = 1.0f / det;
+                    i11 =  t.m22 * invDet; i12 = -t.m12 * invDet;
+                    i21 = -t.m21 * invDet; i22 =  t.m11 * invDet;
+                }
+            }
 
             for (uint32_t i = startIdx; i < startIdx + count; i++) {
                 auto& q = textInstances_[i];
@@ -2560,8 +2693,10 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
                 // foreground and equally wrong for a gradient — leave them alone.
                 if (q.colorR < 0.0f) continue;
 
-                const float cx = x + ((q.posX + q.sizeX * 0.5f) - tx) * invSx;
-                const float cy = y + ((q.posY + q.sizeY * 0.5f) - ty) * invSy;
+                const float ox = (q.posX + (q.sizeX + q.skewX) * 0.5f) - tx;
+                const float oy = (q.posY + (q.skewY + q.sizeY) * 0.5f) - ty;
+                const float cx = x + (ox * i11 + oy * i21);
+                const float cy = y + (ox * i12 + oy * i22);
 
                 GradientColor gc = SampleBrushGradient(*gradientBrush, stopData.data(), cx, cy);
                 const float ga = gc.a * currentOpacity_;
@@ -2576,12 +2711,9 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     if (count > 0) {
         DrawBatch candidate;
         candidate.type = DrawBatchType::Text;
-        // PSO selection: rotation / skew and Animated hinting use the bilinear
-        // text PSO so continuously-moving sub-pixel edges do not shimmer.
-        // Fixed/Auto axis-aligned text (identity or scaled) was rasterized at
-        // display resolution and integer-snapped above, so it stays on the
-        // crisp POINT PSO without a second filtering pass.
-        candidate.smoothText = !crispAxisAligned;
+        // PSO selection follows the raster contract above: only Animated text
+        // and explicitly supersampled strikes need bilinear resolution.
+        candidate.smoothText = smoothText;
         candidate.instanceOffset = startIdx;
         candidate.instanceCount = count;
         candidate.hasScissor = !scissorStack_.empty();
@@ -2607,11 +2739,27 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
         }
     }
 
-    // Render text decorations (underline/strikethrough) as SDF rect instances
+    // Render text decorations (underline/strikethrough) as SDF rect instances.
+    // They still travel through the ambient matrix, so map the run's shared
+    // screen-space snap delta back through the linear inverse first. This keeps
+    // an underline attached to the glyph run instead of leaving it behind by up
+    // to half a physical pixel.
+    float decorationSnapX = 0.0f;
+    float decorationSnapY = 0.0f;
+    if (rotatedText && (rotatedSnapDx != 0.0f || rotatedSnapDy != 0.0f)) {
+        const float det = t.m11 * t.m22 - t.m12 * t.m21;
+        if (std::abs(det) > 1e-9f) {
+            const float invDet = 1.0f / det;
+            decorationSnapX = rotatedSnapDx * ( t.m22 * invDet) +
+                              rotatedSnapDy * (-t.m21 * invDet);
+            decorationSnapY = rotatedSnapDx * (-t.m12 * invDet) +
+                              rotatedSnapDy * ( t.m11 * invDet);
+        }
+    }
     for (auto& dec : decorations) {
         SdfRectInstance inst = {};
-        inst.posX = dec.x;
-        inst.posY = dec.y;
+        inst.posX = dec.x + decorationSnapX;
+        inst.posY = dec.y + decorationSnapY;
         inst.sizeX = dec.width;
         inst.sizeY = dec.thickness;
         inst.fillR = dec.colorR;
@@ -3046,6 +3194,29 @@ bool D3D12DirectRenderer::HasVelloPaths() const
     return velloRenderer_ && velloRenderer_->HasWork();
 }
 
+bool D3D12DirectRenderer::VelloPendingHitsDipRect(float x, float y, float w, float h) const
+{
+    if (!velloRenderer_ || !velloRenderer_->HasWork()) return false;
+    if (w < 0.0f) { x += w; w = -w; }
+    if (h < 0.0f) { y += h; h = -h; }
+    Transform2D t = GetCurrentTransform();
+    const float s = dpiScale_;
+    const float cxs[4] = { x, x + w, x, x + w };
+    const float cys[4] = { y, y, y + h, y + h };
+    float dx0 = 1e30f, dy0 = 1e30f, dx1 = -1e30f, dy1 = -1e30f;
+    for (int i = 0; i < 4; i++) {
+        float px = (t.m11 * cxs[i] + t.m21 * cys[i] + t.dx) * s;
+        float py = (t.m12 * cxs[i] + t.m22 * cys[i] + t.dy) * s;
+        dx0 = std::fmin(dx0, px); dy0 = std::fmin(dy0, py);
+        dx1 = std::fmax(dx1, px); dy1 = std::fmax(dy1, py);
+    }
+    // Half-pixel AA halo. The per-primitive boxes give ITEM granularity, so an
+    // icon and the label RIGHT NEXT to it no longer count as overlapping.
+    const float pad = 0.5f;
+    return velloRenderer_->PendingHitsDeviceRect(dx0 - pad, dy0 - pad,
+                                                 dx1 + pad, dy1 + pad);
+}
+
 void D3D12DirectRenderer::FlushVelloPaths()
 {
     if (!velloRenderer_ || !velloRenderer_->HasWork() || !inFrame_) return;
@@ -3062,8 +3233,14 @@ void D3D12DirectRenderer::FlushVelloPaths()
         velloRenderer_->ClearScissorRect();
     }
 
+    // Attribute the compute graph itself to Path. Without an explicit marker
+    // it inherits whichever graphics batch happened to flush immediately
+    // before it (commonly SdfRect), making the hardware breakdown actively
+    // misleading when comparing Vello with Impeller.
+    MarkGpuTimingPoint(GpuTimingCategory::Path);
     bool dispatched = velloRenderer_->Dispatch(commandList_.Get(), currentFrame_);
     if (dispatched) {
+        ++velloDispatchCountThisFrame_;
         ID3D12Resource* output = velloRenderer_->GetOutputTexture();
         if (output) {
             // Composite Vello output as a full-viewport bitmap with the CURRENT
@@ -3072,14 +3249,35 @@ void D3D12DirectRenderer::FlushVelloPaths()
             // the flush and those drawn afterwards — opaque content drawn after
             // (e.g. card backgrounds) correctly covers the wave/dot pixels in
             // the Vello bitmap.
-            float w = (float)viewportWidth_ / dpiScale_;
-            float h = (float)viewportHeight_ / dpiScale_;
-            AddBitmap(0, 0, w, h, 1.0f, output, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
+            // A sub-scene renders only the region it covers, so composite
+            // the output texture at that region rather than full-viewport.
+            const VelloRenderRegion& reg = velloRenderer_->LastRegion();
+            float x = (float)reg.originX / dpiScale_;
+            float y = (float)reg.originY / dpiScale_;
+            float w = (float)reg.width / dpiScale_;
+            float h = (float)reg.height / dpiScale_;
+            // The composite quad addresses ABSOLUTE window DIPs: every path
+            // already carried its own transform / scissor / opacity into the
+            // scene. The flush, however, is triggered from arbitrarily deep in
+            // the element tree, so the AMBIENT transform/scissor/opacity of
+            // that element must not be baked into the quad -- with a deep
+            // translation it lands off-screen (icons silently vanish).
+            std::stack<Transform2D> savedXf = std::move(transformStack_);
+            transformStack_ = {};
+            transformStack_.push(Transform2D::Identity());
+            std::stack<D3D12_RECT> savedSc = std::move(scissorStack_);
+            scissorStack_ = {};
+            float savedOp = currentOpacity_;
+            currentOpacity_ = 1.0f;
+            AddBitmap(x, y, w, h, 1.0f, output, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
+            currentOpacity_ = savedOp;
+            scissorStack_ = std::move(savedSc);
+            transformStack_ = std::move(savedXf);
         }
         // Force the next Dispatch in this frame to allocate a fresh output
         // texture; the one we just composited is held alive by the
         // BitmapBatchTexture entry AddBitmap pushed above.
-        velloRenderer_->ForceNewOutputTexture();
+        velloRenderer_->ForceNewOutputTexture(currentFrame_);
         // Reset Vello's CPU-side scene encoding so subsequent paths in this
         // frame accumulate into a fresh subscene rather than re-rendering the
         // content we just flushed.
@@ -3135,7 +3333,7 @@ int32_t D3D12DirectRenderer::DebugForceVelloOutputOrphan(int32_t* outAlive) {
     const float w = (float)viewportWidth_ / dpiScale_;
     const float h = (float)viewportHeight_ / dpiScale_;
     AddBitmap(0.0f, 0.0f, w, h, 1.0f, parked, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
-    velloRenderer_->ForceNewOutputTexture();          // fix parks `parked`; regression bare-Resets it
+    velloRenderer_->ForceNewOutputTexture(currentFrame_);          // fix parks `parked`; regression bare-Resets it
     velloRenderer_->BeginFrame(viewportWidth_, viewportHeight_);
     auto& fr = frames_[currentFrame_];
     velloRenderer_->DrainRetired(fr.retiredInstanceBuffers);
@@ -3145,10 +3343,16 @@ int32_t D3D12DirectRenderer::DebugForceVelloOutputOrphan(int32_t* outAlive) {
     // open command list still referenced the texture.
     if (!FlushGraphicsForCompute()) return -9;        // device lost mid-stage
 
-    // Detection (deterministic, debug-layer-independent): is `parked` still pinned on
-    // the fence-gated retired list?
+    // Detection (deterministic, debug-layer-independent): is `parked` still
+    // pinned by a fence-gated owner? Since the sub-scene rewrite the texture is
+    // recycled through the Vello renderer's own per-frame-slot pool (released
+    // only in RecycleFrameResources, after that slot's fence) instead of the
+    // direct renderer's retired list, so both owners count.
     for (const auto& r : fr.retiredInstanceBuffers) {
         if (r.Get() == parked) { if (outAlive) *outAlive = 1; break; }
+    }
+    if (outAlive && *outAlive == 0 && velloRenderer_->OwnsOutputTexture(parked)) {
+        *outAlive = 1;
     }
     return 0;
 }
@@ -3262,7 +3466,7 @@ void D3D12DirectRenderer::UploadInstances()
     }
 
     // Upload text instances (after gradient stops, aligned to GlyphQuadInstance stride)
-    // NOTE: GlyphQuadInstance is 48 bytes (not power-of-2), use division for alignment
+    // NOTE: GlyphQuadInstance is 64 bytes; keep the generic division alignment
     size_t textAlign = sizeof(GlyphQuadInstance);
     size_t textBufferOffset = ((offset + textAlign - 1) / textAlign) * textAlign;
     textBufferByteOffset_ = textBufferOffset;
@@ -4250,6 +4454,26 @@ void D3D12DirectRenderer::RecordDrawCommands()
 // Gaussian Blur — Compute Shader Resources
 // ============================================================================
 
+bool D3D12DirectRenderer::EnsureBlurResources()
+{
+    if (blurResourcesReady_) return true;
+    if (blurResourcesInitAttempted_) return false;
+
+    blurResourcesInitAttempted_ = true;
+    if (CreateBlurResources()) return true;
+
+    // CreateBlurResources publishes members incrementally. Drop any partial
+    // objects so a failed optional effect does not retain startup memory.
+    blurCpuHeap_.Reset();
+    blurPSO_.Reset();
+    blurRootSignature_.Reset();
+    blurCS_.Reset();
+    blurResourcesReady_ = false;
+    OutputDebugStringA(
+        "[D3D12DirectRenderer] Lazy blur resource init failed; using fallback overlay\n");
+    return false;
+}
+
 bool D3D12DirectRenderer::CreateBlurResources()
 {
     if (!device_) return false;
@@ -4691,7 +4915,7 @@ bool D3D12DirectRenderer::FlushGraphicsForCompute()
 
 void D3D12DirectRenderer::BlurRegion(float x, float y, float w, float h, float radius)
 {
-    if (!inFrame_ || !blurResourcesReady_ || radius <= 0 || w <= 0 || h <= 0) {
+    if (!inFrame_ || radius <= 0 || w <= 0 || h <= 0 || !EnsureBlurResources()) {
         // Fallback: draw semi-transparent overlay to approximate blur
         if (inFrame_ && w > 0 && h > 0) {
             SdfRectInstance overlay = {};
@@ -5215,7 +5439,7 @@ void D3D12DirectRenderer::DrawSnapshotBlurred(float x, float y, float w, float h
         }
 
         // Blur the region in-place on the back buffer (if requested)
-        if (blurRadius > 0.5f && blurResourcesReady_) {
+        if (blurRadius > 0.5f) {
             BlurRegion(x, y, w, h, blurRadius);
         }
     }
@@ -5247,19 +5471,71 @@ void D3D12DirectRenderer::DrawSnapshotBackdrop(const JaliumBackdropMaterialDesc&
 {
     if (!inFrame_ || m.width <= 0 || m.height <= 0) return;
 
+    // Batched geometry applies the live transform stack CPU-side, but this
+    // immediate quad historically did not: outside a capture the panel rect,
+    // sampling region, blur kernel and rounding all stayed in untransformed
+    // space, so a scaled ancestor (designer zoom) left the backdrop at its
+    // unscaled position and size. Vulkan parity (TryRecordGpuBackdropCommand):
+    // fold the current transform in here — AABB of the transformed panel,
+    // isotropic quantities scaled by the min axis scale. Capture-nested draws
+    // keep the historical capture-local mapping in TryDrawSnapshotBackdropQuad.
+    JaliumBackdropMaterialDesc adjusted = m;
+    const bool inCapture = inOffscreenCapture_ || inRetainedCapture_;
+    if (!inCapture && !transformStack_.empty()) {
+        const Transform2D& t = transformStack_.top();
+        constexpr float kEps = 1e-6f;
+        const bool isIdentity =
+            std::abs(t.m11 - 1.0f) < kEps && std::abs(t.m12) < kEps &&
+            std::abs(t.m21) < kEps && std::abs(t.m22 - 1.0f) < kEps &&
+            std::abs(t.dx) < kEps && std::abs(t.dy) < kEps;
+        if (!isIdentity) {
+            auto transformPoint = [&t](float px, float py, float& outX, float& outY) {
+                outX = px * t.m11 + py * t.m21 + t.dx;
+                outY = px * t.m12 + py * t.m22 + t.dy;
+            };
+            float x0, y0, x1, y1, x2, y2, x3, y3;
+            transformPoint(m.x, m.y, x0, y0);
+            transformPoint(m.x + m.width, m.y, x1, y1);
+            transformPoint(m.x + m.width, m.y + m.height, x2, y2);
+            transformPoint(m.x, m.y + m.height, x3, y3);
+            const float minX = std::min(std::min(x0, x1), std::min(x2, x3));
+            const float minY = std::min(std::min(y0, y1), std::min(y2, y3));
+            const float maxX = std::max(std::max(x0, x1), std::max(x2, x3));
+            const float maxY = std::max(std::max(y0, y1), std::max(y2, y3));
+            adjusted.x = minX;
+            adjusted.y = minY;
+            adjusted.width = maxX - minX;
+            adjusted.height = maxY - minY;
+            if (adjusted.width <= 0.0f || adjusted.height <= 0.0f) return;
+
+            float sx = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
+            float sy = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
+            if (sx <= 0.0f) sx = 1.0f;
+            if (sy <= 0.0f) sy = 1.0f;
+            const float effectScale = std::min(sx, sy);
+            adjusted.blurRadius *= effectScale;
+            adjusted.blurSigma *= effectScale;
+            adjusted.cornerRadiusTL *= effectScale;
+            adjusted.cornerRadiusTR *= effectScale;
+            adjusted.cornerRadiusBR *= effectScale;
+            adjusted.cornerRadiusBL *= effectScale;
+        }
+    }
+
     // Material route: compute Gaussian region blur + the full colour pipeline
     // (brightness/contrast/saturation/hue/grayscale/sepia/invert), tint with
     // alpha, grain, frost jitter, opacity and anti-aliased per-corner rounding.
-    if (TryDrawSnapshotBackdropQuad(m)) {
+    if (TryDrawSnapshotBackdropQuad(adjusted)) {
         return;
     }
 
     // Fallback (backdrop PSO unavailable): the legacy blit + BlurRegion + tint
     // sequence. The colour pipeline / grain are not applied here, but the
     // backdrop still shows blurred + tinted content instead of vanishing.
-    DrawSnapshotBlurred(m.x, m.y, m.width, m.height, m.blurRadius,
-                        m.tintR, m.tintG, m.tintB, m.tintA,
-                        m.cornerRadiusTL, m.cornerRadiusTR, m.cornerRadiusBR, m.cornerRadiusBL);
+    DrawSnapshotBlurred(adjusted.x, adjusted.y, adjusted.width, adjusted.height, adjusted.blurRadius,
+                        adjusted.tintR, adjusted.tintG, adjusted.tintB, adjusted.tintA,
+                        adjusted.cornerRadiusTL, adjusted.cornerRadiusTR,
+                        adjusted.cornerRadiusBR, adjusted.cornerRadiusBL);
 }
 
 // ============================================================================
@@ -5941,11 +6217,19 @@ D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
         return nullptr;
     }
 
-    // Allocate physical pixels at the current DPI so the layer renders sharp.
-    UINT pw = (UINT)std::ceil(w * dpiScale_);
-    UINT ph = (UINT)std::ceil(h * dpiScale_);
+    // Match the main target's pixel grid. Using ceil(w*dpi) with a viewport
+    // still mapped to fractional w rescales every glyph/path during capture,
+    // and compositing at a fractional origin filters the result a second time.
+    const float pixelLeft = std::floor(x * dpiScale_);
+    const float pixelTop = std::floor(y * dpiScale_);
+    const float captureX = pixelLeft / dpiScale_;
+    const float captureY = pixelTop / dpiScale_;
+    UINT pw = (UINT)(std::ceil((x + w) * dpiScale_) - pixelLeft);
+    UINT ph = (UINT)(std::ceil((y + h) * dpiScale_) - pixelTop);
     if (pw == 0) pw = 1;
     if (ph == 0) ph = 1;
+    const float captureW = (float)pw / dpiScale_;
+    const float captureH = (float)ph / dpiScale_;
 
     // Stale-generation guard (device-lost recovery): a layer created on a
     // previous, now-removed device must never reach EnsureSize. A same-size
@@ -5967,6 +6251,7 @@ D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
         if (created) delete layer;
         return nullptr;
     }
+    layer->SetCaptureBounds(captureX - x, captureY - y, captureW, captureH, w, h);
 
     if (!FlushGraphicsForCompute()) {
         // Device lost — frame will abort; never open the capture. A layer we
@@ -6004,15 +6289,14 @@ D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
     savedRetainedRoundedClipStack_ = std::move(roundedClipStack_);
     roundedClipStack_.clear();
 
-    // Shift screen coords → layer-local coords (content drawn at world (x,y)
-    // lands at the texture origin).
-    PushTransform(1, 0, 0, 1, -x, -y);
+    // Preserve the screen-space pixel phase inside the padded layer texture.
+    PushTransform(1, 0, 0, 1, -captureX, -captureY);
 
     // Frame constants map the DIP capture area to [-1,+1] NDC (viewport → pixels).
-    currentFrameConstants_.screenWidth = w;
-    currentFrameConstants_.screenHeight = h;
-    currentFrameConstants_.invScreenWidth = 1.0f / w;
-    currentFrameConstants_.invScreenHeight = 1.0f / h;
+    currentFrameConstants_.screenWidth = captureW;
+    currentFrameConstants_.screenHeight = captureH;
+    currentFrameConstants_.invScreenWidth = 1.0f / captureW;
+    currentFrameConstants_.invScreenHeight = 1.0f / captureH;
 
     // Stash the active capture target for the stencil-path arm (exitPathMode):
     // path content must resolve into this layer texture, not the back buffer.
@@ -6128,18 +6412,14 @@ void D3D12DirectRenderer::CompositeRetainedLayer(
     // Only composite a realized (sampleable) layer.
     if (layer->State() != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) return;
 
-    // The texture was sized to ceil(w*dpi) × ceil(h*dpi) at realize; if the
-    // composite size matches, uvMax ≈ 1. Clamp so we never sample past the edge.
-    UINT pw = (UINT)std::ceil(w * dpiScale_);
-    UINT ph = (UINT)std::ceil(h * dpiScale_);
-    if (pw == 0) pw = 1;
-    if (ph == 0) ph = 1;
-    float uvMaxX = (layer->PixelWidth()  > 0) ? std::min(1.0f, (float)pw / (float)layer->PixelWidth())  : 1.0f;
-    float uvMaxY = (layer->PixelHeight() > 0) ? std::min(1.0f, (float)ph / (float)layer->PixelHeight()) : 1.0f;
+    // Composite the full pixel-aligned capture, including its origin padding.
+    // With unchanged content bounds this is a 1:1 texel copy; an explicitly
+    // resized destination still scales the original content and padding together.
+    layer->MapCompositeBounds(x, y, w, h);
 
     // AddBitmap applies the live transform stack (scale+translate) and ambient
     // opacity; the layer texture carries no upload buffer (RT-sourced).
-    AddBitmap(x, y, w, h, opacity, layer->Texture(), swapChainFormat_, uvMaxX, uvMaxY);
+    AddBitmap(x, y, w, h, opacity, layer->Texture(), swapChainFormat_, 1.0f, 1.0f);
 }
 
 void D3D12DirectRenderer::DestroyRetainedLayer(D3D12RetainedLayer* layer)
@@ -6769,7 +7049,7 @@ bool D3D12DirectRenderer::TryDrawDesktopBackdropQuad(float x, float y, float w, 
 bool D3D12DirectRenderer::BlurSnapshotRegion(const JaliumBackdropMaterialDesc& m,
                                              BackdropBlurRegion& out)
 {
-    if (!inFrame_ || !blurResourcesReady_ || !snapshotValid_ || !snapshotTexture_ ||
+    if (!inFrame_ || !snapshotValid_ || !snapshotTexture_ ||
         snapshotW_ == 0 || snapshotH_ == 0 || viewportWidth_ == 0 || viewportHeight_ == 0) {
         return false;
     }
@@ -6781,6 +7061,7 @@ bool D3D12DirectRenderer::BlurSnapshotRegion(const JaliumBackdropMaterialDesc& m
     if (physRadius < 0.5f) {
         return false;   // nothing to blur: the caller resamples the snapshot directly
     }
+    if (!EnsureBlurResources()) return false;
 
     // Downsample tier from the physical radius (same thresholds as the Vulkan
     // backend): the kernel then runs over 1/4 or 1/16 of the pixels and large
@@ -7180,11 +7461,12 @@ bool D3D12DirectRenderer::TryDrawSnapshotBackdropQuad(const JaliumBackdropMateri
 
 bool D3D12DirectRenderer::BlurOffscreenSlot(int slot, float radius)
 {
-    if (!inFrame_ || !blurResourcesReady_ || slot < 0 || slot > 1 ||
+    if (!inFrame_ || slot < 0 || slot > 1 ||
         !offscreenRT_[slot] || !offscreenCaptureValid_[slot]) {
         return false;
     }
     if (radius <= 0) return true; // nothing to blur
+    if (!EnsureBlurResources()) return false;
 
     // Scale DIP radius to physical pixels for the compute shader
     float pixelRadius = radius * dpiScale_;
@@ -7397,8 +7679,9 @@ bool D3D12DirectRenderer::BlurOffscreenSlot(int slot, float radius)
 
 bool D3D12DirectRenderer::BlurSnapshotForGlass(float blurRadius)
 {
-    if (!snapshotValid_ || !snapshotTexture_ || !blurResourcesReady_) return false;
+    if (!snapshotValid_ || !snapshotTexture_) return false;
     if (blurRadius <= 0) return false;
+    if (!EnsureBlurResources()) return false;
 
     UINT w = snapshotW_;
     UINT h = snapshotH_;

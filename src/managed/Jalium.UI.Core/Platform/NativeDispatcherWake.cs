@@ -8,7 +8,7 @@ namespace Jalium.UI.Core.Platform;
 /// </summary>
 internal sealed partial class NativeDispatcherWake : IDispatcherWake
 {
-    private const string PlatformLib = "jalium.native.platform";
+    private const string PlatformLib = JaliumNativeLibraryNames.Platform;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeDispatcherCallbackDelegate(nint userData);

@@ -403,6 +403,25 @@ float4 main(PsInput input) : SV_Target
         const float2 halfOuter = gPushConstants.innerRoundedClipRect.xy * 0.5f;
         const float2 p = input.localPos - halfOuter;
 
+        // A 1-pixel box filter is the exact coverage for a straight edge, but a
+        // SHALLOW rotation lands its whole ramp inside one pixel row and leaves a
+        // 1/tan(theta)-long stair (14px at 4 degrees) that reads as a jagged edge
+        // even though every covered pixel is analytically correct. Widening the
+        // band to 1.4px on a rotated instance spreads that ramp over two rows and
+        // dissolves the stair.
+        //
+        // The rotation is read straight off the local SDF's own Jacobian, so no
+        // push constant is needed: for a pure rotation ddx(localPos) is
+        // (1/s)(cos, sin), making |ddx.y| / |ddx| exactly |sin(theta)|. The *16
+        // saturates by ~3.6 degrees, and the ramp below that keeps a sub-degree
+        // transform from stepping visibly. This mirrors the aaScale D3D12's
+        // sdf_rect vertex shader computes from its 2x3 affine.
+        const float2 dLocalX = ddx(input.localPos);
+        const float2 dLocalY = ddy(input.localPos);
+        const float localShear = max(abs(dLocalX.y) / max(length(dLocalX), 1e-6f),
+                                     abs(dLocalY.x) / max(length(dLocalY), 1e-6f));
+        const float aaScale = 1.0f + 0.4f * saturate(localShear * 16.0f);
+
         // Repack TL,TR,BR,BL -> (BR,TR,TL,BL) for sdRoundedBoxLocal, then clamp
         // each corner to the box half-extent — identical to D3D12 sdf_rect
         // (r = min(r, min(halfSize.x, halfSize.y))).
@@ -451,6 +470,7 @@ float4 main(PsInput input) : SV_Target
                 centerDist = sdRoundedBoxLocal(p, centerHalf, rCenter);
                 aa = JaliumSdfAaWidth(centerDist);
             }
+            aa *= aaScale;
             const float strokeDist = abs(centerDist) - halfStroke;
             cov = 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, strokeDist);
         } else {
@@ -468,7 +488,8 @@ float4 main(PsInput input) : SV_Target
                     gPushConstants.innerPerCornerRadiusX,
                     gPushConstants.shadowParams.y)
                 : JaliumSdfAaWidth(distOuter);
-            cov = 1.0f - smoothstep(-aaOuter * 0.5f, aaOuter * 0.5f, distOuter);
+            const float aaOuterWide = aaOuter * aaScale;
+            cov = 1.0f - smoothstep(-aaOuterWide * 0.5f, aaOuterWide * 0.5f, distOuter);
         }
 
         cov *= OuterRoundedClipCoverage(input.position.xy);

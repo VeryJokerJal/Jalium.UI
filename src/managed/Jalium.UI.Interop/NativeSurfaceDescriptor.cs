@@ -9,7 +9,10 @@ internal enum NativePlatform
     LinuxX11 = 2,
     Android = 3,
     MacOS = 4,
-    LinuxWayland = 5
+    LinuxWayland = 5,
+    IOS = 6,
+    TvOS = 7,
+    VisionOS = 8
 }
 
 internal enum NativeSurfaceKind
@@ -85,6 +88,30 @@ internal readonly struct NativeSurfaceDescriptor
     {
         return new NativeSurfaceDescriptor(
             NativePlatform.MacOS,
+            composition ? NativeSurfaceKind.CompositionTarget : NativeSurfaceKind.NativeWindow,
+            viewHandle);
+    }
+
+    public static NativeSurfaceDescriptor ForIOSView(nint viewHandle, bool composition = false)
+    {
+        return new NativeSurfaceDescriptor(
+            NativePlatform.IOS,
+            composition ? NativeSurfaceKind.CompositionTarget : NativeSurfaceKind.NativeWindow,
+            viewHandle);
+    }
+
+    public static NativeSurfaceDescriptor ForTvOSView(nint viewHandle, bool composition = false)
+    {
+        return new NativeSurfaceDescriptor(
+            NativePlatform.TvOS,
+            composition ? NativeSurfaceKind.CompositionTarget : NativeSurfaceKind.NativeWindow,
+            viewHandle);
+    }
+
+    public static NativeSurfaceDescriptor ForVisionOSView(nint viewHandle, bool composition = false)
+    {
+        return new NativeSurfaceDescriptor(
+            NativePlatform.VisionOS,
             composition ? NativeSurfaceKind.CompositionTarget : NativeSurfaceKind.NativeWindow,
             viewHandle);
     }

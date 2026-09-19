@@ -231,6 +231,12 @@ public sealed class PointerPointProperties
     /// </summary>
     public bool IsInverted { get; init; }
 
+    /// <summary>Gets whether this point is an OS-coalesced high-rate sample.</summary>
+    public bool IsCoalesced { get; init; }
+
+    /// <summary>Gets whether this point is an OS-predicted future sample.</summary>
+    public bool IsPredicted { get; init; }
+
     /// <summary>
     /// Gets the contact area rectangle.
     /// </summary>

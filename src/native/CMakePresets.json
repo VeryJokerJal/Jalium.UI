@@ -2,7 +2,7 @@
   "version": 6,
   "cmakeMinimumRequired": {
     "major": 3,
-    "minor": 25,
+    "minor": 28,
     "patch": 0
   },
   "configurePresets": [
@@ -105,6 +105,104 @@
         "JALIUM_LINUX_LIBC": "musl",
         "JALIUM_NATIVE_RID": "linux-musl-arm64"
       }
+    },
+    {
+      "name": "apple-base",
+      "hidden": true,
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": "NO",
+        "JALIUM_BUILD_DEMOS": false,
+        "JALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER": true
+      }
+    },
+    {
+      "name": "apple-macos-arm64",
+      "displayName": "Apple macOS 15 arm64",
+      "inherits": "apple-base",
+      "cacheVariables": {
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "15.0",
+        "JALIUM_BUILD_STATIC": false,
+        "JALIUM_METAL_BUILD_TESTS": true,
+        "JALIUM_NATIVE_RID": "osx-arm64"
+      }
+    },
+    {
+      "name": "apple-embedded-base",
+      "hidden": true,
+      "inherits": "apple-base",
+      "cacheVariables": {
+        "JALIUM_BUILD_STATIC": true,
+        "JALIUM_METAL_BUILD_TESTS": false
+      }
+    },
+    {
+      "name": "apple-ios-arm64",
+      "displayName": "Apple iOS/iPadOS 18 device arm64",
+      "inherits": "apple-embedded-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "18.0",
+        "JALIUM_NATIVE_RID": "ios-arm64"
+      }
+    },
+    {
+      "name": "apple-iossimulator-arm64",
+      "displayName": "Apple iOS/iPadOS 18 simulator arm64",
+      "inherits": "apple-embedded-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphonesimulator",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "18.0",
+        "JALIUM_NATIVE_RID": "iossimulator-arm64"
+      }
+    },
+    {
+      "name": "apple-tvos-arm64",
+      "displayName": "Apple tvOS 18 device arm64",
+      "inherits": "apple-embedded-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "tvOS",
+        "CMAKE_OSX_SYSROOT": "appletvos",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "18.0",
+        "JALIUM_NATIVE_RID": "tvos-arm64"
+      }
+    },
+    {
+      "name": "apple-tvossimulator-arm64",
+      "displayName": "Apple tvOS 18 simulator arm64",
+      "inherits": "apple-embedded-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "tvOS",
+        "CMAKE_OSX_SYSROOT": "appletvsimulator",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "18.0",
+        "JALIUM_NATIVE_RID": "tvossimulator-arm64"
+      }
+    },
+    {
+      "name": "apple-visionos-arm64",
+      "displayName": "Apple visionOS 2 device arm64 (native validation)",
+      "inherits": "apple-embedded-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "visionOS",
+        "CMAKE_OSX_SYSROOT": "xros",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "2.0",
+        "JALIUM_NATIVE_RID": "visionos-arm64"
+      }
+    },
+    {
+      "name": "apple-visionossimulator-arm64",
+      "displayName": "Apple visionOS 2 simulator arm64 (native validation)",
+      "inherits": "apple-embedded-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "visionOS",
+        "CMAKE_OSX_SYSROOT": "xrsimulator",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "2.0",
+        "JALIUM_NATIVE_RID": "visionossimulator-arm64"
+      }
     }
   ],
   "buildPresets": [
@@ -139,6 +237,41 @@
     {
       "name": "build-linux-cross-musl-arm64",
       "configurePreset": "linux-cross-musl-arm64"
+    },
+    {
+      "name": "build-apple-macos-arm64",
+      "configurePreset": "apple-macos-arm64",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-apple-ios-arm64",
+      "configurePreset": "apple-ios-arm64",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-apple-iossimulator-arm64",
+      "configurePreset": "apple-iossimulator-arm64",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-apple-tvos-arm64",
+      "configurePreset": "apple-tvos-arm64",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-apple-tvossimulator-arm64",
+      "configurePreset": "apple-tvossimulator-arm64",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-apple-visionos-arm64",
+      "configurePreset": "apple-visionos-arm64",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-apple-visionossimulator-arm64",
+      "configurePreset": "apple-visionossimulator-arm64",
+      "configuration": "Release"
     }
   ]
 }

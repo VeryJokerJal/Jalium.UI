@@ -135,7 +135,7 @@ internal sealed class WindowsBrowserInteropBackend : IBrowserInteropBackend
 
 internal static class WindowsBrowserNativeMethods
 {
-    private const string BrowserLib = "jalium.native.browser";
+    private const string BrowserLib = JaliumNativeLibraryNames.Browser;
 
     [DllImport(BrowserLib, EntryPoint = "jalium_webview2_initialize", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int Initialize();

@@ -36,12 +36,17 @@ public:
 
     /// Override: hardware-timestamp GPU breakdown for the previous frame.
     JaliumResult QueryGpuTiming(JaliumGpuTimingStats* out) const override;
+    JaliumResult WaitForCompletion() override;
 
     /// Override: return the swap-chain frame-latency waitable HANDLE as
     /// intptr_t. Returns 0 when the swap chain was created without the
     /// FRAME_LATENCY_WAITABLE_OBJECT flag (older runtimes).
     intptr_t GetFrameLatencyWaitable() const override {
         return reinterpret_cast<intptr_t>(frameLatencyWaitable_);
+    }
+
+    bool UsesSoftwareDisplayRoute() const {
+        return softwareDisplayRoute_;
     }
 
     /// Override: report current swap chain present configuration (SwapEffect /
@@ -295,6 +300,12 @@ private:
     // 是否核显(UMA)。仅用于诊断/标签。
     bool isIntegratedAdapter_ = false;
 
+    // True when DXGI reports that the monitor containing hwnd_ belongs to a
+    // software adapter (normally Microsoft Basic Render Driver). Rendering may
+    // still happen on AMD/NVIDIA, but a D3D12 flip present then crosses adapters
+    // and can retire at only a few frames per second.
+    bool softwareDisplayRoute_ = false;
+
     bool CreateSwapChain();
     void WaitForAllFrames();
     JaliumResult CommitCompositionResizePlacement(bool waitForCompletion);
@@ -308,6 +319,35 @@ private:
     // observes the correct scissor and transform stacks. Call this before any
     // non-path draw (FillRect, DrawText, DrawBitmap, etc.).
     void FlushVelloIfNeeded();
+    // Bounded variant for draws with known DIP-space extents: skips the Vello
+    // flush when the draw cannot overlap any pending path content.
+    void FlushVelloIfNeeded(float x, float y, float w, float h, int siteTag = 6);
+    // Overlap reroute: when pending Vello content overlaps an incoming small
+    // rect / polygon, encode the primitive INTO the same sub-scene (painter
+    // order inside one dispatch) instead of flushing. Returns true when the
+    // primitive was fully handled.
+    bool TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx, float ry,
+                                          Brush* brush, float strokeWidth, bool fill);
+    bool TryEncodeRectIntoPendingVello(float x, float y, float w, float h,
+                                       float rTL, float rTR, float rBR, float rBL,
+                                       Brush* brush, float strokeWidth, bool fill);
+    bool TryEncodePolygonIntoPendingVello(const float* points, uint32_t pointCount,
+                                          Brush* brush, float strokeWidth, bool closed,
+                                          int32_t lineJoin, float miterLimit,
+                                          bool fill, int32_t fillRule);
+
+    // Vello is excellent at medium/large scenes, but a full compute dispatch
+    // per 12 px icon is disproportionately expensive when text repeatedly cuts
+    // painter-order sub-scenes. The hybrid UI path uses Impeller's cached
+    // analytic coverage only for bounded icon/control geometry, then feeds the
+    // resulting triangles back into DirectRenderer's normal ordered batches.
+    bool EnsureImpellerFrame();
+    bool IsVelloUiGeometryFastPathEligible(float minX, float minY,
+                                            float maxX, float maxY,
+                                            float inflate = 0.0f) const;
+    void FlushVelloBeforeHybridGeometry(float minX, float minY,
+                                         float maxX, float maxY,
+                                         float inflate = 0.0f);
 
     // Flush Impeller tessellated batches into DirectRenderer's triangle pipeline.
     // Called after each Impeller path encode to maintain correct Z-order.
@@ -423,6 +463,7 @@ private:
 
     // Impeller engine (lazy-initialized on first use when engine == IMPELLER)
     std::unique_ptr<ImpellerD3D12Engine> impellerEngine_;
+    bool impellerFrameBegun_ = false;
 
     /// Returns true if the active engine is Impeller.
     bool IsImpellerActive() const {

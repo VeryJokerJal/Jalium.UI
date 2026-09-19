@@ -45,6 +45,18 @@ const AtlasGlyphEntry& GlyphAtlas::GetOrInsert(
 
     if (rasterized.width > 0 && rasterized.height > 0)
     {
+        // A glyph that cannot fit even into an EMPTY atlas must never trigger
+        // the reset-and-retry below: the reset would evict every cached glyph,
+        // the retry would still fail, and the uncached miss would repeat that
+        // on every call — one oversized glyph corrupting/starving all other
+        // text every frame. Cache it as invalid instead so it costs one
+        // rasterization per generation and leaves the atlas untouched.
+        if (rasterized.width + 1 > kAtlasWidth || rasterized.height + 1 > kAtlasHeight)
+        {
+            auto [oversizedIt, _] = cache_.emplace(key, entry);
+            return oversizedIt->second;
+        }
+
         uint32_t outX, outY;
         if (!PackGlyph(rasterized.width, rasterized.height, outX, outY))
         {
@@ -117,8 +129,16 @@ bool GlyphAtlas::PackGlyph(uint32_t w, uint32_t h, uint32_t& outX, uint32_t& out
     uint32_t pw = w + 1;
     uint32_t ph = h + 1;
 
-    // Try to fit in current row
-    if (packX_ + pw <= kAtlasWidth)
+    // Can never fit, not even in an empty atlas. Without this, a glyph wider
+    // than the atlas passed the next-row branch (which only checks height)
+    // and BlitToAtlas wrote past the row end — wrapping into other glyphs'
+    // rows and, on the last rows, past the buffer itself.
+    if (pw > kAtlasWidth || ph > kAtlasHeight)
+        return false;
+
+    // Try to fit in current row. The height check was missing here: a tall
+    // glyph placed near the bottom blitted out of the atlas buffer.
+    if (packX_ + pw <= kAtlasWidth && packY_ + ph <= kAtlasHeight)
     {
         outX = packX_;
         outY = packY_;
@@ -148,16 +168,23 @@ bool GlyphAtlas::PackGlyph(uint32_t w, uint32_t h, uint32_t& outX, uint32_t& out
 void GlyphAtlas::BlitToAtlas(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                               const uint8_t* rgba)
 {
-    for (uint32_t row = 0; row < h; row++)
+    // Defensive clamp: PackGlyph guarantees in-bounds placement, but an
+    // out-of-range rect must never scribble over other rows / past the buffer.
+    if (x >= kAtlasWidth || y >= kAtlasHeight)
+        return;
+    const uint32_t copyW = std::min(w, kAtlasWidth - x);
+    const uint32_t copyH = std::min(h, kAtlasHeight - y);
+
+    for (uint32_t row = 0; row < copyH; row++)
     {
-        uint32_t dstOffset = ((y + row) * kAtlasWidth + x) * kAtlasBytesPerPixel;
-        uint32_t srcOffset = row * w * kAtlasBytesPerPixel;
+        size_t dstOffset = (static_cast<size_t>(y + row) * kAtlasWidth + x) * kAtlasBytesPerPixel;
+        size_t srcOffset = static_cast<size_t>(row) * w * kAtlasBytesPerPixel;
         std::memcpy(atlasPixels_.data() + dstOffset, rgba + srcOffset,
-                    w * kAtlasBytesPerPixel);
+                    copyW * kAtlasBytesPerPixel);
     }
 
     // Track dirty rect
-    dirtyRects_.push_back({x, y, w, h});
+    dirtyRects_.push_back({x, y, copyW, copyH});
 }
 
 } // namespace jalium

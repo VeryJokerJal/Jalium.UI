@@ -127,6 +127,12 @@ public class DependencyObject : DispatcherObject
     public readonly Func<int, Visual?> GetVisualChild;
 
     public DependencyObject()
+        : this(Dispatcher.CurrentDispatcher)
+    {
+    }
+
+    internal DependencyObject(Dispatcher dispatcher)
+        : base(dispatcher)
     {
         GetVisualChild = GetVisualChildCompatibility;
     }
@@ -203,7 +209,11 @@ public class DependencyObject : DispatcherObject
         TemplateTrigger,
         StyleSetter,
         /// <summary>模板对**自己生成的具名部件**下的 trigger（TargetName）。仅次于 local。</summary>
-        ParentTemplateTrigger
+        ParentTemplateTrigger,
+        /// <summary>CSS 引擎:胜者选择器含动态伪类(:hover 等)。高于 StyleTrigger、低于 ParentTemplate。</summary>
+        CssState,
+        /// <summary>CSS 引擎:普通命中值与内联 Css.Style。高于 StyleSetter、低于 TemplateTrigger。</summary>
+        CssBase,
     }
 
     private enum ValueMutationKind : byte
@@ -300,13 +310,34 @@ public class DependencyObject : DispatcherObject
     public virtual object? GetValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        object? value = GetValueState(dp).Value;
+        object? value;
+        if (!dp.MayCoerce)
+        {
+            // Layout only needs the effective value. Avoid constructing the
+            // diagnostic ValueState and probing binding/expression flags on
+            // every Width, Margin and font read. Coercion retains its complete
+            // existing path, including the re-entrancy guard and base value.
+            if (_animatedValues?.TryGetValue(dp, out var animated) == true)
+                value = animated.CurrentValue;
+            else if (_valueStore?.TryGetEffective(dp, out var stored, out var source) == true &&
+                     (source != BaseValueSource.Default || !dp.MayInherit))
+                value = stored;
+            else
+                value = dp.MayInherit
+                    ? GetUncoercedBaseValueInternal(dp).value
+                    : dp.GetEffectiveDefaultValue(GetType());
+        }
+        else
+        {
+            value = GetValueState(dp).Value;
+        }
 
         // Keep the ubiquitous non-brush GetValue path allocation-free and free of reflection-
         // based type checks. We only enter owner bookkeeping for a mutable brush, or when a
         // previously registered brush must be detached because this property's value changed.
-        if (value is Brush { IsFrozen: false }
-            || (_mutableRenderBrushValues?.ContainsKey(dp) ?? false))
+        if (dp.IsBrushProperty &&
+            (value is Brush { IsFrozen: false }
+             || (_mutableRenderBrushValues?.ContainsKey(dp) ?? false)))
         {
             return TrackMutableRenderBrushValue(dp, value);
         }
@@ -376,6 +407,13 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     /// <param name="dp">The dependency property to check.</param>
     /// <returns>True if a local value is set; otherwise, false.</returns>
+    /// <summary>
+    /// True when the property carries a local or animated value — the precedence tiers a
+    /// CSS layout-state override must never displace (used by the %-margin guard).
+    /// </summary>
+    internal bool HasLocalOrAnimatedValue(DependencyProperty dp)
+        => HasLocalValue(dp) || _animatedValues?.ContainsKey(dp) == true;
+
     public bool HasLocalValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
@@ -453,6 +491,27 @@ public class DependencyObject : DispatcherObject
         // directly, bypassing the SetLayerValueCore backstop.
         if (IsNullForNonNullableValueType(dp, value))
             return;
+
+        // When the effective value comes from a CSS layer, BaseValueSource reports the closest
+        // WPF analogue (Style/StyleTrigger); dispatching on it would misroute the write into the
+        // StyleSetter/StyleTrigger layer where it stays shadowed by the CSS layer. Write back to
+        // the owning CSS layer instead — the next CSS re-evaluation overwrites it, matching the
+        // "style reapplication overwrites SetCurrentValue" semantics.
+        if (_valueStore is { } cssProbe &&
+            cssProbe.TryGetEffectiveLayer(dp, out var effectiveLayer))
+        {
+            if (effectiveLayer == DependencyValueStore.Layer.CssBase)
+            {
+                SetLayerValue(dp, value, LayerValueSource.CssBase, allowAutoTransition: true);
+                return;
+            }
+
+            if (effectiveLayer == DependencyValueStore.Layer.CssState)
+            {
+                SetLayerValue(dp, value, LayerValueSource.CssState, allowAutoTransition: true);
+                return;
+            }
+        }
 
         var source = GetValueSourceInternal(dp);
         SetCurrentValueForSource(dp, value, source.BaseValueSource, allowAutoTransition: true);
@@ -982,6 +1041,7 @@ public class DependencyObject : DispatcherObject
         var oldValue = GetValue(dp);
 
         var animatedValues = _animatedValues ??= new();
+        dp.InvalidateInheritedSources();
         if (!animatedValues.TryGetValue(dp, out var existing))
         {
             // Store base value for restoration when animation ends
@@ -1331,10 +1391,12 @@ public class DependencyObject : DispatcherObject
         if (!mutateCore.Apply(this, dp))
             return;
 
+        var cssTransitionCleared = this is UIElement element && element.StopCssTransitionForLocalValue(dp);
         var newValue = GetValue(dp);
         if (!Equals(oldValue, newValue))
         {
-            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+            if (!cssTransitionCleared)
+                OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
             if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
             {
                 binding.UpdateSource();
@@ -1364,6 +1426,13 @@ public class DependencyObject : DispatcherObject
                 ClearAnimatedValue(dp);
             }
 
+            return true;
+        }
+
+        if (uiElement.StopCssTransitionForLocalValue(dp))
+        {
+            if (notifyBinding && _bindings?.TryGetValue(dp, out var localBinding) == true)
+                localBinding.UpdateSource();
             return true;
         }
 
@@ -1487,6 +1556,7 @@ public class DependencyObject : DispatcherObject
         BaseValueSource currentSource = BaseValueSource.Unknown)
     {
         (_valueStore ??= new DependencyValueStore()).SetLayer(dp, layer, value, currentSource);
+        dp.InvalidateInheritedSources();
     }
 
     private bool RemoveStoredValue(DependencyProperty dp, DependencyValueStore.Layer layer)
@@ -1494,6 +1564,8 @@ public class DependencyObject : DispatcherObject
         var store = _valueStore;
         if (store is null || !store.RemoveLayer(dp, layer))
             return false;
+
+        dp.InvalidateInheritedSources();
 
         if (store.Count == 0 && ReferenceEquals(_valueStore, store))
             _valueStore = null;
@@ -1508,6 +1580,8 @@ public class DependencyObject : DispatcherObject
         if (existing is null || !existing.Remove(dp))
             return false;
 
+        dp.InvalidateInheritedSources();
+
         if (existing.Count == 0 && ReferenceEquals(values, existing))
             values = null;
 
@@ -1521,6 +1595,8 @@ public class DependencyObject : DispatcherObject
         LayerValueSource.TemplateTrigger => DependencyValueStore.Layer.TemplateTrigger,
         LayerValueSource.StyleSetter => DependencyValueStore.Layer.StyleSetter,
         LayerValueSource.ParentTemplateTrigger => DependencyValueStore.Layer.ParentTemplateTrigger,
+        LayerValueSource.CssState => DependencyValueStore.Layer.CssState,
+        LayerValueSource.CssBase => DependencyValueStore.Layer.CssBase,
         _ => throw new ArgumentOutOfRangeException(nameof(source), source, null),
     };
 
@@ -1532,6 +1608,8 @@ public class DependencyObject : DispatcherObject
             LayerValueSource.TemplateTrigger => BaseValueSource.TemplateTrigger,
             LayerValueSource.StyleSetter => BaseValueSource.Style,
             LayerValueSource.ParentTemplateTrigger => BaseValueSource.ParentTemplateTrigger,
+            LayerValueSource.CssState => BaseValueSource.StyleTrigger,
+            LayerValueSource.CssBase => BaseValueSource.Style,
             _ => BaseValueSource.Unknown
         };
 

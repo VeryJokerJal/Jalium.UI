@@ -29,23 +29,25 @@ using VkVelloDrawBatch = VkImpellerDrawBatch;
 // ============================================================================
 // VelloVulkanEngine — Vulkan Vello-engine adapter.
 //
-// **Status (2026-04-28):** runs on the same CPU-tessellation + scanline-AA
-// pipeline as ImpellerVulkanEngine, NOT on the Vello GPU compute pipeline.
-//
-// Why: the original 5-stage SPIR-V compute pipeline (vulkan_vello_shaders.h:
-// flatten/binAlloc/backdrop/coarse/fine) was wired into Execute() with
-// missing descriptor bindings, no output image layout transition, and only
-// 2 of the 5 storage buffers actually allocated in EnsureBuffers — so it
-// could never produce visually correct output. Rewiring that requires the
-// SPIR-V's std430 buffer layout to match the C++ structs, which the binary
-// doesn't expose. Until proper Vello compute shaders land, this engine
-// shares the Impeller path so Vello hot-switch at least produces visually
-// correct frames (algorithmically identical to Impeller, just labelled
-// VELLO so RenderingEngine.GetType()/the user-facing toggle works).
+// **Status (2026-08-30):** dual-path. When the device supports
+// VK_EXT_scalar_block_layout the render target constructs the real Vello
+// 0.10.0 GPU compute pipeline (VelloComputePipeline, 19 stages) and calls
+// SetComputeMode(true); every Encode* then feeds the shared
+// VelloSceneEncoder (jalium_vello_encode.h). The pending encodes are cut
+// into sub-scenes at every non-path replay command (CutPendingToSubScene,
+// driven by MaybeEmitEngineSpan) and each sub-scene runs Record() + the
+// fullscreen composite at ITS VelloSceneSpan position in the stream —
+// painter-order correct, exactly like D3D12's FlushVelloIfNeeded. Without
+// compute mode this engine falls back to the same CPU-tessellation +
+// scanline-AA / stencil pipeline as ImpellerVulkanEngine, so Vello
+// hot-switch still produces visually correct frames on older devices
+// (algorithmically
+// identical to Impeller, just labelled VELLO so RenderingEngine.GetType()
+// and the user-facing toggle work).
 //
 // The engine is intentionally a copy of the Impeller engine's structure
-// (rather than a `using` alias) so that future work can swap in real
-// compute-pipeline rendering without touching every Encode caller.
+// (rather than a `using` alias) so the two paths can diverge without
+// touching every Encode caller.
 // ============================================================================
 
 // VkVelloVertex / VkVelloDrawBatch are aliases above; struct definitions
@@ -126,7 +128,7 @@ public:
     uint32_t GetEncodedPathCount() const override;
 
     const std::vector<VkVelloDrawBatch>& GetBatches() const { return batches_; }
-    void ClearBatches() { batches_.clear(); }
+    void ClearBatches() { batches_.clear(); subScenes_.clear(); }
 
     // ── Real Vello GPU compute path ────────────────────────────────────────
     // When the render target's VelloComputePipeline is live (the device exposes
@@ -142,6 +144,36 @@ public:
     // frame before reading GetScene().
     void FinalizeScene() { sceneEncoder_.Finalize(); }
     const VelloScene& GetScene() const { return sceneEncoder_.scene(); }
+    // Mutable access for VelloComputePipeline::Record (packs the scene and
+    // derives the per-dispatch config on demand).
+    VelloSceneEncoder& SceneEncoder() { return sceneEncoder_; }
+
+    // ── Mid-frame sub-scenes (painter-order interleaving, compute mode) ────
+    // The render target cuts the encoder's pending work into a self-contained
+    // sub-scene right before a non-path replay command records (the compute
+    // analogue of the CPU-batch EngineBatchSpan / D3D12 FlushVelloIfNeeded).
+    // Each sub-scene gets its own dispatch graph + composite at ITS position
+    // in the replay stream, which is what keeps the painter's algorithm
+    // correct — the old frame-end single-scene consume painted every path on
+    // top of everything drawn after it (z-order inversion).
+    // Returns the queued index on success, or -1 when nothing was pending.
+    // Re-applies the engine's sticky scissor mirror to the re-opened encoder
+    // (CutSubScene closes the scissor clip layer as part of finalize).
+    int32_t CutPendingToSubScene() {
+        if (!computeMode_ || !sceneEncoder_.HasWork()) return -1;
+        VelloSubScene sub;
+        if (!sceneEncoder_.CutSubScene(sub)) return -1;
+        subScenes_.push_back(std::move(sub));
+        if (hasScissor_) {
+            sceneEncoder_.SetScissor(scissorLeft_, scissorTop_,
+                                     scissorRight_, scissorBottom_);
+        }
+        return static_cast<int32_t>(subScenes_.size() - 1);
+    }
+    size_t SubSceneCount() const { return subScenes_.size(); }
+    const VelloSubScene& SubScene(size_t i) const { return subScenes_[i]; }
+    const std::vector<VelloSubScene>& SubScenes() const { return subScenes_; }
+    void ClearSubScenes() { subScenes_.clear(); }
 
     /// Push a batch and snapshot scissor + coverage, then COALESCE it into the
     /// previous batch when both are solid-fill (pipelineType==0, no stencil
@@ -340,6 +372,9 @@ private:
     // The real Vello GPU-compute scene encoder (active when computeMode_).
     VelloSceneEncoder sceneEncoder_;
     bool computeMode_ = false;
+    // Sub-scenes cut this frame, indexed by the VelloSceneSpan replay
+    // commands. Cleared with the batches at frame end (ClearBatches).
+    std::vector<VelloSubScene> subScenes_;
 };
 
 } // namespace jalium

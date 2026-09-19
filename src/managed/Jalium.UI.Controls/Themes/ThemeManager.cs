@@ -529,6 +529,29 @@ public static class ThemeManager
     internal static int CurrentThemeVersion => _themeVersion;
 
     /// <summary>
+    /// Releases the application instance currently hosting the managed theme
+    /// dictionaries while retaining the dictionaries for a replacement application.
+    /// </summary>
+    internal static void Cleanup(Application app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        if (!ReferenceEquals(_application, app))
+        {
+            return;
+        }
+
+        if (_genericThemeDictionary != null ||
+            _accentDictionary != null ||
+            _typographyDictionary != null)
+        {
+            DetachManagedDictionaries(app);
+        }
+
+        _application = null;
+    }
+
+    /// <summary>
     /// Resets the theme system, allowing re-initialization.
     /// Primarily for testing purposes.
     /// </summary>

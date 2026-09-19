@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Interop;
 using Jalium.UI.Interop.Win32;
@@ -31,6 +31,13 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _disposed;
+
+    /// <summary>
+    /// Whether this indicator HWND presents through DirectComposition
+    /// (<c>WS_EX_NOREDIRECTIONBITMAP</c>) or through its own DWM redirection surface.
+    /// See <see cref="CompositionSurfacePolicy"/>.
+    /// </summary>
+    private bool _useDirectComposition = true;
     private int _width;
     private int _height;
     private double _dpiScale = 1.0;
@@ -82,9 +89,16 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     {
         RegisterWindowClass();
 
+        // Only a DirectComposition-capable backend may drop the redirection surface;
+        // Vulkan / software present INTO it and would show nothing at all. See
+        // CompositionSurfacePolicy.
+        _useDirectComposition = CompositionSurfacePolicy.BackendSupportsDirectComposition(
+            CompositionSurfacePolicy.ResolveHostBackend(RenderBackend.Auto));
+
         _hwnd = CreateWindowEx(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST
-                | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT,
+            CompositionSurfacePolicy.ApplyRedirectionStyle(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
+                _useDirectComposition),
             IndicatorWindowClassName,
             "",
             WS_POPUP,
@@ -97,6 +111,11 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         if (_hwnd == nint.Zero) return;
 
         _windows[_hwnd] = this;
+
+        if (!_useDirectComposition)
+        {
+            CompositionSurfacePolicy.EnableRedirectionSurfaceAlpha(_hwnd);
+        }
 
         try
         {
@@ -214,6 +233,19 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         _renderTarget = null;
 
         var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceReplaceContext);
+
+        if (_platformWindow == null && _hwnd != nint.Zero)
+        {
+            // A backend fallback can flip the presentation mode under a live indicator.
+            bool useDirectComposition =
+                CompositionSurfacePolicy.BackendSupportsDirectComposition(context.Backend);
+            if (useDirectComposition != _useDirectComposition)
+            {
+                _useDirectComposition = useDirectComposition;
+                CompositionSurfacePolicy.SyncRedirectionStyle(_hwnd, useDirectComposition);
+            }
+        }
+
         if (_platformWindow != null)
         {
             var surface = _platformWindow.GetSurface();

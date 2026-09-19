@@ -275,6 +275,10 @@ public class StackPanel : Panel, IScrollInfo
                 if (child.Visibility == Visibility.Collapsed)
                     continue;
 
+                // position:absolute children are out of flow (measured separately below).
+                if (IsCssAbsolute(child))
+                    continue;
+
                 // Measure with the constrained cross-axis first so stretch/layout-driven content
                 // (for example Grid with star columns) can establish its viewport-based layout.
                 // Only if the constrained pass already overflows on the scrollable cross axis do
@@ -324,6 +328,8 @@ public class StackPanel : Panel, IScrollInfo
             ReleaseLayoutChildren(layoutChildren);
         }
 
+        MeasureCssAbsoluteChildren(availableSize);
+
         var extent = isVertical
             ? new Size(maxCross, totalHeight)
             : new Size(totalWidth, maxCross);
@@ -361,6 +367,10 @@ public class StackPanel : Panel, IScrollInfo
             {
                 // Skip collapsed children
                 if (child.Visibility == Visibility.Collapsed)
+                    continue;
+
+                // position:absolute children are placed by the inset protocol below.
+                if (IsCssAbsolute(child))
                     continue;
 
                 if (sawVisible)
@@ -409,6 +419,8 @@ public class StackPanel : Panel, IScrollInfo
             ReleaseLayoutChildren(layoutChildren);
         }
 
+        ArrangeCssAbsoluteChildren(finalSize);
+
         // Update viewport if scrolling
         if (ScrollOwner != null)
         {
@@ -452,6 +464,47 @@ public class StackPanel : Panel, IScrollInfo
     #endregion
 
     #region Property Changed Callbacks
+
+    /// <summary>
+    /// CSS interception: StackPanel understands flex-direction by mapping it onto its own
+    /// Orientation (the canonical example of the panel-level CSS interception protocol).
+    /// Values flow through the setter into the CSS layers, so a rule that stops matching
+    /// automatically restores the previous orientation.
+    /// </summary>
+    protected internal override bool TryApplyCssPropertyCore(
+        string propertyName, string rawValue, in Jalium.UI.Styling.CssDeclarationSetter setter)
+    {
+        if (propertyName.Equals("flex-direction", StringComparison.OrdinalIgnoreCase))
+        {
+            var value = rawValue.Trim();
+            if (value.Equals("row", StringComparison.OrdinalIgnoreCase))
+            {
+                setter.Set(OrientationProperty, Orientation.Horizontal);
+                return true;
+            }
+
+            if (value.Equals("column", StringComparison.OrdinalIgnoreCase))
+            {
+                setter.Set(OrientationProperty, Orientation.Vertical);
+                return true;
+            }
+
+            if (value.Equals("row-reverse", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("column-reverse", StringComparison.OrdinalIgnoreCase))
+            {
+                setter.ReportLossy("StackPanel cannot reverse; use FlexPanel for reverse directions");
+                setter.Set(OrientationProperty,
+                    value.StartsWith("row", StringComparison.OrdinalIgnoreCase)
+                        ? Orientation.Horizontal
+                        : Orientation.Vertical);
+                return true;
+            }
+
+            return false;
+        }
+
+        return base.TryApplyCssPropertyCore(propertyName, rawValue, in setter);
+    }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {

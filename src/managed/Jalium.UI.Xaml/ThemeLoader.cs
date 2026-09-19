@@ -44,6 +44,20 @@ public static class ThemeLoader
         // 让渲染层强转崩溃。
         Style.StringValueConverter = TypeConverterRegistry.ConvertValue;
 
+        // CSS 样式表的 pack/application URI 取流（CssStyleSheet.FromUri）。Core 看不到
+        // Application，与 TypeResolver 同构地经钩子注入。
+        Jalium.UI.Styling.CssStyleSheet.UriStreamResolver = static uri =>
+        {
+            try
+            {
+                return Application.GetResourceStream(uri)?.Stream;
+            }
+            catch
+            {
+                return null;
+            }
+        };
+
         // NOTE on intentional restraint: this ModuleInitializer ONLY registers callbacks
         // (XamlLoader, SourceLoader, StartupObjectLoader, type resolver, value converter).
         // It MUST NOT call back into ThemeManager.Initialize here — even guarded by
@@ -180,7 +194,7 @@ public static class ThemeLoader
 
             if (TryParsePackComponentUri(sourceUriText, out var packAssemblyName, out var componentPath))
             {
-                assembly = ResolveAssembly(packAssemblyName);
+                assembly = ResolveAssembly(packAssemblyName, sourceAssembly);
                 if (assembly == null)
                 {
                     LogResourceDictionaryLoadFailure(sourceUri, $"Pack component assembly '{packAssemblyName}' could not be loaded.");
@@ -193,7 +207,7 @@ public static class ThemeLoader
                      sourceUri.Scheme.Equals("resource", StringComparison.OrdinalIgnoreCase))
             {
                 var (resourceAssembly, resourcePath) = ParseResourceUri(sourceUri.AbsoluteUri);
-                assembly = ResolveAssembly(resourceAssembly);
+                assembly = ResolveAssembly(resourceAssembly, sourceAssembly);
                 if (assembly == null)
                 {
                     LogResourceDictionaryLoadFailure(sourceUri, $"Resource assembly '{resourceAssembly}' could not be loaded.");
@@ -801,10 +815,22 @@ public static class ThemeLoader
         return dictionary;
     }
 
-    private static Assembly? ResolveAssembly(string assemblyName)
+    private static Assembly? ResolveAssembly(string assemblyName, Assembly? sourceAssembly = null)
     {
         if (string.IsNullOrWhiteSpace(assemblyName))
             return null;
+
+        // Generated framework dictionaries already carry the exact implementation
+        // assembly that registered their builders. Resolving their nested Source
+        // URIs must not enumerate and materialize every assembly in the process.
+        // Keep the historical discovery order for external/application resources,
+        // where several load contexts may contain the same simple assembly name.
+        var controlsAssembly = ThemeManager.ControlsAssembly;
+        if (ReferenceEquals(sourceAssembly, controlsAssembly) &&
+            string.Equals(controlsAssembly.GetName().Name, assemblyName, StringComparison.Ordinal))
+        {
+            return controlsAssembly;
+        }
 
         var loaded = AppDomain.CurrentDomain.GetAssemblies()
             .FirstOrDefault(a => string.Equals(a.GetName().Name, assemblyName, StringComparison.Ordinal));

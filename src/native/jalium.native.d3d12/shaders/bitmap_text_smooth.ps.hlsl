@@ -1,12 +1,8 @@
 #include "rounded_clip.hlsli"
 
-// Bilinear variant of bitmap_text.ps — used ONLY for deformed (transform-scaled)
-// text. The glyph bitmap is already rasterized at its final per-axis size, so it
-// is displayed ~1:1; bilinear (s0) smooths the small in-bucket residual scaling
-// AND the continuous sub-pixel position during an animated deform, so glyphs move
-// together without per-glyph integer snapping/jitter and thin strokes don't
-// shimmer. Normal 1:1 text keeps the point sampler (bitmap_text.ps) for max
-// crispness. Identical logic otherwise (same ClearType dual-source output).
+// Continuous sampling for Ideal grayscale text and transformed/supersampled
+// strikes. Resolve supersampled coverage over the destination pixel footprint;
+// explicit pixel-aligned text keeps bitmap_text.ps and its point sampler.
 Texture2D<float4> glyphAtlas : register(t1);
 SamplerState glyphSampler : register(s0);  // bilinear clamp (smooth sub-pixel for deformed text)
 
@@ -26,12 +22,35 @@ struct PsOutput
     float4 coverage : SV_Target1;
 };
 
+float4 SampleGlyphCoverage(float2 uv)
+{
+    uint atlasWidth = 1, atlasHeight = 1;
+    glyphAtlas.GetDimensions(atlasWidth, atlasHeight);
+    float2 size = float2(atlasWidth, atlasHeight);
+    float2 dx = ddx(uv);
+    float2 dy = ddy(uv);
+    float footprint = max(length(dx * size), length(dy * size));
+    if (footprint > 1.01)
+    {
+        // Resolve the full pixel footprint of supersampled strikes. A single
+        // bilinear lookup undersamples a 2x bitmap at fractional positions,
+        // making thin stems change coverage as a label scrolls or zooms.
+        dx *= 0.25;
+        dy *= 0.25;
+        return (glyphAtlas.SampleLevel(glyphSampler, uv - dx - dy, 0) +
+                glyphAtlas.SampleLevel(glyphSampler, uv + dx - dy, 0) +
+                glyphAtlas.SampleLevel(glyphSampler, uv - dx + dy, 0) +
+                glyphAtlas.SampleLevel(glyphSampler, uv + dx + dy, 0)) * 0.25;
+    }
+    return glyphAtlas.SampleLevel(glyphSampler, uv, 0);
+}
+
 PsOutput main(PsInput input)
 {
     float clipCoverage = RoundedClipCoverage(input.clipPos.xy);
 
     // Atlas is R8G8B8A8_UNORM.
-    float4 atlas = glyphAtlas.Sample(glyphSampler, input.uv);
+    float4 atlas = SampleGlyphCoverage(input.uv);
 
     // Colour-emoji sentinel (see bitmap_text.ps for details).
     if (input.color.r < 0.0)

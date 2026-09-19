@@ -10,7 +10,7 @@ namespace Jalium.UI.Core.Platform;
 /// </summary>
 internal static partial class NativePlatformEventPump
 {
-    private const string PlatformLib = "jalium.native.platform";
+    private const string PlatformLib = JaliumNativeLibraryNames.Platform;
 
     private static volatile bool s_unavailable;
 

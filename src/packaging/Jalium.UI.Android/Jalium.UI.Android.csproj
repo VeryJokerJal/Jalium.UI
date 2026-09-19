@@ -31,7 +31,12 @@
 
   <!-- Include build tools -->
   <ItemGroup>
-    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" PrivateAssets="none" />
+    <!-- Keep the dependency in restore/pack metadata without rebuilding a task assembly
+         that a source consumer may already have loaded into the current MSBuild process. -->
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj"
+                      BuildReference="false"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="none" />
     <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
                       BuildReference="false"
                       ReferenceOutputAssembly="false"

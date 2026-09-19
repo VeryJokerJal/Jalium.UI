@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using Jalium.UI.Media.Animation;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Media;
 
@@ -13,6 +14,17 @@ public abstract partial class Brush : Animatable, IFormattable
     private WeakReference<UIElement>? _singleRenderOwner;
     private int _singleRenderOwnerReferenceCount;
     private ConditionalWeakTable<UIElement, RenderOwnerRegistration>? _renderOwners;
+
+    /// <summary>Initializes a brush on the current dispatcher.</summary>
+    protected Brush()
+    {
+    }
+
+    /// <summary>Initializes a brush on an already selected dispatcher.</summary>
+    internal Brush(Dispatcher dispatcher)
+        : base(dispatcher)
+    {
+    }
 
     private sealed class RenderOwnerRegistration
     {
@@ -214,6 +226,16 @@ public sealed class SolidColorBrush : Brush
     /// </summary>
     /// <param name="color">The brush color.</param>
     public SolidColorBrush(Color color)
+    {
+        Color = color;
+    }
+
+    /// <summary>
+    /// Initializes a literal resource brush while retaining the dispatcher that eager XAML
+    /// construction would have selected.
+    /// </summary>
+    internal SolidColorBrush(Dispatcher dispatcher, Color color)
+        : base(dispatcher)
     {
         Color = color;
     }

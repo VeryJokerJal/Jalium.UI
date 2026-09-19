@@ -16,11 +16,23 @@
 #include <cmath>
 #include <algorithm>
 #include <memory>
+#include <mutex>
 
 namespace jalium {
 
 // Forward declarations
 class SoftwareBackend;
+class SoftwareWorkerPool;
+class SoftwareRetainedLayer;
+class SoftwareEllipseMaskCache;
+class SoftwareTextMaskCache;
+class SoftwareTextCompositeCache;
+class SoftwareBackdropCache;
+class SoftwareRoundedRectMaskCache;
+class SoftwareEllipticalRoundedRectMaskCache;
+class SoftwarePathRasterCache;
+class SoftwareLineRasterCache;
+class SoftwareEffectResultCache;
 #ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
 class WaylandShmPresenter;
 #endif
@@ -31,6 +43,20 @@ class X11SoftwarePresenter;
 // ============================================================================
 // Resource Classes
 // ============================================================================
+
+struct SoftwareGradientRaster {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+    float left = 0.0f;
+    float top = 0.0f;
+    float right = 0.0f;
+    float bottom = 0.0f;
+    float opacity = 1.0f;
+    bool opaque = false;
+    std::vector<uint8_t> pixels;
+};
 
 class SoftwareSolidBrush : public Brush {
 public:
@@ -43,30 +69,58 @@ public:
 class SoftwareLinearGradientBrush : public Brush {
 public:
     float startX, startY, endX, endY;
+    float deltaX = 0, deltaY = 0, inverseLengthSquared = 0;
+    uint32_t spreadMethod; // 0=Pad, 1=Repeat, 2=Reflect
+    // RGB channels are converted to linear light once at brush creation;
+    // positions and alpha retain their wire values.
     std::vector<JaliumGradientStop> stops;
+    std::vector<uint32_t> colorLut;
+    std::vector<float> alphaLut;
     SoftwareLinearGradientBrush(float sx, float sy, float ex, float ey,
-                                const JaliumGradientStop* s, uint32_t count)
-        : startX(sx), startY(sy), endX(ex), endY(ey), stops(s, s + count) {}
+                                const JaliumGradientStop* s, uint32_t count,
+                                uint32_t spread);
+    ~SoftwareLinearGradientBrush() override;
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_LINEAR_GRADIENT; }
 
     void SampleColor(float px, float py, float& outR, float& outG, float& outB, float& outA) const;
+    void SampleColor8(float px, float py,
+                      uint8_t& outR, uint8_t& outG, uint8_t& outB, float& outA) const;
+    std::shared_ptr<const SoftwareGradientRaster> GetOrCreateRaster(
+        float left, float top, float right, float bottom, float opacity) const;
+
+private:
+    mutable std::mutex rasterCacheMutex_;
+    mutable std::vector<std::shared_ptr<SoftwareGradientRaster>> rasterCache_;
+    mutable size_t rasterCacheBytes_ = 0;
 };
 
 class SoftwareRadialGradientBrush : public Brush {
 public:
     float centerX, centerY, radiusX, radiusY, originX, originY;
+    uint32_t spreadMethod; // 0=Pad, 1=Repeat, 2=Reflect
     std::vector<JaliumGradientStop> stops;
+    std::vector<uint32_t> colorLut;
+    std::vector<float> alphaLut;
     SoftwareRadialGradientBrush(float cx, float cy, float rx, float ry,
                                  float ox, float oy,
-                                 const JaliumGradientStop* s, uint32_t count)
-        : centerX(cx), centerY(cy), radiusX(rx), radiusY(ry),
-          originX(ox), originY(oy), stops(s, s + count) {}
+                                 const JaliumGradientStop* s, uint32_t count,
+                                 uint32_t spread);
+    ~SoftwareRadialGradientBrush() override;
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_RADIAL_GRADIENT; }
 
     void SampleColor(float px, float py, float& outR, float& outG, float& outB, float& outA) const;
+    void SampleColor8(float px, float py,
+                      uint8_t& outR, uint8_t& outG, uint8_t& outB, float& outA) const;
+    std::shared_ptr<const SoftwareGradientRaster> GetOrCreateRaster(
+        float left, float top, float right, float bottom, float opacity) const;
+
+private:
+    mutable std::mutex rasterCacheMutex_;
+    mutable std::vector<std::shared_ptr<SoftwareGradientRaster>> rasterCache_;
+    mutable size_t rasterCacheBytes_ = 0;
 };
 
-class SoftwareTextFormat : public TextFormat {
+class SoftwareTextFormat : public TextFormat, public FontUnitMetricsProvider {
 public:
     std::wstring fontFamily;
     float fontSize;
@@ -93,6 +147,7 @@ public:
         JaliumTextMetrics* metrics) override;
 
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+    JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) override;
 
     JaliumResult HitTestPoint(
         const wchar_t*, uint32_t, float, float, float, float,
@@ -108,16 +163,59 @@ public:
     }
 };
 
+struct SoftwareScaledBitmap {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool opaque = false;
+    float destinationWidth = 0.0f;
+    float destinationHeight = 0.0f;
+    float phaseX = 0.0f;
+    float phaseY = 0.0f;
+    float opacity = 1.0f;
+    std::vector<uint8_t> pixels;
+};
+
 class SoftwareBitmap : public Bitmap {
 public:
     uint32_t width_, height_;
     std::vector<uint8_t> pixels_; // BGRA8
+    bool dynamic_ = false;
+    bool opaque_ = false;
 
-    SoftwareBitmap(uint32_t w, uint32_t h, std::vector<uint8_t>&& data)
-        : width_(w), height_(h), pixels_(std::move(data)) {}
+    SoftwareBitmap(
+        uint32_t w, uint32_t h, std::vector<uint8_t>&& data,
+        bool dynamic = false,
+        size_t scaledCacheBudgetBytes = 8u * 1024u * 1024u,
+        bool trackGlobalCache = true)
+        : width_(w), height_(h), pixels_(std::move(data)), dynamic_(dynamic),
+          scaledCacheBudgetBytes_(scaledCacheBudgetBytes),
+          trackGlobalCache_(trackGlobalCache)
+    {
+        if (!dynamic_ && pixels_.size() >= static_cast<size_t>(w) * h * 4u) {
+            opaque_ = true;
+            for (size_t offset = 3; offset < pixels_.size(); offset += 4) {
+                if (pixels_[offset] != 255) { opaque_ = false; break; }
+            }
+        }
+    }
+    ~SoftwareBitmap() override;
 
     uint32_t GetWidth() const override { return width_; }
     uint32_t GetHeight() const override { return height_; }
+
+    std::shared_ptr<const SoftwareScaledBitmap> GetOrCreateScaled(
+        uint32_t width, uint32_t height,
+        float destinationWidth, float destinationHeight,
+        float phaseX, float phaseY, float opacity);
+    size_t ScaledCacheBytes() const;
+    void ClearScaledCache();
+
+private:
+    mutable std::mutex scaledCacheMutex_;
+    std::vector<std::shared_ptr<SoftwareScaledBitmap>> scaledCache_;
+    size_t scaledCacheBytes_ = 0;
+    size_t scaledCacheBudgetBytes_ = 0;
+    bool trackGlobalCache_ = true;
 };
 
 // Software video surface: backed by a SoftwareBitmap (the same BGRA8 vector
@@ -132,7 +230,7 @@ public:
     SoftwareBitmap bitmap;
 
     SoftwareVideoSurface(uint32_t w, uint32_t h)
-        : bitmap(w, h, CreatePixelBuffer(w, h)) {}
+        : bitmap(w, h, CreatePixelBuffer(w, h), true) {}
 
     uint32_t GetWidth()  const override { return bitmap.width_; }
     uint32_t GetHeight() const override { return bitmap.height_; }
@@ -175,9 +273,9 @@ struct SoftwareFramebuffer {
     int32_t height = 0;
 
     void Resize(int32_t w, int32_t h) {
+        pixels.resize(static_cast<size_t>(w) * h * 4, 0);
         width = w;
         height = h;
-        pixels.resize(static_cast<size_t>(w) * h * 4, 0);
     }
 
     void Clear(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -190,6 +288,12 @@ struct SoftwareFramebuffer {
     }
 
     void BlendPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+    void BlendPixelUnchecked(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+    void FillOpaqueSpan(int32_t y, int32_t x0, int32_t x1, uint32_t packedBgra);
+    void BlendSolidSpan(int32_t y, int32_t x0, int32_t x1,
+                        uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+    void BlendBgraSpan(int32_t y, int32_t x0, int32_t x1,
+                       const uint8_t* sourceBgra);
     void BlendPixelSubpixel(int32_t x, int32_t y,
                             uint8_t r, uint8_t g, uint8_t b,
                             uint8_t coverageR, uint8_t coverageG, uint8_t coverageB);
@@ -231,6 +335,9 @@ struct SoftwareClipRect {
     // those paths populate all four per-corner values too.
     float radiusTL = 0, radiusTR = 0, radiusBR = 0, radiusBL = 0;
     float rx = 0, ry = 0;
+    // Set on the clipStack_ entry when this level also pushed a rounded-corner
+    // entry onto roundedClipStack_ (so PopClip pops both in lockstep).
+    bool ownsRounded = false;
     bool Contains(float px, float py) const {
         if (px < x || px >= x + w || py < y || py >= y + h) return false;
 
@@ -268,7 +375,7 @@ struct SoftwareClipRect {
 // Render Target
 // ============================================================================
 
-class SoftwareRenderTarget : public RenderTarget {
+class SoftwareRenderTarget : public RenderTarget, public CpuFramebufferStorageProvider {
 public:
     SoftwareRenderTarget(SoftwareBackend* backend, int32_t width, int32_t height);
     ~SoftwareRenderTarget() override;
@@ -279,6 +386,10 @@ public:
     JaliumResult RequestReadback() override;
     JaliumResult FetchReadback(uint8_t* buf, uint32_t bufStride,
         int32_t* outWidth, int32_t* outHeight) override;
+    JaliumResult QueryGpuStats(JaliumGpuStats* out) const override;
+    JaliumResult ReclaimIdleResources() override;
+    JaliumResult CompactIdleFramebufferStorage() override;
+    JaliumResult QueryMainFramebufferOwnedBytes(uint64_t* outBytes) const override;
 
     void Clear(float r, float g, float b, float a) override;
     void FillRectangle(float x, float y, float w, float h, Brush* brush) override;
@@ -299,11 +410,27 @@ public:
     void DrawContentBorder(float x, float y, float w, float h,
         float blRadius, float brRadius,
         Brush* fillBrush, Brush* strokeBrush, float strokeWidth) override;
+
+    bool SupportsRetainedLayers() const override { return true; }
+    void* RealizeLayerBegin(void* existingLayer, float x, float y, float w, float h) override;
+    void RealizeLayerEnd(void* layer) override;
+    void CompositeLayer(void* layer, float x, float y, float w, float h, float opacity) override;
+    void DestroyRetainedLayer(void* layer) override;
     void RenderText(
         const wchar_t* text, uint32_t textLength,
         TextFormat* format,
         float x, float y, float w, float h,
         Brush* brush) override;
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    // Resampling blit for glyph runs under a rotated / skewed / anisotropic
+    // matrix: quads are in physical-resolution local space, R maps them onto
+    // the screen around (originX, originY). LCD coverage degrades to grayscale.
+    void RenderTransformedGlyphQuads(
+        const std::vector<TextGlyphQuad>& quads,
+        float originX, float originY,
+        float r00, float r01, float r10, float r11,
+        uint8_t textR, uint8_t textG, uint8_t textB, float textAlpha);
+#endif
     void PushTransform(const float* matrix) override;
     void PopTransform() override;
     void PushClip(float x, float y, float w, float h) override;
@@ -437,6 +564,49 @@ public:
     friend class SoftwareBackend;
 
 private:
+    struct CompactFramebufferStorage {
+        std::vector<uint8_t> prefixPixels;
+        uint8_t suffixBgra[4] = {};
+        int32_t suffixStartRow = 0;
+        bool active = false;
+    };
+
+    JaliumResult MaterializeMainFramebuffer();
+    bool HasActiveFramebufferCapture() const;
+    uint64_t MainFramebufferOwnedBytes() const;
+    void CopyMainFramebufferBytes(uint8_t* destination, size_t byteCount) const;
+    void ResetCompactFramebufferStorage();
+    size_t RetainedCaptureBufferPoolBytes() const;
+    void CacheRetainedCaptureBuffer(
+        size_t depth, SoftwareFramebuffer&& framebuffer);
+    void ReleaseRetainedCaptureBufferPool();
+
+    enum class PreparedPaintKind : uint8_t {
+        Invalid,
+        Solid,
+        LinearGradient,
+        RadialGradient,
+    };
+
+    struct PreparedPaint {
+        PreparedPaintKind kind = PreparedPaintKind::Invalid;
+        const SoftwareLinearGradientBrush* linear = nullptr;
+        const SoftwareRadialGradientBrush* radial = nullptr;
+        uint8_t r = 0, g = 0, b = 0, a = 0;
+        uint32_t packedBgra = 0;
+
+        bool IsValid() const { return kind != PreparedPaintKind::Invalid; }
+        bool IsSolid() const { return kind == PreparedPaintKind::Solid; }
+    };
+
+    PreparedPaint PreparePaint(Brush* brush) const;
+    void SamplePaint(const PreparedPaint& paint, float px, float py,
+                     uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) const;
+    void CompositeSpan(int32_t y, int32_t x0, int32_t x1,
+                       const PreparedPaint& paint, uint8_t coverage = 255);
+    bool TightenToRectClip(int32_t& x0, int32_t& y0,
+                           int32_t& x1, int32_t& y1) const;
+    bool TightenSpanToRoundedClips(int32_t y, int32_t& x0, int32_t& x1) const;
     // Text rendering sub-methods (dispatched from RenderText)
 #ifdef JALIUM_HAS_TEXT_ENGINE
     void RenderTextWithGlyphAtlas(const wchar_t* text, uint32_t textLength,
@@ -475,14 +645,22 @@ private:
         float tl, float tr, float br, float bl);
 
     // Helper: box blur (separable, in-place on BGRA8 buffer)
-    static void BoxBlur(std::vector<uint8_t>& pixels, int32_t w, int32_t h, int32_t radius);
+    void BoxBlur(std::vector<uint8_t>& pixels, int32_t w, int32_t h, int32_t radius);
 
     // Helper: copy a region from framebuffer to a separate buffer
     void CopyRegion(const SoftwareFramebuffer& src, SoftwareFramebuffer& dst,
         int32_t srcX, int32_t srcY, int32_t w, int32_t h);
 
+    // Helper: restore a saved region byte-for-byte (including transparent
+    // pixels), without SrcOver blending.
+    void RestoreRegion(const SoftwareFramebuffer& src, int32_t dstX, int32_t dstY);
+    void RestoreRawRegion(const uint8_t* pixels, int32_t width, int32_t height,
+        int32_t dstX, int32_t dstY);
+
     // Helper: blit a buffer onto framebuffer with alpha
     void BlitBuffer(const SoftwareFramebuffer& src, int32_t dstX, int32_t dstY, float opacity = 1.0f);
+    void BlitRawBuffer(const uint8_t* pixels, int32_t width, int32_t height,
+        int32_t dstX, int32_t dstY, float opacity = 1.0f);
 
 public:
     // Helper: adaptive bezier flattening (public for use by path parser)
@@ -512,8 +690,16 @@ private:
     SoftwareBackend* backend_ = nullptr;  // non-owning back-pointer for text engine access
 
     SoftwareFramebuffer fb_;
+    CompactFramebufferStorage compactFramebuffer_;
+    bool isDrawing_ = false;
     std::stack<SoftwareTransform> transformStack_;
     std::stack<SoftwareClipRect> clipStack_;
+    // Rounded-corner clip levels, in their own (untrimmed) rectangles. The
+    // clipStack_ intersection cannot carry an ancestor's corner rounding, so
+    // IsClipped tests every live rounded level here in addition to the top
+    // rectangle intersection. Entries pair with the clipStack_ level whose
+    // ownsRounded flag is set.
+    std::vector<SoftwareClipRect> roundedClipStack_;
     std::stack<float> opacityStack_;
     SoftwareTransform currentTransform_;
     float currentOpacity_ = 1.0f;
@@ -532,11 +718,13 @@ private:
     // rendered inside another effected element, so each open scope owns its
     // framebuffer snapshot and capture bounds.
     struct EffectCaptureState {
-        SoftwareFramebuffer savedFramebuffer;
+        SoftwareFramebuffer savedRegion;
         float x = 0;
         float y = 0;
         float width = 0;
         float height = 0;
+        int32_t pixelX = 0;
+        int32_t pixelY = 0;
     };
 
     SoftwareFramebuffer effectCaptureFb_;
@@ -560,6 +748,43 @@ private:
     SoftwareFramebuffer readbackFb_;
     bool readbackPending_ = false;
     bool readbackReady_ = false;
+
+    struct RetainedCaptureState {
+        SoftwareFramebuffer savedFramebuffer;
+        std::stack<SoftwareClipRect> savedClips;
+        std::vector<SoftwareClipRect> savedRoundedClips;
+        std::vector<uint8_t> capturedPixels;
+        SoftwareRetainedLayer* layer = nullptr;
+        int32_t x = 0, y = 0, width = 0, height = 0;
+    };
+    std::vector<std::unique_ptr<SoftwareRetainedLayer>> retainedLayers_;
+    std::vector<RetainedCaptureState> retainedCaptureStack_;
+    std::vector<SoftwareFramebuffer> retainedCaptureBufferPool_;
+    size_t retainedLayerBytes_ = 0;
+
+    std::unique_ptr<SoftwareEllipseMaskCache> ellipseFillMaskCache_;
+    std::unique_ptr<SoftwareEllipseMaskCache> ellipseStrokeMaskCache_;
+    std::unique_ptr<SoftwareRoundedRectMaskCache> roundedRectMaskCache_;
+    std::unique_ptr<SoftwareEllipticalRoundedRectMaskCache> ellipticalRoundedRectMaskCache_;
+    std::unique_ptr<SoftwarePathRasterCache> pathRasterCache_;
+    std::unique_ptr<SoftwareLineRasterCache> lineRasterCache_;
+    std::unique_ptr<SoftwareTextMaskCache> textMaskCache_;
+    std::unique_ptr<SoftwareTextCompositeCache> textCompositeCache_;
+    std::unique_ptr<SoftwareBackdropCache> backdropCache_;
+    std::unique_ptr<SoftwareEffectResultCache> gradientCompositeCache_;
+    std::unique_ptr<SoftwareEffectResultCache> bitmapCompositeCache_;
+    std::unique_ptr<SoftwareEffectResultCache> effectResultCache_;
+    std::unique_ptr<SoftwareEffectResultCache> liquidGlassCache_;
+    std::vector<uint8_t> blurScratch_;
+
+    uint64_t frameStartNs_ = 0;
+    uint64_t frameParallelStartNs_ = 0;
+    uint64_t lastRasterNs_ = 0;
+    uint64_t lastParallelNs_ = 0;
+    mutable uint64_t framePixelsVisited_ = 0;
+    mutable uint64_t framePixelsBlended_ = 0;
+    mutable uint64_t frameAaSamples_ = 0;
+    mutable uint64_t frameClipRejectedPixels_ = 0;
 
     // Platform-neutral surface descriptor for non-Windows present
     JaliumSurfaceDescriptor surfaceDescriptor_{};
@@ -626,6 +851,8 @@ public:
     VideoSurface* CreateVideoSurface(uint32_t width, uint32_t height,
                                      uint32_t formatHint) override;
 
+    SoftwareWorkerPool* GetWorkerPool() const { return workerPool_.get(); }
+
 #ifdef JALIUM_HAS_TEXT_ENGINE
     TextEngine* GetTextEngine() const { return textEngine_.get(); }
 #else
@@ -633,6 +860,7 @@ public:
 #endif
 
 private:
+    std::unique_ptr<SoftwareWorkerPool> workerPool_;
 #ifdef JALIUM_HAS_TEXT_ENGINE
     std::unique_ptr<TextEngine> textEngine_;
 #endif

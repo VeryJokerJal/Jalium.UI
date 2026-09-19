@@ -1300,6 +1300,17 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         // Floor negatives; preserve +Infinity (the scroll-to-end sentinel).
         var requested = offset < 0 ? 0 : offset;
         var coerced = CoerceOffset(requested);
+        if (Jalium.UI.Diagnostics.ScrollDiagnostics.Enabled)
+        {
+            var liveMaximum = Math.Max(0, GetExtentForCoerce() - GetViewportAxisSize());
+            Jalium.UI.Diagnostics.ScrollDiagnostics.RecordEvent(
+                Name,
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this),
+                "vsp-set-offset",
+                $"raw={offset:R} requested={requested:R} coerced={coerced:R} " +
+                $"oldRequested={_requestedOffset:R} oldComputed={_computedOffset:R} " +
+                $"extent={GetExtentForCoerce():R} viewport={GetViewportAxisSize():R} max={liveMaximum:R}");
+        }
 
         if (_requestedOffset == requested && Math.Abs(coerced - _computedOffset) <= 0.01)
         {

@@ -47,6 +47,7 @@ void VelloVulkanEngine::BeginFrame(uint32_t viewportWidth, uint32_t viewportHeig
     viewportW_ = viewportWidth;
     viewportH_ = viewportHeight;
     batches_.clear();
+    subScenes_.clear();
     encodedPathCount_ = 0;
     flatPoints_.clear();
     // Rounded-clip mirror is sticky like the scissor — reset per frame.
@@ -241,8 +242,11 @@ bool VelloVulkanEngine::EncodeFillPath(
 {
     (void)edgeMode;  // Vello path currently runs analytic AA only.
     if (computeMode_) {
-        return sceneEncoder_.EncodeFillPath(startX, startY, commands, commandLength,
+        sceneEncoder_.BeginPrimitiveBox();
+        bool encOk_ = sceneEncoder_.EncodeFillPath(startX, startY, commands, commandLength,
                                             brush, fillRule, transform);
+        sceneEncoder_.EndPrimitiveBox(encOk_);
+        return encOk_;
     }
     if (brush.type == 1 || brush.type == 2 || brush.type == 3) {
         float gradMaxScale = MaxScale(transform);
@@ -395,9 +399,12 @@ bool VelloVulkanEngine::EncodeStrokePath(
     int32_t edgeMode)
 {
     if (computeMode_) {
-        return sceneEncoder_.EncodeStrokePath(startX, startY, commands, commandLength, brush,
+        sceneEncoder_.BeginPrimitiveBox();
+        bool encOk_ = sceneEncoder_.EncodeStrokePath(startX, startY, commands, commandLength, brush,
                                               strokeWidth, closed, lineJoin, miterLimit, lineCap,
                                               dashPattern, dashCount, dashOffset, transform);
+        sceneEncoder_.EndPrimitiveBox(encOk_);
+        return encOk_;
     }
 
     // Resolve edge mode (D3D12 parity): em<0 → 1 (cacheable feather mesh);
@@ -662,7 +669,10 @@ bool VelloVulkanEngine::EncodeFillPolygon(
     const EngineTransform& transform)
 {
     if (computeMode_) {
-        return sceneEncoder_.EncodeFillPolygon(points, pointCount, brush, fillRule, transform);
+        sceneEncoder_.BeginPrimitiveBox();
+        bool encOk_ = sceneEncoder_.EncodeFillPolygon(points, pointCount, brush, fillRule, transform);
+        sceneEncoder_.EndPrimitiveBox(encOk_);
+        return encOk_;
     }
     if (pointCount < 3) return false;
 
@@ -713,7 +723,10 @@ bool VelloVulkanEngine::EncodeFillEllipse(
     const EngineTransform& transform)
 {
     if (computeMode_) {
-        return sceneEncoder_.EncodeFillEllipse(cx, cy, rx, ry, brush, transform);
+        sceneEncoder_.BeginPrimitiveBox();
+        bool encOk_ = sceneEncoder_.EncodeFillEllipse(cx, cy, rx, ry, brush, transform);
+        sceneEncoder_.EndPrimitiveBox(encOk_);
+        return encOk_;
     }
     float r = brush.r * brush.a;
     float g = brush.g * brush.a;

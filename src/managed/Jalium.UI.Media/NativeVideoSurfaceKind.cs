@@ -54,4 +54,6 @@ public enum NativeVideoSurfaceFormat
     Nv12    = 1,
     P010    = 2,
     Rgb10A2 = 3,
+    /// <summary>Packed BGRX8 video with an unused X byte; sampled as opaque.</summary>
+    Bgrx8   = 4,
 }

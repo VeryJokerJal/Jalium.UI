@@ -62,6 +62,27 @@ public struct TextMetrics
     public float WidthIncludingTrailingWhitespace;
 }
 
+/// <summary>Font and single-glyph rulers in device-independent pixels.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct FontUnitMetrics
+{
+    internal uint StructSize;
+    public float XHeight;
+    public float CapHeight;
+    public float ZeroAdvance;
+    public float IdeographicAdvance;
+    public float Ascent;
+    public float LineHeight;
+    public uint Available;
+
+    internal static FontUnitMetrics Fallback(double size, double ascent = double.NaN, double lineHeight = double.NaN) => new()
+    {
+        StructSize = 32, XHeight = (float)(size * .5), CapHeight = (float)(double.IsFinite(ascent) ? ascent : size),
+        ZeroAdvance = (float)(size * .5), IdeographicAdvance = (float)size,
+        Ascent = (float)(double.IsFinite(ascent) ? ascent : size), LineHeight = (float)(double.IsFinite(lineHeight) ? lineHeight : size * 1.2),
+    };
+}
+
 /// <summary>
 /// Text hit-test result returned by native hit-testing APIs.
 /// </summary>
@@ -92,13 +113,13 @@ public struct TextHitTestResult
 /// </summary>
 internal static partial class NativeMethods
 {
-    private const string CoreLib = "jalium.native.core";
-    private const string D3D12Lib = "jalium.native.d3d12";
-    private const string VulkanLib = "jalium.native.vulkan";
-    private const string MetalLib = "jalium.native.metal";
-    private const string SoftwareLib = "jalium.native.software";
-    private const string PlatformLib = "jalium.native.platform";
-    private const string TextLib = "jalium.native.text";
+    private const string CoreLib = JaliumNativeLibraryNames.Core;
+    private const string D3D12Lib = JaliumNativeLibraryNames.D3D12;
+    private const string VulkanLib = JaliumNativeLibraryNames.Vulkan;
+    private const string MetalLib = JaliumNativeLibraryNames.Metal;
+    private const string SoftwareLib = JaliumNativeLibraryNames.Software;
+    private const string PlatformLib = JaliumNativeLibraryNames.Platform;
+    private const string TextLib = JaliumNativeLibraryNames.Text;
 
     [LibraryImport(TextLib, EntryPoint = "jalium_text_get_system_font_family_count")]
     internal static partial int TextGetSystemFontFamilyCount();
@@ -296,10 +317,23 @@ internal static partial class NativeMethods
         public long TextureBytes;
         public long FrameGpuWaitNs;
         public int SwapBufferCount;
-        public int Reserved0;
+        public int Reserved0; // D3D12 Vello dispatch count; historical ABI slot.
         public long LastFramePresentToReadyNs;
         public long FrameWaitableWaitNs;
         public long PresentBlockNs;
+        public long SoftwareRasterNs;
+        public long SoftwarePixelsVisited;
+        public long SoftwarePixelsBlended;
+        public long SoftwareAaSamples;
+        public long SoftwareClipRejectedPixels;
+        public long SoftwareParallelNs;
+        public long SoftwareCacheBytes;
+        public long SoftwareEffectCacheHits;
+        public long SoftwareEffectCacheMisses;
+        public int SoftwareWorkerCount;
+        public int SoftwareWorkerUtilizationPermille;
+        public int SoftwareEffectCacheEntries;
+        public int SoftwareGradientCacheEntries;
     }
 
     /// <summary>
@@ -355,6 +389,14 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_reclaim_idle_resources")]
     internal static partial int RenderTargetReclaimIdleResources(nint renderTarget);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_compact_idle_framebuffer_storage")]
+    internal static partial int RenderTargetCompactIdleFramebufferStorage(nint renderTarget);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_query_main_framebuffer_owned_bytes")]
+    internal static partial int RenderTargetQueryMainFramebufferOwnedBytes(
+        nint renderTarget,
+        out ulong ownedBytes);
 
     /// <summary>
     /// Arms a one-shot back-buffer readback: the render target's NEXT EndDraw
@@ -1384,6 +1426,9 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_font_metrics")]
     internal static partial int TextFormatGetFontMetrics(nint textFormat, out TextMetrics metrics);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_font_unit_metrics")]
+    internal static partial int TextFormatGetFontUnitMetrics(nint textFormat, ref FontUnitMetrics metrics);
 
     #endregion
 

@@ -8,6 +8,8 @@ namespace Jalium.UI.Controls;
 public class ToggleMenuFlyoutItem : MenuFlyoutItem
 {
     private static readonly SolidColorBrush s_defaultCheckGlyphBrush = new(Color.FromRgb(255, 255, 255));
+    private static readonly SolidColorBrush s_defaultDisabledCheckGlyphBrush = new(Color.FromRgb(90, 90, 90));
+    private static readonly Geometry s_checkGeometry = Geometry.Parse("M2,8 L6,12 L14,4");
 
     #region Dependency Properties
 
@@ -17,7 +19,7 @@ public class ToggleMenuFlyoutItem : MenuFlyoutItem
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsCheckedProperty =
         DependencyProperty.Register(nameof(IsChecked), typeof(bool), typeof(ToggleMenuFlyoutItem),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, (d, _) => ((ToggleMenuFlyoutItem)d).InvalidateVisual()));
 
     #endregion
 
@@ -45,21 +47,27 @@ public class ToggleMenuFlyoutItem : MenuFlyoutItem
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
-        var dc = drawingContext;
         base.OnRender(drawingContext);
 
-        // Draw check mark when checked
-        if (IsChecked)
+        if (IsChecked && RenderSize.Width > 0 && RenderSize.Height > 0)
         {
-            var checkBrush = ResolveCheckGlyphBrush();
-            var checkText = new Jalium.UI.Media.FormattedText(
-                "\u2713", FontFamily.Source, 14) { Foreground = checkBrush };
-            dc.DrawText(checkText, new Point(8, (RenderSize.Height - 14) / 2));
+            // Use a vector in the reserved leading icon column, independent of the label's font.
+            var checkPen = new Pen(ResolveCheckGlyphBrush(), 1.5);
+            drawingContext.PushTransform(new TranslateTransform(12, (RenderSize.Height - 16) / 2));
+            drawingContext.DrawGeometry(null, checkPen, s_checkGeometry);
+            drawingContext.Pop();
         }
     }
 
     private Brush ResolveCheckGlyphBrush()
     {
+        if (!IsEnabled)
+        {
+            return TryFindResource("OneTextDisabled") as Brush
+                ?? TryFindResource("TextDisabled") as Brush
+                ?? s_defaultDisabledCheckGlyphBrush;
+        }
+
         if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
         {
             return Foreground;

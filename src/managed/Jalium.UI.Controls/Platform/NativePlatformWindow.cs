@@ -562,7 +562,7 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     }
 
     // P/Invoke for event callback registration
-    [LibraryImport("jalium.native.platform", EntryPoint = "jalium_window_set_event_callback")]
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_window_set_event_callback")]
     private static partial void WindowSetEventCallback(nint window, nint callback, nint userData);
 
     internal void SetDragEffect(ulong sessionId, uint effect)

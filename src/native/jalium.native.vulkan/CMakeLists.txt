@@ -33,6 +33,7 @@ set(HEADERS
     include/vulkan_render_target.h
     include/vulkan_resources.h
     include/vulkan_runtime.h
+    include/vulkan_environment.h
     include/vulkan_shader_compiler.h
     include/vulkan_vello_engine.h
     include/vulkan_vello_compute.h

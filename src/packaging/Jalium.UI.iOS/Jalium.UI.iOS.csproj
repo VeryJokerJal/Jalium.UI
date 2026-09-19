@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-ios</TargetFramework>
+    <SupportedOSPlatformVersion>18.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifiers>ios-arm64;iossimulator-arm64</RuntimeIdentifiers>
+    <RootNamespace>Jalium.UI.iOS</RootNamespace>
+    <AssemblyName>Jalium.UI.iOS</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.iOS</PackageId>
+    <Description>Jalium.UI UIKit and statically linked Metal entry package for iOS and iPadOS.</Description>
+    <JaliumPlatform>ios</JaliumPlatform>
+    <JaliumAppleNativeRoot Condition="'$(JaliumAppleNativeRoot)' == ''">$(MSBuildThisFileDirectory)..\..\native\artifacts\apple</JaliumAppleNativeRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" AdditionalProperties="JaliumPlatform=ios" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" AdditionalProperties="JaliumPlatform=ios" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Input\Jalium.UI.Input.csproj" AdditionalProperties="JaliumPlatform=ios" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" AdditionalProperties="JaliumPlatform=ios" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Managed\Jalium.UI.Managed.csproj" AdditionalProperties="JaliumPlatform=ios" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" AdditionalProperties="JaliumPlatform=ios" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" AdditionalProperties="JaliumPlatform=ios" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" AdditionalProperties="JaliumPlatform=ios" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(JaliumAppleNativeRoot)/JaliumNative.xcframework')">
+    <NativeReference Include="$(JaliumAppleNativeRoot)/JaliumNative.xcframework"
+                     Kind="Framework" ForceLoad="true" IsCxx="true"
+                     Frameworks="Metal QuartzCore CoreGraphics CoreText CoreVideo ImageIO IOSurface AVFoundation VideoToolbox CoreMedia AudioToolbox UIKit WebKit" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_core.metallib')">
+    <BundleResource Include="$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_*.metallib" />
+    <BundleResource Include="$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_metal_manifest.json" />
+  </ItemGroup>
+</Project>

@@ -16,6 +16,9 @@ extern "C" {
 // each one is provided by jalium_<backend>_init.cpp without dllexport.
 void jalium_d3d12_init(void);
 void jalium_software_init(void);
+#if defined(__APPLE__)
+void jalium_metal_init(void);
+#endif
 #ifdef JALIUM_AOT_INCLUDE_VULKAN
 void jalium_vulkan_init(void);
 #endif
@@ -74,6 +77,13 @@ JALIUM_API void jalium_aot_register_all_backends(void) {
     jalium_vulkan_init();
 #endif
 
+#if defined(__APPLE__)
+    // Embedded Apple targets link Metal statically, so there is no dylib
+    // constructor to populate BackendRegistry. Keep this strong reference in
+    // the aggregator to both retain the object file and register the factory.
+    jalium_metal_init();
+#endif
+
     // Software rasterizer is always registered as the universal fallback.
     jalium_software_init();
 
@@ -89,6 +99,14 @@ JALIUM_API void jalium_aot_register_all_backends(void) {
     if (jalium_audio_initialize() == 0) {
         jalium_audio_shutdown();
     }
+
+#ifdef JALIUM_AOT_INCLUDE_BROWSER
+    // Retain the WKWebView/WebView2-shaped ABI in static Apple images. The
+    // lifecycle round-trip is side-effect free and defeats archive/LTO pruning.
+    if (jalium_webview2_initialize() == 0) {
+        jalium_webview2_shutdown();
+    }
+#endif
 }
 
 } // extern "C"

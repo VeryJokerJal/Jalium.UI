@@ -23,7 +23,7 @@ namespace Jalium.UI.Interop;
 /// </remarks>
 public static class JaliumStaticInit
 {
-    private const string AotLib = "jalium.native.aot";
+    private const string AotLib = JaliumNativeLibraryNames.Aot;
 
     [DllImport(AotLib, EntryPoint = "jalium_aot_register_all_backends", CallingConvention = CallingConvention.Cdecl)]
     public static extern void RegisterAllBackends();

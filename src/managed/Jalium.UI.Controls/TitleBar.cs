@@ -239,9 +239,9 @@ public class TitleBar : Control
     private TitleBarButton? _minimizeButton;
     private TitleBarButton? _maximizeButton;
     private TitleBarButton? _closeButton;
-    private readonly TitleBarButton _fallbackMinimizeButton;
-    private readonly TitleBarButton _fallbackMaximizeButton;
-    private readonly TitleBarButton _fallbackCloseButton;
+    private TitleBarButton? _fallbackMinimizeButton;
+    private TitleBarButton? _fallbackMaximizeButton;
+    private TitleBarButton? _fallbackCloseButton;
     private FrameworkElement? _leftWindowCommandsHost;
     private FrameworkElement? _rightWindowCommandsHost;
     private FrameworkElement? _windowIconHost;
@@ -259,17 +259,6 @@ public class TitleBar : Control
     public TitleBar()
     {
         Focusable = false;
-
-        // Set default backdrop effect (Gaussian blur)
-        BackdropEffect = new BackdropBlurEffect(20f);
-
-        _fallbackMinimizeButton = new TitleBarButton { Kind = TitleBarButtonKind.Minimize };
-        _fallbackMaximizeButton = new TitleBarButton { Kind = TitleBarButtonKind.Maximize };
-        _fallbackCloseButton = new TitleBarButton { Kind = TitleBarButtonKind.Close };
-
-        _fallbackMinimizeButton.Click += OnMinimizeButtonClick;
-        _fallbackMaximizeButton.Click += OnMaximizeButtonClick;
-        _fallbackCloseButton.Click += OnCloseButtonClick;
 
         // Register for mouse events
         AddHandler(MouseDownEvent, new Input.MouseButtonEventHandler(OnTitleBarMouseDown));
@@ -341,6 +330,23 @@ public class TitleBar : Control
         }
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+
+        DetachButtonHandlers();
+        _minimizeButton = null;
+        _maximizeButton = null;
+        _closeButton = null;
+        _leftWindowCommandsHost = null;
+        _rightWindowCommandsHost = null;
+        _windowIconHost = null;
+        _titleTextHost = null;
+        _hasTemplateButtons = false;
+        _templateLookupAttempted = false;
+    }
+
     private void OnMinimizeButtonClick(object sender, RoutedEventArgs e)
     {
         MinimizeClicked?.Invoke(this, EventArgs.Empty);
@@ -398,7 +404,10 @@ public class TitleBar : Control
     {
         EnsureButtonsInitialized();
 
-        _fallbackMaximizeButton.Kind = IsMaximized ? TitleBarButtonKind.Restore : TitleBarButtonKind.Maximize;
+        if (_fallbackMaximizeButton != null)
+        {
+            _fallbackMaximizeButton.Kind = IsMaximized ? TitleBarButtonKind.Restore : TitleBarButtonKind.Maximize;
+        }
 
         if (_maximizeButton != null)
         {
@@ -410,9 +419,12 @@ public class TitleBar : Control
     {
         EnsureButtonsInitialized();
 
-        _fallbackMinimizeButton.Visibility = ShowMinimizeButton ? Visibility.Visible : Visibility.Collapsed;
-        _fallbackMaximizeButton.Visibility = ShowMaximizeButton ? Visibility.Visible : Visibility.Collapsed;
-        _fallbackCloseButton.Visibility = ShowCloseButton ? Visibility.Visible : Visibility.Collapsed;
+        if (_fallbackMinimizeButton != null)
+            _fallbackMinimizeButton.Visibility = ShowMinimizeButton ? Visibility.Visible : Visibility.Collapsed;
+        if (_fallbackMaximizeButton != null)
+            _fallbackMaximizeButton.Visibility = ShowMaximizeButton ? Visibility.Visible : Visibility.Collapsed;
+        if (_fallbackCloseButton != null)
+            _fallbackCloseButton.Visibility = ShowCloseButton ? Visibility.Visible : Visibility.Collapsed;
 
         if (_minimizeButton != null)
             _minimizeButton.Visibility = ShowMinimizeButton ? Visibility.Visible : Visibility.Collapsed;
@@ -475,11 +487,58 @@ public class TitleBar : Control
 
         return kind switch
         {
-            TitleBarButtonKind.Minimize => _minimizeButton ?? _fallbackMinimizeButton,
-            TitleBarButtonKind.Maximize or TitleBarButtonKind.Restore => _maximizeButton ?? _fallbackMaximizeButton,
-            TitleBarButtonKind.Close => _closeButton ?? _fallbackCloseButton,
+            TitleBarButtonKind.Minimize => _minimizeButton ?? GetOrCreateFallbackButton(TitleBarButtonKind.Minimize),
+            TitleBarButtonKind.Maximize or TitleBarButtonKind.Restore =>
+                _maximizeButton ?? GetOrCreateFallbackButton(TitleBarButtonKind.Maximize),
+            TitleBarButtonKind.Close => _closeButton ?? GetOrCreateFallbackButton(TitleBarButtonKind.Close),
             _ => null
         };
+    }
+
+    private TitleBarButton GetOrCreateFallbackButton(TitleBarButtonKind kind)
+    {
+        return kind switch
+        {
+            TitleBarButtonKind.Minimize =>
+                _fallbackMinimizeButton ??= CreateFallbackButton(TitleBarButtonKind.Minimize),
+            TitleBarButtonKind.Maximize or TitleBarButtonKind.Restore =>
+                _fallbackMaximizeButton ??= CreateFallbackButton(TitleBarButtonKind.Maximize),
+            TitleBarButtonKind.Close =>
+                _fallbackCloseButton ??= CreateFallbackButton(TitleBarButtonKind.Close),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind))
+        };
+    }
+
+    private TitleBarButton CreateFallbackButton(TitleBarButtonKind kind)
+    {
+        var button = new TitleBarButton
+        {
+            Kind = kind == TitleBarButtonKind.Maximize && IsMaximized
+                ? TitleBarButtonKind.Restore
+                : kind,
+            Visibility = kind switch
+            {
+                TitleBarButtonKind.Minimize => ShowMinimizeButton ? Visibility.Visible : Visibility.Collapsed,
+                TitleBarButtonKind.Maximize => ShowMaximizeButton ? Visibility.Visible : Visibility.Collapsed,
+                TitleBarButtonKind.Close => ShowCloseButton ? Visibility.Visible : Visibility.Collapsed,
+                _ => Visibility.Visible
+            }
+        };
+
+        switch (kind)
+        {
+            case TitleBarButtonKind.Minimize:
+                button.Click += OnMinimizeButtonClick;
+                break;
+            case TitleBarButtonKind.Maximize:
+                button.Click += OnMaximizeButtonClick;
+                break;
+            case TitleBarButtonKind.Close:
+                button.Click += OnCloseButtonClick;
+                break;
+        }
+
+        return button;
     }
 
     internal IEnumerable<TitleBarButton> EnumerateButtons()
@@ -499,9 +558,9 @@ public class TitleBar : Control
             yield break;
         }
 
-        yield return _fallbackMinimizeButton;
-        yield return _fallbackMaximizeButton;
-        yield return _fallbackCloseButton;
+        yield return GetOrCreateFallbackButton(TitleBarButtonKind.Minimize);
+        yield return GetOrCreateFallbackButton(TitleBarButtonKind.Maximize);
+        yield return GetOrCreateFallbackButton(TitleBarButtonKind.Close);
     }
 
     internal bool IsPointInWindowCommands(Point localPoint)

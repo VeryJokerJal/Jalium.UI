@@ -659,6 +659,42 @@ JaliumResult JaliumTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     return JALIUM_OK;
 }
 
+JaliumResult JaliumTextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)
+{
+    if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *metrics = {sizeof(JaliumFontUnitMetrics), fontSizePx_ * .5f, ascent_,
+        fontSizePx_ * .5f, fontSizePx_, ascent_, lineHeight_, 0};
+    if (!face_) return JALIUM_OK;
+    metrics->available = 16;
+    const float scale = fontSizePx_ / face_->UnitsPerEm();
+    const auto os2 = face_->GetTable(font::kTag_OS2);
+    auto height = [&](uint32_t codepoint, size_t offset) {
+        if (os2.Size() >= 90 && os2.U16(0) >= 2 && os2.S16(offset) > 0)
+            return static_cast<float>(os2.S16(offset));
+        GlyphOutline outline;
+        const auto glyph = face_->GetGlyphIndex(codepoint);
+        if (glyph && face_->GetGlyphContours(glyph, 1.f, outline) && outline.hasInk)
+            return outline.yMax + (std::min)(0.f, outline.yMin);
+        return 0.f;
+    };
+    const auto xHeight = height('x', 86);
+    const auto capHeight = height('O', 88);
+    if (xHeight > 0) { metrics->xHeight = xHeight * scale; metrics->available |= 1; }
+    if (capHeight > 0) { metrics->capHeight = capHeight * scale; metrics->available |= 2; }
+    auto advance = [&](uint32_t codepoint, float& result, uint32_t flag) {
+        uint64_t fontId = 0;
+        auto* face = ChooseFaceForCluster({codepoint}, fontId);
+        if (!face) return;
+        const auto glyph = face->GetGlyphIndex(codepoint);
+        if (!glyph) return;
+        result = face->GetAdvance(glyph) * fontSizePx_ / face->UnitsPerEm();
+        metrics->available |= flag;
+    };
+    advance('0', metrics->zeroAdvance, 4);
+    advance(0x6c34, metrics->ideographicAdvance, 8);
+    return JALIUM_OK;
+}
+
 JaliumResult JaliumTextFormat::HitTestPoint(
     const wchar_t* text, uint32_t textLength,
     float maxWidth, float maxHeight,
@@ -932,6 +968,24 @@ void JaliumTextFormat::GenerateGlyphQuads(
     if (lineSpacingMethod_ != 0 && lineSpacing_ > 0)
         effectiveLineHeight = lineSpacing_;
 
+    // Raster-size cap. A zoomed / print-resolution run (fontSizePx_ easily in
+    // the thousands once renderScale is folded in) would rasterize bitmaps
+    // larger than the 4096 atlas: unrepresentable glyphs, and each insertion
+    // attempt evicting every other cached glyph. Rasterize at the cap and
+    // scale the emitted quads back up — layout metrics keep the true size, so
+    // only the bitmap is magnified (slightly soft at extreme zoom instead of
+    // missing, and other text stays intact).
+    constexpr float kMaxRasterPpem = 1024.0f;
+    const uint16_t rasterPpem = static_cast<uint16_t>(std::lround(
+        std::clamp(std::min(fontSizePx_, kMaxRasterPpem), 1.0f, 4095.0f)));
+    const float rasterUpscale = fontSizePx_ > kMaxRasterPpem
+        ? fontSizePx_ / static_cast<float>(rasterPpem)
+        : 1.0f;
+    // Pin sub-pixel phase 0 for big strikes (not just capped ones): 8 phase
+    // variants of large glyphs are what overflow the atlas, and the ≤1/8-px
+    // residual is invisible at these sizes.
+    const bool rasterCapped = rasterUpscale != 1.0f || rasterPpem > 96;
+
     // The atlas auto-resets when its packer runs out of room (see
     // GlyphAtlas::GetOrInsert). A reset in the MIDDLE of this run would leave
     // the quads emitted before it pointing at overwritten pixels, so emit the
@@ -974,33 +1028,37 @@ void JaliumTextFormat::GenerateGlyphQuads(
             // Sub-pixel quantization to 1/8 pixel (8 buckets). At 1/4 pixel the
             // size-invariant 0.25px residual is a visible fraction of a small-font
             // advance and reads as phantom inter-glyph spacing; 1/8 pixel halves it.
+            // A capped (upscaled) run pins phase 0: the phases are invisible once
+            // the bitmap is magnified, and 8 variants of huge glyphs would flood
+            // the atlas for nothing.
             float fractionalX = penX - std::floor(penX);
-            uint8_t subpixelX = static_cast<uint8_t>(fractionalX * 8.0f);
+            uint8_t subpixelX = rasterCapped
+                ? static_cast<uint8_t>(0)
+                : static_cast<uint8_t>(fractionalX * 8.0f);
             if (subpixelX > 7) subpixelX = 7;
 
             // Get or rasterize glyph in atlas. The glyph carries the face/font
             // it was shaped with (primary, or a CJK/Unicode fallback selected in
             // ShapeWithFallback), so rasterize from THAT face — not always face_.
+            // rasterPpem is rounded (not truncated): HarfBuzz advances are
+            // fractional, so a truncated raster size desyncs glyph ink width
+            // from the advance and skews spacing at fractional sizes.
             FontFace* glyphFace   = glyph.face ? glyph.face : face_.get();
             uint64_t  glyphFontId = glyph.face ? glyph.fontId : fontId_;
             const auto& entry = atlas->GetOrInsert(
                 *rasterizer, glyphFace, glyphFontId,
                 static_cast<uint16_t>(glyph.glyphIndex),
-                // Round (not truncate) the raster em: HarfBuzz advances are
-                // fractional, so a truncated raster size desyncs glyph ink width
-                // from the advance and skews spacing at fractional (high-DPI/scaled) sizes.
-                static_cast<uint16_t>(std::lround(std::clamp(
-                    fontSizePx_, 1.0f, 4095.0f))),
+                rasterPpem,
                 subpixelX,
                 glyphAaMode);
 
             if (entry.valid && entry.w > 0 && entry.h > 0)
             {
                 TextGlyphQuad quad{};
-                quad.posX = std::floor(penX) + glyph.offsetX + entry.bearingX;
-                quad.posY = baselineY + glyph.offsetY - entry.bearingY;
-                quad.sizeX = static_cast<float>(entry.w);
-                quad.sizeY = static_cast<float>(entry.h);
+                quad.posX = std::floor(penX) + glyph.offsetX + entry.bearingX * rasterUpscale;
+                quad.posY = baselineY + glyph.offsetY - entry.bearingY * rasterUpscale;
+                quad.sizeX = static_cast<float>(entry.w) * rasterUpscale;
+                quad.sizeY = static_cast<float>(entry.h) * rasterUpscale;
                 quad.uvMinX = static_cast<float>(entry.x) * invAtlasW;
                 quad.uvMinY = static_cast<float>(entry.y) * invAtlasH;
                 quad.uvMaxX = static_cast<float>(entry.x + entry.w) * invAtlasW;

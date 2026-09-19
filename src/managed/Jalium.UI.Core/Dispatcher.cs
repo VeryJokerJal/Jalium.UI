@@ -1384,22 +1384,36 @@ internal sealed partial class DispatcherCore : IDisposable
             _dispatcherWake = null;
         }
 
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? cleanupFailure = null;
+        void CompleteCleanup(Action cleanup)
+        {
+            try { cleanup(); }
+            catch (Exception ex)
+            {
+                cleanupFailure ??= System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
+            }
+        }
+
         foreach (DispatcherOperation operation in pending)
         {
             if (operation.Status == DispatcherOperationStatus.Pending)
-                operation.AbortInternal();
+                CompleteCleanup(operation.AbortInternal);
         }
 
         _dispatchers.TryRemove(_thread, out _);
 
         if (s_isWindows)
         {
-            DestroyMessageWindow();
+            CompleteCleanup(DestroyMessageWindow);
         }
 
-        dispatcherWake?.Dispose();
-        _workAvailable.Dispose();
-        ShutdownFinished?.Invoke(Dispatcher.FromCore(this), EventArgs.Empty);
+        if (dispatcherWake != null) CompleteCleanup(dispatcherWake.Dispose);
+        CompleteCleanup(_workAvailable.Dispose);
+        CompleteCleanup(() => ShutdownFinished?.Invoke(Dispatcher.FromCore(this), EventArgs.Empty));
+        // Cancellation observers may fail, but cannot strand later operations or
+        // the dispatcher registration. Preserve the first exception for callers
+        // after every owned resource has received its cleanup attempt.
+        cleanupFailure?.Throw();
     }
 
     #endregion

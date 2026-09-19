@@ -42,12 +42,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.platform</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.platform</TargetName>
   </PropertyGroup>
@@ -64,7 +64,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(ProjectDir)$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
-      <AdditionalDependencies>user32.lib;gdi32.lib;shcore.lib;dwmapi.lib;ole32.lib;imm32.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>user32.lib;gdi32.lib;shcore.lib;dwmapi.lib;ole32.lib;imm32.lib;$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -85,7 +85,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(ProjectDir)$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
-      <AdditionalDependencies>user32.lib;gdi32.lib;shcore.lib;dwmapi.lib;ole32.lib;imm32.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>user32.lib;gdi32.lib;shcore.lib;dwmapi.lib;ole32.lib;imm32.lib;$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

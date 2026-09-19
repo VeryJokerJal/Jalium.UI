@@ -1,4 +1,5 @@
 using Jalium.UI;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Media.Animation;
 
@@ -11,6 +12,17 @@ public abstract class Animatable : Freezable, IAnimatable
     // Geometry, brushes, and path segments are Animatable but almost never have a clock attached.
     // Avoid paying for a dictionary on every short-lived render object.
     private Dictionary<DependencyProperty, AnimationClock>? _animationClocks;
+
+    /// <summary>Initializes an Animatable on the current dispatcher.</summary>
+    protected Animatable()
+    {
+    }
+
+    /// <summary>Initializes an Animatable on an already selected dispatcher.</summary>
+    internal Animatable(Dispatcher dispatcher)
+        : base(dispatcher)
+    {
+    }
 
     /// <summary>
     /// Gets a value indicating whether one or more AnimationClock objects are associated

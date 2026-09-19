@@ -138,6 +138,12 @@ JALIUM_API JaliumResult jalium_render_target_query_gpu_timing(
     JaliumRenderTarget* rt,
     JaliumGpuTimingStats* out);
 
+/// Waits until work submitted by the most recent end_draw has completed.
+/// Intended for diagnostics and deterministic benchmarks; normal rendering
+/// should rely on backend frame pacing instead of serializing every frame.
+JALIUM_API JaliumResult jalium_render_target_wait_for_completion(
+    JaliumRenderTarget* rt);
+
 /// Returns the OS HANDLE (as intptr_t) used by this render target's swap
 /// chain as its frame-latency waitable. Callers wait on the handle from
 /// a background thread to drive vsync-aligned rendering; the handle stays
@@ -165,6 +171,27 @@ JALIUM_API intptr_t jalium_render_target_get_frame_latency_waitable(
 /// @return JALIUM_OK on success.
 JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(
     JaliumRenderTarget* rt);
+
+/// Losslessly compacts an idle CPU framebuffer when its bottom rows are one
+/// identical BGRA8 colour and releasing the dense storage saves at least one
+/// MiB. GPU render targets and CPU backends without this optional capability
+/// treat the call as a successful no-op. The call is valid only between frames
+/// and while no offscreen capture is active.
+/// @param rt The render target.
+/// @return JALIUM_OK on success/no-op, JALIUM_ERROR_INVALID_STATE while drawing
+/// or capturing, or JALIUM_ERROR_OUT_OF_MEMORY if candidate allocation failed.
+JALIUM_API JaliumResult jalium_render_target_compact_idle_framebuffer_storage(
+    JaliumRenderTarget* rt);
+
+/// Reports the bytes currently owned by the main CPU framebuffer allocation.
+/// This is allocation capacity, not logical pixel area, and reflects either the
+/// dense BGRA buffer or its lossless idle representation. The output is always
+/// zeroed on failure. GPU backends return JALIUM_ERROR_NOT_SUPPORTED.
+/// @param rt The render target.
+/// @param out_bytes Receives retained allocation bytes.
+JALIUM_API JaliumResult jalium_render_target_query_main_framebuffer_owned_bytes(
+    JaliumRenderTarget* rt,
+    uint64_t* out_bytes);
 
 // ============================================================================
 // Back-Buffer Readback (backend parity verification)
@@ -703,12 +730,14 @@ JALIUM_API JaliumBrush* jalium_brush_create_solid(JaliumContext* ctx, float r, f
 /// @param endY The end y coordinate.
 /// @param stops Array of gradient stops (position, r, g, b, a for each stop).
 /// @param stopCount Number of gradient stops.
+/// @param extendMode Spread method: 0=Pad, 1=Repeat, 2=Reflect.
 /// @return A handle to the created brush, or nullptr on failure.
 JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
     JaliumContext* ctx,
     float startX, float startY, float endX, float endY,
     const JaliumGradientStop* stops,
-    uint32_t stopCount
+    uint32_t stopCount,
+    uint32_t extendMode
 );
 
 /// Creates a radial gradient brush.
@@ -721,13 +750,15 @@ JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
 /// @param originY The gradient origin y coordinate.
 /// @param stops Array of gradient stops.
 /// @param stopCount Number of gradient stops.
+/// @param extendMode Spread method: 0=Pad, 1=Repeat, 2=Reflect.
 /// @return A handle to the created brush, or nullptr on failure.
 JALIUM_API JaliumBrush* jalium_brush_create_radial_gradient(
     JaliumContext* ctx,
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
     const JaliumGradientStop* stops,
-    uint32_t stopCount
+    uint32_t stopCount,
+    uint32_t extendMode
 );
 
 /// Destroys a brush.
@@ -875,6 +906,11 @@ JALIUM_API JaliumResult jalium_text_format_get_font_metrics(
     JaliumTextFormat* format,
     JaliumTextMetrics* metrics
 );
+
+/// Gets the font and single-glyph rulers used by CSS font-relative units.
+/// Set metrics->structSize to sizeof(JaliumFontUnitMetrics) before calling.
+JALIUM_API JaliumResult jalium_text_format_get_font_unit_metrics(
+    JaliumTextFormat* format, JaliumFontUnitMetrics* metrics);
 
 // ============================================================================
 // Bitmap Management

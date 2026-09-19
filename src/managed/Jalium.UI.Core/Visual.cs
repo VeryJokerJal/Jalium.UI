@@ -469,6 +469,7 @@ public abstract class Visual : DependencyObject
 
         OnVisualChildrenChanged(child, null);
         child.OnVisualParentChanged(oldParent);
+        DragDrop.VisualTreeChangedOverride?.Invoke(child);
         Diagnostics.VisualDiagnostics.NotifyVisualChildChanged(
             this,
             child,
@@ -529,6 +530,7 @@ public abstract class Visual : DependencyObject
 
         OnVisualChildrenChanged(null, child);
         child.OnVisualParentChanged(oldParent);
+        DragDrop.VisualTreeChangedOverride?.Invoke(child);
         Diagnostics.VisualDiagnostics.NotifyVisualChildChanged(
             this,
             child,
@@ -788,6 +790,13 @@ public abstract class Visual : DependencyObject
     internal virtual Rect ContentBoundsCore =>
         this is UIElement element ? new Rect(element.RenderSize) : Rect.Empty;
 
+    /// <summary>
+    /// Whether descendants may paint beyond this visual's layout bounds. Such a
+    /// subtree cannot be rejected or captured into a texture using RenderSize alone.
+    /// Its individual descendants still participate in ordinary viewport culling.
+    /// </summary>
+    internal virtual bool HasUnboundedContent => false;
+
     /// <summary>Returns retained vector content for VisualTreeHelper.GetDrawing.</summary>
     internal virtual DrawingGroup? DrawingCore => null;
 
@@ -1020,6 +1029,14 @@ public abstract class Visual : DependencyObject
                 (float)cr.TopLeft, (float)cr.TopRight,
                 (float)cr.BottomRight, (float)cr.BottomLeft);
         }
+
+        // The CSS outline ring renders after the effect composite so it (a) is never
+        // clipped by the offscreen-capture rect (which only accounts for RenderSize +
+        // EffectPadding) and (b) stays sharp on top of blur/shadow output. The layout
+        // clip is already popped, ancestor clips still apply, and the parent-pushed
+        // opacity/transform wrap the whole Render call — all matching CSS semantics.
+        RenderOutlineCore(drawingContext);
+
         // Clearing this visual's own dirty flags here is correct for the
         // damage-driven gate (Phase 4). The child loop above is UNCONDITIONAL
         // with respect to dirty state: every non-template-root child is handed
@@ -1083,7 +1100,7 @@ public abstract class Visual : DependencyObject
     /// Extracts the CornerRadius from an element by looking for the CLR property.
     /// Returns zero radii if the element doesn't have one.
     /// </summary>
-    private static CornerRadius GetCornerRadius(UIElement element)
+    internal static CornerRadius GetCornerRadius(UIElement element)
     {
         // AOT-safe DependencyProperty lookup via the registry (no reflection).
         var dp = DependencyProperty.FromName(element.GetType(), "CornerRadius");
@@ -1099,6 +1116,15 @@ public abstract class Visual : DependencyObject
             return true;
         }
 
+        if (clipBounds.Width <= 0 || clipBounds.Height <= 0)
+            return false;
+
+        // Canvas layout bounds describe its arrange slot, not the extent of its
+        // absolutely positioned children. Panning that slot offscreen must not
+        // discard children that have been brought into view by the same transform.
+        if (child.HasUnboundedContent)
+            return true;
+
         // CurrentClipBounds is expressed in the drawing context's CURRENT managed
         // coordinate space. RenderTargetDrawingContext keeps clips in surface space
         // internally, but maps them back through the inverse native transform while a
@@ -1107,16 +1133,26 @@ public abstract class Visual : DependencyObject
         // final surface space and includes every ancestor transform; comparing it with
         // the inverse-mapped clip culls visible descendants in the lower/right part of
         // an upscaled Viewbox.
+        // Extra ink (outline ring, LiquidGlass shadow) must widen the culling bounds the
+        // same way GetDirtyRenderBounds widens the dirty rect — otherwise an element whose
+        // body is outside the clip but whose ring reaches into it gets culled wholesale.
         Rect localBounds;
+        double extraInk = child.GetExtraDirtyPadding();
         if (child.Effect is IEffect effect && effect.HasEffect)
         {
             var padding = effect.EffectPadding;
             var size = child.RenderSize;
             localBounds = new Rect(
-                -padding.Left,
-                -padding.Top,
-                size.Width + padding.Left + padding.Right,
-                size.Height + padding.Top + padding.Bottom);
+                -padding.Left - extraInk,
+                -padding.Top - extraInk,
+                size.Width + padding.Left + padding.Right + extraInk * 2,
+                size.Height + padding.Top + padding.Bottom + extraInk * 2);
+        }
+        else if (extraInk > 0)
+        {
+            var size = child.RenderSize;
+            localBounds = new Rect(
+                -extraInk, -extraInk, size.Width + extraInk * 2, size.Height + extraInk * 2);
         }
         else
         {
@@ -1191,6 +1227,17 @@ public abstract class Visual : DependencyObject
     /// </summary>
     /// <param name="drawingContext">The drawing context.</param>
     protected virtual void OnPostRender(DrawingContext drawingContext)
+    {
+    }
+
+    /// <summary>
+    /// Renders the element's CSS outline ring. Called by RenderDirect AFTER OnPostRender
+    /// and after the element-effect composite, outside the layout clip and outside the
+    /// retained OnRender command cache. A dedicated hook (rather than base OnPostRender
+    /// work) because several types override OnPostRender without calling base.
+    /// Empty on Visual; FrameworkElement overrides.
+    /// </summary>
+    internal virtual void RenderOutlineCore(DrawingContext drawingContext)
     {
     }
 
@@ -1313,8 +1360,11 @@ public abstract class Visual : DependencyObject
         bool elementEffectsEnabled =
             drawingContext is not IEffectDrawingContext effectContext ||
             effectContext.IsElementEffectCaptureEnabled;
-        if (!child.ParticipatesInRenderCache ||
-            (elementEffectsEnabled && child.Effect is IEffect ce && ce.HasEffect))
+        // Extra ink (outline ring) paints outside RenderSize, but the retained layer
+        // texture is sized exactly (childOffset, RenderSize) — capturing would clip it.
+        if (!child.ParticipatesInRenderCache || child.HasUnboundedContent ||
+            (elementEffectsEnabled && child.Effect is IEffect ce && ce.HasEffect) ||
+            child.GetExtraDirtyPadding() > 0)
         {
             if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CB_NOCACHE);
             ReleaseLayerIfAny(child);
@@ -1362,7 +1412,7 @@ public abstract class Visual : DependencyObject
         // guard 拒绝（offscreen capture 不能嵌套 retained capture，EndOffscreenCapture 会把
         // RT 恢复成 swap-chain 而非 layer），导致 glow/阴影/backdrop 等 effect 静默消失。
         // resize 把带动画的容器翻上 layer 路径正是触发点（独显才有 retained-layer 优化）。
-        if ((elementEffectsEnabled && SubtreeHasEffect(child)) || SubtreeHasNonTranslateTransform(child))
+        if ((elementEffectsEnabled && SubtreeHasEffectOrExtraInk(child)) || SubtreeHasNonTranslateTransform(child))
         {
             if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CB_EFFECT);
             ReleaseLayerIfAny(child);
@@ -1426,19 +1476,21 @@ public abstract class Visual : DependencyObject
         return true;
     }
 
-    // 元素或任意后代是否带活动 effect。effect 通过 offscreen capture 渲染，而 offscreen
-    // capture 不能嵌套进 retained-layer capture（见 TryCompositeChildLayer 的说明），故含
-    // effect 的子树不可作为 retained layer 合成，否则 effect 会静默失效。只在已判定 eligible
-    // 的动画容器上调用，递归开销可控。
-    private static bool SubtreeHasEffect(Visual visual)
+    // 元素或任意后代是否带活动 effect 或 RenderSize 之外的墨迹（outline 环 / LiquidGlass
+    // 阴影）。effect 通过 offscreen capture 渲染，而 offscreen capture 不能嵌套进
+    // retained-layer capture（见 TryCompositeChildLayer 的说明）；extra ink 会被恰好按
+    // (childOffset, RenderSize) 开的 layer 贴图边界裁掉。两者都必须退出 retained 合成。
+    // 只在已判定 eligible 的动画容器上调用，递归开销可控。
+    private static bool SubtreeHasEffectOrExtraInk(Visual visual)
     {
-        if (visual is UIElement ue && ue.Effect is IEffect e && e.HasEffect)
+        if (visual is UIElement ue &&
+            ((ue.Effect is IEffect e && e.HasEffect) || ue.GetExtraDirtyPadding() > 0))
             return true;
         int n = visual.VisualChildrenCount;
         for (int i = 0; i < n; i++)
         {
             var c = visual.GetVisualChild(i);
-            if (c != null && SubtreeHasEffect(c))
+            if (c != null && SubtreeHasEffectOrExtraInk(c))
                 return true;
         }
         return false;

@@ -1,5 +1,18 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.28)
 project(JaliumNative VERSION 0.1.0 LANGUAGES CXX)
+
+# Apple backends contain Objective-C++ translation units (and the Metal
+# backend deliberately keeps its portable source files with a .cpp suffix so
+# the checked-in Visual Studio project can still compile the non-Apple stubs).
+# Setting a source's LANGUAGE property is not enough: CMake must first load the
+# Objective-C++ compiler, otherwise Xcode generation fails before the first
+# target is built.
+if(APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,7 +104,9 @@ option(JALIUM_BUILD_VULKAN "Also build the Vulkan backend on Windows (dev/test)"
 if(JALIUM_PLATFORM_BUILD_TESTS OR
    JALIUM_MEDIA_LINUX_BUILD_TESTS OR
    JALIUM_SOFTWARE_BUILD_TESTS OR
-   JALIUM_TEXT_BUILD_TESTS)
+   JALIUM_TEXT_BUILD_TESTS OR
+   JALIUM_D3D12_BUILD_TESTS OR
+   JALIUM_METAL_BUILD_TESTS)
     enable_testing()
 endif()
 
@@ -193,10 +208,33 @@ if(_jalium_target_arch STREQUAL "")
         "or another architecture with a defined .NET RID mapping.")
 endif()
 
+string(TOLOWER "${CMAKE_OSX_SYSROOT}" _jalium_apple_sysroot)
+
 if(ANDROID)
     set(_jalium_expected_rid_prefix "android-")
 elseif(WIN32)
     set(_jalium_expected_rid_prefix "win-")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    if(_jalium_apple_sysroot MATCHES "simulator")
+        set(_jalium_expected_rid_prefix "iossimulator-")
+    else()
+        set(_jalium_expected_rid_prefix "ios-")
+    endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+    if(_jalium_apple_sysroot MATCHES "simulator")
+        set(_jalium_expected_rid_prefix "tvossimulator-")
+    else()
+        set(_jalium_expected_rid_prefix "tvos-")
+    endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+    # There is no official .NET RID/TFM for visionOS yet. These identifiers
+    # are intentionally native-only and are consumed by the Apple validation
+    # harness / XCFramework assembly scripts, never by NuGet restore.
+    if(_jalium_apple_sysroot MATCHES "simulator")
+        set(_jalium_expected_rid_prefix "visionossimulator-")
+    else()
+        set(_jalium_expected_rid_prefix "visionos-")
+    endif()
 elseif(APPLE)
     set(_jalium_expected_rid_prefix "osx-")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -224,6 +262,15 @@ endif()
 
 message(STATUS "Jalium native RID: ${JALIUM_NATIVE_RID}")
 
+# iOS, tvOS and visionOS applications may not ship arbitrary dynamic
+# libraries. Keep the modular CMake targets for native tests, but always emit
+# archives that the Apple packaging step can merge into JaliumNative.xcframework.
+if(CMAKE_SYSTEM_NAME MATCHES "^(iOS|tvOS|visionOS)$" AND NOT JALIUM_BUILD_STATIC)
+    message(STATUS "Embedded Apple target detected; forcing JALIUM_BUILD_STATIC=ON")
+    set(JALIUM_BUILD_STATIC ON CACHE BOOL
+        "Build native libraries as static archives for embedded Apple targets" FORCE)
+endif()
+
 if(JALIUM_BUILD_STATIC)
     set(JALIUM_LIB_TYPE STATIC)
     add_compile_definitions(JALIUM_STATIC)
@@ -241,6 +288,7 @@ if(WIN32)
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
+    include(cmake/JaliumWindowsProductInfo.cmake)
 endif()
 
 # Output directories
@@ -335,6 +383,12 @@ if(WIN32)
     endif()
 elseif(APPLE)
     add_subdirectory(jalium.native.metal)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/jalium.native.media.apple/CMakeLists.txt")
+        add_subdirectory(jalium.native.media.apple)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/jalium.native.browser.apple/CMakeLists.txt")
+        add_subdirectory(jalium.native.browser.apple)
+    endif()
 else()
     # Linux / Android — Vulkan is the primary backend
     add_subdirectory(jalium.native.vulkan)
@@ -424,11 +478,19 @@ if(NOT JALIUM_BUILD_STATIC)
             jalium.native.vulkan
             jalium.native.metal
             jalium.native.media.android
-            jalium.native.media.linux)
+            jalium.native.media.linux
+            jalium.native.media.apple
+            jalium.native.browser.apple)
         if(TARGET ${_optional_target})
             list(APPEND _jalium_package_targets ${_optional_target})
         endif()
     endforeach()
+
+    if(WIN32)
+        foreach(_package_target ${_jalium_package_targets})
+            jalium_add_windows_product_info(${_package_target})
+        endforeach()
+    endif()
 
     add_custom_target(jalium.native.package.invalidate
         COMMAND ${CMAKE_COMMAND} -E rm -f

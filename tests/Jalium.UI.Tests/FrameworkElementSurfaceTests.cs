@@ -200,6 +200,7 @@ public class FrameworkElementSurfaceTests
         Assert.Same(first, converter.ConvertFromInvariantString("EN-US"));
         Assert.Throws<ArgumentException>(() => XmlLanguage.GetLanguage("en-"));
         Assert.Throws<ArgumentException>(() => XmlLanguage.GetLanguage("zh_zh"));
+        Assert.Throws<ArgumentException>(() => XmlLanguage.GetLanguage("fr-é"));
     }
 
     [Fact]

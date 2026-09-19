@@ -7,6 +7,10 @@
 
 #include <atomic>
 
+#ifdef __APPLE__
+#import <Metal/Metal.h>
+#endif
+
 #ifdef _WIN32
 #include <Windows.h>
 #endif

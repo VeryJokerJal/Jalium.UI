@@ -33,9 +33,23 @@ public readonly record struct GpuResourceStats(
     long TextureBytes,
     long FrameGpuWaitNs,
     int SwapBufferCount,
+    int VelloDispatchCount,
     long LastFramePresentToReadyNs,
     long FrameWaitableWaitNs,
-    long PresentBlockNs);
+    long PresentBlockNs,
+    long SoftwareRasterNs,
+    long SoftwarePixelsVisited,
+    long SoftwarePixelsBlended,
+    long SoftwareAaSamples,
+    long SoftwareClipRejectedPixels,
+    long SoftwareParallelNs,
+    long SoftwareCacheBytes,
+    long SoftwareEffectCacheHits,
+    long SoftwareEffectCacheMisses,
+    int SoftwareWorkerCount,
+    int SoftwareWorkerUtilizationPermille,
+    int SoftwareEffectCacheEntries,
+    int SoftwareGradientCacheEntries);
 
 /// <summary>
 /// Per-frame GPU work breakdown by draw-call category, sourced from
@@ -68,6 +82,7 @@ public sealed class RenderTarget : IDisposable
     private static int _drawTextDepth;
 
     private readonly IRenderTargetNative _native;
+    private readonly IRenderTargetMemoryPressure _memoryPressure;
     private readonly RenderContext? _ownerContext;
 
     /// <summary>
@@ -82,6 +97,8 @@ public sealed class RenderTarget : IDisposable
     private readonly NativeSurfaceDescriptor _surface;
     private readonly nint _hwnd;
     private nint _handle;
+    private long _softwareFramebufferRetainedPressureBytes;
+    private bool _softwareFramebufferUsesOwnedStorageQuery;
     private bool _disposed;
     // volatile: read/written by both the UI thread (resize/recovery defensive
     // TryEndDraw) and the render thread (TryBeginDraw/TryEndDraw). Accesses are
@@ -125,6 +142,13 @@ public sealed class RenderTarget : IDisposable
     public RenderBackend Backend => _backend;
 
     /// <summary>
+    /// Gets whether this target was created for a compositor-owned surface rather
+    /// than a normal native window surface.
+    /// </summary>
+    internal bool IsCompositionTarget =>
+        _surface.Kind == NativeSurfaceKind.CompositionTarget;
+
+    /// <summary>
     /// Gets or sets the width.
     /// </summary>
     public int Width { get; private set; }
@@ -164,6 +188,31 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Gets whether this window is presented through a software display route
+    /// such as Microsoft Basic Render Driver. A hardware D3D12 adapter can still
+    /// render the frame in this state, but its flip swap chain must cross into
+    /// the software display adapter before DWM can consume it.
+    /// </summary>
+    public bool UsesSoftwareDisplayRoute
+    {
+        get
+        {
+            if (!IsValid || _backend != RenderBackend.D3D12) return false;
+            try
+            {
+                return NativeGpuMethods.RenderTargetUsesSoftwareDisplayRoute(_handle) != 0;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // A newer managed assembly can be deployed next to an older
+                // native runtime. Treat the missing diagnostic as "unknown"
+                // instead of failing render-target creation.
+                return false;
+            }
+        }
+    }
+
+    /// <summary>
     /// Sets the rendering engine (hot-switch). Takes effect at the next BeginDraw().
     /// </summary>
     public void SetRenderingEngine(RenderingEngine engine)
@@ -196,6 +245,52 @@ public sealed class RenderTarget : IDisposable
         _ = NativeMethods.RenderTargetReclaimIdleResources(_handle);
     }
 
+    /// <summary>
+    /// Attempts to replace an idle software framebuffer with its lossless compact
+    /// representation. Returns true only when this call released at least one MiB
+    /// of owned main-framebuffer storage. Missing older native entry points,
+    /// unsupported backends, active drawing/capture, allocation failure and a
+    /// frame without enough uniform bottom rows all return false.
+    /// </summary>
+    internal bool TryCompactIdleStorage()
+    {
+        const ulong MinimumReleasedBytes = 1024u * 1024u;
+        if (!IsValid || _backend != RenderBackend.Software || _isDrawing ||
+            !_softwareFramebufferUsesOwnedStorageQuery)
+        {
+            return false;
+        }
+
+        long logicalBytes = GetSoftwareFramebufferLogicalBytes(
+            _backend, Width, Height);
+        if (!TryQuerySoftwareFramebufferOwnedBytes(out ulong beforeBytes))
+        {
+            FallBackToLogicalSoftwareFramebufferPressure(logicalBytes);
+            return false;
+        }
+
+        SetSoftwareFramebufferPressure(checked((long)beforeBytes));
+        if (!_native.TryCompactIdleFramebufferStorage(_handle, out int compactResult))
+        {
+            FallBackToLogicalSoftwareFramebufferPressure(logicalBytes);
+            return false;
+        }
+        if (compactResult != (int)JaliumResult.Ok)
+        {
+            return false;
+        }
+
+        if (!TryQuerySoftwareFramebufferOwnedBytes(out ulong afterBytes))
+        {
+            FallBackToLogicalSoftwareFramebufferPressure(logicalBytes);
+            return false;
+        }
+
+        SetSoftwareFramebufferPressure(checked((long)afterBytes));
+        return beforeBytes > afterBytes &&
+            beforeBytes - afterBytes >= MinimumReleasedBytes;
+    }
+
     internal RenderTarget(RenderContext context, NativeSurfaceDescriptor surface, int width, int height, bool useComposition = false)
         : this(
             context.Backend,
@@ -217,8 +312,13 @@ public sealed class RenderTarget : IDisposable
         int height,
         bool useComposition,
         IRenderTargetNative? native = null,
-        RenderContext? ownerContext = null)
+        RenderContext? ownerContext = null,
+        IRenderTargetMemoryPressure? memoryPressure = null)
     {
+        _memoryPressure = memoryPressure
+            ?? (native == null
+                ? GcRenderTargetMemoryPressure.Instance
+                : NoopRenderTargetMemoryPressure.Instance);
         _native = native ?? DefaultRenderTargetNative.Instance;
         _ownerContext = ownerContext;
         _backend = backend;
@@ -226,6 +326,14 @@ public sealed class RenderTarget : IDisposable
         _hwnd = surface.Platform == NativePlatform.Windows ? surface.Handle0 : nint.Zero;
         Width = width;
         Height = height;
+
+        // New native runtimes report the exact capacity retained by the main
+        // software framebuffer. The logical BGRA area remains the compatibility
+        // fallback for an older DLL without that query. Compute the fallback
+        // before native creation so an impossible 64-bit product cannot create
+        // a target whose pressure is unrepresentable.
+        long initialSoftwareFramebufferBytes =
+            GetSoftwareFramebufferLogicalBytes(backend, width, height);
 
         if (_ownerContext != null)
         {
@@ -243,6 +351,7 @@ public sealed class RenderTarget : IDisposable
                 ThrowRenderPipelineException("Create", resultCode);
             }
 
+            InitializeSoftwareFramebufferPressure(initialSoftwareFramebufferBytes);
             SupportsPartialPresentation = _native.SupportsPartialPresentation(_handle);
         }
         catch
@@ -268,7 +377,20 @@ public sealed class RenderTarget : IDisposable
             finally
             {
                 _disposed = true;
-                ReleaseOwnerContextReference();
+                try
+                {
+                    ReleaseSoftwareFramebufferPressure();
+                }
+                catch
+                {
+                    // Preserve the construction exception, just as for native
+                    // cleanup above. The production GC strategy cannot fail for
+                    // a positive amount that was previously added successfully.
+                }
+                finally
+                {
+                    ReleaseOwnerContextReference();
+                }
             }
             throw;
         }
@@ -284,6 +406,9 @@ public sealed class RenderTarget : IDisposable
         ThrowIfDisposed();
         if (width <= 0 || height <= 0) return JaliumResult.Ok;
 
+        long resizedSoftwareFramebufferBytes =
+            GetSoftwareFramebufferLogicalBytes(_backend, width, height);
+
         int resultCode = _native.Resize(_handle, width, height);
         var result = JaliumResultMapper.FromCode(resultCode);
         // Busy = the native backend refused this resize because a command list is
@@ -297,6 +422,7 @@ public sealed class RenderTarget : IDisposable
 
         ThrowIfNativeFailure("Resize", resultCode);
 
+        SynchronizeSoftwareFramebufferPressure(resizedSoftwareFramebufferBytes);
         Width = width;
         Height = height;
         return JaliumResult.Ok;
@@ -320,6 +446,8 @@ public sealed class RenderTarget : IDisposable
         ThrowIfNativeFailure("Begin", resultCode);
         _drawingThreadId = Environment.CurrentManagedThreadId;
         _isDrawing = true;
+        SynchronizeSoftwareFramebufferPressure(
+            GetSoftwareFramebufferLogicalBytes(_backend, Width, Height));
     }
 
     /// <summary>
@@ -344,6 +472,8 @@ public sealed class RenderTarget : IDisposable
         {
             _drawingThreadId = Environment.CurrentManagedThreadId;
             _isDrawing = true;
+            SynchronizeSoftwareFramebufferPressure(
+                GetSoftwareFramebufferLogicalBytes(_backend, Width, Height));
             return true;
         }
 
@@ -425,8 +555,22 @@ public sealed class RenderTarget : IDisposable
             raw.PathEntries, raw.PathBytes,
             raw.TextureCount, raw.TextureBytes,
             raw.FrameGpuWaitNs, raw.SwapBufferCount,
+            raw.Reserved0,
             raw.LastFramePresentToReadyNs, raw.FrameWaitableWaitNs,
-            raw.PresentBlockNs);
+            raw.PresentBlockNs,
+            raw.SoftwareRasterNs,
+            raw.SoftwarePixelsVisited,
+            raw.SoftwarePixelsBlended,
+            raw.SoftwareAaSamples,
+            raw.SoftwareClipRejectedPixels,
+            raw.SoftwareParallelNs,
+            raw.SoftwareCacheBytes,
+            raw.SoftwareEffectCacheHits,
+            raw.SoftwareEffectCacheMisses,
+            raw.SoftwareWorkerCount,
+            raw.SoftwareWorkerUtilizationPermille,
+            raw.SoftwareEffectCacheEntries,
+            raw.SoftwareGradientCacheEntries);
         return true;
     }
 
@@ -912,6 +1056,11 @@ public sealed class RenderTarget : IDisposable
             return;
         }
 
+        // IsValid above is only a fast rejection. Cache eviction can dispose the
+        // format between that check and P/Invoke; keep its handle pinned until
+        // the synchronous draw has consumed it.
+        if (!format.TryAcquireNativeUse(out var acquiredFormat)) return;
+        using var formatUse = acquiredFormat;
         _drawTextDepth++;
         long t0 = ApiStart();
         try
@@ -920,7 +1069,7 @@ public sealed class RenderTarget : IDisposable
             {
                 fixed (char* textPtr = text)
                 {
-                    NativeMethods.DrawTextRaw(_handle, textPtr, text.Length, format.Handle, x, y, width, height, brush.Handle);
+                    NativeMethods.DrawTextRaw(_handle, textPtr, text.Length, formatUse.Handle, x, y, width, height, brush.Handle);
                 }
             }
         }
@@ -951,6 +1100,8 @@ public sealed class RenderTarget : IDisposable
 
         if (_drawTextDepth > 8) return;
 
+        if (!format.TryAcquireNativeUse(out var acquiredFormat)) return;
+        using var formatUse = acquiredFormat;
         _drawTextDepth++;
         long t0 = ApiStart();
         try
@@ -961,7 +1112,7 @@ public sealed class RenderTarget : IDisposable
                 fixed (float* matrixPtr = inverseMatrix)
                 {
                     NativeMethods.DrawTextWithInverseRaw(_handle, textPtr, text.Length,
-                        format.Handle, x, y, width, height, brush.Handle, matrixPtr);
+                        formatUse.Handle, x, y, width, height, brush.Handle, matrixPtr);
                 }
             }
         }
@@ -1902,6 +2053,126 @@ public sealed class RenderTarget : IDisposable
         ObjectDisposedException.ThrowIf(!IsValid, this);
     }
 
+    private static long GetSoftwareFramebufferLogicalBytes(
+        RenderBackend backend,
+        int width,
+        int height)
+    {
+        if (backend != RenderBackend.Software || width <= 0 || height <= 0)
+        {
+            return 0;
+        }
+
+        return checked((long)width * height * 4L);
+    }
+
+    private void InitializeSoftwareFramebufferPressure(long logicalBytes)
+    {
+        if (_backend != RenderBackend.Software)
+        {
+            return;
+        }
+
+        if (TryQuerySoftwareFramebufferOwnedBytes(out ulong ownedBytes))
+        {
+            _softwareFramebufferUsesOwnedStorageQuery = true;
+            SetSoftwareFramebufferPressure(checked((long)ownedBytes));
+            return;
+        }
+
+        GrowSoftwareFramebufferPressure(logicalBytes);
+    }
+
+    private void SynchronizeSoftwareFramebufferPressure(long logicalBytes)
+    {
+        if (_backend != RenderBackend.Software)
+        {
+            return;
+        }
+
+        if (_softwareFramebufferUsesOwnedStorageQuery)
+        {
+            if (TryQuerySoftwareFramebufferOwnedBytes(out ulong ownedBytes))
+            {
+                SetSoftwareFramebufferPressure(checked((long)ownedBytes));
+                return;
+            }
+
+            FallBackToLogicalSoftwareFramebufferPressure(logicalBytes);
+            return;
+        }
+
+        GrowSoftwareFramebufferPressure(logicalBytes);
+    }
+
+    private bool TryQuerySoftwareFramebufferOwnedBytes(out ulong ownedBytes)
+    {
+        ownedBytes = 0;
+        if (!_native.TryQueryMainFramebufferOwnedBytes(
+                _handle, out int resultCode, out ulong queriedBytes) ||
+            resultCode != (int)JaliumResult.Ok ||
+            queriedBytes > long.MaxValue)
+        {
+            return false;
+        }
+
+        ownedBytes = queriedBytes;
+        return true;
+    }
+
+    private void FallBackToLogicalSoftwareFramebufferPressure(long logicalBytes)
+    {
+        _softwareFramebufferUsesOwnedStorageQuery = false;
+        GrowSoftwareFramebufferPressure(logicalBytes);
+    }
+
+    private void SetSoftwareFramebufferPressure(long ownedBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(ownedBytes);
+        long currentBytes = _softwareFramebufferRetainedPressureBytes;
+        if (ownedBytes == currentBytes)
+        {
+            return;
+        }
+
+        if (ownedBytes > currentBytes)
+        {
+            _memoryPressure.Add(checked(ownedBytes - currentBytes));
+        }
+        else
+        {
+            _memoryPressure.Remove(checked(currentBytes - ownedBytes));
+        }
+        _softwareFramebufferRetainedPressureBytes = ownedBytes;
+    }
+
+    private void GrowSoftwareFramebufferPressure(long logicalBytes)
+    {
+        long retainedLowerBoundBytes = _softwareFramebufferRetainedPressureBytes;
+        if (logicalBytes <= retainedLowerBoundBytes)
+        {
+            return;
+        }
+
+        // std::vector::resize does not release capacity when the logical size
+        // shrinks. Keep the largest successfully allocated logical BGRA area as
+        // a retained-allocation lower bound until native destruction. A later
+        // resize within that peak therefore neither adds nor removes pressure.
+        _memoryPressure.Add(checked(logicalBytes - retainedLowerBoundBytes));
+        _softwareFramebufferRetainedPressureBytes = logicalBytes;
+    }
+
+    private void ReleaseSoftwareFramebufferPressure()
+    {
+        long pressureBytes = Interlocked.Exchange(
+            ref _softwareFramebufferRetainedPressureBytes,
+            0);
+        if (pressureBytes > 0)
+        {
+            _memoryPressure.Remove(pressureBytes);
+        }
+    }
+
     private void ThrowIfNativeFailure(string stage, int resultCode)
     {
         if (resultCode == (int)JaliumResult.Ok)
@@ -1965,8 +2236,17 @@ public sealed class RenderTarget : IDisposable
         finally
         {
             _handle = nint.Zero;
-            ReleaseOwnerContextReference();
-            GC.SuppressFinalize(this);
+            try
+            {
+                // Native destruction above releases the framebuffer first; only
+                // then tell the GC that the corresponding pressure is gone.
+                ReleaseSoftwareFramebufferPressure();
+            }
+            finally
+            {
+                ReleaseOwnerContextReference();
+                GC.SuppressFinalize(this);
+            }
         }
     }
 
@@ -1990,7 +2270,18 @@ public sealed class RenderTarget : IDisposable
             _drawingThreadId = 0;
             _disposed = true;
             _handle = nint.Zero;
-            ReleaseOwnerContextReference();
+            try
+            {
+                ReleaseSoftwareFramebufferPressure();
+            }
+            catch
+            {
+                // Finalizers must never surface managed cleanup failures either.
+            }
+            finally
+            {
+                ReleaseOwnerContextReference();
+            }
         }
     }
 
@@ -2005,6 +2296,42 @@ public sealed class RenderTarget : IDisposable
     }
 }
 
+internal interface IRenderTargetMemoryPressure
+{
+    void Add(long bytes);
+    void Remove(long bytes);
+}
+
+internal sealed class GcRenderTargetMemoryPressure : IRenderTargetMemoryPressure
+{
+    internal static readonly GcRenderTargetMemoryPressure Instance = new();
+
+    private GcRenderTargetMemoryPressure()
+    {
+    }
+
+    public void Add(long bytes) => GC.AddMemoryPressure(bytes);
+
+    public void Remove(long bytes) => GC.RemoveMemoryPressure(bytes);
+}
+
+internal sealed class NoopRenderTargetMemoryPressure : IRenderTargetMemoryPressure
+{
+    internal static readonly NoopRenderTargetMemoryPressure Instance = new();
+
+    private NoopRenderTargetMemoryPressure()
+    {
+    }
+
+    public void Add(long bytes)
+    {
+    }
+
+    public void Remove(long bytes)
+    {
+    }
+}
+
 internal interface IRenderTargetNative
 {
     nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height);
@@ -2013,6 +2340,11 @@ internal interface IRenderTargetNative
     int Resize(nint renderTarget, int width, int height);
     int BeginDraw(nint renderTarget);
     int EndDraw(nint renderTarget);
+    bool TryCompactIdleFramebufferStorage(nint renderTarget, out int resultCode);
+    bool TryQueryMainFramebufferOwnedBytes(
+        nint renderTarget,
+        out int resultCode,
+        out ulong ownedBytes);
     RenderingEngine GetEngine(nint renderTarget);
     void SetVSyncEnabled(nint renderTarget, bool enabled);
     void SetExternalPresentPacing(nint renderTarget, bool enabled);
@@ -2026,6 +2358,7 @@ internal interface IRenderTargetNative
 internal sealed class DefaultRenderTargetNative : IRenderTargetNative
 {
     internal static readonly DefaultRenderTargetNative Instance = new();
+    private static int _framebufferStorageAbiState;
 
     private DefaultRenderTargetNative()
     {
@@ -2048,6 +2381,57 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
 
     public int EndDraw(nint renderTarget)
         => NativeMethods.RenderTargetEndDraw(renderTarget);
+
+    public bool TryCompactIdleFramebufferStorage(
+        nint renderTarget,
+        out int resultCode)
+    {
+        resultCode = (int)JaliumResult.NotSupported;
+        if (Volatile.Read(ref _framebufferStorageAbiState) < 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            resultCode = NativeMethods.RenderTargetCompactIdleFramebufferStorage(
+                renderTarget);
+            Volatile.Write(ref _framebufferStorageAbiState, 1);
+            return true;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            Volatile.Write(ref _framebufferStorageAbiState, -1);
+            return false;
+        }
+    }
+
+    public bool TryQueryMainFramebufferOwnedBytes(
+        nint renderTarget,
+        out int resultCode,
+        out ulong ownedBytes)
+    {
+        resultCode = (int)JaliumResult.NotSupported;
+        ownedBytes = 0;
+        if (Volatile.Read(ref _framebufferStorageAbiState) < 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            resultCode = NativeMethods.RenderTargetQueryMainFramebufferOwnedBytes(
+                renderTarget, out ownedBytes);
+            Volatile.Write(ref _framebufferStorageAbiState, 1);
+            return true;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            Volatile.Write(ref _framebufferStorageAbiState, -1);
+            ownedBytes = 0;
+            return false;
+        }
+    }
 
     public RenderingEngine GetEngine(nint renderTarget)
         => NativeMethods.RenderTargetGetEngine(renderTarget);

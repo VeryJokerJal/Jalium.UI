@@ -1,0 +1,11 @@
+@layer base, app;
+@import "base.css" layer(base) supports(display: grid);
+@property --card-width {
+    syntax: '<length>';
+    inherits: false;
+    initial-value: 64px;
+}
+@layer app {
+    .compiled-card { width: var(--card-width); height: 24px; }
+}
+.compiled-card:disabled { opacity: .4; }

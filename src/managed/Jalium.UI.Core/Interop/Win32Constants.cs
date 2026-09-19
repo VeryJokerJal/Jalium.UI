@@ -127,6 +127,8 @@ internal static class Win32Constants
     public const uint WS_EX_LAYERED = 0x00080000;
     public const uint LWA_ALPHA = 0x02;
     public const int GWL_EXSTYLE = -20;
+    public const uint DWM_BB_ENABLE = 0x00000001;
+    public const uint DWM_BB_BLURREGION = 0x00000002;
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const uint SWP_NOMOVE = 0x0002;
     public static readonly nint HWND_NOTOPMOST = new(-2);

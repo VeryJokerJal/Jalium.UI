@@ -336,11 +336,11 @@ public partial class Storyboard : ParallelTimeline
 
             if (elementDriven && target is UIElement uiElement)
             {
+                // The element owns a separate animated layer. Removing its clock
+                // reveals the current base value, which may have changed since Begin.
+                // Writing the captured value here would replace newer local/bound
+                // values and turn CSS/style fallback values into native local values.
                 uiElement.StopStoryboardAnimation(property, clock);
-                if (remove)
-                {
-                    target.SetValue(property, originalValue ?? property.DefaultMetadata.DefaultValue);
-                }
             }
             else
             {

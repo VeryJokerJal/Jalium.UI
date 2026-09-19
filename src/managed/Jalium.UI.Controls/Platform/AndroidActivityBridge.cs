@@ -12,8 +12,8 @@ namespace Jalium.UI.Controls.Platform;
 // before jalium_register_backend_ex was ready in the core library.
 internal static partial class BackendPreloader
 {
-    private const string SoftwareLib = "jalium.native.software";
-    private const string VulkanLib   = "jalium.native.vulkan";
+    private const string SoftwareLib = JaliumNativeLibraryNames.Software;
+    private const string VulkanLib   = JaliumNativeLibraryNames.Vulkan;
 
     [LibraryImport(SoftwareLib, EntryPoint = "jalium_software_init")]
     internal static partial void SoftwareInit();

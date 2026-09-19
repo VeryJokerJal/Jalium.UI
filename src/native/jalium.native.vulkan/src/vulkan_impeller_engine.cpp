@@ -798,6 +798,7 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
             preferAnalyticStroke = PreferAnalyticFill(devW, devH);
         }
     }
+    const bool useAnalyticCoverage = analytic || preferAnalyticStroke;
 
     if (StrokeCacheEnabled() && !analytic && !gradientStroke &&
         !preferAnalyticStroke &&
@@ -1038,16 +1039,19 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
             dashPattern, dashCount, dashOffset, xform, em);
     }
 
-    // Shared tail: hand a pixel-space contour set to the existing consumers —
-    // GPU stencil-then-cover by default, scanline PixelRect quads on opt-out.
+    // Shared tail: hand a pixel-space contour set to the existing consumers.
+    // Large/default artwork may use GPU stencil-then-cover; explicit analytic
+    // and icon/control-scale strokes MUST use scanline PixelRect coverage.
+    // Previously UseStencilPath() won even after preferAnalyticStroke=true, so
+    // the Gallery's 18px back arrow was still quantized to four MSAA levels
+    // (38 partial pixels versus Chromium's 72 and Vello's 78).
     // Statement-for-statement the pre-cache tail, parameterized on the
     // contour set so cached and freshly-built contours share one path.
     auto emitStrokeContoursBatch = [&](std::vector<Contour>&& sc) -> bool {
         // GPU stencil-then-cover: a stroke renders as a filled outline (the
         // expanded stroke contours). Always NonZero — ExpandStroke emits
         // overlapping CCW triangle soup, which EvenOdd would punch holes in.
-        // (E4: analytic-only mode falls through to the scanline path below.)
-        if (UseStencilPath()) {
+        if (!useAnalyticCoverage && UseStencilPath()) {
             VkImpellerDrawBatch batch;
             if (!BuildVkStencilBatch(std::move(sc), FillRule::NonZero,
                                      brush.r * brush.a, brush.g * brush.a,

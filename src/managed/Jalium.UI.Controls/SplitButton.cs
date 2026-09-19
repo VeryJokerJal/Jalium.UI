@@ -131,6 +131,28 @@ public class SplitButton : ContentControl
     }
 
     /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+
+        if (_primaryButton != null)
+        {
+            _primaryButton.Click -= OnPrimaryButtonClick;
+            // The retired part must stop receiving this SplitButton's Content.
+            // Otherwise its still-active TemplateBinding can claim a new visual
+            // before the replacement part does, routing clicks into the old tree.
+            _primaryButton.ClearBinding(ContentProperty);
+            _primaryButton = null;
+        }
+
+        if (_secondaryButton != null)
+        {
+            _secondaryButton.Click -= OnSecondaryButtonClick;
+            _secondaryButton = null;
+        }
+    }
+
+    /// <inheritdoc />
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);

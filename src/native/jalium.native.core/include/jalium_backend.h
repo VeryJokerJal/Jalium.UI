@@ -1014,6 +1014,11 @@ public:
         return JALIUM_ERROR_NOT_SUPPORTED;
     }
 
+    /// Diagnostic/benchmark synchronization point. CPU backends are complete
+    /// when EndDraw returns, so the default is an immediate success; queued GPU
+    /// backends override and wait for their most recently submitted frame.
+    virtual JaliumResult WaitForCompletion() { return JALIUM_OK; }
+
     /// Returns the OS HANDLE (cast to intptr_t for portability) that the
     /// backend uses as its frame-latency waitable, or 0 when no such
     /// object exists (older platforms, non-D3D12 backends). Callers use
@@ -1221,6 +1226,19 @@ protected:
     JaliumRenderingEngine pendingEngine_ = JALIUM_ENGINE_AUTO;
 };
 
+/// Optional side interface for CPU render targets that own a persistent main
+/// framebuffer. Keeping this outside RenderTarget avoids shifting the shared
+/// backend vtable when the storage-management ABI is added. GPU backends do not
+/// implement it, so compact is a no-op and the owned-byte query reports
+/// NOT_SUPPORTED through the C ABI.
+class CpuFramebufferStorageProvider {
+public:
+    virtual JaliumResult CompactIdleFramebufferStorage() = 0;
+    virtual JaliumResult QueryMainFramebufferOwnedBytes(uint64_t* outBytes) const = 0;
+protected:
+    ~CpuFramebufferStorageProvider() = default;
+};
+
 /// Abstract base class for brushes.
 class Brush {
 public:
@@ -1229,6 +1247,15 @@ public:
 };
 
 /// Abstract base class for text formats.
+// Optional side interface: the existing TextFormat vtable stays unchanged, so
+// an older backend can be queried safely and reports NOT_SUPPORTED.
+class FontUnitMetricsProvider {
+public:
+    virtual JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) = 0;
+protected:
+    ~FontUnitMetricsProvider() = default;
+};
+
 class TextFormat {
 public:
     virtual ~TextFormat() = default;

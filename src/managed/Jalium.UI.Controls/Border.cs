@@ -364,10 +364,10 @@ public class Border : Decorator
     {
         var border = BorderThickness;
         return new Thickness(
-            SnapLayoutValue(border.Left),
-            SnapLayoutValue(border.Top),
-            SnapLayoutValue(border.Right),
-            SnapLayoutValue(border.Bottom));
+            RoundLayoutValue(SnapLayoutValue(border.Left)),
+            RoundLayoutValue(SnapLayoutValue(border.Top)),
+            RoundLayoutValue(SnapLayoutValue(border.Right)),
+            RoundLayoutValue(SnapLayoutValue(border.Bottom)));
     }
 
     private static Rect GetInnerRect(Rect outerRect, Thickness border)
@@ -1397,7 +1397,9 @@ public class Border : Decorator
     private const double LiquidGlassNativePadding = 32.0;
 
     internal override double GetExtraDirtyPadding()
-        => _liquidGlassForDirtyBounds ? _liquidGlassDirtyPadding : 0.0;
+        // Max, not sum: both values are symmetric ink-extent radii, so the reachable
+        // ink is bounded by the larger one (base carries the CSS outline ring).
+        => Math.Max(base.GetExtraDirtyPadding(), _liquidGlassForDirtyBounds ? _liquidGlassDirtyPadding : 0.0);
 
     private void UpdateLiquidGlassDirtyPadding(Size size)
     {

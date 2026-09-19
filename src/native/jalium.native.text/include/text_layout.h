@@ -26,7 +26,7 @@ class GlyphRasterizer;
 // - Custom layout engine for line breaking, alignment, and hit testing
 // ============================================================================
 
-class JALIUM_TEXT_API JaliumTextFormat : public TextFormat {
+class JALIUM_TEXT_API JaliumTextFormat : public TextFormat, public FontUnitMetricsProvider {
 public:
     JaliumTextFormat(
         TextEngine* engine,
@@ -50,6 +50,7 @@ public:
         JaliumTextMetrics* metrics) override;
 
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+    JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) override;
 
     JaliumResult HitTestPoint(
         const wchar_t* text, uint32_t textLength,
