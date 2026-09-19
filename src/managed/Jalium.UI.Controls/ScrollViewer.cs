@@ -38,9 +38,9 @@ public partial class ScrollViewer : ContentControl
     private double _extentHeight;
     // Last committed Auto scroll-bar decisions. Auto visibility is a threshold on a
     // continuous quantity, so a page whose content is exactly viewport-sized sits on
-    // the knife edge and flips every frame while a window is being resized — and each
-    // flip moves a 12px gutter, shoving the content sideways. Remembering the previous
-    // answer turns the single threshold into a dead band.
+    // the knife edge and can flip every frame while a window is being resized. Remembering
+    // the previous answer turns the single threshold into a dead band and keeps the
+    // scroll-bar visual state stable.
     private bool _verticalScrollBarShown;
     private bool _horizontalScrollBarShown;
     // Set once layout has settled an Auto decision from real content. Gates every
@@ -252,8 +252,10 @@ public partial class ScrollViewer : ContentControl
 
     /// <summary>
     /// Identifies the IsOverlayScrollBarEnabled dependency property.
-    /// Overlay scroll bars render as compact edge indicators and do not reserve
-    /// content space. The default is enabled on mobile operating systems.
+    /// Overlay scroll bars render as compact edge indicators. Scroll bars are laid
+    /// out over the content on every platform, so this property changes their visual
+    /// presentation rather than the size of the content viewport. The default is
+    /// enabled on mobile operating systems.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOverlayScrollBarEnabledProperty =
@@ -373,8 +375,8 @@ public partial class ScrollViewer : ContentControl
     }
 
     /// <summary>
-    /// Gets or sets whether scroll bars overlay the content as compact mobile
-    /// edge indicators instead of reserving a desktop scroll-bar gutter.
+    /// Gets or sets whether scroll bars use the compact mobile edge-indicator style.
+    /// Scroll bars always overlay the content and do not reduce the content viewport.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOverlayScrollBarEnabled
@@ -860,8 +862,8 @@ public partial class ScrollViewer : ContentControl
         var scrollBar = new ScrollBar
         {
             // This viewer creates, owns and positions this bar: ArrangeOverride puts
-            // it at a strip derived purely from the arranged size and the configured
-            // gutter, never from the bar's own DesiredSize. Showing, hiding or
+            // it at a strip derived purely from the arranged size, never from the
+            // bar's own DesiredSize. Showing, hiding or
             // animating it therefore cannot change anything outside this viewer, so
             // its layout invalidations must not travel up the tree. A ScrollBar that
             // came from a template is an ordinary child and is deliberately left
@@ -1053,8 +1055,8 @@ public partial class ScrollViewer : ContentControl
         if (!ReferenceEquals(sender, this))
             return;
 
-        // The complete ScrollViewer (content plus scroll-bar gutters) is the
-        // outside boundary. Leaving it bypasses the idle delay and starts fading.
+        // The complete ScrollViewer is the outside boundary. Leaving it bypasses the
+        // idle delay and starts fading.
         HideAutoHideScrollBarsIfEligible();
     }
 
@@ -2769,15 +2771,9 @@ public partial class ScrollViewer : ContentControl
             return default(Size);
         }
 
-        var gutters = GetScrollBarGutters();
-
-        // Calculate available space for content (accounting for potential scrollbars)
-        var contentAvailableWidth = availableSize.Width - gutters.Vertical;
-        var contentAvailableHeight = availableSize.Height - gutters.Horizontal;
-
         var finiteContentAvailable = new Size(
-            Math.Max(0, contentAvailableWidth),
-            Math.Max(0, contentAvailableHeight));
+            Math.Max(0, availableSize.Width),
+            Math.Max(0, availableSize.Height));
 
         // Match WPF's non-IScrollInfo contract: a scrollable axis is measured with
         // an infinite constraint from the first pass. A finite probe followed by an
@@ -2817,9 +2813,9 @@ public partial class ScrollViewer : ContentControl
             _extentHeight = contentDesired.Height;
         }
 
-        // Publish the viewport now rather than waiting for arrange. Since the gutter
-        // no longer depends on the scroll-bar decision, the viewport this pass will
-        // hand the content is already known here. Content that sizes itself from
+        // Publish the viewport now rather than waiting for arrange. Scroll bars are
+        // overlays, so the viewport is the full available size and does not change
+        // when a bar appears or disappears. Content that sizes itself from
         // ViewportWidth/Height — a page that wants to fill the shell and scroll
         // internally — would otherwise read last pass's numbers and settle on a size
         // meant for the previous viewport; being smaller than the box it is arranged
@@ -2828,19 +2824,19 @@ public partial class ScrollViewer : ContentControl
         // real one in that case.
         if (double.IsFinite(availableSize.Width))
         {
-            _viewportWidth = Math.Max(0, availableSize.Width - gutters.Vertical);
+            _viewportWidth = Math.Max(0, availableSize.Width);
         }
 
         if (double.IsFinite(availableSize.Height))
         {
-            _viewportHeight = Math.Max(0, availableSize.Height - gutters.Horizontal);
+            _viewportHeight = Math.Max(0, availableSize.Height);
         }
 
         MaintainEndAnchors(allowCompletion: false);
 
         // Settle the Auto decision here, from this pass's own numbers: the extent was
-        // just produced above and the viewport is availableSize minus a gutter that
-        // does not depend on the decision. Deciding in Arrange instead compared an
+        // just produced above and the viewport is the full availableSize because the
+        // scroll bars overlay it. Deciding in Arrange instead compared an
         // extent from one pass against a size from a later one, which is what made a
         // shrinking window read as "overflowing". Committing before the bars are
         // measured below also means a bar that just turned visible gets measured in
@@ -2853,9 +2849,9 @@ public partial class ScrollViewer : ContentControl
                 HorizontalScrollBarVisibility, _horizontalScrollBarShown,
                 _extentWidth, finiteContentAvailable.Width));
 
-        // Return the smaller of content size and available size
-        var resultWidth = Math.Min(contentDesired.Width + gutters.Vertical, availableSize.Width);
-        var resultHeight = Math.Min(contentDesired.Height + gutters.Horizontal, availableSize.Height);
+        // Scroll bars overlay the content, so they never contribute to desired size.
+        var resultWidth = Math.Min(contentDesired.Width, availableSize.Width);
+        var resultHeight = Math.Min(contentDesired.Height, availableSize.Height);
 
         var scrollBarLayoutSize = IsOverlayScrollBarEnabled
             ? OverlayScrollBarLayoutSize
@@ -2890,41 +2886,6 @@ public partial class ScrollViewer : ContentControl
         => wasShown
             ? extent > viewport
             : extent > viewport + LayoutEpsilon;
-
-    /// <summary>
-    /// Layout gutter reserved for each scroll bar.
-    /// </summary>
-    /// <remarks>
-    /// Depends ONLY on configuration — the overlay flag, the two visibility modes,
-    /// and whether there is content. Deliberately NOT on whether a bar is currently
-    /// shown: letting the gutter follow the decision closes a feedback loop
-    /// (decision → content width → wrapped rows → extent → decision) that has no
-    /// stable fixed point, which is why resizing used to make the page shudder and
-    /// why the layout manager had to re-run whole passes to settle it. Keeping the
-    /// gutter constant makes a bar appearing or disappearing layout-neutral, so the
-    /// decision can be settled once per pass and never has to iterate.
-    /// <para>
-    /// Must not read any field: that is the compile-time guarantee that Measure and
-    /// Arrange compute the same value.
-    /// </para>
-    /// </remarks>
-    private (double Vertical, double Horizontal) GetScrollBarGutters()
-    {
-        // No content means nothing to inset. Panels that use a bare ScrollViewer
-        // purely as an IScrollInfo owner rely on the full viewport being reported.
-        if (ContentElement == null || IsOverlayScrollBarEnabled)
-        {
-            return (0, 0);
-        }
-
-        var vertical = VerticalScrollBarVisibility is ScrollBarVisibility.Visible or ScrollBarVisibility.Auto
-            ? ScrollBarSize
-            : 0;
-        var horizontal = HorizontalScrollBarVisibility is ScrollBarVisibility.Visible or ScrollBarVisibility.Auto
-            ? ScrollBarSize
-            : 0;
-        return (vertical, horizontal);
-    }
 
     /// <summary>
     /// The single rule for "is this scroll bar shown", replacing the separate tests
@@ -2999,19 +2960,11 @@ public partial class ScrollViewer : ContentControl
             }
         }
 
-        // Calculate if scrollbars are needed (now using up-to-date extent values).
-        // Auto uses a dead band around the threshold instead of a bare comparison:
-        // content sized to exactly fill the viewport sits on the boundary, and every
-        // flip moves a ScrollBarSize gutter that shifts the content sideways, so an
-        // undamped test makes a window resize visibly shudder.
-        var arrangeGutters = GetScrollBarGutters();
-
-        // A live native resize can temporarily make the arranged surface smaller than
-        // the fixed desktop scroll-bar gutter. The viewport is the remaining layout
-        // space, so its lower bound is zero; a negative viewport is not meaningful and
-        // cannot be passed to the content's Arrange rect.
-        _viewportWidth = Math.Max(0, finalSize.Width - arrangeGutters.Vertical);
-        _viewportHeight = Math.Max(0, finalSize.Height - arrangeGutters.Horizontal);
+        // Scroll bars are visual overlays, so the content viewport always occupies
+        // the full arranged size. Showing or hiding a bar therefore cannot reflow the
+        // content or create a visibility/layout feedback loop.
+        _viewportWidth = Math.Max(0, finalSize.Width);
+        _viewportHeight = Math.Max(0, finalSize.Height);
 
         // Content is arranged at max(extent, viewport) below. While the extent is the
         // larger of the two, shrinking the viewport leaves that rect byte-identical,
@@ -3058,7 +3011,7 @@ public partial class ScrollViewer : ContentControl
             }
             else
             {
-                // Arrange content with offset (content area excludes scrollbar space)
+                // Arrange content with offset. Scroll bars are overlaid on this area.
                 // Disabled is a constrained axis, not merely a hidden scroll bar.
                 // A fixed-width descendant may still report a wider desired size,
                 // but using that extent to arrange the content would stretch every
@@ -3127,11 +3080,14 @@ public partial class ScrollViewer : ContentControl
             var scrollBarLayoutSize = IsOverlayScrollBarEnabled
                 ? OverlayScrollBarLayoutSize
                 : ScrollBarSize;
+            var oppositeBarInset = !IsOverlayScrollBarEnabled && needsHorizontalScrollBar
+                ? ScrollBarSize
+                : 0.0;
             _verticalScrollBar.Arrange(new Rect(
                 Math.Max(0, finalSize.Width - scrollBarLayoutSize),
                 0,
                 scrollBarLayoutSize,
-                Math.Max(0, _viewportHeight)));
+                Math.Max(0, finalSize.Height - oppositeBarInset)));
         }
         else
         {
@@ -3143,10 +3099,13 @@ public partial class ScrollViewer : ContentControl
             var scrollBarLayoutSize = IsOverlayScrollBarEnabled
                 ? OverlayScrollBarLayoutSize
                 : ScrollBarSize;
+            var oppositeBarInset = !IsOverlayScrollBarEnabled && needsVerticalScrollBar
+                ? ScrollBarSize
+                : 0.0;
             _horizontalScrollBar.Arrange(new Rect(
                 0,
                 Math.Max(0, finalSize.Height - scrollBarLayoutSize),
-                Math.Max(0, _viewportWidth),
+                Math.Max(0, finalSize.Width - oppositeBarInset),
                 scrollBarLayoutSize));
         }
         else
