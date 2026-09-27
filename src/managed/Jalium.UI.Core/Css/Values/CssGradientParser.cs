@@ -14,7 +14,8 @@ internal static class CssGradientParser
     public static bool TryParseGradientFunction(ReadOnlySpan<char> name, ref CssTokenReader args, out Brush? brush)
     {
         var source = args.Remaining.ToString();
-        var provisional = new CssLengthContext(14, 14, 14, 100, 100);
+        // Syntax validation runs before an element is known; used-size resolution uses the real tree.
+        var provisional = new CssLengthContext(14, 14, 14, 100, 100, provisionalTreeCounts: true);
         var conic = name.Equals("conic-gradient", StringComparison.OrdinalIgnoreCase) ||
             name.Equals("repeating-conic-gradient", StringComparison.OrdinalIgnoreCase);
         var dependsOnCurrentColor = false;

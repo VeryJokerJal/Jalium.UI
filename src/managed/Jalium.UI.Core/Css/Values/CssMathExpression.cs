@@ -111,7 +111,12 @@ internal sealed record CssMathExpression(
     private bool TryEvaluateSibling(in CssLengthContext context, out double value)
     {
         value = 0;
-        if (context.Element is not { } element) return false;
+        if (context.Element is not { } element)
+        {
+            if (!context.ProvisionalTreeCounts) return false;
+            value = 1;
+            return true;
+        }
         if (element.FrameworkParent is not { } parent)
         {
             value = 1;

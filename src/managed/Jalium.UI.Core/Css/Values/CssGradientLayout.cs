@@ -33,7 +33,7 @@ internal sealed class CssGradientLayout(string function, string arguments, CssLe
                     !CssColorParser.TrySubstituteCurrentColor(source, color, out source, out _))
                     return null;
             }
-            var reader = new CssTokenReader(source);
+            var reader = new CssTokenReader(source, new CssNumericReadContext(lengths));
             if (!CssGradientParser.TryParseResolved(function, ref reader, lengths, width, height, out var brush) ||
                 brush is null) return null;
             if (brush.CanFreeze) brush.Freeze();
