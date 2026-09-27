@@ -230,7 +230,7 @@ internal static class CssCustomProperties
         Func<string, string, bool>? validateFallback = null, Func<string, bool>? validateFallbackFor = null,
         Func<string, bool>? isTainted = null, Action<string>? onUsed = null, bool inUrl = false,
         CssNode? element = null, Action? onAttributeUsed = null, Func<string, bool>? isActive = null,
-        CssRandomContext? randomContext = null)
+        CssRandomContext? randomContext = null, bool earlyRandom = false)
     {
         value = string.Empty;
         if (depth >= MaxDepth || text.Length > MaxExpandedLength) return false;
@@ -251,7 +251,7 @@ internal static class CssCustomProperties
                 {
                     if (!SubstituteEarly(function.Arguments, resolve, out var earlyArguments, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext) ||
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom) ||
                         !TryArguments(earlyArguments, out var first, out var fallback)) return false;
                     string? name = null;
                     var nameHasAttribute = false;
@@ -262,7 +262,7 @@ internal static class CssCustomProperties
                         nameUsedTainted |= isTainted?.Invoke(dependency) == true;
                     }
                     if (Substitute(first, resolve, out var expandedName, depth + 1,
-                            validateFallback, validateFallbackFor, isTainted, NameUsed, inUrl, element, onAttributeUsed, isActive, randomContext))
+                            validateFallback, validateFallbackFor, isTainted, NameUsed, inUrl, element, onAttributeUsed, isActive, randomContext, true))
                     {
                         nameHasAttribute = ContainsAttributeFunction(expandedName);
                         if ((element is null || !nameHasAttribute || CssAttributeSubstitution.TrySubstitute(
@@ -279,14 +279,14 @@ internal static class CssCustomProperties
                     {
                         if (!Substitute(fallback, resolve, out var validatedFallback, depth + 1,
                                 validateFallback, validateFallbackFor, element: element, isActive: isActive,
-                                randomContext: randomContext) ||
+                                randomContext: randomContext, earlyRandom: earlyRandom) ||
                             !validateFallback(name, validatedFallback)) return false;
                     }
                     var replacement = name is null ? null : resolve(name);
                     if (replacement is null)
                     {
                         if (fallback is null || !Substitute(fallback, resolve, out replacement, depth + 1,
-                                validateFallback, validateFallbackFor, isTainted, onUsed, inUrl, element, onAttributeUsed, isActive, randomContext)) return false;
+                                validateFallback, validateFallbackFor, isTainted, onUsed, inUrl, element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                     }
                     else if (name is not null)
                     {
@@ -294,10 +294,10 @@ internal static class CssCustomProperties
                         if ((isTainted?.Invoke(name) == true || nameHasAttribute || nameUsedTainted) &&
                             (inUrl || ContainsUrlFunction(replacement))) return false;
                     }
-                    if (randomContext.ResolveNumeric && ContainsNumericRandom(replacement) &&
+                    if ((randomContext.ResolveNumeric || earlyRandom) && ContainsNumericRandom(replacement) &&
                         !Substitute(replacement, resolve, out replacement, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext)) return false;
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                     // Preserve token boundaries: var(--number)px must not become a dimension.
                     output.Append("/**/").Append(replacement).Append("/**/");
                 }
@@ -312,31 +312,32 @@ internal static class CssCustomProperties
                     if (!CssEnvironmentVariables.TryResolveFunction(function.Arguments, element, out var replacement) ||
                         !Substitute(replacement, resolve, out replacement, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext)) return false;
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                     output.Append("/**/").Append(replacement).Append("/**/");
                 }
                 else if (function.Name.Equals("if", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!TryResolveIf(function.Arguments, resolve, out var replacement, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext)) return false;
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                     output.Append("/**/").Append(replacement).Append("/**/");
                 }
                 else if (function.Name.Equals("random-item", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!TryResolveRandomItem(function.Arguments, resolve, out var replacement, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext)) return false;
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                     output.Append("/**/").Append(replacement).Append("/**/");
                 }
-                else if (function.Name.Equals("random", StringComparison.OrdinalIgnoreCase) && randomContext.ResolveNumeric)
+                else if (function.Name.Equals("random", StringComparison.OrdinalIgnoreCase) &&
+                         (randomContext.ResolveNumeric || earlyRandom))
                 {
-                    var index = randomContext.ClaimIndex();
+                    var index = randomContext.ClaimIndex(earlyRandom);
                     if (!Substitute(function.Arguments, resolve, out var arguments, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext) ||
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom) ||
                         !CssRandomItem.TryResolveNumberArguments(arguments, element,
-                            randomContext.Property, index, out var resolved)) return false;
+                            randomContext.Property, index, out var resolved, earlyRandom)) return false;
                     output.Append("random(").Append(resolved).Append(')');
                 }
                 else
@@ -344,7 +345,7 @@ internal static class CssCustomProperties
                     var url = function.Name.Equals("url", StringComparison.OrdinalIgnoreCase) ||
                               function.Name.Equals("src", StringComparison.OrdinalIgnoreCase);
                     if (!Substitute(function.Arguments, resolve, out var arguments, depth + 1,
-                            validateFallback, validateFallbackFor, isTainted, onUsed, inUrl || url, element, onAttributeUsed, isActive, randomContext)) return false;
+                            validateFallback, validateFallbackFor, isTainted, onUsed, inUrl || url, element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                     output.Append(function.Name).Append('(').Append(arguments).Append(')');
                 }
                 i = function.End;
@@ -365,7 +366,7 @@ internal static class CssCustomProperties
         Func<string, string, bool>? validateFallback, Func<string, bool>? validateFallbackFor,
         Func<string, bool>? isTainted, Action<string>? onUsed, bool inUrl,
         CssNode? element, Action? onAttributeUsed, Func<string, bool>? isActive,
-        CssRandomContext randomContext)
+        CssRandomContext randomContext, bool earlyRandom)
     {
         value = string.Empty;
         var conditionTainted = false;
@@ -381,13 +382,15 @@ internal static class CssCustomProperties
         }
         if (!SubstituteEarly(arguments, resolve, out arguments, depth,
                 validateFallback, validateFallbackFor, isTainted, ConditionUsed, inUrl,
-                element, ConditionAttributeUsed, isActive, randomContext) ||
+                element, ConditionAttributeUsed, isActive, randomContext, earlyRandom) ||
             !TryParseIfBranches(arguments, out var branches)) return false;
         foreach (var (condition, branchValue) in branches)
         {
+            // Conditions are parsed during arbitrary substitution; the chosen value
+            // is parsed afterward unless its enclosing substitution is also early.
             if (!Substitute(condition, resolve, out var expandedCondition, depth,
                     validateFallback, validateFallbackFor, isTainted, ConditionUsed, inUrl,
-                    element, ConditionAttributeUsed, isActive, randomContext)) continue;
+                    element, ConditionAttributeUsed, isActive, randomContext, true)) continue;
             if (ContainsAttributeFunction(expandedCondition)) ConditionAttributeUsed();
             var conditionReader = new CssTokenReader(expandedCondition);
             var otherwise = conditionReader.TryReadIdent(out var keyword) &&
@@ -396,7 +399,7 @@ internal static class CssCustomProperties
                     ConditionUsed)) continue;
             if (!Substitute(branchValue, resolve, out value, depth,
                     validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                    element, onAttributeUsed, isActive, randomContext)) return false;
+                    element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
             return !conditionTainted || !inUrl && !ContainsUrlFunction(value);
         }
         return true;
@@ -406,10 +409,10 @@ internal static class CssCustomProperties
         out string value, int depth, Func<string, string, bool>? validateFallback,
         Func<string, bool>? validateFallbackFor, Func<string, bool>? isTainted,
         Action<string>? onUsed, bool inUrl, CssNode? element, Action? onAttributeUsed,
-        Func<string, bool>? isActive, CssRandomContext randomContext)
+        Func<string, bool>? isActive, CssRandomContext randomContext, bool earlyRandom)
     {
         value = string.Empty;
-        var index = randomContext.ClaimIndex();
+        var index = randomContext.ClaimIndex(earlyRandom);
         var keyTainted = false;
         void KeyUsed(string dependency)
         {
@@ -423,11 +426,11 @@ internal static class CssCustomProperties
         }
         if (!SubstituteEarly(arguments, resolve, out arguments, depth,
                 validateFallback, validateFallbackFor, isTainted, KeyUsed, inUrl,
-                element, KeyAttributeUsed, isActive, randomContext) ||
+                element, KeyAttributeUsed, isActive, randomContext, earlyRandom) ||
             !CssRandomItem.TryParseArguments(arguments, out var key, out var options) ||
             !Substitute(key, resolve, out key, depth,
                 validateFallback, validateFallbackFor, isTainted, KeyUsed, inUrl,
-                element, KeyAttributeUsed, isActive, randomContext)) return false;
+                element, KeyAttributeUsed, isActive, randomContext, true)) return false;
         if (ContainsAttributeFunction(key))
         {
             if (element is null || !CssAttributeSubstitution.TrySubstitute(key, element,
@@ -435,10 +438,10 @@ internal static class CssCustomProperties
             KeyAttributeUsed();
         }
         if (!CssRandomItem.TrySelect(key, options.Count, element,
-                randomContext.Property, index, out var selected) ||
+                randomContext.Property, index, out var selected, earlyRandom) ||
             !Substitute(options[selected], resolve, out value, depth,
                 validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                element, onAttributeUsed, isActive, randomContext)) return false;
+                element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
         return !keyTainted || !inUrl && !ContainsUrlFunction(value);
     }
 
@@ -446,7 +449,7 @@ internal static class CssCustomProperties
         Func<string, string, bool>? validateFallback, Func<string, bool>? validateFallbackFor,
         Func<string, bool>? isTainted, Action<string>? onUsed, bool inUrl,
         CssNode? element, Action? onAttributeUsed, Func<string, bool>? isActive,
-        CssRandomContext randomContext)
+        CssRandomContext randomContext, bool earlyRandom)
     {
         value = string.Empty;
         if (depth >= MaxDepth || text.Length > MaxExpandedLength) return false;
@@ -466,7 +469,7 @@ internal static class CssCustomProperties
                 var source = text[(i + 3)..spread.End];
                 if (!Substitute(source, resolve, out var replacement, depth + 1,
                         validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                        element, onAttributeUsed, isActive, randomContext)) return false;
+                        element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                 if (spread.Name.Equals("attr", StringComparison.OrdinalIgnoreCase))
                 {
                     if (element is null || !CssAttributeSubstitution.TrySubstitute(replacement, element,
@@ -485,7 +488,7 @@ internal static class CssCustomProperties
                               function.Name.Equals("src", StringComparison.OrdinalIgnoreCase);
                     if (!SubstituteEarly(function.Arguments, resolve, out var arguments, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl || url,
-                            element, onAttributeUsed, isActive, randomContext)) return false;
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                     output.Append(function.Name).Append('(').Append(arguments).Append(')');
                 }
                 i = function.End;

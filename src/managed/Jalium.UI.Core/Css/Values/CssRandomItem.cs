@@ -89,20 +89,20 @@ internal static class CssRandomItem
     }
 
     internal static bool TrySelect(string key, int count, CssNode? element, string? property,
-        int functionIndex, out int selected)
+        int functionIndex, out int selected, bool early = false)
     {
         selected = 0;
-        if (count < 1 || !TryBase(key, element, property, functionIndex, out var random)) return false;
+        if (count < 1 || !TryBase(key, element, property, functionIndex, out var random, early)) return false;
         selected = Math.Min((int)(random * count), count - 1);
         return true;
     }
 
     internal static bool TryBase(string key, CssNode? element, string? property,
-        int functionIndex, out double random)
+        int functionIndex, out double random, bool early = false)
     {
         random = 0;
         if (!TryParseKey(key, out var parsed)) return false;
-        random = parsed.Fixed ?? RandomBase(parsed, element, property, functionIndex);
+        random = parsed.Fixed ?? RandomBase(parsed, element, property, functionIndex, early);
         return true;
     }
 
@@ -123,14 +123,14 @@ internal static class CssRandomItem
     }
 
     internal static bool TryResolveNumberArguments(string arguments, CssNode? element,
-        string? property, int functionIndex, out string resolved)
+        string? property, int functionIndex, out string resolved, bool early = false)
     {
         resolved = string.Empty;
         var reader = new CssTokenReader(arguments);
         if (!reader.TryReadUntilTopLevelComma(out var first) || !reader.TryReadComma()) return false;
         var keyed = TryParseKey(first.ToString(), out _);
         var key = keyed ? first.ToString() : "auto";
-        if (!TryBase(key, element, property, functionIndex, out var random)) return false;
+        if (!TryBase(key, element, property, functionIndex, out var random, early)) return false;
         resolved = "fixed " + random.ToString("R", CultureInfo.InvariantCulture) + "," +
             (keyed ? reader.Remaining.ToString() : arguments);
         return true;
@@ -175,16 +175,18 @@ internal static class CssRandomItem
         return true;
     }
 
-    private static double RandomBase(RandomKey key, CssNode? element, string? property, int functionIndex)
+    private static double RandomBase(RandomKey key, CssNode? element, string? property,
+        int functionIndex, bool early)
     {
         if (element is null) return Random.Shared.NextDouble();
         var owner = element;
         if (!key.ElementScoped)
             while (owner.FrameworkParent is { } parent) owner = parent;
         var values = s_values.GetValue(owner, static _ => new());
+        var prefix = early ? "ua-early-" : "ua-";
         var propertyScope = key.UserAgentScope ??
-            (key.IndexScoped ? $"ua-{property}-{functionIndex + 1}" :
-             key.PropertyScoped ? $"ua-{property}" : null);
+            (key.IndexScoped ? $"{prefix}{property}-{functionIndex + 1}" :
+             key.PropertyScoped ? $"{prefix}{property}" : null);
         var cacheKey = new CacheKey(key.Name, propertyScope, key.Auto);
         return values.GetOrAdd(cacheKey, static _ => Random.Shared.NextDouble());
     }
@@ -194,6 +196,9 @@ internal sealed class CssRandomContext(string? property, bool resolveNumeric = t
 {
     internal string? Property { get; } = property;
     internal bool ResolveNumeric { get; } = resolveNumeric;
+    // Random functions parsed during substitution use ua-early-* and count
+    // independently of functions in the selected property value.
     internal int NextIndex { get; private set; }
-    internal int ClaimIndex() => NextIndex++;
+    internal int NextEarlyIndex { get; private set; }
+    internal int ClaimIndex(bool early = false) => early ? NextEarlyIndex++ : NextIndex++;
 }
