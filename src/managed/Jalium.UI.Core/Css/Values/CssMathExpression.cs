@@ -21,12 +21,18 @@ internal sealed record CssMathExpression(
         return hash.ToHashCode();
     }
 
-    public bool UsesPercent => Literal.Unit == CssUnit.Percent || Type.PercentHint is not null || Arguments.Any(a => a.UsesPercent);
+    public bool UsesPercent => Literal.Unit == CssUnit.Percent || Type.PercentHint is not null ||
+        (Operation == "calc-mix"
+            ? Arguments.Where((_, index) => index % 2 == 0).Any(a => a.UsesPercent)
+            : Arguments.Any(a => a.UsesPercent));
     internal bool RequiresElementContext => Operation is "sibling-index" or "sibling-count" ||
         Operation == "random" && Option is null ||
         (Operation == "value" ? Kind == CssNumericKind.Length && !Literal.IsAbsolute
             : Arguments.Any(a => a.RequiresElementContext));
-    public bool IsAbsolute => (Operation is "sibling-index" or "sibling-count" ||
+    public bool IsAbsolute => Operation == "calc-mix"
+        ? Arguments.Select((argument, index) => index % 2 == 0
+            ? argument.IsAbsolute : !argument.RequiresElementContext).All(absolute => absolute)
+        : (Operation is "sibling-index" or "sibling-count" ||
         Operation == "random" && Option is null) ? false :
         Operation is "value" or "none"
         ? Literal.IsAbsolute || Kind is CssNumericKind.Angle or CssNumericKind.Time or CssNumericKind.Resolution or CssNumericKind.Frequency or CssNumericKind.Flex
@@ -73,6 +79,7 @@ internal sealed record CssMathExpression(
             else if (!Literal.TryResolve(context, CssPercentBasis.NotSupported, out value)) return false;
             return true;
         }
+        if (Operation == "calc-mix") return TryEvaluateMix(context, percentBasis, out value);
         Span<double> values = Arguments.Length <= 32 ? stackalloc double[Arguments.Length] : new double[Arguments.Length];
         var nan = false;
         for (var i = 0; i < Arguments.Length; i++)
@@ -106,6 +113,45 @@ internal sealed record CssMathExpression(
                 ? double.NaN : Math.Log(values[0]) / Math.Log(values[1]),
             "exp" => Math.Exp(values[0]), _ => double.NaN,
         };
+        return true;
+    }
+
+    private bool TryEvaluateMix(in CssLengthContext context, double percentBasis, out double value)
+    {
+        value = 0;
+        var count = Arguments.Length / 2;
+        Span<double> weights = count <= 32 ? stackalloc double[count] : new double[count];
+        var specifiedSum = 0d;
+        var omittedCount = 0;
+        for (var i = 0; i < count; i++)
+        {
+            var weight = Arguments[2 * i + 1];
+            if (weight.Operation == "mix-auto")
+            {
+                omittedCount++;
+                continue;
+            }
+            if (!weight.TryEvaluateCore(context, 100, out var percentage)) return false;
+            weights[i] = double.IsNaN(percentage) ? 0 : Math.Clamp(percentage, 0, 100);
+            specifiedSum = Math.Min(100, specifiedSum + weights[i]);
+        }
+
+        if (omittedCount > 0)
+        {
+            var share = (100 - specifiedSum) / omittedCount;
+            for (var i = 0; i < count; i++)
+                if (Arguments[2 * i + 1].Operation == "mix-auto") weights[i] = share;
+        }
+        var total = 0d;
+        foreach (var weight in weights) total += weight;
+        if (total == 0) return true;
+        var scale = total > 100 ? 1 / total : 1d / 100;
+        for (var i = 0; i < count; i++)
+        {
+            if (weights[i] == 0) continue;
+            if (!Arguments[2 * i].TryEvaluateCore(context, percentBasis, out var term)) return false;
+            value += term * (weights[i] * scale);
+        }
         return true;
     }
 
@@ -240,7 +286,7 @@ internal sealed record CssMathExpression(
         return double.IsNegative(remainder) == double.IsNegative(interval) ? remainder : remainder + interval;
     }
 
-    internal static bool IsFunction(string name) => name is "calc" or "min" or "max" or "clamp" or "random" or "progress"
+    internal static bool IsFunction(string name) => name is "calc" or "min" or "max" or "clamp" or "random" or "progress" or "calc-mix"
         or "sibling-index" or "sibling-count"
         or "round" or "mod" or "rem" or "sin" or "cos" or "tan" or "asin" or "acos" or "atan" or "atan2"
         or "pow" or "sqrt" or "hypot" or "log" or "exp" or "abs" or "sign";
@@ -257,6 +303,7 @@ internal sealed record CssMathExpression(
         if (name is "sibling-index" or "sibling-count")
             return new CssTokenReader(arguments).AtEnd
                 ? new(name, CssNumericType.Of(CssNumericKind.Number), default, []) : null;
+        if (name == "calc-mix") return ParseMix(arguments, depth, budget);
         string? option = null;
         if (name == "random")
         {
@@ -365,6 +412,34 @@ internal sealed record CssMathExpression(
 
     private static CssMathExpression Number(double value) => new("value", default, new(value, CssUnit.None), []);
 
+    private static CssMathExpression? ParseMix(ReadOnlySpan<char> arguments, int depth, ParseBudget budget)
+    {
+        var parser = new Parser(arguments, depth, budget);
+        var items = new List<CssMathExpression>();
+        CssNumericType? type = null;
+        while (true)
+        {
+            var item = parser.Sum(allowAdjacentWeight: true);
+            if (item is null || item.Kind == CssNumericKind.Compound ||
+                type is { } previous && CssNumericType.Add(previous, item.Type) is null) return null;
+            type = type is { } current ? CssNumericType.Add(current, item.Type) : item.Type;
+            items.Add(item);
+
+            var probe = parser;
+            var weight = probe.Sum();
+            if (weight is not null)
+            {
+                if (weight.Type != CssNumericType.Of(CssNumericKind.Percent)) return null;
+                if (weight.Operation == "value" && (weight.Literal.Value < 0 || weight.Literal.Value > 100)) return null;
+                parser = probe;
+            }
+            items.Add(weight ?? new("mix-auto", CssNumericType.Of(CssNumericKind.Percent), default, []));
+            if (items.Count > 8192) return null;
+            if (!parser.Consume(',')) break;
+        }
+        return parser.AtEnd && type is { } result ? new("calc-mix", result, default, items.ToArray()) : null;
+    }
+
     private ref struct Parser(ReadOnlySpan<char> text, int depth, ParseBudget budget)
     {
         private readonly ReadOnlySpan<char> _text = text;
@@ -394,16 +469,22 @@ internal sealed record CssMathExpression(
             _position += reader.Position; return ident.ToString().ToLowerInvariant();
         }
 
-        public CssMathExpression? Sum()
+        public CssMathExpression? Sum(bool allowAdjacentWeight = false)
         {
             var result = Product();
             while (result is not null)
             {
+                var beforeWhitespace = _position;
                 var whitespace = Whitespace();
                 if (_position >= _text.Length || _text[_position] is not ('+' or '-')) break;
                 if (!whitespace) return null;
                 var operation = _text[_position++].ToString();
-                if (!Whitespace()) return null;
+                if (!Whitespace())
+                {
+                    if (!allowAdjacentWeight) return null;
+                    _position = beforeWhitespace;
+                    break;
+                }
                 var right = Product();
                 if (right is null || CssNumericType.Add(result.Type, right.Type) is not { } type) return null;
                 result = new(operation, type, default, [result, right]);
