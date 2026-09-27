@@ -31,7 +31,13 @@ internal static class CssAttributeSubstitution
                 if (reader.TryReadFunction(out var name, out var arguments))
                 {
                     string replacement;
-                    if (name.Equals("attr", StringComparison.OrdinalIgnoreCase))
+                    if (name.Equals("first-valid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // A candidate is selected by property grammar before its attr()
+                        // functions are substituted; unused candidates stay untouched.
+                        output.Append(source.AsSpan(i, reader.Position));
+                    }
+                    else if (name.Equals("attr", StringComparison.OrdinalIgnoreCase))
                     {
                         // Attribute values may not become any part of a URL.
                         if (inUrl) return false;

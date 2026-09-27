@@ -47,7 +47,13 @@ internal sealed class CssRegisteredComputation : IReadOnlyDictionary<string, str
         _line = line; _faces = faces ?? new Dictionary<string, CssCompiledValue>();
         _names = (inherited?.Keys ?? []).Concat(registrations.Keys).Concat(declarations.Keys).Distinct(StringComparer.Ordinal).ToArray();
         _dependencies = declarations.ToDictionary(pair => pair.Key,
-            pair => CssCustomProperties.References(pair.Value.RawValue).ToHashSet(StringComparer.Ordinal), StringComparer.Ordinal);
+            pair => CssCustomProperties.References(pair.Value.RawValue, candidate =>
+                !registrations.TryGetValue(pair.Key, out var registration) || registration.Syntax.Universal ||
+                CssPropertyMetadata.IsWideKeyword(candidate) ||
+                CssCustomProperties.ContainsSubstitution(candidate) ||
+                CssEngine.TryReadFirstValid(candidate, out var nested) && nested is not null ||
+                registration.Syntax.TryCompute(candidate, new CssPropertyValueContext(lengths), out _))
+                .ToHashSet(StringComparer.Ordinal), StringComparer.Ordinal);
         AddOrdinaryDependencies(FontNode, "FontSize", font);
         AddOrdinaryDependencies(ColorNode, "Foreground", color);
         AddOrdinaryDependencies(LineNode, "LineHeight", line);
@@ -114,12 +120,29 @@ internal sealed class CssRegisteredComputation : IReadOnlyDictionary<string, str
         {
             var resolveNumericRandom = _registrations.TryGetValue(name, out var randomRegistration) &&
                 !randomRegistration.Syntax.Universal;
-            if (CssCustomProperties.Substitute(declaration.RawValue, dependency => Resolve(dependency), out var expanded,
-                validateFallback: ValidateFallback, validateFallbackFor: _registrations.ContainsKey,
-                isTainted: AttrTaintedProperties.Contains,
-                onUsed: dependency => tainted |= AttrTaintedProperties.Contains(dependency), element: _element,
-                onAttributeUsed: () => tainted = true, isActive: _visiting.Contains,
-                randomContext: new(name, resolveNumericRandom)))
+            bool Expand(string source, out string expandedValue)
+                => CssCustomProperties.Substitute(source, dependency => Resolve(dependency), out expandedValue,
+                    validateFallback: ValidateFallback, validateFallbackFor: _registrations.ContainsKey,
+                    isTainted: AttrTaintedProperties.Contains,
+                    onUsed: dependency => tainted |= AttrTaintedProperties.Contains(dependency), element: _element,
+                    onAttributeUsed: () => tainted = true, isActive: _visiting.Contains,
+                    randomContext: new(name, resolveNumericRandom));
+            var valid = Expand(declaration.RawValue, out var expanded);
+            var selections = 0;
+            while (valid && CssEngine.TryReadFirstValid(expanded, out var candidates))
+            {
+                if (++selections > 32) { valid = false; break; }
+                var selected = candidates?.FirstOrDefault(candidate =>
+                    CssCustomProperties.IsValidFirstValidCandidate(candidate) &&
+                    (!_registrations.TryGetValue(name, out var registered) || registered.Syntax.Universal ||
+                     CssPropertyMetadata.IsWideKeyword(candidate) ||
+                     CssCustomProperties.ContainsSubstitution(candidate) ||
+                     CssEngine.TryReadFirstValid(candidate, out var nested) && nested is not null ||
+                     registered.Syntax.TryCompute(candidate, Context(declaration.BaseUri), out _)));
+                if (selected is null || !Expand(selected, out expanded))
+                { valid = false; break; }
+            }
+            if (valid)
             {
                 tainted |= CssCustomProperties.ContainsAttributeFunction(expanded);
                 if (CssAttributeSubstitution.TrySubstitute(expanded, _element, _lengths, out var substituted,

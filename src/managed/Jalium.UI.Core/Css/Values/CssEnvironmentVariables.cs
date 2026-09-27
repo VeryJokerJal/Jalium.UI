@@ -56,6 +56,10 @@ internal static class CssEnvironmentVariables
                         if (!Resolve(arguments.Remaining.ToString(), element, out var replacement, depth + 1)) return false;
                         output.Append("/**/").Append(replacement).Append("/**/");
                     }
+                    else if (name.Equals("first-valid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        output.Append(source.AsSpan(i, reader.Position));
+                    }
                     else if (name.Equals("attr", StringComparison.OrdinalIgnoreCase))
                     {
                         // attr() substitutes its own first argument and selected fallback later.

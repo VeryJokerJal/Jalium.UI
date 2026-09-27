@@ -302,12 +302,13 @@ internal static class CssEngine
 
     private static List<MergedDeclaration> MergeCandidates(
         Dictionary<string, List<CascadeCandidate>> candidates, CssNode element, bool resolveVariables = false,
-        IReadOnlyDictionary<string, CssCustomPropertyValue>? selectedCustom = null)
+        IReadOnlyDictionary<string, CssCustomPropertyValue>? selectedCustom = null,
+        IReadOnlyDictionary<string, CssPropertyRegistration>? registrations = null)
     {
         var merged = new List<MergedDeclaration>();
         foreach (var group in candidates.Values)
         {
-            if (SelectCandidate(group, element, resolveVariables, selectedCustom) is { } winner)
+            if (SelectCandidate(group, element, resolveVariables, selectedCustom, registrations) is { } winner)
                 merged.Add(new MergedDeclaration(winner.Declaration, winner.FromState));
         }
 
@@ -332,7 +333,8 @@ internal static class CssEngine
     }
 
     private static CascadeCandidate? SelectCandidate(List<CascadeCandidate> candidates, CssNode element,
-        bool resolveVariables = false, IReadOnlyDictionary<string, CssCustomPropertyValue>? selectedCustom = null)
+        bool resolveVariables = false, IReadOnlyDictionary<string, CssCustomPropertyValue>? selectedCustom = null,
+        IReadOnlyDictionary<string, CssPropertyRegistration>? registrations = null)
     {
         var group = new List<CascadeCandidate>(candidates);
         group.Sort(static (a, b) => CompareCandidates(b, a));
@@ -341,7 +343,7 @@ internal static class CssEngine
         {
             var winner = group[0];
             var revert = winner.Declaration.Value as CssRevertValue ??
-                SubstitutedRevert(winner, element, resolveVariables, selectedCustom);
+                SubstitutedRevert(winner, element, resolveVariables, selectedCustom, registrations);
             if (revert is null) return winner;
             switch (revert.Kind)
             {
@@ -366,18 +368,35 @@ internal static class CssEngine
     }
 
     private static CssRevertValue? SubstitutedRevert(CascadeCandidate candidate, CssNode element,
-        bool resolveVariables, IReadOnlyDictionary<string, CssCustomPropertyValue>? selectedCustom)
+        bool resolveVariables, IReadOnlyDictionary<string, CssCustomPropertyValue>? selectedCustom,
+        IReadOnlyDictionary<string, CssPropertyRegistration>? registrations)
     {
         if (candidate.Declaration.Value is CssCustomPropertyValue custom)
         {
             if (!resolveVariables || selectedCustom is null ||
-                !CssCustomProperties.ContainsSubstitution(custom.RawValue) ||
+                !CssCustomProperties.ContainsSubstitution(custom.RawValue) &&
+                !TryReadFirstValid(custom.RawValue, out _) ||
                 IsCyclicCustomCandidate(candidate.Declaration.Name, custom, selectedCustom) ||
-                !CssCustomProperties.TrySubstitute(custom.RawValue, element, out var computed, candidate.Declaration.Name) ||
-                CssCustomProperties.ContainsAttributeFunction(computed) &&
-                !CssAttributeSubstitution.TrySubstitute(computed, element,
-                    BuildLengthContext(element), out computed, namespaces: custom.Namespaces))
+                !CssCustomProperties.TrySubstitute(custom.RawValue, element, out var computed, candidate.Declaration.Name))
                 return null;
+            var selections = 0;
+            while (TryReadFirstValid(computed, out var candidates))
+            {
+                if (++selections > 32) return null;
+                var selected = candidates?.FirstOrDefault(value =>
+                    CssCustomProperties.IsValidFirstValidCandidate(value) &&
+                    (registrations is null || !registrations.TryGetValue(candidate.Declaration.Name, out var registration) ||
+                     registration.Syntax.Universal || CssPropertyMetadata.IsWideKeyword(value) ||
+                     CssCustomProperties.ContainsSubstitution(value) ||
+                     TryReadFirstValid(value, out var nested) && nested is not null ||
+                     registration.Syntax.TryCompute(value,
+                         new CssPropertyValueContext(BuildLengthContext(element)), out _)));
+                if (selected is null || !CssCustomProperties.TrySubstitute(selected, element,
+                        out computed, candidate.Declaration.Name)) return null;
+            }
+            if (CssCustomProperties.ContainsAttributeFunction(computed) &&
+                !CssAttributeSubstitution.TrySubstitute(computed, element,
+                    BuildLengthContext(element), out computed, namespaces: custom.Namespaces)) return null;
             return CssPropertyMetadata.WideKeyword(computed) is { } customKeyword &&
                 customKeyword.StartsWith("revert", StringComparison.Ordinal)
                 ? CssRevertValue.FromKeyword(customKeyword) : null;
@@ -389,9 +408,35 @@ internal static class CssEngine
         if (!CssCustomProperties.TrySubstitute(pending.RawValue, element, out var expanded, candidate.Declaration.Name) ||
             attribute && !CssAttributeSubstitution.TrySubstitute(expanded, element,
                 BuildLengthContext(element), out expanded, namespaces: pending.Namespaces)) return null;
-        return CssPropertyMetadata.WideKeyword(expanded) is { } keyword &&
-            keyword.StartsWith("revert", StringComparison.Ordinal)
-            ? CssRevertValue.FromKeyword(keyword) : null;
+        return RevertFromExpanded(pending.Property, candidate.Declaration.Name, expanded,
+            element, pending.Namespaces);
+    }
+
+    private static CssRevertValue? RevertFromExpanded(string property, string longhand,
+        string value, CssNode element, CssNamespaceContext? namespaces, int depth = 0)
+    {
+        if (CssPropertyMetadata.WideKeyword(value) is { } keyword &&
+            keyword.StartsWith("revert", StringComparison.Ordinal))
+            return CssRevertValue.FromKeyword(keyword);
+        if (depth >= 32 || !TryReadFirstValid(value, out var candidates) || candidates is null)
+            return null;
+
+        var compiled = CompileDeclarations(
+            [new CssDeclaration { PropertyName = property, RawValue = value }],
+            new CssCompileContext { Namespaces = namespaces }, reportDiagnostics: false);
+        foreach (var declaration in compiled)
+        {
+            if (declaration.Name != longhand) continue;
+            if (declaration.Value is CssRevertValue revert) return revert;
+            if (declaration.Value is not CssPendingSubstitution pending ||
+                !CssCustomProperties.TrySubstitute(pending.RawValue, element,
+                    out var expanded, property) ||
+                !CssAttributeSubstitution.TrySubstitute(expanded, element,
+                    BuildLengthContext(element), out expanded, namespaces: namespaces))
+                return null;
+            return RevertFromExpanded(property, longhand, expanded, element, namespaces, depth + 1);
+        }
+        return null;
     }
 
     private static bool IsCyclicCustomCandidate(string name, CssCustomPropertyValue candidate,
@@ -756,7 +801,8 @@ internal static class CssEngine
     /// Compiles syntax-level declarations: registry lookup, shorthand expansion, then a
     /// per-longhand merge (later wins; !important is not displaced by a later normal value).
     /// </summary>
-    internal static CssCompiledDeclaration[] CompileDeclarations(List<CssDeclaration> declarations, CssCompileContext? compileContext = null)
+    internal static CssCompiledDeclaration[] CompileDeclarations(List<CssDeclaration> declarations,
+        CssCompileContext? compileContext = null, int firstValidDepth = 0, bool reportDiagnostics = true)
     {
         compileContext ??= CssCompileContext.Default;
         if (declarations.Count == 0)
@@ -780,17 +826,49 @@ internal static class CssEngine
             var descriptor = CssPropertyRegistry.LookupForCompile(declaration.PropertyName, out var canonicalName);
             if (descriptor is null)
             {
-                CssDiagnostics.Report(
-                    declaration.PropertyName, CssDiagnosticReason.UnknownProperty, null,
-                    "no CSS mapping and no kebab-case dependency-property form; declaration skipped");
+                if (reportDiagnostics)
+                    CssDiagnostics.Report(
+                        declaration.PropertyName, CssDiagnosticReason.UnknownProperty, null,
+                        "no CSS mapping and no kebab-case dependency-property form; declaration skipped");
                 continue;
             }
 
             if (descriptor.Kind == CssPropertyKind.Unsupported)
             {
-                CssDiagnostics.Report(
-                    declaration.PropertyName, CssDiagnosticReason.UnsupportedProperty, null,
-                    descriptor.UnsupportedReason ?? "not supported");
+                if (reportDiagnostics)
+                    CssDiagnostics.Report(
+                        declaration.PropertyName, CssDiagnosticReason.UnsupportedProperty, null,
+                        descriptor.UnsupportedReason ?? "not supported");
+                continue;
+            }
+
+            if (TryReadFirstValid(declaration.RawValue, out var candidates))
+            {
+                if (candidates is null)
+                {
+                    if (reportDiagnostics) ReportInvalidValue(declaration);
+                    continue;
+                }
+
+                CssCompiledDeclaration[]? selected = null;
+                if (firstValidDepth < 32)
+                    foreach (var candidate in candidates)
+                    {
+                        if (!CssDeclarationValueSyntax.IsValid(candidate)) continue;
+                        var compiled = CompileDeclarations(
+                            [new CssDeclaration { PropertyName = declaration.PropertyName,
+                                RawValue = candidate, Important = declaration.Important }],
+                            compileContext, firstValidDepth + 1, reportDiagnostics: false);
+                        if (compiled.Length == 0) continue;
+                        selected = compiled;
+                        break;
+                    }
+
+                if (selected is not null) expanded.AddRange(selected);
+                else
+                    foreach (var longhand in CssPropertyMetadata.Longhands(canonicalName))
+                        expanded.Add(new CssCompiledDeclaration(longhand,
+                            new CssWideValue(longhand, "unset"), declaration.Important));
                 continue;
             }
 
@@ -805,7 +883,7 @@ internal static class CssEngine
             }
             if (!CssCustomProperties.HasValidNumericRandomFunctions(declaration.RawValue))
             {
-                ReportInvalidValue(declaration);
+                if (reportDiagnostics) ReportInvalidValue(declaration);
                 continue;
             }
             if (CssCustomProperties.ContainsSubstitution(declaration.RawValue))
@@ -813,7 +891,7 @@ internal static class CssEngine
                 if (!CssCustomProperties.HasValidAttributeFunctions(declaration.RawValue) ||
                     !CssCustomProperties.HasValidEnvironmentFunctions(declaration.RawValue))
                 {
-                    ReportInvalidValue(declaration);
+                    if (reportDiagnostics) ReportInvalidValue(declaration);
                     continue;
                 }
                 foreach (var longhand in CssPropertyMetadata.Longhands(canonicalName))
@@ -830,7 +908,7 @@ internal static class CssEngine
                 shorthandBuffer.Clear();
                 if (!descriptor.Expand!(ref reader, compileContext, shorthandBuffer))
                 {
-                    ReportInvalidValue(declaration);
+                    if (reportDiagnostics) ReportInvalidValue(declaration);
                     continue;
                 }
 
@@ -847,7 +925,7 @@ internal static class CssEngine
                 var value = descriptor.Parse!(ref reader, compileContext);
                 if (value is null)
                 {
-                    ReportInvalidValue(declaration);
+                    if (reportDiagnostics) ReportInvalidValue(declaration);
                     continue;
                 }
 
@@ -879,6 +957,35 @@ internal static class CssEngine
         }
 
         return merged.ToArray();
+    }
+
+    internal static bool TryReadFirstValid(string value, out List<string>? candidates)
+    {
+        candidates = null;
+        var reader = new CssTokenReader(value);
+        if (!reader.TryReadFunction(out var name, out var arguments) ||
+            !name.Equals("first-valid", StringComparison.OrdinalIgnoreCase) || !reader.AtEnd)
+            return false;
+
+        var parsed = new List<string>();
+        while (arguments.TryReadUntilTopLevelComma(out var candidate))
+        {
+            if (candidate.IsEmpty || parsed.Count >= 4096) return true;
+            // A braced free-form argument keeps its internal commas; the braces
+            // delimit the argument and are not part of the chosen CSS value.
+            var normalized = CssParser.StripComments(candidate).Trim();
+            parsed.Add(!normalized.IsEmpty && normalized[0] == '{'
+                ? normalized.Length > 1 && normalized[^1] == '}'
+                    ? normalized[1..^1].ToString() : string.Empty
+                : candidate.ToString());
+            if (arguments.AtEnd)
+            {
+                candidates = parsed;
+                return true;
+            }
+            if (!arguments.TryReadComma()) return true;
+        }
+        return true;
     }
 
     private static void ReportInvalidValue(CssDeclaration declaration)
@@ -1017,7 +1124,7 @@ internal static class CssEngine
             for (var pass = 0; pass < 8; pass++)
             {
                 var resolved = MergeCandidates(cascadeCandidates, element, resolveVariables: true,
-                    selectedCustom: custom);
+                    selectedCustom: custom, registrations: registry);
                 if (SameMergedDeclarations(declarations, resolved)) break;
                 declarations = resolved;
                 CollectCustomDeclarations();

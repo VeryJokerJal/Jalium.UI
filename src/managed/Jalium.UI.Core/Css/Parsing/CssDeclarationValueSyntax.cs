@@ -41,6 +41,16 @@ internal static class CssDeclarationValueSyntax
                 var nameEnd = position;
                 if (CssSyntax.ReadIdentifier(value, ref nameEnd, out var name))
                 {
+                    if (name.Equals("first-valid", StringComparison.OrdinalIgnoreCase) &&
+                        nameEnd < value.Length && value[nameEnd] == '(')
+                    {
+                        // Each candidate is checked separately against its property's grammar.
+                        // An invalid var() inside one candidate cannot invalidate the list.
+                        var functionReader = new CssTokenReader(value[position..]);
+                        if (!functionReader.TryReadFunction(out _, out _)) return false;
+                        position += functionReader.Position;
+                        continue;
+                    }
                     if (IsUrl(name) && nameEnd < value.Length && value[nameEnd] == '(' &&
                         !StartsQuotedUrlFunction(value, nameEnd + 1))
                     {

@@ -52,6 +52,15 @@ internal static class CssCustomProperties
         => Functions(text).Where(f => f.Name.Equals("env", StringComparison.OrdinalIgnoreCase))
             .All(f => CssEnvironmentVariables.IsValidFunction(f.Arguments));
 
+    internal static bool IsValidFirstValidCandidate(string candidate)
+    {
+        // A nested first-valid() is itself a parse-valid whole value. Its
+        // alternatives are checked only if that whole value gets selected.
+        if (CssEngine.TryReadFirstValid(candidate, out var nested)) return nested is not null;
+        return CssDeclarationValueSyntax.IsValid(candidate) &&
+            HasValidAttributeFunctions(candidate) && HasValidEnvironmentFunctions(candidate);
+    }
+
     internal static bool HasValidIfArguments(ReadOnlySpan<char> arguments)
         => ContainsTopLevelEarlySpread(arguments.ToString()) || TryParseIfBranches(arguments, out _);
 
@@ -81,9 +90,22 @@ internal static class CssCustomProperties
            name.Equals("env", StringComparison.OrdinalIgnoreCase) ||
            name.Equals("random-item", StringComparison.OrdinalIgnoreCase);
 
-    internal static IEnumerable<string> References(string text)
+    internal static IEnumerable<string> References(string text, Func<string, bool>? firstValidAccept = null)
+        => References(text, 0, firstValidAccept);
+
+    private static IEnumerable<string> References(string text, int depth, Func<string, bool>? firstValidAccept)
     {
+        if (depth >= MaxDepth) yield break;
         if (!CssEnvironmentVariables.TrySubstitute(text, null, out var expanded)) yield break;
+        if (CssEngine.TryReadFirstValid(expanded, out var candidates))
+        {
+            var selected = candidates?.FirstOrDefault(candidate =>
+                IsValidFirstValidCandidate(candidate) &&
+                (firstValidAccept?.Invoke(candidate) ?? true));
+            if (selected is not null)
+                foreach (var reference in References(selected, depth + 1, firstValidAccept)) yield return reference;
+            yield break;
+        }
         foreach (var function in Functions(expanded, traverseIfContents: false))
             if (function.Name.Equals("var", StringComparison.OrdinalIgnoreCase) &&
                 TryArguments(function.Arguments, out var first, out _) && TryParseCustomName(first, out var name)) yield return name;
@@ -153,8 +175,20 @@ internal static class CssCustomProperties
             visiting.Add(name);
             try
             {
-                if (Substitute(value, dependency => Resolve(dependency, depth + 1), out var expanded, depth,
-                        element: element, isActive: visiting.Contains, randomContext: new(name, false)) && !cyclic.Contains(name))
+                bool Expand(string source, out string expandedValue)
+                    => Substitute(source, dependency => Resolve(dependency, depth + 1), out expandedValue, depth,
+                        element: element, isActive: visiting.Contains, randomContext: new(name, false));
+                var valid = Expand(value, out var expanded);
+                var selections = 0;
+                while (valid && CssEngine.TryReadFirstValid(expanded, out var candidates))
+                {
+                    if (++selections > 32) { valid = false; break; }
+                    var selected = candidates?.FirstOrDefault(candidate =>
+                        IsValidFirstValidCandidate(candidate));
+                    if (selected is null || !Expand(selected, out expanded))
+                    { valid = false; break; }
+                }
+                if (valid && !cyclic.Contains(name))
                 {
                     var keyword = CssPropertyMetadata.WideKeyword(expanded);
                     if (keyword is "inherit" or "unset")
@@ -194,9 +228,22 @@ internal static class CssCustomProperties
             {
                 if (tainted.Contains(name) || !computed.ContainsKey(name)) continue;
                 var usedTainted = false;
-                if (!Substitute(raw, dependency => computed.GetValueOrDefault(dependency), out var expanded,
+                bool Expand(string source, out string expandedValue)
+                    => Substitute(source, dependency => computed.GetValueOrDefault(dependency), out expandedValue,
                         onUsed: dependency => usedTainted |= tainted.Contains(dependency), element: element,
-                        onAttributeUsed: () => usedTainted = true, randomContext: new(name, false))) continue;
+                        onAttributeUsed: () => usedTainted = true, randomContext: new(name, false));
+                if (!Expand(raw, out var expanded)) continue;
+                var valid = true;
+                var selections = 0;
+                while (CssEngine.TryReadFirstValid(expanded, out var candidates))
+                {
+                    if (++selections > 32) { valid = false; break; }
+                    var selected = candidates?.FirstOrDefault(candidate =>
+                        IsValidFirstValidCandidate(candidate));
+                    if (selected is null || !Expand(selected, out expanded))
+                    { valid = false; break; }
+                }
+                if (!valid) continue;
                 var keyword = CssPropertyMetadata.WideKeyword(expanded);
                 if (keyword is "inherit" or "unset")
                 {
@@ -305,6 +352,12 @@ internal static class CssCustomProperties
                             element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
                     // Preserve token boundaries: var(--number)px must not become a dimension.
                     output.Append("/**/").Append(replacement).Append("/**/");
+                }
+                else if (function.Name.Equals("first-valid", StringComparison.OrdinalIgnoreCase))
+                {
+                    // The property being computed selects a candidate before its
+                    // arbitrary substitutions run. Keep the alternatives intact here.
+                    output.Append(text.AsSpan(i, function.End - i));
                 }
                 else if (function.Name.Equals("attr", StringComparison.OrdinalIgnoreCase))
                 {
@@ -627,6 +680,7 @@ internal sealed class CssCustomPropertyValue(string rawValue, Uri? baseUri = nul
 /// <summary>Resolves a pending substitution after the cascade, independently for each longhand.</summary>
 internal sealed class CssPendingSubstitution(string property, string rawValue, string longhand, CssCompileContext compileContext) : CssCompiledValue
 {
+    internal string Property => property;
     internal string RawValue => rawValue;
     internal CssNamespaceContext? Namespaces => compileContext.Namespaces;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CssCompiledDeclaration[]> _cache = new(StringComparer.Ordinal);
@@ -638,8 +692,9 @@ internal sealed class CssPendingSubstitution(string property, string rawValue, s
         return _invalid.TryApply(in context, sink);
     }
 
-    internal bool TryApplyKeyframe(in CssApplyContext context, ICssSetterSink sink)
+    internal bool TryApplyKeyframe(in CssApplyContext context, ICssSetterSink sink, int depth = 0)
     {
+        if (depth >= 32) return false;
         var lengths = property.StartsWith("font", StringComparison.Ordinal)
             ? context.Lengths.ForFontProperty()
             : property == "line-height" ? context.Lengths.ForLineHeight() : context.Lengths;
@@ -655,10 +710,12 @@ internal sealed class CssPendingSubstitution(string property, string rawValue, s
             }
             foreach (var declaration in compiled)
             {
-                if (declaration.Name == longhand && declaration.Value is not CssPendingSubstitution)
-                    return declaration.Value is CssNumericDeclarationValue numeric
-                        ? numeric.TryApplyKeyframe(in context, sink)
-                        : declaration.Value.TryApply(in context, sink);
+                if (declaration.Name != longhand) continue;
+                if (declaration.Value is CssPendingSubstitution pending)
+                    return pending.TryApplyKeyframe(in context, sink, depth + 1);
+                return declaration.Value is CssNumericDeclarationValue numeric
+                    ? numeric.TryApplyKeyframe(in context, sink)
+                    : declaration.Value.TryApply(in context, sink);
             }
         }
         return false;
