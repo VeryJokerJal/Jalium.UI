@@ -230,7 +230,7 @@ internal static class CssCustomProperties
         Func<string, string, bool>? validateFallback = null, Func<string, bool>? validateFallbackFor = null,
         Func<string, bool>? isTainted = null, Action<string>? onUsed = null, bool inUrl = false,
         CssNode? element = null, Action? onAttributeUsed = null, Func<string, bool>? isActive = null,
-        CssRandomContext? randomContext = null, bool earlyRandom = false)
+        CssRandomContext? randomContext = null, bool earlyRandom = false, bool deferNumeric = false)
     {
         value = string.Empty;
         if (depth >= MaxDepth || text.Length > MaxExpandedLength) return false;
@@ -251,7 +251,7 @@ internal static class CssCustomProperties
                 {
                     if (!SubstituteEarly(function.Arguments, resolve, out var earlyArguments, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext, earlyRandom) ||
+                            element, onAttributeUsed, isActive, randomContext) ||
                         !TryArguments(earlyArguments, out var first, out var fallback)) return false;
                     string? name = null;
                     var nameHasAttribute = false;
@@ -277,16 +277,21 @@ internal static class CssCustomProperties
                     if (name is not null && fallback is not null && validateFallback is not null &&
                         validateFallbackFor?.Invoke(name) != false)
                     {
+                        // Registered fallback syntax is checked even when the variable exists.
+                        // Its random functions must not consume indexes in the used value.
+                        var validationRandomContext = new CssRandomContext(randomContext.Property,
+                            randomContext.ResolveNumeric);
                         if (!Substitute(fallback, resolve, out var validatedFallback, depth + 1,
                                 validateFallback, validateFallbackFor, element: element, isActive: isActive,
-                                randomContext: randomContext, earlyRandom: earlyRandom) ||
+                                randomContext: validationRandomContext, earlyRandom: earlyRandom,
+                                deferNumeric: deferNumeric) ||
                             !validateFallback(name, validatedFallback)) return false;
                     }
                     var replacement = name is null ? null : resolve(name);
                     if (replacement is null)
                     {
                         if (fallback is null || !Substitute(fallback, resolve, out replacement, depth + 1,
-                                validateFallback, validateFallbackFor, isTainted, onUsed, inUrl, element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                                validateFallback, validateFallbackFor, isTainted, onUsed, inUrl, element, onAttributeUsed, isActive, randomContext, earlyRandom, deferNumeric)) return false;
                     }
                     else if (name is not null)
                     {
@@ -294,7 +299,7 @@ internal static class CssCustomProperties
                         if ((isTainted?.Invoke(name) == true || nameHasAttribute || nameUsedTainted) &&
                             (inUrl || ContainsUrlFunction(replacement))) return false;
                     }
-                    if ((randomContext.ResolveNumeric || earlyRandom) && ContainsNumericRandom(replacement) &&
+                    if (!deferNumeric && (randomContext.ResolveNumeric || earlyRandom) && ContainsNumericRandom(replacement) &&
                         !Substitute(replacement, resolve, out replacement, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
                             element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
@@ -312,25 +317,25 @@ internal static class CssCustomProperties
                     if (!CssEnvironmentVariables.TryResolveFunction(function.Arguments, element, out var replacement) ||
                         !Substitute(replacement, resolve, out replacement, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom, deferNumeric)) return false;
                     output.Append("/**/").Append(replacement).Append("/**/");
                 }
                 else if (function.Name.Equals("if", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!TryResolveIf(function.Arguments, resolve, out var replacement, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom, deferNumeric)) return false;
                     output.Append("/**/").Append(replacement).Append("/**/");
                 }
                 else if (function.Name.Equals("random-item", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!TryResolveRandomItem(function.Arguments, resolve, out var replacement, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom, deferNumeric)) return false;
                     output.Append("/**/").Append(replacement).Append("/**/");
                 }
                 else if (function.Name.Equals("random", StringComparison.OrdinalIgnoreCase) &&
-                         (randomContext.ResolveNumeric || earlyRandom))
+                         !deferNumeric && (randomContext.ResolveNumeric || earlyRandom))
                 {
                     var index = randomContext.ClaimIndex(earlyRandom);
                     if (!Substitute(function.Arguments, resolve, out var arguments, depth + 1,
@@ -345,7 +350,8 @@ internal static class CssCustomProperties
                     var url = function.Name.Equals("url", StringComparison.OrdinalIgnoreCase) ||
                               function.Name.Equals("src", StringComparison.OrdinalIgnoreCase);
                     if (!Substitute(function.Arguments, resolve, out var arguments, depth + 1,
-                            validateFallback, validateFallbackFor, isTainted, onUsed, inUrl || url, element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                            validateFallback, validateFallbackFor, isTainted, onUsed, inUrl || url,
+                            element, onAttributeUsed, isActive, randomContext, earlyRandom, deferNumeric)) return false;
                     output.Append(function.Name).Append('(').Append(arguments).Append(')');
                 }
                 i = function.End;
@@ -366,7 +372,7 @@ internal static class CssCustomProperties
         Func<string, string, bool>? validateFallback, Func<string, bool>? validateFallbackFor,
         Func<string, bool>? isTainted, Action<string>? onUsed, bool inUrl,
         CssNode? element, Action? onAttributeUsed, Func<string, bool>? isActive,
-        CssRandomContext randomContext, bool earlyRandom)
+        CssRandomContext randomContext, bool earlyRandom, bool deferNumeric)
     {
         value = string.Empty;
         var conditionTainted = false;
@@ -382,7 +388,7 @@ internal static class CssCustomProperties
         }
         if (!SubstituteEarly(arguments, resolve, out arguments, depth,
                 validateFallback, validateFallbackFor, isTainted, ConditionUsed, inUrl,
-                element, ConditionAttributeUsed, isActive, randomContext, earlyRandom) ||
+                element, ConditionAttributeUsed, isActive, randomContext) ||
             !TryParseIfBranches(arguments, out var branches)) return false;
         foreach (var (condition, branchValue) in branches)
         {
@@ -399,7 +405,7 @@ internal static class CssCustomProperties
                     ConditionUsed)) continue;
             if (!Substitute(branchValue, resolve, out value, depth,
                     validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                    element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                    element, onAttributeUsed, isActive, randomContext, earlyRandom, deferNumeric)) return false;
             return !conditionTainted || !inUrl && !ContainsUrlFunction(value);
         }
         return true;
@@ -409,7 +415,8 @@ internal static class CssCustomProperties
         out string value, int depth, Func<string, string, bool>? validateFallback,
         Func<string, bool>? validateFallbackFor, Func<string, bool>? isTainted,
         Action<string>? onUsed, bool inUrl, CssNode? element, Action? onAttributeUsed,
-        Func<string, bool>? isActive, CssRandomContext randomContext, bool earlyRandom)
+        Func<string, bool>? isActive, CssRandomContext randomContext, bool earlyRandom,
+        bool deferNumeric)
     {
         value = string.Empty;
         var index = randomContext.ClaimIndex(earlyRandom);
@@ -426,7 +433,7 @@ internal static class CssCustomProperties
         }
         if (!SubstituteEarly(arguments, resolve, out arguments, depth,
                 validateFallback, validateFallbackFor, isTainted, KeyUsed, inUrl,
-                element, KeyAttributeUsed, isActive, randomContext, earlyRandom) ||
+                element, KeyAttributeUsed, isActive, randomContext) ||
             !CssRandomItem.TryParseArguments(arguments, out var key, out var options) ||
             !Substitute(key, resolve, out key, depth,
                 validateFallback, validateFallbackFor, isTainted, KeyUsed, inUrl,
@@ -441,7 +448,7 @@ internal static class CssCustomProperties
                 randomContext.Property, index, out var selected, earlyRandom) ||
             !Substitute(options[selected], resolve, out value, depth,
                 validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                element, onAttributeUsed, isActive, randomContext, earlyRandom, deferNumeric)) return false;
         return !keyTainted || !inUrl && !ContainsUrlFunction(value);
     }
 
@@ -449,7 +456,7 @@ internal static class CssCustomProperties
         Func<string, string, bool>? validateFallback, Func<string, bool>? validateFallbackFor,
         Func<string, bool>? isTainted, Action<string>? onUsed, bool inUrl,
         CssNode? element, Action? onAttributeUsed, Func<string, bool>? isActive,
-        CssRandomContext randomContext, bool earlyRandom)
+        CssRandomContext randomContext)
     {
         value = string.Empty;
         if (depth >= MaxDepth || text.Length > MaxExpandedLength) return false;
@@ -469,7 +476,8 @@ internal static class CssCustomProperties
                 var source = text[(i + 3)..spread.End];
                 if (!Substitute(source, resolve, out var replacement, depth + 1,
                         validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
-                        element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                        element, onAttributeUsed, isActive, randomContext,
+                        earlyRandom: true, deferNumeric: true)) return false;
                 if (spread.Name.Equals("attr", StringComparison.OrdinalIgnoreCase))
                 {
                     if (element is null || !CssAttributeSubstitution.TrySubstitute(replacement, element,
@@ -488,7 +496,7 @@ internal static class CssCustomProperties
                               function.Name.Equals("src", StringComparison.OrdinalIgnoreCase);
                     if (!SubstituteEarly(function.Arguments, resolve, out var arguments, depth + 1,
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl || url,
-                            element, onAttributeUsed, isActive, randomContext, earlyRandom)) return false;
+                            element, onAttributeUsed, isActive, randomContext)) return false;
                     output.Append(function.Name).Append('(').Append(arguments).Append(')');
                 }
                 i = function.End;
