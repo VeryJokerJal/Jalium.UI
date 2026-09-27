@@ -1234,7 +1234,8 @@ internal static class CssEngine
             ReferenceEquals(root, element), EnsureState(dependent ?? element).FontDependency ??= new(dependent ?? element),
             Jalium.UI.Interop.TextMeasurement.MetricsCacheEpoch);
         return new CssLengthContext(elementFontSize, inheritedFontSize, rootFontSize, viewportWidth, viewportHeight,
-            CssContainerUnitContext.Create(element, dependent ?? element, viewports.Small.Width, viewports.Small.Height), fonts, viewports);
+            CssContainerUnitContext.Create(element, dependent ?? element, viewports.Small.Width, viewports.Small.Height),
+            fonts, viewports, element, dependent ?? element);
     }
 
     internal static Size ViewportSize(CssNode root) => root.CssRuntimeState?.ViewportAllocation ?? new Size(

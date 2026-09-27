@@ -22,10 +22,12 @@ internal sealed record CssMathExpression(
     }
 
     public bool UsesPercent => Literal.Unit == CssUnit.Percent || Type.PercentHint is not null || Arguments.Any(a => a.UsesPercent);
-    internal bool RequiresElementContext => Operation == "random" && Option is null ||
+    internal bool RequiresElementContext => Operation is "sibling-index" or "sibling-count" ||
+        Operation == "random" && Option is null ||
         (Operation == "value" ? Kind == CssNumericKind.Length && !Literal.IsAbsolute
             : Arguments.Any(a => a.RequiresElementContext));
-    public bool IsAbsolute => Operation == "random" && Option is null ? false :
+    public bool IsAbsolute => (Operation is "sibling-index" or "sibling-count" ||
+        Operation == "random" && Option is null) ? false :
         Operation is "value" or "none"
         ? Literal.IsAbsolute || Kind is CssNumericKind.Angle or CssNumericKind.Time or CssNumericKind.Resolution or CssNumericKind.Frequency or CssNumericKind.Flex
         : Arguments.All(a => a.IsAbsolute);
@@ -53,6 +55,8 @@ internal sealed record CssMathExpression(
     {
         value = double.NaN;
         if (Operation == "random" && Option is null) return false;
+        if (Operation is "sibling-index" or "sibling-count")
+            return TryEvaluateSibling(context, out value);
         if (Operation == "none") { value = Literal.Value; return true; }
         if (Operation == "value")
         {
@@ -101,6 +105,28 @@ internal sealed record CssMathExpression(
                 ? double.NaN : Math.Log(values[0]) / Math.Log(values[1]),
             "exp" => Math.Exp(values[0]), _ => double.NaN,
         };
+        return true;
+    }
+
+    private bool TryEvaluateSibling(in CssLengthContext context, out double value)
+    {
+        value = 0;
+        if (context.Element is not { } element) return false;
+        if (element.FrameworkParent is not { } parent)
+        {
+            value = 1;
+            return true;
+        }
+        CssSelectorDependencies.For(context.Dependent ?? element).Observe(parent, null);
+        var count = 0;
+        var index = 0;
+        foreach (var sibling in parent.EnumerateChildren())
+        {
+            if (!ReferenceEquals(sibling.FrameworkParent, parent)) continue;
+            count++;
+            if (ReferenceEquals(sibling, element)) index = count;
+        }
+        value = Operation == "sibling-count" ? count : index;
         return true;
     }
 
@@ -197,6 +223,7 @@ internal sealed record CssMathExpression(
     }
 
     internal static bool IsFunction(string name) => name is "calc" or "min" or "max" or "clamp" or "random"
+        or "sibling-index" or "sibling-count"
         or "round" or "mod" or "rem" or "sin" or "cos" or "tan" or "asin" or "acos" or "atan" or "atan2"
         or "pow" or "sqrt" or "hypot" or "log" or "exp" or "abs" or "sign";
 
@@ -209,6 +236,9 @@ internal sealed record CssMathExpression(
     {
         name = name.ToLowerInvariant();
         if (depth > 64 || !IsFunction(name)) return null;
+        if (name is "sibling-index" or "sibling-count")
+            return new CssTokenReader(arguments).AtEnd
+                ? new(name, CssNumericType.Of(CssNumericKind.Number), default, []) : null;
         string? option = null;
         if (name == "random")
         {

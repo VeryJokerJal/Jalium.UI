@@ -74,11 +74,14 @@ internal readonly struct CssLengthContext
     public readonly CssContainerUnitContext? Containers;
     public readonly CssFontContext? Fonts;
     public readonly CssViewportMetrics? Viewports;
+    internal readonly CssNode? Element;
+    internal readonly CssNode? Dependent;
 
     public CssLengthContext(
         double elementFontSize, double inheritedFontSize, double rootFontSize,
         double viewportWidth, double viewportHeight, CssContainerUnitContext? containers = null,
-        CssFontContext? fonts = null, CssViewportMetrics? viewports = null)
+        CssFontContext? fonts = null, CssViewportMetrics? viewports = null,
+        CssNode? element = null, CssNode? dependent = null)
     {
         ElementFontSize = elementFontSize >= 0 && double.IsFinite(elementFontSize) ? elementFontSize : DefaultFontSize;
         InheritedFontSize = inheritedFontSize >= 0 && double.IsFinite(inheritedFontSize) ? inheritedFontSize : DefaultFontSize;
@@ -88,21 +91,26 @@ internal readonly struct CssLengthContext
         Containers = containers;
         Fonts = fonts;
         Viewports = viewports;
+        Element = element;
+        Dependent = dependent;
     }
 
     public CssLengthContext WithElementFontSize(double elementFontSize)
         => new(elementFontSize, InheritedFontSize, Fonts?.IsRoot == true ? elementFontSize : RootFontSize,
-            ViewportWidth, ViewportHeight, Containers, Fonts, Viewports);
+            ViewportWidth, ViewportHeight, Containers, Fonts, Viewports, Element, Dependent);
 
     public CssLengthContext WithRootFontSize(double rootFontSize)
-        => new(ElementFontSize, InheritedFontSize, rootFontSize, ViewportWidth, ViewportHeight, Containers, Fonts, Viewports);
+        => new(ElementFontSize, InheritedFontSize, rootFontSize, ViewportWidth, ViewportHeight,
+            Containers, Fonts, Viewports, Element, Dependent);
 
     internal CssLengthContext WithFonts(CssFontContext fonts)
-        => new(ElementFontSize, InheritedFontSize, RootFontSize, ViewportWidth, ViewportHeight, Containers, fonts, Viewports);
+        => new(ElementFontSize, InheritedFontSize, RootFontSize, ViewportWidth, ViewportHeight,
+            Containers, fonts, Viewports, Element, Dependent);
 
     internal CssLengthContext ForFontProperty()
         => new(InheritedFontSize, InheritedFontSize, Fonts?.IsRoot == true ? DefaultFontSize : RootFontSize,
-            ViewportWidth, ViewportHeight, Containers, (Fonts ?? CssFontContext.Initial).ForFontProperty(), Viewports);
+            ViewportWidth, ViewportHeight, Containers, (Fonts ?? CssFontContext.Initial).ForFontProperty(),
+            Viewports, Element, Dependent);
 
     internal CssLengthContext ForLineHeight()
         => WithFonts((Fonts ?? CssFontContext.Initial).ForLineHeight());
