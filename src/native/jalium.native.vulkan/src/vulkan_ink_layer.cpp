@@ -1,4 +1,5 @@
 #include "vulkan_ink_layer.h"
+#include "jalium_brush_shader_source.h"
 #include "jalium_bitmap_stats.h"
 #include "jalium_types.h"  // JaliumInkDispatchResult — unified dispatch result codes
 
@@ -245,6 +246,9 @@ PsIn main(uint vid : SV_VertexID)
 }
 )__HLSL__";
 
+// Historical inline copy retained temporarily for source archaeology only.
+// All three GPU backends compile jalium_brush_shader_source.h instead.
+#if 0
 constexpr const char* kBrushPsPreamble = R"__HLSL__(
 cbuffer BrushConstants : register(b0)
 {
@@ -381,6 +385,7 @@ float4 BrushPsMain(PsIn input) : SV_Target
     return BrushMain(input.pxPos);
 }
 )__HLSL__";
+#endif
 
 VkShaderModule MakeShaderModule(const VkInkFunctions& fns, VkDevice device,
                                 const std::vector<uint32_t>& spirv) {
@@ -572,13 +577,13 @@ std::unique_ptr<VulkanBrushShader> VulkanBrushPipeline::CreateBrushShader(
     VkDevice device = ctx_.device;
 
     std::string psSource;
-    psSource.reserve(std::strlen(kBrushPsPreamble) + std::strlen(brushMainHlsl) +
-                     std::strlen(kBrushPsEntry) + 4);
-    psSource.append(kBrushPsPreamble);
+    psSource.reserve(std::strlen(kSharedBrushPixelPreamble) + std::strlen(brushMainHlsl) +
+                     std::strlen(kSharedBrushPixelEntry) + 4);
+    psSource.append(kSharedBrushPixelPreamble);
     psSource.append("\n");
     psSource.append(brushMainHlsl);
     psSource.append("\n");
-    psSource.append(kBrushPsEntry);
+    psSource.append(kSharedBrushPixelEntry);
 
     std::string err;
     std::vector<uint32_t> psSpirv = compiler_.Compile(psSource, "BrushPsMain", "ps_6_0", err);

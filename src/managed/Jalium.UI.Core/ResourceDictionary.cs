@@ -13,6 +13,150 @@ namespace Jalium.UI;
 /// </summary>
 public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Markup.INameScope, Jalium.UI.Markup.IUriContext
 {
+    private sealed class DeferredLiteralSolidColorBrushEntry
+    {
+        private static readonly object s_creating = new();
+
+        private readonly Jalium.UI.Threading.Dispatcher _dispatcher;
+        private object? _valueOrState;
+        private readonly uint _argb;
+
+        public DeferredLiteralSolidColorBrushEntry(
+            Jalium.UI.Threading.Dispatcher dispatcher,
+            uint argb)
+        {
+            _dispatcher = dispatcher;
+            _argb = argb;
+        }
+
+        public Jalium.UI.Media.SolidColorBrush GetValue()
+        {
+            SpinWait spinner = default;
+            while (true)
+            {
+                object? current = Volatile.Read(ref _valueOrState);
+                if (current is Jalium.UI.Media.SolidColorBrush brush)
+                {
+                    return brush;
+                }
+
+                if (current is null &&
+                    Interlocked.CompareExchange(ref _valueOrState, s_creating, null) is null)
+                {
+                    try
+                    {
+                        var color = Jalium.UI.Media.Color.FromArgb(
+                            (byte)(_argb >> 24),
+                            (byte)(_argb >> 16),
+                            (byte)(_argb >> 8),
+                            (byte)_argb);
+                        var created = new Jalium.UI.Media.SolidColorBrush(_dispatcher, color);
+
+                        Volatile.Write(ref _valueOrState, created);
+                        return created;
+                    }
+                    catch
+                    {
+                        // Construction failures are not cached. A later lookup may retry after
+                        // the transient condition has cleared.
+                        Volatile.Write(ref _valueOrState, null);
+                        throw;
+                    }
+                }
+
+                spinner.SpinOnce();
+            }
+        }
+    }
+
+    private sealed class DeferredResourceEntry
+    {
+        private const int Uninitialized = 0;
+        private const int Creating = 1;
+        private const int Created = 2;
+
+        private readonly Jalium.UI.Markup.XamlBuilder.DeferredResourceFactory _factory;
+        private readonly Uri? _baseUri;
+        private readonly Assembly? _sourceAssembly;
+        private readonly Jalium.UI.Threading.Dispatcher _dispatcher;
+        private int _state;
+        private object? _value;
+
+        public DeferredResourceEntry(
+            Jalium.UI.Markup.XamlBuilder.DeferredResourceFactory factory,
+            Uri? baseUri,
+            Assembly? sourceAssembly,
+            Jalium.UI.Threading.Dispatcher dispatcher)
+        {
+            _factory = factory;
+            _baseUri = baseUri;
+            _sourceAssembly = sourceAssembly;
+            _dispatcher = dispatcher;
+        }
+
+        public DeferredResourceEntry Clone()
+            => new(_factory, _baseUri, _sourceAssembly, _dispatcher);
+
+        public object? GetValue(ResourceDictionary owner, object key)
+        {
+            // Styles derive from DispatcherObject. Creating one on whichever thread happened
+            // to perform the first lookup would permanently bind it to the wrong dispatcher.
+            // The eager path created every style on the dictionary-build thread, so retain that
+            // affinity for the deferred path as well.
+            _dispatcher.VerifyAccess();
+
+            if (Volatile.Read(ref _state) == Created)
+            {
+                return _value;
+            }
+
+            if (Interlocked.CompareExchange(ref _state, Creating, Uninitialized) != Uninitialized)
+            {
+                if (Volatile.Read(ref _state) == Created)
+                {
+                    return _value;
+                }
+
+                throw new InvalidOperationException(
+                    $"Circular deferred resource reference detected while creating resource '{key}'.");
+            }
+
+            try
+            {
+                // Never retain the mutable context used to build the containing dictionary.
+                // A fresh context gives this factory an empty parent/name stack while preserving
+                // the owner, BaseUri and source assembly needed by StaticResource and Source.
+                var context = Jalium.UI.Markup.XamlBuilder.BeginComponent(
+                    owner,
+                    _baseUri,
+                    _sourceAssembly);
+
+                Jalium.UI.Markup.XamlBuilder.PushParent(owner, context);
+                object? value;
+                try
+                {
+                    value = _factory(owner, context);
+                }
+                finally
+                {
+                    Jalium.UI.Markup.XamlBuilder.PopParent(context);
+                }
+
+                _value = value;
+                Volatile.Write(ref _state, Created);
+                return value;
+            }
+            catch
+            {
+                // A failed resource remains deferred and can be retried after its dependency
+                // becomes available. This also unwinds every entry in a dependency cycle.
+                _value = null;
+                Volatile.Write(ref _state, Uninitialized);
+                throw;
+            }
+        }
+    }
+
     private sealed class NotificationDeferralScope : IDisposable
     {
         private ResourceDictionary? _owner;
@@ -285,7 +429,11 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
 
         foreach (var kvp in source._innerDictionary)
         {
-            _innerDictionary[kvp.Key] = kvp.Value;
+            // Deferred entries are per-dictionary caches. Sharing the placeholder object
+            // would make realizing the source silently share a Style instance with the copy.
+            _innerDictionary[kvp.Key] = kvp.Value is DeferredResourceEntry deferred
+                ? deferred.Clone()
+                : kvp.Value;
             changed = true;
         }
 
@@ -364,6 +512,60 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
     {
         _innerDictionary.Add(key, value);
         OnChangedForKey(key);
+    }
+
+    private static int s_deferredLiteralBrushTypesInitialized;
+
+    /// <summary>
+    /// Registers a resource factory whose value is created on first read and then replaces
+    /// the factory entry in-place. Used by generated framework theme dictionaries.
+    /// </summary>
+    internal void AddDeferredResource(
+        object key,
+        Jalium.UI.Markup.XamlBuilder.DeferredResourceFactory factory)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(factory);
+
+        _innerDictionary.Add(
+            key,
+            new DeferredResourceEntry(
+                factory,
+                BaseUri,
+                SourceAssembly,
+                Jalium.UI.Threading.Dispatcher.CurrentDispatcher));
+        OnChangedForKey(key);
+    }
+
+    /// <summary>
+    /// Registers a compact descriptor for an exact framework-theme literal
+    /// <see cref="Jalium.UI.Media.SolidColorBrush"/>. The brush is constructed on first
+    /// value read while retaining the dispatcher selected by eager XAML construction.
+    /// </summary>
+    internal void AddDeferredLiteralSolidColorBrush(object key, uint argb)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        EnsureDeferredLiteralBrushTypesInitialized();
+
+        _innerDictionary[key] = new DeferredLiteralSolidColorBrushEntry(
+            Jalium.UI.Threading.Dispatcher.CurrentDispatcher,
+            argb);
+        OnChangedForKey(key);
+    }
+
+    private static void EnsureDeferredLiteralBrushTypesInitialized()
+    {
+        if (Volatile.Read(ref s_deferredLiteralBrushTypesInitialized) != 0)
+        {
+            return;
+        }
+
+        // The eager path initializes these types while the framework theme dictionary is
+        // built. Preserve that timing and thread even though the brush instance itself is
+        // delayed until first value access.
+        RuntimeHelpers.RunClassConstructor(typeof(Jalium.UI.Media.Brush).TypeHandle);
+        RuntimeHelpers.RunClassConstructor(typeof(Jalium.UI.Media.SolidColorBrush).TypeHandle);
+        Volatile.Write(ref s_deferredLiteralBrushTypesInitialized, 1);
     }
 
     /// <summary>
@@ -466,6 +668,16 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
     /// 「资源内容是否还是原来那份」。需要后者语义的调用方必须用本属性。</para>
     /// </summary>
     internal static int ContentGeneration => Volatile.Read(ref s_contentGeneration);
+
+    /// <summary>
+    /// Releases resource-dictionary lookup state owned by the current thread.
+    /// </summary>
+    internal static void ClearThreadCache()
+    {
+        t_lookupChain = null;
+        t_mergedLookupCache = null;
+        t_mergedLookupGeneration = Volatile.Read(ref s_contentGeneration);
+    }
 
     /// <summary>
     /// Tries to resolve a resource and also returns the dictionary that supplied the value.
@@ -673,6 +885,11 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
     /// <param name="canCache">Whether a replacement value may be cached in this dictionary.</param>
     protected virtual void OnGettingValue(object key, ref object? value, out bool canCache)
     {
+        if (value is DeferredResourceEntry deferred)
+        {
+            value = deferred.GetValue(this, key);
+        }
+
         canCache = true;
     }
 
@@ -706,13 +923,24 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
             return null;
         }
 
-        object? resolvedValue = value;
+        var literalDescriptor = value as DeferredLiteralSolidColorBrushEntry;
+        object? literalValue = literalDescriptor?.GetValue();
+        object? resolvedValue = literalDescriptor is null ? value : literalValue;
         OnGettingValue(key, ref resolvedValue, out bool canCache);
 
-        if (canCache &&
+        // The ordinary literal-brush result remains behind its compact descriptor so CopyFrom
+        // shares the same lazy identity and the dictionary never grows a full brush reference
+        // in addition to the descriptor. A derived OnGettingValue override may still substitute
+        // and cache another value, matching the existing ResourceDictionary hook contract.
+        bool shouldCacheReplacement = literalDescriptor is null
+            ? !Equals(value, resolvedValue)
+            : !ReferenceEquals(literalValue, resolvedValue);
+
+        if (canCache && shouldCacheReplacement &&
             _innerDictionary.TryGetValue(key, out object? currentValue) &&
-            Equals(currentValue, value) &&
-            !Equals(currentValue, resolvedValue))
+            (literalDescriptor is null
+                ? Equals(currentValue, value)
+                : ReferenceEquals(currentValue, value)))
         {
             // Realizing deferred content is a cache operation, not a resource mutation, so it
             // intentionally does not raise Changed or invalidate the resource lookup cache.
@@ -1179,6 +1407,16 @@ public static class ResourceLookup
     public static void InvalidateResourceCache()
     {
         Interlocked.Increment(ref s_globalCacheGeneration);
+    }
+
+    /// <summary>
+    /// Releases resource lookup values and recursion helpers owned by the current thread.
+    /// </summary>
+    internal static void ClearThreadCache()
+    {
+        t_resourceCache = null;
+        t_cacheGeneration = Volatile.Read(ref s_globalCacheGeneration);
+        t_resourceChainPool = null;
     }
 
     /// <summary>

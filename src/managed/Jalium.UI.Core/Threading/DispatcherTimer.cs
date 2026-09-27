@@ -17,14 +17,67 @@ namespace Jalium.UI.Threading;
 /// </summary>
 public sealed class DispatcherTimer
 {
+    private sealed class TimerGeneration
+    {
+        internal TimerGeneration(DispatcherTimer owner, long intervalTicks)
+        {
+            Owner = owner;
+            IntervalTicks = intervalTicks;
+        }
+
+        internal DispatcherTimer Owner { get; }
+        internal long IntervalTicks { get; }
+        internal long NextDueTimestamp;
+        internal int TickPending;
+        internal Timer? Timer;
+        internal DispatcherOperation? PendingOperation;
+        internal EventHandler? RenderingHandler;
+        internal bool RenderingEventAttached;
+        internal bool CompositionSubscribed;
+
+        internal void OnRendering(object? sender, EventArgs e)
+        {
+            Owner.OnCompositionTargetRendering(this, sender, e);
+        }
+
+        internal void TrackPendingOperation(DispatcherOperation operation)
+        {
+            operation.Aborted += OnPendingOperationFinished;
+            operation.Completed += OnPendingOperationFinished;
+        }
+
+        internal void StopTrackingPendingOperation(DispatcherOperation operation)
+        {
+            operation.Aborted -= OnPendingOperationFinished;
+            operation.Completed -= OnPendingOperationFinished;
+        }
+
+        internal void OnPendingOperationFinished(object? sender, EventArgs e)
+        {
+            if (sender is not DispatcherOperation operation)
+            {
+                return;
+            }
+
+            StopTrackingPendingOperation(operation);
+            if (ReferenceEquals(
+                    Interlocked.CompareExchange(ref PendingOperation, null, operation),
+                    operation))
+            {
+                // This operation never reached RaiseQueuedTick (synchronous abort),
+                // or completed before its handle could be observed there. In either
+                // case it still owns this generation's single in-flight tick slot.
+                ExitTickGate(ref TickPending);
+            }
+        }
+    }
+
     private readonly Dispatcher _dispatcher;
-    private Timer? _timer;
+    private readonly object _lifecycleLock = new();
     private TimeSpan _interval;
     private bool _isEnabled;
     private object? _tag;
-    private bool _useCompositionTarget; // True when piggybacking on frame timer
-    private long _nextDueTimestamp;     // Stopwatch ticks; piggyback throttle deadline
-    private int _tickPending;           // 0/1 gate: at most one queued tick may be in flight
+    private TimerGeneration? _activeGeneration;
 
     /// <summary>
     /// Occurs when the timer interval has elapsed.
@@ -92,21 +145,35 @@ public sealed class DispatcherTimer
     /// </summary>
     public bool IsEnabled
     {
-        get => _isEnabled;
+        get => Volatile.Read(ref _isEnabled);
         set
         {
-            if (_isEnabled != value)
+            TimerGeneration? generationToDispose = null;
+            lock (_lifecycleLock)
             {
-                _isEnabled = value;
+                if (_isEnabled == value)
+                {
+                    return;
+                }
 
-                if (_isEnabled)
+                Volatile.Write(ref _isEnabled, value);
+
+                if (value)
                 {
                     StartTimer();
                 }
                 else
                 {
-                    StopTimer();
+                    generationToDispose = DetachTimer();
                 }
+            }
+
+            // DispatcherOperation.Abort synchronously invokes Aborted handlers and
+            // dispatcher hooks. Dispose outside the lifecycle lock so those callbacks
+            // may safely restart or reconfigure this timer.
+            if (generationToDispose != null)
+            {
+                DisposeGeneration(generationToDispose);
             }
         }
     }
@@ -119,7 +186,13 @@ public sealed class DispatcherTimer
     /// </exception>
     public TimeSpan Interval
     {
-        get => _interval;
+        get
+        {
+            lock (_lifecycleLock)
+            {
+                return _interval;
+            }
+        }
         set
         {
             if (value.TotalMilliseconds < 0)
@@ -132,18 +205,35 @@ public sealed class DispatcherTimer
                 throw new ArgumentOutOfRangeException(nameof(value), "Interval is too large.");
             }
 
-            bool wasRunning = _isEnabled;
-
-            if (wasRunning)
+            TimerGeneration? generationToDispose = null;
+            try
             {
-                StopTimer();
+                lock (_lifecycleLock)
+                {
+                    bool wasRunning = _isEnabled;
+
+                    if (wasRunning)
+                    {
+                        generationToDispose = DetachTimer();
+                    }
+
+                    _interval = value;
+
+                    if (wasRunning)
+                    {
+                        // Publish the replacement generation while still holding the
+                        // lifecycle lock. Old callbacks already fail identity checks;
+                        // their resources are released below, outside the lock.
+                        StartTimer();
+                    }
+                }
             }
-
-            _interval = value;
-
-            if (wasRunning)
+            finally
             {
-                StartTimer();
+                if (generationToDispose != null)
+                {
+                    DisposeGeneration(generationToDispose);
+                }
             }
         }
     }
@@ -194,54 +284,91 @@ public sealed class DispatcherTimer
 
     private void StartTimer()
     {
-        if (_timer != null || _useCompositionTarget)
+        if (Volatile.Read(ref _activeGeneration) != null)
         {
             return;
         }
 
-        if (ShouldUseCompositionTarget())
-        {
-            // Piggyback on the centralized frame timer.
-            // All frame-rate DispatcherTimers share a single System.Threading.Timer.
-            // First tick is due one interval from now, matching the dedicated
-            // timer's "first interval elapses before the first tick" semantics.
-            _useCompositionTarget = true;
-            _nextDueTimestamp = Stopwatch.GetTimestamp() + IntervalToStopwatchTicks(_interval);
-            CompositionTarget.Rendering += OnCompositionTargetRendering;
-            CompositionTarget.Subscribe();
-            return;
-        }
+        long intervalTicks = IntervalToStopwatchTicks(_interval);
+        var generation = new TimerGeneration(this, intervalTicks);
+        Volatile.Write(ref _activeGeneration, generation);
 
-        // Non-frame-rate interval: use a dedicated timer (e.g., caret blink at 500ms)
-        int intervalMs = Math.Max(1, (int)_interval.TotalMilliseconds);
-        _timer = new Timer(
-            OnTimerCallback,
-            null,
-            intervalMs,
-            intervalMs);
+        try
+        {
+            if (ShouldUseCompositionTarget())
+            {
+                // Piggyback on the centralized frame timer.
+                // All frame-rate DispatcherTimers share a single System.Threading.Timer.
+                // First tick is due one interval from now, matching the dedicated
+                // timer's "first interval elapses before the first tick" semantics.
+                generation.NextDueTimestamp = Stopwatch.GetTimestamp() + intervalTicks;
+
+                // CompositionTarget snapshots its invocation list before calling it. A
+                // handler removed by Stop can therefore still be invoked later in that
+                // same snapshot, after this DispatcherTimer has already been restarted.
+                // Bind one handler directly to the generation represented by that
+                // subscription so the stale snapshot cannot borrow the new generation.
+                EventHandler renderingHandler = generation.OnRendering;
+                generation.RenderingHandler = renderingHandler;
+
+                CompositionTarget.Rendering += renderingHandler;
+                generation.RenderingEventAttached = true;
+                CompositionTarget.Subscribe();
+                generation.CompositionSubscribed = true;
+                return;
+            }
+
+            // Non-frame-rate interval: use a dedicated timer (e.g., caret blink at 500ms)
+            int intervalMs = Math.Max(1, (int)_interval.TotalMilliseconds);
+            generation.Timer = new Timer(
+                OnTimerCallback,
+                generation,
+                intervalMs,
+                intervalMs);
+        }
+        catch
+        {
+            Interlocked.CompareExchange(ref _activeGeneration, null, generation);
+            // IsEnabled was set before StartTimer. Restore the public state when the
+            // backing timer/subscription could not be created so a later Start can retry.
+            Volatile.Write(ref _isEnabled, false);
+            DisposeGeneration(generation);
+            throw;
+        }
     }
 
-    private void StopTimer()
+    private TimerGeneration? DetachTimer()
     {
-        if (_useCompositionTarget)
+        TimerGeneration? generation = Interlocked.Exchange(ref _activeGeneration, null);
+        // Invalidate under the lifecycle lock, then dispose outside it. Timer.Dispose
+        // cannot recall a callback that already started and Rendering may already have
+        // snapshotted its handlers, so every stale path still validates this identity.
+        return generation;
+    }
+
+    private static void DisposeGeneration(TimerGeneration generation)
+    {
+        CancelPendingOperation(generation);
+
+        if (generation.RenderingHandler is { } renderingHandler)
         {
-            _useCompositionTarget = false;
-            CompositionTarget.Rendering -= OnCompositionTargetRendering;
-            CompositionTarget.Unsubscribe();
-            return;
+            generation.RenderingHandler = null;
+            if (generation.RenderingEventAttached)
+            {
+                generation.RenderingEventAttached = false;
+                CompositionTarget.Rendering -= renderingHandler;
+            }
+
+            if (generation.CompositionSubscribed)
+            {
+                generation.CompositionSubscribed = false;
+                CompositionTarget.Unsubscribe();
+            }
         }
 
-        if (_timer == null)
-        {
-            return;
-        }
-
-        _timer.Dispose();
-        _timer = null;
-
-        // Reopen the gate so a restarted timer is not blocked by a tick that was
-        // still queued (or still running) when the timer was stopped.
-        ExitTickGate(ref _tickPending);
+        Timer? timer = generation.Timer;
+        generation.Timer = null;
+        timer?.Dispose();
     }
 
     /// <summary>
@@ -249,14 +376,21 @@ public sealed class DispatcherTimer
     /// Already on UI thread — raise tick directly, throttled to the nominal
     /// interval (the frame loop is uncapped and can run far above 60Hz).
     /// </summary>
-    private void OnCompositionTargetRendering(object? sender, EventArgs e)
+    private void OnCompositionTargetRendering(
+        TimerGeneration generation,
+        object? sender,
+        EventArgs e)
     {
-        if (!_isEnabled) return;
+        if (!ReferenceEquals(generation.Owner, this) ||
+            !IsCurrentGeneration(generation))
+        {
+            return;
+        }
 
         long now = Stopwatch.GetTimestamp();
-        if (!ShouldFireOnFrame(now, IntervalToStopwatchTicks(_interval), ref _nextDueTimestamp)) return;
+        if (!ShouldFireOnFrame(now, generation.IntervalTicks, ref generation.NextDueTimestamp)) return;
 
-        RaiseTick();
+        RaiseTick(generation);
     }
 
     /// <summary>
@@ -282,7 +416,9 @@ public sealed class DispatcherTimer
 
     private void OnTimerCallback(object? state)
     {
-        if (!_isEnabled)
+        if (state is not TimerGeneration generation ||
+            !ReferenceEquals(generation.Owner, this) ||
+            !IsCurrentGeneration(generation))
         {
             return;
         }
@@ -293,7 +429,7 @@ public sealed class DispatcherTimer
             if (_dispatcher.CheckAccess())
             {
                 // Already on the dispatcher thread
-                RaiseTick();
+                RaiseTick(generation);
                 return;
             }
 
@@ -314,20 +450,57 @@ public sealed class DispatcherTimer
             // from "now" instead of the previous due time). This is the same rule for the
             // dedicated-timer path: drop callbacks that arrive while a tick is still
             // queued or still running, and let the next one be scheduled from a clean state.
-            if (!TryEnterTickGate(ref _tickPending))
+            if (!TryEnterTickGate(ref generation.TickPending))
             {
                 return;
             }
 
             try
             {
-                _dispatcher.BeginInvoke(RaiseQueuedTick);
+                DispatcherOperation operation =
+                    _dispatcher.BeginInvoke(() => RaiseQueuedTick(generation));
+                generation.TrackPendingOperation(operation);
+
+                DispatcherOperation? existing = Interlocked.CompareExchange(
+                    ref generation.PendingOperation,
+                    operation,
+                    null);
+                if (existing != null)
+                {
+                    // The generation gate makes this unreachable in normal operation,
+                    // but never leave an untracked dispatcher callback behind if its
+                    // invariant is violated by a future change.
+                    generation.StopTrackingPendingOperation(operation);
+                    TryAbortOperation(operation);
+                    ExitTickGate(ref generation.TickPending);
+                    return;
+                }
+
+                // Stop can invalidate the generation while BeginInvoke is adding the
+                // operation (including re-entrantly from OperationPosted hooks). Publish
+                // first, then re-check so whichever side loses can remove the real queue
+                // node rather than leaving a no-op that retains this timer.
+                if (!IsCurrentGeneration(generation))
+                {
+                    CancelPendingOperation(generation, operation);
+                    return;
+                }
+
+                // A stopped dispatcher aborts synchronously and returns the operation.
+                // Likewise, a very fast UI thread may have completed the callback before
+                // BeginInvoke returns. The terminal event covers the normal race; this
+                // post-publication check covers terminal state reached before handlers
+                // were attached.
+                if (operation.Task.IsCompleted)
+                {
+                    generation.OnPendingOperationFinished(operation, EventArgs.Empty);
+                }
             }
             catch
             {
                 // Never leave the gate latched shut when the tick could not be queued,
                 // otherwise the timer goes permanently silent after one failed dispatch.
-                ExitTickGate(ref _tickPending);
+                ExitTickGate(ref generation.TickPending);
                 throw;
             }
         }
@@ -341,15 +514,79 @@ public sealed class DispatcherTimer
     /// Runs a queued tick and reopens the gate only after the handler returns, so a
     /// long-running handler cannot have further ticks pile up behind it either.
     /// </summary>
-    private void RaiseQueuedTick()
+    private void RaiseQueuedTick(TimerGeneration generation)
     {
+        DispatcherOperation? operation = Interlocked.Exchange(
+            ref generation.PendingOperation,
+            null);
+        if (operation != null)
+        {
+            generation.StopTrackingPendingOperation(operation);
+        }
+
         try
         {
-            RaiseTick();
+            RaiseTick(generation);
         }
         finally
         {
-            ExitTickGate(ref _tickPending);
+            // When the operation was already published, this UI callback owns the
+            // generation gate. If it ran before BeginInvoke returned, publication and
+            // the Completed/Aborted callback release the gate instead; keeping it closed
+            // until then prevents a second timer callback from overtaking publication.
+            if (operation != null)
+            {
+                ExitTickGate(ref generation.TickPending);
+            }
+        }
+    }
+
+    private static void CancelPendingOperation(TimerGeneration generation)
+    {
+        DispatcherOperation? operation = Interlocked.Exchange(
+            ref generation.PendingOperation,
+            null);
+        if (operation != null)
+        {
+            generation.StopTrackingPendingOperation(operation);
+            TryAbortOperation(operation);
+        }
+
+        // Stop invalidated the whole generation. Releasing its private gate is safe
+        // even when the operation was between BeginInvoke and publication; that path
+        // re-checks generation identity and aborts its operation after publishing it.
+        ExitTickGate(ref generation.TickPending);
+    }
+
+    private static void CancelPendingOperation(
+        TimerGeneration generation,
+        DispatcherOperation operation)
+    {
+        if (!ReferenceEquals(
+                Interlocked.CompareExchange(
+                    ref generation.PendingOperation,
+                    null,
+                    operation),
+                operation))
+        {
+            return;
+        }
+
+        generation.StopTrackingPendingOperation(operation);
+        TryAbortOperation(operation);
+        ExitTickGate(ref generation.TickPending);
+    }
+
+    private static void TryAbortOperation(DispatcherOperation operation)
+    {
+        try
+        {
+            operation.Abort();
+        }
+        catch
+        {
+            // Abort removes the queue node before invoking diagnostic hooks. A hook
+            // failure must not resurrect stale timer work or break Stop/Interval set.
         }
     }
 
@@ -368,9 +605,13 @@ public sealed class DispatcherTimer
     internal static void ExitTickGate(ref int tickPending)
         => Volatile.Write(ref tickPending, 0);
 
-    private void RaiseTick()
+    private bool IsCurrentGeneration(TimerGeneration generation)
+        => Volatile.Read(ref _isEnabled) &&
+           ReferenceEquals(Volatile.Read(ref _activeGeneration), generation);
+
+    private void RaiseTick(TimerGeneration generation)
     {
-        if (!_isEnabled)
+        if (!IsCurrentGeneration(generation))
         {
             return;
         }

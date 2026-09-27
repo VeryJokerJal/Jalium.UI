@@ -3,6 +3,7 @@ using Jalium.UI.Documents;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
+using Jalium.UI.Styling;
 using Jalium.UI.Threading;
 using RenderTargetDrawingContext = Jalium.UI.Interop.RenderTargetDrawingContext;
 
@@ -12,7 +13,7 @@ namespace Jalium.UI.Controls;
 /// Draws a border, background, or both around another element.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Child")]
-public class Border : Decorator
+public partial class Border : Decorator
 {
     private const float DefaultGlassTintChannel = 0.08f;
     private const float DefaultGlassTintOpacity = 0.3f;
@@ -364,10 +365,10 @@ public class Border : Decorator
     {
         var border = BorderThickness;
         return new Thickness(
-            SnapLayoutValue(border.Left),
-            SnapLayoutValue(border.Top),
-            SnapLayoutValue(border.Right),
-            SnapLayoutValue(border.Bottom));
+            RoundLayoutValue(SnapLayoutValue(border.Left)),
+            RoundLayoutValue(SnapLayoutValue(border.Top)),
+            RoundLayoutValue(SnapLayoutValue(border.Right)),
+            RoundLayoutValue(SnapLayoutValue(border.Bottom)));
     }
 
     private static Rect GetInnerRect(Rect outerRect, Thickness border)
@@ -506,6 +507,19 @@ public class Border : Decorator
     /// <inheritdoc />
     internal override Geometry? GetLayoutClip()
     {
+        if (TryGetCssRadius(out var cssRadius))
+            return GetCssRadiusClip(cssRadius);
+        if (Clip is not null) return Clip;
+        if (Shape == BorderShape.RoundedRectangle &&
+            Styling.CssOverflowProperties.TryGetActiveClipMargin(this, out var margin))
+        {
+            var corner = CornerRadius;
+            var radii = new Styling.CssUsedBorderRadii(
+                new Size(corner.TopLeft, corner.TopLeft), new Size(corner.TopRight, corner.TopRight),
+                new Size(corner.BottomRight, corner.BottomRight), new Size(corner.BottomLeft, corner.BottomLeft))
+                .Normalize(RenderSize);
+            return GetCssOverflowClip(margin, radii);
+        }
         var clipEdges = ClipToBoundsEdges;
         if (!ClipToBounds || clipEdges == ClipEdges.None)
             return null;
@@ -712,8 +726,34 @@ public class Border : Decorator
     }
 
     /// <inheritdoc />
+    protected override bool CanCompositeCssBoxShadowBeforeChildren =>
+        !(LiquidGlass && LiquidGlassInteractive) &&
+        !_lgPushedTransform && !_lgPushedNativeTextTransform;
+
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (TryGetCssRadius(out var cssRadius))
+        {
+            if (BackdropEffect is { HasEffect: true } backdrop)
+            {
+                // CSS filters the backdrop inside the border-box contour, including
+                // elliptical radii. The native material has circular corner values,
+                // so clip its draw to the CSS geometry instead.
+                drawingContext.PushClip(GetCssOuterGeometry(cssRadius));
+                drawingContext.DrawBackdropEffect(new Rect(RenderSize), backdrop, new CornerRadius(0));
+                drawingContext.Pop();
+            }
+            if (Background is not null)
+            {
+                var outer = new Rect(RenderSize);
+                var geometry = GetCssOuterGeometry(cssRadius);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, drawingContext,
+                        outer, cssRadius, GetSnappedBorderThickness(), Padding,
+                        brush => drawingContext.DrawGeometry(brush, null, geometry)))
+                    drawingContext.DrawGeometry(Background, null, geometry);
+            }
+            return;
+        }
         var dc = drawingContext;
 
         var rect = new Rect(RenderSize);
@@ -1010,11 +1050,13 @@ public class Border : Decorator
             if (Background != null && !LiquidGlass &&
                 backgroundRect.Width > 0 && backgroundRect.Height > 0)
             {
-                dc.DrawRoundedRectangle(
-                    Background,
-                    null,
-                    backgroundRect,
-                    backgroundRadius);
+                // The native superellipse contour applies to rounded-rectangle draws,
+                // so rectangle gradient tiles would escape that special shape.
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                        rect, CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize), border, Padding,
+                        brush => dc.DrawRoundedRectangle(brush, null, rect, cornerRadius),
+                        tileGradients: false))
+                    dc.DrawRoundedRectangle(Background, null, backgroundRect, backgroundRadius);
             }
 
             dc.SetShapeType(0, 4.0f);
@@ -1043,11 +1085,10 @@ public class Border : Decorator
 
                 if (backgroundRect.Width > 0 && backgroundRect.Height > 0)
                 {
-                    dc.DrawRoundedRectangle(
-                        Background,
-                        null,
-                        backgroundRect,
-                        backgroundRadius);
+                    if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                            rect, CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize), border, Padding,
+                            brush => dc.DrawRoundedRectangle(brush, null, rect, cornerRadius)))
+                        dc.DrawRoundedRectangle(Background, null, backgroundRect, backgroundRadius);
                 }
             }
 
@@ -1122,6 +1163,18 @@ public class Border : Decorator
     /// </summary>
     private void DrawStrokeAboveChildren(DrawingContext dc)
     {
+        var sideColors = CssBorderPaintProperties.Get(this);
+        var sideStyles = CssBorderStyleProperties.Get(this);
+        if (sideColors is not null && (!sideColors.IsUniform || sideStyles is { AllSolid: false }))
+        {
+            DrawCssSideColors(dc, sideColors, sideStyles);
+            return;
+        }
+        if (TryGetCssRadius(out var cssRadius))
+        {
+            DrawCssRadiusBorder(dc, cssRadius);
+            return;
+        }
         if (BorderBrush == null) return;
         var isSuperEllipse = Shape == BorderShape.SuperEllipse;
 
@@ -1397,7 +1450,9 @@ public class Border : Decorator
     private const double LiquidGlassNativePadding = 32.0;
 
     internal override double GetExtraDirtyPadding()
-        => _liquidGlassForDirtyBounds ? _liquidGlassDirtyPadding : 0.0;
+        // Max, not sum: both values are symmetric ink-extent radii, so the reachable
+        // ink is bounded by the larger one (base carries the CSS outline ring).
+        => Math.Max(base.GetExtraDirtyPadding(), _liquidGlassForDirtyBounds ? _liquidGlassDirtyPadding : 0.0);
 
     private void UpdateLiquidGlassDirtyPadding(Size size)
     {

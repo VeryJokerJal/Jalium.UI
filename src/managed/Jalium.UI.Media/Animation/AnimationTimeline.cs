@@ -144,6 +144,19 @@ public sealed class AnimationClock : Clock, IAnimationClock
 
     public new double CurrentProgress => _currentProgress;
 
+    /// <summary>Samples a reusable timeline at a chosen progress without starting a clock or raising events.</summary>
+    internal void SetProgressForSampling(double progress)
+    {
+        // CSS easing can legitimately extrapolate beyond both endpoints.
+        _currentProgress = progress;
+        base.CurrentProgress = _currentProgress;
+        var duration = _animation.Duration.HasTimeSpan
+            ? _animation.Duration.TimeSpan : TimeSpan.FromSeconds(1);
+        CurrentTime = TimeSpan.FromTicks((long)Math.Round(duration.Ticks * Math.Clamp(progress, 0d, 1d)));
+        CurrentIteration = 1;
+        CurrentState = ClockState.Active;
+    }
+
     public bool IsRunning => _isRunning;
 
     bool IAnimationClock.IsPaused => _isPaused;

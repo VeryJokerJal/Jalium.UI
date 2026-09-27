@@ -1,6 +1,7 @@
 #pragma once
 
 #include "jalium_rendering_engine.h"
+#include "jalium_elliptical_clip.h"
 #include "jalium_impeller_shapes.h"   // Trig / TrigCache / shape generators
 #include "jalium_impeller_stroke.h"   // ImpellerCap / ImpellerJoin / ExpandStrokePath
 #include "jalium_gradient_sample.h"   // SampleBrushGradient / FlattenGradientStops
@@ -63,6 +64,7 @@ struct VkImpellerDrawBatch {
     //     Polygon/stroke content no longer leaks through a rounded Border's
     //     corners (previously only the AABB scissor applied). ---
     bool hasRoundedClip = false;
+    EllipticalClipSnapshot ellipticalClips;
     float roundedClipRect[4] = { 0, 0, 0, 0 };        // L, T, R, B (physical px)
     float roundedClipCornerRadii[4] = { 0, 0, 0, 0 }; // TL, TR, BR, BL (physical px)
 
@@ -310,6 +312,7 @@ public:
         }
     }
     void ClearRoundedClip() { hasRoundedClip_ = false; }
+    void SetEllipticalClips(EllipticalClipSnapshot clips) { ellipticalClips_ = std::move(clips); }
 
     // E4: path-MSAA "analytic-only" mode, the Vulkan analogue of D3D12's
     // pathAnalyticOnly_ (set by SetPathMsaaSampleCount(0)). When on, solid
@@ -381,6 +384,7 @@ public:
             batch.scissorB = scissorBottom_;
         }
         batch.hasRoundedClip = hasRoundedClip_;
+        batch.ellipticalClips = ellipticalClips_;
         if (hasRoundedClip_) {
             for (int i = 0; i < 4; ++i) {
                 batch.roundedClipRect[i] = roundedClipRect_[i];
@@ -404,7 +408,7 @@ public:
             // clip rides in per-draw push constants, so a merged buffer could
             // only carry one of them (mirrors the D3D12 rule that batching
             // "only splits when the clip actually differs").
-            const bool roundedClipEq = (last.hasRoundedClip == batch.hasRoundedClip) &&
+            const bool roundedClipEq = (last.ellipticalClips == batch.ellipticalClips) && (last.hasRoundedClip == batch.hasRoundedClip) &&
                 (!batch.hasRoundedClip ||
                  (last.roundedClipRect[0] == batch.roundedClipRect[0] &&
                   last.roundedClipRect[1] == batch.roundedClipRect[1] &&
@@ -515,6 +519,7 @@ private:
     // Live rounded-clip mirror (SetRoundedClip / ClearRoundedClip), snapshotted
     // into each batch by PushBatch — parallel to the scissor fields above.
     bool hasRoundedClip_ = false;
+    EllipticalClipSnapshot ellipticalClips_;
     float roundedClipRect_[4] = { 0, 0, 0, 0 };
     float roundedClipRadii_[4] = { 0, 0, 0, 0 };
 

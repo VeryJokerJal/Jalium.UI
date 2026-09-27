@@ -1,3 +1,5 @@
+using Jalium.UI.Styling;
+
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
@@ -17,6 +19,12 @@ public class ToolBarOverflowPanel : Panel
         DependencyProperty.Register(nameof(WrapWidth), typeof(double), typeof(ToolBarOverflowPanel),
             new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
 
+    /// <summary>Identifies the Padding dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty PaddingProperty =
+        DependencyProperty.Register(nameof(Padding), typeof(Thickness), typeof(ToolBarOverflowPanel),
+            new PropertyMetadata(new Thickness(0), OnLayoutPropertyChanged));
+
     #endregion
 
     #region CLR Properties
@@ -31,6 +39,14 @@ public class ToolBarOverflowPanel : Panel
         set => SetValue(WrapWidthProperty, value);
     }
 
+    /// <summary>Gets or sets the space inside the panel's border.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public Thickness Padding
+    {
+        get => (Thickness)GetValue(PaddingProperty)!;
+        set => SetValue(PaddingProperty, value);
+    }
+
     #endregion
 
     #region Layout
@@ -42,71 +58,105 @@ public class ToolBarOverflowPanel : Panel
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var wrapWidth = double.IsNaN(WrapWidth) ? availableSize.Width : WrapWidth;
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var contentAvailable = CssBoxMetrics.InnerSize(availableSize, insets);
+        var wrapWidth = double.IsNaN(WrapWidth) ? contentAvailable.Width : WrapWidth;
+        var rowGap = ResolveGap(row: true, contentAvailable.Width);
+        var columnGap = ResolveGap(row: false, contentAvailable.Width);
 
         var currentRowWidth = 0.0;
         var currentRowHeight = 0.0;
         var totalHeight = 0.0;
         var maxWidth = 0.0;
+        var rowHasChild = false;
 
         foreach (UIElement child in Children.EnumerateStruct())
         {
-            child.Measure(availableSize);
+            child.Measure(contentAvailable);
+            if (child.Visibility == Visibility.Collapsed)
+                continue;
 
             var childWidth = child.DesiredSize.Width;
             var childHeight = child.DesiredSize.Height;
 
-            if (currentRowWidth + childWidth > wrapWidth && currentRowWidth > 0)
+            if (rowHasChild && currentRowWidth + columnGap + childWidth > wrapWidth)
             {
                 // Start new row
                 maxWidth = Math.Max(maxWidth, currentRowWidth);
-                totalHeight += currentRowHeight;
+                totalHeight += currentRowHeight + rowGap;
                 currentRowWidth = childWidth;
                 currentRowHeight = childHeight;
             }
             else
             {
-                currentRowWidth += childWidth;
+                currentRowWidth += (rowHasChild ? columnGap : 0) + childWidth;
                 currentRowHeight = Math.Max(currentRowHeight, childHeight);
             }
+            rowHasChild = true;
         }
 
         // Add last row
         maxWidth = Math.Max(maxWidth, currentRowWidth);
-        totalHeight += currentRowHeight;
+        if (rowHasChild)
+            totalHeight += currentRowHeight;
 
-        return new Size(maxWidth, totalHeight);
+        return new Size(maxWidth + insets.Left + insets.Right,
+            totalHeight + insets.Top + insets.Bottom);
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var wrapWidth = double.IsNaN(WrapWidth) ? finalSize.Width : WrapWidth;
+        var content = ControlRenderGeometry.GetContentRect(new Rect(finalSize),
+            CssBoxMetrics.ContentInsets(this,
+                CssLayout?.ContainingWidthCache ?? finalSize.Width));
+        var wrapWidth = double.IsNaN(WrapWidth) ? content.Width : WrapWidth;
+        var rowGap = ResolveGap(row: true, content.Width);
+        var columnGap = ResolveGap(row: false, content.Width);
 
         var currentX = 0.0;
         var currentY = 0.0;
         var currentRowHeight = 0.0;
+        var rowHasChild = false;
 
         foreach (UIElement child in Children.EnumerateStruct())
         {
+            if (child.Visibility == Visibility.Collapsed)
+            {
+                child.Arrange(default);
+                continue;
+            }
+
             var childWidth = child.DesiredSize.Width;
             var childHeight = child.DesiredSize.Height;
 
-            if (currentX + childWidth > wrapWidth && currentX > 0)
+            if (rowHasChild && currentX + columnGap + childWidth > wrapWidth)
             {
                 // Start new row
                 currentX = 0;
-                currentY += currentRowHeight;
+                currentY += currentRowHeight + rowGap;
                 currentRowHeight = 0;
+                rowHasChild = false;
             }
 
-            child.Arrange(new Rect(currentX, currentY, childWidth, childHeight));
+            if (rowHasChild)
+                currentX += columnGap;
+            child.Arrange(new Rect(content.X + currentX, content.Y + currentY,
+                childWidth, childHeight));
 
             currentX += childWidth;
             currentRowHeight = Math.Max(currentRowHeight, childHeight);
+            rowHasChild = true;
         }
 
         return finalSize;
+    }
+
+    private double ResolveGap(bool row, double basis)
+    {
+        var gap = CssGapProperties.Resolve(this, row, basis);
+        return double.IsFinite(gap) ? Math.Max(0, gap) : 0;
     }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

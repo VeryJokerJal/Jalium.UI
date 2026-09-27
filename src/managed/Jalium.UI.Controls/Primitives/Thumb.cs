@@ -2,6 +2,7 @@
 using Jalium.UI;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -27,6 +28,7 @@ public class Thumb : Control
     private Pen? _borderPen;
     private Brush? _borderPenBrush;
     private double _borderPenThickness;
+    private Border? _cssBorderPainter;
 
     private const string DefaultBackgroundKey = "ControlBackground";
     private const string DraggingBackgroundKey = "ControlBackgroundPressed";
@@ -435,20 +437,38 @@ public class Thumb : Control
 
         var rect = new Rect(RenderSize);
         var cornerRadius = CornerRadius;
+        var cssRadius = CssBorderRadiusProperties.Get(this);
+        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+        var bgBrush = Background;
+        if (bgBrush is null && backgroundLayer is not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+            bgBrush = IsDragging ? ResolveDraggingBackgroundBrush() : ResolveDefaultBackgroundBrush();
 
-        // Get visual state colors
-        var bgBrush = Background ?? (IsDragging
-            ? ResolveDraggingBackgroundBrush()
-            : ResolveDefaultBackgroundBrush());
-
-        var borderBrush = BorderBrush;
         var gripPen = ResolveGripPen();
 
-        // Draw background
-        dc.DrawRoundedRectangle(bgBrush, null, rect, cornerRadius);
+        if (bgBrush is not null)
+        {
+            if (cssRadius is null && backgroundLayer is not
+                    (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                dc.DrawRoundedRectangle(bgBrush, null, rect, cornerRadius);
+            else
+            {
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(rect, radii);
+                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, bgBrush,
+                        dc, rect, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(bgBrush, null, shape);
+            }
+        }
 
-        // Draw border
-        if (borderBrush != null && BorderThickness.TotalWidth > 0)
+        // Keep the native pen path for thumbs without CSS border geometry.
+        var cssBorder = CssBorderPaintProperties.Get(this) is not null ||
+            CssBorderStyleProperties.Get(this) is not null || cssRadius is not null;
+        if (!cssBorder && BorderBrush is { } borderBrush && BorderThickness.TotalWidth > 0)
         {
             if (_borderPen == null || _borderPenBrush != borderBrush || _borderPenThickness != BorderThickness.Left)
             {
@@ -459,18 +479,31 @@ public class Thumb : Control
             dc.DrawRoundedRectangle(null, _borderPen, rect, cornerRadius);
         }
 
-        // Draw grip lines for visual feedback when requested.
-        if (ShowGrip && RenderSize.Width >= 8 && RenderSize.Height >= 8)
+        // Keep the grip inside the content box when CSS edges are asymmetric.
+        var content = ControlRenderGeometry.GetContentRect(rect,
+            CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? RenderSize.Width));
+        if (ShowGrip && content.Width >= 8 && content.Height >= 8)
         {
-            var centerX = rect.Width / 2;
-            var centerY = rect.Height / 2;
-            var gripWidth = Math.Min(8, rect.Width - 4);
+            var centerX = content.X + content.Width / 2;
+            var centerY = content.Y + content.Height / 2;
+            var gripWidth = Math.Min(8, content.Width - 4);
             var startX = centerX - gripWidth / 2;
 
             dc.DrawLine(gripPen, new Point(startX, centerY - 2), new Point(startX + gripWidth, centerY - 2));
             dc.DrawLine(gripPen, new Point(startX, centerY), new Point(startX + gripWidth, centerY));
             dc.DrawLine(gripPen, new Point(startX, centerY + 2), new Point(startX + gripWidth, centerY + 2));
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (_thumbBorder is null &&
+            (CssBorderPaintProperties.Get(this) is not null ||
+             CssBorderStyleProperties.Get(this) is not null ||
+             CssBorderRadiusProperties.Get(this) is not null))
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     private Brush ResolveDefaultBackgroundBrush()

@@ -158,8 +158,11 @@ void main(uint3 groupId : SV_GroupID,
             sample = g_Input.Load(int3(texCoord, 0));
         }
 
-        // Convert from sRGB to linear on load so blurring is physically correct.
-        sample.rgb = SrgbToLinear(sample.rgb);
+        // The source is premultiplied sRGB. Decode its straight color, then
+        // premultiply in linear light before accumulating Gaussian weights.
+        sample.rgb = sample.a > 0.000001f
+            ? SrgbToLinear(saturate(sample.rgb / sample.a)) * sample.a
+            : float3(0, 0, 0);
         sharedCache[i] = sample;
     }
 
@@ -193,8 +196,11 @@ void main(uint3 groupId : SV_GroupID,
 
     sum /= max(weightSum, 0.0001f);
 
-    // Convert back to sRGB for storage
-    sum.rgb = LinearToSrgb(sum.rgb);
+    // Restore premultiplied sRGB. Applying the transfer curve directly to
+    // linear premultiplied RGB would make translucent fringes too bright.
+    sum.rgb = sum.a > 0.000001f
+        ? LinearToSrgb(saturate(sum.rgb / sum.a)) * sum.a
+        : float3(0, 0, 0);
 
     // Write output
     int2 outCoord;

@@ -5,6 +5,16 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed class DrawingImage : ImageSource
 {
+    private long _contentGeneration;
+    internal override long ContentGeneration => Interlocked.Read(ref _contentGeneration);
+
+    protected override void OnChanged()
+    {
+        Interlocked.Increment(ref _contentGeneration);
+        base.OnChanged();
+        RaiseRasterChanged(this);
+    }
+
     public static readonly DependencyProperty DrawingProperty =
         DependencyProperty.Register(nameof(Drawing), typeof(Drawing), typeof(DrawingImage), new PropertyMetadata(null));
 

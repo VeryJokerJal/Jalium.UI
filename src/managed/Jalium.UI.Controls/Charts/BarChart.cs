@@ -373,7 +373,7 @@ public class BarChart : AxisChartBase
         double usableBand = bandWidth - GroupSpacing;
         if (usableBand < 2) usableBand = 2;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var labelBrush = new SolidColorBrush(Color.FromRgb(220, 220, 220));
 
         for (int ci = 0; ci < categoryCount; ci++)

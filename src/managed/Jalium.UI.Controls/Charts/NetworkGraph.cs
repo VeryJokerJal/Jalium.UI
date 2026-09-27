@@ -665,7 +665,7 @@ public class NetworkGraph : ChartBase
         }
 
         // Draw nodes
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         int nodeIndex = 0;
         foreach (var node in nodes)
         {

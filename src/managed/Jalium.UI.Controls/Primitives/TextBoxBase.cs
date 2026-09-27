@@ -13,7 +13,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Base class for text editing controls.
 /// </summary>
-public abstract class TextBoxBase : Control
+public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -59,6 +59,12 @@ public abstract class TextBoxBase : Control
     protected void InvalidateTextContentMeasure()
     {
         _textBoxContentHost?.InvalidateMeasure();
+    }
+
+    internal override void OnFontResourcesChanged()
+    {
+        InvalidateTextContentMeasure();
+        base.OnFontResourcesChanged();
     }
 
     #endregion
@@ -749,8 +755,8 @@ public abstract class TextBoxBase : Control
         if (clampedColumn <= 0)
             return 0;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         if (clampedColumn < lineText.Length)
         {
@@ -1737,6 +1743,13 @@ public abstract class TextBoxBase : Control
     /// <returns>The current caret opacity (0.0 to 1.0).</returns>
     protected double UpdateCaretAnimation()
     {
+        if (Styling.CssCaretAnimationProperties.IsManual(this))
+        {
+            _caretOpacity = 1.0;
+            _caretVisible = true;
+            return 1.0;
+        }
+
         var now = DateTime.Now;
         var elapsed = (now - _lastCaretBlink).TotalMilliseconds;
 
@@ -1985,6 +1998,7 @@ public abstract class TextBoxBase : Control
         var contentY = position.Y - border.Top - padding.Top + _verticalOffset;
 
         var lineCount = GetLineCount();
+        if (lineHeight <= 0) return 0;
         var lineIndex = Math.Max(0, Math.Min((int)(contentY / lineHeight), lineCount - 1));
 
         // Get the line text and find the column by measuring
@@ -1997,8 +2011,8 @@ public abstract class TextBoxBase : Control
         // Use DirectWrite's native hit testing for accurate character mapping.
         // This ensures the hit position matches exactly how DirectWrite lays out
         // characters within the rendered text, avoiding prefix-measurement drift.
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         if (TextMeasurement.HitTestPoint(lineText, fontFamily, fontSize, (float)contentX, out var hitResult))
         {
             int column = (int)hitResult.TextPosition;
@@ -2417,7 +2431,8 @@ public abstract class TextBoxBase : Control
 
     private void StartCaretTimer()
     {
-        if (IsReadOnly && !IsReadOnlyCaretVisible)
+        if (Styling.CssCaretAnimationProperties.IsManual(this) ||
+            (IsReadOnly && !IsReadOnlyCaretVisible))
             return;
 
         if (_caretTimer == null)
@@ -2440,7 +2455,8 @@ public abstract class TextBoxBase : Control
 
     private void OnCaretTimerTick(object? sender, EventArgs e)
     {
-        if (!IsKeyboardFocused || (IsReadOnly && !IsReadOnlyCaretVisible))
+        if (Styling.CssCaretAnimationProperties.IsManual(this) || !IsKeyboardFocused ||
+            (IsReadOnly && !IsReadOnlyCaretVisible))
         {
             StopCaretTimer();
             return;
@@ -2458,6 +2474,26 @@ public abstract class TextBoxBase : Control
             InvalidateVisual();
         }
         ScheduleNextCaretTick(DateTime.Now);
+    }
+
+    void Styling.ICssCaretAnimationHost.OnCssCaretAnimationChanged()
+        => OnCssCaretAnimationChanged();
+
+    protected virtual void OnCssCaretAnimationChanged()
+    {
+        if (Styling.CssCaretAnimationProperties.IsManual(this))
+        {
+            StopCaretTimer();
+            _caretVisible = true;
+            _caretOpacity = 1.0;
+        }
+        else
+        {
+            ResetCaretBlink();
+            if (IsKeyboardFocused) StartCaretTimer();
+        }
+
+        InvalidateVisual();
     }
 
     #endregion
@@ -2986,7 +3022,8 @@ public abstract class TextBoxBase : Control
         if (HasLocalValue(CaretBrushProperty))
             return CaretBrush;
 
-        return CaretBrush
+        return Styling.CssCaretColorProperties.Get(this)
+            ?? CaretBrush
             ?? ((HasLocalValue(Control.ForegroundProperty) && Foreground != null) ? Foreground : null)
             ?? ResolveThemeBrush("TextPrimary", s_defaultCaretBrush, "TextFillColorPrimaryBrush");
     }

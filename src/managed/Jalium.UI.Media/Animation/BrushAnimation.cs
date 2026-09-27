@@ -114,13 +114,46 @@ public sealed class BrushAnimation : TypedAnimationTimeline<Brush>
         return false;
     }
 
+    /// <summary>
+    /// Interpolates in linear light space with the color channels premultiplied by
+    /// alpha.
+    ///
+    /// <para>
+    /// The premultiplication is what keeps the transition monotone. Interpolating
+    /// straight (non-premultiplied) channels alongside a large alpha delta makes the
+    /// midpoint a mid-alpha version of the <i>brighter</i> endpoint, and that
+    /// composites lighter than either end — e.g. a hover going from
+    /// <c>#F22C2C2E</c> (alpha 242, dark grey) to <c>#240A84FF</c> (alpha 36, bright
+    /// blue) peaked at <c>#264B7D</c>, visibly brighter than both, so a single hover
+    /// read as two color changes: first lighter, then settling darker. Premultiplied,
+    /// the same pair moves straight from one end to the other.
+    /// </para>
+    /// </summary>
     private static Color LerpColor(Color from, Color to, double progress)
     {
-        // Interpolate in linear light space for perceptually correct transitions.
         float a = (float)Lerp(from.ScA, to.ScA, progress);
-        float r = (float)Lerp(from.ScR, to.ScR, progress);
-        float g = (float)Lerp(from.ScG, to.ScG, progress);
-        float b = (float)Lerp(from.ScB, to.ScB, progress);
+
+        float r = (float)Lerp(from.ScR * from.ScA, to.ScR * to.ScA, progress);
+        float g = (float)Lerp(from.ScG * from.ScA, to.ScG * to.ScA, progress);
+        float b = (float)Lerp(from.ScB * from.ScA, to.ScB * to.ScA, progress);
+
+        // Unpremultiply. Below the epsilon the color is fully transparent, so its
+        // channels are unobservable — carry the destination hue rather than dividing
+        // by ~0 and producing NaN/Infinity.
+        const float AlphaEpsilon = 1e-4f;
+        if (a > AlphaEpsilon)
+        {
+            r /= a;
+            g /= a;
+            b /= a;
+        }
+        else
+        {
+            r = to.ScR;
+            g = to.ScG;
+            b = to.ScB;
+        }
+
         return Color.FromScRgb(a, r, g, b);
     }
 

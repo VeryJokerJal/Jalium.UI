@@ -64,7 +64,8 @@ public sealed partial class StylusDevice : InputDevice
             element = null;
             captureMode = CaptureMode.None;
         }
-        else if (!element.IsEnabled)
+        else if (!element.IsEnabled || element is UIElement uiElement &&
+                 Styling.CssDisplayProperties.IsExitInert(uiElement))
         {
             return false;
         }

@@ -186,6 +186,8 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
         if (_isUpdating)
             return;
 
+        var requiredBefore = Styling.CssOptionalityState.GetRequired(Target);
+        var rangeBefore = Styling.CssRangeState.GetInRange(Target);
         try
         {
             _isUpdating = true;
@@ -256,6 +258,8 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
         finally
         {
             _isUpdating = false;
+            Styling.CssOptionalityState.NotifyBindingChange(Target, requiredBefore);
+            Styling.CssRangeState.NotifyBindingChange(Target, rangeBefore);
         }
     }
 

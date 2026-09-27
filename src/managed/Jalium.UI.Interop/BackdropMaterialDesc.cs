@@ -25,8 +25,8 @@ public enum BackdropMaterialBlurType
 /// native side rejects a call whose <see cref="StructSize"/> does not match.
 /// </summary>
 /// <remarks>
-/// Colour pipeline order shared by every backend (CSS backdrop-filter semantics:
-/// the filters act on the backdrop, the tint composites on top):
+/// Colour pipeline order shared by every backend (a single CSS backdrop-filter
+/// function maps to one stage; ordered CSS lists need a separate pipeline):
 /// blur → brightness → contrast → saturation → hue rotation → grayscale → sepia
 /// → invert → tint → luminosity → noise. All lengths are DIPs.
 /// </remarks>

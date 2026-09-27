@@ -10,6 +10,38 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Control : FrameworkElement
 {
+    private Styling.CssRoundedRectangleGeometry? _cssOuterClip;
+
+    internal override Geometry? GetLayoutClip()
+    {
+        if (Clip is not null || !ClipToBounds || ClipToBoundsEdges == ClipEdges.None ||
+            Styling.CssOverflowProperties.TryGetActiveClipMargin(this, out _) ||
+            Styling.CssBorderRadiusProperties.Get(this) is not { } value)
+            return base.GetLayoutClip();
+        var reference = new Rect(RenderSize);
+        var edges = ClipToBoundsEdges;
+        var bounds = ExpandBoundsClip(reference, edges);
+        var radii = value.Resolve(RenderSize).Mask(edges);
+        if (_cssOuterClip is { } cached && cached.Rect == bounds && cached.Radii == radii && cached.ClipEdges == edges)
+            return cached;
+        // The template paints its chrome inside this outer contour. A bound
+        // Border separately clips its content at the padding edge.
+        var geometry = new Styling.CssRoundedRectangleGeometry(bounds, radii, edges, reference);
+        geometry.Freeze();
+        return _cssOuterClip = geometry;
+    }
+
+    protected override HitTestResult? HitTestCore(Point point)
+    {
+        var hit = base.HitTestCore(point);
+        if (ReferenceEquals(hit?.VisualHit, this) && Styling.CssBorderRadiusProperties.Get(this) is { } radius)
+        {
+            var local = new Point(point.X - VisualBounds.X, point.Y - VisualBounds.Y);
+            if (!Styling.CssRoundedRectangleGeometry.Contains(new Rect(RenderSize), radius.Resolve(RenderSize), local)) return null;
+        }
+        return hit;
+    }
+
     private static readonly Dictionary<string, SolidColorBrush> s_brushStringCache =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -668,6 +700,7 @@ public class Control : FrameworkElement
             _templateRoot = null;
             root.IsTemplatedRoot = false;
             RemoveVisualChild(root);
+            ReleaseTemplateOwner(root, this);
         }
 
         // Template names belong to this particular expanded template instance.
@@ -701,6 +734,27 @@ public class Control : FrameworkElement
                 ReleasePresentedContentRecursive(child);
             }
         }
+    }
+
+    private static void ReleaseTemplateOwner(FrameworkElement root, Control owner)
+    {
+        // Collect before changing ownership: binding reactivation may itself
+        // replace nested templates. User content and nested controls' own
+        // template parts keep their distinct owners.
+        var pending = new Stack<FrameworkElement>();
+        var seen = new HashSet<FrameworkElement>();
+        var owned = new List<FrameworkElement>();
+        pending.Push(root);
+        while (pending.TryPop(out var element))
+        {
+            if (!seen.Add(element)) continue;
+            if (ReferenceEquals(element.TemplatedParent, owner)) owned.Add(element);
+            for (var i = 0; i < element.VisualChildrenCount; i++)
+                if (element.GetVisualChild(i) is FrameworkElement child) pending.Push(child);
+            if (element is Popup { Child: FrameworkElement popupChild }) pending.Push(popupChild);
+            if (element is ContentControl { Content: FrameworkElement content }) pending.Push(content);
+        }
+        foreach (var element in owned) element.SetTemplatedParent(null, reactivateBindings: true);
     }
 
     /// <summary>

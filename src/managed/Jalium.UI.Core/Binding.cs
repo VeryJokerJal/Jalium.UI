@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -381,6 +382,9 @@ public class Binding : BindingBase
     /// at which point the target FE is already in the live visual tree.
     /// </summary>
     internal string? PendingConverterKey { get; set; }
+    // The public TemplateBindingExtension exposes a BindingExpression while
+    // retaining template-value precedence and template-specific presentation.
+    internal DependencyProperty? TemplateSourceProperty { get; set; }
 
     /// <summary>
     /// Gets or sets the parameter to pass to the converter.
@@ -405,7 +409,9 @@ public class Binding : BindingBase
     /// <summary>
     /// Gets the collection of validation rules to apply to the binding.
     /// </summary>
-    public Collection<ValidationRule> ValidationRules { get; } = new();
+    private readonly ValidationRuleCollection _validationRules = new();
+    public Collection<ValidationRule> ValidationRules => _validationRules;
+    internal ValidationRuleCollection ValidationRulesInternal => _validationRules;
 
     /// <summary>
     /// Gets or sets a value that indicates whether to include exceptions as validation errors.
@@ -733,6 +739,15 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
         ParentBindingBase = parentBindingBase ?? throw new ArgumentNullException(nameof(parentBindingBase));
         Target = target;
         TargetProperty = targetProperty;
+        switch (parentBindingBase)
+        {
+            case Binding binding:
+                binding.ValidationRulesInternal.TrackTarget(target);
+                break;
+            case MultiBinding multiBinding:
+                multiBinding.ValidationRulesInternal.TrackTarget(target);
+                break;
+        }
     }
 
     /// <summary>
@@ -754,6 +769,8 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
     /// Updates the target value.
     /// </summary>
     public abstract void UpdateTarget();
+
+    internal virtual void OnTemplateParentChanged() { }
 
     /// <summary>Runs this expression's validation rules without writing to the source.</summary>
     public bool ValidateWithoutUpdate()
@@ -858,7 +875,9 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
             return false;
         }
 
-        Target.SetValue(TargetProperty, value);
+        if (ParentBindingBase is Binding { TemplateSourceProperty: not null })
+            Target.SetLayerValue(TargetProperty, value, DependencyObject.LayerValueSource.ParentTemplate);
+        else Target.SetValue(TargetProperty, value);
         Status = BindingStatus.Active;
         return true;
     }
@@ -869,6 +888,11 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
 /// </summary>
 public sealed class BindingExpression : BindingExpressionBase
 {
+    internal override void OnTemplateParentChanged()
+    {
+        if (_binding.RelativeSource?.Mode == RelativeSourceMode.TemplatedParent) Deactivate();
+    }
+
     private readonly Binding _binding;
     private INotifyPropertyChanged? _sourceNotify;
     private INotifyDataErrorInfo? _notifyDataErrorInfo;
@@ -881,6 +905,7 @@ public sealed class BindingExpression : BindingExpressionBase
     private bool _isLostFocusUpdate;
     private bool _isAsyncUpdatePending;
     private List<(INotifyPropertyChanged Notify, string PropertyName)>? _intermediateSubscriptions;
+    private List<INotifyCollectionChanged>? _indexedCollectionSubscriptions;
 
     // Converter / ConverterParameter 自身的可变状态订阅。
     // 若 Converter 实现 INotifyPropertyChanged 或继承自 DependencyObject，其属性变化时
@@ -909,6 +934,7 @@ public sealed class BindingExpression : BindingExpressionBase
     private readonly EventHandler<PropertyChangedEventArgs> _converterPcHandler;
     private readonly EventHandler<PropertyChangedEventArgs> _converterParamPcHandler;
     private readonly EventHandler<PropertyChangedEventArgs> _intermediatePcHandler;
+    private readonly EventHandler<NotifyCollectionChangedEventArgs> _indexedCollectionChangedHandler;
 
     /// <summary>
     /// Gets the parent binding.
@@ -943,6 +969,7 @@ public sealed class BindingExpression : BindingExpressionBase
         _converterPcHandler = OnConverterPropertyChanged;
         _converterParamPcHandler = OnConverterParameterPropertyChanged;
         _intermediatePcHandler = OnIntermediatePropertyChanged;
+        _indexedCollectionChangedHandler = OnIndexedCollectionChanged;
     }
 
     /// <inheritdoc />
@@ -1109,6 +1136,12 @@ public sealed class BindingExpression : BindingExpressionBase
         // Unsubscribe even for an unattached expression: the unresolved-source path
         // subscribes to DataContextChanged while IsActive is false.
         UnsubscribeFromSource();
+        if (_binding.TemplateSourceProperty is not null)
+        {
+            Target.ClearLayerValue(TargetProperty, DependencyObject.LayerValueSource.ParentTemplate);
+            if (Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_binding.TemplateSourceProperty, TargetProperty))
+                Styling.CssBorderRadiusProperties.ClearTemplate(Target);
+        }
     }
 
     /// <inheritdoc />
@@ -1257,7 +1290,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (ResolvedSource is not IDataErrorInfo dataErrorInfo || _binding.Path == null)
             return true;
 
-        var propertyName = _binding.Path.CachedPathSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
         var error = dataErrorInfo[propertyName];
 
         if (!string.IsNullOrEmpty(error))
@@ -1277,7 +1310,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (_notifyDataErrorInfo == null || _binding.Path == null)
             return;
 
-        var propertyName = _binding.Path.CachedPathSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
         var errors = _notifyDataErrorInfo.GetErrors(propertyName);
 
         if (errors != null)
@@ -1428,6 +1461,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
             if (!TrySetTargetValue(targetValue))
                 return;
+            TransferTemplateCssRadius();
 
             // Validate data errors for the target update
             if (_binding.ValidatesOnNotifyDataErrors && _notifyDataErrorInfo != null)
@@ -1639,7 +1673,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (ResolvedSource == null || _binding.Path == null)
             return;
 
-        var segments = _binding.Path.CachedPathSegments;
+        var segments = _binding.Path.CachedParsedSegments;
         if (segments.Length == 0)
             return;
 
@@ -1649,7 +1683,7 @@ public sealed class BindingExpression : BindingExpressionBase
         for (int i = 0; i < segments.Length - 1; i++)
         {
             if (current == null) return;
-            if (!PropertyAccessorRegistry.TryReadProperty(current, segments[i], out var next))
+            if (!PropertyPath.TryReadBindingSegment(current, segments[i], out var next))
                 return;
             current = next;
         }
@@ -1672,17 +1706,17 @@ public sealed class BindingExpression : BindingExpressionBase
         if (root == null)
             return _binding.FallbackValue;
 
-        if (_binding.Path == null || _binding.Path.CachedPathSegments.Length == 0)
+        if (_binding.Path == null || _binding.Path.CachedParsedSegments.Length == 0)
             return root;
 
         // Navigate the path
         object? current = root;
-        foreach (var segment in _binding.Path.CachedPathSegments)
+        foreach (var segment in _binding.Path.CachedParsedSegments)
         {
             if (current == null)
                 return _binding.FallbackValue;
 
-            if (!PropertyAccessorRegistry.TryReadProperty(current, segment, out var next))
+            if (!PropertyPath.TryReadBindingSegment(current, segment, out var next))
                 return _binding.FallbackValue;
 
             current = next;
@@ -1794,6 +1828,9 @@ public sealed class BindingExpression : BindingExpressionBase
             _sourceDependencyObject = depObj;
             _sourceDependencyObject.PropertyChangedInternal -= OnSourceDependencyPropertyChanged;
             _sourceDependencyObject.PropertyChangedInternal += OnSourceDependencyPropertyChanged;
+            _sourceDependencyObject.CssCornerRadiusPresentationChanged -= TransferTemplateCssRadius;
+            if (Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_binding.TemplateSourceProperty, TargetProperty))
+                _sourceDependencyObject.CssCornerRadiusPresentationChanged += TransferTemplateCssRadius;
         }
 
         // Also subscribe to DataContext changes. Non-visual dependency objects can
@@ -1845,6 +1882,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (_sourceDependencyObject != null)
         {
             _sourceDependencyObject.PropertyChangedInternal -= OnSourceDependencyPropertyChanged;
+            _sourceDependencyObject.CssCornerRadiusPresentationChanged -= TransferTemplateCssRadius;
             _sourceDependencyObject = null;
         }
 
@@ -1985,6 +2023,12 @@ public sealed class BindingExpression : BindingExpressionBase
             }
             _intermediateSubscriptions = null;
         }
+        if (_indexedCollectionSubscriptions != null)
+        {
+            foreach (var collection in _indexedCollectionSubscriptions)
+                CollectionChangedEventManager.RemoveHandler(collection, _indexedCollectionChangedHandler);
+            _indexedCollectionSubscriptions = null;
+        }
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
@@ -1994,36 +2038,56 @@ public sealed class BindingExpression : BindingExpressionBase
         UnsubscribeFromIntermediates();
 
         if (_binding.Path == null) return;
-        var segments = _binding.Path.CachedPathSegments;
-        if (segments.Length <= 1) return; // No intermediates for simple paths
+        var segments = _binding.Path.CachedParsedSegments;
+        if (segments.Length == 0) return;
 
         _intermediateSubscriptions = new();
+        _indexedCollectionSubscriptions = new();
 
         object? current = ResolvedSource == null ? null : EvaluateXPath(ResolvedSource);
         // Subscribe to intermediate objects (segments[0] through segments[Length-2]).
         // Segment 0's property changing on ResolvedSource is already handled by _sourceNotify,
         // but we still need to subscribe to the *value* of segment 0 (the intermediate object)
         // for changes to segment 1, and so on.
-        for (int i = 0; i < segments.Length - 1; i++)
+        for (int i = 0; i < segments.Length; i++)
         {
             if (current == null) break;
-            if (!PropertyAccessorRegistry.TryReadProperty(
-                    current,
-                    segments[i],
-                    out var intermediateObj))
+            if (PropertyPath.TryGetIndexedSegment(segments[i], out var propertyName, out _))
             {
-                break;
+                object? collection = current;
+                if (propertyName.Length > 0 && !PropertyAccessorRegistry.TryReadProperty(current, propertyName, out collection))
+                    break;
+                if (collection is INotifyCollectionChanged changed)
+                {
+                    CollectionChangedEventManager.AddHandler(changed, _indexedCollectionChangedHandler);
+                    _indexedCollectionSubscriptions.Add(changed);
+                }
+                else if (collection is INotifyPropertyChanged indexedNotify && !ReferenceEquals(indexedNotify, _sourceNotify))
+                {
+                    PropertyChangedEventManager.AddHandler(indexedNotify, _intermediatePcHandler, "");
+                    _intermediateSubscriptions.Add((indexedNotify, "Item[]"));
+                }
             }
+            if (i == segments.Length - 1 || !PropertyPath.TryReadBindingSegment(current, segments[i], out var intermediateObj))
+                break;
 
             if (intermediateObj is INotifyPropertyChanged inpc)
             {
                 // Subscribe to this intermediate object for property changes
                 // (e.g., for path A.B.C, subscribe to A's value for "B" changes)
                 PropertyChangedEventManager.AddHandler(inpc, _intermediatePcHandler, "");
-                _intermediateSubscriptions.Add((inpc, segments[i + 1]));
+                _intermediateSubscriptions.Add((inpc, PropertyPath.BindingPropertyName(segments[i + 1])));
             }
             current = intermediateObj;
         }
+    }
+
+    private void OnIndexedCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (_isUpdating || !IsActive) return;
+        ResolveSourceProperty();
+        SubscribeToIntermediates();
+        UpdateTarget();
     }
 
     private void OnIntermediatePropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -2058,7 +2122,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (_binding.Path == null)
             return;
 
-        var propertyName = _binding.Path.CachedPathSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
 
         // Check if the changed property matches our binding path
         if (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == propertyName)
@@ -2084,12 +2148,14 @@ public sealed class BindingExpression : BindingExpressionBase
 
         // Check if the changed property is in our path
         if (string.IsNullOrEmpty(e.PropertyName) ||
-            _binding.Path.CachedPathSegments.Length > 0 && _binding.Path.CachedPathSegments[0] == e.PropertyName)
+            _binding.Path.CachedParsedSegments.Length > 0
+                && PropertyPath.BindingPropertyName(_binding.Path.CachedParsedSegments[0]) == e.PropertyName)
         {
             // For nested paths (e.g., Address.City), when the top-level property changes
             // (e.g., Address), we need to re-resolve the entire property chain and
             // re-subscribe to the new intermediate objects
-            if (_binding.Path.CachedPathSegments.Length > 1)
+            if (_binding.Path.CachedParsedSegments.Length > 1
+                || PropertyPath.TryGetIndexedSegment(_binding.Path.CachedParsedSegments[0], out _, out _))
             {
                 ResolveSourceProperty();
                 SubscribeToIntermediates();
@@ -2105,16 +2171,27 @@ public sealed class BindingExpression : BindingExpressionBase
             return;
 
         // Check if the changed property matches our path
-        if (_binding.Path.CachedPathSegments.Length > 0 && _binding.Path.CachedPathSegments[0] == dp.Name)
+        if (_binding.Path.CachedParsedSegments.Length > 0
+            && PropertyPath.BindingPropertyName(_binding.Path.CachedParsedSegments[0]) == dp.Name)
         {
             // For nested paths, re-resolve the property chain and re-subscribe intermediates
-            if (_binding.Path.CachedPathSegments.Length > 1)
+            if (_binding.Path.CachedParsedSegments.Length > 1
+                || PropertyPath.TryGetIndexedSegment(_binding.Path.CachedParsedSegments[0], out _, out _))
             {
                 ResolveSourceProperty();
                 SubscribeToIntermediates();
             }
             UpdateTarget();
         }
+        else if (Styling.CssBorderRadiusProperties.IsTemplatePresentationInput(dp)) TransferTemplateCssRadius();
+    }
+
+    private void TransferTemplateCssRadius()
+    {
+        if (!IsActive || !Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_binding.TemplateSourceProperty, TargetProperty)) return;
+        if (_binding.Converter is null && string.IsNullOrEmpty(_binding.PendingConverterKey) && ResolvedSource is FrameworkElement source)
+            Styling.CssBorderRadiusProperties.TransferTemplate(source, Target);
+        else Styling.CssBorderRadiusProperties.ClearTemplate(Target);
     }
 
     private void OnTargetLostFocus(object? sender, RoutedEventArgs e)

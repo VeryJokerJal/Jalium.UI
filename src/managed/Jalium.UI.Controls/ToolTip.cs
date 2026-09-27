@@ -431,6 +431,31 @@ public static class ToolTipService
         e.Handled = true;
     }
 
+    private static void OnCurrentOwnerUnloaded(object? sender, RoutedEventArgs e)
+    {
+        if (sender is UIElement owner)
+        {
+            HideToolTip(owner);
+        }
+    }
+
+    private static void SubscribeToOwnerLifetime(UIElement owner)
+    {
+        if (owner is FrameworkElement element)
+        {
+            element.Unloaded -= OnCurrentOwnerUnloaded;
+            element.Unloaded += OnCurrentOwnerUnloaded;
+        }
+    }
+
+    private static void UnsubscribeFromOwnerLifetime(UIElement? owner)
+    {
+        if (owner is FrameworkElement element)
+        {
+            element.Unloaded -= OnCurrentOwnerUnloaded;
+        }
+    }
+
     #region Attached Properties
 
     /// <summary>Identifies the ToolTip attached dependency property.</summary>
@@ -607,7 +632,9 @@ public static class ToolTipService
     {
         if (_currentToolTip != null)
         {
+            UnsubscribeFromOwnerLifetime(_currentOwner);
             _currentToolTip.StopTimers();
+            _currentToolTip.IsOpen = false;
             _currentToolTip = null;
             _currentOwner = null;
         }
@@ -635,6 +662,7 @@ public static class ToolTipService
         HideToolTip(_currentOwner);
 
         _currentOwner = owner;
+        SubscribeToOwnerLifetime(owner);
 
         // Create or get the tooltip
         if (content is ToolTip existingToolTip)
@@ -691,6 +719,7 @@ public static class ToolTipService
 
             _currentToolTip.StopTimers();
             _currentToolTip.IsOpen = false;
+            UnsubscribeFromOwnerLifetime(owner);
             _currentToolTip = null;
             _currentOwner = null;
         }

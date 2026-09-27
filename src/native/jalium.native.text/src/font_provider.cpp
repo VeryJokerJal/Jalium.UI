@@ -1,5 +1,6 @@
 #include "font_provider.h"
 #include "font_face.h"
+#include "jalium_font_resource.h"
 
 #include <array>
 #include <cstring>
@@ -140,6 +141,8 @@ std::unique_ptr<FontFace> FontProvider::CreateFace(
     int32_t weight,
     int32_t style)
 {
+    if (auto bytes = AcquireRegisteredFontData(familyName))
+        return FontFace::Parse(std::move(bytes), 0);
     std::string path;
     int faceIndex = 0;
 

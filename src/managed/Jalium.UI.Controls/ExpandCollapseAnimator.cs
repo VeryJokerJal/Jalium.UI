@@ -254,13 +254,12 @@ internal static class ExpandCollapseAnimator
         return desired > 0.0 ? desired : panel.ActualHeight;
     }
 
-    private static RotateTransform EnsureRotateTransform(Shapes.Path arrow)
+    internal static RotateTransform EnsureRotateTransform(Shapes.Path arrow)
     {
-        // 绝对像素轴心：把旋转中心烘进 RotateTransform 的本地坐标，与渲染时的 RenderSize 解耦。
-        // 旧实现靠 RenderTransformOrigin(0.5,0.5)×RenderSize 在绘制那一刻现算轴心，
-        // 在 Stretch 缩放 / 首帧布局未稳定时会算偏，旋转后箭头偏移甚至漂出槽位
-        // （与 TreeView.SetExpanderAngle / ComboBox / NavigationViewItem 同策）。
-        // 每次调用都按最新 ActualWidth/Height 刷新中心；RenderTransformOrigin 保持默认 (0,0)。
+        // Initialization, animation and detached controls must use the same pivot.
+        // An explicit CenterX/CenterY compounds with RenderTransformOrigin: switching
+        // between the two conventions moves the arrow outside its clipped slot.
+        // The relative origin also follows the first arrange and subsequent resizes.
         var rt = arrow.RenderTransform as RotateTransform;
         if (rt == null)
         {
@@ -268,10 +267,9 @@ internal static class ExpandCollapseAnimator
             arrow.RenderTransform = rt;
         }
 
-        var w = arrow.ActualWidth > 0 ? arrow.ActualWidth : arrow.Width;
-        var h = arrow.ActualHeight > 0 ? arrow.ActualHeight : arrow.Height;
-        rt.CenterX = (double.IsNaN(w) || w <= 0) ? 4 : w / 2;
-        rt.CenterY = (double.IsNaN(h) || h <= 0) ? 4 : h / 2;
+        rt.CenterX = 0;
+        rt.CenterY = 0;
+        arrow.RenderTransformOrigin = new Point(0.5, 0.5);
         return rt;
     }
 

@@ -68,8 +68,8 @@ public class ChartLegend : Control
         if (items == null)
             return;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 12.0;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         var foreground = Foreground ?? s_defaultForeground;
 
         const double markerSize = 12;
@@ -92,20 +92,27 @@ public class ChartLegend : Control
             dc.DrawRectangle(legendItem.Brush, null, markerRect);
 
             // Draw the label text
-            var ft = new FormattedText(legendItem.Label, fontFamily, fontSize)
+            double textWidth = 0;
+            double textHeight = 0;
+            if (fontSize > 0)
             {
-                Foreground = foreground
-            };
-            TextMeasurement.MeasureText(ft);
-            dc.DrawText(ft, new Point(offsetX + markerSize + markerTextGap, offsetY));
+                var ft = new FormattedText(legendItem.Label, fontFamily, fontSize)
+                {
+                    Foreground = foreground
+                };
+                TextMeasurement.MeasureText(ft);
+                dc.DrawText(ft, new Point(offsetX + markerSize + markerTextGap, offsetY));
+                textWidth = ft.Width;
+                textHeight = ft.Height;
+            }
 
             if (Orientation == Orientation.Horizontal)
             {
-                offsetX += markerSize + markerTextGap + ft.Width + itemSpacing;
+                offsetX += markerSize + markerTextGap + textWidth + itemSpacing;
             }
             else
             {
-                offsetY += Math.Max(markerSize, ft.Height) + itemSpacing / 2.0;
+                offsetY += Math.Max(markerSize, textHeight) + itemSpacing / 2.0;
             }
         }
     }
@@ -117,8 +124,8 @@ public class ChartLegend : Control
         if (items == null)
             return new Size(0, 0);
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 12.0;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         const double markerSize = 12;
         const double markerTextGap = 4;
@@ -134,11 +141,18 @@ public class ChartLegend : Control
             if (item is not ChartLegendItem legendItem || !legendItem.IsVisible)
                 continue;
 
-            var ft = new FormattedText(legendItem.Label, fontFamily, fontSize);
-            TextMeasurement.MeasureText(ft);
+            double textWidth = 0;
+            double textHeight = 0;
+            if (fontSize > 0)
+            {
+                var ft = new FormattedText(legendItem.Label, fontFamily, fontSize);
+                TextMeasurement.MeasureText(ft);
+                textWidth = ft.Width;
+                textHeight = ft.Height;
+            }
 
-            var itemWidth = markerSize + markerTextGap + ft.Width + itemSpacing;
-            var itemHeight = Math.Max(markerSize, ft.Height);
+            var itemWidth = markerSize + markerTextGap + textWidth + itemSpacing;
+            var itemHeight = Math.Max(markerSize, textHeight);
 
             if (Orientation == Orientation.Horizontal)
             {

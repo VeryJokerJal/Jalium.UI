@@ -22,12 +22,19 @@ public:
     WaylandShmPresenter(const WaylandShmPresenter&) = delete;
     WaylandShmPresenter& operator=(const WaylandShmPresenter&) = delete;
 
-    /// Copies one BGRA8 frame and commits it. Returns false when every buffer
-    /// is still owned by the compositor or when the Wayland connection fails.
+    /// Synchronizes the damaged 64x64 tiles of one BGRA8 frame and commits it.
+    /// Per-buffer tile versions keep rotating wl_shm buffers coherent without
+    /// copying the entire surface after every partial redraw. Returns false
+    /// when every buffer is still owned by the compositor or when the Wayland
+    /// connection fails.
     bool Present(const uint8_t* bgraPixels,
                  int32_t width,
                  int32_t height,
-                 int32_t sourceStride);
+                 int32_t sourceStride,
+                 int32_t left,
+                 int32_t top,
+                 int32_t right,
+                 int32_t bottom);
 
 private:
     struct Impl;

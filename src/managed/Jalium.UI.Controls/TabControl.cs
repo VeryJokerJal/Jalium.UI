@@ -4,6 +4,7 @@ using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -36,6 +37,7 @@ public class TabControl : Selector
     private static readonly SolidColorBrush s_tabStripBorderBrush = new(ThemeColors.TabStripBorder);
     private Pen? _borderPenCached;
     private Brush? _borderPenBrush;
+    private Border? _cssBorderPainter;
     private bool _isSynchronizingContainerSelection;
     private readonly HashSet<TabItem> _directTabItems = new();
 
@@ -760,15 +762,20 @@ public class TabControl : Selector
             RefreshItems();
         }
 
+        // The border and padding occupy the outer box; children use the content box.
+        var contentInsets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var innerAvailable = CssBoxMetrics.InnerSize(availableSize, contentInsets);
+
         // Calculate tab strip dimensions
-        double tabStripWidth = availableSize.Width;
+        double tabStripWidth = innerAvailable.Width;
         double tabStripHeight = TabStripHeight;
         double verticalTabStripWidth = 120;
 
         if (TabStripPlacement == Dock.Left || TabStripPlacement == Dock.Right)
         {
             tabStripWidth = verticalTabStripWidth;
-            tabStripHeight = availableSize.Height;
+            tabStripHeight = innerAvailable.Height;
         }
 
         // Measure ItemsHost (contains tab headers)
@@ -797,17 +804,17 @@ public class TabControl : Selector
         }
 
         // Calculate content area dimensions
-        double contentWidth = availableSize.Width;
-        double contentHeight = double.IsPositiveInfinity(availableSize.Height)
+        double contentWidth = innerAvailable.Width;
+        double contentHeight = double.IsPositiveInfinity(innerAvailable.Height)
             ? double.PositiveInfinity
-            : Math.Max(0, availableSize.Height - TabStripHeight);
+            : Math.Max(0, innerAvailable.Height - TabStripHeight);
 
         if (TabStripPlacement == Dock.Left || TabStripPlacement == Dock.Right)
         {
-            contentWidth = double.IsPositiveInfinity(availableSize.Width)
+            contentWidth = double.IsPositiveInfinity(innerAvailable.Width)
                 ? double.PositiveInfinity
-                : Math.Max(0, availableSize.Width - verticalTabStripWidth);
-            contentHeight = availableSize.Height;
+                : Math.Max(0, innerAvailable.Width - verticalTabStripWidth);
+            contentHeight = innerAvailable.Height;
         }
 
         // Measure content
@@ -821,32 +828,7 @@ public class TabControl : Selector
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        double tabStripHeight = ControlRenderGeometry.GetAvailableLength(TabStripHeight, finalSize.Height);
-        double verticalTabStripWidth = ControlRenderGeometry.GetAvailableLength(120, finalSize.Width);
-
-        // Calculate tab strip rect
-        Rect tabStripRect;
-        Rect contentRect;
-
-        switch (TabStripPlacement)
-        {
-            case Dock.Bottom:
-                tabStripRect = new Rect(0, finalSize.Height - tabStripHeight, finalSize.Width, tabStripHeight);
-                contentRect = new Rect(0, 0, finalSize.Width, finalSize.Height - tabStripHeight);
-                break;
-            case Dock.Left:
-                tabStripRect = new Rect(0, 0, verticalTabStripWidth, finalSize.Height);
-                contentRect = new Rect(verticalTabStripWidth, 0, finalSize.Width - verticalTabStripWidth, finalSize.Height);
-                break;
-            case Dock.Right:
-                tabStripRect = new Rect(finalSize.Width - verticalTabStripWidth, 0, verticalTabStripWidth, finalSize.Height);
-                contentRect = new Rect(0, 0, finalSize.Width - verticalTabStripWidth, finalSize.Height);
-                break;
-            default: // Top
-                tabStripRect = new Rect(0, 0, finalSize.Width, tabStripHeight);
-                contentRect = new Rect(0, tabStripHeight, finalSize.Width, finalSize.Height - tabStripHeight);
-                break;
-        }
+        GetTabLayoutRects(GetInnerLayoutRect(finalSize), out var tabStripRect, out var contentRect);
 
         // Arrange ItemsHost (the panel containing tab headers)
         // StackPanel will automatically arrange its children (TabItems) based on orientation
@@ -864,6 +846,40 @@ public class TabControl : Selector
         }
 
         return finalSize;
+    }
+
+    private Rect GetInnerLayoutRect(Size outerSize)
+    {
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? outerSize.Width);
+        var innerSize = CssBoxMetrics.InnerSize(outerSize, insets);
+        return new Rect(insets.Left, insets.Top, innerSize.Width, innerSize.Height);
+    }
+
+    private void GetTabLayoutRects(Rect inner, out Rect tabStripRect, out Rect contentRect)
+    {
+        var stripHeight = ControlRenderGeometry.GetAvailableLength(TabStripHeight, inner.Height);
+        var stripWidth = ControlRenderGeometry.GetAvailableLength(120, inner.Width);
+
+        switch (TabStripPlacement)
+        {
+            case Dock.Bottom:
+                tabStripRect = new Rect(inner.Left, inner.Bottom - stripHeight, inner.Width, stripHeight);
+                contentRect = new Rect(inner.Left, inner.Top, inner.Width, inner.Height - stripHeight);
+                break;
+            case Dock.Left:
+                tabStripRect = new Rect(inner.Left, inner.Top, stripWidth, inner.Height);
+                contentRect = new Rect(inner.Left + stripWidth, inner.Top, inner.Width - stripWidth, inner.Height);
+                break;
+            case Dock.Right:
+                tabStripRect = new Rect(inner.Right - stripWidth, inner.Top, stripWidth, inner.Height);
+                contentRect = new Rect(inner.Left, inner.Top, inner.Width - stripWidth, inner.Height);
+                break;
+            default: // Top
+                tabStripRect = new Rect(inner.Left, inner.Top, inner.Width, stripHeight);
+                contentRect = new Rect(inner.Left, inner.Top + stripHeight, inner.Width, inner.Height - stripHeight);
+                break;
+        }
     }
 
     #region Visual Children
@@ -907,36 +923,21 @@ public class TabControl : Selector
     {
         var dc = drawingContextObj;
 
-        var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-        double tabStripSize = ControlRenderGeometry.GetAvailableLength(TabStripHeight, bounds.Height);
-        double verticalTabStripWidth = ControlRenderGeometry.GetAvailableLength(120, bounds.Width);
+        var bounds = new Rect(RenderSize);
+        var inner = GetInnerLayoutRect(RenderSize);
+        GetTabLayoutRects(inner, out var tabStripRect, out _);
 
         // Draw background (content area)
         if (Background != null)
         {
-            dc.DrawRectangle(Background, null, bounds);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                    bounds, default, BorderThickness, Padding,
+                    brush => dc.DrawRectangle(brush, null, bounds)))
+                dc.DrawRectangle(Background, null, bounds);
         }
 
         // Draw tab strip background
         var tabStripBrush = ResolveTabStripBackground();
-        Rect tabStripRect;
-
-        switch (TabStripPlacement)
-        {
-            case Dock.Bottom:
-                tabStripRect = new Rect(0, ActualHeight - tabStripSize, ActualWidth, tabStripSize);
-                break;
-            case Dock.Left:
-                tabStripRect = new Rect(0, 0, verticalTabStripWidth, ActualHeight);
-                break;
-            case Dock.Right:
-                tabStripRect = new Rect(ActualWidth - verticalTabStripWidth, 0, verticalTabStripWidth, ActualHeight);
-                break;
-            default: // Top
-                tabStripRect = new Rect(0, 0, ActualWidth, tabStripSize);
-                break;
-        }
-
         dc.DrawRectangle(tabStripBrush, null, tabStripRect);
 
         // Draw border line
@@ -950,20 +951,27 @@ public class TabControl : Selector
         switch (TabStripPlacement)
         {
             case Dock.Bottom:
-                dc.DrawLine(borderPen, new Point(0, ActualHeight - tabStripSize), new Point(ActualWidth, ActualHeight - tabStripSize));
+                dc.DrawLine(borderPen, new Point(inner.Left, tabStripRect.Top), new Point(inner.Right, tabStripRect.Top));
                 break;
             case Dock.Left:
-                dc.DrawLine(borderPen, new Point(verticalTabStripWidth, 0), new Point(verticalTabStripWidth, ActualHeight));
+                dc.DrawLine(borderPen, new Point(tabStripRect.Right, inner.Top), new Point(tabStripRect.Right, inner.Bottom));
                 break;
             case Dock.Right:
-                dc.DrawLine(borderPen, new Point(ActualWidth - verticalTabStripWidth, 0), new Point(ActualWidth - verticalTabStripWidth, ActualHeight));
+                dc.DrawLine(borderPen, new Point(tabStripRect.Left, inner.Top), new Point(tabStripRect.Left, inner.Bottom));
                 break;
             default: // Top
-                dc.DrawLine(borderPen, new Point(0, tabStripSize), new Point(ActualWidth, tabStripSize));
+                dc.DrawLine(borderPen, new Point(inner.Left, tabStripRect.Bottom), new Point(inner.Right, tabStripRect.Bottom));
                 break;
         }
 
         base.OnRender(drawingContextObj);
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     private Brush ResolveTabStripBackground()
@@ -1243,7 +1251,7 @@ public class TabItem : HeaderedContentControl
     {
         // Measure based on header content
         var headerText = Header?.ToString() ?? "";
-        var charWidth = 14 * 0.6;
+        var charWidth = FontSize * 0.6;
         var textWidth = headerText.Length * charWidth;
 
         // Calculate desired width based on text
@@ -1296,7 +1304,7 @@ public class TabItem : HeaderedContentControl
 
         // Draw header text
         var headerText = Header?.ToString() ?? "";
-        if (!string.IsNullOrEmpty(headerText))
+        if (!string.IsNullOrEmpty(headerText) && FontSize > 0)
         {
             // Determine text color based on state
             Brush textBrush;
@@ -1309,8 +1317,8 @@ public class TabItem : HeaderedContentControl
                 textBrush = ResolveSecondaryTextBrush();
             }
 
-            var fontSize = FontSize > 0 ? FontSize : 13;
-            var fontFamily = !string.IsNullOrEmpty(FontFamily?.Source) ? FontFamily.Source : FrameworkElement.DefaultFontFamilyName;
+            var fontSize = FontSize;
+            var fontFamily = !string.IsNullOrEmpty(FontFamily?.GetRenderingSource(this)) ? FontFamily.GetRenderingSource(this) : FrameworkElement.DefaultFontFamilyName;
 
             var text = new FormattedText(headerText, fontFamily, fontSize)
             {

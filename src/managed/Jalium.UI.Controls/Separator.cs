@@ -1,4 +1,5 @@
 ﻿using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -104,12 +105,19 @@ public class Separator : Control
     #region Template Parts
 
     private Border? _separatorBorder;
+    private Border? _cssBorderPainter;
 
     /// <inheritdoc />
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
         _separatorBorder = GetTemplateChild("SeparatorBorder") as Border;
+    }
+
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+        _separatorBorder = null;
     }
 
     #endregion
@@ -120,17 +128,24 @@ public class Separator : Control
     protected override Size MeasureOverride(Size availableSize)
     {
         var thickness = StrokeThickness;
-        var margin = Margin;
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
 
         if (Orientation == Orientation.Horizontal)
         {
             // Horizontal separator: zero desired width (stretches to fill), minimal height
-            return new Size(0, thickness);
+            return new Size(
+                ControlRenderGeometry.GetAvailableLength(insets.Left + insets.Right, availableSize.Width),
+                ControlRenderGeometry.GetAvailableLength(
+                    thickness + insets.Top + insets.Bottom, availableSize.Height));
         }
         else
         {
             // Vertical separator: minimal width, zero desired height (stretches to fill)
-            return new Size(thickness, 0);
+            return new Size(
+                ControlRenderGeometry.GetAvailableLength(
+                    thickness + insets.Left + insets.Right, availableSize.Width),
+                ControlRenderGeometry.GetAvailableLength(insets.Top + insets.Bottom, availableSize.Height));
         }
     }
 
@@ -149,22 +164,81 @@ public class Separator : Control
 
         var dc = drawingContext;
 
-        var brush = StrokeBrush ?? BorderBrush ?? s_defaultStrokeBrush;
+        if (RenderSize.Width <= 0 || RenderSize.Height <= 0)
+            return;
+
+        var rect = new Rect(RenderSize);
+        if (Background is { } background)
+        {
+            var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            if (cssRadius is null && backgroundLayer is not
+                    (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                dc.DrawRoundedRectangle(background, null, rect, CornerRadius);
+            else
+            {
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(rect, radii);
+                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
+                        rect, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
+        }
+
+        var content = ControlRenderGeometry.GetContentRect(rect,
+            CssBoxMetrics.ContentInsets(this,
+                CssLayout?.ContainingWidthCache ?? RenderSize.Width));
+        if (content.Width <= 0 || content.Height <= 0)
+            return;
+
+        var brush = ResolveStrokeBrush();
         var thickness = StrokeThickness;
         var pen = new Pen(brush, thickness);
 
         if (Orientation == Orientation.Horizontal)
         {
             // Draw horizontal line
-            var y = RenderSize.Height / 2;
-            dc.DrawLine(pen, new Point(0, y), new Point(RenderSize.Width, y));
+            var y = content.Y + content.Height / 2;
+            dc.DrawLine(pen, new Point(content.X, y), new Point(content.Right, y));
         }
         else
         {
             // Draw vertical line
-            var x = RenderSize.Width / 2;
-            dc.DrawLine(pen, new Point(x, 0), new Point(x, RenderSize.Height));
+            var x = content.X + content.Width / 2;
+            dc.DrawLine(pen, new Point(x, content.Y), new Point(x, content.Bottom));
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (_separatorBorder is null)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
+    }
+
+    private Brush ResolveStrokeBrush()
+    {
+        if (HasLocalOrAnimatedValue(StrokeBrushProperty) && StrokeBrush is { } localStroke)
+            return localStroke;
+        if (Foreground is { } authoredForeground &&
+            (HasLocalOrAnimatedValue(ForegroundProperty) ||
+             GetEffectiveValueLayer(ForegroundProperty) is
+                 (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState)))
+            return authoredForeground;
+        if (StrokeBrush is { } stroke)
+            return stroke;
+        if (BorderBrush is { } border)
+            return border;
+        if (Foreground is { } foreground &&
+            DependencyPropertyHelper.GetValueSource(this, ForegroundProperty).BaseValueSource ==
+                BaseValueSource.Inherited)
+            return foreground;
+        return s_defaultStrokeBrush;
     }
 
     #endregion

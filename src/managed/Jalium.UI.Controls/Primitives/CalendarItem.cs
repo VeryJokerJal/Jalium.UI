@@ -239,7 +239,7 @@ public class CalendarItem : Control
 
         for (var i = 0; i < DaysPerWeek; i++)
         {
-            var formattedText = new FormattedText(dayNames[i], FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, 12)
+            var formattedText = new FormattedText(dayNames[i], FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, 12)
             {
                 Foreground = fgBrush
             };

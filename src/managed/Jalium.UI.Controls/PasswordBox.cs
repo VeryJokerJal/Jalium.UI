@@ -5,6 +5,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 using Jalium.UI.Threading;
 using WpfClipboard = global::Jalium.UI.Clipboard;
 
@@ -14,9 +15,10 @@ namespace Jalium.UI.Controls;
 /// A control for entering passwords with masked display.
 /// Inherits from Control for security reasons - passwords should not be exposed via data binding.
 /// </summary>
-public sealed class PasswordBox : Control, IImeSupport
+public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
 {
     private InputMethodWeakSubscription<PasswordBox>? _imeSubscription;
+    private Border? _cssBorderPainter;
     #region Automation
 
     /// <inheritdoc />
@@ -668,6 +670,8 @@ public sealed class PasswordBox : Control, IImeSupport
         }
 
         InvalidateVisual();
+        if (CssEngine.IsActive)
+            CssSelectorDependencies.NativeValueChanged(this, nameof(Password));
     }
 
     /// <summary>
@@ -695,6 +699,8 @@ public sealed class PasswordBox : Control, IImeSupport
         }
 
         InvalidateVisual();
+        if (CssEngine.IsActive)
+            CssSelectorDependencies.NativeValueChanged(this, nameof(Password));
     }
 
     #endregion
@@ -737,12 +743,18 @@ public sealed class PasswordBox : Control, IImeSupport
         var strokeThickness = border.Left;
         var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, strokeThickness);
         var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
-        if (Background != null)
+        if (Background is { } background)
         {
-            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize);
+            var shape = new CssRoundedRectangleGeometry(bounds, radii);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
+                    bounds, radii, border, padding,
+                    brush => dc.DrawGeometry(brush, null, shape)))
+                dc.DrawRoundedRectangle(background, null, borderRect, borderRadius);
         }
 
-        if (BorderBrush != null && strokeThickness > 0)
+        if (CssBorderPaintProperties.Get(this) is null && BorderBrush != null && strokeThickness > 0)
         {
             var borderPen = new Pen(BorderBrush, strokeThickness);
             dc.DrawRoundedRectangle(null, borderPen, borderRect, borderRadius);
@@ -754,6 +766,11 @@ public sealed class PasswordBox : Control, IImeSupport
             Math.Round(border.Top + padding.Top),
             Math.Max(0, Math.Round(bounds.Width - border.Left - border.Right - padding.Left - padding.Right)),
             Math.Max(0, Math.Round(bounds.Height - border.Top - border.Bottom - padding.Top - padding.Bottom)));
+        var alignedContentRect = new Rect(
+            contentRect.X,
+            contentRect.Y + GetVerticalContentOffset(contentRect.Height, lineHeight),
+            contentRect.Width,
+            contentRect.Height);
 
         // Clip to content area
         dc.PushClip(new RectangleGeometry(contentRect));
@@ -761,40 +778,40 @@ public sealed class PasswordBox : Control, IImeSupport
         // Draw selection background
         if (_selectionLength > 0 && (IsKeyboardFocused || IsInactiveSelectionHighlightEnabled))
         {
-            DrawSelection(dc, contentRect, lineHeight);
+            DrawSelection(dc, alignedContentRect, lineHeight);
         }
 
         // Draw text or placeholder
         if (string.IsNullOrEmpty(_password))
         {
-            if (!string.IsNullOrEmpty(PlaceholderText))
+            if (FontSize > 0 && !string.IsNullOrEmpty(PlaceholderText))
             {
                 var placeholderBrush = ResolvePlaceholderBrush();
-                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = placeholderBrush,
                     MaxTextWidth = contentRect.Width,
                     MaxTextHeight = contentRect.Height,
                     Trimming = TextTrimming
                 };
-                dc.DrawText(formattedPlaceholder, new Point(contentRect.X - Math.Round(_horizontalOffset), contentRect.Y));
+                dc.DrawText(formattedPlaceholder, new Point(alignedContentRect.X - Math.Round(_horizontalOffset), alignedContentRect.Y));
             }
         }
         else
         {
-            DrawText(dc, contentRect, lineHeight);
+            if (FontSize > 0) DrawText(dc, alignedContentRect, lineHeight);
         }
 
         // Draw IME composition string
-        if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
+        if (FontSize > 0 && _isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
         {
-            DrawImeComposition(dc, contentRect, lineHeight);
+            DrawImeComposition(dc, alignedContentRect, lineHeight);
         }
 
         // Draw caret
         if (IsFocused && !IsReadOnly)
         {
-            DrawCaret(dc, contentRect, lineHeight);
+            DrawCaret(dc, alignedContentRect, lineHeight);
         }
 
         dc.Pop(); // Pop clip
@@ -806,6 +823,13 @@ public sealed class PasswordBox : Control, IImeSupport
         {
             DrawRevealButton(dc, bounds);
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     private Brush ResolveFocusedBorderBrush()
@@ -835,7 +859,7 @@ public sealed class PasswordBox : Control, IImeSupport
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
 
         var displayText = IsPasswordRevealed ? _password : new string(PasswordChar, _password.Length);
-        var formattedText = new FormattedText(displayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var formattedText = new FormattedText(displayText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = textBrush,
             MaxTextWidth = Math.Max(0, contentRect.Width + roundedHorizontalOffset),
@@ -860,7 +884,7 @@ public sealed class PasswordBox : Control, IImeSupport
                 var selected = displayText.Substring(start, length);
                 var selectedText = new FormattedText(
                     selected,
-                    FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName,
+                    FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
                     FontSize)
                 {
                     Foreground = SelectionTextBrush,
@@ -915,7 +939,7 @@ public sealed class PasswordBox : Control, IImeSupport
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
 
         // Draw composition text
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -931,8 +955,9 @@ public sealed class PasswordBox : Control, IImeSupport
     private void DrawCaret(DrawingContext dc, Rect contentRect, double lineHeight)
     {
         var caretOpacity = UpdateCaretAnimation();
+        var caretBrush = ResolveCaretBrush();
 
-        if (CaretBrush == null || _isImeComposing || caretOpacity < 0.01)
+        if (caretBrush == null || _isImeComposing || caretOpacity < 0.01)
             return;
 
         var columnIndex = Math.Min(_caretIndex, _password.Length);
@@ -944,7 +969,7 @@ public sealed class PasswordBox : Control, IImeSupport
 
         // Create brush with animated opacity
         Brush caretBrushWithOpacity;
-        if (CaretBrush is SolidColorBrush solidBrush)
+        if (caretBrush is SolidColorBrush solidBrush)
         {
             var color = solidBrush.Color;
             var alpha = (byte)(color.A * caretOpacity);
@@ -952,7 +977,21 @@ public sealed class PasswordBox : Control, IImeSupport
         }
         else
         {
-            caretBrushWithOpacity = CaretBrush;
+            caretBrushWithOpacity = caretBrush;
+        }
+
+        var caretShape = CssCaretShapeProperties.Get(this);
+        if (caretShape != CssCaretShape.Auto)
+        {
+            var displayText = GetDisplayText();
+            // The hidden display has one mask glyph per UTF-16 unit; use the
+            // source text to find the next whole grapheme, then measure its mask.
+            var advance = CssCaretPainter.NextAdvance(_password, columnIndex,
+                index => MeasureDisplayTextWidth(displayText.Substring(0, index)),
+                MeasureDisplayTextWidth("0"));
+            _lastRenderedCaretRect = CssCaretPainter.Draw(dc, caretBrushWithOpacity,
+                caretShape, x, y, lineHeight, advance, 1.5);
+            return;
         }
 
         var caretPen = new Pen(caretBrushWithOpacity, 1.5);
@@ -963,6 +1002,10 @@ public sealed class PasswordBox : Control, IImeSupport
         // their entire visual dirty every 530ms.
         _lastRenderedCaretRect = new Rect(x - 2, y - 1, 5, lineHeight + 2);
     }
+
+    internal Brush? ResolveCaretBrush() => HasLocalValue(CaretBrushProperty)
+        ? CaretBrush
+        : CssCaretColorProperties.Get(this) ?? CaretBrush;
 
     private void DrawRevealButton(DrawingContext dc, Rect bounds)
     {
@@ -1108,10 +1151,21 @@ public sealed class PasswordBox : Control, IImeSupport
 
     private double GetLineHeight()
     {
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
+    }
+
+    private double GetVerticalContentOffset(double contentHeight, double lineHeight)
+    {
+        var slack = Math.Max(0, contentHeight - lineHeight);
+        return VerticalContentAlignment switch
+        {
+            VerticalAlignment.Center => Math.Floor(slack / 2),
+            VerticalAlignment.Bottom => Math.Floor(slack),
+            _ => 0,
+        };
     }
 
     private string GetDisplayText()
@@ -1124,8 +1178,8 @@ public sealed class PasswordBox : Control, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         // Check if font settings changed, invalidate cache if so
         if (_cachedFontFamily != fontFamily || _cachedFontSize != fontSize)
@@ -1217,6 +1271,13 @@ public sealed class PasswordBox : Control, IImeSupport
 
     private double UpdateCaretAnimation()
     {
+        if (CssCaretAnimationProperties.IsManual(this))
+        {
+            _caretOpacity = 1.0;
+            _caretVisible = true;
+            return 1.0;
+        }
+
         var now = DateTime.Now;
         var elapsed = (now - _lastCaretBlink).TotalMilliseconds;
 
@@ -1296,6 +1357,8 @@ public sealed class PasswordBox : Control, IImeSupport
     {
         var e = new RoutedEventArgs(PasswordChangedEvent, this);
         RaiseEvent(e);
+        if (CssEngine.IsActive)
+            CssSelectorDependencies.NativeValueChanged(this, nameof(Password));
         InvalidateVisual();
         NotifyLinuxImeContextChanged();
     }
@@ -1536,7 +1599,7 @@ public sealed class PasswordBox : Control, IImeSupport
 
     private void StartCaretTimer()
     {
-        if (IsReadOnly)
+        if (IsReadOnly || CssCaretAnimationProperties.IsManual(this))
             return;
 
         if (_caretTimer == null)
@@ -1556,7 +1619,7 @@ public sealed class PasswordBox : Control, IImeSupport
 
     private void OnCaretTimerTick(object? sender, EventArgs e)
     {
-        if (!IsKeyboardFocused || IsReadOnly)
+        if (!IsKeyboardFocused || IsReadOnly || CssCaretAnimationProperties.IsManual(this))
         {
             StopCaretTimer();
             return;
@@ -1571,6 +1634,23 @@ public sealed class PasswordBox : Control, IImeSupport
             InvalidateVisual();
         }
         ScheduleNextCaretTick(DateTime.Now);
+    }
+
+    void ICssCaretAnimationHost.OnCssCaretAnimationChanged()
+    {
+        if (CssCaretAnimationProperties.IsManual(this))
+        {
+            StopCaretTimer();
+            _caretVisible = true;
+            _caretOpacity = 1.0;
+        }
+        else
+        {
+            ResetCaretBlink();
+            if (IsKeyboardFocused) StartCaretTimer();
+        }
+
+        InvalidateVisual();
     }
 
     /// <summary>
@@ -1885,9 +1965,12 @@ public sealed class PasswordBox : Control, IImeSupport
         var lineHeight = Math.Round(GetLineHeight());
         var displayText = GetDisplayText();
         var textBeforeCaret = displayText.Substring(0, Math.Min(_caretIndex, displayText.Length));
+        var border = BorderThickness;
+        var padding = Padding;
+        var contentHeight = Math.Max(0, RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom);
 
-        double x = Padding.Left - _horizontalOffset + MeasureDisplayTextWidth(textBeforeCaret);
-        double y = Padding.Top;
+        double x = padding.Left - _horizontalOffset + MeasureDisplayTextWidth(textBeforeCaret);
+        double y = padding.Top + GetVerticalContentOffset(contentHeight, lineHeight);
 
         return new Point(x, y + lineHeight);
     }

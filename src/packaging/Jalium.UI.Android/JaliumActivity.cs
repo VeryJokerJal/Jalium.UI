@@ -28,6 +28,7 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback, IAndroi
     private JaliumTextInputView? _inputView;
     private InputMethodManager? _inputMethodManager;
     private JaliumKeyboardObserver? _keyboardObserver;
+    private JaliumInputDeviceObserver? _inputDeviceObserver;
     private (TextInputContentType, bool, TextInputReturnKeyType, bool, bool, bool) _lastImeShape;
     private bool _hasImeShape;
 
@@ -97,6 +98,7 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback, IAndroi
         // content and keep the focused editor visible.
         _keyboardObserver = new JaliumKeyboardObserver(this, contentRoot);
         _keyboardObserver.Attach();
+        _inputDeviceObserver = new JaliumInputDeviceObserver(this, _activityGeneration);
     }
 
     public void SurfaceCreated(ISurfaceHolder holder)
@@ -532,6 +534,7 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback, IAndroi
 
     protected override void OnPause()
     {
+        _inputDeviceObserver?.Detach();
         base.OnPause();
         AndroidActivityBridge.OnPause(_activityGeneration);
     }
@@ -539,11 +542,14 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback, IAndroi
     protected override void OnResume()
     {
         base.OnResume();
+        _inputDeviceObserver?.Attach();
         AndroidActivityBridge.OnResume(_activityGeneration);
     }
 
     protected override void OnDestroy()
     {
+        _inputDeviceObserver?.Detach();
+        _inputDeviceObserver = null;
         // Configuration replacement keeps the process-level Jalium application
         // alive.  A late destroy from the old Activity generation must not shut
         // down a newer Activity or detach its Surface.

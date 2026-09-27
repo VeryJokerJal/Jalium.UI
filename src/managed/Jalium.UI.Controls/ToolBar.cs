@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
+using Jalium.UI.Styling;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -9,6 +11,8 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ToolBar : HeaderedItemsControl
 {
+    private Border? _cssBorderPainter;
+
     private static readonly ResourceKey s_buttonStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(ButtonStyleKey));
     private static readonly ResourceKey s_checkBoxStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(CheckBoxStyleKey));
     private static readonly ResourceKey s_comboBoxStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(ComboBoxStyleKey));
@@ -273,17 +277,22 @@ public class ToolBar : HeaderedItemsControl
             RefreshItems();
         }
 
-        UpdateOverflowStateFromCurrentHost(availableSize);
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var contentAvailable = CssBoxMetrics.InnerSize(availableSize, insets);
+        UpdateOverflowStateFromCurrentHost(contentAvailable);
         if (ItemsHost is not Panel mainPanel)
         {
-            return default;
+            return new Size(insets.Left + insets.Right, insets.Top + insets.Bottom);
         }
 
-        mainPanel.Measure(availableSize);
+        mainPanel.Measure(contentAvailable);
         _overflowPanel.Measure(new Size(
-            double.IsFinite(availableSize.Width) ? Math.Max(availableSize.Width, 0) : 200,
+            double.IsFinite(contentAvailable.Width) ? Math.Max(contentAvailable.Width, 0) : 200,
             double.PositiveInfinity));
-        return mainPanel.DesiredSize;
+        return new Size(
+            mainPanel.DesiredSize.Width + insets.Left + insets.Right,
+            mainPanel.DesiredSize.Height + insets.Top + insets.Bottom);
     }
 
     /// <inheritdoc />
@@ -296,14 +305,17 @@ public class ToolBar : HeaderedItemsControl
             return result;
         }
 
-        ItemsHost?.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
+        var content = ControlRenderGeometry.GetContentRect(new Rect(finalSize),
+            CssBoxMetrics.ContentInsets(this,
+                CssLayout?.ContainingWidthCache ?? finalSize.Width));
+        ItemsHost?.Arrange(content);
         UpdateOverflowPanelVisibility();
         if (_overflowPanel.Visibility == Visibility.Visible)
         {
             var overflowSize = _overflowPanel.DesiredSize;
             var origin = Orientation == Orientation.Horizontal
-                ? new Point(0, finalSize.Height)
-                : new Point(finalSize.Width, 0);
+                ? new Point(content.X, finalSize.Height)
+                : new Point(finalSize.Width, content.Y);
             _overflowPanel.Arrange(new Rect(origin.X, origin.Y, overflowSize.Width, overflowSize.Height));
         }
         else
@@ -312,6 +324,43 @@ public class ToolBar : HeaderedItemsControl
         }
 
         return finalSize;
+    }
+
+    /// <inheritdoc />
+    protected override void OnRender(DrawingContext drawingContext)
+    {
+        base.OnRender(drawingContext);
+        if (Template != null || Background is not { } background ||
+            RenderSize.Width <= 0 || RenderSize.Height <= 0)
+            return;
+
+        var rect = new Rect(RenderSize);
+        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+        var cssRadius = CssBorderRadiusProperties.Get(this);
+        if (cssRadius is null && backgroundLayer is not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+        {
+            drawingContext.DrawRoundedRectangle(background, null, rect, CornerRadius);
+            return;
+        }
+
+        var radii = cssRadius?.Resolve(RenderSize) ??
+            CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+        var shape = new CssRoundedRectangleGeometry(rect, radii);
+        var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+            CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+        if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background,
+                drawingContext, rect, radii, border, padding,
+                brush => drawingContext.DrawGeometry(brush, null, shape)))
+            drawingContext.DrawGeometry(background, null, shape);
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (Template is null)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     /// <inheritdoc />
@@ -370,33 +419,47 @@ public class ToolBar : HeaderedItemsControl
             _containerOrder.Add(child);
         }
 
+        var panelInsets = CssBoxMetrics.ContentInsets(mainPanel,
+            mainPanel.CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var itemAvailable = CssBoxMetrics.InnerSize(availableSize, panelInsets);
         var isHorizontal = Orientation == Orientation.Horizontal;
         var childConstraint = isHorizontal
-            ? new Size(double.PositiveInfinity, availableSize.Height)
-            : new Size(availableSize.Width, double.PositiveInfinity);
+            ? new Size(double.PositiveInfinity, itemAvailable.Height)
+            : new Size(itemAvailable.Width, double.PositiveInfinity);
         foreach (var child in _containerOrder)
         {
             child.Measure(childConstraint);
         }
 
-        var available = isHorizontal ? availableSize.Width : availableSize.Height;
+        var available = isHorizontal ? itemAvailable.Width : itemAvailable.Height;
+        var spacing = mainPanel.GetItemSpacing(itemAvailable.Width);
+        var neverCount = _containerOrder.Count(child =>
+            GetOverflowMode(child) == OverflowMode.Never && child.Visibility != Visibility.Collapsed);
         var neverExtent = _containerOrder
             .Where(child => GetOverflowMode(child) == OverflowMode.Never)
-            .Sum(child => GetMainExtent(child, isHorizontal));
+            .Sum(child => GetMainExtent(child, isHorizontal)) +
+            Math.Max(0, neverCount - 1) * spacing;
         var asNeededAvailable = double.IsFinite(available)
             ? Math.Max(0, available - neverExtent)
             : double.PositiveInfinity;
         var asNeededUsed = 0.0;
+        var retainedCount = neverCount;
         var overflowItems = new List<UIElement>();
         foreach (var child in _containerOrder)
         {
             var mode = GetOverflowMode(child);
             var extent = GetMainExtent(child, isHorizontal);
+            var visible = child.Visibility != Visibility.Collapsed;
+            var addedGap = mode == OverflowMode.AsNeeded && visible && retainedCount > 0
+                ? spacing : 0;
             var overflow = mode == OverflowMode.Always ||
-                (mode == OverflowMode.AsNeeded && asNeededUsed + extent > asNeededAvailable);
+                (mode == OverflowMode.AsNeeded &&
+                 asNeededUsed + addedGap + extent > asNeededAvailable);
             if (mode == OverflowMode.AsNeeded && !overflow)
             {
-                asNeededUsed += extent;
+                asNeededUsed += addedGap + extent;
+                if (visible)
+                    retainedCount++;
             }
 
             SetIsOverflowItem(child, overflow);
@@ -512,6 +575,7 @@ public class ToolBarTray : FrameworkElement
 {
     private readonly ObservableCollection<ToolBar> _toolBars;
     private readonly HashSet<ToolBar> _attachedToolBars = new();
+    private Border? _cssBorderPainter;
 
     #region Dependency Properties
 
@@ -540,7 +604,19 @@ public class ToolBarTray : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(ToolBarTray),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnTrayBackgroundChanged));
+
+    /// <summary>Identifies the Padding dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty PaddingProperty =
+        DependencyProperty.Register(nameof(Padding), typeof(Thickness), typeof(ToolBarTray),
+            new PropertyMetadata(new Thickness(0), OnTrayBoxEdgesChanged));
+
+    /// <summary>Identifies the BorderThickness dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty BorderThicknessProperty =
+        DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(ToolBarTray),
+            new PropertyMetadata(new Thickness(0), OnTrayBoxEdgesChanged));
 
     #endregion
 
@@ -593,6 +669,22 @@ public class ToolBarTray : FrameworkElement
         set => SetValue(BackgroundProperty, value);
     }
 
+    /// <summary>Gets or sets the space between the tray edge and its toolbars.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public Thickness Padding
+    {
+        get => (Thickness)GetValue(PaddingProperty)!;
+        set => SetValue(PaddingProperty, value);
+    }
+
+    /// <summary>Gets or sets the width of the tray border.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public Thickness BorderThickness
+    {
+        get => (Thickness)GetValue(BorderThicknessProperty)!;
+        set => SetValue(BorderThicknessProperty, value);
+    }
+
     #endregion
 
     /// <summary>
@@ -638,12 +730,21 @@ public class ToolBarTray : FrameworkElement
         tray.InvalidateMeasure();
     }
 
+    private static void OnTrayBackgroundChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        => ((ToolBarTray)d).InvalidateVisual();
+
+    private static void OnTrayBoxEdgesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        => ((ToolBarTray)d).InvalidateMeasure();
+
     private static bool IsValidTrayOrientation(object? value) =>
         value is Orientation.Horizontal or Orientation.Vertical;
 
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var contentAvailable = CssBoxMetrics.InnerSize(availableSize, insets);
         var totalWidth = 0.0;
         var totalHeight = 0.0;
         var maxBand = 0;
@@ -662,7 +763,7 @@ public class ToolBarTray : FrameworkElement
 
             foreach (var toolBar in bandToolBars)
             {
-                toolBar.Measure(availableSize);
+                toolBar.Measure(contentAvailable);
                 if (Orientation == Orientation.Horizontal)
                 {
                     bandWidth += toolBar.DesiredSize.Width;
@@ -687,14 +788,18 @@ public class ToolBarTray : FrameworkElement
             }
         }
 
-        return new Size(totalWidth, totalHeight);
+        return new Size(totalWidth + insets.Left + insets.Right,
+            totalHeight + insets.Top + insets.Bottom);
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
+        var content = ControlRenderGeometry.GetContentRect(new Rect(finalSize),
+            CssBoxMetrics.ContentInsets(this,
+                CssLayout?.ContainingWidthCache ?? finalSize.Width));
         var maxBand = _toolBars.Count > 0 ? _toolBars.Max(t => t.Band) : 0;
-        var offset = 0.0;
+        var offset = Orientation == Orientation.Horizontal ? content.Y : content.X;
 
         for (var band = 0; band <= maxBand; band++)
         {
@@ -707,13 +812,15 @@ public class ToolBarTray : FrameworkElement
                 Rect rect;
                 if (Orientation == Orientation.Horizontal)
                 {
-                    rect = new Rect(bandOffset, offset, toolBar.DesiredSize.Width, toolBar.DesiredSize.Height);
+                    rect = new Rect(content.X + bandOffset, offset,
+                        toolBar.DesiredSize.Width, toolBar.DesiredSize.Height);
                     bandOffset += toolBar.DesiredSize.Width;
                     bandSize = Math.Max(bandSize, toolBar.DesiredSize.Height);
                 }
                 else
                 {
-                    rect = new Rect(offset, bandOffset, toolBar.DesiredSize.Width, toolBar.DesiredSize.Height);
+                    rect = new Rect(offset, content.Y + bandOffset,
+                        toolBar.DesiredSize.Width, toolBar.DesiredSize.Height);
                     bandOffset += toolBar.DesiredSize.Height;
                     bandSize = Math.Max(bandSize, toolBar.DesiredSize.Width);
                 }
@@ -727,6 +834,38 @@ public class ToolBarTray : FrameworkElement
         }
 
         return finalSize;
+    }
+
+    /// <inheritdoc />
+    protected override void OnRender(DrawingContext drawingContext)
+    {
+        base.OnRender(drawingContext);
+        if (Background is not { } background ||
+            RenderSize.Width <= 0 || RenderSize.Height <= 0)
+            return;
+
+        var rect = new Rect(RenderSize);
+        var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+            CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+        var cssRadius = CssBorderRadiusProperties.Get(this);
+        var radii = cssRadius?.Resolve(RenderSize) ?? default;
+        var shape = new CssRoundedRectangleGeometry(rect, radii);
+        if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background,
+                drawingContext, rect, radii, border, padding,
+                brush => drawingContext.DrawGeometry(brush, null, shape)))
+        {
+            if (cssRadius is null)
+                drawingContext.DrawRectangle(background, null, rect);
+            else
+                drawingContext.DrawGeometry(background, null, shape);
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 }
 

@@ -1,5 +1,8 @@
 #include "d3d12_resources.h"
 #include "jalium_text_stats.h"
+#include "jalium_dwrite_font_units.h"
+#include "jalium_dwrite_font_math.h"
+#include <algorithm>
 
 namespace jalium {
 
@@ -11,12 +14,16 @@ D3D12TextFormat::D3D12TextFormat(
     int32_t fontStyle)
     : factory_(factory), fontSize_(fontSize)
 {
-    DWRITE_FONT_WEIGHT weight = static_cast<DWRITE_FONT_WEIGHT>(fontWeight);
+    // The legacy DirectWrite weight parameter rejects 1000, although CSS and OpenType allow it.
+    DWRITE_FONT_WEIGHT weight = static_cast<DWRITE_FONT_WEIGHT>(std::clamp(fontWeight, 1, 999));
     DWRITE_FONT_STYLE style = static_cast<DWRITE_FONT_STYLE>(fontStyle);
+
+    registeredFont_ = AcquireFontResource(fontFamily);
+    auto* collection = static_cast<IDWriteFontCollection*>(jalium_font_resource_get_collection(registeredFont_.get()));
 
     factory->CreateTextFormat(
         fontFamily,
-        nullptr,  // Font collection (nullptr = system collection)
+        collection,
         weight,
         style,
         DWRITE_FONT_STRETCH_NORMAL,
@@ -504,6 +511,16 @@ JaliumResult D3D12TextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     metrics->baseline = metrics->ascent;
 
     return JALIUM_OK;
+}
+
+JaliumResult D3D12TextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)
+{
+    return font_units::Read(factory_, format_.Get(), fontSize_, metrics);
+}
+
+JaliumResult D3D12TextFormat::GetFontMathConstants(JaliumFontMathConstants* constants)
+{
+    return font_math::Read(format_.Get(), constants);
 }
 
 JaliumResult D3D12TextFormat::HitTestPoint(

@@ -17,10 +17,19 @@ internal sealed class WindowInputDispatcher
 
     // ── Mouse state ──
     private UIElement? _lastMouseOverElement;
+    // Keep the ancestor snapshot captured while the element was still attached.
+    // Content replacement severs VisualParent before Window gets its callback, so
+    // walking the old leaf at teardown time can no longer reach the Window-side
+    // ancestors whose IsMouseOver state also has to be cleared.
+    private readonly List<UIElement> _mouseOverChain = [];
+    private long _mouseOverGeneration;
     private readonly List<UIElement> _mousePressedChain = [];
     private MouseButton? _suppressMouseUpButton;
     private TitleBarButton? _hoveredTitleBarButton;
     private TitleBarButton? _pressedTitleBarButton;
+    private bool _isClientMouseLeaveTracking;
+    private nint _clientMouseLeaveTrackingHandle;
+    private int _clientMouseLeaveTrackingGeneration;
 
     // ── Keyboard state ──
     private readonly List<UIElement> _keyboardPressedChain = [];
@@ -34,6 +43,11 @@ internal sealed class WindowInputDispatcher
     private readonly Dictionary<uint, StylusDevice> _activeStylusDevices = [];
     private readonly Dictionary<uint, PointerManipulationSession> _activeManipulationSessions = [];
     private readonly Dictionary<uint, UIElement> _lastTouchOverDirect = [];
+    private readonly Dictionary<uint, List<UIElement>> _touchOverChains = [];
+    private readonly Dictionary<uint, long> _pointerSessionTokens = [];
+    private readonly Dictionary<uint, (long Token, UIElement Target)> _pendingStylusTargets = [];
+    private readonly List<InertialManipulationRegistration> _inertialManipulations = [];
+    private long _nextPointerSessionToken;
     private uint? _primaryTouchPointerId;
 
     // ── Gesture (Tap/DoubleTap/Flick/TwoFingerTap) tracking ──
@@ -124,7 +138,7 @@ internal sealed class WindowInputDispatcher
         {
             var titleBarButton = _host.GetTitleBarButtonAtPoint(position);
             UpdateTitleBarButtonHover(titleBarButton);
-            _host.RequestTrackMouseLeave();
+            EnsureClientMouseLeaveTracking();
         }
 
         // A Thumb owns direct capture for the whole drag. Hit testing here used to force every
@@ -154,16 +168,8 @@ internal sealed class WindowInputDispatcher
         var target = (UIElement?)capturedThumb ?? Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         // Track mouse over state and raise MouseEnter/MouseLeave events
-        var newMouseOverElement = hitElement;
-        if (capturedThumb == null && newMouseOverElement != _lastMouseOverElement)
-        {
-            if (_lastMouseOverElement != null)
-                RaiseMouseLeaveChain(_lastMouseOverElement, newMouseOverElement, timestamp);
-            if (newMouseOverElement != null)
-                RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement, timestamp);
-            _lastMouseOverElement = newMouseOverElement;
-            UIElement.SetMouseDirectlyOverElement(newMouseOverElement);
-        }
+        if (capturedThumb == null)
+            UpdateMouseOverState(hitElement, timestamp);
 
         // Raise tunnel event (PreviewMouseMove)
         MouseEventArgs tunnelArgs = new(
@@ -244,12 +250,7 @@ internal sealed class WindowInputDispatcher
     /// <summary>Drops the window's hover chain without attributing it to a new element.</summary>
     private void ClearContentMouseOver(int timestamp)
     {
-        if (_lastMouseOverElement == null)
-            return;
-
-        RaiseMouseLeaveChain(_lastMouseOverElement, null, timestamp);
-        _lastMouseOverElement = null;
-        UIElement.SetMouseDirectlyOverElement(null);
+        UpdateMouseOverState(null, timestamp);
     }
 
     private void ApplyPopupBlockedCursor()
@@ -569,6 +570,7 @@ internal sealed class WindowInputDispatcher
     /// <summary>Handles mouse leaving the window.</summary>
     public void HandleMouseLeave()
     {
+        ResetClientMouseLeaveTracking();
         Mouse.OnMouseLeaveWindow();
 
         if (_host.TitleBarStyle == WindowTitleBarStyle.Custom)
@@ -576,12 +578,7 @@ internal sealed class WindowInputDispatcher
 
         ClearMousePressedChain();
 
-        if (_lastMouseOverElement != null)
-        {
-            RaiseMouseLeaveChain(_lastMouseOverElement, null, Environment.TickCount);
-            _lastMouseOverElement = null;
-            UIElement.SetMouseDirectlyOverElement(null);
-        }
+        ClearContentMouseOver(Environment.TickCount);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -785,6 +782,7 @@ internal sealed class WindowInputDispatcher
         if (newCaptureWindow != nint.Zero && newCaptureWindow == selfWindow)
             return;
 
+        ResetClientMouseLeaveTracking();
         UIElement.OnNativeCaptureChanged();
         ClearMousePressedChain();
     }
@@ -842,12 +840,356 @@ internal sealed class WindowInputDispatcher
 
     private void ResetTransientInputStateOnDeactivate()
     {
+        ResetClientMouseLeaveTracking();
         UIElement.ForceReleaseMouseCapture();
         ClearPressedChains();
         _suppressMouseUpButton = null;
 
         if (_host.TitleBarStyle == WindowTitleBarStyle.Custom)
             ClearTitleBarInteractionState();
+    }
+
+    /// <summary>
+    /// Ends input sessions that still reference <paramref name="root"/> after that
+    /// subtree has left this window. State is detached before routed notifications
+    /// are raised so a handler may synchronously establish input on the replacement
+    /// tree (including reusing the same pointer id) without the old cleanup erasing it.
+    /// </summary>
+    internal void HandleSubtreeDetached(UIElement root)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+
+        int timestamp = Environment.TickCount;
+        bool detachingWholeWindow = ReferenceEquals(root, _host.Self);
+
+        // Snapshot hover while the dispatcher still has the ancestor chain captured
+        // at hit-test time. VisualParent on the old content root is already null here.
+        UIElement? detachedMouseOver = null;
+        UIElement[] detachedMouseOverChain = [];
+        if (_lastMouseOverElement is { } lastMouseOver && IsDescendantOf(lastMouseOver, root))
+        {
+            detachedMouseOver = lastMouseOver;
+            detachedMouseOverChain = _mouseOverChain.Count == 0
+                ? CaptureAncestorChain(lastMouseOver)
+                : _mouseOverChain.ToArray();
+            _lastMouseOverElement = null;
+            _mouseOverChain.Clear();
+            unchecked { _mouseOverGeneration++; }
+        }
+        else if (UIElement.MouseDirectlyOverElement is { } directlyOver
+                 && IsDescendantOf(directlyOver, root))
+        {
+            detachedMouseOver = directlyOver;
+            detachedMouseOverChain = CaptureAncestorChain(directlyOver);
+        }
+
+        UIElement[] detachedMousePressedChain = ChainIntersectsSubtree(_mousePressedChain, root)
+            ? DetachPressedChain(_mousePressedChain)
+            : [];
+        UIElement[] detachedKeyboardPressedChain = ChainIntersectsSubtree(_keyboardPressedChain, root)
+            ? DetachPressedChain(_keyboardPressedChain)
+            : [];
+
+        UIElement? detachedMouseCapture = UIElement.MouseCapturedElement is { } mouseCapture
+            && IsDescendantOf(mouseCapture, root)
+                ? mouseCapture
+                : null;
+        UIElement? detachedStylusCapture = UIElement.StylusCapturedElement is { } stylusCapture
+            && IsDescendantOf(stylusCapture, root)
+                ? stylusCapture
+                : null;
+
+        TitleBarButton? detachedHoveredTitleBarButton =
+            _hoveredTitleBarButton is { } hoveredTitleBarButton
+            && IsDescendantOf(hoveredTitleBarButton, root)
+                ? hoveredTitleBarButton
+                : null;
+        TitleBarButton? detachedPressedTitleBarButton =
+            _pressedTitleBarButton is { } pressedTitleBarButton
+            && IsDescendantOf(pressedTitleBarButton, root)
+                ? pressedTitleBarButton
+                : null;
+        if (detachedHoveredTitleBarButton != null)
+            _hoveredTitleBarButton = null;
+        if (detachedPressedTitleBarButton != null)
+            _pressedTitleBarButton = null;
+
+        HashSet<uint> detachedPointerIds = CollectDetachedPointerIds(root);
+        List<DetachedPointerState> detachedPointers = new(detachedPointerIds.Count);
+        HashSet<PointerManipulationSession> detachedManipulations = [];
+        HashSet<PointerManipulationSession> detachedInertialManipulations = [];
+
+        foreach (uint pointerId in detachedPointerIds)
+        {
+            _activePointerTargets.TryGetValue(pointerId, out UIElement? activeTarget);
+            _lastPointerPoints.TryGetValue(pointerId, out PointerPoint? point);
+            _lastTouchOverDirect.TryGetValue(pointerId, out UIElement? touchOver);
+            _touchOverChains.TryGetValue(pointerId, out List<UIElement>? touchOverChain);
+            _activeStylusDevices.TryGetValue(pointerId, out StylusDevice? stylusDevice);
+            _activeManipulationSessions.TryGetValue(pointerId, out PointerManipulationSession? manipulation);
+            TouchDevice? registeredTouchDevice = Touch.GetDevice(unchecked((int)pointerId));
+            TouchDevice? touchDevice = registeredTouchDevice != null
+                && (IsWithinSubtree(registeredTouchDevice.DirectlyOver, root)
+                    || IsWithinSubtree(registeredTouchDevice.Captured, root)
+                    || (registeredTouchDevice.DirectlyOver == null
+                        && registeredTouchDevice.Captured == null
+                        && (IsWithinSubtree(activeTarget, root) || IsWithinSubtree(touchOver, root))))
+                    ? registeredTouchDevice
+                    : FindTouchDevice(touchOver, pointerId);
+            bool hasRegisteredTouchState = ReferenceEquals(registeredTouchDevice, touchDevice);
+
+            UIElement? cancelTarget = IsWithinSubtree(activeTarget, root)
+                ? activeTarget
+                : IsWithinSubtree(point?.SourceElement, root)
+                    ? point!.SourceElement
+                    : hasRegisteredTouchState && IsWithinSubtree(touchOver, root)
+                        ? touchOver
+                        : hasRegisteredTouchState && IsWithinSubtree(touchDevice?.DirectlyOver, root)
+                            ? (UIElement?)touchDevice!.DirectlyOver
+                            : IsWithinSubtree(stylusDevice?.DirectlyOver, root)
+                                ? (UIElement?)stylusDevice!.DirectlyOver
+                                : null;
+
+            if (manipulation != null && IsDescendantOf(manipulation.Target, root))
+            {
+                detachedManipulations.Add(manipulation);
+                if (manipulation.InertiaProcessor?.IsRunning == true)
+                    detachedInertialManipulations.Add(manipulation);
+            }
+
+            detachedPointers.Add(new DetachedPointerState(
+                pointerId,
+                cancelTarget,
+                point,
+                touchOverChain?.ToArray() ?? (touchOver != null ? CaptureAncestorChain(touchOver) : []),
+                touchDevice,
+                stylusDevice,
+                IsWithinSubtree(stylusDevice?.DirectlyOver, root)
+                    ? (UIElement?)stylusDevice!.DirectlyOver
+                    : null));
+
+            // Remove every id-owned slot before any LostCapture/Leave/Cancel callback.
+            _activePointerTargets.Remove(pointerId);
+            _lastPointerPoints.Remove(pointerId);
+            _lastTouchOverDirect.Remove(pointerId);
+            _touchOverChains.Remove(pointerId);
+            _activeStylusDevices.Remove(pointerId);
+            _gestureTrackers.Remove(pointerId);
+            _activeManipulationSessions.Remove(pointerId);
+            InvalidatePointerSession(pointerId);
+            _host.RealTimeStylus.CancelSession(pointerId);
+
+            if (_primaryTouchPointerId == pointerId)
+                _primaryTouchPointerId = null;
+        }
+
+        List<ManipulationInertiaProcessor> detachedInertiaProcessors = [];
+        PruneInertialManipulations();
+        for (int i = _inertialManipulations.Count - 1; i >= 0; i--)
+        {
+            InertialManipulationRegistration registration = _inertialManipulations[i];
+            if (!IsDescendantOf(registration.Target, root))
+            {
+                continue;
+            }
+
+            _inertialManipulations.RemoveAt(i);
+            registration.Detach();
+            detachedManipulations.Add(registration.Session);
+            detachedInertialManipulations.Add(registration.Session);
+            detachedInertiaProcessors.Add(registration.Processor);
+        }
+
+        // Stop timers before user code runs. A detached target must not receive an
+        // inertia tick while another cancellation callback is replacing the page.
+        foreach (ManipulationInertiaProcessor processor in detachedInertiaProcessors)
+            processor.Cancel();
+
+        if (detachedMousePressedChain.Length > 0 || detachedMouseCapture != null || detachedMouseOver != null
+            || detachedPointerIds.Contains(MousePointerId))
+        {
+            _suppressMouseUpButton = null;
+        }
+
+        if (detachingWholeWindow)
+        {
+            ResetClientMouseLeaveTracking();
+            _suppressEscapeUntilTick = 0;
+        }
+
+        // Remove each old touch device from the global id registry before its
+        // LostTouchCapture notification can re-enter and register a replacement
+        // device with the same id. Later cleanup only uses the old device snapshot.
+        foreach (DetachedPointerState state in detachedPointers)
+        {
+            TouchDevice? touchDevice = state.TouchDevice;
+            if (touchDevice == null)
+                continue;
+
+            touchDevice.SetDirectlyOver(null);
+            if (ReferenceEquals(Touch.GetDevice(unchecked((int)state.PointerId)), touchDevice))
+            {
+                Touch.UnregisterTouchPoint(unchecked((int)state.PointerId));
+            }
+            else if (IsWithinSubtree(touchDevice.Captured, root))
+            {
+                touchDevice.Capture(null);
+            }
+        }
+
+        if (detachedMouseOver != null
+            && UIElement.MouseDirectlyOverElement is { } currentDirectlyOver
+            && IsDescendantOf(currentDirectlyOver, root))
+        {
+            Mouse.OnMouseLeaveWindow();
+        }
+
+        // From here on every old state slot has been relinquished. Routed handlers
+        // are free to create replacement state; all remaining work is snapshot-only.
+        if (detachedMouseCapture != null)
+        {
+            detachedMouseCapture.ReleaseMouseCapture();
+            if (Mouse.Captured == null)
+                _host.Self.ReleaseNativeCaptureIfOwned();
+        }
+
+        if (detachedStylusCapture != null)
+            detachedStylusCapture.ReleaseStylusCapture();
+
+        ClearDetachedPressedChain(detachedMousePressedChain, _mousePressedChain);
+        ClearDetachedPressedChain(detachedKeyboardPressedChain, _keyboardPressedChain);
+
+        if (detachedHoveredTitleBarButton != null
+            && !ReferenceEquals(_hoveredTitleBarButton, detachedHoveredTitleBarButton))
+        {
+            detachedHoveredTitleBarButton.SetIsMouseOver(false);
+        }
+        if (detachedPressedTitleBarButton != null
+            && !ReferenceEquals(_pressedTitleBarButton, detachedPressedTitleBarButton))
+        {
+            detachedPressedTitleBarButton.SetIsPressed(false);
+        }
+
+        if (detachedMouseOver != null)
+            RaiseDetachedMouseLeaveChain(detachedMouseOverChain);
+
+        foreach (DetachedPointerState state in detachedPointers)
+        {
+            TouchDevice? touchDevice = state.TouchDevice;
+            if (touchDevice != null)
+            {
+                if (state.TouchOverChain.Length > 0)
+                    RaiseDetachedTouchLeaveChain(state.TouchOverChain, touchDevice, timestamp);
+            }
+
+            StylusDevice? stylusDevice = state.StylusDevice;
+            if (stylusDevice != null)
+            {
+                if (IsWithinSubtree(stylusDevice.DirectlyOver, root))
+                {
+                    stylusDevice.DirectlyOver = null;
+                    if (ReferenceEquals(Tablet.CurrentStylusDevice, stylusDevice))
+                        stylusDevice.Synchronize();
+                }
+
+                if (state.StylusOver != null)
+                    RaiseStylusSimpleEvent(state.StylusOver, stylusDevice, timestamp, UIElement.StylusLeaveEvent);
+
+                if (ReferenceEquals(Tablet.CurrentStylusDevice, stylusDevice))
+                {
+                    if (IsWithinSubtree(stylusDevice.Captured, root))
+                        stylusDevice.Capture(null);
+
+                    // A LostStylusCapture handler may have re-captured this device to
+                    // the replacement tree. Preserve that new capture/current device.
+                    if (ReferenceEquals(Tablet.CurrentStylusDevice, stylusDevice)
+                        && stylusDevice.Captured == null
+                        && stylusDevice.DirectlyOver == null)
+                    {
+                        Tablet.CurrentStylusDevice = null;
+                    }
+                }
+            }
+        }
+
+        foreach (PointerManipulationSession session in detachedManipulations)
+        {
+            TerminateManipulationSession(
+                session,
+                isInertial: detachedInertialManipulations.Contains(session),
+                timestamp);
+        }
+
+        foreach (DetachedPointerState state in detachedPointers)
+        {
+            if (state.CancelTarget == null)
+                continue;
+
+            PointerDeviceType deviceType = state.PointerId == MousePointerId
+                ? PointerDeviceType.Mouse
+                : state.TouchDevice != null || state.TouchOverChain.Length > 0
+                    ? PointerDeviceType.Touch
+                    : PointerDeviceType.Pen;
+            PointerPoint point = state.Point
+                ?? CreateCanceledPointerPoint(state.PointerId, deviceType, timestamp);
+            RaisePointerCancelPipeline(state.CancelTarget, point, ModifierKeys.None, timestamp);
+        }
+    }
+
+    internal bool HasInputStateInSubtree(UIElement root)
+    {
+        if (IsWithinSubtree(_lastMouseOverElement, root) ||
+            IsWithinSubtree(_hoveredTitleBarButton, root) ||
+            IsWithinSubtree(_pressedTitleBarButton, root) ||
+            IsWithinSubtree(UIElement.MouseCapturedElement, root) ||
+            IsWithinSubtree(UIElement.StylusCapturedElement, root) ||
+            root.AreAnyTouchesCapturedWithin ||
+            ChainIntersectsSubtree(_mousePressedChain, root) ||
+            ChainIntersectsSubtree(_keyboardPressedChain, root))
+            return true;
+        foreach (var target in _activePointerTargets.Values)
+            if (IsWithinSubtree(target, root)) return true;
+        foreach (var point in _lastPointerPoints.Values)
+            if (IsWithinSubtree(point.SourceElement, root)) return true;
+        foreach (var target in _lastTouchOverDirect.Values)
+            if (IsWithinSubtree(target, root)) return true;
+        foreach (var session in _activeManipulationSessions.Values)
+            if (IsWithinSubtree(session.Target, root)) return true;
+        foreach (var pending in _pendingStylusTargets.Values)
+            if (IsWithinSubtree(pending.Target, root)) return true;
+        foreach (var registration in _inertialManipulations)
+            if (IsWithinSubtree(registration.Target, root)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Arms client-area leave tracking once per native handle. TrackMouseEvent keeps
+    /// the registration active until WM_MOUSELEAVE, so repeating it for every raw move
+    /// is redundant. Failed registrations remain unarmed and are retried by the next
+    /// move. The generation check protects against a re-entrant leave/deactivation
+    /// delivered while the native registration call is in progress.
+    /// </summary>
+    private void EnsureClientMouseLeaveTracking()
+    {
+        var handle = _host.Handle;
+        if (_isClientMouseLeaveTracking && _clientMouseLeaveTrackingHandle == handle)
+            return;
+
+        var generation = _clientMouseLeaveTrackingGeneration;
+        var registered = _host.RequestTrackMouseLeave();
+
+        if (generation != _clientMouseLeaveTrackingGeneration || _host.Handle != handle)
+            return;
+
+        _isClientMouseLeaveTracking = registered;
+        _clientMouseLeaveTrackingHandle = registered ? handle : nint.Zero;
+    }
+
+    private void ResetClientMouseLeaveTracking()
+    {
+        _clientMouseLeaveTrackingGeneration++;
+        _isClientMouseLeaveTracking = false;
+        _clientMouseLeaveTrackingHandle = nint.Zero;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -880,76 +1222,61 @@ internal sealed class WindowInputDispatcher
     //  Mouse Enter/Leave Chain
     // ══════════════════════════════════════════════════════════════
 
-    internal void RaiseMouseLeaveChain(UIElement oldElement, UIElement? newElement, int timestamp)
-    {
-        HashSet<UIElement> newAncestors = [];
-        Visual? current = newElement;
-        while (current != null)
-        {
-            if (current is UIElement uiElement)
-                _ = newAncestors.Add(uiElement);
-            current = current.VisualParent;
-        }
-
-        current = oldElement;
-        while (current != null)
-        {
-            if (current is UIElement uiElement)
-            {
-                if (newAncestors.Contains(uiElement))
-                    break;
-                uiElement.SetIsMouseOver(false);
-                MouseEventArgs args = new(UIElement.MouseLeaveEvent) { Source = uiElement };
-                uiElement.RaiseEvent(args);
-            }
-            current = current.VisualParent;
-        }
-    }
-
-    internal void RaiseMouseEnterChain(UIElement newElement, UIElement? oldElement, int timestamp)
-    {
-        HashSet<UIElement> oldAncestors = [];
-        Visual? current = oldElement;
-        while (current != null)
-        {
-            if (current is UIElement uiElement)
-                _ = oldAncestors.Add(uiElement);
-            current = current.VisualParent;
-        }
-
-        List<UIElement> enterElements = [];
-        current = newElement;
-        while (current != null)
-        {
-            if (current is UIElement uiElement)
-            {
-                if (oldAncestors.Contains(uiElement))
-                    break;
-                enterElements.Add(uiElement);
-            }
-            current = current.VisualParent;
-        }
-
-        for (int i = enterElements.Count - 1; i >= 0; i--)
-        {
-            var uiElement = enterElements[i];
-            uiElement.SetIsMouseOver(true);
-            MouseEventArgs args = new(UIElement.MouseEnterEvent) { Source = uiElement };
-            uiElement.RaiseEvent(args);
-        }
-    }
-
     internal void UpdateMouseOverState(UIElement? newMouseOverElement, int timestamp)
     {
-        if (newMouseOverElement != _lastMouseOverElement)
+        // Style changes can rebuild a hovered button's template. The old hit leaf
+        // then has no path back to the button, or the same Content is already in the
+        // replacement template. Compare against the recorded ancestors in both cases;
+        // walking the old leaf here loses the controls that still need MouseLeave.
+        if (ReferenceEquals(newMouseOverElement, _lastMouseOverElement)
+            && MatchesMouseOverChain(newMouseOverElement))
+            return;
+
+        UIElement[] previousChain = _mouseOverChain.ToArray();
+        UIElement[] nextChain = newMouseOverElement == null
+            ? []
+            : CaptureAncestorChain(newMouseOverElement);
+        long generation = unchecked(++_mouseOverGeneration);
+
+        // Publish ownership before property/routed callbacks. A handler may replace
+        // the template or start another hover transition; the outer operation must
+        // finish clearing its old snapshot without overwriting that newer state.
+        _lastMouseOverElement = newMouseOverElement;
+        _mouseOverChain.Clear();
+        _mouseOverChain.AddRange(nextChain);
+        UIElement.SetMouseDirectlyOverElement(newMouseOverElement);
+        RaiseDetachedMouseLeaveChain(previousChain);
+
+        for (int i = nextChain.Length - 1; i >= 0; i--)
         {
-            if (_lastMouseOverElement != null)
-                RaiseMouseLeaveChain(_lastMouseOverElement, newMouseOverElement, timestamp);
-            if (newMouseOverElement != null)
-                RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement, timestamp);
-            _lastMouseOverElement = newMouseOverElement;
-            UIElement.SetMouseDirectlyOverElement(newMouseOverElement);
+            if (generation != _mouseOverGeneration)
+                return;
+
+            UIElement element = nextChain[i];
+            if (element.IsMouseOver)
+                continue;
+
+            element.SetIsMouseOver(true);
+            if (generation != _mouseOverGeneration)
+                return;
+
+            MouseEventArgs args = new(UIElement.MouseEnterEvent) { Source = element };
+            element.RaiseEvent(args);
         }
+    }
+
+    // No allocations for repeated moves over an unchanged leaf/ancestor chain.
+    private bool MatchesMouseOverChain(UIElement? element)
+    {
+        int index = 0;
+        while (element != null)
+        {
+            if (index >= _mouseOverChain.Count || !ReferenceEquals(element, _mouseOverChain[index]))
+                return false;
+            index++;
+            element = element.VisualParent as UIElement;
+        }
+        return index == _mouseOverChain.Count;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -965,11 +1292,7 @@ internal sealed class WindowInputDispatcher
 
     internal void ClearMousePressedChain()
     {
-        if (_mousePressedChain.Count > 0)
-        {
-            ApplyPressedState(_mousePressedChain, false);
-            _mousePressedChain.Clear();
-        }
+        ClearPressedChain(_mousePressedChain);
     }
 
     internal void ActivateKeyboardPressedChain(UIElement target)
@@ -981,11 +1304,7 @@ internal sealed class WindowInputDispatcher
 
     internal void ClearKeyboardPressedChain()
     {
-        if (_keyboardPressedChain.Count > 0)
-        {
-            ApplyPressedState(_keyboardPressedChain, false);
-            _keyboardPressedChain.Clear();
-        }
+        ClearPressedChain(_keyboardPressedChain);
     }
 
     internal void ClearPressedChains()
@@ -995,6 +1314,9 @@ internal sealed class WindowInputDispatcher
     }
 
     private static void BuildAncestorChain(UIElement start, List<UIElement> chain)
+        => CaptureAncestorChain(start, chain);
+
+    private static void CaptureAncestorChain(UIElement? start, List<UIElement> chain)
     {
         chain.Clear();
         UIElement? current = start;
@@ -1005,10 +1327,58 @@ internal sealed class WindowInputDispatcher
         }
     }
 
+    private static UIElement[] CaptureAncestorChain(UIElement start)
+    {
+        List<UIElement> chain = [];
+        CaptureAncestorChain(start, chain);
+        return chain.ToArray();
+    }
+
     private static void ApplyPressedState(List<UIElement> chain, bool isPressed)
     {
         for (int i = 0; i < chain.Count; i++)
             chain[i].SetIsPressed(isPressed);
+    }
+
+    private static void ClearPressedChain(List<UIElement> chain)
+    {
+        if (chain.Count == 0)
+            return;
+
+        // Relinquish ownership before notifying dependency-property observers.
+        // A callback may synchronously start a new press; entries adopted by that
+        // new chain must stay pressed when the old snapshot finishes unwinding.
+        UIElement[] previous = DetachPressedChain(chain);
+        ClearDetachedPressedChain(previous, chain);
+    }
+
+    private static UIElement[] DetachPressedChain(List<UIElement> chain)
+    {
+        UIElement[] previous = chain.ToArray();
+        chain.Clear();
+        return previous;
+    }
+
+    private static void ClearDetachedPressedChain(
+        UIElement[] previous,
+        List<UIElement> currentChain)
+    {
+        foreach (UIElement element in previous)
+        {
+            if (!currentChain.Contains(element))
+                element.SetIsPressed(false);
+        }
+    }
+
+    private static bool ChainIntersectsSubtree(List<UIElement> chain, UIElement root)
+    {
+        foreach (UIElement element in chain)
+        {
+            if (IsDescendantOf(element, root))
+                return true;
+        }
+
+        return false;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -1240,6 +1610,139 @@ internal sealed class WindowInputDispatcher
         return false;
     }
 
+    private static bool IsWithinSubtree(IInputElement? candidate, UIElement root) =>
+        candidate is UIElement element && IsDescendantOf(element, root);
+
+    private static TouchDevice? FindTouchDevice(UIElement? directlyOver, uint pointerId)
+    {
+        if (directlyOver == null)
+            return null;
+
+        int deviceId = unchecked((int)pointerId);
+        return directlyOver.TouchesDirectlyOver.FirstOrDefault(device => device.Id == deviceId)
+            ?? directlyOver.TouchesOver.FirstOrDefault(device => device.Id == deviceId);
+    }
+
+    private HashSet<uint> CollectDetachedPointerIds(UIElement root)
+    {
+        HashSet<uint> result = [];
+
+        foreach (var pair in _activePointerTargets)
+        {
+            if (IsWithinSubtree(pair.Value, root))
+                result.Add(pair.Key);
+        }
+
+        foreach (var pair in _lastPointerPoints)
+        {
+            if (IsWithinSubtree(pair.Value.SourceElement, root))
+                result.Add(pair.Key);
+        }
+
+        foreach (var pair in _lastTouchOverDirect)
+        {
+            if (IsDescendantOf(pair.Value, root))
+                result.Add(pair.Key);
+        }
+
+        foreach (var pair in _activeStylusDevices)
+        {
+            if (IsWithinSubtree(pair.Value.DirectlyOver, root)
+                || IsWithinSubtree(pair.Value.Captured, root))
+            {
+                result.Add(pair.Key);
+            }
+        }
+
+        foreach (var pair in _activeManipulationSessions)
+        {
+            if (IsDescendantOf(pair.Value.Target, root))
+                result.Add(pair.Key);
+        }
+
+        foreach (var pair in _pendingStylusTargets)
+        {
+            if (IsDescendantOf(pair.Value.Target, root))
+                result.Add(pair.Key);
+        }
+
+        foreach (TouchDevice device in Touch.ActiveDevices)
+        {
+            if (IsWithinSubtree(device.DirectlyOver, root)
+                || IsWithinSubtree(device.Captured, root))
+            {
+                result.Add(unchecked((uint)device.Id));
+            }
+        }
+
+        return result;
+    }
+
+    private void RaiseDetachedMouseLeaveChain(UIElement[] oldChain)
+    {
+        HashSet<UIElement> raised = [];
+        foreach (UIElement element in oldChain)
+        {
+            if (!raised.Add(element) || _mouseOverChain.Contains(element) || !element.IsMouseOver)
+                continue;
+
+            element.SetIsMouseOver(false);
+            if (_mouseOverChain.Contains(element))
+                continue;
+            MouseEventArgs args = new(UIElement.MouseLeaveEvent) { Source = element };
+            element.RaiseEvent(args);
+        }
+    }
+
+    private static PointerPoint CreateCanceledPointerPoint(
+        uint pointerId,
+        PointerDeviceType deviceType,
+        int timestamp)
+    {
+        return new PointerPoint(
+            pointerId,
+            new Point(0, 0),
+            deviceType,
+            false,
+            new PointerPointProperties(),
+            (ulong)timestamp);
+    }
+
+    private long GetPointerSessionToken(uint pointerId, bool startNewSession)
+    {
+        if (startNewSession || !_pointerSessionTokens.TryGetValue(pointerId, out long token))
+        {
+            token = unchecked(++_nextPointerSessionToken);
+            if (token == 0)
+                token = unchecked(++_nextPointerSessionToken);
+            _pointerSessionTokens[pointerId] = token;
+        }
+
+        return token;
+    }
+
+    private bool IsPointerSessionCurrent(uint pointerId, long token) =>
+        _pointerSessionTokens.TryGetValue(pointerId, out long current) && current == token;
+
+    private void InvalidatePointerSession(uint pointerId)
+    {
+        _pointerSessionTokens.Remove(pointerId);
+        _pendingStylusTargets.Remove(pointerId);
+    }
+
+    private void CompletePointerSession(uint pointerId, long token)
+    {
+        if (IsPointerSessionCurrent(pointerId, token))
+        {
+            _pointerSessionTokens.Remove(pointerId);
+            if (_pendingStylusTargets.TryGetValue(pointerId, out var pending)
+                && pending.Token == token)
+            {
+                _pendingStylusTargets.Remove(pointerId);
+            }
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════
     //  Pointer/Touch/Stylus Input Pipeline
     // ══════════════════════════════════════════════════════════════
@@ -1446,9 +1949,15 @@ internal sealed class WindowInputDispatcher
             if (target != null)
                 RaiseTouchEnterChain(target, previousOver, touchDevice, timestamp);
             if (target == null)
+            {
                 _lastTouchOverDirect.Remove(pointerData.PointerId);
+                _touchOverChains.Remove(pointerData.PointerId);
+            }
             else
+            {
                 _lastTouchOverDirect[pointerData.PointerId] = target;
+                CaptureTouchOverChain(pointerData.PointerId, target);
+            }
         }
 
         // Touch → Stylus promotion (InkCanvas, RealTimeStylus).
@@ -1484,6 +1993,7 @@ internal sealed class WindowInputDispatcher
             {
                 RaiseTouchLeaveChain(residual, null, touchDevice, timestamp);
                 _lastTouchOverDirect.Remove(pointerData.PointerId);
+                _touchOverChains.Remove(pointerData.PointerId);
             }
 
             touchDevice.DeactivateForManager();
@@ -1602,6 +2112,8 @@ internal sealed class WindowInputDispatcher
         var pointerDataCopy = pointerData;
         bool isDownCopy = isDown, isUpCopy = isUp;
         int timestampCopy = timestamp;
+        long sessionToken = GetPointerSessionToken(pointerData.PointerId, isDown);
+        _pendingStylusTargets[pointerData.PointerId] = (sessionToken, target);
 
         _host.RealTimeStylus.BeginProcess(
             pointerData.PointerId, target, inputAction,
@@ -1612,6 +2124,9 @@ internal sealed class WindowInputDispatcher
             inverted: false, pointerCanceled: pointerData.IsCanceled,
             onCompleted: processResult =>
             {
+                if (!IsPointerSessionCurrent(pointerDataCopy.PointerId, sessionToken))
+                    return;
+
                 // Re-apply mutated points + raise StylusXxx routed events on the UI thread.
                 deviceCopy.UpdateState(
                     pointerDataCopy.Position, processResult.RawStylusInput.GetStylusPoints(),
@@ -1642,7 +2157,11 @@ internal sealed class WindowInputDispatcher
                     targetCopy.RaiseEvent(bubbleArgs);
                 }
 
-                _host.RealTimeStylus.QueueProcessedCallbacks(processResult);
+                QueueProcessedStylusCallbacks(
+                    processResult,
+                    pointerDataCopy.PointerId,
+                    sessionToken,
+                    completeSession: isUpCopy || processResult.Canceled || processResult.SessionEnded);
             });
     }
 
@@ -1692,6 +2211,8 @@ internal sealed class WindowInputDispatcher
         bool isDownCopy = isDown, isUpCopy = isUp;
         int timestampCopy = timestamp;
         StylusInputAction actionCopy = inputAction;
+        long sessionToken = GetPointerSessionToken(pointerData.PointerId, isDown);
+        _pendingStylusTargets[pointerData.PointerId] = (sessionToken, target);
 
         _host.RealTimeStylus.BeginProcess(
             pointerData.PointerId, target, inputAction,
@@ -1704,6 +2225,9 @@ internal sealed class WindowInputDispatcher
             pointerCanceled: pointerData.IsCanceled,
             onCompleted: processResult =>
             {
+                if (!IsPointerSessionCurrent(pointerDataCopy.PointerId, sessionToken))
+                    return;
+
                 deviceCopy.UpdateState(
                     pointerDataCopy.Position, processResult.RawStylusInput.GetStylusPoints(),
                     inAir: !pointerDataCopy.Point.IsInContact,
@@ -1731,11 +2255,20 @@ internal sealed class WindowInputDispatcher
                     StylusEventArgs bubbleArgs = CreateStylusEventArgs(deviceCopy, timestampCopy, bubbleEvent, isDownCopy);
                     targetCopy.RaiseEvent(bubbleArgs);
                 }
-                _host.RealTimeStylus.QueueProcessedCallbacks(processResult);
+                bool completesSession = isUpCopy || processResult.Canceled || processResult.SessionEnded;
+                QueueProcessedStylusCallbacks(
+                    processResult,
+                    pointerDataCopy.PointerId,
+                    sessionToken,
+                    completeSession: completesSession);
 
-                if (isUpCopy || processResult.Canceled || processResult.SessionEnded)
+                if (completesSession)
                 {
-                    _activeStylusDevices.Remove(pointerDataCopy.PointerId);
+                    if (_activeStylusDevices.TryGetValue(pointerDataCopy.PointerId, out var activeDevice)
+                        && ReferenceEquals(activeDevice, deviceCopy))
+                    {
+                        _activeStylusDevices.Remove(pointerDataCopy.PointerId);
+                    }
                     if (ReferenceEquals(Tablet.CurrentStylusDevice, deviceCopy))
                         Tablet.CurrentStylusDevice = null;
                 }
@@ -1763,6 +2296,90 @@ internal sealed class WindowInputDispatcher
             : new StylusEventArgs(stylusDevice, timestamp);
         args.RoutedEvent = routedEvent;
         return args;
+    }
+
+    private void QueueProcessedStylusCallbacks(
+        RealTimeStylusProcessResult processResult,
+        uint pointerId,
+        long sessionToken,
+        bool completeSession)
+    {
+        IReadOnlyList<RawStylusInput.ProcessedCallback> callbacks =
+            processResult.RawStylusInput.DrainProcessedCallbacks();
+        Dispatcher dispatcher = _host.Self.Dispatcher;
+
+        foreach (RawStylusInput.ProcessedCallback callback in callbacks)
+        {
+            RawStylusInput.ProcessedCallback pending = callback;
+            dispatcher.BeginInvoke(() =>
+            {
+                if (!IsPointerSessionCurrent(pointerId, sessionToken))
+                    return;
+
+                try
+                {
+                    UIElement? plugInElement = pending.PlugIn.Element;
+                    bool targetVerified = plugInElement != null
+                        && IsDescendantOf(processResult.RawStylusInput.Target, plugInElement);
+                    pending.PlugIn.InvokeProcessed(
+                        pending.Action,
+                        pending.CallbackData,
+                        targetVerified);
+                }
+                catch
+                {
+                    // Processed-stage failures must not escape the input loop.
+                }
+            });
+        }
+
+        if (completeSession)
+        {
+            // Always retire on a later dispatcher turn. Earlier packets in this
+            // session may already have processed callbacks queued, and FIFO order
+            // lets them run before this final retirement. A re-entrant new Down gets
+            // a fresh token and is therefore not removed by this old completion.
+            dispatcher.BeginInvoke(() => CompletePointerSession(pointerId, sessionToken));
+        }
+    }
+
+    private void CaptureTouchOverChain(uint pointerId, UIElement target)
+    {
+        if (!_touchOverChains.TryGetValue(pointerId, out List<UIElement>? chain))
+        {
+            chain = [];
+            _touchOverChains[pointerId] = chain;
+        }
+
+        CaptureAncestorChain(target, chain);
+    }
+
+    private static void RaiseDetachedTouchLeaveChain(
+        UIElement[] oldChain,
+        TouchDevice device,
+        int timestamp)
+    {
+        bool isDirect = true;
+        HashSet<UIElement> raised = [];
+        foreach (UIElement element in oldChain)
+        {
+            if (!raised.Add(element))
+                continue;
+
+            element.RemoveOverTouchInternal(device);
+            if (isDirect)
+            {
+                element.RemoveDirectlyOverTouchInternal(device);
+                isDirect = false;
+            }
+
+            TouchEventArgs args = new(device, timestamp)
+            {
+                RoutedEvent = UIElement.TouchLeaveEvent,
+                Source = element,
+            };
+            element.RaiseEvent(args);
+        }
     }
 
     private static StylusButton? GetBarrelButton(StylusDevice stylusDevice)
@@ -2294,6 +2911,7 @@ internal sealed class WindowInputDispatcher
         }
 
         session.InertiaProcessor = processor;
+        TrackInertialManipulation(session, processor);
     }
 
     private void TerminateManipulationSession(PointerManipulationSession session, bool isInertial, int timestamp)
@@ -2307,6 +2925,7 @@ internal sealed class WindowInputDispatcher
             _activeManipulationSessions.Remove(key);
 
         session.InertiaProcessor?.Cancel();
+        RemoveInertialManipulation(session);
         session.InertiaProcessor = null;
 
         RaiseManipulationCompletedPipeline(session, isInertial, timestamp);
@@ -2397,6 +3016,46 @@ internal sealed class WindowInputDispatcher
         || delta.Expansion.Length > 0.0001
         || delta.Scale.X != 1.0 || delta.Scale.Y != 1.0;
 
+    private void TrackInertialManipulation(
+        PointerManipulationSession session,
+        ManipulationInertiaProcessor processor)
+    {
+        PruneInertialManipulations();
+        _inertialManipulations.Add(new InertialManipulationRegistration(this, session, processor));
+    }
+
+    private void RemoveInertialManipulation(PointerManipulationSession session)
+    {
+        for (int i = _inertialManipulations.Count - 1; i >= 0; i--)
+        {
+            InertialManipulationRegistration registration = _inertialManipulations[i];
+            if (ReferenceEquals(registration.Session, session))
+            {
+                _inertialManipulations.RemoveAt(i);
+                registration.Detach();
+            }
+        }
+    }
+
+    private void RemoveInertialManipulation(InertialManipulationRegistration registration)
+    {
+        if (_inertialManipulations.Remove(registration))
+            registration.Detach();
+    }
+
+    private void PruneInertialManipulations()
+    {
+        for (int i = _inertialManipulations.Count - 1; i >= 0; i--)
+        {
+            InertialManipulationRegistration registration = _inertialManipulations[i];
+            if (!registration.Processor.IsRunning)
+            {
+                _inertialManipulations.RemoveAt(i);
+                registration.Detach();
+            }
+        }
+    }
+
     // ── Session Cleanup ──
 
     internal void CleanupPointerSession(uint pointerId)
@@ -2449,6 +3108,72 @@ internal sealed class WindowInputDispatcher
     }
 
     // ── PointerManipulationSession ──
+
+    private sealed class DetachedPointerState
+    {
+        public DetachedPointerState(
+            uint pointerId,
+            UIElement? cancelTarget,
+            PointerPoint? point,
+            UIElement[] touchOverChain,
+            TouchDevice? touchDevice,
+            StylusDevice? stylusDevice,
+            UIElement? stylusOver)
+        {
+            PointerId = pointerId;
+            CancelTarget = cancelTarget;
+            Point = point;
+            TouchOverChain = touchOverChain;
+            TouchDevice = touchDevice;
+            StylusDevice = stylusDevice;
+            StylusOver = stylusOver;
+        }
+
+        public uint PointerId { get; }
+        public UIElement? CancelTarget { get; }
+        public PointerPoint? Point { get; }
+        public UIElement[] TouchOverChain { get; }
+        public TouchDevice? TouchDevice { get; }
+        public StylusDevice? StylusDevice { get; }
+        public UIElement? StylusOver { get; }
+    }
+
+    private sealed class InertialManipulationRegistration
+    {
+        public InertialManipulationRegistration(
+            WindowInputDispatcher owner,
+            PointerManipulationSession session,
+            ManipulationInertiaProcessor processor)
+        {
+            Session = session;
+            Processor = processor;
+            _completedHandler = (_, args) =>
+            {
+                if (args is ManipulationCompletedEventArgs { IsInertial: true })
+                    owner.RemoveInertialManipulation(this);
+            };
+            Target.AddHandler(
+                UIElement.PreviewManipulationCompletedEvent,
+                _completedHandler,
+                handledEventsToo: true);
+        }
+
+        private readonly RoutedEventHandler _completedHandler;
+        private bool _isAttached = true;
+
+        public PointerManipulationSession Session { get; }
+        public ManipulationInertiaProcessor Processor { get; }
+        public UIElement Target => Session.Target;
+
+        public void Detach()
+        {
+            if (!_isAttached)
+                return;
+
+            _isAttached = false;
+            Target.RemoveHandler(UIElement.PreviewManipulationCompletedEvent, _completedHandler);
+        }
+    }
 
     /// <summary>
     /// Aggregated per-frame motion computed from the current multi-touch pointer set.

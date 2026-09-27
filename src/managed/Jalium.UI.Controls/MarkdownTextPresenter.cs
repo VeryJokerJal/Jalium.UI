@@ -488,7 +488,7 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         }
 
         // Pass 2: 每行一条连续的选区高亮（词间不留缝）。
-        if (_selectionEnd > _selectionStart && _selectionStart >= 0 && SelectionBrush != null)
+        if (FontSize > 0 && _selectionEnd > _selectionStart && _selectionStart >= 0 && SelectionBrush != null)
         {
             DrawSelectionHighlight(dc, layout);
         }
@@ -499,6 +499,9 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
             foreach (var run in line.Runs)
             {
                 var format = ResolveFormat(run.Style);
+                if (format.FontSize <= 0)
+                    continue;
+
                 dc.DrawText(CreateFormattedText(run.Text, format), new Point(run.TextX, run.TextY));
 
                 if (format.Decorations != MarkdownTextDecorations.None && format.DecorationPen != null)
@@ -580,7 +583,10 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         {
             foreach (var placement in line.Placements)
             {
-                if (placement.Style.LinkUri != null && placement.Bounds.Contains(point))
+                if (placement.Style.LinkUri != null &&
+                    (FontSize > 0 || (placement.ImageIndex >= 0 && HasResolvedImage(placement.ImageIndex))) &&
+                    placement.Bounds.Width > 0 && placement.Bounds.Height > 0 &&
+                    placement.Bounds.Contains(point))
                 {
                     return placement.Style.LinkUri;
                 }
@@ -606,10 +612,10 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         }
 
         var inheritedForeground = Foreground ?? s_fallbackForeground;
-        var family = FontFamily?.Source is { Length: > 0 } inheritedFamily
+        var family = FontFamily?.GetRenderingSource(this) is { Length: > 0 } inheritedFamily
             ? inheritedFamily
             : FrameworkElement.DefaultFontFamilyName;
-        var size = Math.Max(1, FontSize * NormalizeRatio(FontSizeRatio));
+        var size = Math.Max(0, FontSize * NormalizeRatio(FontSizeRatio));
         var weight = FontWeight;
         var fontStyle = FontStyle;
         var foreground = inheritedForeground;
@@ -677,7 +683,7 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
             var ratio = inlineStyle.FontSizeRatio;
             if (!double.IsNaN(ratio) && ratio > 0)
             {
-                size = Math.Max(1, size * ratio);
+                size = Math.Max(0, size * ratio);
             }
 
             if (inlineStyle.FontWeight is { } overrideWeight)
@@ -1664,12 +1670,20 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
     {
         Interlocked.Increment(ref DebugTokenMeasurements);
         var format = ResolveFormat(style);
+        var horizontalPadding = format.Padding.Left + format.Padding.Right;
+        var verticalPadding = format.Padding.Top + format.Padding.Bottom;
+        if (format.FontSize <= 0)
+        {
+            return new MarkdownTokenMeasurement(
+                horizontalPadding,
+                Math.Max(DefaultLineHeight, verticalPadding),
+                0, 0, format.Padding.Left);
+        }
+
         var formattedText = CreateFormattedText(text, format);
         TextMeasurement.MeasureText(formattedText);
 
         var width = formattedText.WidthIncludingTrailingWhitespace;
-        var horizontalPadding = format.Padding.Left + format.Padding.Right;
-        var verticalPadding = format.Padding.Top + format.Padding.Bottom;
         var totalHeight = Math.Max(DefaultLineHeight, formattedText.Height + verticalPadding);
 
         return new MarkdownTokenMeasurement(
@@ -1694,9 +1708,9 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
     {
         get
         {
-            var size = Math.Max(1, FontSize * NormalizeRatio(FontSizeRatio));
+            var size = Math.Max(0, FontSize * NormalizeRatio(FontSizeRatio));
             var ratio = LineHeightRatio;
-            return Math.Max(1, size * (double.IsNaN(ratio) || ratio <= 0 ? 1.5 : ratio));
+            return Math.Max(0, size * (double.IsNaN(ratio) || ratio <= 0 ? 1.5 : ratio));
         }
     }
 
@@ -1784,7 +1798,7 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
     bool IMarkdownSelectable.TryHitTestCharacter(Point localPoint, out int charIndex)
     {
         charIndex = 0;
-        if (Spans.Count == 0)
+        if (Spans.Count == 0 || FontSize <= 0)
         {
             return false;
         }
@@ -1936,7 +1950,7 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
 
     private double MeasurePrefixWidth(string text, int count, MarkdownTextStyle style)
     {
-        if (count <= 0)
+        if (count <= 0 || ResolveFormat(style).FontSize <= 0)
         {
             return 0;
         }

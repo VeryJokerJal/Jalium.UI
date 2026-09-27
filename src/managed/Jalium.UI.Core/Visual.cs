@@ -469,6 +469,7 @@ public abstract class Visual : DependencyObject
 
         OnVisualChildrenChanged(child, null);
         child.OnVisualParentChanged(oldParent);
+        DragDrop.VisualTreeChangedOverride?.Invoke(child);
         Diagnostics.VisualDiagnostics.NotifyVisualChildChanged(
             this,
             child,
@@ -529,6 +530,7 @@ public abstract class Visual : DependencyObject
 
         OnVisualChildrenChanged(null, child);
         child.OnVisualParentChanged(oldParent);
+        DragDrop.VisualTreeChangedOverride?.Invoke(child);
         Diagnostics.VisualDiagnostics.NotifyVisualChildChanged(
             this,
             child,
@@ -788,6 +790,16 @@ public abstract class Visual : DependencyObject
     internal virtual Rect ContentBoundsCore =>
         this is UIElement element ? new Rect(element.RenderSize) : Rect.Empty;
 
+    /// <summary>
+    /// Whether descendants may paint beyond this visual's layout bounds. Such a
+    /// subtree cannot be rejected or captured into a texture using RenderSize alone.
+    /// Its individual descendants still participate in ordinary viewport culling.
+    /// </summary>
+    internal virtual bool HasUnboundedContent => false;
+
+    /// <summary>Controls that paint their backdrop in OnRender opt out of the shared paint step.</summary>
+    internal virtual bool RendersBackdropEffectInOnRender => false;
+
     /// <summary>Returns retained vector content for VisualTreeHelper.GetDrawing.</summary>
     internal virtual DrawingGroup? DrawingCore => null;
 
@@ -831,13 +843,16 @@ public abstract class Visual : DependencyObject
         // Respect UIElement visibility at render entry.
         // Hidden and Collapsed should not render.
         if (this is UIElement thisElementVisibility &&
-            thisElementVisibility.Visibility != Visibility.Visible)
+            (thisElementVisibility.Visibility != Visibility.Visible ||
+             Styling.CssDisplayProperties.IsCollapsedFlexItem(thisElementVisibility)))
         {
             _isRenderDirty = false;
             _isSubtreeDirty = false;
             _isSubtreeCompositionDirty = false;
             return;
         }
+        var suppressOwnPaint = this is UIElement cssVisibilityElement &&
+            Styling.CssDisplayProperties.EffectiveVisibility(cssVisibilityElement) != Visibility.Visible;
 
         // Stamp the "last rendered" tick so the idle-resource reclaimer can
         // tell how long this visual has been off-screen. Updated AFTER the
@@ -853,25 +868,57 @@ public abstract class Visual : DependencyObject
             renderedObserver(this);
         }
 
-        // Check for element effect (BlurEffect, DropShadowEffect, etc.)
-        // If present, capture all rendering to an offscreen bitmap so the effect can be applied.
+        // Check for an element effect (BlurEffect, DropShadowEffect, etc.).
+        // Most effects capture the whole subtree. Pure CSS box shadows on
+        // background-only hosts finish the capture before rendering children.
         IEffect? activeEffect = null;
+        IEffect? combinedCssShadows = null;
+        bool isCssFilterCapture = false;
         IEffectDrawingContext? effectDc = null;
         float captureX = 0, captureY = 0, captureW = 0, captureH = 0;
         bool effectCaptureOpen = false;
         bool pushedClip = false;
+        bool pushedChildClip = false;
+        bool pushedCssClip = false;
+        Geometry? cssClipGeometry = null;
 
         if (this is UIElement effectElement &&
             effectElement.Effect is IEffect eff &&
             eff.HasEffect &&
+            !(suppressOwnPaint && eff is Media.Effects.Effect { CssBoxShadowLayer: true } &&
+              eff is not Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true }) &&
             drawingContext is IEffectDrawingContext edc &&
             edc.IsElementEffectCaptureEnabled &&
             drawingContext is IOffsetDrawingContext offsetDc)
         {
-            activeEffect = eff;
+            if (eff is Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true } combined &&
+                combined.Children.Count == 2 && (suppressOwnPaint ||
+                    edc.SupportsCssShadowLayers && CanCompositeCssBoxShadowBeforeChildren))
+            {
+                if (!suppressOwnPaint) combinedCssShadows = combined.Children[0];
+                activeEffect = combined.Children[1];
+            }
+            else
+            {
+                activeEffect = eff;
+            }
+            isCssFilterCapture = activeEffect is Media.Effects.Effect { CssFilterLayer: true } ||
+                eff is Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true };
             effectDc = edc;
 
             var padding = eff.EffectPadding;
+            if (isCssFilterCapture && effectElement is FrameworkElement outlineElement &&
+                outlineElement.OutlineBrush is not null &&
+                (outlineElement.OutlineStyle == OutlineStyle.Auto ||
+                 outlineElement.OutlineThickness > 0) &&
+                outlineElement.OutlineStyle != OutlineStyle.None)
+            {
+                var reach = Math.Max(0.0,
+                    outlineElement.OutlineOffset +
+                    (outlineElement.OutlineStyle == OutlineStyle.Auto ? 3 : outlineElement.OutlineThickness));
+                padding = new Thickness(padding.Left + reach, padding.Top + reach,
+                    padding.Right + reach, padding.Bottom + reach);
+            }
             var size = effectElement.RenderSize;
             var left = offsetDc.Offset.X - padding.Left;
             var top = offsetDc.Offset.Y - padding.Top;
@@ -895,6 +942,50 @@ public abstract class Visual : DependencyObject
 
         try
         {
+            // clip-path encloses the entire painted box, including its border and outline.
+            // Keep it outside the temporary layout/overflow clip, which Border removes
+            // before drawing its outer stroke.
+            if (this is UIElement clipPathElement && drawingContext is IClipDrawingContext cssClipContext &&
+                Styling.CssClipPathProperties.GetGeometry(clipPathElement) is { } cssClip)
+            {
+                cssClipContext.PushClip(cssClip);
+                pushedCssClip = true;
+                cssClipGeometry = cssClip;
+            }
+            PaintCombinedCssShadowLayer(inset: false);
+            // A backdrop belongs beneath the element's own background, template,
+            // and children. Paint it at the border-box edge before overflow clips
+            // are pushed; Border and ScrollBar use their own backdrop placement.
+            if (!suppressOwnPaint && !RendersBackdropEffectInOnRender &&
+                this is UIElement backdropElement &&
+                backdropElement.BackdropEffect is { HasEffect: true } backdrop &&
+                backdropElement.RenderSize is { Width: > 0, Height: > 0 } backdropSize)
+            {
+                var backdropRect = new Rect(backdropSize);
+                var radius = Styling.CssBorderRadiusProperties.Get(backdropElement);
+                var explicitClip = backdropElement.Clip;
+                var clipDepth = 0;
+                try
+                {
+                    if (radius is not null)
+                    {
+                        drawingContext.PushClip(new Styling.CssRoundedRectangleGeometry(
+                            backdropRect, radius.Resolve(backdropSize)));
+                        clipDepth++;
+                    }
+                    if (explicitClip is not null)
+                    {
+                        drawingContext.PushClip(explicitClip);
+                        clipDepth++;
+                    }
+                    drawingContext.DrawBackdropEffect(backdropRect, backdrop,
+                        radius is null ? GetCornerRadius(backdropElement) : new CornerRadius(0));
+                }
+                finally
+                {
+                    for (var i = 0; i < clipDepth; i++) drawingContext.Pop();
+                }
+            }
             // Push clip BEFORE OnRender so the element's own drawing is also clipped
             // (matches WPF semantics: ClipToBounds clips the element itself + children).
             Geometry? clipGeometry = null;
@@ -903,7 +994,8 @@ public abstract class Visual : DependencyObject
                 clipGeometry = thisElement.GetLayoutClip();
             }
 
-            if (clipGeometry != null && drawingContext is IClipDrawingContext clipContext)
+            var deferLayoutClip = this is UIElement { LayoutClipIncludesSelf: false };
+            if (!deferLayoutClip && clipGeometry != null && drawingContext is IClipDrawingContext clipContext)
             {
                 clipContext.PushClip(clipGeometry);
                 pushedClip = true;
@@ -942,7 +1034,14 @@ public abstract class Visual : DependencyObject
         //    OnRender has its matching pop recorded too, so drawingContext's
         //    state stacks remain balanced post-replay.
         var cacheHost = RenderCacheHost;
-        if (cacheHost != null && ParticipatesInRenderCache && drawingContext is ICacheableDrawingContext)
+        var useRenderCache = !suppressOwnPaint && cacheHost != null &&
+            ParticipatesInRenderCache && drawingContext is ICacheableDrawingContext;
+        // A direct render can show the new content without replacing a retained
+        // drawing from an earlier frame. Keep its dirty bit until a cacheable
+        // context actually records the replacement.
+        var retainedCacheNeedsRefresh = _isRenderDirty && _cachedDrawing != null &&
+            !useRenderCache;
+        if (useRenderCache)
         {
             if (_isRenderDirty || _cachedDrawing == null)
             {
@@ -957,10 +1056,49 @@ public abstract class Visual : DependencyObject
             }
             cacheHost.Replay(_cachedDrawing!, drawingContext);
         }
-        else
+        else if (!suppressOwnPaint)
         {
             OnRender(drawingContext);
             System.Threading.Interlocked.Increment(ref s_retainedCacheBypasses);
+        }
+
+        if ((activeEffect is Media.Effects.Effect { CssBoxShadowLayer: true } &&
+             CanCompositeCssBoxShadowBeforeChildren) || combinedCssShadows != null)
+        {
+            // A CSS box shadow is part of the box decoration. Finish the
+            // background capture now, leaving descendants and the later border
+            // stroke above the inset shadow. Its outer part must not inherit
+            // this element's temporary layout clip.
+            if (pushedClip && drawingContext is IClipDrawingContext shadowClipContext)
+            {
+                pushedClip = false;
+                shadowClipContext.Pop();
+            }
+            if (combinedCssShadows != null)
+                PaintCombinedCssShadowLayer(inset: true);
+            else
+                CompleteEffectCapture();
+            if (!deferLayoutClip && clipGeometry != null &&
+                drawingContext is IClipDrawingContext restoredClipContext)
+            {
+                restoredClipContext.PushClip(clipGeometry);
+                pushedClip = true;
+            }
+        }
+
+        if (deferLayoutClip && clipGeometry != null && drawingContext is IClipDrawingContext childClipContext)
+        {
+            childClipContext.PushClip(clipGeometry);
+            pushedClip = true;
+        }
+
+        var childClipGeometry = this is UIElement childClipElement
+            ? childClipElement.GetChildLayoutClip()
+            : null;
+        if (childClipGeometry != null && drawingContext is IClipDrawingContext insetClipContext)
+        {
+            insetClipContext.PushClip(childClipGeometry);
+            pushedChildClip = true;
         }
 
         var childCount = VisualChildrenCount;
@@ -978,7 +1116,17 @@ public abstract class Visual : DependencyObject
                 continue;
             }
 
-            RenderChildVisualInline(drawingContext, child);
+            var additionalChildClip = this is UIElement perChildClipElement
+                ? perChildClipElement.GetAdditionalChildLayoutClip(child)
+                : null;
+            if (additionalChildClip != null && drawingContext is IClipDrawingContext perChildClipContext)
+            {
+                perChildClipContext.PushClip(additionalChildClip);
+                try { RenderChildVisualInline(drawingContext, child); }
+                finally { perChildClipContext.Pop(); }
+            }
+            else
+                RenderChildVisualInline(drawingContext, child);
         }
 
         // Pop child clip BEFORE OnPostRender so OnPostRender executes outside the
@@ -993,33 +1141,169 @@ public abstract class Visual : DependencyObject
         // get the inner clip; the stroke renders unconstrained on the outer
         // shape; the result is a clean visible boundary where nothing leaks
         // past the stroke into the BorderThickness ring.
+        if (pushedChildClip && drawingContext is IClipDrawingContext insetClipContext2)
+        {
+            pushedChildClip = false;
+            insetClipContext2.Pop();
+        }
         if (pushedClip && drawingContext is IClipDrawingContext clipContext2)
         {
             pushedClip = false;
             clipContext2.Pop();
         }
 
-        OnPostRender(drawingContext);
+        if (!suppressOwnPaint) OnPostRender(drawingContext);
 
-        if (activeEffect != null && effectDc != null)
+        // CSS filters consume the completed painted group, including its
+        // outline. Native XAML effects keep the established sharp outline
+        // after their composite.
+        if (isCssFilterCapture && !suppressOwnPaint)
+            RenderOutlineCore(drawingContext);
+
+        CompleteEffectCapture();
+
+        void PaintCombinedCssShadowLayer(bool inset)
         {
+            if (combinedCssShadows == null || effectDc == null)
+                return;
+            var offset = (drawingContext as IOffsetDrawingContext)?.Offset ??
+                new Point(captureX, captureY);
+            var size = (this as UIElement)?.RenderSize ??
+                new Size(captureW, captureH);
+            var cssRadius = this is UIElement cssElement
+                ? Styling.CssBorderRadiusProperties.Get(cssElement)?.Resolve(size)
+                : null;
+            var nativeRadius = this is UIElement nativeElement
+                ? GetCornerRadius(nativeElement) : default;
+            var borderProperty = this is UIElement borderElement
+                ? Styling.CssDependencyPropertyLookup.Find(borderElement.GetType(), "BorderThickness")
+                : null;
+            var border = borderProperty is not null &&
+                this is UIElement borderOwner &&
+                borderOwner.GetValue(borderProperty) is Thickness thickness
+                ? thickness : default;
+            effectDc.PaintCssShadowLayers(combinedCssShadows, inset,
+                (float)offset.X, (float)offset.Y, (float)size.Width, (float)size.Height,
+                (float)(cssRadius?.TopLeft.Width ?? nativeRadius.TopLeft),
+                (float)(cssRadius?.TopLeft.Height ?? nativeRadius.TopLeft),
+                (float)(cssRadius?.TopRight.Width ?? nativeRadius.TopRight),
+                (float)(cssRadius?.TopRight.Height ?? nativeRadius.TopRight),
+                (float)(cssRadius?.BottomRight.Width ?? nativeRadius.BottomRight),
+                (float)(cssRadius?.BottomRight.Height ?? nativeRadius.BottomRight),
+                (float)(cssRadius?.BottomLeft.Width ?? nativeRadius.BottomLeft),
+                (float)(cssRadius?.BottomLeft.Height ?? nativeRadius.BottomLeft), border);
+        }
+
+        void CompleteEffectCapture()
+        {
+            if (activeEffect == null || effectDc == null)
+                return;
+            // Offscreen captures have their own clip stack. Balance the CSS clip
+            // inside that stack before restoring the parent target, then push it
+            // again so the effect output is clipped on the parent surface too.
+            if (pushedCssClip && drawingContext is IClipDrawingContext capturedClipContext)
+            {
+                pushedCssClip = false;
+                capturedClipContext.Pop();
+            }
             effectCaptureOpen = false;
             effectDc.EndEffectCapture();
+            if (cssClipGeometry != null && drawingContext is IClipDrawingContext effectClipContext)
+            {
+                effectClipContext.PushClip(cssClipGeometry);
+                pushedCssClip = true;
+            }
+            if (isCssFilterCapture)
+            {
+                // SourceGraphic includes the full painted apron from shadows
+                // and outlines, not just the element's RenderSize.
+                effectDc.ApplyElementEffect(activeEffect,
+                    captureX, captureY, captureW, captureH,
+                    captureX, captureY, 0, 0, 0, 0);
+                activeEffect = null;
+                effectDc = null;
+                return;
+            }
             var elemOffset = (drawingContext is IOffsetDrawingContext odc2) ? odc2.Offset : new Point(captureX, captureY);
             var elemSize = (this is UIElement ue) ? ue.RenderSize : new Size(captureW, captureH);
 
-            // Corner radii for the element content clip (shadows render outside, unclipped).
-            var cr = (this is UIElement cornerElem) ? GetCornerRadius(cornerElem) : new CornerRadius(0);
-            float maxR = (float)Math.Max(Math.Max(cr.TopLeft, cr.TopRight),
-                                         Math.Max(cr.BottomRight, cr.BottomLeft));
-
-            effectDc.ApplyElementEffect(activeEffect,
-                (float)elemOffset.X, (float)elemOffset.Y,
-                (float)elemSize.Width, (float)elemSize.Height,
-                captureX, captureY,
-                (float)cr.TopLeft, (float)cr.TopRight,
-                (float)cr.BottomRight, (float)cr.BottomLeft);
+            // CSS keeps two used radii per corner outside the public circular CornerRadius.
+            // Preserve that contour through retained recording and the optional native effect
+            // extension; native/current/animated radius takeover makes Get return null and keeps
+            // the established scalar path.
+            if (this is UIElement cornerElement &&
+                Styling.CssBorderRadiusProperties.Get(cornerElement) is { } cssRadius)
+            {
+                var used = cssRadius.Resolve(elemSize);
+                var borderProperty = Styling.CssDependencyPropertyLookup.Find(
+                    cornerElement.GetType(), "BorderThickness");
+                var border = borderProperty is not null &&
+                    cornerElement.GetValue(borderProperty) is Thickness thickness
+                    ? thickness : default;
+                effectDc.ApplyElementEffectEllipticalWithBorder(activeEffect,
+                    (float)elemOffset.X, (float)elemOffset.Y,
+                    (float)elemSize.Width, (float)elemSize.Height,
+                    captureX, captureY,
+                    (float)used.TopLeft.Width, (float)used.TopLeft.Height,
+                    (float)used.TopRight.Width, (float)used.TopRight.Height,
+                    (float)used.BottomRight.Width, (float)used.BottomRight.Height,
+                    (float)used.BottomLeft.Width, (float)used.BottomLeft.Height,
+                    border);
+            }
+            else
+            {
+                var cr = (this is UIElement nativeCornerElement)
+                    ? GetCornerRadius(nativeCornerElement)
+                    : new CornerRadius(0);
+                // A CSS inset shadow still uses the padding edge when a native local/bound
+                // CornerRadius wins over CSS. Pass that authoritative circular radius through
+                // the same contour channel; a native-only Effect keeps its established path.
+                var cssEffect = this is UIElement styledElement &&
+                    styledElement.GetEffectiveValueLayer(UIElement.EffectProperty) is
+                        DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
+                var hasInset = activeEffect.EffectTypeId is
+                    (int)Media.Effects.EffectType.InnerShadow or
+                    (int)Media.Effects.EffectType.EffectGroup;
+                if (cssEffect && hasInset && this is UIElement insetElement)
+                {
+                    var borderProperty = Styling.CssDependencyPropertyLookup.Find(
+                        insetElement.GetType(), "BorderThickness");
+                    var border = borderProperty is not null &&
+                        insetElement.GetValue(borderProperty) is Thickness thickness
+                        ? thickness : default;
+                    effectDc.ApplyElementEffectEllipticalWithBorder(activeEffect,
+                        (float)elemOffset.X, (float)elemOffset.Y,
+                        (float)elemSize.Width, (float)elemSize.Height,
+                        captureX, captureY,
+                        (float)cr.TopLeft, (float)cr.TopLeft,
+                        (float)cr.TopRight, (float)cr.TopRight,
+                        (float)cr.BottomRight, (float)cr.BottomRight,
+                        (float)cr.BottomLeft, (float)cr.BottomLeft,
+                        border);
+                }
+                else
+                {
+                    effectDc.ApplyElementEffect(activeEffect,
+                        (float)elemOffset.X, (float)elemOffset.Y,
+                        (float)elemSize.Width, (float)elemSize.Height,
+                        captureX, captureY,
+                        (float)cr.TopLeft, (float)cr.TopRight,
+                        (float)cr.BottomRight, (float)cr.BottomLeft);
+                }
+            }
+            activeEffect = null;
+            effectDc = null;
         }
+
+        if (!isCssFilterCapture && !suppressOwnPaint)
+            RenderOutlineCore(drawingContext);
+
+        if (pushedCssClip && drawingContext is IClipDrawingContext finalCssClipContext)
+        {
+            pushedCssClip = false;
+            finalCssClipContext.Pop();
+        }
+
         // Clearing this visual's own dirty flags here is correct for the
         // damage-driven gate (Phase 4). The child loop above is UNCONDITIONAL
         // with respect to dirty state: every non-template-root child is handed
@@ -1048,7 +1332,7 @@ public abstract class Visual : DependencyObject
         // animation actually moves (Part A gates invalidation on real value
         // change), so clearing the composition flag here cannot strand a
         // pending composite.
-        _isRenderDirty = false;
+        _isRenderDirty = retainedCacheNeedsRefresh;
         _isSubtreeDirty = false;
         _isSubtreeCompositionDirty = false;
         }
@@ -1060,10 +1344,20 @@ public abstract class Visual : DependencyObject
             // case leaked state would clip or redirect every following visual.
             try
             {
+                if (pushedChildClip && drawingContext is IClipDrawingContext insetClipContext)
+                {
+                    pushedChildClip = false;
+                    insetClipContext.Pop();
+                }
                 if (pushedClip && drawingContext is IClipDrawingContext clipContext)
                 {
                     pushedClip = false;
                     clipContext.Pop();
+                }
+                if (pushedCssClip && drawingContext is IClipDrawingContext cssClipContext)
+                {
+                    pushedCssClip = false;
+                    cssClipContext.Pop();
                 }
             }
             finally
@@ -1083,7 +1377,7 @@ public abstract class Visual : DependencyObject
     /// Extracts the CornerRadius from an element by looking for the CLR property.
     /// Returns zero radii if the element doesn't have one.
     /// </summary>
-    private static CornerRadius GetCornerRadius(UIElement element)
+    internal static CornerRadius GetCornerRadius(UIElement element)
     {
         // AOT-safe DependencyProperty lookup via the registry (no reflection).
         var dp = DependencyProperty.FromName(element.GetType(), "CornerRadius");
@@ -1099,6 +1393,15 @@ public abstract class Visual : DependencyObject
             return true;
         }
 
+        if (clipBounds.Width <= 0 || clipBounds.Height <= 0)
+            return false;
+
+        // Canvas layout bounds describe its arrange slot, not the extent of its
+        // absolutely positioned children. Panning that slot offscreen must not
+        // discard children that have been brought into view by the same transform.
+        if (child.HasUnboundedContent)
+            return true;
+
         // CurrentClipBounds is expressed in the drawing context's CURRENT managed
         // coordinate space. RenderTargetDrawingContext keeps clips in surface space
         // internally, but maps them back through the inverse native transform while a
@@ -1107,16 +1410,26 @@ public abstract class Visual : DependencyObject
         // final surface space and includes every ancestor transform; comparing it with
         // the inverse-mapped clip culls visible descendants in the lower/right part of
         // an upscaled Viewbox.
+        // Extra ink (outline ring, LiquidGlass shadow) must widen the culling bounds the
+        // same way GetDirtyRenderBounds widens the dirty rect — otherwise an element whose
+        // body is outside the clip but whose ring reaches into it gets culled wholesale.
         Rect localBounds;
+        double extraInk = child.GetExtraDirtyPadding();
         if (child.Effect is IEffect effect && effect.HasEffect)
         {
             var padding = effect.EffectPadding;
             var size = child.RenderSize;
             localBounds = new Rect(
-                -padding.Left,
-                -padding.Top,
-                size.Width + padding.Left + padding.Right,
-                size.Height + padding.Top + padding.Bottom);
+                -padding.Left - extraInk,
+                -padding.Top - extraInk,
+                size.Width + padding.Left + padding.Right + extraInk * 2,
+                size.Height + padding.Top + padding.Bottom + extraInk * 2);
+        }
+        else if (extraInk > 0)
+        {
+            var size = child.RenderSize;
+            localBounds = new Rect(
+                -extraInk, -extraInk, size.Width + extraInk * 2, size.Height + extraInk * 2);
         }
         else
         {
@@ -1191,6 +1504,23 @@ public abstract class Visual : DependencyObject
     /// </summary>
     /// <param name="drawingContext">The drawing context.</param>
     protected virtual void OnPostRender(DrawingContext drawingContext)
+    {
+    }
+
+    /// <summary>
+    /// True when OnRender paints the box background while descendants and the
+    /// border are painted later, allowing CSS box shadows to be composited at
+    /// that boundary. Other visuals keep their whole-subtree effect capture.
+    /// </summary>
+    protected virtual bool CanCompositeCssBoxShadowBeforeChildren => false;
+
+    /// <summary>
+    /// Renders the element's outline after OnPostRender and outside its layout
+    /// clip. CSS filters capture it before applying the filter; native XAML
+    /// effects retain their sharp outline afterward. The hook is separate from
+    /// OnPostRender because some controls do not call its base implementation.
+    /// </summary>
+    internal virtual void RenderOutlineCore(DrawingContext drawingContext)
     {
     }
 
@@ -1313,8 +1643,11 @@ public abstract class Visual : DependencyObject
         bool elementEffectsEnabled =
             drawingContext is not IEffectDrawingContext effectContext ||
             effectContext.IsElementEffectCaptureEnabled;
-        if (!child.ParticipatesInRenderCache ||
-            (elementEffectsEnabled && child.Effect is IEffect ce && ce.HasEffect))
+        // Extra ink (outline ring) paints outside RenderSize, but the retained layer
+        // texture is sized exactly (childOffset, RenderSize) — capturing would clip it.
+        if (!child.ParticipatesInRenderCache || child.HasUnboundedContent ||
+            (elementEffectsEnabled && child.Effect is IEffect ce && ce.HasEffect) ||
+            child.GetExtraDirtyPadding() > 0)
         {
             if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CB_NOCACHE);
             ReleaseLayerIfAny(child);
@@ -1362,7 +1695,7 @@ public abstract class Visual : DependencyObject
         // guard 拒绝（offscreen capture 不能嵌套 retained capture，EndOffscreenCapture 会把
         // RT 恢复成 swap-chain 而非 layer），导致 glow/阴影/backdrop 等 effect 静默消失。
         // resize 把带动画的容器翻上 layer 路径正是触发点（独显才有 retained-layer 优化）。
-        if ((elementEffectsEnabled && SubtreeHasEffect(child)) || SubtreeHasNonTranslateTransform(child))
+        if ((elementEffectsEnabled && SubtreeHasEffectOrExtraInk(child)) || SubtreeHasNonTranslateTransform(child))
         {
             if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CB_EFFECT);
             ReleaseLayerIfAny(child);
@@ -1426,19 +1759,21 @@ public abstract class Visual : DependencyObject
         return true;
     }
 
-    // 元素或任意后代是否带活动 effect。effect 通过 offscreen capture 渲染，而 offscreen
-    // capture 不能嵌套进 retained-layer capture（见 TryCompositeChildLayer 的说明），故含
-    // effect 的子树不可作为 retained layer 合成，否则 effect 会静默失效。只在已判定 eligible
-    // 的动画容器上调用，递归开销可控。
-    private static bool SubtreeHasEffect(Visual visual)
+    // 元素或任意后代是否带活动 effect 或 RenderSize 之外的墨迹（outline 环 / LiquidGlass
+    // 阴影）。effect 通过 offscreen capture 渲染，而 offscreen capture 不能嵌套进
+    // retained-layer capture（见 TryCompositeChildLayer 的说明）；extra ink 会被恰好按
+    // (childOffset, RenderSize) 开的 layer 贴图边界裁掉。两者都必须退出 retained 合成。
+    // 只在已判定 eligible 的动画容器上调用，递归开销可控。
+    private static bool SubtreeHasEffectOrExtraInk(Visual visual)
     {
-        if (visual is UIElement ue && ue.Effect is IEffect e && e.HasEffect)
+        if (visual is UIElement ue &&
+            ((ue.Effect is IEffect e && e.HasEffect) || ue.GetExtraDirtyPadding() > 0))
             return true;
         int n = visual.VisualChildrenCount;
         for (int i = 0; i < n; i++)
         {
             var c = visual.GetVisualChild(i);
-            if (c != null && SubtreeHasEffect(c))
+            if (c != null && SubtreeHasEffectOrExtraInk(c))
                 return true;
         }
         return false;
@@ -1549,7 +1884,8 @@ public abstract class Visual : DependencyObject
             // cached GPU layer (one transformed quad) instead of re-walking and
             // re-emitting the whole subtree. Transparently falls back when not
             // eligible or unsupported by the backend.
-            if (TryCompositeChildLayer(drawingContext, uiChild, childOffset))
+            if (!Styling.CssDisplayProperties.HasVisibilityStyleOnPath(uiChild) &&
+                TryCompositeChildLayer(drawingContext, uiChild, childOffset))
             {
                 return true;
             }
@@ -1792,6 +2128,9 @@ public abstract class Visual : DependencyObject
         DpiScale oldDpi = _dpiScale;
         _dpiScale = dpiScale;
         OnDpiChanged(oldDpi, dpiScale);
+        if (this is FrameworkElement { FrameworkParent: null,
+                CssRuntimeState: { ObservesViewport: true } } root)
+            Styling.CssEvaluationScheduler.InvalidateSubtree(root);
         SetRenderDirty();
     }
 

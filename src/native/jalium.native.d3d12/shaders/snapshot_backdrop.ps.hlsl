@@ -17,8 +17,8 @@
 // <=8-tap box below as a degraded-but-visible blur.
 //
 // Colour pipeline: the SAME order on every backend (Vulkan
-// backdrop_quad.frag.hlsl, the software backend). CSS backdrop-filter
-// semantics: the filters act on the backdrop, the tint composites on top:
+// backdrop_quad.frag.hlsl, the software backend). A single CSS backdrop-filter
+// function maps to one stage; ordered CSS lists need a separate pipeline:
 //   blur -> brightness -> contrast -> saturation -> hueRotation -> grayscale
 //        -> sepia -> invert -> tint -> luminosity -> noise
 // Noise is full-range hash grain mixed at noiseIntensity (integer hash, no
@@ -32,12 +32,14 @@
 
 Texture2D sourceTexture : register(t0);
 SamplerState sourceSampler : register(s0);
+#define JALIUM_BACKDROP_ELLIPTICAL_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
 
 cbuffer SnapshotBackdropConstants : register(b0)
 {
     float4 blurInfo;       // x=residual blur radius (source texels, <=8, 0 on the compute route) y=texelStepX z=texelStepY w=unused
     float4 tintColor;      // rgb = tint colour, a = effective tint opacity
-    float4 extraInfo;      // x=saturation y=noiseIntensity z=luminosity w=unused
+    float4 extraInfo;      // x=saturation y=noiseIntensity z=luminosity w=elliptical clip count
     float4 uvRemap;        // xy = uv offset into the source, zw = uv scale over the quad
     float4 clipRect;       // (left, top, right, bottom) in PHYSICAL pixels (SV_Position space)
     float4 clipRadii;      // per-corner radii in physical pixels: (TL, TR, BR, BL)
@@ -92,28 +94,30 @@ float3 ApplyColorPipeline(float3 color)
     // contrast (pivot at mid grey)
     color = (color - 0.5f) * max(materialInfo0.y, 0.0f) + 0.5f;
 
-    // saturation towards Rec.601 luma
+    // CSS feColorMatrix saturation coefficients.
     const float saturation = max(extraInfo.x, 0.0f);
-    float luma = dot(color, float3(0.299f, 0.587f, 0.114f));
+    float luma = dot(color, float3(0.213f, 0.715f, 0.072f));
     color = lerp(float3(luma, luma, luma), color, saturation);
 
-    // hue rotation (YIQ chroma rotation)
+    // CSS feColorMatrix hueRotate coefficients.
     const float hue = materialInfo0.z;
     if (abs(hue) > 0.0001f) {
-        const float yv = dot(color, float3(0.299f, 0.587f, 0.114f));
-        const float iv = dot(color, float3(0.596f, -0.274f, -0.322f));
-        const float qv = dot(color, float3(0.211f, -0.523f, 0.312f));
         const float c = cos(hue);
         const float s = sin(hue);
-        const float i2 = iv * c - qv * s;
-        const float q2 = iv * s + qv * c;
-        color = float3(yv + 0.956f * i2 + 0.621f * q2,
-                       yv - 0.272f * i2 - 0.647f * q2,
-                       yv - 1.106f * i2 + 1.703f * q2);
+        color = float3(
+            dot(color, float3(0.213f + 0.787f * c - 0.213f * s,
+                              0.715f - 0.715f * c - 0.715f * s,
+                              0.072f - 0.072f * c + 0.928f * s)),
+            dot(color, float3(0.213f - 0.213f * c + 0.143f * s,
+                              0.715f + 0.285f * c + 0.140f * s,
+                              0.072f - 0.072f * c - 0.283f * s)),
+            dot(color, float3(0.213f - 0.213f * c - 0.787f * s,
+                              0.715f - 0.715f * c + 0.715f * s,
+                              0.072f + 0.928f * c + 0.072f * s)));
     }
 
     // grayscale
-    luma = dot(color, float3(0.299f, 0.587f, 0.114f));
+    luma = dot(color, float3(0.2126f, 0.7152f, 0.0722f));
     color = lerp(color, float3(luma, luma, luma), saturate(materialInfo1.x));
 
     // sepia
@@ -181,14 +185,18 @@ float4 main(PsInput input) : SV_Target
 
     color = saturate(color);
 
-    // Opaque windows give blurred.a == 1; the floor keeps a faint panel visible
-    // over a fully transparent (per-pixel alpha) window background.
-    const float baseA = max(blurred.a, 0.08f + tintColor.a * 0.25f);
+    // Only tinted materials retain the legacy visibility floor. CSS filter
+    // functions without tint must preserve a transparent backdrop's alpha.
+    const float floorA = tintColor.a > 0.0f ? 0.08f + tintColor.a * 0.25f : 0.0f;
+    const float baseA = max(blurred.a, floorA);
 
     const float sdf = BackdropRoundedSdf(input.position.xy);
     const float aa = max(fwidth(sdf), 0.0001f);
     const float cornerCov = 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, sdf);
 
-    const float outA = baseA * cornerCov * saturate(materialInfo0.w);
+    const uint ellipticalClipCount = (uint)extraInfo.w;
+    const float ellipseCov = ellipticalClipCount == 0u ? 1.0f
+        : JaliumEllipticalClipCoverage(ellipticalClipCount, input.position.xy);
+    const float outA = baseA * cornerCov * ellipseCov * saturate(materialInfo0.w);
     return float4(color * outA, outA);   // premultiplied out
 }

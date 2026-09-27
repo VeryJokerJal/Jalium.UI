@@ -457,8 +457,15 @@ public class DiffViewer : Control
 
     private void MeasureCharacterDimensions()
     {
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 13;
+        if (FontSize <= 0)
+        {
+            _charWidth = 0;
+            _lineHeight = 4; // Keep the viewer's row spacing as a nonzero scroll step.
+            return;
+        }
+
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         var measureText = new FormattedText("M", fontFamily, fontSize)
         {
@@ -565,8 +572,8 @@ public class DiffViewer : Control
         var gutterBrush = GutterBackground ?? s_defaultGutterBackground;
         var lineNumBrush = LineNumberForeground ?? s_defaultLineNumberForeground;
         var selBrush = SelectionBrush ?? s_defaultSelectionBrush;
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 13;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         var gutterW = ShowLineNumbers
             ? ControlRenderGeometry.GetAvailableLength(_effectiveGutterWidth, panelWidth)
@@ -605,6 +612,8 @@ public class DiffViewer : Control
                     dc.DrawRectangle(selBrush, null, new Rect(panelX + gutterW, y, contentWidth, _lineHeight));
                 }
             }
+
+            if (fontSize <= 0) continue;
 
             // Line number
             if (ShowLineNumbers)
@@ -648,8 +657,8 @@ public class DiffViewer : Control
         var gutterBrush = GutterBackground ?? s_defaultGutterBackground;
         var lineNumBrush = LineNumberForeground ?? s_defaultLineNumberForeground;
         var selBrush = SelectionBrush ?? s_defaultSelectionBrush;
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 13;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         var gutterW = ShowLineNumbers
             ? ControlRenderGeometry.GetAvailableLength(_effectiveGutterWidth, bounds.Width)
@@ -689,6 +698,8 @@ public class DiffViewer : Control
                     dc.DrawRectangle(selBrush, null, new Rect(gutterW, y, contentWidth, _lineHeight));
                 }
             }
+
+            if (fontSize <= 0) continue;
 
             // Line numbers (original | modified)
             if (ShowLineNumbers)

@@ -1,5 +1,7 @@
 project(jalium.native.software)
 
+find_package(Threads REQUIRED)
+
 option(JALIUM_SOFTWARE_ENABLE_XSHM
     "Enable the optional MIT-SHM fast path for X11 software presentation" ON)
 
@@ -13,6 +15,20 @@ set(SOURCES
 )
 
 add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})
+
+if(APPLE)
+    set_source_files_properties(src/software_backend.cpp PROPERTIES LANGUAGE OBJCXX)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        "-framework Foundation"
+        "-framework CoreGraphics"
+        "-framework QuartzCore")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework AppKit")
+    else()
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework UIKit")
+    endif()
+    target_compile_options(${PROJECT_NAME} PRIVATE -fobjc-arc)
+endif()
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
@@ -30,6 +46,7 @@ endif()
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         jalium.native.core
+        Threads::Threads
 )
 
 if(WIN32)
@@ -131,8 +148,6 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     DEBUG_POSTFIX ""
 )
 
-option(JALIUM_SOFTWARE_BUILD_TESTS
-    "Build jalium.native.software Linux presentation smoke tests" OFF)
 if(JALIUM_SOFTWARE_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
     if(TARGET jalium.native.platform)
         if(WAYLAND_CLIENT_FOUND)
@@ -145,6 +160,8 @@ if(JALIUM_SOFTWARE_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
                 jalium.native.core
                 jalium.native.platform
                 jalium.native.software)
+            add_test(NAME jalium.native.software.wayland
+                COMMAND jalium.native.software.wayland.tests)
         endif()
 
         if(X11_FOUND)
@@ -193,7 +210,8 @@ if(JALIUM_TEXT_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID AND TARGET jal
             ${JALIUM_STB_ROOT})
     target_link_libraries(jalium.native.software.text.test-support PRIVATE
         jalium.native.core
-        jalium.native.text)
+        jalium.native.text
+        Threads::Threads)
     if(X11_FOUND)
         target_compile_definitions(jalium.native.software.text.test-support
             PUBLIC JALIUM_SOFTWARE_X11_PRESENT)

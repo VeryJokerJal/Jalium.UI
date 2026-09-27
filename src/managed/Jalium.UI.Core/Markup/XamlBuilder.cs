@@ -31,6 +31,22 @@ namespace Jalium.UI.Markup;
 /// </summary>
 public static class XamlBuilder
 {
+    /// <summary>
+    /// Factory emitted for a deferred resource entry. The owner and context are supplied at
+    /// first lookup so generated code never captures the mutable context used to build the
+    /// containing dictionary.
+    /// </summary>
+    public delegate object? DeferredResourceFactory(
+        ResourceDictionary owner,
+        XamlBuildContext context);
+
+    /// <summary>Records the XML expanded name for native CSS matching without changing the control.</summary>
+    public static void SetXmlIdentity(object instance,string namespaceUri,string localName,bool resetAttributes=false)
+        => Jalium.UI.Styling.CssXmlIdentity.Set(instance,namespaceUri,localName,resetAttributes);
+
+    /// <summary>Records a markup attribute; CSS reads native dependency-property values without replacing bindings.</summary>
+    public static void RecordXmlAttribute(object instance,string namespaceUri,string localName,string value,Type? ownerType=null)
+        => Jalium.UI.Styling.CssXmlIdentity.RecordAttribute(instance,namespaceUri,localName,value,ownerType);
     // ============================================================
     // Value / structure callbacks (registered by Jalium.UI.Xaml).
     // ============================================================
@@ -218,6 +234,22 @@ public static class XamlBuilder
     /// <summary>Add a child onto the parent according to its content-property / collection rules.</summary>
     public static void AddChild(object parent, object child, XamlBuildContext ctx, string? resourceKey = null)
         => Required(AddChildImpl, nameof(AddChildImpl))(parent, child, ctx, resourceKey);
+
+    /// <summary>
+    /// Adds a resource factory that is invoked once, on the dictionary's build dispatcher,
+    /// when the key is first read. Successful creation is cached as the ordinary resource
+    /// value without publishing a dictionary-change notification.
+    /// </summary>
+    public static void AddDeferredResource(
+        ResourceDictionary owner,
+        object key,
+        DeferredResourceFactory factory)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(factory);
+        owner.AddDeferredResource(key, factory);
+    }
 
     /// <summary>Apply a child of a property-element form (<c>&lt;Foo.Bar&gt;...&lt;/Foo.Bar&gt;</c>).</summary>
     public static void ApplyPropertyElementChild(

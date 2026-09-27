@@ -297,10 +297,12 @@ public sealed class MarkdownCodeTextPresenter : FrameworkElement, IMarkdownSelec
         var dc = drawingContext;
 
         EnsureMetrics();
+        if (_lineHeight <= 0)
+            return;
 
         var padding = Padding;
         var fontFamilyName = ResolveFontFamilyName();
-        var fontSize = Math.Max(1, FontSize);
+        var fontSize = FontSize;
         var showLineNumbers = ShowLineNumbers;
         var separatorX = padding.Left + _gutterWidth;
 
@@ -374,7 +376,7 @@ public sealed class MarkdownCodeTextPresenter : FrameworkElement, IMarkdownSelec
         }
     }
 
-    private double GutterExtent => ShowLineNumbers ? _gutterWidth + GutterGap : 0;
+    private double GutterExtent => ShowLineNumbers && _lineHeight > 0 ? _gutterWidth + GutterGap : 0;
 
     private void RebuildHighlighting()
     {
@@ -420,8 +422,15 @@ public sealed class MarkdownCodeTextPresenter : FrameworkElement, IMarkdownSelec
 
     private void EnsureMetrics()
     {
+        if (FontSize <= 0)
+        {
+            _lineHeight = 0;
+            _gutterWidth = 0;
+            return;
+        }
+
         var fontFamilyName = ResolveFontFamilyName();
-        var fontSize = Math.Max(1, FontSize);
+        var fontSize = FontSize;
         var probeBrush = Foreground ?? s_fallbackForeground;
 
         var probe = new FormattedText("Ag", fontFamilyName, fontSize)
@@ -449,8 +458,11 @@ public sealed class MarkdownCodeTextPresenter : FrameworkElement, IMarkdownSelec
 
     private double MeasureLineWidth(MarkdownHighlightedCodeLine line)
     {
+        if (FontSize <= 0)
+            return 0;
+
         var fontFamilyName = ResolveFontFamilyName();
-        var fontSize = Math.Max(1, FontSize);
+        var fontSize = FontSize;
 
         double width = 0;
         foreach (var token in line.Tokens)
@@ -524,6 +536,9 @@ public sealed class MarkdownCodeTextPresenter : FrameworkElement, IMarkdownSelec
         }
 
         EnsureMetrics();
+        if (_lineHeight <= 0)
+            return false;
+
         var padding = Padding;
         var contentX = padding.Left + GutterExtent;
         var line = (int)Math.Floor((localPoint.Y - padding.Top) / _lineHeight);
@@ -577,7 +592,7 @@ public sealed class MarkdownCodeTextPresenter : FrameworkElement, IMarkdownSelec
 
     private double MeasureWidth(string text, int count)
     {
-        if (count <= 0)
+        if (count <= 0 || FontSize <= 0)
         {
             return 0;
         }
@@ -586,7 +601,7 @@ public sealed class MarkdownCodeTextPresenter : FrameworkElement, IMarkdownSelec
             count = text.Length;
         }
 
-        var ft = new FormattedText(text.Substring(0, count), ResolveFontFamilyName(), Math.Max(1, FontSize))
+        var ft = new FormattedText(text.Substring(0, count), ResolveFontFamilyName(), FontSize)
         {
             Foreground = Foreground ?? s_fallbackForeground
         };

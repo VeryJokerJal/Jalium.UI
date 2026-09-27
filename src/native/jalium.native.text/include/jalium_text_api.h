@@ -33,6 +33,13 @@ JALIUM_TEXT_API int32_t jalium_text_copy_system_font_family(
     char* buffer,
     int32_t buffer_size);
 
+/// See jalium_api.h. Linux/Android implement this in jalium.native.text.
+JALIUM_TEXT_API int32_t jalium_text_copy_outline_path(
+    const uint16_t* text, uint32_t text_length,
+    const uint16_t* family, uint32_t family_length,
+    float font_size, int32_t font_weight, int32_t font_style,
+    float* width, float* baseline, char* buffer, int32_t buffer_size);
+
 #ifdef __cplusplus
 }
 #endif

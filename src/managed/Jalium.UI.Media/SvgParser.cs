@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Xml.Linq;
+using Jalium.UI.Interop;
 using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Media;
@@ -8,7 +9,7 @@ namespace Jalium.UI.Media;
 /// Parses SVG (Scalable Vector Graphics) documents into Jalium.UI Drawing objects.
 /// Supports core SVG shape elements, gradients, transforms, clip paths, and styling.
 /// </summary>
-internal static class SvgParser
+internal static partial class SvgParser
 {
     private static readonly XNamespace SvgNs = "http://www.w3.org/2000/svg";
     private static readonly XNamespace XlinkNs = "http://www.w3.org/1999/xlink";
@@ -166,7 +167,8 @@ internal static class SvgParser
         if (display == "none")
             return;
         var visibility = GetResolvedAttribute(element, "visibility");
-        if (visibility is "hidden" or "collapse")
+        if (localName is not ("g" or "svg" or "text") &&
+            (visibility is "hidden" or "collapse"))
             return;
 
         switch (localName)
@@ -228,12 +230,14 @@ internal static class SvgParser
         // Apply group-level attributes
         ApplyTransform(element, childGroup);
         ApplyOpacity(element, childGroup);
-        ApplyClipPath(element, childGroup, defs);
 
         ParseChildren(element, childGroup, defs);
 
         if (childGroup.Children.Count > 0)
+        {
+            ApplyClipPath(element, childGroup, defs);
             parentGroup.Children.Add(childGroup);
+        }
     }
 
     private static void ParseRect(XElement element, DrawingGroup group, Dictionary<string, XElement> defs)
@@ -358,22 +362,104 @@ internal static class SvgParser
     }
 
     /// <summary>
-    /// Parses an SVG &lt;text&gt; element (with nested &lt;tspan&gt; content) into a
-    /// <see cref="GlyphRunDrawing"/> carrying a <see cref="FormattedText"/>. Handles the
-    /// common attributes: x/y (baseline anchor), font-size, font-family, font-weight,
-    /// font-style, fill, and text-anchor.
+    /// Parses an SVG &lt;text&gt; element into positioned glyph runs. Nested
+    /// &lt;tspan&gt; elements can change the font, fill, and scalar x/y/dx/dy
+    /// coordinates; text-anchor is applied to each absolute-position chunk.
     ///
     /// <para>
     /// Note: the pure-CPU SVG rasterizer (<c>SoftwareVectorRasterizer</c>) cannot render
-    /// glyphs (it has no font-outline source), so on the primary SVG path the text is parsed
+    /// glyphs, so on the primary SVG path the text is parsed
     /// but not painted; it becomes visible when the Drawing tree is replayed through the GPU
-    /// <c>DrawText</c> fallback. Pixel-perfect text on the software path needs a native
-    /// glyph-outline ABI (→ PathGeometry), tracked as a follow-up. Because measurement isn't
-    /// available at parse time, text-anchor middle/end uses an approximate run width.
+    /// <c>DrawText</c> fallback. The native outline source supplies measured width and
+    /// baseline for alignment; software painting still needs to consume those outlines.
     /// </para>
     /// </summary>
     private static void ParseText(XElement element, DrawingGroup group, Dictionary<string, XElement> defs)
     {
+        if (TryLayoutSvgText(element, requireOutlines: false, out var runs))
+        {
+            var contents = new DrawingGroup();
+            var openSpans = new List<(XElement Element, DrawingGroup Drawing)>();
+            foreach (var run in runs)
+            {
+                if (!run.Visible || string.IsNullOrWhiteSpace(run.Text) || run.Fill == "none")
+                    continue;
+
+                // Keep the text/tspan tree so each span's opacity, transform and
+                // local clip apply to its complete subtree rather than being lost
+                // when neighboring glyph runs happen to share the same paint.
+                var ancestors = new List<XElement>();
+                for (var current = run.Element; !ReferenceEquals(current, element);
+                     current = current.Parent!)
+                    ancestors.Add(current);
+                ancestors.Reverse();
+                var shared = 0;
+                while (shared < openSpans.Count && shared < ancestors.Count &&
+                       ReferenceEquals(openSpans[shared].Element, ancestors[shared]))
+                    shared++;
+                while (openSpans.Count > shared)
+                {
+                    var last = openSpans[^1];
+                    openSpans.RemoveAt(openSpans.Count - 1);
+                    AddDrawing(last.Element, last.Drawing,
+                        openSpans.Count == 0 ? contents : openSpans[^1].Drawing, defs);
+                }
+                for (var index = shared; index < ancestors.Count; index++)
+                    openSpans.Add((ancestors[index], new DrawingGroup()));
+
+                var brush = ResolveFillBrush(run.Element, defs) ??
+                    new SolidColorBrush(Color.FromRgb(0, 0, 0));
+                var formatted = new FormattedText(run.Text, run.Family, run.FontSize)
+                {
+                    Foreground = brush,
+                    FontWeight = run.Weight,
+                    FontStyle = run.Style,
+                };
+                var target = openSpans.Count == 0 ? contents : openSpans[^1].Drawing;
+                Drawing glyphDrawing = new GlyphRunDrawing(formatted,
+                    new Point(run.X, run.Y - run.Baseline)) { ForegroundBrush = brush };
+                if (run.ScaleX != 1)
+                {
+                    var scaled = new DrawingGroup
+                    {
+                        Transform = new ScaleTransform
+                        {
+                            ScaleX = run.ScaleX, ScaleY = 1,
+                            CenterX = run.X, CenterY = run.Y,
+                        },
+                    };
+                    scaled.Children.Add(glyphDrawing);
+                    glyphDrawing = scaled;
+                }
+                if (run.Rotate != 0)
+                {
+                    var rotated = new DrawingGroup
+                    {
+                        Transform = new RotateTransform
+                        {
+                            Angle = run.Rotate, CenterX = run.X, CenterY = run.Y,
+                        },
+                    };
+                    rotated.Children.Add(glyphDrawing);
+                    glyphDrawing = rotated;
+                }
+                target.Children.Add(glyphDrawing);
+            }
+            while (openSpans.Count > 0)
+            {
+                var last = openSpans[^1];
+                openSpans.RemoveAt(openSpans.Count - 1);
+                AddDrawing(last.Element, last.Drawing,
+                    openSpans.Count == 0 ? contents : openSpans[^1].Drawing, defs);
+            }
+            if (contents.Children.Count == 0) return;
+            AddDrawing(element, contents.Children.Count == 1 ? contents.Children[0] : contents,
+                group, defs);
+            return;
+        }
+
+        // Retain the old single-run fallback for unsupported character-position
+        // lists and invalid positioning values.
         var sb = new System.Text.StringBuilder();
         CollectTextContent(element, sb);
         var text = sb.ToString();
@@ -384,11 +470,7 @@ internal static class SvgParser
         var fontSize = ParseDoubleAttribute(element, "font-size", 16);
         if (fontSize <= 0) fontSize = 16;
 
-        var fontFamily = GetResolvedAttribute(element, "font-family") ?? "Segoe UI";
-        var comma = fontFamily.IndexOf(',');
-        if (comma >= 0) fontFamily = fontFamily.Substring(0, comma);
-        fontFamily = fontFamily.Trim().Trim('\'', '"');
-        if (string.IsNullOrEmpty(fontFamily)) fontFamily = "Segoe UI";
+        var fontFamily = ParseSvgFontFamily(element);
 
         // fill="none" means "don't paint the text" (distinct from an absent fill, which
         // defaults to black per SVG). ResolveFillBrush returns null for both, so check the
@@ -403,20 +485,28 @@ internal static class SvgParser
             FontStyle = ParseSvgFontStyle(GetResolvedAttribute(element, "font-style")),
         };
 
-        // SVG (x,y) is the text baseline anchor; FormattedText's origin is top-left, so lift
-        // it by an approximate ascent. text-anchor shifts X by the (approximate) run width.
+        // SVG (x,y) is the baseline anchor; FormattedText's origin is top-left.
+        // Use the same native metrics as text clip-path when available.
         var anchor = GetResolvedAttribute(element, "text-anchor");
-        var approxWidth = text.Length * fontSize * 0.55;
+        var runWidth = text.Length * fontSize * 0.55;
+        var baseline = fontSize * 0.8;
+        if (NativeTextOutline.TryGetPath(text, fontFamily, (float)fontSize,
+            ft.FontWeight, ft.FontStyle, out _, out var measuredWidth, out var measuredBaseline) &&
+            float.IsFinite(measuredWidth) && float.IsFinite(measuredBaseline))
+        {
+            runWidth = measuredWidth;
+            baseline = measuredBaseline;
+        }
         var originX = anchor switch
         {
-            "middle" => x - approxWidth / 2,
-            "end" => x - approxWidth,
+            "middle" => x - runWidth / 2,
+            "end" => x - runWidth,
             _ => x,
         };
-        var originY = y - fontSize * 0.8;
+        var originY = y - baseline;
 
         var drawing = new GlyphRunDrawing(ft, new Point(originX, originY)) { ForegroundBrush = fill };
-        AddDrawing(element, drawing, group);
+        AddDrawing(element, drawing, group, defs);
     }
 
     /// <summary>Recursively concatenates the text content of a &lt;text&gt;/&lt;tspan&gt; element.</summary>
@@ -429,7 +519,7 @@ internal static class SvgParser
                 sb.Append(t.Value);
             }
             else if (node is XElement child &&
-                     (child.Name.LocalName == "tspan" || child.Name.LocalName == "text"))
+                     (child.Name.LocalName is "tspan" or "text" or "textPath"))
             {
                 CollectTextContent(child, sb);
             }
@@ -505,7 +595,10 @@ internal static class SvgParser
         }
 
         if (useGroup.Children.Count > 0)
+        {
+            ApplyClipPath(element, useGroup, defs);
             group.Children.Add(useGroup);
+        }
     }
 
     private static void ParseImage(XElement element, DrawingGroup group, Dictionary<string, XElement> defs)
@@ -547,7 +640,7 @@ internal static class SvgParser
         // must re-sample the embedded source. Bounded to one buffer per embedded
         // image and freed when the owning SvgImage is collected.
         var imageDrawing = new ImageDrawing(bitmap, new Rect(x, y, w, h));
-        AddDrawing(element, imageDrawing, group);
+        AddDrawing(element, imageDrawing, group, defs);
     }
 
     /// <summary>
@@ -629,7 +722,7 @@ internal static class SvgParser
         }
 
         var drawing = new GeometryDrawing(fill, pen, geometry);
-        AddDrawing(element, drawing, group);
+        AddDrawing(element, drawing, group, defs);
     }
 
     /// <summary>
@@ -639,18 +732,21 @@ internal static class SvgParser
     /// raster image (<see cref="ParseImage"/>) parsing so both honor element-level
     /// transform / opacity identically.
     /// </summary>
-    private static void AddDrawing(XElement element, Drawing drawing, DrawingGroup group)
+    private static void AddDrawing(XElement element, Drawing drawing, DrawingGroup group,
+        Dictionary<string, XElement> defs)
     {
         var transform = ParseTransform(element);
         var opacity = ParseDoubleAttribute(element, "opacity", 1.0);
+        var clip = ResolveLocalClipPath(element, defs, SvgObjectBounds(drawing));
 
-        if (transform != null || opacity < 1.0)
+        if (transform != null || opacity < 1.0 || clip != null)
         {
             var wrapper = new DrawingGroup();
             if (transform != null)
                 wrapper.Transform = transform;
             if (opacity < 1.0)
                 wrapper.Opacity = opacity;
+            wrapper.ClipGeometry = clip;
             wrapper.Children.Add(drawing);
             group.Children.Add(wrapper);
         }
@@ -1047,22 +1143,10 @@ internal static class SvgParser
 
     private static void ApplyClipPath(XElement element, DrawingGroup group, Dictionary<string, XElement> defs)
     {
-        var clipPathStr = GetResolvedAttribute(element, "clip-path");
-        if (string.IsNullOrEmpty(clipPathStr)) return;
-
-        var id = ExtractUrlId(clipPathStr);
-        if (id == null || !defs.TryGetValue(id, out var clipPathElement)) return;
-
-        var geometryGroup = new GeometryGroup();
-        foreach (var child in clipPathElement.Elements())
-        {
-            var clipGeometry = ParseClipGeometry(child);
-            if (clipGeometry != null)
-                geometryGroup.Children.Add(clipGeometry);
-        }
-
-        if (geometryGroup.Children.Count > 0)
-            group.ClipGeometry = geometryGroup.Children.Count == 1 ? geometryGroup.Children[0] : geometryGroup;
+        var bounds = Rect.Empty;
+        foreach (var child in group.Children)
+            bounds = Rect.Union(bounds, SvgObjectBounds(child));
+        group.ClipGeometry = ResolveLocalClipPath(element, defs, bounds);
     }
 
     private static Geometry? ParseClipGeometry(XElement element)
@@ -1392,7 +1476,7 @@ internal static class SvgParser
     {
         "fill" or "stroke" or "stroke-width" or "stroke-linecap" or "stroke-linejoin" or
         "stroke-miterlimit" or "stroke-dasharray" or "stroke-dashoffset" or
-        "fill-rule" or "fill-opacity" or "stroke-opacity" or
+        "fill-rule" or "clip-rule" or "fill-opacity" or "stroke-opacity" or
         "font-size" or "font-family" or "font-weight" or "font-style" or
         "text-anchor" or "color" or "visibility" => true,
         _ => false

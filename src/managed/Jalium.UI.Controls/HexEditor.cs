@@ -12,7 +12,7 @@ namespace Jalium.UI.Controls;
 /// Provides offset, hex, and ASCII columns with selection, caret navigation,
 /// keyboard hex entry, and data interpretation.
 /// </summary>
-public class HexEditor : Control
+public class HexEditor : Control, Styling.ICssCaretAnimationHost
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -898,22 +898,25 @@ public class HexEditor : Control
                 _rowCache[rowByteOffset] = cache;
 
                 // Draw offset
-                if (ShowOffsetColumn)
+                if (ShowOffsetColumn && fontSize > 0)
                     DrawOffsetCell(dc, rowByteOffset, y, fontFamily, fontSize);
 
                 // Draw hex (clipped to column)
-                var hexFt = new FormattedText(hexStr, fontFamily, fontSize) { Foreground = hexBrush };
-                TextMeasurement.MeasureText(hexFt);
-                dc.PushClip(new RectangleGeometry(new Rect(_hexColumnStartX, y, _hexColumnWidth, _rowHeight)));
-                dc.DrawText(hexFt, new Point(_hexColumnStartX + ColumnPadding, y));
-                dc.Pop();
-
-                // Draw ASCII
-                if (ShowAsciiColumn)
+                if (fontSize > 0)
                 {
-                    var asciiFt = new FormattedText(asciiStr, fontFamily, fontSize) { Foreground = asciiBrush };
-                    TextMeasurement.MeasureText(asciiFt);
-                    dc.DrawText(asciiFt, new Point(_asciiColumnStartX + ColumnPadding, y));
+                    var hexFt = new FormattedText(hexStr, fontFamily, fontSize) { Foreground = hexBrush };
+                    TextMeasurement.MeasureText(hexFt);
+                    dc.PushClip(new RectangleGeometry(new Rect(_hexColumnStartX, y, _hexColumnWidth, _rowHeight)));
+                    dc.DrawText(hexFt, new Point(_hexColumnStartX + ColumnPadding, y));
+                    dc.Pop();
+
+                    // Draw ASCII
+                    if (ShowAsciiColumn)
+                    {
+                        var asciiFt = new FormattedText(asciiStr, fontFamily, fontSize) { Foreground = asciiBrush };
+                        TextMeasurement.MeasureText(asciiFt);
+                        dc.DrawText(asciiFt, new Point(_asciiColumnStartX + ColumnPadding, y));
+                    }
                 }
             }
 
@@ -943,7 +946,7 @@ public class HexEditor : Control
             }
 
             // Draw data interpretation panel
-            if (ShowDataInterpretation && data != null && dataLength > 0)
+            if (ShowDataInterpretation && data != null && dataLength > 0 && fontSize > 0)
             {
                 DrawDataInterpretation(dc, data, fontFamily, fontSize);
             }
@@ -1179,13 +1182,24 @@ public class HexEditor : Control
 
         long rowByteOffset = caretRow * bytesPerRow;
         _rowCache.TryGetValue(rowByteOffset, out var cache);
+        var caretBrush = Styling.CssCaretColorProperties.Get(this) ?? s_caretBrush;
+        var caretShape = Styling.CssCaretShapeProperties.Get(this);
+
+        void DrawAt(double x)
+        {
+            if (caretShape == Styling.CssCaretShape.Auto)
+                dc.DrawRectangle(caretBrush, null, new Rect(x, y, 2, _rowHeight));
+            else
+                CssCaretPainter.Draw(dc, caretBrush, caretShape,
+                    x, y, _rowHeight, _charWidth, 2);
+        }
 
         if (_isCaretInAsciiPane && ShowAsciiColumn)
         {
             double x = _asciiColumnStartX + ColumnPadding;
             if (cache != null && !string.IsNullOrEmpty(cache.AsciiString))
                 x += MeasureSubstring(cache.AsciiString, 0, col, cache.FontFamily, cache.FontSize);
-            dc.DrawRectangle(s_caretBrush, null, new Rect(x, y, 2, _rowHeight));
+            DrawAt(x);
         }
         else
         {
@@ -1200,7 +1214,7 @@ public class HexEditor : Control
                     x += MeasureSubstring(cache.HexString, charIdx, 1, cache.FontFamily, cache.FontSize);
                 }
             }
-            dc.DrawRectangle(s_caretBrush, null, new Rect(x, y, 2, _rowHeight));
+            DrawAt(x);
         }
     }
 
@@ -2073,6 +2087,12 @@ public class HexEditor : Control
 
     private void UpdateCaretBlink()
     {
+        if (Styling.CssCaretAnimationProperties.IsManual(this))
+        {
+            _caretVisible = true;
+            return;
+        }
+
         long now = Environment.TickCount64;
         if (now - _lastCaretBlinkTicks >= CaretBlinkIntervalMs)
         {
@@ -2081,14 +2101,21 @@ public class HexEditor : Control
         }
     }
 
+    void Styling.ICssCaretAnimationHost.OnCssCaretAnimationChanged()
+    {
+        _caretVisible = IsKeyboardFocused;
+        _lastCaretBlinkTicks = Environment.TickCount64;
+        InvalidateVisual();
+    }
+
     private string GetMonospaceFont()
     {
-        return FontFamily?.Source ?? "Cascadia Code";
+        return FontFamily?.GetRenderingSource(this) ?? "Cascadia Code";
     }
 
     private double GetFontSize()
     {
-        return FontSize > 0 ? FontSize : 14;
+        return FontSize;
     }
 
     private Size MeasureChar(char c, string fontFamily, double fontSize)

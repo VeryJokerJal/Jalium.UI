@@ -532,20 +532,58 @@ public sealed class RequiredValidationRule : ValidationRule
 /// </summary>
 public sealed class RangeValidationRule : ValidationRule
 {
+    private static readonly object s_marker = new();
+    private readonly ConditionalWeakTable<DependencyObject, object> _targets = new();
+    private double? _minimum;
+    private double? _maximum;
+    private bool _hasTargets;
+
     /// <summary>
     /// Gets or sets the minimum value.
     /// </summary>
-    public double? Minimum { get; set; }
+    public double? Minimum
+    {
+        get => _minimum;
+        set => ChangeLimit(ref _minimum, value);
+    }
 
     /// <summary>
     /// Gets or sets the maximum value.
     /// </summary>
-    public double? Maximum { get; set; }
+    public double? Maximum
+    {
+        get => _maximum;
+        set => ChangeLimit(ref _maximum, value);
+    }
 
     /// <summary>
     /// Gets or sets the error message.
     /// </summary>
     public string? ErrorMessage { get; set; }
+
+    internal void TrackCssTarget(DependencyObject target)
+    {
+        _targets.GetValue(target, static _ => s_marker);
+        _hasTargets = true;
+    }
+
+    private void ChangeLimit(ref double? field, double? value)
+    {
+        if (field == value) return;
+        if (!_hasTargets)
+        {
+            field = value;
+            return;
+        }
+
+        var previous = new List<(DependencyObject Target, bool? InRange)>();
+        foreach (var entry in _targets)
+            previous.Add((entry.Key, Styling.CssRangeState.GetInRange(entry.Key)));
+
+        field = value;
+        foreach (var (target, inRange) in previous)
+            Styling.CssRangeState.NotifyBindingChange(target, inRange);
+    }
 
     /// <inheritdoc />
     public override ValidationResult Validate(object? value, CultureInfo cultureInfo)

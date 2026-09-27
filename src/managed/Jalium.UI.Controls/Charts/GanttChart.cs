@@ -353,7 +353,7 @@ public class GanttChart : AxisChartBase
         var xAxis = XAxis ?? new DateTimeAxis();
         double rowH = RowHeight;
         double cornerR = BarCornerRadius;
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
 
         // The gantt area has a label portion on the left, chart portion on the right
         double chartLeft = plotArea.Left + LabelAreaWidth;

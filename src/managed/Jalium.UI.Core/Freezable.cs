@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI;
 
@@ -12,6 +13,17 @@ namespace Jalium.UI;
 public abstract class Freezable : DependencyObject
 {
     private bool _isFrozen;
+
+    /// <summary>Initializes a Freezable on the current dispatcher.</summary>
+    protected Freezable()
+    {
+    }
+
+    /// <summary>Initializes a Freezable on an already selected dispatcher.</summary>
+    internal Freezable(Dispatcher dispatcher)
+        : base(dispatcher)
+    {
+    }
 
     /// <summary>
     /// Occurs when the Freezable or an object it contains is modified.

@@ -2,6 +2,7 @@
 using System.Collections.Specialized;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -17,6 +18,7 @@ public class MenuBar : Control
 
     private readonly ObservableCollection<MenuBarItem> _items = new();
     private StackPanel? _panel;
+    private Border? _cssBorderPainter;
 
     /// <summary>
     /// Gets the collection of MenuBarItem objects in the MenuBar.
@@ -39,16 +41,23 @@ public class MenuBar : Control
     protected override Size MeasureOverride(Size availableSize)
     {
         EnsurePanel();
-        _panel!.Measure(availableSize);
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        _panel!.Measure(CssBoxMetrics.InnerSize(availableSize, insets));
         return new Size(
-            ControlRenderGeometry.GetAvailableLength(_panel.DesiredSize.Width, availableSize.Width),
-            ControlRenderGeometry.GetAvailableLength(Math.Max(_panel.DesiredSize.Height, 32), availableSize.Height));
+            ControlRenderGeometry.GetAvailableLength(
+                _panel.DesiredSize.Width + insets.Left + insets.Right, availableSize.Width),
+            ControlRenderGeometry.GetAvailableLength(
+                Math.Max(_panel.DesiredSize.Height, 32) + insets.Top + insets.Bottom,
+                availableSize.Height));
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        _panel?.Arrange(new Rect(finalSize));
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? finalSize.Width);
+        _panel?.Arrange(ControlRenderGeometry.GetContentRect(new Rect(finalSize), insets));
         return finalSize;
     }
 
@@ -58,8 +67,38 @@ public class MenuBar : Control
         var dc = drawingContext;
         base.OnRender(drawingContext);
 
-        var bg = Background ?? Jalium.UI.Media.Brushes.Transparent;
-        dc.DrawRectangle(bg, null, new Rect(RenderSize));
+        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+        var bg = Background;
+        if (bg is null && backgroundLayer is not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+            bg = Brushes.Transparent;
+        if (bg is null) return;
+
+        var outer = new Rect(RenderSize);
+        var cssRadius = CssBorderRadiusProperties.Get(this);
+        if (cssRadius is null && backgroundLayer is not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+        {
+            dc.DrawRoundedRectangle(bg, null, outer, CornerRadius);
+            return;
+        }
+
+        var radii = cssRadius?.Resolve(RenderSize) ??
+            CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+        var shape = new CssRoundedRectangleGeometry(outer, radii);
+        var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+            CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+        if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, bg, dc,
+                outer, radii, border, padding,
+                brush => dc.DrawGeometry(brush, null, shape)))
+            dc.DrawGeometry(bg, null, shape);
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     /// <inheritdoc />

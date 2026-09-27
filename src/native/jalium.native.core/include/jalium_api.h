@@ -19,6 +19,17 @@
 extern "C" {
 #endif
 
+/// Copies the shaped outline of a UTF-16 text run as SVG path data. Coordinates
+/// use a top-left text layout origin; baseline is returned separately. The
+/// result includes its trailing NUL, or zero if the outline is unavailable.
+/// A null buffer/zero capacity queries the required byte count.
+/// Available from jalium.native.core on Windows.
+JALIUM_API int32_t jalium_text_copy_outline_path(
+    const uint16_t* text, uint32_t text_length,
+    const uint16_t* family, uint32_t family_length,
+    float font_size, int32_t font_weight, int32_t font_style,
+    float* width, float* baseline, char* buffer, int32_t buffer_size);
+
 // ============================================================================
 // Context Management
 // ============================================================================
@@ -138,6 +149,12 @@ JALIUM_API JaliumResult jalium_render_target_query_gpu_timing(
     JaliumRenderTarget* rt,
     JaliumGpuTimingStats* out);
 
+/// Waits until work submitted by the most recent end_draw has completed.
+/// Intended for diagnostics and deterministic benchmarks; normal rendering
+/// should rely on backend frame pacing instead of serializing every frame.
+JALIUM_API JaliumResult jalium_render_target_wait_for_completion(
+    JaliumRenderTarget* rt);
+
 /// Returns the OS HANDLE (as intptr_t) used by this render target's swap
 /// chain as its frame-latency waitable. Callers wait on the handle from
 /// a background thread to drive vsync-aligned rendering; the handle stays
@@ -165,6 +182,27 @@ JALIUM_API intptr_t jalium_render_target_get_frame_latency_waitable(
 /// @return JALIUM_OK on success.
 JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(
     JaliumRenderTarget* rt);
+
+/// Losslessly compacts an idle CPU framebuffer when its bottom rows are one
+/// identical BGRA8 colour and releasing the dense storage saves at least one
+/// MiB. GPU render targets and CPU backends without this optional capability
+/// treat the call as a successful no-op. The call is valid only between frames
+/// and while no offscreen capture is active.
+/// @param rt The render target.
+/// @return JALIUM_OK on success/no-op, JALIUM_ERROR_INVALID_STATE while drawing
+/// or capturing, or JALIUM_ERROR_OUT_OF_MEMORY if candidate allocation failed.
+JALIUM_API JaliumResult jalium_render_target_compact_idle_framebuffer_storage(
+    JaliumRenderTarget* rt);
+
+/// Reports the bytes currently owned by the main CPU framebuffer allocation.
+/// This is allocation capacity, not logical pixel area, and reflects either the
+/// dense BGRA buffer or its lossless idle representation. The output is always
+/// zeroed on failure. GPU backends return JALIUM_ERROR_NOT_SUPPORTED.
+/// @param rt The render target.
+/// @param out_bytes Receives retained allocation bytes.
+JALIUM_API JaliumResult jalium_render_target_query_main_framebuffer_owned_bytes(
+    JaliumRenderTarget* rt,
+    uint64_t* out_bytes);
 
 // ============================================================================
 // Back-Buffer Readback (backend parity verification)
@@ -642,6 +680,19 @@ JALIUM_API void jalium_push_clip_aliased(JaliumRenderTarget* rt, float x, float 
 /// @param ry The y radius of the corners.
 JALIUM_API void jalium_push_rounded_rect_clip(JaliumRenderTarget* rt, float x, float y, float width, float height, float rx, float ry);
 
+/// Pushes a two-axis, per-corner clip, including open-edge and transformed
+/// contours. On success pop once with jalium_pop_clip. Errors leave the stack
+/// unchanged. Older backends return NOT_SUPPORTED without changing their vtable.
+JALIUM_API JaliumResult jalium_push_elliptical_rect_clip(
+    JaliumRenderTarget* rt, const JaliumEllipticalRectClip* clip);
+
+/// Pushes a filled path clip using the FillPath command stream and fill rule
+/// (0 = even-odd, 1 = nonzero). Pop once with jalium_pop_clip on success.
+/// Backends without path clipping return NOT_SUPPORTED without changing state.
+JALIUM_API JaliumResult jalium_push_path_clip(
+    JaliumRenderTarget* rt, float startX, float startY,
+    const float* commands, uint32_t commandLength, int32_t fillRule);
+
 /// Pushes an INVERSE (exclude) rounded rectangle clip onto the stack:
 /// subsequent drawing keeps only the area OUTSIDE the rounded rect (the
 /// interior is masked away). Backends without inverse-clip support push a
@@ -703,12 +754,14 @@ JALIUM_API JaliumBrush* jalium_brush_create_solid(JaliumContext* ctx, float r, f
 /// @param endY The end y coordinate.
 /// @param stops Array of gradient stops (position, r, g, b, a for each stop).
 /// @param stopCount Number of gradient stops.
+/// @param extendMode Spread method: 0=Pad, 1=Repeat, 2=Reflect.
 /// @return A handle to the created brush, or nullptr on failure.
 JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
     JaliumContext* ctx,
     float startX, float startY, float endX, float endY,
     const JaliumGradientStop* stops,
-    uint32_t stopCount
+    uint32_t stopCount,
+    uint32_t extendMode
 );
 
 /// Creates a radial gradient brush.
@@ -721,13 +774,15 @@ JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
 /// @param originY The gradient origin y coordinate.
 /// @param stops Array of gradient stops.
 /// @param stopCount Number of gradient stops.
+/// @param extendMode Spread method: 0=Pad, 1=Repeat, 2=Reflect.
 /// @return A handle to the created brush, or nullptr on failure.
 JALIUM_API JaliumBrush* jalium_brush_create_radial_gradient(
     JaliumContext* ctx,
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
     const JaliumGradientStop* stops,
-    uint32_t stopCount
+    uint32_t stopCount,
+    uint32_t extendMode
 );
 
 /// Destroys a brush.
@@ -756,6 +811,13 @@ JALIUM_API JaliumTextFormat* jalium_text_format_create(
 /// Destroys a text format.
 /// @param format The text format to destroy.
 JALIUM_API void jalium_text_format_destroy(JaliumTextFormat* format);
+
+/// Registers a process-private, already-decoded sfnt font family. Data is copied.
+JALIUM_API JaliumFontResource* jalium_font_resource_register(const wchar_t* family, const uint8_t* data, uint32_t size);
+JALIUM_API JaliumFontResource* jalium_font_resource_acquire(const wchar_t* family);
+JALIUM_API void jalium_font_resource_release(JaliumFontResource* resource);
+/// Borrowed IDWriteFontCollection pointer on Windows; null on other platforms.
+JALIUM_API void* jalium_font_resource_get_collection(JaliumFontResource* resource);
 
 /// Sets the text alignment.
 /// @param format The text format.
@@ -876,6 +938,16 @@ JALIUM_API JaliumResult jalium_text_format_get_font_metrics(
     JaliumTextMetrics* metrics
 );
 
+/// Gets the font and single-glyph rulers used by CSS font-relative units.
+/// Set metrics->structSize to sizeof(JaliumFontUnitMetrics) before calling.
+JALIUM_API JaliumResult jalium_text_format_get_font_unit_metrics(
+    JaliumTextFormat* format, JaliumFontUnitMetrics* metrics);
+
+/// Gets the selected font's MATH script scaling constants, if present.
+/// Set constants->structSize to sizeof(JaliumFontMathConstants) before calling.
+JALIUM_API JaliumResult jalium_text_format_get_font_math_constants(
+    JaliumTextFormat* format, JaliumFontMathConstants* constants);
+
 // ============================================================================
 // Bitmap Management
 // ============================================================================
@@ -977,7 +1049,8 @@ typedef enum {
     JALIUM_BITMAP_SCALING_HIGH_QUALITY    = 2,  ///< Anisotropic + trilinear mipmap.
     JALIUM_BITMAP_SCALING_NEAREST_NEIGHBOR = 3, ///< Point sampling — pixel art / 1:1 UI.
     JALIUM_BITMAP_SCALING_LINEAR          = 4,  ///< Bilinear (no mipmap), explicit.
-    JALIUM_BITMAP_SCALING_FANT            = 5   ///< Treated as HighQuality (Anisotropic + mipmap).
+    JALIUM_BITMAP_SCALING_FANT            = 5,  ///< Treated as HighQuality (Anisotropic + mipmap).
+    JALIUM_BITMAP_SCALING_PIXELATED       = 6   ///< Integer nearest stage, then smooth scaling.
 } JaliumBitmapScalingMode;
 
 /// Draws a bitmap with an explicit scaling mode.
@@ -1230,6 +1303,74 @@ JALIUM_API void jalium_draw_drop_shadow_effect(JaliumRenderTarget* rt,
     float uvOffsetX, float uvOffsetY,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
+/// Draws a drop shadow with independent horizontal/vertical radii at each corner.
+/// This is an optional side interface and does not alter the RenderTarget vtable.
+JALIUM_API JaliumResult jalium_draw_drop_shadow_effect_elliptical(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* contour);
+
+/// Draws an outer shadow with a perimeter already expanded or contracted by spread.
+/// The original x/y/w/h are retained for compositing the captured content above it.
+/// Older backends return NOT_SUPPORTED through the optional side interface.
+JALIUM_API JaliumResult jalium_draw_drop_shadow_effect_spread_elliptical(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* spreadContour);
+
+/// Draws a CSS outer box-shadow, excluding the original border-box interior.
+JALIUM_API JaliumResult jalium_draw_css_box_shadow_effect_elliptical(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* originalContour,
+    const JaliumEllipticalRectClip* spreadContour);
+
+JALIUM_API JaliumResult jalium_paint_css_outer_shadow_layer_elliptical(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    const JaliumEllipticalRectClip* originalContour,
+    const JaliumEllipticalRectClip* spreadContour);
+
+JALIUM_API JaliumResult jalium_paint_css_inner_shadow_layer_elliptical(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    const JaliumEllipticalRectClip* contour);
+
+/// Returns 1 when the render target implements both direct CSS shadow layers.
+JALIUM_API int32_t jalium_supports_css_shadow_layers(JaliumRenderTarget* rt);
+
+/// Applies CSS filter drop-shadow() to the captured input alpha mask.
+/// captureX/Y/W/H identify the padded isolated capture; x/y/w/h remain the
+/// original content rectangle. Older backends return NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_draw_filter_drop_shadow_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a);
+
+/// Applies a CSS text-shadow list to the isolated text-and-decoration capture.
+/// `layers` has `layer_count` entries of seven floats in authored order:
+/// blur radius, X/Y offsets, straight RGB, and opacity.
+JALIUM_API JaliumResult jalium_draw_css_text_shadows(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    const float* layers, uint32_t layer_count);
+
+/// Paints only the shadow layers. The caller paints the text and decoration
+/// after all inline fragments' shadows, keeping adjacent text above them.
+JALIUM_API JaliumResult jalium_draw_css_text_shadows_only(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    const float* layers, uint32_t layer_count);
+
 JALIUM_API void jalium_draw_outer_glow_effect(JaliumRenderTarget* rt,
     float x, float y, float w, float h,
     float glowSize, float r, float g, float b, float a, float intensity,
@@ -1243,9 +1384,31 @@ JALIUM_API void jalium_draw_inner_shadow_effect(JaliumRenderTarget* rt,
     float uvOffsetX, float uvOffsetY,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
+JALIUM_API JaliumResult jalium_draw_inner_shadow_effect_elliptical(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* contour);
+
+/// Adds an inset CSS shadow layer without re-compositing captured content.
+JALIUM_API JaliumResult jalium_draw_inner_shadow_layer_elliptical(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* contour);
+
 JALIUM_API void jalium_draw_color_matrix_effect(JaliumRenderTarget* rt,
     float x, float y, float w, float h,
     const float* matrix);
+
+/// Applies an ordered CSS color-matrix filter chain to the captured content.
+/// Each stage clamps before the next stage reads it. The matrix array contains
+/// 20 floats per stage: four RGBA coefficient rows and one offset row.
+JALIUM_API JaliumResult jalium_draw_color_matrix_chain_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    const float* matrices, uint32_t matrixCount);
 
 JALIUM_API void jalium_draw_emboss_effect(JaliumRenderTarget* rt,
     float x, float y, float w, float h,

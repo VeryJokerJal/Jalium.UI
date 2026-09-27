@@ -1,32 +1,30 @@
-// Vello GPU Pipeline V2 — path_tiling_setup
-// Reads bump.seg_counts to set up indirect dispatch arguments for path_tiling.
+// Vello GPU Pipeline V3 — path_tiling_setup
+// Port of vello 0.10.0 shader/path_tiling_setup.wgsl.
+// Computes the indirect dispatch size for the path_tiling stage, and signals
+// the fine rasterizer (which does not bind bump) when a prior stage failed.
 //
-// Dispatch: 1, 1, 1
+// Bindings: u0 bump | u1 indirect | u2 ptcl
+// Dispatch: (1, 1, 1)
 
 #include "vello_shared.hlsli"
 
 RWByteAddressBuffer bump : register(u0);
-
-// IndirectCount: { count_x, count_y, count_z }
 RWByteAddressBuffer indirect : register(u1);
+RWStructuredBuffer<uint> ptcl : register(u2);
+
+#define WG_SIZE 256u
 
 [numthreads(1, 1, 1)]
 void main()
 {
-    uint n_seg_counts;
-    bump.InterlockedAdd(BUMP_SEG_COUNTS, 0u, n_seg_counts); // atomic load
-
-    // Check for prior failure
-    uint failed;
-    bump.InterlockedAdd(BUMP_FAILED, 0u, failed);
-    if ((failed & (STAGE_FLATTEN | STAGE_TILE_ALLOC | STAGE_PATH_COUNT)) != 0u) {
+    if (bump.Load(BUMP_FAILED) != 0u) {
         indirect.Store(0, 0u);
-        indirect.Store(4, 1u);
-        indirect.Store(8, 1u);
-        return;
+        // signal fine rasterizer that failure happened (it doesn't bind bump)
+        ptcl[0] = ~0u;
+    } else {
+        uint segments = bump.Load(BUMP_SEG_COUNTS);
+        indirect.Store(0, (segments + (WG_SIZE - 1u)) / WG_SIZE);
     }
-
-    indirect.Store(0, (n_seg_counts + 255u) / 256u);
     indirect.Store(4, 1u);
     indirect.Store(8, 1u);
 }

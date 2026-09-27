@@ -38,10 +38,8 @@ internal static class DevToolsUi
         => Text(content, size, color ?? DevToolsTheme.TextPrimary, mono: true);
 
     /// <summary>
-    /// Letter-spaces a short, display-only label by inserting thin spaces between
-    /// characters — the framework has no letter-spacing property, so this fakes the
-    /// "S P A C E D   C A P S" instrument look. Only use on static labels (headings,
-    /// pills, eyebrows), never on user-editable / measured-width text.
+    /// Preserves the existing thin-space styling for short, display-only labels.
+    /// New TextBlock styling can use CSS letter-spacing without changing source text.
     /// </summary>
     public static string Tracked(string s)
     {

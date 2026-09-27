@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 // Impeller solid fill fragment shader
 // Used by ImpellerVulkanEngine / VelloVulkanEngine (CPU-tessellated geometry)
 // and the stencil-then-cover PSOs — all five pipelines share this FS and the
@@ -56,7 +59,7 @@ float RoundedClipCoverage(float2 p, float4 rect, float4 radii)
     return 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, d);
 }
 
-float4 main(PSInput input) : SV_TARGET {
+float4 UnclippedMain(PSInput input) : SV_TARGET {
     float4 color = input.color;
     if (pc.clipFlags.x > 0.5f) {
         // fwidth runs under uniform control flow (push-constant branch) and
@@ -70,5 +73,13 @@ float4 main(PSInput input) : SV_TARGET {
         }
         color *= cov;   // premultiplied alpha: scale ALL channels by coverage
     }
+    return color;
+}
+
+float4 main(PSInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    color *= coverage;
     return color;
 }

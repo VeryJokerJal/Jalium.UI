@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 struct PushConstants
 {
     float4 color;
@@ -91,7 +94,7 @@ float RoundedClipCoverage(float2 pixel)
     return coverage;
 }
 
-float4 main(PsInput input) : SV_Target
+float4 UnclippedMain(PsInput input) : SV_Target
 {
     float4 color = input.color * gPushConstants.color;
     if (gPushConstants.clipFlags.x > 0.5f) {
@@ -107,5 +110,13 @@ float4 main(PsInput input) : SV_Target
     // push-constant carries the real color. For per-vertex gradient fills the
     // push-constant is set to (1,1,1,1) and the vertex colors carry the
     // sampled per-vertex colors.
+    return color;
+}
+
+float4 main(PsInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    color *= coverage;
     return color;
 }

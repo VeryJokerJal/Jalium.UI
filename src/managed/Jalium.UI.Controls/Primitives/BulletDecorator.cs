@@ -225,12 +225,13 @@ public class BulletDecorator : Decorator
             return element.RenderSize.Height;
         }
 
-        double fontSize = text.FontSize > 0 ? text.FontSize : 14;
-        double naturalLineHeight = TextMeasurement.GetLineHeight(
-            text.FontFamily.Source,
-            fontSize,
-            text.FontWeight.ToOpenTypeWeight(),
-            text.FontStyle.ToOpenTypeStyle());
+        double naturalLineHeight = text.FontSize > 0
+            ? TextMeasurement.GetLineHeight(
+                text.FontFamily.GetRenderingSource(text),
+                text.FontSize,
+                text.FontWeight.ToOpenTypeWeight(),
+                text.FontStyle.ToOpenTypeStyle())
+            : 0;
         double lineHeight = double.IsNaN(text.LineHeight)
             ? naturalLineHeight
             : text.LineStackingStrategy == LineStackingStrategy.MaxHeight

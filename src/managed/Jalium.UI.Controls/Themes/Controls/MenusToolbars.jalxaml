@@ -62,9 +62,9 @@
     <!-- ============================================== -->
     <!-- AppBarSeparator Style -->
     <!-- ============================================== -->
+    <!-- Its intrinsic 1-DIP width expands when CSS borders or padding are present. -->
     <Style TargetType="AppBarSeparator">
         <Setter Property="Foreground" Value="{ThemeResource AppBarSeparatorForeground}" />
-        <Setter Property="Width" Value="1" />
         <Setter Property="Margin" Value="6,8,6,8" />
     </Style>
 

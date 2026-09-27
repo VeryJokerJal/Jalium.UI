@@ -125,6 +125,10 @@ public class DockPanel : Panel
             if (children[i] is not FrameworkElement child)
                 continue;
 
+            // position:absolute children are out of flow: no dock slot, no spacing.
+            if (IsCssAbsolute(child))
+                continue;
+
             // Inject spacing along the axis of the preceding docked sibling so the next
             // child's constraint already accounts for the gap we will insert in Arrange.
             if (previousDock is Dock prev)
@@ -170,6 +174,8 @@ public class DockPanel : Panel
         parentWidth = Math.Max(parentWidth, accumulatedWidth);
         parentHeight = Math.Max(parentHeight, accumulatedHeight);
 
+        MeasureCssAbsoluteChildren(availableSize);
+
         return new Size(parentWidth, parentHeight);
     }
 
@@ -190,7 +196,7 @@ public class DockPanel : Panel
         {
             for (int i = children.Count - 1; i >= 0; i--)
             {
-                if (children[i] is FrameworkElement)
+                if (children[i] is FrameworkElement candidate && !IsCssAbsolute(candidate))
                 {
                     lastFeIndex = i;
                     break;
@@ -203,6 +209,10 @@ public class DockPanel : Panel
         for (int i = 0; i < children.Count; i++)
         {
             if (children[i] is not FrameworkElement fe)
+                continue;
+
+            // position:absolute children are placed by the inset protocol below.
+            if (IsCssAbsolute(fe))
                 continue;
 
             // Consume spacing from the slot on the side of the previously docked sibling
@@ -291,6 +301,8 @@ public class DockPanel : Panel
 
             fe.Arrange(childRect);
         }
+
+        ArrangeCssAbsoluteChildren(finalSize);
 
         return finalSize;
     }

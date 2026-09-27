@@ -280,17 +280,17 @@ public class InfoBar : ContentControl
         var height = MinHeight;
 
         // Calculate text heights
-        if (!string.IsNullOrEmpty(Title))
+        if (FontSize > 0 && !string.IsNullOrEmpty(Title))
         {
-            var titleFormatted = new FormattedText(Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2);
+            var titleFormatted = new FormattedText(Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize + 2);
             titleFormatted.FontWeight = 600;
             Interop.TextMeasurement.MeasureText(titleFormatted);
             height = Math.Max(height, titleFormatted.Height + padding.TotalHeight);
         }
 
-        if (!string.IsNullOrEmpty(Message))
+        if (FontSize > 0 && !string.IsNullOrEmpty(Message))
         {
-            var messageFormatted = new FormattedText(Message, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+            var messageFormatted = new FormattedText(Message, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
             Interop.TextMeasurement.MeasureText(messageFormatted);
 
             if (!string.IsNullOrEmpty(Title))
@@ -353,9 +353,9 @@ public class InfoBar : ContentControl
         var textBrush = Foreground ?? s_whiteBrush;
         var currentY = padding.Top;
 
-        if (!string.IsNullOrEmpty(Title))
+        if (FontSize > 0 && !string.IsNullOrEmpty(Title))
         {
-            var titleFormatted = new FormattedText(Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2)
+            var titleFormatted = new FormattedText(Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize + 2)
             {
                 Foreground = textBrush,
                 FontWeight = 600
@@ -365,9 +365,9 @@ public class InfoBar : ContentControl
             currentY += titleFormatted.Height + 4;
         }
 
-        if (!string.IsNullOrEmpty(Message))
+        if (FontSize > 0 && !string.IsNullOrEmpty(Message))
         {
-            var messageFormatted = new FormattedText(Message, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var messageFormatted = new FormattedText(Message, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = textBrush
             };

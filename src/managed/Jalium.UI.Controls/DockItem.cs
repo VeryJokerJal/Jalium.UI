@@ -1084,13 +1084,18 @@ public partial class DockItem : HeaderedContentControl
     protected override Size MeasureOverride(Size availableSize)
     {
         var headerText = Header?.ToString() ?? "";
-        var fontSize = FontSize > 0 ? FontSize : 12;
-        var fontFamily = !string.IsNullOrEmpty(FontFamily?.Source) ? FontFamily.Source : FrameworkElement.DefaultFontFamilyName;
-        var formatted = new FormattedText(headerText, fontFamily, fontSize);
-        TextMeasurement.MeasureText(formatted);
+        var fontSize = FontSize;
+        double textWidth = 0;
+        if (fontSize > 0 && headerText.Length > 0)
+        {
+            var fontFamily = !string.IsNullOrEmpty(FontFamily?.GetRenderingSource(this)) ? FontFamily.GetRenderingSource(this) : FrameworkElement.DefaultFontFamilyName;
+            var formatted = new FormattedText(headerText, fontFamily, fontSize);
+            TextMeasurement.MeasureText(formatted);
+            textWidth = formatted.Width;
+        }
 
         var padding = GetEffectivePadding();
-        var desiredWidth = formatted.Width + padding.Left + padding.Right;
+        var desiredWidth = textWidth + padding.Left + padding.Right;
 
         // Add space for close button
         if (CanClose)
@@ -1273,11 +1278,11 @@ public partial class DockItem : HeaderedContentControl
     private FormattedText? CreateHeaderTextLayout(Brush textBrush, double availableWidth, double availableHeight)
     {
         var headerText = Header?.ToString() ?? string.Empty;
-        if (string.IsNullOrEmpty(headerText))
+        if (string.IsNullOrEmpty(headerText) || FontSize <= 0)
             return null;
 
-        var fontSize = FontSize > 0 ? FontSize : 12;
-        var fontFamily = !string.IsNullOrEmpty(FontFamily?.Source) ? FontFamily.Source : FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
+        var fontFamily = !string.IsNullOrEmpty(FontFamily?.GetRenderingSource(this)) ? FontFamily.GetRenderingSource(this) : FrameworkElement.DefaultFontFamilyName;
         if (!ShouldConstrainHeaderTextWidth())
         {
             var naturalText = new FormattedText(headerText, fontFamily, fontSize)

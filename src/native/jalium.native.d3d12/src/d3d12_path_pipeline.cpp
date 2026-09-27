@@ -39,6 +39,8 @@
 #include "d3d12_direct_renderer.h"
 #include "jalium_flatten.h"
 #include "jalium_stencil_path.h"
+#include "jalium_elliptical_clip_shader.h"
+#include <string>
 
 #include <d3dcompiler.h>
 #include <cstring>
@@ -80,7 +82,12 @@ inline D3D12_RESOURCE_BARRIER MakeBarrier(ID3D12Resource* r,
 // ============================================================================
 // Shaders
 // ============================================================================
-static const char* kStencilPathHLSL = R"(
+static const std::string kStencilPathHLSL = std::string(kEllipticalClipHlsl) + R"(
+cbuffer RoundedClip : register(b2) {
+    uint2 unusedClipFlags;
+    uint ellipticalClipCount;
+    uint unusedClipPadding;
+};
 cbuffer PathDraw : register(b1) {
     float4 transform0;     // m11 m12 m21 m22
     float4 transform1;     // dx  dy  _   _
@@ -111,8 +118,8 @@ VSOut VSMain(VSIn input) {
     return o;
 }
 
-float4 PSMain() : SV_TARGET {
-    return drawColor;
+float4 PSMain(VSOut input) : SV_TARGET {
+    return drawColor * JaliumEllipticalClipCoverage(ellipticalClipCount, input.svpos.xy);
 }
 )";
 
@@ -162,6 +169,35 @@ float4 PSMain(VSOut input) : SV_TARGET {
 // Resource creation
 // ============================================================================
 
+bool D3D12DirectRenderer::EnsureStencilPathResources()
+{
+    if (stencilPathReady_) return true;
+    if (stencilPathInitAttempted_) return false;
+
+    stencilPathInitAttempted_ = true;
+    if (CreateStencilPathResources()) return true;
+
+    // Creation publishes shaders, root signatures, PSOs and heaps in stages.
+    // Release any partial optional pipeline so a failed fallback does not retain
+    // memory for the rest of the render target's lifetime.
+    stencilPathRootSig_.Reset();
+    psoStencilFillNonZero_.Reset();
+    psoStencilFillEvenOdd_.Reset();
+    psoStencilCover_.Reset();
+    stencilPathVS_.Reset();
+    stencilPathPS_.Reset();
+    pathResolveRootSig_.Reset();
+    psoPathResolve_.Reset();
+    pathResolveVS_.Reset();
+    pathResolvePS_.Reset();
+    pathMsaaRtvHeap_.Reset();
+    stencilDsvHeap_.Reset();
+    stencilPathReady_ = false;
+    OutputDebugStringA(
+        "[D3D12DirectRenderer] Lazy stencil path init failed; using analytic fallback\n");
+    return false;
+}
+
 bool D3D12DirectRenderer::CreateStencilPathResources()
 {
     if (!device_) return false;
@@ -200,14 +236,14 @@ bool D3D12DirectRenderer::CreateStencilPathResources()
     // ── Path stencil/cover shaders.
     {
         ComPtr<ID3DBlob> err;
-        if (FAILED(D3DCompile(kStencilPathHLSL, std::strlen(kStencilPathHLSL),
+        if (FAILED(D3DCompile(kStencilPathHLSL.data(), kStencilPathHLSL.size(),
                 "stencil_path", nullptr, nullptr, "VSMain", "vs_5_0",
                 compileFlags, 0, &stencilPathVS_, &err))) {
             if (err) OutputDebugStringA((const char*)err->GetBufferPointer());
             return false;
         }
         err.Reset();
-        if (FAILED(D3DCompile(kStencilPathHLSL, std::strlen(kStencilPathHLSL),
+        if (FAILED(D3DCompile(kStencilPathHLSL.data(), kStencilPathHLSL.size(),
                 "stencil_path", nullptr, nullptr, "PSMain", "ps_5_0",
                 compileFlags, 0, &stencilPathPS_, &err))) {
             if (err) OutputDebugStringA((const char*)err->GetBufferPointer());
@@ -235,16 +271,22 @@ bool D3D12DirectRenderer::CreateStencilPathResources()
 
     // ── Root signature for stencil/cover (b1 root constants only).
     {
-        D3D12_ROOT_PARAMETER param = {};
-        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        param.Constants.ShaderRegister = 1;
-        param.Constants.RegisterSpace = 0;
-        param.Constants.Num32BitValues = 16;
-        param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 1;
+        params[0].Constants.Num32BitValues = 16;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[1].Constants.ShaderRegister = 2;
+        params[1].Constants.Num32BitValues = 12;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[2].Descriptor.ShaderRegister = 3;
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = 1;
-        rsDesc.pParameters = &param;
+        rsDesc.NumParameters = 3;
+        rsDesc.pParameters = params;
         rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
         ComPtr<ID3DBlob> rsBlob, rsErr;
@@ -748,7 +790,7 @@ bool D3D12DirectRenderer::AddStencilPath(
     float r, float g, float b, float a,
     int32_t fillRule)
 {
-    if (!stencilPathReady_ || !inFrame_) return false;
+    if (!inFrame_ || !EnsureStencilPathResources()) return false;
     if (!geom || geom->fillTriangles.empty() || geom->coverTriangles.empty()) {
         return true;
     }

@@ -13,6 +13,11 @@ namespace Jalium.UI.Xaml.SourceGenerator;
 /// </summary>
 internal static class JalxamlCodeGenerator
 {
+    // A helper call is smaller than the general Color element path, but keep the optimization
+    // scoped to real palettes so the generated metadata/helper body is paid only when the
+    // aggregate saving is material. Colors.jalxaml currently contributes hundreds of entries.
+    private const int MinimumLiteralColorHelperCount = 16;
+
     /// <summary>
     /// Try to emit the body of <c>InitializeComponent</c>. Returns null when the document
     /// uses features the codegen does not support yet — unresolved CLR type for an element,
@@ -84,6 +89,788 @@ internal static class JalxamlCodeGenerator
         return sb.ToString();
     }
 
+    private sealed class DeferredStylePlan
+    {
+        private readonly Dictionary<JalxamlAstNode, List<DeferredStyleEntry>> _entriesByDictionary = new();
+        private readonly HashSet<JalxamlAstNode> _deferredNodes = new();
+        private readonly Dictionary<JalxamlAstNode, LiteralColorEntry> _literalColors = new();
+        private readonly Dictionary<JalxamlAstNode, LiteralSolidColorBrushEntry> _literalBrushes = new();
+
+        public List<DeferredStyleEntry> Entries { get; } = new();
+        public bool UsesLiteralColorHelper =>
+            _literalColors.Count >= MinimumLiteralColorHelperCount;
+
+        public void Add(JalxamlAstNode dictionary, DeferredStyleEntry entry)
+        {
+            if (!_entriesByDictionary.TryGetValue(dictionary, out var entries))
+            {
+                entries = new List<DeferredStyleEntry>();
+                _entriesByDictionary.Add(dictionary, entries);
+            }
+
+            entries.Add(entry);
+            Entries.Add(entry);
+            _deferredNodes.Add(entry.Node);
+        }
+
+        public void AddLiteralBrush(LiteralSolidColorBrushEntry entry)
+            => _literalBrushes.Add(entry.Node, entry);
+
+        public void AddLiteralColor(LiteralColorEntry entry)
+            => _literalColors.Add(entry.Node, entry);
+
+        public bool TryGetLiteralColor(
+            JalxamlAstNode node,
+            out LiteralColorEntry entry)
+        {
+            if (UsesLiteralColorHelper
+                && _literalColors.TryGetValue(node, out var found))
+            {
+                entry = found;
+                return true;
+            }
+
+            entry = null!;
+            return false;
+        }
+
+        public List<DeferredStyleEntry>? GetEntries(JalxamlAstNode dictionary)
+            => _entriesByDictionary.TryGetValue(dictionary, out var entries) ? entries : null;
+
+        public bool IsDeferred(JalxamlAstNode node) => _deferredNodes.Contains(node);
+
+        public bool TryGetLiteralBrush(
+            JalxamlAstNode node,
+            out LiteralSolidColorBrushEntry entry)
+        {
+            if (_literalBrushes.TryGetValue(node, out var found))
+            {
+                entry = found;
+                return true;
+            }
+
+            entry = null!;
+            return false;
+        }
+    }
+
+    private sealed class DeferredStyleEntry
+    {
+        public DeferredStyleEntry(
+            JalxamlAstNode node,
+            DeferredResourceKey key,
+            int index)
+        {
+            Node = node;
+            Key = key;
+            Index = index;
+            FactoryName = $"__CreateDeferredStyle{index}";
+        }
+
+        public JalxamlAstNode Node { get; }
+        public DeferredResourceKey Key { get; }
+        public int Index { get; }
+        public string FactoryName { get; }
+    }
+
+    private sealed class LiteralSolidColorBrushEntry
+    {
+        public LiteralSolidColorBrushEntry(
+            JalxamlAstNode node,
+            DeferredResourceKey key,
+            uint argb)
+        {
+            Node = node;
+            Key = key;
+            Argb = argb;
+        }
+
+        public JalxamlAstNode Node { get; }
+        public DeferredResourceKey Key { get; }
+        public uint Argb { get; }
+    }
+
+    private sealed class LiteralColorEntry
+    {
+        public LiteralColorEntry(
+            JalxamlAstNode node,
+            DeferredResourceKey key,
+            uint argb)
+        {
+            Node = node;
+            Key = key;
+            Argb = argb;
+        }
+
+        public JalxamlAstNode Node { get; }
+        public DeferredResourceKey Key { get; }
+        public uint Argb { get; }
+    }
+
+    private readonly struct DeferredResourceKey
+    {
+        public DeferredResourceKey(string expression, string identity)
+        {
+            Expression = expression;
+            Identity = identity;
+        }
+
+        public string Expression { get; }
+        public string Identity { get; }
+    }
+
+    private static DeferredStylePlan CreateDeferredStylePlan(
+        JalxamlAstNode root,
+        EmitContext ctx)
+    {
+        var plan = new DeferredStylePlan();
+        var nextFactoryIndex = 0;
+        CollectDeferredStyles(root, ctx, plan, ref nextFactoryIndex);
+        return plan;
+    }
+
+    private static void CollectDeferredStyles(
+        JalxamlAstNode node,
+        EmitContext ctx,
+        DeferredStylePlan plan,
+        ref int nextFactoryIndex)
+    {
+        if (string.Equals(
+                node.ResolvedClrTypeName,
+                "Jalium.UI.ResourceDictionary",
+                StringComparison.Ordinal))
+        {
+            AnalyzeResourceDictionaryForDeferredStyles(
+                node,
+                ctx,
+                plan,
+                ref nextFactoryIndex);
+        }
+
+        // Resource dictionaries inside a template are already behind the template's visual
+        // factory, so deferring them again has no startup benefit and complicates namescope
+        // ownership. Keep that subtree on its existing path.
+        if (IsTemplateClrType(node.ResolvedClrTypeName))
+        {
+            return;
+        }
+
+        foreach (var child in node.Children)
+        {
+            CollectDeferredStyles(child, ctx, plan, ref nextFactoryIndex);
+        }
+
+        foreach (var propertyElement in node.PropertyElements)
+        {
+            foreach (var child in propertyElement.Children)
+            {
+                CollectDeferredStyles(child, ctx, plan, ref nextFactoryIndex);
+            }
+        }
+    }
+
+    private static void AnalyzeResourceDictionaryForDeferredStyles(
+        JalxamlAstNode dictionary,
+        EmitContext ctx,
+        DeferredStylePlan plan,
+        ref int nextFactoryIndex)
+    {
+        var keyCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var child in dictionary.Children)
+        {
+            if (!TryGetKnownResourceKey(child, ctx, out var key))
+            {
+                continue;
+            }
+
+            keyCounts.TryGetValue(key.Identity, out var count);
+            keyCounts[key.Identity] = count + 1;
+        }
+
+        foreach (var child in dictionary.Children)
+        {
+            if (IsStyleNode(child, ctx))
+            {
+                if (HasUnsafeDeferredStyleSemantics(child, insideTemplateContent: false)
+                    || !TryGetDeferredStyleKey(child, ctx, out var styleKey)
+                    || !keyCounts.TryGetValue(styleKey.Identity, out var styleKeyCount)
+                    || styleKeyCount != 1)
+                {
+                    continue;
+                }
+
+                plan.Add(
+                    dictionary,
+                    new DeferredStyleEntry(child, styleKey, nextFactoryIndex++));
+                continue;
+            }
+
+            if (!TryGetLiteralSolidColorBrushEntry(child, out var literalBrush))
+            {
+                if (TryGetLiteralColorEntry(child, out var literalColor))
+                {
+                    plan.AddLiteralColor(literalColor);
+                }
+
+                continue;
+            }
+
+            plan.AddLiteralBrush(literalBrush);
+        }
+    }
+
+    private static bool TryGetKnownResourceKey(
+        JalxamlAstNode node,
+        EmitContext ctx,
+        out DeferredResourceKey key)
+    {
+        var explicitKey = FindExplicitResourceKey(node);
+        if (explicitKey != null)
+        {
+            return TryCreatePlainStringKey(explicitKey.Value, out key);
+        }
+
+        if (IsStyleNode(node, ctx))
+        {
+            return TryGetImplicitStyleKey(node, ctx, out key);
+        }
+
+        key = default;
+        return false;
+    }
+
+    private static bool TryGetDeferredStyleKey(
+        JalxamlAstNode style,
+        EmitContext ctx,
+        out DeferredResourceKey key)
+    {
+        var explicitKey = FindExplicitResourceKey(style);
+        if (explicitKey != null)
+        {
+            // Complex markup-extension keys keep the original eager path. The generated
+            // AddChild bridge owns those semantics and must see the fully-created object.
+            return TryCreatePlainStringKey(explicitKey.Value, out key);
+        }
+
+        return TryGetImplicitStyleKey(style, ctx, out key);
+    }
+
+    private static JalxamlAstAttribute? FindExplicitResourceKey(JalxamlAstNode node)
+    {
+        foreach (var attribute in node.Attributes)
+        {
+            if (attribute.Kind == JalxamlAttributeKind.XDirective
+                && string.Equals(attribute.LocalName, "Key", StringComparison.Ordinal))
+            {
+                return attribute;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryCreatePlainStringKey(
+        string value,
+        out DeferredResourceKey key)
+    {
+        if (string.IsNullOrEmpty(value)
+            || value.TrimStart().StartsWith("{", StringComparison.Ordinal))
+        {
+            key = default;
+            return false;
+        }
+
+        key = new DeferredResourceKey(
+            EscapeStringLiteral(value),
+            "string\0" + value);
+        return true;
+    }
+
+    private static bool TryGetImplicitStyleKey(
+        JalxamlAstNode style,
+        EmitContext ctx,
+        out DeferredResourceKey key)
+    {
+        foreach (var attribute in style.Attributes)
+        {
+            if (attribute.Kind != JalxamlAttributeKind.Value
+                || !string.Equals(attribute.LocalName, "TargetType", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var typeReference = GetXamlTypeReference(attribute.Value);
+            if (string.IsNullOrEmpty(typeReference)
+                || !ctx.TryResolvePrefixedType(typeReference!, out var globalTypeName))
+            {
+                break;
+            }
+
+            var identity = globalTypeName.StartsWith("global::", StringComparison.Ordinal)
+                ? globalTypeName.Substring("global::".Length)
+                : globalTypeName;
+            key = new DeferredResourceKey(
+                $"typeof({globalTypeName})",
+                "type\0" + identity);
+            return true;
+        }
+
+        key = default;
+        return false;
+    }
+
+    private static bool IsStyleNode(JalxamlAstNode node, EmitContext ctx)
+    {
+        if (string.Equals(node.ResolvedClrTypeName, "Jalium.UI.Style", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrEmpty(node.ResolvedClrTypeName))
+        {
+            return false;
+        }
+
+        for (var type = ctx.ResolveType(node.ResolvedClrTypeName!);
+             type != null;
+             type = type.BaseType)
+        {
+            if (string.Equals(
+                    type.ToDisplayString(),
+                    "Jalium.UI.Style",
+                    StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetLiteralSolidColorBrushEntry(
+        JalxamlAstNode node,
+        out LiteralSolidColorBrushEntry entry)
+    {
+        const string PresentationNamespace =
+            "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        const string XamlLanguageNamespace =
+            "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        entry = null!;
+        if (!string.Equals(
+                node.ResolvedClrTypeName,
+                "Jalium.UI.Media.SolidColorBrush",
+                StringComparison.Ordinal)
+            || !string.Equals(
+                node.NamespaceUri,
+                PresentationNamespace,
+                StringComparison.Ordinal)
+            || !string.Equals(node.LocalName, "SolidColorBrush", StringComparison.Ordinal)
+            || node.Children.Count != 0
+            || node.PropertyElements.Count != 0
+            || !string.IsNullOrEmpty(node.TextContent)
+            || !string.IsNullOrEmpty(node.RazorIfCondition))
+        {
+            return false;
+        }
+
+        JalxamlAstAttribute? keyAttribute = null;
+        JalxamlAstAttribute? colorAttribute = null;
+        var semanticAttributeIndex = 0;
+        foreach (var attribute in node.Attributes)
+        {
+            if (attribute.Kind == JalxamlAttributeKind.XmlnsDecl)
+            {
+                continue;
+            }
+
+            // Keep this path deliberately exact. Besides ruling out x:Shared, x:Name,
+            // bindings and attached properties, requiring the same x:Key/Color order lets the
+            // shared emitted helper preserve XML-attribute recording order byte-for-byte.
+            if (semanticAttributeIndex == 0
+                && attribute.Kind == JalxamlAttributeKind.XDirective
+                && string.Equals(attribute.LocalName, "Key", StringComparison.Ordinal)
+                && string.Equals(
+                    attribute.NamespaceUri,
+                    XamlLanguageNamespace,
+                    StringComparison.Ordinal))
+            {
+                keyAttribute = attribute;
+            }
+            else if (semanticAttributeIndex == 1
+                     && attribute.Kind == JalxamlAttributeKind.Value
+                     && string.IsNullOrEmpty(attribute.Prefix)
+                     && string.IsNullOrEmpty(attribute.NamespaceUri)
+                     && string.Equals(attribute.LocalName, "Color", StringComparison.Ordinal))
+            {
+                colorAttribute = attribute;
+            }
+            else
+            {
+                return false;
+            }
+
+            semanticAttributeIndex++;
+        }
+
+        if (semanticAttributeIndex != 2
+            || keyAttribute == null
+            || colorAttribute == null
+            || !TryCreatePlainStringKey(keyAttribute.Value, out var key)
+            || !TryParseLiteralColorArgb(colorAttribute.Value, out var argb))
+        {
+            return false;
+        }
+
+        entry = new LiteralSolidColorBrushEntry(
+            node,
+            key,
+            argb);
+        return true;
+    }
+
+    private static bool TryGetLiteralColorEntry(
+        JalxamlAstNode node,
+        out LiteralColorEntry entry)
+    {
+        const string PresentationNamespace =
+            "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        const string XamlLanguageNamespace =
+            "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        entry = null!;
+        if (!string.Equals(
+                node.ResolvedClrTypeName,
+                "Jalium.UI.Media.Color",
+                StringComparison.Ordinal)
+            || !string.Equals(
+                node.NamespaceUri,
+                PresentationNamespace,
+                StringComparison.Ordinal)
+            || !string.Equals(node.LocalName, "Color", StringComparison.Ordinal)
+            || node.Children.Count != 0
+            || node.PropertyElements.Count != 0
+            || string.IsNullOrEmpty(node.TextContent)
+            || !string.IsNullOrEmpty(node.RazorIfCondition))
+        {
+            return false;
+        }
+
+        JalxamlAstAttribute? keyAttribute = null;
+        var semanticAttributeIndex = 0;
+        foreach (var attribute in node.Attributes)
+        {
+            if (attribute.Kind == JalxamlAttributeKind.XmlnsDecl)
+            {
+                continue;
+            }
+
+            // Match the general Color element path exactly: a plain x:Key is the only
+            // semantic attribute, and the value comes from inner text. x:Shared, x:Name,
+            // attached properties and custom directives stay on the ordinary path.
+            if (semanticAttributeIndex == 0
+                && attribute.Kind == JalxamlAttributeKind.XDirective
+                && string.Equals(attribute.LocalName, "Key", StringComparison.Ordinal)
+                && string.Equals(
+                    attribute.NamespaceUri,
+                    XamlLanguageNamespace,
+                    StringComparison.Ordinal))
+            {
+                keyAttribute = attribute;
+            }
+            else
+            {
+                return false;
+            }
+
+            semanticAttributeIndex++;
+        }
+
+        if (semanticAttributeIndex != 1
+            || keyAttribute == null
+            || !TryCreatePlainStringKey(keyAttribute.Value, out var key)
+            || !TryParseLiteralColorElementArgb(node.TextContent!, out var argb))
+        {
+            return false;
+        }
+
+        entry = new LiteralColorEntry(node, key, argb);
+        return true;
+    }
+
+    private static bool TryParseLiteralColorElementArgb(string value, out uint argb)
+    {
+        // ColorConverter accepts only #RRGGBB and #AARRGGBB for element text. Keep the
+        // brush parser's broader #RGB/#ARGB/{} support out of this path so direct encoding
+        // cannot turn formerly-invalid Color markup into a valid resource.
+        var trimmed = value.Trim();
+        if ((trimmed.Length != 7 && trimmed.Length != 9)
+            || trimmed[0] != '#')
+        {
+            argb = 0;
+            return false;
+        }
+
+        return TryParseLiteralColorArgb(trimmed, out argb);
+    }
+
+    private static bool TryParseLiteralColorArgb(string value, out uint argb)
+    {
+        argb = 0;
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith("{}", StringComparison.Ordinal))
+        {
+            trimmed = trimmed.Substring(2);
+        }
+
+        if (trimmed.Length < 2 || trimmed[0] != '#')
+        {
+            return false;
+        }
+
+        var hex = trimmed.Substring(1);
+        byte a;
+        byte r;
+        byte g;
+        byte b;
+        switch (hex.Length)
+        {
+            case 3:
+                if (!TryParseHexNibble(hex[0], out var r3)
+                    || !TryParseHexNibble(hex[1], out var g3)
+                    || !TryParseHexNibble(hex[2], out var b3))
+                {
+                    return false;
+                }
+
+                a = 0xFF;
+                r = (byte)((r3 << 4) | r3);
+                g = (byte)((g3 << 4) | g3);
+                b = (byte)((b3 << 4) | b3);
+                break;
+            case 4:
+                if (!TryParseHexNibble(hex[0], out var a4)
+                    || !TryParseHexNibble(hex[1], out var r4)
+                    || !TryParseHexNibble(hex[2], out var g4)
+                    || !TryParseHexNibble(hex[3], out var b4))
+                {
+                    return false;
+                }
+
+                a = (byte)((a4 << 4) | a4);
+                r = (byte)((r4 << 4) | r4);
+                g = (byte)((g4 << 4) | g4);
+                b = (byte)((b4 << 4) | b4);
+                break;
+            case 6:
+                if (!TryParseHexByte(hex, 0, out r)
+                    || !TryParseHexByte(hex, 2, out g)
+                    || !TryParseHexByte(hex, 4, out b))
+                {
+                    return false;
+                }
+
+                a = 0xFF;
+                break;
+            case 8:
+                if (!TryParseHexByte(hex, 0, out a)
+                    || !TryParseHexByte(hex, 2, out r)
+                    || !TryParseHexByte(hex, 4, out g)
+                    || !TryParseHexByte(hex, 6, out b))
+                {
+                    return false;
+                }
+
+                break;
+            default:
+                return false;
+        }
+
+        argb = ((uint)a << 24)
+            | ((uint)r << 16)
+            | ((uint)g << 8)
+            | b;
+        return true;
+    }
+
+    private static bool TryParseHexByte(string value, int offset, out byte parsed)
+    {
+        parsed = 0;
+        if (!TryParseHexNibble(value[offset], out var high)
+            || !TryParseHexNibble(value[offset + 1], out var low))
+        {
+            return false;
+        }
+
+        parsed = (byte)((high << 4) | low);
+        return true;
+    }
+
+    private static bool TryParseHexNibble(char value, out byte parsed)
+    {
+        if (value >= '0' && value <= '9')
+        {
+            parsed = (byte)(value - '0');
+            return true;
+        }
+
+        if (value >= 'a' && value <= 'f')
+        {
+            parsed = (byte)(value - 'a' + 10);
+            return true;
+        }
+
+        if (value >= 'A' && value <= 'F')
+        {
+            parsed = (byte)(value - 'A' + 10);
+            return true;
+        }
+
+        parsed = 0;
+        return false;
+    }
+
+    private static bool HasUnsafeDeferredStyleSemantics(
+        JalxamlAstNode node,
+        bool insideTemplateContent)
+    {
+        const string XamlLanguageNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        if (string.Equals(node.LocalName, "Reference", StringComparison.Ordinal)
+            && (string.Equals(node.Prefix, "x", StringComparison.Ordinal)
+                || string.Equals(
+                    node.NamespaceUri,
+                    XamlLanguageNamespace,
+                    StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        foreach (var attribute in node.Attributes)
+        {
+            var isXamlDirective = attribute.Kind == JalxamlAttributeKind.XDirective
+                || string.Equals(attribute.Prefix, "x", StringComparison.Ordinal)
+                || string.Equals(
+                    attribute.NamespaceUri,
+                    XamlLanguageNamespace,
+                    StringComparison.Ordinal);
+
+            if (isXamlDirective
+                && string.Equals(attribute.LocalName, "Shared", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (!insideTemplateContent
+                && ((isXamlDirective
+                     && string.Equals(attribute.LocalName, "Name", StringComparison.Ordinal))
+                    || (attribute.Kind == JalxamlAttributeKind.Value
+                        && string.IsNullOrEmpty(attribute.Prefix)
+                        && string.Equals(attribute.LocalName, "Name", StringComparison.Ordinal))))
+            {
+                return true;
+            }
+
+            if (attribute.Value.IndexOf(
+                    "{x:Reference",
+                    StringComparison.OrdinalIgnoreCase) >= 0
+                || attribute.Value.IndexOf(
+                    "{Reference ",
+                    StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+        }
+
+        var childrenAreTemplateContent = insideTemplateContent
+            || IsTemplateClrType(node.ResolvedClrTypeName);
+
+        foreach (var child in node.Children)
+        {
+            if (HasUnsafeDeferredStyleSemantics(child, childrenAreTemplateContent))
+            {
+                return true;
+            }
+        }
+
+        foreach (var propertyElement in node.PropertyElements)
+        {
+            foreach (var child in propertyElement.Children)
+            {
+                if (HasUnsafeDeferredStyleSemantics(child, childrenAreTemplateContent))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static void EmitDeferredStyleFactories(
+        StringBuilder sb,
+        DeferredStylePlan plan,
+        EmitContext dictionaryContext)
+    {
+        foreach (var entry in plan.Entries)
+        {
+            var contextVariable = $"__deferredCtx{entry.Index}";
+            sb.AppendLine(
+                $"        static object? {entry.FactoryName}(global::Jalium.UI.ResourceDictionary __owner, global::Jalium.UI.Markup.XamlBuildContext {contextVariable})");
+            sb.AppendLine("        {");
+            sb.AppendLine(
+                $"            var __style = new global::{entry.Node.ResolvedClrTypeName!}();");
+
+            var factoryContext = new EmitContext(
+                dictionaryContext.Symbols,
+                dictionaryContext.RootPrefixes,
+                dictionaryContext.XmlnsResolver,
+                ownerExpression: "__owner",
+                contextExpression: contextVariable)
+            {
+                DeferredStyles = plan,
+            };
+
+            EmitElementBody(
+                sb,
+                entry.Node,
+                "__style",
+                new IndexCounter(),
+                new HashSet<string>(StringComparer.Ordinal),
+                indent: 12,
+                factoryContext);
+            sb.AppendLine("            return __style;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+        }
+    }
+
+    private static void EmitLiteralColorHelper(StringBuilder sb)
+    {
+        sb.AppendLine(
+            "        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]");
+        sb.AppendLine(
+            "        static void __AddLiteralColor(global::Jalium.UI.ResourceDictionary __owner, global::Jalium.UI.Markup.XamlBuildContext __colorCtx, string __key, uint __argb)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            var __color = new global::Jalium.UI.Media.Color();");
+        sb.AppendLine(
+            "            global::Jalium.UI.Markup.XamlBuilder.SetXmlIdentity(__color, \"http://schemas.microsoft.com/winfx/2006/xaml/presentation\", \"Color\", resetAttributes: true);");
+        sb.AppendLine(
+            "            global::Jalium.UI.Markup.XamlBuilder.RecordXmlAttribute(__color, \"http://schemas.microsoft.com/winfx/2006/xaml\", \"Key\", __key, null);");
+        sb.AppendLine(
+            "            global::Jalium.UI.Markup.XamlBuilder.PushParent(__color, __colorCtx);");
+        sb.AppendLine(
+            "            global::Jalium.UI.Markup.XamlBuilder.ApplyXDirective(__color, \"Key\", __key, __colorCtx);");
+        sb.AppendLine(
+            "            __color = global::Jalium.UI.Media.Color.FromArgb((byte)(__argb >> 24), (byte)(__argb >> 16), (byte)(__argb >> 8), (byte)__argb);");
+        sb.AppendLine(
+            "            global::Jalium.UI.Markup.XamlBuilder.PopParent(__colorCtx);");
+        sb.AppendLine(
+            "            global::Jalium.UI.Markup.XamlBuilder.AddChild(__owner, __color, __colorCtx, __key);");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+    }
+
     /// <summary>
     /// Per-emission context — caches per-type symbol resolutions so the generator does not
     /// re-walk the inheritance chain for every attribute on the same element. Lifetime
@@ -104,6 +891,12 @@ internal static class JalxamlCodeGenerator
         public XmlnsTypeResolver? XmlnsResolver { get; }
 
         /// <summary>
+        /// Optional dictionary-style deferral plan. It is populated only for generated
+        /// framework theme dictionaries; regular component generation stays unchanged.
+        /// </summary>
+        public DeferredStylePlan? DeferredStyles { get; set; }
+
+        /// <summary>
         /// C# expression that evaluates to the document owner inside the generated
         /// <c>InitializeComponent</c> body. Used by template <c>SetVisualTree</c> lambdas
         /// to push the owner onto the build context's ambient parent stack so nested
@@ -116,12 +909,21 @@ internal static class JalxamlCodeGenerator
         /// </summary>
         public string OwnerExpression { get; }
 
-        public EmitContext(SymbolTypeHelper? symbols, IReadOnlyDictionary<string, string>? rootPrefixes = null, XmlnsTypeResolver? xmlnsResolver = null, string ownerExpression = "this")
+        /// <summary>C# expression naming the active build context in emitted code.</summary>
+        public string ContextExpression { get; }
+
+        public EmitContext(
+            SymbolTypeHelper? symbols,
+            IReadOnlyDictionary<string, string>? rootPrefixes = null,
+            XmlnsTypeResolver? xmlnsResolver = null,
+            string ownerExpression = "this",
+            string contextExpression = "__ctx")
         {
             Symbols = symbols;
             RootPrefixes = rootPrefixes ?? new Dictionary<string, string>(StringComparer.Ordinal);
             XmlnsResolver = xmlnsResolver;
             OwnerExpression = ownerExpression;
+            ContextExpression = contextExpression;
         }
 
         public INamedTypeSymbol? ResolveType(string fullMetadataName)
@@ -186,7 +988,11 @@ internal static class JalxamlCodeGenerator
     /// (the caller is responsible for those — the runtime ThemeLoader hands us a
     /// pre-existing context for the lookup).
     /// </summary>
-    public static string? TryEmitDictionaryBuildBody(JalxamlParseResult result, SymbolTypeHelper? symbols, XmlnsTypeResolver? xmlnsResolver = null)
+    public static string? TryEmitDictionaryBuildBody(
+        JalxamlParseResult result,
+        SymbolTypeHelper? symbols,
+        XmlnsTypeResolver? xmlnsResolver = null,
+        bool deferFrameworkThemeStyles = false)
     {
         if (result.Root == null || result.HasStructuralRazor)
             return null;
@@ -203,11 +1009,31 @@ internal static class JalxamlCodeGenerator
         var counter = new IndexCounter();
         var namedAlready = new HashSet<string>(StringComparer.Ordinal);
         var ctx = new EmitContext(symbols, result.RootPrefixMappings, xmlnsResolver, ownerExpression: "__target");
+        if (deferFrameworkThemeStyles)
+        {
+            ctx.DeferredStyles = CreateDeferredStylePlan(result.Root, ctx);
+            if (ctx.DeferredStyles is { } frameworkThemePlan)
+            {
+                if (frameworkThemePlan.Entries.Count > 0)
+                {
+                    EmitDeferredStyleFactories(sb, frameworkThemePlan, ctx);
+                }
+            }
+        }
 
         // The runtime supplies the dictionary instance directly. We push it onto the
         // parent stack so any descendant lookups (resource references, parent-aware
         // markup extensions) behave exactly like the streaming parser would have.
         EmitElementBody(sb, result.Root, "__target", counter, namedAlready, indent: 8, ctx);
+
+        // Local functions may be declared after their call sites. Keeping these shared palette
+        // helpers after the executable build statements means generated-source order continues
+        // to mirror runtime order for diagnostics and existing code-generation assertions.
+        if (ctx.DeferredStyles is { UsesLiteralColorHelper: true })
+        {
+            sb.AppendLine();
+            EmitLiteralColorHelper(sb);
+        }
 
         return sb.ToString();
     }
@@ -345,7 +1171,19 @@ internal static class JalxamlCodeGenerator
     {
         var pad = new string(' ', indent);
 
-        sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.PushParent({varName}, __ctx);");
+        sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetXmlIdentity({varName}, {EscapeStringLiteral(node.NamespaceUri)}, {EscapeStringLiteral(node.LocalName)}, resetAttributes: true);");
+        foreach (var attribute in node.Attributes)
+        {
+            if (attribute.Kind == JalxamlAttributeKind.XmlnsDecl) continue;
+            var localName = attribute.AttachedOwner is { } owner ? owner + "." + attribute.LocalName : attribute.LocalName;
+            var ownerNamespace = string.IsNullOrEmpty(attribute.NamespaceUri) ? node.NamespaceUri : attribute.NamespaceUri;
+            var ownerType = attribute.AttachedOwner is { } attachedOwner
+                ? ctx.XmlnsResolver?.ResolveToGlobalQualifiedName(attachedOwner, ownerNamespace ?? string.Empty)
+                : null;
+            var ownerArgument = ownerType is null ? "null" : "typeof(" + ownerType + ")";
+            sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.RecordXmlAttribute({varName}, {EscapeStringLiteral(attribute.NamespaceUri ?? string.Empty)}, {EscapeStringLiteral(localName)}, {EscapeStringLiteral(attribute.Value)}, {ownerArgument});");
+        }
+        sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.PushParent({varName}, {ctx.ContextExpression});");
 
         // Resolve the element's CLR type symbol once per element. Used by the value-attribute
         // path to look up declared property types and emit strongly-typed setters when the
@@ -363,7 +1201,7 @@ internal static class JalxamlCodeGenerator
                 continue;
             if (attr.LocalName == "Class")
                 continue; // x:Class is handled at compile time, not at runtime.
-            sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.ApplyXDirective({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(attr.Value)}, __ctx);");
+            sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.ApplyXDirective({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(attr.Value)}, {ctx.ContextExpression});");
         }
 
         // Compatibility: runtime parser also treats unprefixed `Name="..."` as x:Name.
@@ -373,7 +1211,7 @@ internal static class JalxamlCodeGenerator
                 attr.LocalName == "Name" &&
                 string.IsNullOrEmpty(attr.Prefix))
             {
-                sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.ApplyXDirective({varName}, \"Name\", {EscapeStringLiteral(attr.Value)}, __ctx);");
+                sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.ApplyXDirective({varName}, \"Name\", {EscapeStringLiteral(attr.Value)}, {ctx.ContextExpression});");
             }
         }
 
@@ -395,7 +1233,21 @@ internal static class JalxamlCodeGenerator
         {
             if (attr.Kind != JalxamlAttributeKind.Attached)
                 continue;
-            EmitAttached(sb, varName, attr, pad);
+            EmitAttached(sb, varName, attr, pad, ctx);
+        }
+
+        // Pre-register every safe Style key before constructing any other resource in this
+        // dictionary. StaticResource/BasedOn can therefore resolve both backward and forward
+        // references, while the Style object and its Setters/Templates stay unallocated until
+        // the key is actually read.
+        var deferredEntries = ctx.DeferredStyles?.GetEntries(node);
+        if (deferredEntries != null)
+        {
+            foreach (var entry in deferredEntries)
+            {
+                sb.AppendLine(
+                    $"{pad}global::Jalium.UI.Markup.XamlBuilder.AddDeferredResource({varName}, {entry.Key.Expression}, {entry.FactoryName});");
+            }
         }
 
         // Property elements — emit one ApplyPropertyElementChild per immediate child.
@@ -423,6 +1275,25 @@ internal static class JalxamlCodeGenerator
             // instead of the reflective XamlBuilder.AddChild dispatch.
             foreach (var child in node.Children)
             {
+                if (ctx.DeferredStyles?.TryGetLiteralColor(child, out var literalColor) == true)
+                {
+                    sb.AppendLine(
+                        $"{pad}__AddLiteralColor({varName}, {ctx.ContextExpression}, {literalColor.Key.Expression}, 0x{literalColor.Argb:X8}u);");
+                    continue;
+                }
+
+                if (ctx.DeferredStyles?.TryGetLiteralBrush(child, out var literalBrush) == true)
+                {
+                    sb.AppendLine(
+                        $"{pad}{varName}.AddDeferredLiteralSolidColorBrush({literalBrush.Key.Expression}, 0x{literalBrush.Argb:X8}u);");
+                    continue;
+                }
+
+                if (ctx.DeferredStyles?.IsDeferred(child) == true)
+                {
+                    continue;
+                }
+
                 EmitChildElement(sb, varName, child, counter, namedAlready, indent, ctx, asPropertyElementChild: null, parentNode: node);
             }
         }
@@ -441,18 +1312,18 @@ internal static class JalxamlCodeGenerator
             // Razor text-content fast path: TextBlock "Count: @Items.Count" → SetContentRazorBinding.
             if (RazorExpressionLowering.TryLowerAttributeValue(node.TextContent!, out var contentExpr, out var contentDeps))
             {
-                sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetContentRazorBinding({varName}, {EscapeStringLiteral(contentExpr!)}, {RazorExpressionLowering.EmitDependencyArray(contentDeps!)}, __ctx);");
+                sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetContentRazorBinding({varName}, {EscapeStringLiteral(contentExpr!)}, {RazorExpressionLowering.EmitDependencyArray(contentDeps!)}, {ctx.ContextExpression});");
             }
             else
             {
                 var castType = elementSymbol != null
                     ? SymbolTypeHelper.ToGlobalName(elementSymbol)
                     : (node.ResolvedClrTypeName != null ? $"global::{node.ResolvedClrTypeName}" : "global::System.Object");
-                sb.AppendLine($"{pad}{varName} = ({castType})global::Jalium.UI.Markup.XamlBuilder.SetContentText({varName}, {EscapeStringLiteral(node.TextContent!)}, __ctx);");
+                sb.AppendLine($"{pad}{varName} = ({castType})global::Jalium.UI.Markup.XamlBuilder.SetContentText({varName}, {EscapeStringLiteral(node.TextContent!)}, {ctx.ContextExpression});");
             }
         }
 
-        sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.PopParent(__ctx);");
+        sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.PopParent({ctx.ContextExpression});");
     }
 
     /// <summary>
@@ -524,7 +1395,7 @@ internal static class JalxamlCodeGenerator
         // streaming XAML reader's behaviour where ambient parents are always available.
         // We push/pop strictly around the body so concurrent LoadContent calls don't
         // accumulate stack entries.
-        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, __ctx);");
+        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, {ctx.ContextExpression});");
         sb.AppendLine($"{innerPad}try");
         sb.AppendLine($"{innerPad}{{");
 
@@ -542,7 +1413,7 @@ internal static class JalxamlCodeGenerator
         sb.AppendLine($"{innerPad}}}");
         sb.AppendLine($"{innerPad}finally");
         sb.AppendLine($"{innerPad}{{");
-        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent(__ctx);");
+        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent({ctx.ContextExpression});");
         sb.AppendLine($"{innerPad}}}");
 
         sb.AppendLine($"{pad}}});");
@@ -596,15 +1467,15 @@ internal static class JalxamlCodeGenerator
 
         if (loop.Kind == global::Jalium.UI.Markup.RazorVirtualizeKind.Collection)
         {
-            EmitRazorBoundProperty(sb, hostVar, "ItemsSource", loop.SourceExpression, pad);
+            EmitRazorBoundProperty(sb, hostVar, "ItemsSource", loop.SourceExpression, pad, ctx);
         }
         else
         {
             sb.AppendLine($"{pad}{hostVar}.IsRangeSource = true;");
             sb.AppendLine($"{pad}{hostVar}.RangeEndInclusive = {(loop.EndInclusive ? "true" : "false")};");
-            EmitRazorBoundProperty(sb, hostVar, "RangeStart", loop.StartExpression, pad);
-            EmitRazorBoundProperty(sb, hostVar, "RangeEnd", loop.EndExpression, pad);
-            EmitRazorBoundProperty(sb, hostVar, "RangeStep", loop.StepExpression, pad);
+            EmitRazorBoundProperty(sb, hostVar, "RangeStart", loop.StartExpression, pad, ctx);
+            EmitRazorBoundProperty(sb, hostVar, "RangeEnd", loop.EndExpression, pad, ctx);
+            EmitRazorBoundProperty(sb, hostVar, "RangeStep", loop.StepExpression, pad, ctx);
         }
 
         sb.AppendLine($"{pad}{hostVar}.EndInit();");
@@ -620,7 +1491,12 @@ internal static class JalxamlCodeGenerator
     /// change.
     /// </remarks>
     private static void EmitRazorBoundProperty(
-        StringBuilder sb, string hostVar, string propertyName, string expression, string pad)
+        StringBuilder sb,
+        string hostVar,
+        string propertyName,
+        string expression,
+        string pad,
+        EmitContext ctx)
     {
         var trimmed = expression.Trim();
         if (int.TryParse(trimmed, System.Globalization.NumberStyles.AllowLeadingSign,
@@ -633,7 +1509,7 @@ internal static class JalxamlCodeGenerator
         var razor = "@(" + trimmed + ")";
         var deps = RazorExpressionLowering.ExtractConditionDependencies(trimmed);
         sb.AppendLine(
-            $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetRazorBinding({hostVar}, \"{propertyName}\", {EscapeStringLiteral(razor)}, {RazorExpressionLowering.EmitDependencyArray(deps)}, __ctx);");
+            $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetRazorBinding({hostVar}, \"{propertyName}\", {EscapeStringLiteral(razor)}, {RazorExpressionLowering.EmitDependencyArray(deps)}, {ctx.ContextExpression});");
     }
 
     /// <summary>
@@ -682,7 +1558,7 @@ internal static class JalxamlCodeGenerator
         // Prime the ambient resource stack with the defining component so
         // {StaticResource} inside the section body resolves against its Resources —
         // same rationale as EmitTemplateVisualTree.
-        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, __ctx);");
+        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, {ctx.ContextExpression});");
         sb.AppendLine($"{innerPad}try");
         sb.AppendLine($"{innerPad}{{");
 
@@ -699,7 +1575,7 @@ internal static class JalxamlCodeGenerator
         {
             var ifDeps = RazorExpressionLowering.ExtractConditionDependencies(rootChild.RazorIfCondition);
             sb.AppendLine(
-                $"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.SetRazorIfVisibility({rootVar}, {EscapeStringLiteral(rootChild.RazorIfCondition!)}, {RazorExpressionLowering.EmitDependencyArray(ifDeps)}, __ctx);");
+                $"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.SetRazorIfVisibility({rootVar}, {EscapeStringLiteral(rootChild.RazorIfCondition!)}, {RazorExpressionLowering.EmitDependencyArray(ifDeps)}, {ctx.ContextExpression});");
         }
 
         sb.AppendLine($"{bodyPad}return ({rootVar} as object);");
@@ -707,7 +1583,7 @@ internal static class JalxamlCodeGenerator
         sb.AppendLine($"{innerPad}}}");
         sb.AppendLine($"{innerPad}finally");
         sb.AppendLine($"{innerPad}{{");
-        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent(__ctx);");
+        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent({ctx.ContextExpression});");
         sb.AppendLine($"{innerPad}}}");
 
         sb.AppendLine($"{pad}}});");
@@ -744,7 +1620,7 @@ internal static class JalxamlCodeGenerator
         // away from the reflection-heavy RazorExpressionAnalyzer in the hot path.
         if (RazorExpressionLowering.TryLowerAttributeValue(attr.Value, out var razorExpr, out var razorDeps))
         {
-            sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetRazorBinding({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(razorExpr!)}, {RazorExpressionLowering.EmitDependencyArray(razorDeps!)}, __ctx);");
+            sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetRazorBinding({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(razorExpr!)}, {RazorExpressionLowering.EmitDependencyArray(razorDeps!)}, {ctx.ContextExpression});");
             return;
         }
 
@@ -788,14 +1664,14 @@ internal static class JalxamlCodeGenerator
             switch (extKind)
             {
                 case SimpleMarkupKind.StaticResource:
-                    sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetStaticResource({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(extKey!)}, __ctx);");
+                    sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetStaticResource({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(extKey!)}, {ctx.ContextExpression});");
                     return;
                 case SimpleMarkupKind.ThemeResource:
                 case SimpleMarkupKind.DynamicResource:
-                    sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetDynamicResource({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(extKey!)}, __ctx);");
+                    sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetDynamicResource({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(extKey!)}, {ctx.ContextExpression});");
                     return;
                 case SimpleMarkupKind.TemplateBinding:
-                    sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetTemplateBinding({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(extKey!)}, __ctx);");
+                    sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetTemplateBinding({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(extKey!)}, {ctx.ContextExpression});");
                     return;
                 case SimpleMarkupKind.XNull:
                     sb.AppendLine($"{pad}{varName}.{attr.LocalName} = null!;");
@@ -815,7 +1691,7 @@ internal static class JalxamlCodeGenerator
         {
             var pathExpr = bindPath == null ? "null" : EscapeStringLiteral(bindPath);
             sb.AppendLine(
-                $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetCompiledBinding({varName}, \"{attr.LocalName}\", {pathExpr}, {EmitStringArray(bindNames)}, {EmitStringArray(bindValues)}, __ctx);");
+                $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetCompiledBinding({varName}, \"{attr.LocalName}\", {pathExpr}, {EmitStringArray(bindNames)}, {EmitStringArray(bindValues)}, {ctx.ContextExpression});");
             return;
         }
 
@@ -870,7 +1746,7 @@ internal static class JalxamlCodeGenerator
         var castType = elementSymbol != null
             ? SymbolTypeHelper.ToGlobalName(elementSymbol)
             : "global::System.Object";
-        sb.AppendLine($"{pad}{varName} = ({castType})global::Jalium.UI.Markup.XamlBuilder.SetProperty({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(attr.Value)}, __ctx);");
+        sb.AppendLine($"{pad}{varName} = ({castType})global::Jalium.UI.Markup.XamlBuilder.SetProperty({varName}, \"{attr.LocalName}\", {EscapeStringLiteral(attr.Value)}, {ctx.ContextExpression});");
     }
 
     private enum SimpleMarkupKind
@@ -1009,7 +1885,12 @@ internal static class JalxamlCodeGenerator
         return typeReference.Length > 0 ? typeReference : null;
     }
 
-    private static void EmitAttached(StringBuilder sb, string targetVar, JalxamlAstAttribute attr, string pad)
+    private static void EmitAttached(
+        StringBuilder sb,
+        string targetVar,
+        JalxamlAstAttribute attr,
+        string pad,
+        EmitContext ctx)
     {
         var owner = attr.AttachedOwner ?? string.Empty;
         var prop = attr.LocalName;
@@ -1030,7 +1911,7 @@ internal static class JalxamlCodeGenerator
                 ? "null"
                 : EscapeStringLiteral(bindPath);
             sb.AppendLine(
-                $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetCompiledAttachedBinding({targetVar}, \"{owner}\", \"{prop}\", {pathExpr}, {EmitStringArray(bindNames)}, {EmitStringArray(bindValues)}, __ctx, {EscapeStringLiteral(attr.NamespaceUri ?? string.Empty)});");
+                $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetCompiledAttachedBinding({targetVar}, \"{owner}\", \"{prop}\", {pathExpr}, {EmitStringArray(bindNames)}, {EmitStringArray(bindValues)}, {ctx.ContextExpression}, {EscapeStringLiteral(attr.NamespaceUri ?? string.Empty)});");
             return;
         }
 
@@ -1045,7 +1926,7 @@ internal static class JalxamlCodeGenerator
 
         // Generic path: forward to the runtime which resolves the owner type and converter.
         sb.AppendLine(
-            $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetAttachedProperty({targetVar}, \"{owner}\", \"{prop}\", {EscapeStringLiteral(value)}, __ctx, {EscapeStringLiteral(attr.NamespaceUri ?? string.Empty)});");
+            $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetAttachedProperty({targetVar}, \"{owner}\", \"{prop}\", {EscapeStringLiteral(value)}, {ctx.ContextExpression}, {EscapeStringLiteral(attr.NamespaceUri ?? string.Empty)});");
     }
 
     private static string? TryEmitAttachedFastPath(string owner, string prop, string value, string targetVar, string pad)
@@ -1229,7 +2110,7 @@ internal static class JalxamlCodeGenerator
                 ? EscapeStringLiteral(asPropertyElementChild.Value.ResourceKey!)
                 : "null";
             sb.AppendLine(
-                $"{innerPad}global::Jalium.UI.Markup.XamlBuilder.ApplyPropertyElementChild({parentVar}, \"{propName}\", {childVar}, __ctx, {keyExpr});");
+                $"{innerPad}global::Jalium.UI.Markup.XamlBuilder.ApplyPropertyElementChild({parentVar}, \"{propName}\", {childVar}, {ctx.ContextExpression}, {keyExpr});");
         }
         else
         {
@@ -1245,7 +2126,7 @@ internal static class JalxamlCodeGenerator
         {
             var ifDeps = RazorExpressionLowering.ExtractConditionDependencies(child.RazorIfCondition);
             sb.AppendLine(
-                $"{innerPad}global::Jalium.UI.Markup.XamlBuilder.SetRazorIfVisibility({childVar}, {EscapeStringLiteral(child.RazorIfCondition!)}, {RazorExpressionLowering.EmitDependencyArray(ifDeps)}, __ctx);");
+                $"{innerPad}global::Jalium.UI.Markup.XamlBuilder.SetRazorIfVisibility({childVar}, {EscapeStringLiteral(child.RazorIfCondition!)}, {RazorExpressionLowering.EmitDependencyArray(ifDeps)}, {ctx.ContextExpression});");
         }
 
         sb.AppendLine($"{pad}}}");
@@ -1284,7 +2165,7 @@ internal static class JalxamlCodeGenerator
         if (parentNode != null &&
             parentNode.ResolvedClrTypeName == "Jalium.UI.ResourceDictionary")
         {
-            sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.AddChild({parentVar}, {childVar}, __ctx, {keyExpr});");
+            sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.AddChild({parentVar}, {childVar}, {ctx.ContextExpression}, {keyExpr});");
             return;
         }
 
@@ -1350,7 +2231,7 @@ internal static class JalxamlCodeGenerator
         }
 
         // Fallback: runtime AddChild walks ContentPropertyAttribute on the parent type.
-        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.AddChild({parentVar}, {childVar}, __ctx, {keyExpr});");
+        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.AddChild({parentVar}, {childVar}, {ctx.ContextExpression}, {keyExpr});");
     }
 
     /// <summary>

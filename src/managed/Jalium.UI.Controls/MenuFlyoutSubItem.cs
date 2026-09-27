@@ -55,11 +55,13 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
         if (RenderSize.Width <= 0 || RenderSize.Height <= 0)
             return;
 
-        var arrowBrush = ResolveBrush("OneTextSecondary", "TextSecondary", s_fallbackArrowBrush);
+        var arrowBrush = ResolveAuthoredForegroundBrush() ??
+            ResolveBrush("OneTextSecondary", "TextSecondary", s_fallbackArrowBrush);
         const double arrowSize = 8.0;
+        var content = GetItemContentBounds();
         var arrowBounds = new Rect(
-            Math.Max(0, RenderSize.Width - 16),
-            Math.Max(0, (RenderSize.Height - arrowSize) / 2),
+            Math.Max(content.X, content.Right - 16),
+            content.Y + Math.Max(0, (content.Height - arrowSize) / 2),
             arrowSize,
             arrowSize);
         ArrowIcons.DrawArrow(dc, arrowBrush, arrowBounds, ArrowIcons.Direction.Right);

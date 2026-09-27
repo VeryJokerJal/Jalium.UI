@@ -18,7 +18,7 @@ namespace Jalium.UI;
 /// selected they identify its active end and opposite anchor respectively.
 /// </para>
 /// </remarks>
-internal readonly record struct ImeSurroundingTextSnapshot(
+public readonly record struct ImeSurroundingTextSnapshot(
     string Text,
     int CursorIndex,
     int AnchorIndex);
@@ -26,7 +26,7 @@ internal readonly record struct ImeSurroundingTextSnapshot(
 /// <summary>
 /// Interface for elements that support IME (Input Method Editor) input.
 /// </summary>
-internal interface IImeSupport
+public interface IImeSupport
 {
     /// <summary>
     /// Gets whether the element currently accepts IME composition input.

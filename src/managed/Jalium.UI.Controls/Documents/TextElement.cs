@@ -43,7 +43,8 @@ public abstract class TextElement : FrameworkContentElement
                 SystemFonts.MessageFontFamily,
                 FrameworkPropertyMetadataOptions.AffectsMeasure |
                 FrameworkPropertyMetadataOptions.AffectsRender |
-                FrameworkPropertyMetadataOptions.Inherits),
+                FrameworkPropertyMetadataOptions.Inherits,
+                OnTextTypographyChanged),
             static value => value is FontFamily);
 
     /// <summary>
@@ -53,10 +54,10 @@ public abstract class TextElement : FrameworkContentElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.RegisterAttached("FontSize", typeof(double), typeof(TextElement),
-            new PropertyMetadata(14.0, null, null, inherits: true),
+            new PropertyMetadata(14.0, OnTextTypographyChanged, null, inherits: true),
             static value => value is double size &&
                             double.IsFinite(size) &&
-                            size > 0.001 &&
+                            (size == 0 || size > 0.001) &&
                             size <= 35791.0);
 
     /// <summary>
@@ -66,7 +67,7 @@ public abstract class TextElement : FrameworkContentElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontWeightProperty =
         DependencyProperty.RegisterAttached("FontWeight", typeof(FontWeight), typeof(TextElement),
-            new PropertyMetadata(FontWeights.Normal, null, null, inherits: true));
+            new PropertyMetadata(FontWeights.Normal, OnTextTypographyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontStyle dependency property.
@@ -75,7 +76,7 @@ public abstract class TextElement : FrameworkContentElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStyleProperty =
         DependencyProperty.RegisterAttached("FontStyle", typeof(FontStyle), typeof(TextElement),
-            new PropertyMetadata(FontStyles.Normal, null, null, inherits: true));
+            new PropertyMetadata(FontStyles.Normal, OnTextTypographyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontStretch dependency property.
@@ -83,7 +84,12 @@ public abstract class TextElement : FrameworkContentElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStretchProperty =
         DependencyProperty.RegisterAttached("FontStretch", typeof(FontStretch), typeof(TextElement),
-            new PropertyMetadata(FontStretches.Normal, null, null, inherits: true));
+            new PropertyMetadata(FontStretches.Normal, OnTextTypographyChanged, null, inherits: true));
+
+    private static void OnTextTypographyChanged(DependencyObject target, DependencyPropertyChangedEventArgs _)
+    {
+        if (target is TextElement textElement) textElement.NotifyTextContentChanged();
+    }
 
     /// <summary>
     /// Identifies the Foreground dependency property.
@@ -92,7 +98,12 @@ public abstract class TextElement : FrameworkContentElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.RegisterAttached("Foreground", typeof(Brush), typeof(TextElement),
-            new PropertyMetadata(null, null, null, inherits: true));
+            new PropertyMetadata(null, OnTextForegroundChanged, null, inherits: true));
+
+    private static void OnTextForegroundChanged(DependencyObject target, DependencyPropertyChangedEventArgs _)
+    {
+        if (target is TextElement textElement) textElement.NotifyTextContentChanged();
+    }
 
     /// <summary>
     /// Identifies the Background dependency property.
@@ -100,7 +111,13 @@ public abstract class TextElement : FrameworkContentElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(TextElement),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnTextBackgroundChanged));
+
+    private static void OnTextBackgroundChanged(DependencyObject target,
+        DependencyPropertyChangedEventArgs _)
+    {
+        if (target is TextElement textElement) textElement.NotifyTextContentChanged();
+    }
 
     /// <summary>
     /// Identifies the TextDecorations dependency property.
@@ -108,7 +125,12 @@ public abstract class TextElement : FrameworkContentElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextDecorationsProperty =
         DependencyProperty.Register(nameof(TextDecorations), typeof(TextDecorationCollection), typeof(TextElement),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnTextDecorationsChanged));
+
+    private static void OnTextDecorationsChanged(DependencyObject target, DependencyPropertyChangedEventArgs _)
+    {
+        if (target is TextElement textElement) textElement.NotifyTextContentChanged();
+    }
 
     /// <summary>
     /// Identifies the TextEffects dependency property.

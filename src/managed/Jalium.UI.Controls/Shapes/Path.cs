@@ -169,7 +169,7 @@ public sealed class Path : Shape
         if (width <= 0 || height <= 0)
             return;
 
-        var pen = GetOrCreatePen();
+        var pen = ResolveStrokePen(GetOrCreatePen());
 
         // RenderTransform (rotate/skew/etc.) is now pushed generically by
         // Visual.RenderDirect around this element's draw pass. Path's only
@@ -178,7 +178,7 @@ public sealed class Path : Shape
         // Applying it again here would double-transform the path (the symptom
         // was TreeView chevrons appearing at 45° / off-center after a 90°
         // RotateTransform).
-        dc.DrawGeometry(Fill, pen, _renderedGeometry);
+        dc.DrawGeometry(ResolveFillBrush(), pen, _renderedGeometry);
     }
 
     private Pen? GetOrCreatePen()

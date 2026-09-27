@@ -84,7 +84,7 @@ public sealed class Polygon : Shape
         if (points == null || points.Count < 3)
             return;
 
-        var fill = Fill;
+        var fill = ResolveFillBrush();
         var stroke = Stroke;
 
         if (fill == null && stroke == null)
@@ -107,6 +107,8 @@ public sealed class Polygon : Shape
                 pen.DashStyle = new DashStyle(dashArray, StrokeDashOffset);
             }
         }
+
+        pen = ResolveStrokePen(pen);
 
         var geometry = EnsureGeometry();
         if (geometry == null) return;

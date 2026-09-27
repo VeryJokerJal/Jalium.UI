@@ -80,6 +80,7 @@ typedef enum JaliumEventType {
     JALIUM_EVENT_DEACTIVATE       = 8,
     JALIUM_EVENT_STATE_CHANGED    = 9,
     JALIUM_EVENT_MONITORS_CHANGED = 10,
+    JALIUM_EVENT_POINTING_DEVICES_CHANGED = 11,
 
     // Focus
     JALIUM_EVENT_FOCUS_GAINED     = 20,
@@ -180,6 +181,8 @@ typedef enum JaliumPointerFlags {
     JALIUM_POINTER_FLAG_ERASER     = 1 << 3,
     JALIUM_POINTER_FLAG_INVERTED   = 1 << 4,
     JALIUM_POINTER_FLAG_BARREL     = 1 << 5,
+    JALIUM_POINTER_FLAG_COALESCED  = 1 << 6,
+    JALIUM_POINTER_FLAG_PREDICTED  = 1 << 7,
 } JaliumPointerFlags;
 
 /// Physical tablet tool shape. Unknown is used for touch and for backends that
@@ -421,6 +424,24 @@ JALIUM_PLATFORM_API void jalium_platform_shutdown(void);
 
 /// Returns the current host platform identifier.
 JALIUM_PLATFORM_API JaliumPlatform jalium_platform_get_current(void);
+
+// ============================================================================
+// Apple host bridge
+// ============================================================================
+
+/// Registers the AppKit/UIKit view supplied by the managed application/scene
+/// delegate as the root surface for the next Jalium window. The platform
+/// backend keeps a weak reference; pass 0 when a scene disconnects.
+JALIUM_PLATFORM_API void jalium_apple_set_root_view(intptr_t nativeView);
+/// Registers/unregisters one UIWindowScene root. IDs are UTF-8 persistent
+/// session identifiers; window creation claims an unclaimed root in FIFO order.
+JALIUM_PLATFORM_API void jalium_apple_register_scene_root(
+    const char* sceneId, intptr_t nativeView);
+JALIUM_PLATFORM_API void jalium_apple_unregister_scene_root(const char* sceneId);
+
+/// Forwards a JaliumEventType application lifecycle event (PAUSE, RESUME,
+/// DESTROY or LOW_MEMORY) to all Apple windows.
+JALIUM_PLATFORM_API void jalium_apple_notify_lifecycle(int32_t eventType);
 
 // ============================================================================
 // Window Management
@@ -790,6 +811,20 @@ JALIUM_PLATFORM_API int16_t jalium_input_get_key_state(int32_t jaliumVirtualKey)
 JALIUM_PLATFORM_API JaliumResult jalium_input_get_touch_capabilities(
     int32_t* touchPresent,
     int32_t* maxContacts);
+
+/// Pointing devices attached to the active window-system seat. Multiple bits
+/// may be set: touch plus mouse reports both COARSE and FINE. HOVER means at
+/// least one attached device can hover. PRIMARY_FINE chooses the desktop
+/// mouse/trackpad as primary when both fine and coarse devices are attached.
+typedef enum JaliumPointingCapability {
+    JALIUM_POINTING_COARSE = 1 << 0,
+    JALIUM_POINTING_FINE   = 1 << 1,
+    JALIUM_POINTING_HOVER  = 1 << 2,
+    JALIUM_POINTING_PRIMARY_FINE = 1 << 3,
+} JaliumPointingCapability;
+
+JALIUM_PLATFORM_API JaliumResult jalium_input_get_pointing_capabilities(
+    int32_t* capabilities);
 
 /// Updates platform-wide multi-click thresholds from the active desktop
 /// settings provider. Distance is expressed in platform input pixels.

@@ -1,5 +1,6 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Jalium.UI.Hosting;
@@ -15,9 +16,8 @@ namespace Jalium.UI.Hosting;
 /// <para>
 /// Every interaction happens on the UI thread:
 /// <see cref="Visual.VisualRenderedObserver"/> fires synchronously inside
-/// <see cref="Visual.Render"/>, and the periodic scan piggybacks on
-/// <see cref="CompositionTarget.Rendering"/> which dispatches to the UI
-/// thread. That means the tracking list and the iterated state can stay
+/// <see cref="Visual.Render"/>. Active-frame scans and the idle fallback timer
+/// both dispatch to the UI thread. That means the tracking list and state can stay
 /// lock-free.
 /// </para>
 /// <para>
@@ -36,6 +36,9 @@ internal sealed class ResourceReclaimer : IDisposable
     private readonly EventHandler _onRenderingDelegate;
     private int _frameCounter;
     private long _lastBackendReclaimTickMs;
+    private long _lastScanTickMs;
+    private DispatcherTimer? _idleTimer;
+    private bool _started;
     private bool _disposed;
 
     public ResourceReclaimer(ResourceReclamationOptions options)
@@ -48,13 +51,15 @@ internal sealed class ResourceReclaimer : IDisposable
 
     /// <summary>
     /// Installs the <see cref="Visual.VisualRenderedObserver"/> hook and
-    /// subscribes to <see cref="CompositionTarget.Rendering"/> so the periodic
-    /// scan starts running. Idempotent — safe to call after a previous
+    /// subscribes to <see cref="CompositionTarget.Rendering"/> and starts the
+    /// idle timer. Idempotent — safe to call after a previous
     /// <see cref="Stop"/>.
     /// </summary>
     public void Start()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(ResourceReclaimer));
+        if (_started) return;
+        _started = true;
 
         _options.Enabled = true;
 
@@ -62,6 +67,13 @@ internal sealed class ResourceReclaimer : IDisposable
         // (DevTools, profiling overlays, etc.).
         Visual.VisualRenderedObserver += _onVisualRenderedDelegate;
         CompositionTarget.Rendering += _onRenderingDelegate;
+        // Rendering is demand-driven and parks when the last animation ends.
+        // A frame-only reclaimer would never visit a genuinely idle window.
+        // One low-frequency UI timer covers that case without requesting a draw
+        // or keeping the high-resolution animation loop awake.
+        _idleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _idleTimer.Tick += OnIdleTick;
+        _idleTimer.Start();
     }
 
     /// <summary>
@@ -73,6 +85,13 @@ internal sealed class ResourceReclaimer : IDisposable
     {
         Visual.VisualRenderedObserver -= _onVisualRenderedDelegate;
         CompositionTarget.Rendering -= _onRenderingDelegate;
+        if (_idleTimer != null)
+        {
+            _idleTimer.Stop();
+            _idleTimer.Tick -= OnIdleTick;
+            _idleTimer = null;
+        }
+        _started = false;
 
         _options.Enabled = false;
 
@@ -88,6 +107,7 @@ internal sealed class ResourceReclaimer : IDisposable
         _tracked.Clear();
         _frameCounter = 0;
         _lastBackendReclaimTickMs = 0;
+        _lastScanTickMs = 0;
     }
 
     public void Dispose()
@@ -125,6 +145,12 @@ internal sealed class ResourceReclaimer : IDisposable
         ScanAndReclaim();
     }
 
+    private void OnIdleTick(object? sender, EventArgs e)
+    {
+        if (!_options.Enabled || Environment.TickCount64 - _lastScanTickMs < 1000) return;
+        ScanAndReclaim();
+    }
+
     /// <summary>
     /// Walk the tracked-visuals list and reclaim resources for any visual that
     /// has stayed unrendered past <see cref="ResourceReclamationOptions.IdleTimeoutMs"/>.
@@ -144,6 +170,7 @@ internal sealed class ResourceReclaimer : IDisposable
         Jalium.UI.Media.ImageSource.ReclaimGraceMs = idleTimeoutMs;
 
         var nowMs = Environment.TickCount64;
+        _lastScanTickMs = nowMs;
         var threshold = nowMs - idleTimeoutMs;
 
         var evictCache = _options.EvictDrawingCache;
@@ -270,7 +297,7 @@ internal sealed class ResourceReclaimer : IDisposable
         {
             try
             {
-                windows[i].RenderTarget?.ReclaimIdleResources();
+                windows[i].ReclaimIdleBackendResources();
             }
             catch
             {

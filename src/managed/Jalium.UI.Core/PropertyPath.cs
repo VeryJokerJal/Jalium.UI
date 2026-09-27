@@ -105,6 +105,51 @@ public sealed class PropertyPath
     internal string[] CachedPathSegments =>
         _pathSegments ??= string.IsNullOrEmpty(_path) ? Array.Empty<string>() : _path.Split('.');
 
+    // BindingExpression uses the same bracket-aware split as ResolveValue. A dot inside
+    // a dictionary key is part of that key, rather than a property separator.
+    internal string[] CachedParsedSegments => GetParsedSegments();
+
+    internal static string BindingPropertyName(string segment)
+    {
+        var bracket = segment.IndexOf('[');
+        return bracket < 0 ? segment : bracket == 0 ? "Item[]" : segment[..bracket];
+    }
+
+    internal static bool TryGetIndexedSegment(string segment, out string propertyName, out string index)
+    {
+        propertyName = "";
+        index = "";
+        var bracket = segment.IndexOf('[');
+        if (bracket < 0 || !segment.EndsWith(']') || segment.IndexOf('[', bracket + 1) >= 0
+            || segment.IndexOf(']') != segment.Length - 1 || bracket == segment.Length - 2) return false;
+        propertyName = segment[..bracket];
+        index = segment[(bracket + 1)..^1];
+        return true;
+    }
+
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Binding path segments use PropertyAccessorRegistry and public indexer reflection when no typed accessor exists.")]
+    internal static bool TryReadBindingSegment(object current, string segment, out object? value)
+    {
+        if (TryGetIndexedSegment(segment, out var propertyName, out var index))
+        {
+            object? indexedSource = current;
+            if (propertyName.Length > 0 && !PropertyAccessorRegistry.TryReadProperty(current, propertyName, out indexedSource))
+            {
+                value = null;
+                return false;
+            }
+            if (indexedSource != null) return TryReadIndexer(indexedSource, index, out value);
+            value = null;
+            return false;
+        }
+        if (segment.IndexOfAny(['[', ']', '(', ')']) >= 0)
+        {
+            value = null;
+            return false;
+        }
+        return PropertyAccessorRegistry.TryReadProperty(current, segment, out value);
+    }
+
     /// <summary>
     /// Resolves the value at this path starting from the specified source.
     /// </summary>
@@ -256,38 +301,40 @@ public sealed class PropertyPath
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Walks user object graphs via reflection to resolve indexers.")]
     private static object? ResolveIndexer(object current, string indexStr)
     {
-        var type = current.GetType();
+        return TryReadIndexer(current, indexStr, out var value) ? value : null;
+    }
 
-        // Try integer indexer
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Public Item indexers are resolved through reflection when a collection interface is unavailable.")]
+    private static bool TryReadIndexer(object current, string indexStr, out object? value)
+    {
+        value = null;
+        var type = current.GetType();
         if (int.TryParse(indexStr, out var intIndex))
         {
-            var indexer = type.GetProperty("Item", new[] { typeof(int) });
-            if (indexer != null)
+            if (type.GetProperty("Item", new[] { typeof(int) }) is { CanRead: true } numeric)
             {
-                return indexer.GetValue(current, new object[] { intIndex });
+                try { value = numeric.GetValue(current, [intIndex]); return true; }
+                catch (TargetInvocationException error) when (error.InnerException is ArgumentOutOfRangeException or IndexOutOfRangeException) { return false; }
             }
-
-            // Try IList
             if (current is System.Collections.IList list)
             {
-                return list[intIndex];
+                if (intIndex < 0 || intIndex >= list.Count) return false;
+                value = list[intIndex];
+                return true;
             }
         }
-
-        // Try string indexer
-        var stringIndexer = type.GetProperty("Item", new[] { typeof(string) });
-        if (stringIndexer != null)
+        if (type.GetProperty("Item", new[] { typeof(string) }) is { CanRead: true } keyed)
         {
-            return stringIndexer.GetValue(current, new object[] { indexStr });
+            try { value = keyed.GetValue(current, [indexStr]); return true; }
+            catch (TargetInvocationException error) when (error.InnerException is KeyNotFoundException) { return false; }
         }
-
-        // Try IDictionary
-        if (current is System.Collections.IDictionary dict)
+        if (current is System.Collections.IDictionary map)
         {
-            return dict[indexStr];
+            if (!map.Contains(indexStr)) return false;
+            value = map[indexStr];
+            return true;
         }
-
-        return null;
+        return false;
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Falls back to Assembly.GetType(string) inside FindType for trimmed types.")]

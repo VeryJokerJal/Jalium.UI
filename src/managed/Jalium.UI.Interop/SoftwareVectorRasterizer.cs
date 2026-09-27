@@ -13,7 +13,7 @@ namespace Jalium.UI.Interop;
 /// sampled by 4 vertical sub-scanlines and, within each, every filled span contributes
 /// fractional horizontal coverage. Fills honor <see cref="PathGeometry.FillRule"/>
 /// (even-odd or nonzero) for both single- and multi-figure paths; strokes are widened to
-/// device-space quads + round joins and composited with max-coverage so overlapping
+/// source-space quads + round joins and composited with max-coverage so overlapping
 /// segments never darken.
 /// </para>
 /// <para>
@@ -29,6 +29,9 @@ namespace Jalium.UI.Interop;
 /// </summary>
 internal static class SoftwareVectorRasterizer
 {
+    [ThreadStatic]
+    private static int s_vectorImageBrushDepth;
+
     /// <summary>
     /// Rasterizes a Drawing into a BGRA8 pixel buffer at the specified size.
     /// Returns null if the drawing cannot be rasterized.
@@ -145,7 +148,7 @@ internal static class SoftwareVectorRasterizer
         // representative color.
         if (drawing.Brush != null)
         {
-            var fillPaint = GradientPaint.TryCreate(drawing.Brush, geoCtx, flatGeometry);
+            var fillPaint = CreatePixelPaint(drawing.Brush, geoCtx, flatGeometry);
             if (fillPaint != null)
             {
                 FillGeometry(flatGeometry, geoCtx, 0, 0, 0, 255, fillPaint);
@@ -161,16 +164,21 @@ internal static class SoftwareVectorRasterizer
         // Stroke
         if (drawing.Pen is { Brush: not null } pen && pen.Thickness > 0)
         {
-            var strokePaint = GradientPaint.TryCreate(pen.Brush, geoCtx, flatGeometry);
+            var contours = BuildStrokeContours(flatGeometry, geoCtx, pen);
+            if (contours.Count == 0) return;
+            var strokeBounds = StrokePaintBounds(flatGeometry, geoCtx, pen, contours);
+            var strokePaint = CreatePixelPaint(pen.Brush, geoCtx, flatGeometry, strokeBounds);
             if (strokePaint != null)
             {
-                StrokeGeometry(flatGeometry, geoCtx, 0, 0, 0, 255, pen, strokePaint);
+                RasterizeCoverage(geoCtx, contours, nonZero: false, isMax: true,
+                    0, 0, 0, 255, strokePaint);
             }
             else
             {
                 var (sb, sg, sr, sa) = ExtractBrushColor(pen.Brush, geoCtx, flatGeometry);
                 if (sa > 0)
-                    StrokeGeometry(flatGeometry, geoCtx, sb, sg, sr, sa, pen);
+                    RasterizeCoverage(geoCtx, contours, nonZero: false, isMax: true,
+                        sb, sg, sr, sa);
             }
         }
     }
@@ -182,7 +190,99 @@ internal static class SoftwareVectorRasterizer
     /// old behaviour of flattening every gradient to one offset-weighted average colour,
     /// which turned any gradient-filled SVG artwork into a flat slab.
     /// </summary>
-    private sealed class GradientPaint
+    private abstract class PixelPaint
+    {
+        public abstract (byte B, byte G, byte R, byte A) Sample(float deviceX, float deviceY);
+    }
+
+    private static PixelPaint? CreatePixelPaint(Brush brush, in SoftwareRenderContext ctx,
+        PathGeometry geometry, Rect? strokeBounds = null)
+    {
+        var paintBounds = strokeBounds ?? geometry.Bounds;
+        if (brush.CssGradientLayout is { } layout &&
+            paintBounds.Width > 0 && paintBounds.Height > 0)
+        {
+            if (layout.Resolve(paintBounds.Width, paintBounds.Height) is not { } resolved) return null;
+            brush = resolved;
+        }
+        if (brush is not ImageBrush image) return GradientPaint.TryCreate(brush, ctx, geometry);
+        if (image.ImageSource is { } source) ctx.TouchedSources?.Add(source);
+        if (!ctx.Matrix.TryInvert(out var inverse)) return null;
+        var opacity = Math.Clamp(ctx.Opacity * image.Opacity, 0, 1);
+        ImageBrushSampler? sampler;
+        if (TryRasterizeVectorBrushSource(image.ImageSource, paintBounds, ctx, out var vectorPixels))
+        {
+            sampler = vectorPixels is null
+                ? null
+                : ImageBrushSampler.Create(image, paintBounds, default, opacity, vectorPixels);
+        }
+        else
+        {
+            sampler = ImageBrushSampler.Create(image, paintBounds, default,
+                opacity, Math.Max(ctx.ScaleX, ctx.ScaleY));
+        }
+        return new ImagePaint(sampler, inverse);
+    }
+
+    private static bool TryRasterizeVectorBrushSource(ImageSource? source, Rect paintBounds,
+        in SoftwareRenderContext ctx, out BitmapPixelSnapshot? pixels)
+    {
+        Drawing? drawing;
+        Rect viewport;
+        switch (source)
+        {
+            case DrawingImage { Drawing: { } imageDrawing }:
+                drawing = imageDrawing;
+                viewport = imageDrawing.Bounds;
+                break;
+            case SvgImage { Drawing: { } svgDrawing } svg:
+                drawing = svgDrawing;
+                viewport = svg.Width > 0 && svg.Height > 0
+                    ? new Rect(0, 0, svg.Width, svg.Height)
+                    : svgDrawing.Bounds;
+                break;
+            default:
+                pixels = null;
+                return false;
+        }
+
+        pixels = null;
+        if (viewport.IsEmpty || viewport.Width <= 0 || viewport.Height <= 0 ||
+            paintBounds.Width <= 0 || paintBounds.Height <= 0 || s_vectorImageBrushDepth >= 8)
+            return true;
+
+        var width = Math.Clamp((int)Math.Ceiling(paintBounds.Width * ctx.ScaleX), 1, 4096);
+        var height = Math.Clamp((int)Math.Ceiling(paintBounds.Height * ctx.ScaleY), 1, 4096);
+        s_vectorImageBrushDepth++;
+        try
+        {
+            var buffer = Rasterize(drawing, width, height, viewport, ctx.TouchedSources);
+            if (buffer is null) return true;
+            pixels = BitmapPixelSnapshot.Create(buffer, width, height, width * 4,
+                NativePixelFormat.Bgra8,
+                Math.Clamp((int)Math.Ceiling(viewport.Width), 1, 16384),
+                Math.Clamp((int)Math.Ceiling(viewport.Height), 1, 16384));
+            return true;
+        }
+        finally
+        {
+            s_vectorImageBrushDepth--;
+        }
+    }
+
+    private sealed class ImagePaint(ImageBrushSampler? sampler, Matrix inverse) : PixelPaint
+    {
+        public override (byte B, byte G, byte R, byte A) Sample(float x, float y)
+        {
+            if (sampler is null) return default;
+            var point = inverse.Transform(new Point(x, y));
+            var color = sampler.Sample(point.X, point.Y);
+            static byte Byte(double value) => (byte)Math.Clamp(Math.Round(value * 255), 0, 255);
+            return (Byte(color.B), Byte(color.G), Byte(color.R), Byte(color.A));
+        }
+    }
+
+    private sealed class GradientPaint : PixelPaint
     {
         private readonly double[] _offsets;
         private readonly (byte B, byte G, byte R, byte A)[] _colors;
@@ -232,6 +332,12 @@ internal static class SoftwareVectorRasterizer
         /// </summary>
         public static GradientPaint? TryCreate(Brush brush, in SoftwareRenderContext ctx, PathGeometry geometry)
         {
+            if (brush.CssGradientLayout is { } cssLayout &&
+                geometry.Bounds.Width > 0 && geometry.Bounds.Height > 0)
+            {
+                if (cssLayout.Resolve(geometry.Bounds.Width, geometry.Bounds.Height) is not { } resolved) return null;
+                brush = resolved;
+            }
             if (brush is not GradientBrush gradient || gradient.GradientStops.Count < 2)
                 return null;
             if (brush is not LinearGradientBrush && brush is not RadialGradientBrush)
@@ -301,7 +407,7 @@ internal static class SoftwareVectorRasterizer
                 center.X, center.Y, rx, ry, fx, fy);
         }
 
-        public (byte B, byte G, byte R, byte A) Sample(float deviceX, float deviceY)
+        public override (byte B, byte G, byte R, byte A) Sample(float deviceX, float deviceY)
         {
             var m = _deviceToBrush;
             double x = deviceX * m.M11 + deviceY * m.M21 + m.OffsetX;
@@ -388,13 +494,12 @@ internal static class SoftwareVectorRasterizer
     /// </summary>
     private static void RenderImageDrawing(ImageDrawing drawing, in SoftwareRenderContext ctx)
     {
-        // Only raster sources expose a CPU pixel buffer the software path can sample.
-        if (drawing.ImageSource is not BitmapImage bitmap) return;
+        if (drawing.ImageSource is not { } imageSource) return;
 
         // Recorded before any early return: the caller's raster cache has to learn about the
         // dependency even on the frame where nothing could be blitted, because THAT is the frame
         // whose blank output would otherwise be cached forever.
-        ctx.TouchedSources?.Add(bitmap);
+        ctx.TouchedSources?.Add(imageSource);
 
         var rect = drawing.Rect;
         if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0) return;
@@ -420,32 +525,19 @@ internal static class SoftwareVectorRasterizer
         int yEnd = Math.Min(ctx.Height - 1, (int)Math.Ceiling(maxYf));
         if (xStart > xEnd || yStart > yEnd) return;
 
-        // Drive the decode from here as well as from the GPU choke point. This method reads the
-        // pixel buffer directly and never goes through RenderTargetDrawingContext.GetNativeBitmap,
-        // so without this line a DrawingImage / SVG <image> backed by a URI bitmap renders nothing
-        // at all on the software backend and on WARP — the fix at the GPU choke point does not
-        // reach this code path. The bounding box computed above IS device pixels (ctx maps into
-        // the raster buffer), so it is the honest size hint.
-        // Floored at 1, never 0: an all-zero request means "unbounded" to the deferred decoder and
-        // resolves to the source's natural size, which a growth-only bucket ladder can never walk
-        // back. A degenerate transform must cost a 1px bucket, not a permanently resident
-        // full-resolution one.
-        bitmap.RequestDecode(
+        // This drawing path reads pixels directly and never reaches the GPU bitmap choke point.
+        // Resolve every raster ImageSource through the shared sampler so deferred BitmapImages,
+        // WriteableBitmaps, animated frames and RGBA decoders all use one snapshot contract.
+        var snapshot = ImageBrushSampler.GetPixels(
+            imageSource,
             Math.Clamp((int)Math.Ceiling(maxXf - minXf), 1, 16384),
             Math.Clamp((int)Math.Ceiling(maxYf - minYf), 1, 16384),
             cover: false);
+        if (snapshot is null) return;
 
-        // One consistent tuple. The old code read RawPixelData, PixelWidth, PixelHeight and
-        // PixelStride as four independent properties and then had to defend against the stride not
-        // fitting the buffer; the snapshot is validated at publication, so `Pixels.Length >=
-        // Stride * Height` and `Stride >= Width * 4` hold by construction.
-        if (!bitmap.TryGetPixelSnapshot(out var snapshot) || snapshot is null) return;
-
-        var srcPixels = snapshot.Pixels;
         int srcW = snapshot.Width;
         int srcH = snapshot.Height;
-        int srcStride = snapshot.Stride;
-        if (srcW <= 0 || srcH <= 0 || srcPixels.Length < 4) return;
+        if (srcW <= 0 || srcH <= 0 || snapshot.Pixels.Length < 4) return;
 
         // Invert the device transform so a destination pixel maps back to drawing-local space.
         if (!ctx.Matrix.TryInvert(out var inv)) return;
@@ -466,24 +558,9 @@ internal static class SoftwareVectorRasterizer
                 // Bilinear sample of the source texels.
                 double fx = u * srcW - 0.5;
                 double fy = v * srcH - 0.5;
-                int sx0 = (int)Math.Floor(fx);
-                int sy0 = (int)Math.Floor(fy);
-                double tx = fx - sx0;
-                double ty = fy - sy0;
-
-                SampleClamped(srcPixels, srcStride, srcW, srcH, sx0, sy0, out var b00, out var g00, out var r00, out var a00);
-                SampleClamped(srcPixels, srcStride, srcW, srcH, sx0 + 1, sy0, out var b10, out var g10, out var r10, out var a10);
-                SampleClamped(srcPixels, srcStride, srcW, srcH, sx0, sy0 + 1, out var b01, out var g01, out var r01, out var a01);
-                SampleClamped(srcPixels, srcStride, srcW, srcH, sx0 + 1, sy0 + 1, out var b11, out var g11, out var r11, out var a11);
-
-                double w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty), w01 = (1 - tx) * ty, w11 = tx * ty;
-                double sA = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
-                if (sA < 0.5) continue;
-                double sB = b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11;
-                double sG = g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11;
-                double sR = r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11;
-
-                byte outA = opacity >= 1.0 ? (byte)(sA + 0.5) : (byte)(sA * opacity + 0.5);
+                var sampled = ImageBrushSampler.SamplePixels(snapshot, fx, fy);
+                if (sampled.A <= 0) continue;
+                byte outA = (byte)Math.Clamp(Math.Round(sampled.A * opacity * 255), 0, 255);
 
                 // Apply clip coverage.
                 if (clip != null)
@@ -494,19 +571,13 @@ internal static class SoftwareVectorRasterizer
                 }
                 if (outA == 0) continue;
 
-                BlendPixel(ctx.Pixels, ctx.Stride, x, y, (byte)(sB + 0.5), (byte)(sG + 0.5), (byte)(sR + 0.5), outA);
+                BlendPixel(ctx.Pixels, ctx.Stride, x, y,
+                    (byte)Math.Clamp(Math.Round(sampled.B * 255), 0, 255),
+                    (byte)Math.Clamp(Math.Round(sampled.G * 255), 0, 255),
+                    (byte)Math.Clamp(Math.Round(sampled.R * 255), 0, 255),
+                    outA);
             }
         }
-    }
-
-    private static void SampleClamped(byte[] src, int stride, int w, int h, int x, int y,
-        out byte b, out byte g, out byte r, out byte a)
-    {
-        if (x < 0) x = 0; else if (x >= w) x = w - 1;
-        if (y < 0) y = 0; else if (y >= h) y = h - 1;
-        int off = y * stride + x * 4;
-        if (off < 0 || off + 3 >= src.Length) { b = g = r = a = 0; return; }
-        b = src[off]; g = src[off + 1]; r = src[off + 2]; a = src[off + 3];
     }
 
     private static PathGeometry? GetFlattenedGeometry(Geometry geometry, double tolerance)
@@ -690,7 +761,7 @@ internal static class SoftwareVectorRasterizer
     #region Coverage-AA Fill / Stroke / Clip
 
     private static void FillGeometry(PathGeometry geometry, in SoftwareRenderContext ctx,
-        byte b, byte g, byte r, byte a, GradientPaint? paint = null)
+        byte b, byte g, byte r, byte a, PixelPaint? paint = null)
     {
         if (a == 0) return;
 
@@ -715,56 +786,178 @@ internal static class SoftwareVectorRasterizer
         RasterizeCoverage(ctx, contours, nonZero, isMax: false, b, g, r, a, paint);
     }
 
-    private static void StrokeGeometry(PathGeometry geometry, in SoftwareRenderContext ctx,
-        byte b, byte g, byte r, byte a, Pen pen, GradientPaint? paint = null)
+    private static Rect StrokePaintBounds(PathGeometry geometry,
+        in SoftwareRenderContext ctx, Pen pen,
+        List<List<(float X, float Y)>> contours)
     {
-        if (a == 0) return;
+        var centerline = geometry.Bounds;
+        var halfWidth = pen.Thickness / 2;
+        var left = centerline.X - halfWidth;
+        var top = centerline.Y - halfWidth;
+        var right = centerline.Right + halfWidth;
+        var bottom = centerline.Bottom + halfWidth;
+        if (ctx.Matrix.TryInvert(out var inverse))
+        {
+            foreach (var contour in contours)
+            foreach (var vertex in contour)
+            {
+                var point = inverse.Transform(new Point(vertex.X, vertex.Y));
+                if (!double.IsFinite(point.X) || !double.IsFinite(point.Y)) continue;
+                left = Math.Min(left, point.X);
+                top = Math.Min(top, point.Y);
+                right = Math.Max(right, point.X);
+                bottom = Math.Max(bottom, point.Y);
+            }
+        }
+        return new Rect(left, top, right - left, bottom - top);
+    }
+
+    private static List<List<(float X, float Y)>> BuildStrokeContours(
+        PathGeometry geometry, in SoftwareRenderContext ctx, Pen pen)
+    {
+        var contours = new List<List<(float X, float Y)>>();
 
         double strokeWidth = pen.Thickness;
+        double halfW = strokeWidth * 0.5;
 
-        // Device-space half-width. Using the geometric mean of the transform's scale
-        // (sqrt|det|) tracks non-uniform scale far better than the old max(scaleX,scaleY)
-        // and is exact for uniform scale. Strokes thinner than a pixel clamp to 0.5 so
-        // they stay visible.
-        double det = ctx.Matrix.M11 * ctx.Matrix.M22 - ctx.Matrix.M12 * ctx.Matrix.M21;
-        double avgScale = Math.Sqrt(Math.Abs(det));
-        if (avgScale <= 1e-6) avgScale = Math.Max(ctx.ScaleX, ctx.ScaleY);
-        double halfW = strokeWidth * avgScale * 0.5;
-        if (halfW < 0.5) halfW = 0.5;
-
-        // Dash pattern in device pixels. DashStyle stores dash lengths in multiples of
-        // the pen thickness (WPF semantics), so scale by thickness × device scale.
+        // DashStyle stores dash lengths in multiples of pen thickness. Splitting the
+        // source path before its affine transform also preserves dash lengths under
+        // nonuniform scale and shear.
         // Ignoring the pattern painted every dashed SVG stroke as a solid line.
-        double[]? devDashes = null;
-        double devDashOffset = 0;
+        double[]? sourceDashes = null;
+        double sourceDashOffset = 0;
         if (pen.DashStyle?.Dashes is { Count: > 0 } dashes)
         {
-            double unit = strokeWidth * avgScale;
+            double unit = strokeWidth;
+            double minDashInSource = 0.05 /
+                Math.Max(Math.Sqrt(ctx.ScaleX * ctx.ScaleX +
+                    ctx.ScaleY * ctx.ScaleY), 1e-6);
             // SVG: an odd-length dash array repeats itself once so on/off alternation
             // stays consistent ("4 2 1" ≡ "4 2 1 4 2 1").
             int patternLength = dashes.Count % 2 == 0 ? dashes.Count : dashes.Count * 2;
             double total = 0;
-            devDashes = new double[patternLength];
+            sourceDashes = new double[patternLength];
             for (int i = 0; i < patternLength; i++)
             {
-                devDashes[i] = Math.Max(0, dashes[i % dashes.Count]) * unit;
-                total += devDashes[i];
+                sourceDashes[i] = Math.Max(0, dashes[i % dashes.Count]) * unit;
+                total += sourceDashes[i];
             }
-            if (total <= 1e-6) devDashes = null;   // all-zero pattern = solid per SVG
-            else devDashOffset = pen.DashStyle.Offset * unit;
+            if (!double.IsFinite(total)) return contours;
+            if (total <= 1e-6)
+            {
+                sourceDashes = null;   // all-zero pattern = solid per SVG
+            }
+            else
+            {
+                // Preserve zero-length "on" entries as tiny centerlines so
+                // round and square dash caps can paint dots at their positions.
+                for (int i = 0; i < sourceDashes.Length; i++)
+                    sourceDashes[i] = sourceDashes[i] == 0
+                        ? Math.Min(1e-4, minDashInSource * 0.5)
+                        : Math.Max(sourceDashes[i], minDashInSource);
+                sourceDashOffset = pen.DashStyle.Offset * unit;
+                if (!double.IsFinite(sourceDashOffset)) sourceDashes = null;
+            }
         }
 
-        // Build all stroke geometry (one quad per segment + a round join/cap disk at
-        // every vertex) as device-space contours, then composite with max-coverage so
-        // overlapping pieces never double-darken the seam.
-        var contours = new List<List<(float X, float Y)>>();
+        // Widen the path in source space and then transform the resulting contours.
+        // This makes the pen follow both axes of an arbitrary affine transform.
+        var sourceCtx = new SoftwareRenderContext(ctx.Pixels, ctx.Width, ctx.Height,
+            ctx.Stride, Matrix.Identity);
+        double diskScale = Math.Max(ctx.ScaleX, ctx.ScaleY);
 
-        void EmitPolyline(List<(float X, float Y)> pts, bool isClosed)
+        void AddCap((float X, float Y) endpoint, (float X, float Y) adjacent, PenLineCap cap)
+        {
+            if (cap == PenLineCap.Flat) return;
+            if (cap == PenLineCap.Round)
+            {
+                AddDisk(contours, endpoint, halfW, diskScale);
+                return;
+            }
+
+            double dx = endpoint.X - adjacent.X;
+            double dy = endpoint.Y - adjacent.Y;
+            double length = Math.Sqrt(dx * dx + dy * dy);
+            if (length <= 1e-6) return;
+            double ux = dx / length, uy = dy / length;
+            var tip = ((float)(endpoint.X + ux * halfW),
+                (float)(endpoint.Y + uy * halfW));
+            if (cap == PenLineCap.Square)
+            {
+                AddSegmentQuad(contours, endpoint, tip, halfW);
+            }
+            else if (cap == PenLineCap.Triangle)
+            {
+                float nx = (float)(-uy * halfW), ny = (float)(ux * halfW);
+                contours.Add(new List<(float X, float Y)>
+                {
+                    (endpoint.X + nx, endpoint.Y + ny), tip,
+                    (endpoint.X - nx, endpoint.Y - ny),
+                });
+            }
+        }
+
+        static bool SamePoint((float X, float Y) left, (float X, float Y) right)
+            => Math.Abs(left.X - right.X) <= 1e-3f &&
+               Math.Abs(left.Y - right.Y) <= 1e-3f;
+
+        void AddJoin((float X, float Y) previous, (float X, float Y) vertex,
+            (float X, float Y) next)
+        {
+            double dx0 = vertex.X - previous.X, dy0 = vertex.Y - previous.Y;
+            double dx1 = next.X - vertex.X, dy1 = next.Y - vertex.Y;
+            double len0 = Math.Sqrt(dx0 * dx0 + dy0 * dy0);
+            double len1 = Math.Sqrt(dx1 * dx1 + dy1 * dy1);
+            if (len0 <= 1e-6 || len1 <= 1e-6) return;
+            dx0 /= len0;
+            dy0 /= len0;
+            dx1 /= len1;
+            dy1 /= len1;
+            double cross = dx0 * dy1 - dy0 * dx1;
+            if (Math.Abs(cross) <= 1e-9) return;
+
+            if (pen.LineJoin == PenLineJoin.Round)
+            {
+                AddDisk(contours, vertex, halfW, diskScale);
+                return;
+            }
+
+            double side = cross > 0 ? -halfW : halfW;
+            var outer0 = ((float)(vertex.X - dy0 * side),
+                (float)(vertex.Y + dx0 * side));
+            var outer1 = ((float)(vertex.X - dy1 * side),
+                (float)(vertex.Y + dx1 * side));
+            if (pen.LineJoin == PenLineJoin.Miter &&
+                double.IsFinite(pen.MiterLimit) && pen.MiterLimit >= 1)
+            {
+                double betweenX = outer1.Item1 - outer0.Item1;
+                double betweenY = outer1.Item2 - outer0.Item2;
+                double t = (betweenX * dy1 - betweenY * dx1) / cross;
+                double tipX = outer0.Item1 + t * dx0;
+                double tipY = outer0.Item2 + t * dy0;
+                double reachX = tipX - vertex.X;
+                double reachY = tipY - vertex.Y;
+                if (double.IsFinite(tipX) && double.IsFinite(tipY) &&
+                    reachX * reachX + reachY * reachY <=
+                    halfW * halfW * pen.MiterLimit * pen.MiterLimit)
+                {
+                    contours.Add(new List<(float X, float Y)>
+                    {
+                        vertex, outer0, ((float)tipX, (float)tipY), outer1,
+                    });
+                    return;
+                }
+            }
+            contours.Add(new List<(float X, float Y)> { vertex, outer0, outer1 });
+        }
+
+        void EmitPolyline(List<(float X, float Y)> pts, bool isClosed,
+            PenLineCap startCap, PenLineCap endCap)
         {
             if (pts.Count < 2)
             {
-                // Degenerate single-point figure with round cap → a dot.
-                if (pts.Count == 1) AddDisk(contours, pts[0], halfW);
+                if (pts.Count == 1 && startCap == PenLineCap.Round)
+                    AddDisk(contours, pts[0], halfW, diskScale);
                 return;
             }
 
@@ -776,42 +969,71 @@ internal static class SoftwareVectorRasterizer
                 AddSegmentQuad(contours, p0, p1, halfW);
             }
 
-            // Round joins at every interior vertex (and the closing vertex for closed
-            // figures); round caps at the two open endpoints. Round joins/caps need no
-            // miter-limit math and never leave a gap.
             if (isClosed)
             {
-                for (int i = 0; i < pts.Count; i++) AddDisk(contours, pts[i], halfW);
+                for (int i = 0; i < pts.Count; i++)
+                    AddJoin(pts[(i - 1 + pts.Count) % pts.Count], pts[i],
+                        pts[(i + 1) % pts.Count]);
             }
             else
             {
-                for (int i = 1; i < pts.Count - 1; i++) AddDisk(contours, pts[i], halfW);
-                AddDisk(contours, pts[0], halfW);
-                AddDisk(contours, pts[^1], halfW);
+                for (int i = 1; i < pts.Count - 1; i++)
+                    AddJoin(pts[i - 1], pts[i], pts[i + 1]);
+                AddCap(pts[0], pts[1], startCap);
+                AddCap(pts[^1], pts[^2], endCap);
             }
         }
 
         foreach (var figure in geometry.Figures)
         {
-            var pts = GetTransformedPoints(figure, ctx);
-            if (devDashes == null)
+            var pts = GetTransformedPoints(figure, sourceCtx);
+            // A repeated vertex has no incoming or outgoing tangent. Remove it
+            // before joins and dash traversal so it cannot erase a real corner.
+            for (int i = pts.Count - 1; i > 0; i--)
             {
-                EmitPolyline(pts, figure.IsClosed);
+                double dx = pts[i].X - pts[i - 1].X;
+                double dy = pts[i].Y - pts[i - 1].Y;
+                if (dx * dx + dy * dy <= 1e-12)
+                    pts.RemoveAt(i);
+            }
+            if (figure.IsClosed && pts.Count > 2 && SamePoint(pts[0], pts[^1]))
+                pts.RemoveAt(pts.Count - 1);
+            if (sourceDashes == null)
+            {
+                EmitPolyline(pts, figure.IsClosed, pen.StartLineCap, pen.EndLineCap);
                 continue;
             }
 
             // Dashed: walk the (closed → wrapped) polyline by arc length and emit each
             // "on" run as its own open sub-polyline, capped like any open stroke end.
-            foreach (var sub in SplitByDashes(pts, figure.IsClosed, devDashes, devDashOffset))
-                EmitPolyline(sub, isClosed: false);
+            var dashRuns = SplitByDashes(pts, figure.IsClosed, sourceDashes, sourceDashOffset);
+            if (figure.IsClosed && dashRuns.Count > 1 &&
+                SamePoint(dashRuns[0][0], pts[0]) &&
+                SamePoint(dashRuns[^1][^1], pts[0]))
+            {
+                dashRuns[^1].AddRange(dashRuns[0].Skip(1));
+                dashRuns.RemoveAt(0);
+            }
+            foreach (var sub in dashRuns)
+            {
+                var closedRun = figure.IsClosed && sub.Count > 2 &&
+                    SamePoint(sub[0], sub[^1]);
+                if (closedRun) sub.RemoveAt(sub.Count - 1);
+                EmitPolyline(sub, closedRun, pen.DashCap, pen.DashCap);
+            }
         }
 
-        if (contours.Count == 0) return;
-        RasterizeCoverage(ctx, contours, nonZero: false, isMax: true, b, g, r, a, paint);
+        foreach (var contour in contours)
+        for (int i = 0; i < contour.Count; i++)
+        {
+            var vertex = contour[i];
+            contour[i] = ctx.TransformPoint(new Point(vertex.X, vertex.Y));
+        }
+        return contours;
     }
 
     /// <summary>
-    /// Splits a device-space polyline into the "on" runs of a dash pattern (device
+    /// Splits a source-space polyline into the "on" runs of a dash pattern (source
     /// units). A closed figure is walked with its wrap-around edge included.
     /// </summary>
     private static List<List<(float X, float Y)>> SplitByDashes(
@@ -882,7 +1104,7 @@ internal static class SoftwareVectorRasterizer
     }
 
     /// <summary>Appends the 4-point quad spanning <paramref name="p0"/>→<paramref name="p1"/>
-    /// offset by ±halfWidth along the segment's device-space normal.</summary>
+    /// offset by ±halfWidth along the segment's source-space normal.</summary>
     private static void AddSegmentQuad(List<List<(float X, float Y)>> contours,
         (float X, float Y) p0, (float X, float Y) p1, double halfWidth)
     {
@@ -901,10 +1123,11 @@ internal static class SoftwareVectorRasterizer
     }
 
     /// <summary>Appends a polygon approximation of a filled disk (round join/cap).</summary>
-    private static void AddDisk(List<List<(float X, float Y)>> contours, (float X, float Y) center, double radius)
+    private static void AddDisk(List<List<(float X, float Y)>> contours,
+        (float X, float Y) center, double radius, double deviceScale)
     {
-        if (radius <= 0.4) return;
-        int sides = Math.Clamp((int)(radius * 1.5) + 6, 8, 32);
+        if (radius <= 0) return;
+        int sides = Math.Clamp((int)(radius * deviceScale * 1.5) + 6, 8, 128);
         var poly = new List<(float, float)>(sides);
         for (int i = 0; i < sides; i++)
         {
@@ -924,7 +1147,7 @@ internal static class SoftwareVectorRasterizer
     private static void RasterizeCoverage(
         in SoftwareRenderContext ctx, List<List<(float X, float Y)>> contours,
         bool nonZero, bool isMax, byte b, byte g, byte r, byte a,
-        GradientPaint? paint = null)
+        PixelPaint? paint = null)
     {
         byte[] pixels = ctx.Pixels;
         int width = ctx.Width, height = ctx.Height, stride = ctx.Stride;
@@ -1133,7 +1356,9 @@ internal static class SoftwareVectorRasterizer
         double effScale = Math.Max(ctx.ScaleX, ctx.ScaleY);
         double tol = effScale > 1e-6 ? 0.3 / effScale : 0.3;
         var flat = GetFlattenedGeometry(clipGeometry, tol);
-        if (flat == null || flat.Figures.Count == 0) return ctx;
+        if (flat == null) return ctx;
+        if (flat.Figures.Count == 0)
+            return ctx.WithClipMask(new byte[ctx.Width * ctx.Height]);
 
         // Honor a transform set directly on the clip geometry (composed before ctx,
         // like fill/stroke do for geometry.Transform).
@@ -1147,7 +1372,8 @@ internal static class SoftwareVectorRasterizer
             var pts = GetTransformedPoints(figure, clipCtx);
             if (pts.Count >= 3) contours.Add(pts);
         }
-        if (contours.Count == 0) return ctx;
+        if (contours.Count == 0)
+            return ctx.WithClipMask(new byte[ctx.Width * ctx.Height]);
 
         var mask = new byte[ctx.Width * ctx.Height];
         bool nonZero = flat.FillRule == FillRule.Nonzero;
@@ -1338,7 +1564,7 @@ internal static class SoftwareVectorRasterizer
         public readonly Matrix Matrix;
 
         /// <summary>Effective per-axis device scale (row norms = transformed X/Y basis-vector
-        /// lengths), for stroke width and curve-flatten tolerance.</summary>
+        /// lengths), for curve-flatten tolerance and brush sampling.</summary>
         public readonly double ScaleX;
         public readonly double ScaleY;
 

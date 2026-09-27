@@ -11,8 +11,8 @@ namespace Jalium.UI;
 /// </summary>
 /// <remarks>
 /// Application code does not need to populate this registry. The JALXAML source
-/// generator emits a module initializer that registers every referenceable
-/// binding type declared by the consuming assembly. The annotations on
+/// generator emits a module initializer that registers one lazy provider for
+/// every consuming assembly. The annotations on
 /// <see cref="Register(Type)"/> preserve the constructors and public members needed
 /// by MVVM discovery and string-path data binding.
 /// </remarks>
@@ -29,6 +29,20 @@ public static class AotTypeRegistry
     {
         ArgumentNullException.ThrowIfNull(assembly);
         Catalogs.GetOrAdd(assembly, static _ => new AssemblyCatalog());
+    }
+
+    /// <summary>
+    /// Registers a source-generated provider whose type entries are materialized
+    /// the first time the assembly catalog is requested.
+    /// </summary>
+    public static void RegisterAssembly(Assembly assembly, Action typeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        ArgumentNullException.ThrowIfNull(typeProvider);
+
+        Catalogs
+            .GetOrAdd(assembly, static _ => new AssemblyCatalog())
+            .RegisterProvider(typeProvider);
     }
 
     /// <summary>
@@ -74,6 +88,7 @@ public static class AotTypeRegistry
             return false;
         }
 
+        catalog.EnsureMaterialized();
         types = catalog.Types.Keys
             .OrderBy(static type => type.FullName, StringComparer.Ordinal)
             .ToArray();
@@ -82,6 +97,101 @@ public static class AotTypeRegistry
 
     private sealed class AssemblyCatalog
     {
+        private readonly object _providerGate = new();
+        private Action? _typeProviders;
+        private bool _isMaterializing;
+        private bool _isMaterialized;
+        private int _materializingThreadId;
+
         public ConcurrentDictionary<Type, byte> Types { get; } = new();
+
+        public void RegisterProvider(Action typeProvider)
+        {
+            var invokeImmediately = false;
+            var currentThreadId = Environment.CurrentManagedThreadId;
+
+            lock (_providerGate)
+            {
+                while (_isMaterializing && _materializingThreadId != currentThreadId)
+                {
+                    Monitor.Wait(_providerGate);
+                }
+
+                // A provider can trigger another module initializer for this
+                // assembly. Complete that nested registration on the owning
+                // thread instead of waiting for our own materialization to end.
+                if (_isMaterialized || _isMaterializing)
+                {
+                    invokeImmediately = true;
+                }
+                else
+                {
+                    _typeProviders += typeProvider;
+                }
+            }
+
+            if (invokeImmediately)
+            {
+                typeProvider();
+            }
+        }
+
+        public void EnsureMaterialized()
+        {
+            Action? providers;
+            var currentThreadId = Environment.CurrentManagedThreadId;
+
+            lock (_providerGate)
+            {
+                while (_isMaterializing)
+                {
+                    // A provider is allowed to query its own catalog. Returning the
+                    // entries materialized so far avoids a same-thread deadlock.
+                    if (_materializingThreadId == currentThreadId)
+                    {
+                        return;
+                    }
+
+                    Monitor.Wait(_providerGate);
+                }
+
+                if (_isMaterialized)
+                {
+                    return;
+                }
+
+                _isMaterializing = true;
+                _materializingThreadId = currentThreadId;
+                providers = _typeProviders;
+                _typeProviders = null;
+            }
+
+            try
+            {
+                providers?.Invoke();
+            }
+            catch
+            {
+                lock (_providerGate)
+                {
+                    // Registration is idempotent, so retrying the complete provider
+                    // list after a transient failure is safe.
+                    _typeProviders = (Action?)Delegate.Combine(providers, _typeProviders);
+                    _isMaterializing = false;
+                    _materializingThreadId = 0;
+                    Monitor.PulseAll(_providerGate);
+                }
+
+                throw;
+            }
+
+            lock (_providerGate)
+            {
+                _isMaterialized = true;
+                _isMaterializing = false;
+                _materializingThreadId = 0;
+                Monitor.PulseAll(_providerGate);
+            }
+        }
     }
 }

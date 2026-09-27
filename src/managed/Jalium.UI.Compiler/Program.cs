@@ -1,4 +1,6 @@
 ﻿using System.Text;
+using System.Text.Json;
+using Jalium.UI.BuildSupport;
 using Jalium.UI.Gpu;
 
 namespace Jalium.UI.Compiler;
@@ -26,6 +28,8 @@ internal sealed class Program
 {
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--compile-css") return CssCompiler.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--compile-jalxaml-batch") return CompileBatch(args[1]);
         if (args.Length == 0 || args.Contains("-h") || args.Contains("--help"))
         {
             PrintHelp();
@@ -65,6 +69,43 @@ internal sealed class Program
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"错误: 编译失败 [{inputFile}] - {ex.Message}");
+                hasErrors = true;
+            }
+        }
+
+        return hasErrors ? 1 : 0;
+    }
+
+    private static int CompileBatch(string manifestPath)
+    {
+        JalxamlBatchCompilationManifest manifest;
+        try
+        {
+            manifest = JsonSerializer.Deserialize<JalxamlBatchCompilationManifest>(File.ReadAllText(manifestPath))
+                ?? throw new InvalidDataException("Empty JALXAML batch manifest.");
+        }
+        catch (Exception ex) when (ex is IOException or JsonException)
+        {
+            Console.Error.WriteLine($"JALXAML batch manifest: {ex.Message}");
+            return 1;
+        }
+
+        var hasErrors = false;
+        foreach (var file in manifest.Files)
+        {
+            try
+            {
+                CompileFile(file.SourcePath, new CompilerCliOptions
+                {
+                    OutputFile = file.OutputPath,
+                    Optimize = manifest.Optimize,
+                    Debug = manifest.Debug
+                });
+                Console.WriteLine($"已编译: {file.SourcePath}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"错误: 编译失败 [{file.SourcePath}] - {ex.Message}");
                 hasErrors = true;
             }
         }
