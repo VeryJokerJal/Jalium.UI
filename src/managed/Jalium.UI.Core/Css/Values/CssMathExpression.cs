@@ -1,4 +1,5 @@
 using System.Globalization;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Styling;
 
@@ -27,13 +28,15 @@ internal sealed record CssMathExpression(
             : Arguments.Any(a => a.UsesPercent));
     internal bool RequiresElementContext => Operation is "sibling-index" or "sibling-count" ||
         Operation == "random" && Option is null ||
+        Operation == "round" && Option == "line-width" ||
         (Operation == "value" ? Kind == CssNumericKind.Length && !Literal.IsAbsolute
             : Arguments.Any(a => a.RequiresElementContext));
     public bool IsAbsolute => Operation == "calc-mix"
         ? Arguments.Select((argument, index) => index % 2 == 0
             ? argument.IsAbsolute : !argument.RequiresElementContext).All(absolute => absolute)
         : (Operation is "sibling-index" or "sibling-count" ||
-        Operation == "random" && Option is null) ? false :
+        Operation == "random" && Option is null ||
+        Operation == "round" && Option == "line-width") ? false :
         Operation is "value" or "none"
         ? Literal.IsAbsolute || Kind is CssNumericKind.Angle or CssNumericKind.Time or CssNumericKind.Resolution or CssNumericKind.Frequency or CssNumericKind.Flex
         : Arguments.All(a => a.IsAbsolute);
@@ -97,7 +100,9 @@ internal sealed record CssMathExpression(
             "random" => RandomValue(values, double.Parse(Option!, CultureInfo.InvariantCulture)),
             "progress" => Progress(values, Option == "no-clamp"),
             "clamp" => Math.Max(values[0], Math.Min(values[1], values[2])),
-            "round" => Round(values[0], values[1], Option!),
+            "round" => Option == "line-width"
+                ? RoundLineWidth(values[0], values.Length == 2 ? values[1] : (double?)null, context)
+                : Round(values[0], values[1], Option!),
             "mod" => Mod(values[0], values[1]), "rem" => values[0] % values[1],
             "abs" => Math.Abs(values[0]), "sign" => values[0] == 0 ? values[0] : Math.CopySign(1, values[0]),
             "sin" => Trig("sin", values[0], Arguments[0].Kind),
@@ -276,6 +281,26 @@ internal sealed record CssMathExpression(
         };
     }
 
+    private static double RoundLineWidth(double value, double? interval, in CssLengthContext context)
+    {
+        if (interval is { } step)
+        {
+            var rounded = Round(value, step, "nearest");
+            // A nonzero line width chooses the nonzero multiple when zero is a bound.
+            value = value != 0 && rounded == 0 ? Math.CopySign(Math.Abs(step), value) : rounded;
+        }
+
+        if (!double.IsFinite(value) || value == 0) return value;
+        var scale = context.Element?.Target is Visual visual
+            ? VisualTreeHelper.GetDpi(VisualTreeHelper.GetRoot(visual) as Visual ?? visual).DpiScaleX : 1d;
+        if (!double.IsFinite(scale) || scale <= 0) scale = 1;
+        var devicePixels = value * scale;
+        if (!double.IsFinite(devicePixels)) return value;
+        var snappedPixels = Math.Abs(devicePixels) < 1
+            ? Math.CopySign(1, devicePixels) : Math.Truncate(devicePixels);
+        return snappedPixels / scale;
+    }
+
     private static double Mod(double value, double interval)
     {
         if (interval == 0 || double.IsInfinity(value)) return double.NaN;
@@ -324,7 +349,7 @@ internal sealed record CssMathExpression(
         {
             option = "nearest";
             var probe = parser;
-            if (probe.Identifier() is { } strategy && strategy is "nearest" or "up" or "down" or "to-zero")
+            if (probe.Identifier() is { } strategy && strategy is "nearest" or "up" or "down" or "to-zero" or "line-width")
             {
                 if (!probe.Consume(',')) return null;
                 option = strategy; parser = probe;
@@ -397,7 +422,8 @@ internal sealed record CssMathExpression(
             }
             if (name == "atan2") type = type.Result(CssNumericKind.Angle);
         }
-        if (name == "round" && count == 1)
+        if (name == "round" && option == "line-width" && values[0].Kind != CssNumericKind.Length) return null;
+        if (name == "round" && count == 1 && option != "line-width")
         {
             if (type.Kind != CssNumericKind.Number) return null;
             values.Add(Number(1));
