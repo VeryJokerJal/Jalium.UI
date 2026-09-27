@@ -88,6 +88,7 @@ internal sealed record CssMathExpression(
             "negate" => -values[0], "calc" => values[0],
             "min" => Minimum(values), "max" => Maximum(values),
             "random" => RandomValue(values, double.Parse(Option!, CultureInfo.InvariantCulture)),
+            "progress" => Progress(values, Option == "no-clamp"),
             "clamp" => Math.Max(values[0], Math.Min(values[1], values[2])),
             "round" => Round(values[0], values[1], Option!),
             "mod" => Mod(values[0], values[1]), "rem" => values[0] % values[1],
@@ -162,6 +163,18 @@ internal sealed record CssMathExpression(
         return index == last && Math.Abs(max - result) <= epsilon ? max : result;
     }
 
+    private static double Progress(ReadOnlySpan<double> values, bool noClamp)
+    {
+        var current = values[0];
+        var start = values[1];
+        var end = values[2];
+        if (start == end)
+            return !noClamp || current == start ? 0
+                : current < start ? double.NegativeInfinity : double.PositiveInfinity;
+        var result = (current - start) / (end - start);
+        return noClamp ? result : Math.Clamp(result, 0, 1);
+    }
+
     private static double Trig(string operation, double value, CssNumericKind kind)
     {
         if (double.IsInfinity(value)) return double.NaN;
@@ -227,7 +240,7 @@ internal sealed record CssMathExpression(
         return double.IsNegative(remainder) == double.IsNegative(interval) ? remainder : remainder + interval;
     }
 
-    internal static bool IsFunction(string name) => name is "calc" or "min" or "max" or "clamp" or "random"
+    internal static bool IsFunction(string name) => name is "calc" or "min" or "max" or "clamp" or "random" or "progress"
         or "sibling-index" or "sibling-count"
         or "round" or "mod" or "rem" or "sin" or "cos" or "tan" or "asin" or "acos" or "atan" or "atan2"
         or "pow" or "sqrt" or "hypot" or "log" or "exp" or "abs" or "sign";
@@ -270,6 +283,15 @@ internal sealed record CssMathExpression(
                 option = strategy; parser = probe;
             }
         }
+        if (name == "progress")
+        {
+            var probe = parser;
+            if (probe.Identifier() == "no-clamp")
+            {
+                option = "no-clamp";
+                parser = probe;
+            }
+        }
         var values = new List<CssMathExpression>();
         while (true)
         {
@@ -293,7 +315,7 @@ internal sealed record CssMathExpression(
         var count = values.Count;
         if (name is "calc" or "sin" or "cos" or "tan" or "asin" or "acos" or "atan" or "sqrt" or "exp" or "abs" or "sign")
         { if (count != 1) return null; }
-        else if (name == "clamp") { if (count != 3) return null; }
+        else if (name is "clamp" or "progress") { if (count != 3) return null; }
         else if (name is "mod" or "rem" or "atan2" or "pow") { if (count != 2) return null; }
         else if (name is "round" or "log") { if (count is < 1 or > 2) return null; }
         else if (name == "random") { if (count is < 2 or > 3) return null; }
@@ -332,6 +354,11 @@ internal sealed record CssMathExpression(
         {
             if (type.Kind != CssNumericKind.Number) return null;
             values.Add(Number(1));
+        }
+        if (name == "progress")
+        {
+            if (type.Kind == CssNumericKind.Compound) return null;
+            type = type.Result(CssNumericKind.Number);
         }
         return new(name, type, default, values.ToArray(), option);
     }
