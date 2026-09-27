@@ -803,6 +803,11 @@ internal static class CssEngine
                             : new CssWideValue(longhand, wideKeyword), declaration.Important));
                 continue;
             }
+            if (!CssCustomProperties.HasValidNumericRandomFunctions(declaration.RawValue))
+            {
+                ReportInvalidValue(declaration);
+                continue;
+            }
             if (CssCustomProperties.ContainsSubstitution(declaration.RawValue))
             {
                 if (!CssCustomProperties.HasValidAttributeFunctions(declaration.RawValue) ||

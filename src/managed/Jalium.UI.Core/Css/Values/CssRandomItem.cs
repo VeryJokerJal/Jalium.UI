@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 
 namespace Jalium.UI.Styling;
@@ -91,9 +92,47 @@ internal static class CssRandomItem
         int functionIndex, out int selected)
     {
         selected = 0;
-        if (count < 1 || !TryParseKey(key, out var parsed)) return false;
-        var random = parsed.Fixed ?? RandomBase(parsed, element, property, functionIndex);
+        if (count < 1 || !TryBase(key, element, property, functionIndex, out var random)) return false;
         selected = Math.Min((int)(random * count), count - 1);
+        return true;
+    }
+
+    internal static bool TryBase(string key, CssNode? element, string? property,
+        int functionIndex, out double random)
+    {
+        random = 0;
+        if (!TryParseKey(key, out var parsed)) return false;
+        random = parsed.Fixed ?? RandomBase(parsed, element, property, functionIndex);
+        return true;
+    }
+
+    internal static bool HasFixedKey(ReadOnlySpan<char> arguments)
+    {
+        var reader = new CssTokenReader(arguments);
+        return reader.TryReadUntilTopLevelComma(out var first) &&
+            TryParseKey(first.ToString(), out var key) && key.Fixed.HasValue;
+    }
+
+    internal static bool HasValidNumberArguments(string arguments)
+    {
+        var reader = new CssTokenReader(arguments);
+        if (reader.TryReadUntilTopLevelComma(out var first) && reader.TryReadComma() &&
+            TryParseKey(first.ToString(), out _))
+            arguments = "fixed 0," + reader.Remaining.ToString();
+        return CssMathExpression.Parse("random", arguments) is not null;
+    }
+
+    internal static bool TryResolveNumberArguments(string arguments, CssNode? element,
+        string? property, int functionIndex, out string resolved)
+    {
+        resolved = string.Empty;
+        var reader = new CssTokenReader(arguments);
+        if (!reader.TryReadUntilTopLevelComma(out var first) || !reader.TryReadComma()) return false;
+        var keyed = TryParseKey(first.ToString(), out _);
+        var key = keyed ? first.ToString() : "auto";
+        if (!TryBase(key, element, property, functionIndex, out var random)) return false;
+        resolved = "fixed " + random.ToString("R", CultureInfo.InvariantCulture) + "," +
+            (keyed ? reader.Remaining.ToString() : arguments);
         return true;
     }
 
@@ -151,9 +190,10 @@ internal static class CssRandomItem
     }
 }
 
-internal sealed class CssRandomContext(string? property)
+internal sealed class CssRandomContext(string? property, bool resolveNumeric = true)
 {
     internal string? Property { get; } = property;
+    internal bool ResolveNumeric { get; } = resolveNumeric;
     internal int NextIndex { get; private set; }
     internal int ClaimIndex() => NextIndex++;
 }

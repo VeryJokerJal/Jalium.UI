@@ -112,12 +112,14 @@ internal sealed class CssRegisteredComputation : IReadOnlyDictionary<string, str
         var tainted = false;
         try
         {
+            var resolveNumericRandom = _registrations.TryGetValue(name, out var randomRegistration) &&
+                !randomRegistration.Syntax.Universal;
             if (CssCustomProperties.Substitute(declaration.RawValue, dependency => Resolve(dependency), out var expanded,
                 validateFallback: ValidateFallback, validateFallbackFor: _registrations.ContainsKey,
                 isTainted: AttrTaintedProperties.Contains,
                 onUsed: dependency => tainted |= AttrTaintedProperties.Contains(dependency), element: _element,
                 onAttributeUsed: () => tainted = true, isActive: _visiting.Contains,
-                randomContext: new(name)))
+                randomContext: new(name, resolveNumericRandom)))
             {
                 tainted |= CssCustomProperties.ContainsAttributeFunction(expanded);
                 if (CssAttributeSubstitution.TrySubstitute(expanded, _element, _lengths, out var substituted,

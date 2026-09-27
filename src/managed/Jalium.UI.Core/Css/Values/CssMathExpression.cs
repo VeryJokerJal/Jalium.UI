@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Jalium.UI.Styling;
 
 internal enum CssNumericKind { Number, Length, Percent, LengthPercent, Angle, Time, Resolution, Frequency, Flex, Compound }
@@ -20,10 +22,11 @@ internal sealed record CssMathExpression(
     }
 
     public bool UsesPercent => Literal.Unit == CssUnit.Percent || Type.PercentHint is not null || Arguments.Any(a => a.UsesPercent);
-    internal bool RequiresElementContext => Operation == "value"
-        ? Kind == CssNumericKind.Length && !Literal.IsAbsolute
-        : Arguments.Any(a => a.RequiresElementContext);
-    public bool IsAbsolute => Operation is "value" or "none"
+    internal bool RequiresElementContext => Operation == "random" && Option is null ||
+        (Operation == "value" ? Kind == CssNumericKind.Length && !Literal.IsAbsolute
+            : Arguments.Any(a => a.RequiresElementContext));
+    public bool IsAbsolute => Operation == "random" && Option is null ? false :
+        Operation is "value" or "none"
         ? Literal.IsAbsolute || Kind is CssNumericKind.Angle or CssNumericKind.Time or CssNumericKind.Resolution or CssNumericKind.Frequency or CssNumericKind.Flex
         : Arguments.All(a => a.IsAbsolute);
 
@@ -49,6 +52,7 @@ internal sealed record CssMathExpression(
     internal bool TryEvaluateCore(in CssLengthContext context, double percentBasis, out double value)
     {
         value = double.NaN;
+        if (Operation == "random" && Option is null) return false;
         if (Operation == "none") { value = Literal.Value; return true; }
         if (Operation == "value")
         {
@@ -79,6 +83,7 @@ internal sealed record CssMathExpression(
             "*" => values[0] * values[1], "/" => values[0] / values[1],
             "negate" => -values[0], "calc" => values[0],
             "min" => Minimum(values), "max" => Maximum(values),
+            "random" => RandomValue(values, double.Parse(Option!, CultureInfo.InvariantCulture)),
             "clamp" => Math.Max(values[0], Math.Min(values[1], values[2])),
             "round" => Round(values[0], values[1], Option!),
             "mod" => Mod(values[0], values[1]), "rem" => values[0] % values[1],
@@ -103,6 +108,28 @@ internal sealed record CssMathExpression(
     { var result = values[0]; foreach (var value in values) result = Math.Min(result, value); return result; }
     private static double Maximum(ReadOnlySpan<double> values)
     { var result = values[0]; foreach (var value in values) result = Math.Max(result, value); return result; }
+
+    private static double RandomValue(ReadOnlySpan<double> values, double random)
+    {
+        var min = values[0];
+        if (double.IsInfinity(min)) return min;
+        var max = Math.Max(min, values[1]);
+        var range = max - min;
+        if (!double.IsFinite(range)) return double.NaN;
+        if (values.Length == 2) return min + random * range;
+        var step = values[2];
+        if (double.IsInfinity(step)) return min;
+        var steps = range / step;
+        if (step <= 0 || !double.IsFinite(steps) || steps >= 9007199254740992d)
+            return min + random * range;
+        var epsilon = Math.Max(step / 1000, double.Epsilon);
+        var last = Math.Floor(steps);
+        if (Math.Abs(max - (min + last * step)) > epsilon &&
+            Math.Abs(max - (min + (last + 1) * step)) <= epsilon) last++;
+        var index = Math.Min(Math.Floor(random * (last + 1)), last);
+        var result = min + index * step;
+        return index == last && Math.Abs(max - result) <= epsilon ? max : result;
+    }
 
     private static double Trig(string operation, double value, CssNumericKind kind)
     {
@@ -169,7 +196,7 @@ internal sealed record CssMathExpression(
         return double.IsNegative(remainder) == double.IsNegative(interval) ? remainder : remainder + interval;
     }
 
-    internal static bool IsFunction(string name) => name is "calc" or "min" or "max" or "clamp"
+    internal static bool IsFunction(string name) => name is "calc" or "min" or "max" or "clamp" or "random"
         or "round" or "mod" or "rem" or "sin" or "cos" or "tan" or "asin" or "acos" or "atan" or "atan2"
         or "pow" or "sqrt" or "hypot" or "log" or "exp" or "abs" or "sign";
 
@@ -182,8 +209,22 @@ internal sealed record CssMathExpression(
     {
         name = name.ToLowerInvariant();
         if (depth > 64 || !IsFunction(name)) return null;
-        var parser = new Parser(arguments, depth, budget);
         string? option = null;
+        if (name == "random")
+        {
+            var keyReader = new CssTokenReader(arguments);
+            if (keyReader.TryReadUntilTopLevelComma(out var first) && keyReader.TryReadComma())
+            {
+                var probe = new CssTokenReader(first);
+                if (probe.TryReadIdent(out var keyword) && keyword.Equals("fixed", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!CssRandomItem.TryBase(first.ToString(), null, null, 0, out var random)) return null;
+                    option = random.ToString("R", CultureInfo.InvariantCulture);
+                    arguments = keyReader.Remaining;
+                }
+            }
+        }
+        var parser = new Parser(arguments, depth, budget);
         if (name == "round")
         {
             option = "nearest";
@@ -220,6 +261,7 @@ internal sealed record CssMathExpression(
         else if (name == "clamp") { if (count != 3) return null; }
         else if (name is "mod" or "rem" or "atan2" or "pow") { if (count != 2) return null; }
         else if (name is "round" or "log") { if (count is < 1 or > 2) return null; }
+        else if (name == "random") { if (count is < 2 or > 3) return null; }
 
         if (name == "clamp")
             for (var i = 0; i < 3; i += 2)

@@ -16,7 +16,18 @@ internal static class CssCustomProperties
                                     f.Name.Equals("env", StringComparison.OrdinalIgnoreCase) ||
                                     f.Name.Equals("attr", StringComparison.OrdinalIgnoreCase) ||
                                     f.Name.Equals("if", StringComparison.OrdinalIgnoreCase) ||
-                                    f.Name.Equals("random-item", StringComparison.OrdinalIgnoreCase));
+                                    f.Name.Equals("random-item", StringComparison.OrdinalIgnoreCase) ||
+                                    f.Name.Equals("random", StringComparison.OrdinalIgnoreCase) &&
+                                    !CssRandomItem.HasFixedKey(f.Arguments));
+
+    private static bool ContainsNumericRandom(string text)
+        => Functions(text).Any(f => f.Name.Equals("random", StringComparison.OrdinalIgnoreCase));
+
+    internal static bool HasValidNumericRandomFunctions(string text)
+        => text.IndexOf("random", StringComparison.OrdinalIgnoreCase) < 0 ||
+            Functions(text).Any(f => IsArbitrarySubstitution(f.Name)) ||
+            Functions(text).Where(f => f.Name.Equals("random", StringComparison.OrdinalIgnoreCase))
+                .All(f => CssRandomItem.HasValidNumberArguments(f.Arguments));
 
     internal static bool ContainsUrlFunction(string text)
         => Functions(text).Any(f => f.Name.Equals("url", StringComparison.OrdinalIgnoreCase) ||
@@ -143,7 +154,7 @@ internal static class CssCustomProperties
             try
             {
                 if (Substitute(value, dependency => Resolve(dependency, depth + 1), out var expanded, depth,
-                        element: element, isActive: visiting.Contains, randomContext: new(name)) && !cyclic.Contains(name))
+                        element: element, isActive: visiting.Contains, randomContext: new(name, false)) && !cyclic.Contains(name))
                 {
                     var keyword = CssPropertyMetadata.WideKeyword(expanded);
                     if (keyword is "inherit" or "unset")
@@ -185,7 +196,7 @@ internal static class CssCustomProperties
                 var usedTainted = false;
                 if (!Substitute(raw, dependency => computed.GetValueOrDefault(dependency), out var expanded,
                         onUsed: dependency => usedTainted |= tainted.Contains(dependency), element: element,
-                        onAttributeUsed: () => usedTainted = true, randomContext: new(name))) continue;
+                        onAttributeUsed: () => usedTainted = true, randomContext: new(name, false))) continue;
                 var keyword = CssPropertyMetadata.WideKeyword(expanded);
                 if (keyword is "inherit" or "unset")
                 {
@@ -283,6 +294,10 @@ internal static class CssCustomProperties
                         if ((isTainted?.Invoke(name) == true || nameHasAttribute || nameUsedTainted) &&
                             (inUrl || ContainsUrlFunction(replacement))) return false;
                     }
+                    if (randomContext.ResolveNumeric && ContainsNumericRandom(replacement) &&
+                        !Substitute(replacement, resolve, out replacement, depth + 1,
+                            validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
+                            element, onAttributeUsed, isActive, randomContext)) return false;
                     // Preserve token boundaries: var(--number)px must not become a dimension.
                     output.Append("/**/").Append(replacement).Append("/**/");
                 }
@@ -313,6 +328,16 @@ internal static class CssCustomProperties
                             validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
                             element, onAttributeUsed, isActive, randomContext)) return false;
                     output.Append("/**/").Append(replacement).Append("/**/");
+                }
+                else if (function.Name.Equals("random", StringComparison.OrdinalIgnoreCase) && randomContext.ResolveNumeric)
+                {
+                    var index = randomContext.ClaimIndex();
+                    if (!Substitute(function.Arguments, resolve, out var arguments, depth + 1,
+                            validateFallback, validateFallbackFor, isTainted, onUsed, inUrl,
+                            element, onAttributeUsed, isActive, randomContext) ||
+                        !CssRandomItem.TryResolveNumberArguments(arguments, element,
+                            randomContext.Property, index, out var resolved)) return false;
+                    output.Append("random(").Append(resolved).Append(')');
                 }
                 else
                 {
