@@ -461,7 +461,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/work" \
             -v "${{ runner.temp }}:/artifacts" \
             -w /work \
-            mcr.microsoft.com/dotnet/sdk:10.0-alpine3.24 \
+            mcr.microsoft.com/dotnet/sdk:10.0-alpine3.23 \
             sh -euxc '
               apk add --no-cache \
                 bash build-base clang lld cmake ninja pkgconf python3 git linux-headers \
