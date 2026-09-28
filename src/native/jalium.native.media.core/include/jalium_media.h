@@ -263,6 +263,11 @@ JALIUM_MEDIA_API void jalium_video_decoder_close(jalium_video_decoder_t* decoder
 // Vulkan consumer accepts only one packed RGB AR24/XR24/AB24/XB24 plane.
 // NV12/P010, DMA_DRM and multi-plane samples return an unsupported GPU layout
 // and are reopened through the precise-timestamp CPU frame path.
+// The producer completed all GPU writes and will never mutate this allocation
+// again. The importer must hold its own resource reference through GPU use.
+// Kept in sync with JALIUM_VS_FLAG_IMMUTABLE_READY; does not change the ABI.
+#define JALIUM_VIDEO_GPU_DESCRIPTOR_IMMUTABLE_READY (1u << 16)
+
 typedef struct jalium_video_decoder_gpu_descriptor {
     int32_t   kind;          // JaliumVideoSurfaceKind (D3D11_SHARED / AHARDWAREBUFFER / ...)
     uint32_t  width;

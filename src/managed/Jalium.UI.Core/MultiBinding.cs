@@ -13,7 +13,7 @@ namespace Jalium.UI.Data;
 public class MultiBinding : BindingBase, IAddChild
 {
     private readonly Collection<BindingBase> _bindings = new();
-    private readonly Collection<ValidationRule> _validationRules = new();
+    private readonly ValidationRuleCollection _validationRules = new();
 
     /// <summary>
     /// Gets the collection of Binding objects within this MultiBinding instance.
@@ -72,6 +72,7 @@ public class MultiBinding : BindingBase, IAddChild
 
     /// <summary>Gets the validation rules applied to the combined target value.</summary>
     public Collection<ValidationRule> ValidationRules => _validationRules;
+    internal ValidationRuleCollection ValidationRulesInternal => _validationRules;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MultiBinding"/> class.

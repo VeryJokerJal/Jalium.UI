@@ -64,7 +64,10 @@ inline void BuildRoundCapArc(
     constexpr float kPi = (float)M_PI;
 
     float angle0 = std::atan2(ny, nx);
-    float startAngle = isStart ? (angle0 + kPi * 0.5f) : (angle0 - kPi * 0.5f);
+    // The segment normal already points to one edge of the stroke. Sweep
+    // through the outward half of the cap: opposite the segment at the start,
+    // along the segment at the end.
+    float startAngle = angle0;
     float sweep = isStart ? kPi : -kPi;
 
     outXY.clear();
@@ -219,6 +222,34 @@ inline bool ExpandStrokePath(
     float featherScaleInSrc = 1.0f)
 {
     if (pointCount < 2 || flatPoints == nullptr) return false;
+
+    // Consecutive coincident vertices have no tangent. Leaving them in the
+    // segment list creates zero normals and changes every join style at the
+    // next real corner. Keep the all-coincident case intact so an explicit
+    // zero-length round-capped stroke can still paint a dot.
+    std::vector<float> compactPoints;
+    for (uint32_t i = 1; i < pointCount; ++i) {
+        const float dx = flatPoints[i * 2] - flatPoints[(i - 1) * 2];
+        const float dy = flatPoints[i * 2 + 1] - flatPoints[(i - 1) * 2 + 1];
+        if (dx * dx + dy * dy > 1e-12f) continue;
+        compactPoints.reserve(static_cast<size_t>(pointCount) * 2u);
+        compactPoints.insert(compactPoints.end(), flatPoints, flatPoints + 2);
+        for (uint32_t j = 1; j < pointCount; ++j) {
+            const float nextX = flatPoints[j * 2], nextY = flatPoints[j * 2 + 1];
+            const float prevX = compactPoints[compactPoints.size() - 2];
+            const float prevY = compactPoints[compactPoints.size() - 1];
+            const float sx = nextX - prevX, sy = nextY - prevY;
+            if (sx * sx + sy * sy > 1e-12f) {
+                compactPoints.push_back(nextX);
+                compactPoints.push_back(nextY);
+            }
+        }
+        if (compactPoints.size() >= 4) {
+            flatPoints = compactPoints.data();
+            pointCount = static_cast<uint32_t>(compactPoints.size() / 2);
+        }
+        break;
+    }
 
     // featherScaleInSrc must be > 0; clamp NaN / negatives to 1 (pixel-space).
     if (!(featherScaleInSrc > 0.0f)) featherScaleInSrc = 1.0f;
@@ -446,27 +477,20 @@ inline bool ExpandStrokePath(
         if (alignment > 1e-6f) {
             float mx = (n0x + n1x) * 0.5f * halfWidth / alignment;
             float my = (n0y + n1y) * 0.5f * halfWidth / alignment;
-            if (mx * mx + my * my <= miterLimit * miterLimit) {
+            const float maxReach = halfWidth * miterLimit;
+            if (mx * mx + my * my <= maxReach * maxReach) {
                 haveMiter = true;
                 mtx = cx + mx * dir; mty = cy + my * dir;
             }
         }
 
         if (collect) {
-            // Deliberately mirrors the mesh decomposition triangle-for-
-            // triangle rather than merging into one polygon: the bevel
-            // triangle and the miter triangle are (corner, p0, p1) and
-            // (corner, p1, tip), and the quad through those four points in
-            // that order is a self-intersecting bowtie whose signed area is
-            // zero — merging would silently delete every miter join. (The
-            // pair also does not tile the full miter kite; that asymmetry
-            // predates this change and is preserved here so the analytic and
-            // mesh routes keep rendering the same shape.)
-            float t0[6] = { cx, cy, p0x, p0y, p1x, p1y };
-            pushContourCCW(t0, 3);
             if (haveMiter) {
-                float t1[6] = { cx, cy, p1x, p1y, mtx, mty };
-                pushContourCCW(t1, 3);
+                float wedge[8] = { cx, cy, p0x, p0y, mtx, mty, p1x, p1y };
+                pushContourCCW(wedge, 4);
+            } else {
+                float bevel[6] = { cx, cy, p0x, p0y, p1x, p1y };
+                pushContourCCW(bevel, 3);
             }
             return;
         }
@@ -475,13 +499,12 @@ inline bool ExpandStrokePath(
         verts.push_back({ cx, cy, r, g, b, a });
         verts.push_back({ p0x, p0y, r, g, b, a });
         verts.push_back({ p1x, p1y, r, g, b, a });
-        indices.push_back(base); indices.push_back(base + 1); indices.push_back(base + 2);
         if (haveMiter) {
-            uint32_t mbase = (uint32_t)verts.size();
             verts.push_back({ mtx, mty, r, g, b, a });
-            indices.push_back(base);
-            indices.push_back(base + 2);
-            indices.push_back(mbase);
+            indices.push_back(base); indices.push_back(base + 1); indices.push_back(base + 3);
+            indices.push_back(base); indices.push_back(base + 3); indices.push_back(base + 2);
+        } else {
+            indices.push_back(base); indices.push_back(base + 1); indices.push_back(base + 2);
         }
     };
 

@@ -44,12 +44,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.core</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.core</TargetName>
   </PropertyGroup>
@@ -66,7 +66,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(ProjectDir)$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
-      <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>kernel32.lib;user32.lib;dwrite.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -87,7 +87,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(ProjectDir)$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
-      <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>kernel32.lib;user32.lib;dwrite.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -102,14 +102,28 @@
     <ClInclude Include="include\jalium_stencil_path.h" />
     <ClInclude Include="include\jalium_string_util.h" />
     <ClInclude Include="include\jalium_text_options.h" />
+    <ClInclude Include="include\jalium_dwrite_font_units.h" />
+    <ClInclude Include="include\jalium_font_resource.h" />
+    <ClInclude Include="include\jalium_elliptical_clip.h" />
+    <ClInclude Include="include\jalium_elliptical_clip_shader.h" />
+    <None Include="tests\**\*" />
     <ClInclude Include="include\jalium_text_stats.h" />
     <ClInclude Include="include\jalium_triangulate.h" />
     <ClInclude Include="include\jalium_types.h" />
+    <ClInclude Include="include\jalium_abi_guard.h" />
+    <ClInclude Include="include\jalium_gradient_sample.h" />
+    <ClInclude Include="include\jalium_impeller_shapes.h" />
+    <ClInclude Include="include\jalium_impeller_stroke.h" />
+    <ClInclude Include="include\jalium_scanline_rasterizer.h" />
+    <ClInclude Include="include\jalium_vello_encode.h" />
+    <ClInclude Include="include\jalium_video_surface.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\context.cpp" />
     <ClCompile Include="src\render_target.cpp" />
     <ClCompile Include="src\brush.cpp" />
+    <ClCompile Include="src\font_resource.cpp" />
+    <ClCompile Include="src\text_outline_win.cpp" />
     <ClCompile Include="src\bitmap.cpp" />
     <ClCompile Include="src\backend_registry.cpp" />
     <ClCompile Include="src\jalium_path_stats.cpp" />

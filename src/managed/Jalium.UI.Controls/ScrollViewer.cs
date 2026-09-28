@@ -2,6 +2,8 @@ using System.Runtime.InteropServices;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
+using Jalium.UI.Styling;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
@@ -29,7 +31,10 @@ public partial class ScrollViewer : ContentControl
     private Pen? _borderPenCached;
     private Brush? _borderPenBrush;
     private double _borderPenThickness;
+    private Border? _cssBorderPainter;
     private RectangleGeometry? _layoutClipCache;
+    private Geometry? _contentViewportClipCache;
+    private RectangleGeometry? _cssGutterContentClipCache;
     private double _horizontalOffset;
     private double _verticalOffset;
     private double _requestedHorizontalOffset;
@@ -38,11 +43,13 @@ public partial class ScrollViewer : ContentControl
     private double _extentHeight;
     // Last committed Auto scroll-bar decisions. Auto visibility is a threshold on a
     // continuous quantity, so a page whose content is exactly viewport-sized sits on
-    // the knife edge and flips every frame while a window is being resized — and each
-    // flip moves a 12px gutter, shoving the content sideways. Remembering the previous
-    // answer turns the single threshold into a dead band.
+    // the knife edge and can flip every frame while a window is being resized. Remembering
+    // the previous answer turns the single threshold into a dead band and keeps the
+    // scroll-bar visual state stable.
     private bool _verticalScrollBarShown;
     private bool _horizontalScrollBarShown;
+    private bool _verticalGutterAdmitted;
+    private bool _horizontalGutterAdmitted;
     // Set once layout has settled an Auto decision from real content. Gates every
     // non-layout path down to re-asserting that decision instead of re-deriving it.
     private bool _hasCommittedScrollBarVisibility;
@@ -62,6 +69,7 @@ public partial class ScrollViewer : ContentControl
     private double _lastNotifiedViewportHeight;
     private double _lastNotifiedHorizontalOffset;
     private double _lastNotifiedVerticalOffset;
+    private CssScrollableDirection _lastRelativeScrollDirection;
     private readonly ScrollBar _verticalScrollBar;
     private readonly ScrollBar _horizontalScrollBar;
     private bool _isUpdatingScrollBars;
@@ -252,8 +260,9 @@ public partial class ScrollViewer : ContentControl
 
     /// <summary>
     /// Identifies the IsOverlayScrollBarEnabled dependency property.
-    /// Overlay scroll bars render as compact edge indicators and do not reserve
-    /// content space. The default is enabled on mobile operating systems.
+    /// Overlay scroll bars render as compact edge indicators over the content.
+    /// Classic scroll bars consume gutter space when shown; a stable CSS gutter
+    /// also reserves it without overflow. The default is enabled on mobile systems.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOverlayScrollBarEnabledProperty =
@@ -261,6 +270,42 @@ public partial class ScrollViewer : ContentControl
             new PropertyMetadata(
                 OperatingSystem.IsAndroid() || OperatingSystem.IsIOS(),
                 OnOverlayScrollBarEnabledChanged));
+
+    internal static readonly DependencyProperty CssScrollBarWidthProperty =
+        DependencyProperty.RegisterAttached(nameof(CssScrollBarWidth), typeof(CssScrollBarWidthMode),
+            typeof(ScrollViewer), new FrameworkPropertyMetadata(CssScrollBarWidthMode.Auto,
+                FrameworkPropertyMetadataOptions.AffectsMeasure,
+                OnCssScrollBarWidthChanged));
+
+    internal static readonly DependencyProperty CssScrollBarGutterProperty =
+        DependencyProperty.RegisterAttached(nameof(CssScrollBarGutter), typeof(CssScrollBarGutterMode),
+            typeof(ScrollViewer), new FrameworkPropertyMetadata(CssScrollBarGutterMode.Auto,
+                FrameworkPropertyMetadataOptions.AffectsMeasure,
+                OnCssScrollBarGutterChanged));
+
+    internal static readonly DependencyProperty CssScrollBarColorsProperty =
+        DependencyProperty.RegisterAttached(nameof(CssScrollBarColors), typeof(CssScrollBarColors),
+            typeof(ScrollViewer), new FrameworkPropertyMetadata(null,
+                FrameworkPropertyMetadataOptions.Inherits, OnCssScrollBarColorsChanged)
+            {
+                AutomaticTransitionFactory = static (_, from, to, duration, timing) =>
+                    from is CssScrollBarColors first && to is CssScrollBarColors second
+                        ? new CssScrollBarColorsAnimation
+                        {
+                            From = first,
+                            To = second,
+                            Duration = new Duration(duration),
+                            EasingFunction = timing switch
+                            {
+                                TransitionTimingFunction.Linear => new LinearEase(),
+                                TransitionTimingFunction.EaseIn => new CubicEase { EasingMode = EasingMode.EaseIn },
+                                TransitionTimingFunction.EaseOut => new CubicEase { EasingMode = EasingMode.EaseOut },
+                                TransitionTimingFunction.EaseInOut => new CubicEase { EasingMode = EasingMode.EaseInOut },
+                                _ => new CubicEase { EasingMode = EasingMode.EaseOut },
+                            },
+                        }
+                        : null,
+            });
 
     #endregion
 
@@ -373,14 +418,103 @@ public partial class ScrollViewer : ContentControl
     }
 
     /// <summary>
-    /// Gets or sets whether scroll bars overlay the content as compact mobile
-    /// edge indicators instead of reserving a desktop scroll-bar gutter.
+    /// Gets or sets whether scroll bars use the compact mobile edge-indicator style.
+    /// Classic bars consume viewport space when shown; overlay bars do not.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOverlayScrollBarEnabled
     {
         get => (bool)GetValue(IsOverlayScrollBarEnabledProperty)!;
         set => SetValue(IsOverlayScrollBarEnabledProperty, value);
+    }
+
+    internal CssScrollBarWidthMode CssScrollBarWidth
+    {
+        get
+        {
+            var ownWidth = (CssScrollBarWidthMode)GetValue(CssScrollBarWidthProperty)!;
+            var ownLayer = GetEffectiveValueLayer(CssScrollBarWidthProperty);
+            if (ownLayer is not null and not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                return ownWidth;
+            if (GetViewportStyleRoot() is { } root &&
+                HasCssDeclaration(root, CssScrollBarWidthProperty))
+                return (CssScrollBarWidthMode)root.GetValue(CssScrollBarWidthProperty)!;
+            // scrollbar-width is not inherited. A template-hosted ScrollViewer is
+            // the scroll container of its owner, so use that owner's declaration
+            // only when the viewer has no width declaration of its own.
+            if (ownLayer is not null ||
+                TemplatedParent is not DependencyObject owner)
+                return ownWidth;
+            return (CssScrollBarWidthMode)owner.GetValue(CssScrollBarWidthProperty)!;
+        }
+        set => SetValue(CssScrollBarWidthProperty, value);
+    }
+
+    internal CssScrollBarGutterMode CssScrollBarGutter
+    {
+        get
+        {
+            var ownGutter = (CssScrollBarGutterMode)GetValue(CssScrollBarGutterProperty)!;
+            var ownLayer = GetEffectiveValueLayer(CssScrollBarGutterProperty);
+            if (ownLayer is not null and not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                return ownGutter;
+            if (GetViewportStyleRoot() is { } root &&
+                HasCssDeclaration(root, CssScrollBarGutterProperty))
+                return (CssScrollBarGutterMode)root.GetValue(CssScrollBarGutterProperty)!;
+            if (ownLayer is not null ||
+                TemplatedParent is not DependencyObject owner)
+                return ownGutter;
+            return (CssScrollBarGutterMode)owner.GetValue(CssScrollBarGutterProperty)!;
+        }
+        set => SetValue(CssScrollBarGutterProperty, value);
+    }
+
+    internal CssScrollBarColors? CssScrollBarColors
+    {
+        get => (CssScrollBarColors?)GetValue(CssScrollBarColorsProperty);
+        set => SetValue(CssScrollBarColorsProperty, value);
+    }
+
+    // A Window has no scrollport of its own. Direct ScrollViewer content or
+    // the designated viewer of a direct scrolling control supplies it.
+    private Window? GetViewportStyleRoot()
+    {
+        if (VisualParent is Window directRoot && ReferenceEquals(directRoot.Content, this))
+            return directRoot;
+
+        if (TemplatedParent is Control owner &&
+            IsViewportTemplateViewer(this, owner) &&
+            owner.VisualParent is Window templateRoot &&
+            ReferenceEquals(templateRoot.Content, owner) &&
+            IsVisualDescendantOf(this, owner))
+            return templateRoot;
+
+        return null;
+    }
+
+    private static bool IsViewportTemplateViewer(ScrollViewer viewer, Control owner)
+        => owner is ListBox ||
+            (owner is DataGrid or TreeDataGrid &&
+             viewer.Name == "PART_DataScrollViewer") ||
+            (owner is TreeView or Markdown or Terminal &&
+             viewer.Name == "PART_ScrollViewer");
+
+    private static bool HasCssDeclaration(DependencyObject target, DependencyProperty property)
+        => target.GetEffectiveValueLayer(property) is
+            DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
+
+    private CssScrollBarColors? GetPaintedScrollBarColors()
+    {
+        if (GetEffectiveValueLayer(CssScrollBarColorsProperty) is { } ownLayer &&
+            ownLayer is not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+            return CssScrollBarColors;
+        if (GetViewportStyleRoot() is { } root &&
+            HasCssDeclaration(root, CssScrollBarColorsProperty))
+            return (CssScrollBarColors?)root.GetValue(CssScrollBarColorsProperty);
+        return CssScrollBarColors;
     }
 
     internal static bool DetermineDefaultScrollBarAutoHide(string? environmentValue)
@@ -418,6 +552,8 @@ public partial class ScrollViewer : ContentControl
         _verticalScrollBarShown = false;
         _horizontalScrollBarShown = false;
         _hasCommittedScrollBarVisibility = false;
+        ClearEndAnchor(isVertical: true);
+        ClearEndAnchor(isVertical: false);
         ScrollInfo = null;
         base.OnContentChanged(oldContent, newContent);
         ScrollInfo = ContentElement as IScrollInfo;
@@ -503,6 +639,9 @@ public partial class ScrollViewer : ContentControl
         remove => RemoveHandler(ScrollChangedEvent, value);
     }
 
+    internal CssScrollableDirection LastRelativeScrollDirection => _lastRelativeScrollDirection;
+    internal event EventHandler? RelativeScrollChanged;
+
     #endregion
 
     #region Constructor
@@ -511,6 +650,37 @@ public partial class ScrollViewer : ContentControl
     /// The default scroll bar width/height.
     /// </summary>
     private const double ScrollBarSize = 12.0;
+    private const double ThinScrollBarSize = 10.0;
+    private bool _cssThinScrollBarMinimumsApplied;
+
+    private double GetScrollBarLayoutSize()
+        => IsOverlayScrollBarEnabled ? OverlayScrollBarLayoutSize
+            : CssScrollBarWidth == CssScrollBarWidthMode.Thin ? ThinScrollBarSize : ScrollBarSize;
+
+    private void UpdateCssScrollBarMinimums()
+    {
+        var thinDesktopBar = CssScrollBarWidth == CssScrollBarWidthMode.Thin &&
+            !IsOverlayScrollBarEnabled;
+        if (thinDesktopBar && !_cssThinScrollBarMinimumsApplied)
+        {
+            // Theme styles specify a 12-DIP minimum. This viewer owns the two
+            // bars, so keep its override separate from each bar's own CSS layer;
+            // a native local minimum can still take precedence.
+            _verticalScrollBar.SetLayerValue(MinWidthProperty, ThinScrollBarSize,
+                DependencyObject.LayerValueSource.ParentTemplate);
+            _horizontalScrollBar.SetLayerValue(MinHeightProperty, ThinScrollBarSize,
+                DependencyObject.LayerValueSource.ParentTemplate);
+            _cssThinScrollBarMinimumsApplied = true;
+        }
+        else if (!thinDesktopBar && _cssThinScrollBarMinimumsApplied)
+        {
+            _verticalScrollBar.ClearLayerValue(MinWidthProperty,
+                DependencyObject.LayerValueSource.ParentTemplate);
+            _horizontalScrollBar.ClearLayerValue(MinHeightProperty,
+                DependencyObject.LayerValueSource.ParentTemplate);
+            _cssThinScrollBarMinimumsApplied = false;
+        }
+    }
     /// <summary>
     /// Tolerance for "does the content overflow the viewport" comparisons. Layout
     /// sizes are continuous doubles, so a page sized to exactly fill its viewport
@@ -529,6 +699,8 @@ public partial class ScrollViewer : ContentControl
     private double _smoothTargetY;
     private bool _isSmoothScrolling;
     private bool _isApplyingSmoothScrollStep;
+    private bool _smoothVerticalEndAnchorPending;
+    private bool _smoothHorizontalEndAnchorPending;
     private bool _areAutoHideScrollBarsRevealed;
     private bool _hasInitializedOverlayAutoHide;
     private long _lastSmoothTickTime;
@@ -550,6 +722,7 @@ public partial class ScrollViewer : ContentControl
 
     // Deferred scrolling fields
     private bool _isDeferredScrolling;
+    private bool _deferredScrollIsVertical;
     private double _deferredVerticalOffset;
     private double _deferredHorizontalOffset;
 
@@ -562,8 +735,20 @@ public partial class ScrollViewer : ContentControl
     private DispatcherTimer? _dragScrollCoalesceTimer;
     private bool _hasPendingDragVerticalScroll;
     private bool _hasPendingDragHorizontalScroll;
+    private bool _pendingDragVerticalEndAnchor;
+    private bool _pendingDragHorizontalEndAnchor;
     private double _pendingDragVerticalOffset;
     private double _pendingDragHorizontalOffset;
+
+    // A virtualizing IScrollInfo can refine its extent after the thumb has already reached the
+    // maximum that was frozen at drag start. Keep that endpoint intent inside ScrollViewer and
+    // re-apply only finite live maxima until layout settles. Passing a non-finite sentinel through
+    // arbitrary IScrollInfo proxies is unsafe: some valid implementations coerce it to zero.
+    private bool _verticalEndAnchorActive;
+    private bool _horizontalEndAnchorActive;
+    private double _verticalEndAnchorMaximum = double.NaN;
+    private double _horizontalEndAnchorMaximum = double.NaN;
+    private bool _isApplyingEndAnchor;
 
     // Direct viewer-level thumb drag fallback (used by synthetic input paths in tests)
     private bool _isDraggingVerticalThumb;
@@ -602,7 +787,15 @@ public partial class ScrollViewer : ContentControl
     private bool _pointerPanningAxisResolved;
     private bool _pointerPanningAllowHorizontal;
     private bool _pointerPanningAllowVertical;
+
+    // Committed offsets are quantized to whole device pixels, but a slow pan can move
+    // less than half a pixel per frame. Delta-based panning would lose each such
+    // increment to the rounding and the finger would appear stuck; these carry the
+    // quantization remainder into the next packet so slow pans keep integrating.
+    private double _pointerPanningResidualX;
+    private double _pointerPanningResidualY;
     private bool _pointerPanningYieldedToAncestor;
+    private bool _isCompletingLifecycleCleanup;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ScrollViewer"/> class.
@@ -646,6 +839,197 @@ public partial class ScrollViewer : ContentControl
 
         // Register for BringIntoView requests
         AddHandler(FrameworkElement.RequestBringIntoViewEvent, new RequestBringIntoViewEventHandler(HandleRequestBringIntoView));
+
+        // A presentation host can unload a subtree without first changing this element's
+        // immediate visual parent. Pair this with OnVisualParentChanged so every lifecycle exit
+        // retires frame-paced timers and transient input state.
+        Unloaded += OnScrollViewerUnloaded;
+    }
+
+    /// <inheritdoc />
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+        if (oldParent is Window || VisualParent is Window)
+        {
+            RefreshCssScrollBarWidth();
+            RefreshCssScrollBarGutter();
+            RefreshCssScrollBarColors();
+        }
+        if (oldParent != null && VisualParent == null)
+        {
+            CompleteLifecycleCleanup();
+        }
+    }
+
+    private void OnScrollViewerUnloaded(object sender, RoutedEventArgs e)
+    {
+        CompleteLifecycleCleanup();
+    }
+
+    private void CompleteLifecycleCleanup()
+    {
+        if (_isCompletingLifecycleCleanup)
+            return;
+
+        _isCompletingLifecycleCleanup = true;
+        try
+        {
+            // Stop the global frame subscriptions first, while preserving their pending state.
+            // Capture-loss callbacks below can still commit a final thumb value and may restart
+            // an idle timer, so the finally block stops all five timers once more.
+            StopLifecycleTimers();
+            ReleaseLifecycleInputCaptures();
+
+            CompleteDeferredScrollForLifecycle();
+            FlushPendingDragScroll();
+            StopDragScrollCoalesce();
+
+            _pointerPanningCoalesceTimer?.Stop();
+            CompletePendingPointerPanningDelta();
+            ResetPointerPanningState();
+
+            CompleteSmoothScrollForLifecycle();
+        }
+        finally
+        {
+            ResetLifecycleTransitionState();
+            StopLifecycleTimers();
+            _isCompletingLifecycleCleanup = false;
+        }
+    }
+
+    private void StopLifecycleTimers()
+    {
+        _smoothScrollTimer?.Stop();
+        _scrollBarAutoHideTimer?.Stop();
+        _dragScrollCoalesceTimer?.Stop();
+        _pointerPanningCoalesceTimer?.Stop();
+        _bounceTimer?.Stop();
+        _verticalScrollBar?.CompleteInteractionForDetach();
+        _horizontalScrollBar?.CompleteInteractionForDetach();
+    }
+
+    private void ReleaseLifecycleInputCaptures()
+    {
+        var mouseCapture = UIElement.MouseCapturedElement;
+        if (mouseCapture != null && IsVisualDescendantOf(mouseCapture, this))
+        {
+            mouseCapture.ReleaseMouseCapture();
+        }
+
+        // Touch capture is per contact. Snapshot before releasing because each capture-loss
+        // event mutates the global capture table and can finish a Thumb drag synchronously.
+        foreach (var touchDevice in TouchesCapturedWithin.ToArray())
+        {
+            touchDevice.Capture(null);
+        }
+
+        if (Stylus.Captured is UIElement stylusCapture &&
+            IsVisualDescendantOf(stylusCapture, this))
+        {
+            Stylus.Capture(null);
+        }
+    }
+
+    private void CompleteDeferredScrollForLifecycle()
+    {
+        if (!_isDeferredScrolling)
+            return;
+
+        var isVertical = _deferredScrollIsVertical;
+        var deferredValue = isVertical ? _deferredVerticalOffset : _deferredHorizontalOffset;
+        var interactionMaximum = isVertical ? _verticalScrollBar.Maximum : _horizontalScrollBar.Maximum;
+        _isDeferredScrolling = false;
+
+        if (IsScrollBarRangeEnd(deferredValue, interactionMaximum))
+        {
+            ApplyEndAnchorOffset(isVertical);
+        }
+        else
+        {
+            ApplyScrollOffset(isVertical, deferredValue);
+        }
+    }
+
+    private void CompleteSmoothScrollForLifecycle()
+    {
+        if (!_isSmoothScrolling)
+            return;
+
+        var targetY = _smoothVerticalEndAnchorPending
+            ? ScrollableHeight
+            : Math.Clamp(_smoothTargetY, 0, ScrollableHeight);
+        var targetX = _smoothHorizontalEndAnchorPending
+            ? ScrollableWidth
+            : Math.Clamp(_smoothTargetX, 0, ScrollableWidth);
+        var anchorVerticalEnd = _smoothVerticalEndAnchorPending;
+        var anchorHorizontalEnd = _smoothHorizontalEndAnchorPending;
+
+        _isApplyingSmoothScrollStep = true;
+        try
+        {
+            RunRelativeScroll(() =>
+            {
+                ScrollToVerticalOffset(targetY);
+                ScrollToHorizontalOffset(targetX);
+            });
+        }
+        finally
+        {
+            _isApplyingSmoothScrollStep = false;
+        }
+
+        anchorVerticalEnd &= IsAtScrollEnd(isVertical: true);
+        anchorHorizontalEnd &= IsAtScrollEnd(isVertical: false);
+        _smoothScrollTimer?.Stop();
+        _isSmoothScrolling = false;
+        _smoothVerticalEndAnchorPending = false;
+        _smoothHorizontalEndAnchorPending = false;
+
+        if (anchorVerticalEnd)
+            ApplyEndAnchorOffset(isVertical: true);
+        if (anchorHorizontalEnd)
+            ApplyEndAnchorOffset(isVertical: false);
+    }
+
+    private void ResetLifecycleTransitionState()
+    {
+        _isSmoothScrolling = false;
+        _isApplyingSmoothScrollStep = false;
+        _smoothVerticalEndAnchorPending = false;
+        _smoothHorizontalEndAnchorPending = false;
+        _lastSmoothTickTime = 0;
+        _smoothTargetX = _horizontalOffset;
+        _smoothTargetY = _verticalOffset;
+
+        _scrollBarAutoHideDeadlineTick = 0;
+        _areAutoHideScrollBarsRevealed = false;
+        _hasInitializedOverlayAutoHide = false;
+
+        _isDeferredScrolling = false;
+        _deferredScrollIsVertical = false;
+        _deferredVerticalOffset = _verticalOffset;
+        _deferredHorizontalOffset = _horizontalOffset;
+
+        StopDragScrollCoalesce();
+        _pendingDragVerticalOffset = _verticalOffset;
+        _pendingDragHorizontalOffset = _horizontalOffset;
+        _isDraggingVerticalThumb = false;
+        _dragStartMouseY = 0;
+        _dragStartVerticalOffset = _verticalOffset;
+
+        ResetPointerPanningState();
+
+        _bounceStartTicks = 0;
+        _bounceFromX = 0;
+        _bounceFromY = 0;
+        _overscrollX = 0;
+        _overscrollY = 0;
+
+        _isApplyingEndAnchor = false;
+        ClearEndAnchor(isVertical: true);
+        ClearEndAnchor(isVertical: false);
     }
 
     private ScrollBar CreateScrollBar(Orientation orientation)
@@ -653,8 +1037,8 @@ public partial class ScrollViewer : ContentControl
         var scrollBar = new ScrollBar
         {
             // This viewer creates, owns and positions this bar: ArrangeOverride puts
-            // it at a strip derived purely from the arranged size and the configured
-            // gutter, never from the bar's own DesiredSize. Showing, hiding or
+            // it at a strip derived purely from the arranged size, never from the
+            // bar's own DesiredSize. Showing, hiding or
             // animating it therefore cannot change anything outside this viewer, so
             // its layout invalidations must not travel up the tree. A ScrollBar that
             // came from a template is an ordinary child and is deliberately left
@@ -700,6 +1084,7 @@ public partial class ScrollViewer : ContentControl
             return;
 
         if (e.ChangedButton != MouseButton.Left ||
+            CssScrollBarWidth == CssScrollBarWidthMode.None ||
             !CanScrollVertically ||
             ScrollableHeight <= 0)
         {
@@ -707,14 +1092,27 @@ public partial class ScrollViewer : ContentControl
         }
 
         var point = e.GetPosition(this);
+        var viewport = GetContentViewportRect(RenderSize);
+        if (point.Y < viewport.Top || point.Y > viewport.Bottom)
+            return;
         if (IsOverlayScrollBarEnabled)
         {
-            var indicatorEnd = RenderSize.Width - OverlayScrollBarIndicatorEdgeInset;
+            if (point.X < viewport.Left || point.X > viewport.Right)
+                return;
+            var indicatorEnd = viewport.Right - OverlayScrollBarIndicatorEdgeInset;
             var indicatorStart = indicatorEnd - OverlayScrollBarIndicatorThickness;
             if (point.X < indicatorStart || point.X > indicatorEnd)
                 return;
         }
-        else if (point.X < RenderSize.Width - InputThumbHitWidth)
+        else if (UsesClassicGutter && _verticalScrollBarShown)
+        {
+            var barWidth = GetScrollBarLayoutSize();
+            if (FlowDirection == FlowDirection.RightToLeft
+                ? point.X < viewport.Left - barWidth || point.X > viewport.Left
+                : point.X < viewport.Right || point.X > viewport.Right + barWidth)
+                return;
+        }
+        else if (point.X < viewport.Right - InputThumbHitWidth || point.X > viewport.Right)
         {
             return;
         }
@@ -727,6 +1125,7 @@ public partial class ScrollViewer : ContentControl
             return;
 
         CancelSmoothScroll();
+        ClearEndAnchor(isVertical: true);
         _isDraggingVerticalThumb = true;
         _dragStartMouseY = point.Y;
         _dragStartVerticalOffset = VerticalOffset;
@@ -751,7 +1150,14 @@ public partial class ScrollViewer : ContentControl
         var newOffset = _dragStartVerticalOffset + (deltaY / metrics.ScrollRange) * ScrollableHeight;
 
         CancelSmoothScroll();
-        ScrollToVerticalOffset(newOffset);
+        if (newOffset >= ScrollableHeight - 0.01)
+        {
+            ApplyEndAnchorOffset(isVertical: true);
+        }
+        else
+        {
+            ScrollToVerticalOffset(newOffset);
+        }
         e.Handled = true;
     }
 
@@ -838,8 +1244,8 @@ public partial class ScrollViewer : ContentControl
         if (!ReferenceEquals(sender, this))
             return;
 
-        // The complete ScrollViewer (content plus scroll-bar gutters) is the
-        // outside boundary. Leaving it bypasses the idle delay and starts fading.
+        // The complete ScrollViewer is the outside boundary. Leaving it bypasses the
+        // idle delay and starts fading.
         HideAutoHideScrollBarsIfEligible();
     }
 
@@ -871,6 +1277,8 @@ public partial class ScrollViewer : ContentControl
         _pointerPanningLastTimestamp = e.Timestamp;
         _pointerPanningVelocityX = 0;
         _pointerPanningVelocityY = 0;
+        _pointerPanningResidualX = 0;
+        _pointerPanningResidualY = 0;
         _pointerPanningYieldedToAncestor = false;
 
         InitializePointerPanningAxes();
@@ -1353,18 +1761,23 @@ public partial class ScrollViewer : ContentControl
 
         if (_pointerPanningAllowHorizontal && CanScrollHorizontally && Math.Abs(horizontalDelta) > double.Epsilon)
         {
-            double newOffset = Math.Clamp(_horizontalOffset + horizontalDelta, 0, ScrollableWidth);
+            double effectiveDelta = horizontalDelta + _pointerPanningResidualX;
+            double newOffset = Math.Clamp(_horizontalOffset + effectiveDelta, 0, ScrollableWidth);
             double consumed = newOffset - _horizontalOffset;
             if (!AreClose(newOffset, _horizontalOffset))
             {
                 ScrollToHorizontalOffset(newOffset);
                 moved = true;
             }
+            // Whatever the quantized commit did not take stays in the residual so a
+            // slow pan integrates across packets instead of stalling below the
+            // half-pixel rounding threshold.
+            _pointerPanningResidualX = newOffset - _horizontalOffset;
             // Any movement not absorbed by the scroll offset feeds the rubber-
             // band overscroll. We negate here because horizontalDelta is the
             // scroll-offset delta (opposite the finger direction); overscroll
             // is rendered as a content translation that follows the finger.
-            double remaining = horizontalDelta - consumed;
+            double remaining = effectiveDelta - consumed;
             if (Math.Abs(remaining) > double.Epsilon)
             {
                 // In a nested chain the next packet is handed to an ancestor.
@@ -1382,14 +1795,16 @@ public partial class ScrollViewer : ContentControl
 
         if (_pointerPanningAllowVertical && CanScrollVertically && Math.Abs(verticalDelta) > double.Epsilon)
         {
-            double newOffset = Math.Clamp(_verticalOffset + verticalDelta, 0, ScrollableHeight);
+            double effectiveDelta = verticalDelta + _pointerPanningResidualY;
+            double newOffset = Math.Clamp(_verticalOffset + effectiveDelta, 0, ScrollableHeight);
             double consumed = newOffset - _verticalOffset;
             if (!AreClose(newOffset, _verticalOffset))
             {
                 ScrollToVerticalOffset(newOffset);
                 moved = true;
             }
-            double remaining = verticalDelta - consumed;
+            _pointerPanningResidualY = newOffset - _verticalOffset;
+            double remaining = effectiveDelta - consumed;
             if (Math.Abs(remaining) > double.Epsilon)
             {
                 if (!HasScrollableAncestorForPointerDelta(0, remaining))
@@ -1458,7 +1873,7 @@ public partial class ScrollViewer : ContentControl
         _pendingPointerPanningHorizontalDelta = 0;
         _pendingPointerPanningVerticalDelta = 0;
 
-        ApplyPointerPanningDelta(horizontalDelta, verticalDelta);
+        RunRelativeScroll(() => ApplyPointerPanningDelta(horizontalDelta, verticalDelta));
     }
 
     private void DiscardPendingPointerPanningDelta()
@@ -1531,6 +1946,8 @@ public partial class ScrollViewer : ContentControl
         _pointerPanningLastTimestamp = 0;
         _pointerPanningVelocityX = 0;
         _pointerPanningVelocityY = 0;
+        _pointerPanningResidualX = 0;
+        _pointerPanningResidualY = 0;
         _pointerPanningAxisResolved = false;
         _pointerPanningAllowHorizontal = false;
         _pointerPanningAllowVertical = false;
@@ -1555,10 +1972,14 @@ public partial class ScrollViewer : ContentControl
 
     private (double ThumbTop, double ThumbHeight, double ScrollRange) GetInputVerticalThumbMetrics()
     {
+        var viewport = GetContentViewportRect(RenderSize);
         var trackInset = IsOverlayScrollBarEnabled
             ? OverlayScrollBarEndInset
             : InputScrollButtonSize;
-        var trackHeight = Math.Max(0, RenderSize.Height - (trackInset * 2));
+        var oppositeBarInset = !IsOverlayScrollBarEnabled && !UsesClassicGutter && _horizontalScrollBarShown
+            ? GetScrollBarLayoutSize()
+            : 0.0;
+        var trackHeight = Math.Max(0, viewport.Height - oppositeBarInset - (trackInset * 2));
         if (trackHeight <= 0 || ExtentHeight <= 0 || ScrollableHeight <= 0)
             return (0, 0, 0);
 
@@ -1569,7 +1990,7 @@ public partial class ScrollViewer : ContentControl
             trackHeight,
             Math.Max(minimumThumbLength, (ViewportHeight / ExtentHeight) * trackHeight));
         var scrollRange = Math.Max(0, trackHeight - thumbHeight);
-        var thumbTop = trackInset + (VerticalOffset / ScrollableHeight) * scrollRange;
+        var thumbTop = viewport.Top + trackInset + (VerticalOffset / ScrollableHeight) * scrollRange;
         return (thumbTop, thumbHeight, scrollRange);
     }
 
@@ -1663,13 +2084,9 @@ public partial class ScrollViewer : ContentControl
 
     internal bool IsPointWithinContentViewport(Point point)
     {
-        double viewportWidth = _viewportWidth > 0 ? _viewportWidth : RenderSize.Width;
-        double viewportHeight = _viewportHeight > 0 ? _viewportHeight : RenderSize.Height;
-
-        return point.X >= 0 &&
-               point.Y >= 0 &&
-               point.X <= viewportWidth &&
-               point.Y <= viewportHeight;
+        var viewport = GetContentViewportRect(RenderSize);
+        return point.X >= viewport.Left && point.Y >= viewport.Top &&
+               point.X <= viewport.Right && point.Y <= viewport.Bottom;
     }
 
     /// <inheritdoc />
@@ -1919,14 +2336,16 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     internal override Geometry? GetLayoutClip()
     {
+        if (Styling.CssOverflowProperties.TryGetActiveClipMargin(this, out _))
+            return base.GetLayoutClip();
         var clipEdges = ClipToBoundsEdges;
         if (!ClipToBounds || clipEdges == ClipEdges.None)
         {
             return null;
         }
 
-        // Keep the full control unclipped so visual-child scrollbars remain visible.
-        // Content clipping is handled by layout offsets and child layering.
+        // Keep the outer clip around the control's background and border. The
+        // content-box clip below separately limits the child visuals.
         var clipRect = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
         var geometryRect = ExpandBoundsClip(clipRect, clipEdges);
         if (_layoutClipCache is null ||
@@ -1946,9 +2365,133 @@ public partial class ScrollViewer : ContentControl
         return _layoutClipCache;
     }
 
+    internal override Geometry? GetChildLayoutClip()
+    {
+        if (!ClipToBounds || ClipToBoundsEdges == ClipEdges.None)
+            return null;
+
+        var insets = UsesClassicGutter
+            ? CssBoxMetrics.BackgroundInsets(this,
+                CssLayout?.ContainingWidthCache ?? RenderSize.Width).Border
+            : GetContentInsets(RenderSize.Width);
+        var innerSize = CssBoxMetrics.InnerSize(RenderSize, insets);
+        var viewport = new Rect(insets.Left, insets.Top, innerSize.Width, innerSize.Height);
+        if (viewport == new Rect(RenderSize))
+            return null;
+
+        var edges = ClipToBoundsEdges;
+        var expanded = ExpandBoundsClip(viewport, edges);
+        if (CssBorderRadiusProperties.Get(this) is { } radius)
+        {
+            var innerRadii = radius.Resolve(RenderSize).Inset(insets).Mask(edges);
+            if (_contentViewportClipCache is CssRoundedRectangleGeometry cached &&
+                cached.Rect == expanded && cached.Radii == innerRadii &&
+                cached.ClipEdges == edges && cached.ClipReferenceRect == viewport)
+                return cached;
+
+            var rounded = new CssRoundedRectangleGeometry(expanded, innerRadii, edges, viewport);
+            rounded.Freeze();
+            return _contentViewportClipCache = rounded;
+        }
+
+        if (_contentViewportClipCache is RectangleGeometry rectangle &&
+            rectangle.Rect == expanded && rectangle.BoundsClipRect == viewport &&
+            rectangle.BoundsClipEdges == edges)
+            return rectangle;
+
+        var geometry = new RectangleGeometry(expanded)
+        {
+            BoundsClipRect = viewport,
+            BoundsClipEdges = edges,
+        };
+        geometry.Freeze();
+        return _contentViewportClipCache = geometry;
+    }
+
+    internal override Geometry? GetAdditionalChildLayoutClip(Visual child)
+    {
+        if (!ReferenceEquals(child, ContentElement) || !ClipToBounds ||
+            ClipToBoundsEdges == ClipEdges.None || !UsesClassicGutter)
+            return null;
+
+        var viewport = GetContentViewportRect(RenderSize);
+        var edges = ClipToBoundsEdges;
+        var expanded = ExpandBoundsClip(viewport, edges);
+        if (_cssGutterContentClipCache is { } cached && cached.Rect == expanded &&
+            cached.BoundsClipRect == viewport && cached.BoundsClipEdges == edges)
+            return _cssGutterContentClipCache;
+
+        var clip = new RectangleGeometry(expanded)
+        {
+            BoundsClipRect = viewport,
+            BoundsClipEdges = edges,
+        };
+        clip.Freeze();
+        return _cssGutterContentClipCache = clip;
+    }
+
     #endregion
 
     #region Scroll Methods
+
+    private double GetScrollDpiScale()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window window)
+                return window.DpiScale;
+        }
+
+        // A detached viewer has no host DPI. The process-wide layout scale may
+        // belong to another window, so use the neutral scale until attached.
+        return 1.0;
+    }
+
+    /// <summary>
+    /// Quantizes a smooth-scroll frame offset to whole physical pixels. A scroll offset
+    /// translates the entire content subtree, and the renderer pixel-snaps text runs
+    /// and axis-aligned strokes in DEVICE space: under a fractional translation each
+    /// primitive crosses its integer pixel boundary on a different frame, so during a
+    /// smooth scroll neighbouring text and paths visibly jitter against each other by
+    /// 1px (some appear to hold still while others move). Whole-device-pixel offsets
+    /// keep every primitive's sub-pixel phase constant, so snapped and unsnapped
+    /// content translate in lockstep — the same policy browsers and WPF's pixel-based
+    /// scrolling apply. Element animations are unaffected: this quantizes only the
+    /// scroll translation, not arranged element origins. Explicit ScrollTo requests
+    /// retain their precise logical offsets; only animated frames use this helper.
+    ///
+    /// The extremes stay exact: 0 and <paramref name="maxOffset"/> are resting
+    /// positions (no motion, so no jitter), and rounding the bottom stop would
+    /// otherwise leave a sub-pixel gap that keeps IsAtVerticalEnd false forever.
+    /// </summary>
+    internal static double SnapScrollOffsetToDevicePixels(double offset, double maxOffset, double dpiScale)
+    {
+        if (!double.IsFinite(offset))
+        {
+            return offset;
+        }
+
+        if (offset <= 0)
+        {
+            return 0;
+        }
+
+        // Only the KNOWN end stop is preserved exactly. With maxOffset still 0 (metrics
+        // not yet synced from the IScrollInfo, or genuinely unscrollable) the offset is
+        // handed onward rounded-but-unclamped so the existing clamp sites keep owning
+        // the range decision, exactly as they did before quantization.
+        if (maxOffset > 0 && double.IsFinite(maxOffset) && offset >= maxOffset)
+        {
+            return maxOffset;
+        }
+
+        if (!(dpiScale > 0.0) || !double.IsFinite(dpiScale))
+        {
+            return offset;
+        }
+
+        return Math.Round(offset * dpiScale, MidpointRounding.AwayFromZero) / dpiScale;
+    }
 
     /// <summary>
     /// Scrolls to the specified horizontal offset.
@@ -1957,6 +2500,10 @@ public partial class ScrollViewer : ContentControl
     public void ScrollToHorizontalOffset(double offset)
     {
         offset = ValidateScrollOffset(offset, nameof(offset));
+        if (!_isApplyingEndAnchor)
+        {
+            ClearEndAnchor(isVertical: false);
+        }
 
         if (!_isApplyingSmoothScrollStep)
         {
@@ -2002,7 +2549,15 @@ public partial class ScrollViewer : ContentControl
     /// <param name="offset">The vertical offset.</param>
     public void ScrollToVerticalOffset(double offset)
     {
+        var rawOffset = offset;
         offset = ValidateScrollOffset(offset, nameof(offset));
+        if (!_isApplyingEndAnchor)
+        {
+            ClearEndAnchor(isVertical: true);
+        }
+        TraceVerticalState(
+            "set-vertical-request",
+            $"raw={rawOffset:R} validated={offset:R} applyingEndAnchor={_isApplyingEndAnchor} applyingSmooth={_isApplyingSmoothScrollStep}");
 
         if (!_isApplyingSmoothScrollStep)
         {
@@ -2015,6 +2570,9 @@ public partial class ScrollViewer : ContentControl
             _scrollInfo.SetVerticalOffset(offset);
             _verticalOffset = _scrollInfo.VerticalOffset;
             UpdateRequestedOffsetsFromContent();
+            TraceVerticalState(
+                "set-vertical-provider-commit",
+                $"raw={rawOffset:R} sent={offset:R} old={oldOffset:R}");
 
             if (oldOffset != _verticalOffset)
             {
@@ -2029,6 +2587,9 @@ public partial class ScrollViewer : ContentControl
         var oldOff = _verticalOffset;
         _verticalOffset = Math.Clamp(offset, 0, ScrollableHeight);
         UpdateRequestedOffsetsFromContent();
+        TraceVerticalState(
+            "set-vertical-physical-commit",
+            $"raw={rawOffset:R} sent={offset:R} old={oldOff:R}");
 
         if (oldOff != _verticalOffset)
         {
@@ -2074,9 +2635,10 @@ public partial class ScrollViewer : ContentControl
         var contentHeight = VerticalScrollBarVisibility == ScrollBarVisibility.Disabled
             ? _viewportHeight
             : Math.Max(_extentHeight, _viewportHeight);
+        var viewport = GetContentViewportRect(RenderSize);
         var targetRect = new Rect(
-            -_horizontalOffset + _overscrollX,
-            -_verticalOffset + _overscrollY,
+            viewport.Left - _horizontalOffset + _overscrollX,
+            viewport.Top - _verticalOffset + _overscrollY,
             contentWidth,
             contentHeight);
         var previousRect = content.PreviousFinalRect;
@@ -2093,20 +2655,43 @@ public partial class ScrollViewer : ContentControl
         return content.IsMeasureValid && content.IsArrangeValid;
     }
 
+    // Record only committed movement from a relative operation. Absolute offset changes,
+    // thumb dragging and layout corrections leave the last relative direction intact.
+    private void RunRelativeScroll(Action scroll)
+    {
+        var beforeX = _horizontalOffset;
+        var beforeY = _verticalOffset;
+        scroll();
+
+        var direction = _lastRelativeScrollDirection;
+        if (_horizontalOffset != beforeX)
+        {
+            direction &= ~(CssScrollableDirection.Left | CssScrollableDirection.Right);
+            direction |= _horizontalOffset < beforeX ? CssScrollableDirection.Left : CssScrollableDirection.Right;
+        }
+        if (_verticalOffset != beforeY)
+        {
+            direction &= ~(CssScrollableDirection.Top | CssScrollableDirection.Bottom);
+            direction |= _verticalOffset < beforeY ? CssScrollableDirection.Top : CssScrollableDirection.Bottom;
+        }
+        if (direction == _lastRelativeScrollDirection) return;
+
+        _lastRelativeScrollDirection = direction;
+        RelativeScrollChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     /// <summary>
     /// Scrolls up by one line.
     /// </summary>
     public void LineUp()
     {
+        ClearEndAnchor(isVertical: true);
         CancelSmoothScroll();
-
-        if (_scrollInfo != null)
+        RunRelativeScroll(() =>
         {
-            _scrollInfo.LineUp();
-            SyncFromScrollInfo();
-            return;
-        }
-        ScrollToVerticalOffset(_verticalOffset - LineScrollAmount);
+            if (_scrollInfo != null) { _scrollInfo.LineUp(); SyncFromScrollInfo(); }
+            else ScrollToVerticalOffset(_verticalOffset - LineScrollAmount);
+        });
     }
 
     /// <summary>
@@ -2114,15 +2699,14 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void LineDown()
     {
+        ClearEndAnchor(isVertical: true);
         CancelSmoothScroll();
 
-        if (_scrollInfo != null)
+        RunRelativeScroll(() =>
         {
-            _scrollInfo.LineDown();
-            SyncFromScrollInfo();
-            return;
-        }
-        ScrollToVerticalOffset(_verticalOffset + LineScrollAmount);
+            if (_scrollInfo != null) { _scrollInfo.LineDown(); SyncFromScrollInfo(); }
+            else ScrollToVerticalOffset(_verticalOffset + LineScrollAmount);
+        });
     }
 
     /// <summary>
@@ -2130,15 +2714,14 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void LineLeft()
     {
+        ClearEndAnchor(isVertical: false);
         CancelSmoothScroll();
 
-        if (_scrollInfo != null)
+        RunRelativeScroll(() =>
         {
-            _scrollInfo.LineLeft();
-            SyncFromScrollInfo();
-            return;
-        }
-        ScrollToHorizontalOffset(_horizontalOffset - LineScrollAmount);
+            if (_scrollInfo != null) { _scrollInfo.LineLeft(); SyncFromScrollInfo(); }
+            else ScrollToHorizontalOffset(_horizontalOffset - LineScrollAmount);
+        });
     }
 
     /// <summary>
@@ -2146,15 +2729,14 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void LineRight()
     {
+        ClearEndAnchor(isVertical: false);
         CancelSmoothScroll();
 
-        if (_scrollInfo != null)
+        RunRelativeScroll(() =>
         {
-            _scrollInfo.LineRight();
-            SyncFromScrollInfo();
-            return;
-        }
-        ScrollToHorizontalOffset(_horizontalOffset + LineScrollAmount);
+            if (_scrollInfo != null) { _scrollInfo.LineRight(); SyncFromScrollInfo(); }
+            else ScrollToHorizontalOffset(_horizontalOffset + LineScrollAmount);
+        });
     }
 
     /// <summary>
@@ -2162,15 +2744,14 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void PageUp()
     {
+        ClearEndAnchor(isVertical: true);
         CancelSmoothScroll();
 
-        if (_scrollInfo != null)
+        RunRelativeScroll(() =>
         {
-            _scrollInfo.PageUp();
-            SyncFromScrollInfo();
-            return;
-        }
-        ScrollToVerticalOffset(_verticalOffset - _viewportHeight);
+            if (_scrollInfo != null) { _scrollInfo.PageUp(); SyncFromScrollInfo(); }
+            else ScrollToVerticalOffset(_verticalOffset - _viewportHeight);
+        });
     }
 
     /// <summary>
@@ -2178,15 +2759,14 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void PageDown()
     {
+        ClearEndAnchor(isVertical: true);
         CancelSmoothScroll();
 
-        if (_scrollInfo != null)
+        RunRelativeScroll(() =>
         {
-            _scrollInfo.PageDown();
-            SyncFromScrollInfo();
-            return;
-        }
-        ScrollToVerticalOffset(_verticalOffset + _viewportHeight);
+            if (_scrollInfo != null) { _scrollInfo.PageDown(); SyncFromScrollInfo(); }
+            else ScrollToVerticalOffset(_verticalOffset + _viewportHeight);
+        });
     }
 
     /// <summary>
@@ -2194,15 +2774,14 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void PageLeft()
     {
+        ClearEndAnchor(isVertical: false);
         CancelSmoothScroll();
 
-        if (_scrollInfo != null)
+        RunRelativeScroll(() =>
         {
-            _scrollInfo.PageLeft();
-            SyncFromScrollInfo();
-            return;
-        }
-        ScrollToHorizontalOffset(_horizontalOffset - _viewportWidth);
+            if (_scrollInfo != null) { _scrollInfo.PageLeft(); SyncFromScrollInfo(); }
+            else ScrollToHorizontalOffset(_horizontalOffset - _viewportWidth);
+        });
     }
 
     /// <summary>
@@ -2210,15 +2789,14 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void PageRight()
     {
+        ClearEndAnchor(isVertical: false);
         CancelSmoothScroll();
 
-        if (_scrollInfo != null)
+        RunRelativeScroll(() =>
         {
-            _scrollInfo.PageRight();
-            SyncFromScrollInfo();
-            return;
-        }
-        ScrollToHorizontalOffset(_horizontalOffset + _viewportWidth);
+            if (_scrollInfo != null) { _scrollInfo.PageRight(); SyncFromScrollInfo(); }
+            else ScrollToHorizontalOffset(_horizontalOffset + _viewportWidth);
+        });
     }
 
     /// <summary>
@@ -2238,6 +2816,7 @@ public partial class ScrollViewer : ContentControl
         _horizontalOffset = _scrollInfo.HorizontalOffset;
         _verticalOffset = _scrollInfo.VerticalOffset;
         SyncExtentFromScrollInfo();
+        MaintainEndAnchors(allowCompletion: false);
         if (!_isDeferredScrolling)
         {
             UpdateRequestedOffsetsFromContent();
@@ -2276,7 +2855,8 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void ScrollToEnd()
     {
-        ScrollToHorizontalOffset(ScrollableWidth);
+        ClearEndAnchor(isVertical: false);
+        ApplyEndAnchorOffset(isVertical: false);
     }
 
     /// <summary>
@@ -2292,7 +2872,8 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     public void ScrollToBottom()
     {
-        ScrollToVerticalOffset(ScrollableHeight);
+        ClearEndAnchor(isVertical: true);
+        ApplyEndAnchorOffset(isVertical: true);
     }
 
     /// <summary>
@@ -2453,29 +3034,96 @@ public partial class ScrollViewer : ContentControl
 
     #region Layout
 
+    private Thickness GetContentInsets(double fallbackWidth)
+        => CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? fallbackWidth);
+
+    private bool UsesClassicGutter => !IsOverlayScrollBarEnabled &&
+        CssScrollBarWidth != CssScrollBarWidthMode.None;
+
+    private Thickness GetClassicGutterInsets(Size outerSize, bool verticalBarShown,
+        bool horizontalBarShown)
+    {
+        if (!UsesClassicGutter)
+            return default;
+
+        var border = CssBoxMetrics.BackgroundInsets(this,
+            CssLayout?.ContainingWidthCache ?? outerSize.Width).Border;
+        var availableWidth = Math.Max(0, outerSize.Width - border.Left - border.Right);
+        var availableHeight = Math.Max(0, outerSize.Height - border.Top - border.Bottom);
+        var barSize = GetScrollBarLayoutSize();
+        var verticalGutter = VerticalScrollBarVisibility != ScrollBarVisibility.Disabled &&
+            (CssScrollBarGutter != CssScrollBarGutterMode.Auto || verticalBarShown);
+        var bothEdges = CssScrollBarGutter == CssScrollBarGutterMode.StableBothEdges;
+        var sideWidth = verticalGutter
+            ? Math.Min(barSize, bothEdges ? availableWidth / 2 : availableWidth)
+            : 0;
+        var left = verticalGutter && (bothEdges || FlowDirection == FlowDirection.RightToLeft)
+            ? sideWidth : 0;
+        var right = verticalGutter && (bothEdges || FlowDirection != FlowDirection.RightToLeft)
+            ? sideWidth : 0;
+        var bottom = horizontalBarShown ? Math.Min(barSize, availableHeight) : 0;
+        return new Thickness(left, 0, right, bottom);
+    }
+
+    private Size GetClassicGutterViewportSize(Size innerSize, Size outerSize,
+        bool verticalBarShown, bool horizontalBarShown)
+    {
+        var gutter = GetClassicGutterInsets(outerSize, verticalBarShown, horizontalBarShown);
+        return new Size(Math.Max(0, innerSize.Width - gutter.Left - gutter.Right),
+            Math.Max(0, innerSize.Height - gutter.Bottom));
+    }
+
+    private Rect GetContentViewportRect(Size outerSize)
+        => GetContentViewportRect(outerSize, _verticalScrollBarShown, _horizontalScrollBarShown);
+
+    private Rect GetContentViewportRect(Size outerSize, bool verticalBarShown,
+        bool horizontalBarShown)
+    {
+        var insets = GetContentInsets(outerSize.Width);
+        var innerSize = CssBoxMetrics.InnerSize(outerSize, insets);
+        var gutter = GetClassicGutterInsets(outerSize, verticalBarShown, horizontalBarShown);
+        return new Rect(insets.Left + gutter.Left, insets.Top,
+            Math.Max(0, innerSize.Width - gutter.Left - gutter.Right),
+            Math.Max(0, innerSize.Height - gutter.Bottom));
+    }
+
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // Pick up inherited colors and the template owner's width when a viewer
+        // first enters layout, including after its template was built detached.
+        RefreshCssScrollBarColors();
+        UpdateCssScrollBarMinimums();
+        var insets = GetContentInsets(availableSize.Width);
+        var innerAvailable = CssBoxMetrics.InnerSize(availableSize, insets);
         if (ContentElement == null)
         {
             _extentWidth = 0;
             _extentHeight = 0;
+            if (UsesClassicGutter)
+            {
+                var showVertical = VerticalScrollBarVisibility == ScrollBarVisibility.Visible;
+                var showHorizontal = HorizontalScrollBarVisibility == ScrollBarVisibility.Visible;
+                var emptyGutter = GetClassicGutterInsets(availableSize, showVertical,
+                    showHorizontal);
+                var emptyViewport = GetClassicGutterViewportSize(innerAvailable,
+                    availableSize, showVertical, showHorizontal);
+                _viewportWidth = double.IsFinite(availableSize.Width) ? emptyViewport.Width : 0;
+                _viewportHeight = double.IsFinite(availableSize.Height) ? emptyViewport.Height : 0;
+                CommitScrollBarVisibility(showVertical, showHorizontal);
+                var barSize = GetScrollBarLayoutSize();
+                _verticalScrollBar.Measure(new Size(barSize, emptyViewport.Height));
+                _horizontalScrollBar.Measure(new Size(emptyViewport.Width, barSize));
+                return new Size(Math.Max(0, insets.Left + insets.Right + emptyGutter.Left + emptyGutter.Right),
+                    Math.Max(0, insets.Top + insets.Bottom + emptyGutter.Bottom));
+            }
             _viewportWidth = 0;
             _viewportHeight = 0;
             _verticalScrollBar.Measure(default);
             _horizontalScrollBar.Measure(default);
-            return default(Size);
+            return new Size(Math.Max(0, insets.Left + insets.Right),
+                Math.Max(0, insets.Top + insets.Bottom));
         }
-
-        var gutters = GetScrollBarGutters();
-
-        // Calculate available space for content (accounting for potential scrollbars)
-        var contentAvailableWidth = availableSize.Width - gutters.Vertical;
-        var contentAvailableHeight = availableSize.Height - gutters.Horizontal;
-
-        var finiteContentAvailable = new Size(
-            Math.Max(0, contentAvailableWidth),
-            Math.Max(0, contentAvailableHeight));
 
         // Match WPF's non-IScrollInfo contract: a scrollable axis is measured with
         // an infinite constraint from the first pass. A finite probe followed by an
@@ -2491,73 +3139,127 @@ public partial class ScrollViewer : ContentControl
         var fillsHorizontally = fillMode is FillViewportMode.Horizontal or FillViewportMode.Both;
         var fillsVertically = fillMode is FillViewportMode.Vertical or FillViewportMode.Both;
 
-        var contentMeasureAvailable = _scrollInfo == null
-            ? new Size(
-                HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled || fillsHorizontally
-                    ? finiteContentAvailable.Width
-                    : double.PositiveInfinity,
-                VerticalScrollBarVisibility == ScrollBarVisibility.Disabled || fillsVertically
-                    ? finiteContentAvailable.Height
-                    : double.PositiveInfinity)
-            : finiteContentAvailable;
-
-        ContentElement.Measure(contentMeasureAvailable);
-        var contentDesired = ContentElement.DesiredSize;
-
-        // Update extent from IScrollInfo or from content desired size
-        if (_scrollInfo != null)
+        // Visible bars and stable vertical gutters are known before measuring.
+        // Auto bars can appear after their sibling consumes space, so admit each
+        // newly needed gutter and remeasure with the resulting viewport.
+        var reserveVertical = UsesClassicGutter &&
+            (VerticalScrollBarVisibility == ScrollBarVisibility.Visible ||
+             (CssScrollBarGutter != CssScrollBarGutterMode.Auto &&
+              VerticalScrollBarVisibility != ScrollBarVisibility.Disabled) ||
+             (VerticalScrollBarVisibility == ScrollBarVisibility.Auto &&
+              _verticalScrollBarShown));
+        var reserveHorizontal = UsesClassicGutter &&
+            (HorizontalScrollBarVisibility == ScrollBarVisibility.Visible ||
+             (HorizontalScrollBarVisibility == ScrollBarVisibility.Auto &&
+              _horizontalScrollBarShown));
+        _verticalGutterAdmitted = false;
+        _horizontalGutterAdmitted = false;
+        var contentViewportAvailable = innerAvailable;
+        Size contentDesired = default;
+        for (var pass = 0; pass < (UsesClassicGutter ? 4 : 1); pass++)
         {
-            SyncExtentFromScrollInfo();
-        }
-        else
-        {
-            _extentWidth = contentDesired.Width;
-            _extentHeight = contentDesired.Height;
-        }
+            contentViewportAvailable = GetClassicGutterViewportSize(innerAvailable,
+                availableSize, reserveVertical, reserveHorizontal);
+            var contentMeasureAvailable = _scrollInfo == null
+                ? new Size(
+                    HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled || fillsHorizontally
+                        ? contentViewportAvailable.Width
+                        : double.PositiveInfinity,
+                    VerticalScrollBarVisibility == ScrollBarVisibility.Disabled || fillsVertically
+                        ? contentViewportAvailable.Height
+                        : double.PositiveInfinity)
+                : contentViewportAvailable;
 
-        // Publish the viewport now rather than waiting for arrange. Since the gutter
-        // no longer depends on the scroll-bar decision, the viewport this pass will
-        // hand the content is already known here. Content that sizes itself from
-        // ViewportWidth/Height — a page that wants to fill the shell and scroll
-        // internally — would otherwise read last pass's numbers and settle on a size
-        // meant for the previous viewport; being smaller than the box it is arranged
-        // into, it then gets centred, which reads as the whole page sitting too low.
-        // An unbounded constraint carries no viewport information, so keep the last
-        // real one in that case.
-        if (double.IsFinite(availableSize.Width))
-        {
-            _viewportWidth = Math.Max(0, availableSize.Width - gutters.Vertical);
-        }
+            ContentElement.Measure(contentMeasureAvailable);
+            contentDesired = ContentElement.DesiredSize;
+            if (_scrollInfo != null)
+                SyncExtentFromScrollInfo();
+            else
+            {
+                _extentWidth = contentDesired.Width;
+                _extentHeight = contentDesired.Height;
+            }
 
-        if (double.IsFinite(availableSize.Height))
-        {
-            _viewportHeight = Math.Max(0, availableSize.Height - gutters.Horizontal);
-        }
+            // Publish this pass's viewport before any scrollbar visibility change.
+            if (double.IsFinite(availableSize.Width))
+                _viewportWidth = contentViewportAvailable.Width;
+            if (double.IsFinite(availableSize.Height))
+                _viewportHeight = contentViewportAvailable.Height;
 
-        // Settle the Auto decision here, from this pass's own numbers: the extent was
-        // just produced above and the viewport is availableSize minus a gutter that
-        // does not depend on the decision. Deciding in Arrange instead compared an
-        // extent from one pass against a size from a later one, which is what made a
-        // shrinking window read as "overflowing". Committing before the bars are
-        // measured below also means a bar that just turned visible gets measured in
-        // this same pass.
-        CommitScrollBarVisibility(
-            ResolveScrollBarShown(
+            var showVertical = ResolveScrollBarShown(
                 VerticalScrollBarVisibility, _verticalScrollBarShown,
-                _extentHeight, finiteContentAvailable.Height),
-            ResolveScrollBarShown(
+                _extentHeight, contentViewportAvailable.Height);
+            var showHorizontal = ResolveScrollBarShown(
                 HorizontalScrollBarVisibility, _horizontalScrollBarShown,
-                _extentWidth, finiteContentAvailable.Width));
+                _extentWidth, contentViewportAvailable.Width);
+            var needsVerticalGutter = UsesClassicGutter &&
+                (CssScrollBarGutter != CssScrollBarGutterMode.Auto &&
+                 VerticalScrollBarVisibility != ScrollBarVisibility.Disabled ||
+                 showVertical || _verticalGutterAdmitted);
+            var needsHorizontalGutter = UsesClassicGutter &&
+                (showHorizontal || _horizontalGutterAdmitted);
+            if (UsesClassicGutter && pass < 3 &&
+                (needsVerticalGutter != reserveVertical ||
+                 needsHorizontalGutter != reserveHorizontal))
+            {
+                if (needsVerticalGutter && !reserveVertical)
+                    _verticalGutterAdmitted = true;
+                if (needsHorizontalGutter && !reserveHorizontal)
+                    _horizontalGutterAdmitted = true;
+                reserveVertical = needsVerticalGutter;
+                reserveHorizontal = needsHorizontalGutter;
+                var nextViewport = GetClassicGutterViewportSize(innerAvailable,
+                    availableSize, reserveVertical, reserveHorizontal);
+                var nextMeasureWidth = HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled ||
+                    fillsHorizontally ? nextViewport.Width : double.PositiveInfinity;
+                var nextMeasureHeight = VerticalScrollBarVisibility == ScrollBarVisibility.Disabled ||
+                    fillsVertically ? nextViewport.Height : double.PositiveInfinity;
 
-        // Return the smaller of content size and available size
-        var resultWidth = Math.Min(contentDesired.Width + gutters.Vertical, availableSize.Width);
-        var resultHeight = Math.Min(contentDesired.Height + gutters.Horizontal, availableSize.Height);
+                // A gutter changes the finite constraint, but a child whose desired
+                // size fits both constraints can keep its completed measurement.
+                // Re-measure IScrollInfo and content touching either constraint: their
+                // layout or extent can change with the newly available viewport.
+                var canKeepContentMeasure = _scrollInfo == null &&
+                    (contentMeasureAvailable.Width == nextMeasureWidth ||
+                     contentDesired.Width <= Math.Min(contentMeasureAvailable.Width, nextMeasureWidth)) &&
+                    (contentMeasureAvailable.Height == nextMeasureHeight ||
+                     contentDesired.Height <= Math.Min(contentMeasureAvailable.Height, nextMeasureHeight));
+                if (!canKeepContentMeasure)
+                    continue;
 
-        var scrollBarLayoutSize = IsOverlayScrollBarEnabled
-            ? OverlayScrollBarLayoutSize
-            : ScrollBarSize;
-        _verticalScrollBar.Measure(new Size(scrollBarLayoutSize, Math.Max(0, availableSize.Height)));
-        _horizontalScrollBar.Measure(new Size(Math.Max(0, availableSize.Width), scrollBarLayoutSize));
+                contentViewportAvailable = nextViewport;
+                if (double.IsFinite(availableSize.Width))
+                    _viewportWidth = nextViewport.Width;
+                if (double.IsFinite(availableSize.Height))
+                    _viewportHeight = nextViewport.Height;
+                showVertical = ResolveScrollBarShown(VerticalScrollBarVisibility,
+                    showVertical, _extentHeight, nextViewport.Height);
+                showHorizontal = ResolveScrollBarShown(HorizontalScrollBarVisibility,
+                    showHorizontal, _extentWidth, nextViewport.Width);
+            }
+
+            // Keep bars admitted on an earlier pass. Viewport-dependent content
+            // can otherwise alternate between needing and not needing its gutter.
+            if (_verticalGutterAdmitted)
+                showVertical = true;
+            if (_horizontalGutterAdmitted)
+                showHorizontal = true;
+
+            MaintainEndAnchors(allowCompletion: false);
+            CommitScrollBarVisibility(showVertical, showHorizontal);
+            break;
+        }
+
+        var gutter = GetClassicGutterInsets(availableSize, _verticalScrollBarShown,
+            _horizontalScrollBarShown);
+        var resultWidth = Math.Min(Math.Max(0,
+            contentDesired.Width + insets.Left + insets.Right + gutter.Left + gutter.Right), availableSize.Width);
+        var resultHeight = Math.Min(Math.Max(0,
+            contentDesired.Height + insets.Top + insets.Bottom + gutter.Bottom), availableSize.Height);
+
+        var scrollBarLayoutSize = GetScrollBarLayoutSize();
+        _verticalScrollBar.Measure(new Size(scrollBarLayoutSize, contentViewportAvailable.Height));
+        _horizontalScrollBar.Measure(new Size(contentViewportAvailable.Width, scrollBarLayoutSize));
 
         return new Size(resultWidth, resultHeight);
     }
@@ -2586,41 +3288,6 @@ public partial class ScrollViewer : ContentControl
         => wasShown
             ? extent > viewport
             : extent > viewport + LayoutEpsilon;
-
-    /// <summary>
-    /// Layout gutter reserved for each scroll bar.
-    /// </summary>
-    /// <remarks>
-    /// Depends ONLY on configuration — the overlay flag, the two visibility modes,
-    /// and whether there is content. Deliberately NOT on whether a bar is currently
-    /// shown: letting the gutter follow the decision closes a feedback loop
-    /// (decision → content width → wrapped rows → extent → decision) that has no
-    /// stable fixed point, which is why resizing used to make the page shudder and
-    /// why the layout manager had to re-run whole passes to settle it. Keeping the
-    /// gutter constant makes a bar appearing or disappearing layout-neutral, so the
-    /// decision can be settled once per pass and never has to iterate.
-    /// <para>
-    /// Must not read any field: that is the compile-time guarantee that Measure and
-    /// Arrange compute the same value.
-    /// </para>
-    /// </remarks>
-    private (double Vertical, double Horizontal) GetScrollBarGutters()
-    {
-        // No content means nothing to inset. Panels that use a bare ScrollViewer
-        // purely as an IScrollInfo owner rely on the full viewport being reported.
-        if (ContentElement == null || IsOverlayScrollBarEnabled)
-        {
-            return (0, 0);
-        }
-
-        var vertical = VerticalScrollBarVisibility is ScrollBarVisibility.Visible or ScrollBarVisibility.Auto
-            ? ScrollBarSize
-            : 0;
-        var horizontal = HorizontalScrollBarVisibility is ScrollBarVisibility.Visible or ScrollBarVisibility.Auto
-            ? ScrollBarSize
-            : 0;
-        return (vertical, horizontal);
-    }
 
     /// <summary>
     /// The single rule for "is this scroll bar shown", replacing the separate tests
@@ -2656,6 +3323,8 @@ public partial class ScrollViewer : ContentControl
     /// </remarks>
     private void CommitScrollBarVisibility(bool showVertical, bool showHorizontal)
     {
+        if (CssScrollBarWidth == CssScrollBarWidthMode.None)
+            showVertical = showHorizontal = false;
         _verticalScrollBarShown = showVertical;
         _horizontalScrollBarShown = showHorizontal;
         // Only set once real content has been measured: a content-less viewer used
@@ -2695,19 +3364,18 @@ public partial class ScrollViewer : ContentControl
             }
         }
 
-        // Calculate if scrollbars are needed (now using up-to-date extent values).
-        // Auto uses a dead band around the threshold instead of a bare comparison:
-        // content sized to exactly fill the viewport sits on the boundary, and every
-        // flip moves a ScrollBarSize gutter that shifts the content sideways, so an
-        // undamped test makes a window resize visibly shudder.
-        var arrangeGutters = GetScrollBarGutters();
-
-        // A live native resize can temporarily make the arranged surface smaller than
-        // the fixed desktop scroll-bar gutter. The viewport is the remaining layout
-        // space, so its lower bound is zero; a negative viewport is not meaningful and
-        // cannot be passed to the content's Arrange rect.
-        _viewportWidth = Math.Max(0, finalSize.Width - arrangeGutters.Vertical);
-        _viewportHeight = Math.Max(0, finalSize.Height - arrangeGutters.Horizontal);
+        // Classic bars consume their gutters; overlay bars keep the full content box.
+        var verticalBarReserved = _verticalScrollBarShown;
+        var horizontalBarReserved = _horizontalScrollBarShown;
+        var measuredViewportWidth = _viewportWidth;
+        var measuredViewportHeight = _viewportHeight;
+        var viewport = GetContentViewportRect(finalSize, verticalBarReserved,
+            horizontalBarReserved);
+        _viewportWidth = viewport.Width;
+        _viewportHeight = viewport.Height;
+        if (UsesClassicGutter && (measuredViewportWidth != _viewportWidth ||
+            measuredViewportHeight != _viewportHeight))
+            InvalidateMeasure();
 
         // Content is arranged at max(extent, viewport) below. While the extent is the
         // larger of the two, shrinking the viewport leaves that rect byte-identical,
@@ -2749,12 +3417,13 @@ public partial class ScrollViewer : ContentControl
                 // IScrollInfo manages its own scrolling; arrange at full viewport size.
                 // Overscroll is added as a layout offset so the content visually drifts
                 // past the edge during a rubber-band gesture.
-                var arrangeRect = new Rect(_overscrollX, _overscrollY, _viewportWidth, _viewportHeight);
+                var arrangeRect = new Rect(viewport.Left + _overscrollX,
+                    viewport.Top + _overscrollY, _viewportWidth, _viewportHeight);
                 ContentElement.Arrange(arrangeRect);
             }
             else
             {
-                // Arrange content with offset (content area excludes scrollbar space)
+                // Arrange content with offset inside the computed scrollport.
                 // Disabled is a constrained axis, not merely a hidden scroll bar.
                 // A fixed-width descendant may still report a wider desired size,
                 // but using that extent to arrange the content would stretch every
@@ -2768,8 +3437,8 @@ public partial class ScrollViewer : ContentControl
                     : Math.Max(_extentHeight, _viewportHeight);
 
                 var arrangeRect = new Rect(
-                    -_horizontalOffset + _overscrollX,
-                    -_verticalOffset + _overscrollY,
+                    viewport.Left - _horizontalOffset + _overscrollX,
+                    viewport.Top - _verticalOffset + _overscrollY,
                     contentWidth,
                     contentHeight);
 
@@ -2781,6 +3450,11 @@ public partial class ScrollViewer : ContentControl
             }
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
         }
+
+        // Arrange is the first safe point at which a stable provider can release the temporary
+        // endpoint anchor. If virtualization queued another measure, IsMeasureValid is false and
+        // the anchor survives to follow the next refined finite maximum.
+        MaintainEndAnchors(allowCompletion: true);
 
         // Re-check against the viewport we actually got. Measure decided from
         // availableSize, which a parent that over-constrains us (a star grid row, a
@@ -2796,14 +3470,24 @@ public partial class ScrollViewer : ContentControl
                                 || ContentElement.IsMeasureValid;
         if (extentTrustworthy)
         {
+            var showHorizontal = ResolveScrollBarShown(
+                HorizontalScrollBarVisibility, _horizontalScrollBarShown,
+                _extentWidth, _viewportWidth);
+            if (UsesClassicGutter && horizontalBarReserved && _horizontalGutterAdmitted)
+                showHorizontal = true;
+            var showVertical = ResolveScrollBarShown(
+                VerticalScrollBarVisibility, _verticalScrollBarShown,
+                _extentHeight, _viewportHeight);
+            if (UsesClassicGutter && verticalBarReserved && _verticalGutterAdmitted)
+                showVertical = true;
             CommitScrollBarVisibility(
-                ResolveScrollBarShown(
-                    VerticalScrollBarVisibility, _verticalScrollBarShown,
-                    _extentHeight, _viewportHeight),
-                ResolveScrollBarShown(
-                    HorizontalScrollBarVisibility, _horizontalScrollBarShown,
-                    _extentWidth, _viewportWidth));
+                showVertical, showHorizontal);
         }
+
+        if (UsesClassicGutter &&
+            (verticalBarReserved != _verticalScrollBarShown ||
+             horizontalBarReserved != _horizontalScrollBarShown))
+            InvalidateMeasure();
 
         var needsVerticalScrollBar = _verticalScrollBarShown;
         var needsHorizontalScrollBar = _horizontalScrollBarShown;
@@ -2815,14 +3499,35 @@ public partial class ScrollViewer : ContentControl
         // layout path, and each one costs an ancestor-chain invalidation.
         if (needsVerticalScrollBar)
         {
-            var scrollBarLayoutSize = IsOverlayScrollBarEnabled
-                ? OverlayScrollBarLayoutSize
-                : ScrollBarSize;
-            _verticalScrollBar.Arrange(new Rect(
-                Math.Max(0, finalSize.Width - scrollBarLayoutSize),
-                0,
-                scrollBarLayoutSize,
-                Math.Max(0, _viewportHeight)));
+            var scrollBarLayoutSize = GetScrollBarLayoutSize();
+            if (UsesClassicGutter)
+            {
+                var gutter = GetClassicGutterInsets(finalSize, needsVerticalScrollBar,
+                    needsHorizontalScrollBar);
+                var barWidth = FlowDirection == FlowDirection.RightToLeft ? gutter.Left : gutter.Right;
+                var border = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? finalSize.Width).Border;
+                var borderInner = new Rect(border.Left, border.Top,
+                    Math.Max(0, finalSize.Width - border.Left - border.Right),
+                    Math.Max(0, finalSize.Height - border.Top - border.Bottom));
+                _verticalScrollBar.Arrange(new Rect(
+                    FlowDirection == FlowDirection.RightToLeft
+                        ? borderInner.Left : borderInner.Right - barWidth,
+                    borderInner.Top, barWidth,
+                    Math.Max(0, borderInner.Height - gutter.Bottom)));
+            }
+            else
+            {
+                var oppositeBarInset = !IsOverlayScrollBarEnabled && needsHorizontalScrollBar
+                    ? scrollBarLayoutSize
+                    : 0.0;
+                var barWidth = ControlRenderGeometry.GetAvailableLength(scrollBarLayoutSize, viewport.Width);
+                _verticalScrollBar.Arrange(new Rect(
+                    viewport.Right - barWidth,
+                    viewport.Top,
+                    barWidth,
+                    Math.Max(0, viewport.Height - oppositeBarInset)));
+            }
         }
         else
         {
@@ -2831,14 +3536,34 @@ public partial class ScrollViewer : ContentControl
 
         if (needsHorizontalScrollBar)
         {
-            var scrollBarLayoutSize = IsOverlayScrollBarEnabled
-                ? OverlayScrollBarLayoutSize
-                : ScrollBarSize;
-            _horizontalScrollBar.Arrange(new Rect(
-                0,
-                Math.Max(0, finalSize.Height - scrollBarLayoutSize),
-                Math.Max(0, _viewportWidth),
-                scrollBarLayoutSize));
+            var scrollBarLayoutSize = GetScrollBarLayoutSize();
+            if (UsesClassicGutter)
+            {
+                var gutter = GetClassicGutterInsets(finalSize, needsVerticalScrollBar,
+                    needsHorizontalScrollBar);
+                var border = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? finalSize.Width).Border;
+                var borderInner = new Rect(border.Left, border.Top,
+                    Math.Max(0, finalSize.Width - border.Left - border.Right),
+                    Math.Max(0, finalSize.Height - border.Top - border.Bottom));
+                _horizontalScrollBar.Arrange(new Rect(
+                    borderInner.Left + gutter.Left,
+                    borderInner.Bottom - gutter.Bottom,
+                    Math.Max(0, borderInner.Width - gutter.Left - gutter.Right),
+                    gutter.Bottom));
+            }
+            else
+            {
+                var oppositeBarInset = !IsOverlayScrollBarEnabled && needsVerticalScrollBar
+                    ? scrollBarLayoutSize
+                    : 0.0;
+                var barHeight = ControlRenderGeometry.GetAvailableLength(scrollBarLayoutSize, viewport.Height);
+                _horizontalScrollBar.Arrange(new Rect(
+                    viewport.Left,
+                    viewport.Bottom - barHeight,
+                    Math.Max(0, viewport.Width - oppositeBarInset),
+                    barHeight));
+            }
         }
         else
         {
@@ -2898,11 +3623,19 @@ public partial class ScrollViewer : ContentControl
         // Draw background
         if (Background != null)
         {
-            dc.DrawRectangle(Background, null, bounds);
+            var gutter = GetClassicGutterInsets(RenderSize, _verticalScrollBarShown,
+                _horizontalScrollBarShown);
+            var backgroundPadding = new Thickness(
+                Padding.Left + gutter.Left, Padding.Top,
+                Padding.Right + gutter.Right, Padding.Bottom + gutter.Bottom);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                    bounds, default, BorderThickness, backgroundPadding,
+                    brush => dc.DrawRectangle(brush, null, bounds)))
+                dc.DrawRectangle(Background, null, bounds);
         }
 
         // Draw border
-        if (BorderBrush != null && BorderThickness.Left > 0)
+        if (CssBorderPaintProperties.Get(this) is null && BorderBrush != null && BorderThickness.Left > 0)
         {
             if (_borderPenCached == null || _borderPenBrush != BorderBrush || _borderPenThickness != BorderThickness.Left)
             {
@@ -2916,6 +3649,13 @@ public partial class ScrollViewer : ContentControl
         // Content and scrollbars render through the visual tree.
     }
 
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+    }
+
     #endregion
     #region Input Handling
 
@@ -2927,7 +3667,21 @@ public partial class ScrollViewer : ContentControl
         if (e.Handled)
             return;
 
+        bool scrollingTowardStart = e.Delta > 0;
+        bool scrollingTowardEnd = e.Delta < 0;
+        if (scrollingTowardStart || e.Delta == 0)
+        {
+            ClearEndAnchor(isVertical: true);
+            ClearEndAnchor(isVertical: false);
+            _smoothVerticalEndAnchorPending = false;
+            _smoothHorizontalEndAnchorPending = false;
+        }
+
         bool useSmoothWheelInertia = IsScrollInertiaEnabled && GetEffectiveScrollInertiaDurationMs() > 0;
+        TraceVerticalState(
+            "wheel-enter",
+            $"delta={e.Delta} useSmooth={useSmoothWheelInertia} " +
+            $"source={e.Source?.GetType().FullName ?? "null"}");
 
         // Delegate to IScrollInfo if available
         if (_scrollInfo != null)
@@ -2946,10 +3700,27 @@ public partial class ScrollViewer : ContentControl
                 _scrollInfo.ExtentHeight - _scrollInfo.ViewportHeight);
             bool atTop = _scrollInfo.VerticalOffset <= 0.5;
             bool atBottom = _scrollInfo.VerticalOffset >= providerMaxOffset - 0.5;
-            bool scrollingUp = e.Delta > 0;
-            bool scrollingDown = e.Delta < 0;
-            if ((scrollingUp && atTop) || (scrollingDown && atBottom) || e.Delta == 0)
+            if (scrollingTowardEnd && atBottom)
             {
+                // A true, settled boundary still bubbles to an ancestor. An active endpoint
+                // intent means this is only the old estimated boundary; keep the event here
+                // while layout resolves the next finite maximum.
+                if (_verticalEndAnchorActive || _smoothVerticalEndAnchorPending)
+                {
+                    MaintainEndAnchors(allowCompletion: false);
+                    e.Handled = true;
+                }
+                TraceVerticalState(
+                    "wheel-provider-boundary",
+                    $"delta={e.Delta} action={(e.Handled ? "retain" : "bubble")}");
+                return;
+            }
+
+            if ((scrollingTowardStart && atTop) || e.Delta == 0)
+            {
+                TraceVerticalState(
+                    "wheel-provider-boundary",
+                    $"delta={e.Delta} action=bubble");
                 return;
             }
 
@@ -2959,18 +3730,33 @@ public partial class ScrollViewer : ContentControl
                 var delta = ComputeMouseWheelDelta(e.Delta, LineScrollAmount, _viewportHeight);
 
                 InitializeSmoothScrollTargetsIfNeeded();
-                _smoothTargetY = Math.Clamp(_smoothTargetY + delta, 0, ScrollableHeight);
+                var nextTarget = _smoothTargetY + delta;
+                _smoothVerticalEndAnchorPending = scrollingTowardEnd &&
+                                                  ScrollableHeight > 0 &&
+                                                  nextTarget >= ScrollableHeight - 0.01;
+                _smoothTargetY = Math.Clamp(nextTarget, 0, ScrollableHeight);
+                TraceVerticalState(
+                    "wheel-smooth-target",
+                    $"delta={e.Delta} computedDelta={delta:R} rawTarget={nextTarget:R}");
                 StartSmoothScroll();
             }
             else
             {
                 // Immediate scroll
                 CancelSmoothScroll();
-                if (e.Delta > 0)
-                    _scrollInfo.MouseWheelUp();
-                else if (e.Delta < 0)
-                    _scrollInfo.MouseWheelDown();
-                SyncFromScrollInfo();
+                RunRelativeScroll(() =>
+                {
+                    if (scrollingTowardStart)
+                        _scrollInfo.MouseWheelUp();
+                    else if (scrollingTowardEnd)
+                        _scrollInfo.MouseWheelDown();
+                    SyncFromScrollInfo();
+                    if (scrollingTowardEnd && IsAtScrollEnd(isVertical: true))
+                        ApplyEndAnchorOffset(isVertical: true);
+                });
+                TraceVerticalState(
+                    "wheel-provider-immediate",
+                    $"delta={e.Delta}");
             }
 
             e.Handled = true;
@@ -2983,12 +3769,13 @@ public partial class ScrollViewer : ContentControl
             // This allows nested ScrollViewers to bubble the event to the parent when at bounds.
             bool atTop = _verticalOffset <= 0;
             bool atBottom = _verticalOffset >= ScrollableHeight;
-            bool scrollingUp = e.Delta > 0;
-            bool scrollingDown = e.Delta < 0;
 
-            if ((scrollingUp && atTop) || (scrollingDown && atBottom))
+            if ((scrollingTowardStart && atTop) || (scrollingTowardEnd && atBottom))
             {
                 // At boundary: don't handle, let parent ScrollViewer process it
+                TraceVerticalState(
+                    "wheel-physical-boundary",
+                    $"delta={e.Delta} action=bubble");
             }
             else
             {
@@ -2998,13 +3785,23 @@ public partial class ScrollViewer : ContentControl
                 {
                     // Smooth animated scroll: accumulate target, animate toward it
                     InitializeSmoothScrollTargetsIfNeeded();
-                    _smoothTargetY = Math.Clamp(_smoothTargetY + delta, 0, ScrollableHeight);
+                    var nextTarget = _smoothTargetY + delta;
+                    _smoothVerticalEndAnchorPending = scrollingTowardEnd &&
+                                                      ScrollableHeight > 0 &&
+                                                      nextTarget >= ScrollableHeight - 0.01;
+                    _smoothTargetY = Math.Clamp(nextTarget, 0, ScrollableHeight);
+                    TraceVerticalState(
+                        "wheel-smooth-target",
+                        $"delta={e.Delta} computedDelta={delta:R} rawTarget={nextTarget:R}");
                     StartSmoothScroll();
                 }
                 else
                 {
                     CancelSmoothScroll();
-                    ScrollToVerticalOffset(_verticalOffset + delta);
+                    RunRelativeScroll(() => ScrollToVerticalOffset(_verticalOffset + delta));
+                    TraceVerticalState(
+                        "wheel-physical-immediate",
+                        $"delta={e.Delta} computedDelta={delta:R}");
                 }
 
                 e.Handled = true;
@@ -3014,10 +3811,8 @@ public partial class ScrollViewer : ContentControl
         {
             bool atLeft = _horizontalOffset <= 0;
             bool atRight = _horizontalOffset >= ScrollableWidth;
-            bool scrollingLeft = e.Delta > 0;
-            bool scrollingRight = e.Delta < 0;
 
-            if ((scrollingLeft && atLeft) || (scrollingRight && atRight))
+            if ((scrollingTowardStart && atLeft) || (scrollingTowardEnd && atRight))
             {
                 // At boundary: don't handle, let parent ScrollViewer process it
             }
@@ -3028,13 +3823,17 @@ public partial class ScrollViewer : ContentControl
                 if (useSmoothWheelInertia)
                 {
                     InitializeSmoothScrollTargetsIfNeeded();
-                    _smoothTargetX = Math.Clamp(_smoothTargetX + delta, 0, ScrollableWidth);
+                    var nextTarget = _smoothTargetX + delta;
+                    _smoothHorizontalEndAnchorPending = scrollingTowardEnd &&
+                                                        ScrollableWidth > 0 &&
+                                                        nextTarget >= ScrollableWidth - 0.01;
+                    _smoothTargetX = Math.Clamp(nextTarget, 0, ScrollableWidth);
                     StartSmoothScroll();
                 }
                 else
                 {
                     CancelSmoothScroll();
-                    ScrollToHorizontalOffset(_horizontalOffset + delta);
+                    RunRelativeScroll(() => ScrollToHorizontalOffset(_horizontalOffset + delta));
                 }
 
                 e.Handled = true;
@@ -3064,15 +3863,24 @@ public partial class ScrollViewer : ContentControl
             _isApplyingSmoothScrollStep = true;
             try
             {
-                ScrollToVerticalOffset(_smoothTargetY);
-                ScrollToHorizontalOffset(_smoothTargetX);
+                RunRelativeScroll(() =>
+                {
+                    ScrollToVerticalOffset(_smoothTargetY);
+                    ScrollToHorizontalOffset(_smoothTargetX);
+                });
             }
             finally
             {
                 _isApplyingSmoothScrollStep = false;
             }
 
+            var anchorVerticalEnd = _smoothVerticalEndAnchorPending && IsAtScrollEnd(isVertical: true);
+            var anchorHorizontalEnd = _smoothHorizontalEndAnchorPending && IsAtScrollEnd(isVertical: false);
             StopSmoothScroll();
+            if (anchorVerticalEnd)
+                ApplyEndAnchorOffset(isVertical: true);
+            if (anchorHorizontalEnd)
+                ApplyEndAnchorOffset(isVertical: false);
             return;
         }
 
@@ -3096,6 +3904,8 @@ public partial class ScrollViewer : ContentControl
     {
         _smoothScrollTimer?.Stop();
         _isSmoothScrolling = false;
+        _smoothVerticalEndAnchorPending = false;
+        _smoothHorizontalEndAnchorPending = false;
         if (IsScrollBarAutoHideEnabled)
         {
             RestartScrollBarAutoHideTimer();
@@ -3122,31 +3932,89 @@ public partial class ScrollViewer : ContentControl
         if (!_isSmoothScrolling)
             return;
 
-        _smoothTargetY = Math.Clamp(_smoothTargetY, 0, ScrollableHeight);
-        _smoothTargetX = Math.Clamp(_smoothTargetX, 0, ScrollableWidth);
+        TraceVerticalState(
+            "smooth-tick-enter",
+            $"elapsedMs={elapsedMs}");
+
+        _smoothTargetY = _smoothVerticalEndAnchorPending
+            ? ScrollableHeight
+            : Math.Clamp(_smoothTargetY, 0, ScrollableHeight);
+        _smoothTargetX = _smoothHorizontalEndAnchorPending
+            ? ScrollableWidth
+            : Math.Clamp(_smoothTargetX, 0, ScrollableWidth);
         if (elapsedMs <= 0)
             elapsedMs = Math.Max(1, SmoothScrollIntervalMs);
 
         double dtSeconds = Math.Min(elapsedMs / 1000.0, SmoothScrollMaxDeltaTimeSeconds);
         double alpha = ComputeSmoothAlpha(dtSeconds);
-        double minStep = SmoothScrollMinSpeedPixelsPerSecond * dtSeconds;
+        var dpiScale = GetScrollDpiScale();
+        var oneDevicePixel = dpiScale > 0 && double.IsFinite(dpiScale)
+            ? 1.0 / dpiScale
+            : 1.0;
+        // Every committed scroll offset is device-pixel snapped. At high refresh rates the
+        // time-based minimum can be less than half a device pixel, so a legitimate 10px+ tail
+        // repeatedly rounds back to the current offset and is mistaken for completion. One
+        // physical pixel is the smallest step that can always make observable progress in both
+        // directions after snapping.
+        double minStep = Math.Max(
+            SmoothScrollMinSpeedPixelsPerSecond * dtSeconds,
+            oneDevicePixel);
 
         bool moved = false;
+        var offsetXBefore = _horizontalOffset;
+        var offsetYBefore = _verticalOffset;
 
         _isApplyingSmoothScrollStep = true;
         try
         {
-            moved |= StepSmoothAxis(_smoothTargetY, _verticalOffset, ScrollToVerticalOffset, alpha, minStep);
-            moved |= StepSmoothAxis(_smoothTargetX, _horizontalOffset, ScrollToHorizontalOffset, alpha, minStep);
+            RunRelativeScroll(() =>
+            {
+                moved |= StepSmoothAxis(_smoothTargetY, _verticalOffset, ScrollToVerticalOffset, alpha, minStep);
+                moved |= StepSmoothAxis(_smoothTargetX, _horizontalOffset, ScrollToHorizontalOffset, alpha, minStep);
+            });
         }
         finally
         {
             _isApplyingSmoothScrollStep = false;
         }
 
-        if (!moved)
+        // Realization can grow the extent synchronously inside the setter above. Keep an
+        // endpoint-targeted wheel animation alive and retarget it before the no-progress test
+        // mistakes the old maximum for a completed scroll.
+        bool endTargetExpanded = false;
+        if (_smoothVerticalEndAnchorPending && _smoothTargetY < ScrollableHeight - 0.01)
         {
+            _smoothTargetY = ScrollableHeight;
+            endTargetExpanded = true;
+        }
+        if (_smoothHorizontalEndAnchorPending && _smoothTargetX < ScrollableWidth - 0.01)
+        {
+            _smoothTargetX = ScrollableWidth;
+            endTargetExpanded = true;
+        }
+
+        TraceVerticalState(
+            "smooth-tick-commit",
+            $"elapsedMs={elapsedMs} moved={moved} endTargetExpanded={endTargetExpanded}");
+
+        // The committed offsets are quantized to whole device pixels, so a
+        // sub-pixel closing step can round back onto the pixel the offset is
+        // already on. StepSmoothAxis still reports intent to move in that case;
+        // judging progress by the committed offsets is what guarantees the timer
+        // stops instead of spinning on a target it can never get closer to.
+        if (!endTargetExpanded &&
+            (!moved || (_horizontalOffset == offsetXBefore && _verticalOffset == offsetYBefore)))
+        {
+            var anchorVerticalEnd = _smoothVerticalEndAnchorPending && IsAtScrollEnd(isVertical: true);
+            var anchorHorizontalEnd = _smoothHorizontalEndAnchorPending && IsAtScrollEnd(isVertical: false);
+            TraceVerticalState(
+                "smooth-complete",
+                $"anchorVertical={anchorVerticalEnd} anchorHorizontal={anchorHorizontalEnd}");
             StopSmoothScroll();
+            if (anchorVerticalEnd)
+                ApplyEndAnchorOffset(isVertical: true);
+            if (anchorHorizontalEnd)
+                ApplyEndAnchorOffset(isVertical: false);
         }
     }
 
@@ -3221,10 +4089,31 @@ public partial class ScrollViewer : ContentControl
         CancelSmoothScroll();
         RevealOverlayIndicatorForScrollMovement();
 
-        HandleScrollBarValueChange(e, isVertical ? ScrollableHeight : ScrollableWidth, isVertical);
+        var scrollBar = isVertical ? _verticalScrollBar : _horizontalScrollBar;
+        if (e.ScrollEventType is ScrollEventType.SmallDecrement or ScrollEventType.SmallIncrement or
+            ScrollEventType.LargeDecrement or ScrollEventType.LargeIncrement)
+        {
+            RunRelativeScroll(() => HandleScrollBarValueChange(
+                e,
+                isVertical ? ScrollableHeight : ScrollableWidth,
+                scrollBar.Maximum,
+                isVertical));
+        }
+        else
+        {
+            HandleScrollBarValueChange(
+                e,
+                isVertical ? ScrollableHeight : ScrollableWidth,
+                scrollBar.Maximum,
+                isVertical);
+        }
     }
 
-    private void HandleScrollBarValueChange(ScrollEventArgs e, double maxValue, bool isVertical)
+    private void HandleScrollBarValueChange(
+        ScrollEventArgs e,
+        double maxValue,
+        double interactionMaximum,
+        bool isVertical)
     {
         var clampedValue = Math.Clamp(e.NewValue, 0, Math.Max(0, maxValue));
 
@@ -3232,7 +4121,9 @@ public partial class ScrollViewer : ContentControl
         // dragged and apply the offset only once, when the thumb is released.
         if (IsDeferredScrollingEnabled && e.ScrollEventType == ScrollEventType.ThumbTrack)
         {
+            ClearEndAnchor(isVertical);
             _isDeferredScrolling = true;
+            _deferredScrollIsVertical = isVertical;
             if (isVertical)
                 _deferredVerticalOffset = clampedValue;
             else
@@ -3243,9 +4134,19 @@ public partial class ScrollViewer : ContentControl
 
         if (IsDeferredScrollingEnabled && e.ScrollEventType == ScrollEventType.EndScroll && _isDeferredScrolling)
         {
+            var deferredValue = isVertical ? _deferredVerticalOffset : _deferredHorizontalOffset;
+            var deferredScrollToRangeEnd = IsScrollBarRangeEnd(deferredValue, interactionMaximum);
             StopDragScrollCoalesce();
-            ApplyScrollOffset(isVertical, isVertical ? _deferredVerticalOffset : _deferredHorizontalOffset);
             _isDeferredScrolling = false;
+            _deferredScrollIsVertical = false;
+            if (deferredScrollToRangeEnd)
+            {
+                ApplyEndAnchorOffset(isVertical);
+            }
+            else
+            {
+                ApplyScrollOffset(isVertical, deferredValue);
+            }
             // The scrollbar mapping is intentionally frozen for the lifetime of thumb capture.
             // Thaw it even when the final content offset did not change (and therefore did not
             // naturally call UpdateScrollBarMetrics).
@@ -3254,6 +4155,7 @@ public partial class ScrollViewer : ContentControl
         }
 
         _isDeferredScrolling = false;
+        _deferredScrollIsVertical = false;
 
         // Live thumb drag (default path): coalesce the content-offset apply to one update per
         // rendered frame, mirroring the wheel's smooth-scroll frame pacing.
@@ -3269,7 +4171,20 @@ public partial class ScrollViewer : ContentControl
         // the thumb itself keeps following the cursor on every move.
         if (e.ScrollEventType == ScrollEventType.ThumbTrack)
         {
-            ScheduleCoalescedDragScroll(isVertical, clampedValue);
+            // Maximum is intentionally frozen while the thumb owns capture. Reaching that
+            // frozen endpoint is nevertheless an endpoint intent, not a request for its stale
+            // numeric value. Keep the intent beside the finite value so it never crosses an
+            // arbitrary IScrollInfo boundary as a non-finite sentinel.
+            var thumbTracksRangeEnd = IsScrollBarRangeEnd(e.NewValue, interactionMaximum);
+            if (thumbTracksRangeEnd)
+            {
+                ActivateEndAnchor(isVertical);
+            }
+            else
+            {
+                ClearEndAnchor(isVertical);
+            }
+            ScheduleCoalescedDragScroll(isVertical, clampedValue, thumbTracksRangeEnd);
             return;
         }
 
@@ -3290,12 +4205,268 @@ public partial class ScrollViewer : ContentControl
 
         // Stop any in-flight drag coalescing first so discrete clicks stay instant and a stale
         // timer tick cannot overwrite the just-committed final position.
+        var scrollToRangeEnd = e.ScrollEventType == ScrollEventType.EndScroll &&
+                               (IsScrollBarRangeEnd(e.NewValue, interactionMaximum) ||
+                                IsScrollBarRangeEnd(finalValue, interactionMaximum) ||
+                                (isVertical
+                                    ? _pendingDragVerticalEndAnchor
+                                    : _pendingDragHorizontalEndAnchor));
         StopDragScrollCoalesce();
-        ApplyScrollOffset(isVertical, finalValue);
+        if (scrollToRangeEnd)
+        {
+            ApplyEndAnchorOffset(isVertical);
+        }
+        else
+        {
+            ApplyScrollOffset(isVertical, finalValue);
+        }
         if (e.ScrollEventType == ScrollEventType.EndScroll)
         {
             UpdateScrollBarMetrics();
         }
+    }
+
+    private static bool IsScrollBarRangeEnd(double value, double interactionMaximum)
+    {
+        if (double.IsNaN(value) || !double.IsFinite(interactionMaximum) || interactionMaximum <= 0)
+            return false;
+
+        return value >= interactionMaximum - 0.01;
+    }
+
+    private bool IsAtScrollEnd(bool isVertical)
+    {
+        if (_scrollInfo != null)
+        {
+            var extent = isVertical ? _scrollInfo.ExtentHeight : _scrollInfo.ExtentWidth;
+            var viewport = isVertical ? _scrollInfo.ViewportHeight : _scrollInfo.ViewportWidth;
+            var offset = isVertical ? _scrollInfo.VerticalOffset : _scrollInfo.HorizontalOffset;
+            var maximum = Math.Max(0, extent - viewport);
+            return maximum > 0 && offset >= maximum - 0.5;
+        }
+
+        var physicalMaximum = isVertical ? ScrollableHeight : ScrollableWidth;
+        var physicalOffset = isVertical ? _verticalOffset : _horizontalOffset;
+        return physicalMaximum > 0 && physicalOffset >= physicalMaximum - 0.5;
+    }
+
+    private void TraceVerticalState(string phase, string details = "")
+    {
+        if (!Jalium.UI.Diagnostics.ScrollDiagnostics.Enabled)
+            return;
+
+        var info = _scrollInfo;
+        var infoType = info?.GetType().FullName ?? "<physical>";
+        var infoOffset = info?.VerticalOffset ?? double.NaN;
+        var infoExtent = info?.ExtentHeight ?? double.NaN;
+        var infoViewport = info?.ViewportHeight ?? double.NaN;
+        var infoMaximum = info == null
+            ? double.NaN
+            : Math.Max(0, infoExtent - infoViewport);
+        var contentMeasureValid = ContentElement?.IsMeasureValid;
+        var payload =
+            $"{details} requested={_requestedVerticalOffset:R} committed={_verticalOffset:R} " +
+            $"extent={_extentHeight:R} viewport={_viewportHeight:R} max={ScrollableHeight:R} " +
+            $"barValue={_verticalScrollBar.Value:R} barMax={_verticalScrollBar.Maximum:R} " +
+            $"barDragging={_verticalScrollBar.IsThumbDragging} smooth={_isSmoothScrolling} " +
+            $"smoothTarget={_smoothTargetY:R} smoothEnd={_smoothVerticalEndAnchorPending} " +
+            $"anchor={_verticalEndAnchorActive} anchorMax={_verticalEndAnchorMaximum:R} " +
+            $"measureValid={contentMeasureValid?.ToString() ?? "null"} provider={infoType} " +
+            $"providerOffset={infoOffset:R} providerExtent={infoExtent:R} " +
+            $"providerViewport={infoViewport:R} providerMax={infoMaximum:R}";
+        Jalium.UI.Diagnostics.ScrollDiagnostics.RecordEvent(
+            Name,
+            System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this),
+            phase,
+            payload);
+    }
+
+    private void ActivateEndAnchor(bool isVertical)
+    {
+        if (_scrollInfo == null)
+            return;
+
+        if (isVertical)
+        {
+            if (!_verticalEndAnchorActive)
+            {
+                _verticalEndAnchorActive = true;
+                _verticalEndAnchorMaximum = double.NaN;
+                TraceVerticalState("anchor-activate");
+            }
+        }
+        else if (!_horizontalEndAnchorActive)
+        {
+            _horizontalEndAnchorActive = true;
+            _horizontalEndAnchorMaximum = double.NaN;
+        }
+    }
+
+    private void ClearEndAnchor(bool isVertical)
+    {
+        if (isVertical)
+        {
+            if (_verticalEndAnchorActive || _pendingDragVerticalEndAnchor)
+            {
+                TraceVerticalState("anchor-clear");
+            }
+            _verticalEndAnchorActive = false;
+            _verticalEndAnchorMaximum = double.NaN;
+            _pendingDragVerticalEndAnchor = false;
+        }
+        else
+        {
+            _horizontalEndAnchorActive = false;
+            _horizontalEndAnchorMaximum = double.NaN;
+            _pendingDragHorizontalEndAnchor = false;
+        }
+    }
+
+    private void ApplyEndAnchorOffset(bool isVertical)
+    {
+        ActivateEndAnchor(isVertical);
+
+        var liveEnd = Math.Max(0, isVertical ? ScrollableHeight : ScrollableWidth);
+        var previousEnd = isVertical ? _verticalEndAnchorMaximum : _horizontalEndAnchorMaximum;
+        // A virtualized measure may briefly publish a zero/smaller extent while replacing its
+        // realization window. Never follow that transient contraction from an input callback;
+        // a completed stable Arrange is the only place allowed to commit a smaller endpoint.
+        var finiteEnd = !double.IsNaN(previousEnd) && liveEnd < previousEnd
+            ? previousEnd
+            : liveEnd;
+        if (isVertical)
+        {
+            TraceVerticalState(
+                "anchor-apply-request",
+                $"liveEnd={liveEnd:R} previousEnd={previousEnd:R} finiteEnd={finiteEnd:R}");
+        }
+        if (isVertical)
+            _verticalEndAnchorMaximum = finiteEnd;
+        else
+            _horizontalEndAnchorMaximum = finiteEnd;
+
+        _isApplyingEndAnchor = true;
+        try
+        {
+            ApplyScrollOffset(isVertical, finiteEnd);
+        }
+        finally
+        {
+            _isApplyingEndAnchor = false;
+        }
+
+        // Exact, non-virtualizing providers generally need only Arrange and already know their
+        // final extent. A virtualizing provider invalidates Measure when it accepts the jump;
+        // keep the anchor only in that case so later extent refinements are followed.
+        if (!IsEndAnchorInteractionActive(isVertical) &&
+            ContentElement is { IsMeasureValid: true })
+        {
+            ClearEndAnchor(isVertical);
+        }
+    }
+
+    private void MaintainEndAnchors(bool allowCompletion)
+    {
+        if (_isApplyingEndAnchor || (!_verticalEndAnchorActive && !_horizontalEndAnchorActive))
+            return;
+
+        if (_scrollInfo == null)
+        {
+            ClearEndAnchor(isVertical: true);
+            ClearEndAnchor(isVertical: false);
+            return;
+        }
+
+        _horizontalOffset = _scrollInfo.HorizontalOffset;
+        _verticalOffset = _scrollInfo.VerticalOffset;
+        SyncExtentFromScrollInfo();
+
+        MaintainEndAnchor(isVertical: true, allowCompletion);
+        MaintainEndAnchor(isVertical: false, allowCompletion);
+        UpdateRequestedOffsetsFromContent();
+    }
+
+    private void MaintainEndAnchor(bool isVertical, bool allowCompletion)
+    {
+        var isActive = isVertical ? _verticalEndAnchorActive : _horizontalEndAnchorActive;
+        if (!isActive || _scrollInfo == null)
+            return;
+
+        var finiteEnd = Math.Max(0, isVertical ? ScrollableHeight : ScrollableWidth);
+        var previousMaximum = isVertical ? _verticalEndAnchorMaximum : _horizontalEndAnchorMaximum;
+        var interactionActive = IsEndAnchorInteractionActive(isVertical);
+        var canCommitShrink = allowCompletion &&
+                              !interactionActive &&
+                              ContentElement is { IsMeasureValid: true };
+        if (!double.IsNaN(previousMaximum) &&
+            finiteEnd < previousMaximum &&
+            !canCommitShrink)
+        {
+            if (isVertical)
+            {
+                TraceVerticalState(
+                    "anchor-ignore-shrink",
+                    $"liveEnd={finiteEnd:R} previousEnd={previousMaximum:R} allowCompletion={allowCompletion} interaction={interactionActive}");
+            }
+            return;
+        }
+        var rangeChanged = double.IsNaN(previousMaximum) || !AreClose(previousMaximum, finiteEnd);
+        var currentOffset = isVertical ? _scrollInfo.VerticalOffset : _scrollInfo.HorizontalOffset;
+
+        if (isVertical)
+            _verticalEndAnchorMaximum = finiteEnd;
+        else
+            _horizontalEndAnchorMaximum = finiteEnd;
+
+        if (rangeChanged || !AreClose(currentOffset, finiteEnd))
+        {
+            if (isVertical)
+            {
+                TraceVerticalState(
+                    "anchor-maintain-request",
+                    $"finiteEnd={finiteEnd:R} previousEnd={previousMaximum:R} current={currentOffset:R} rangeChanged={rangeChanged} allowCompletion={allowCompletion}");
+            }
+            _isApplyingEndAnchor = true;
+            try
+            {
+                if (isVertical)
+                {
+                    _scrollInfo.SetVerticalOffset(finiteEnd);
+                    _verticalOffset = _scrollInfo.VerticalOffset;
+                }
+                else
+                {
+                    _scrollInfo.SetHorizontalOffset(finiteEnd);
+                    _horizontalOffset = _scrollInfo.HorizontalOffset;
+                }
+            }
+            finally
+            {
+                _isApplyingEndAnchor = false;
+            }
+            if (isVertical)
+            {
+                TraceVerticalState("anchor-maintain-commit");
+            }
+        }
+
+        if (allowCompletion &&
+            !rangeChanged &&
+            !interactionActive &&
+            ContentElement is { IsMeasureValid: true })
+        {
+            ClearEndAnchor(isVertical);
+        }
+    }
+
+    private bool IsEndAnchorInteractionActive(bool isVertical)
+    {
+        if (_isDeferredScrolling)
+            return true;
+
+        return isVertical
+            ? _verticalScrollBar.IsThumbDragging || _isDraggingVerticalThumb || _hasPendingDragVerticalScroll
+            : _horizontalScrollBar.IsThumbDragging || _hasPendingDragHorizontalScroll;
     }
 
     private void ApplyScrollOffset(bool isVertical, double value)
@@ -3314,17 +4485,19 @@ public partial class ScrollViewer : ContentControl
     // one-realize-per-frame guarantee. The thumb visual still tracks the cursor on every move
     // (ScrollBar.Value is set per DragDelta); only the expensive content realize is throttled.
 
-    private void ScheduleCoalescedDragScroll(bool isVertical, double value)
+    private void ScheduleCoalescedDragScroll(bool isVertical, double value, bool anchorsEnd = false)
     {
         if (isVertical)
         {
             _pendingDragVerticalOffset = value;
             _hasPendingDragVerticalScroll = true;
+            _pendingDragVerticalEndAnchor = anchorsEnd;
         }
         else
         {
             _pendingDragHorizontalOffset = value;
             _hasPendingDragHorizontalScroll = true;
+            _pendingDragHorizontalEndAnchor = anchorsEnd;
         }
 
         if (_dragScrollCoalesceTimer == null)
@@ -3355,14 +4528,30 @@ public partial class ScrollViewer : ContentControl
         if (_hasPendingDragVerticalScroll)
         {
             _hasPendingDragVerticalScroll = false;
-            ScrollToVerticalOffset(_pendingDragVerticalOffset);
+            if (_pendingDragVerticalEndAnchor)
+            {
+                ApplyEndAnchorOffset(isVertical: true);
+            }
+            else
+            {
+                ScrollToVerticalOffset(_pendingDragVerticalOffset);
+            }
+            _pendingDragVerticalEndAnchor = false;
             applied = true;
         }
 
         if (_hasPendingDragHorizontalScroll)
         {
             _hasPendingDragHorizontalScroll = false;
-            ScrollToHorizontalOffset(_pendingDragHorizontalOffset);
+            if (_pendingDragHorizontalEndAnchor)
+            {
+                ApplyEndAnchorOffset(isVertical: false);
+            }
+            else
+            {
+                ScrollToHorizontalOffset(_pendingDragHorizontalOffset);
+            }
+            _pendingDragHorizontalEndAnchor = false;
             applied = true;
         }
 
@@ -3373,6 +4562,8 @@ public partial class ScrollViewer : ContentControl
     {
         _hasPendingDragVerticalScroll = false;
         _hasPendingDragHorizontalScroll = false;
+        _pendingDragVerticalEndAnchor = false;
+        _pendingDragHorizontalEndAnchor = false;
         _dragScrollCoalesceTimer?.Stop();
     }
 
@@ -3384,9 +4575,13 @@ public partial class ScrollViewer : ContentControl
     /// layout — and every flip invalidated the whole ancestor chain.
     /// </summary>
     private ScrollBarVisibility EffectiveScrollBarMode(ScrollBarVisibility mode, bool shown)
-        => _hasCommittedScrollBarVisibility && mode == ScrollBarVisibility.Auto
+    {
+        if (CssScrollBarWidth == CssScrollBarWidthMode.None)
+            return ScrollBarVisibility.Hidden;
+        return _hasCommittedScrollBarVisibility && mode == ScrollBarVisibility.Auto
             ? (shown ? ScrollBarVisibility.Visible : ScrollBarVisibility.Hidden)
             : mode;
+    }
 
     private void UpdateScrollBarMetrics()
     {
@@ -3423,6 +4618,7 @@ public partial class ScrollViewer : ContentControl
 
         ApplyScrollBarAutoHideVisualState();
         UpdateScrollMetricDependencyProperties();
+        TraceVerticalState("scrollbar-metrics");
     }
 
     private void SyncExtentFromScrollInfo()
@@ -3450,14 +4646,19 @@ public partial class ScrollViewer : ContentControl
         var oldVertical = _verticalOffset;
         var oldExtentWidth = _extentWidth;
         var oldExtentHeight = _extentHeight;
+        TraceVerticalState("invalidate-scroll-info-enter");
 
         _horizontalOffset = _scrollInfo.HorizontalOffset;
         _verticalOffset = _scrollInfo.VerticalOffset;
         SyncExtentFromScrollInfo();
+        MaintainEndAnchors(allowCompletion: false);
         if (!_isDeferredScrolling)
         {
             UpdateRequestedOffsetsFromContent();
         }
+        TraceVerticalState(
+            "invalidate-scroll-info-sync",
+            $"oldOffset={oldVertical:R} oldExtent={oldExtentHeight:R}");
 
         if (oldHorizontal != _horizontalOffset || oldVertical != _verticalOffset ||
             oldExtentWidth != _extentWidth || oldExtentHeight != _extentHeight)
@@ -3612,15 +4813,24 @@ public partial class ScrollViewer : ContentControl
         _isApplyingSmoothScrollStep = true;
         try
         {
-            ScrollToVerticalOffset(_smoothTargetY);
-            ScrollToHorizontalOffset(_smoothTargetX);
+            RunRelativeScroll(() =>
+            {
+                ScrollToVerticalOffset(_smoothTargetY);
+                ScrollToHorizontalOffset(_smoothTargetX);
+            });
         }
         finally
         {
             _isApplyingSmoothScrollStep = false;
         }
 
+        var anchorVerticalEnd = _smoothVerticalEndAnchorPending && IsAtScrollEnd(isVertical: true);
+        var anchorHorizontalEnd = _smoothHorizontalEndAnchorPending && IsAtScrollEnd(isVertical: false);
         StopSmoothScroll();
+        if (anchorVerticalEnd)
+            ApplyEndAnchorOffset(isVertical: true);
+        if (anchorHorizontalEnd)
+            ApplyEndAnchorOffset(isVertical: false);
     }
 
     private double ComputeSmoothAlpha(double dtSeconds)
@@ -3764,6 +4974,7 @@ public partial class ScrollViewer : ContentControl
         scrollViewer._hasInitializedOverlayAutoHide = false;
         scrollViewer._verticalScrollBar.IsOverlayStyle = enabled;
         scrollViewer._horizontalScrollBar.IsOverlayStyle = enabled;
+        scrollViewer.UpdateCssScrollBarMinimums();
 
         if (enabled)
         {
@@ -3778,6 +4989,167 @@ public partial class ScrollViewer : ContentControl
         scrollViewer.InvalidateMeasure();
         scrollViewer.InvalidateArrange();
         scrollViewer.ApplyScrollBarAutoHideVisualState();
+    }
+
+    private static void OnCssScrollBarWidthChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is ScrollViewer viewer)
+            viewer.RefreshCssScrollBarWidth();
+        if (d is Window window)
+            RefreshViewportScrollBarStyle(window, CssScrollBarWidthProperty);
+        if (d is Visual visual)
+            RefreshTemplateScrollBarWidths(visual, d);
+    }
+
+    private static void OnCssScrollBarGutterChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is ScrollViewer viewer)
+            viewer.RefreshCssScrollBarGutter();
+        if (d is Window window)
+            RefreshViewportScrollBarStyle(window, CssScrollBarGutterProperty);
+        if (d is Visual visual)
+            RefreshTemplateScrollBarGutters(visual, d);
+    }
+
+    private static void RefreshTemplateScrollBarGutters(Visual visual, DependencyObject owner)
+    {
+        var childCount = VisualTreeHelper.GetChildrenCount(visual);
+        for (var index = 0; index < childCount; index++)
+        {
+            if (VisualTreeHelper.GetChild(visual, index) is not Visual child)
+                continue;
+            if (child is ScrollViewer viewer &&
+                ReferenceEquals(viewer.TemplatedParent, owner) &&
+                viewer.GetEffectiveValueLayer(CssScrollBarGutterProperty) is null)
+                viewer.RefreshCssScrollBarGutter();
+            RefreshTemplateScrollBarGutters(child, owner);
+        }
+    }
+
+    private void RefreshCssScrollBarGutter()
+    {
+        _cssGutterContentClipCache = null;
+        InvalidateMeasure();
+        InvalidateArrange();
+        InvalidateVisual();
+    }
+
+    private static void RefreshTemplateScrollBarWidths(Visual visual, DependencyObject owner)
+    {
+        var childCount = VisualTreeHelper.GetChildrenCount(visual);
+        for (var index = 0; index < childCount; index++)
+        {
+            if (VisualTreeHelper.GetChild(visual, index) is not Visual child)
+                continue;
+            if (child is ScrollViewer viewer &&
+                ReferenceEquals(viewer.TemplatedParent, owner) &&
+                viewer.GetEffectiveValueLayer(CssScrollBarWidthProperty) is null)
+                viewer.RefreshCssScrollBarWidth();
+            RefreshTemplateScrollBarWidths(child, owner);
+        }
+    }
+
+    private void RefreshCssScrollBarWidth()
+    {
+        // This changes the bars' presentation, not either axis's ability to scroll.
+        UpdateCssScrollBarMinimums();
+        InvalidateMeasure();
+        InvalidateArrange();
+        UpdateScrollMetricDependencyProperties();
+    }
+
+    internal override void OnEffectiveValueSourceChanged(DependencyProperty property)
+    {
+        base.OnEffectiveValueSourceChanged(property);
+        if (property == CssScrollBarWidthProperty)
+            RefreshCssScrollBarWidth();
+        if (property == CssScrollBarGutterProperty)
+            RefreshCssScrollBarGutter();
+    }
+
+    /// <inheritdoc />
+    protected override void OnTemplatedParentChanged(FrameworkElement? oldParent,
+        FrameworkElement? newParent)
+    {
+        base.OnTemplatedParentChanged(oldParent, newParent);
+        RefreshCssScrollBarWidth();
+        RefreshCssScrollBarGutter();
+        RefreshCssScrollBarColors();
+    }
+
+    private static void OnCssScrollBarColorsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Visual visual)
+            RefreshCssScrollBarColorsInSubtree(visual);
+    }
+
+    private static void RefreshCssScrollBarColorsInSubtree(Visual visual)
+    {
+        if (visual is ScrollViewer viewer)
+            viewer.RefreshCssScrollBarColors();
+        var childCount = VisualTreeHelper.GetChildrenCount(visual);
+        for (var index = 0; index < childCount; index++)
+            if (VisualTreeHelper.GetChild(visual, index) is Visual child)
+                RefreshCssScrollBarColorsInSubtree(child);
+    }
+
+    private void RefreshCssScrollBarColors()
+    {
+        var colors = GetPaintedScrollBarColors();
+        _verticalScrollBar.SetOwnerCssColors(colors);
+        _horizontalScrollBar.SetOwnerCssColors(colors);
+    }
+
+    internal static void RefreshViewportScrollBarStyle(Window window, DependencyProperty property)
+    {
+        var viewer = window.Content switch
+        {
+            ScrollViewer direct when ReferenceEquals(direct.VisualParent, window) => direct,
+            Control owner when IsViewportTemplateOwner(owner) &&
+                               ReferenceEquals(owner.VisualParent, window) =>
+                FindTemplateViewportViewer(owner, owner),
+            _ => null,
+        };
+        if (viewer is null)
+            return;
+
+        if (property == CssScrollBarWidthProperty)
+            viewer.RefreshCssScrollBarWidth();
+        else if (property == CssScrollBarGutterProperty)
+            viewer.RefreshCssScrollBarGutter();
+        else if (property == CssScrollBarColorsProperty)
+            viewer.RefreshCssScrollBarColors();
+    }
+
+    internal static void RefreshTemplateViewportStyle(Control owner)
+    {
+        if (!IsViewportTemplateOwner(owner))
+            return;
+        if (FindTemplateViewportViewer(owner, owner) is not { } viewer)
+            return;
+        viewer.RefreshCssScrollBarWidth();
+        viewer.RefreshCssScrollBarGutter();
+        viewer.RefreshCssScrollBarColors();
+    }
+
+    private static bool IsViewportTemplateOwner(Control owner)
+        => owner is ListBox or DataGrid or TreeDataGrid or TreeView or Markdown or Terminal;
+
+    private static ScrollViewer? FindTemplateViewportViewer(Visual visual, Control owner)
+    {
+        if (visual is ScrollViewer viewer &&
+            ReferenceEquals(viewer.TemplatedParent, owner) &&
+            IsViewportTemplateViewer(viewer, owner))
+            return viewer;
+
+        var childCount = VisualTreeHelper.GetChildrenCount(visual);
+        for (var index = 0; index < childCount; index++)
+        {
+            if (VisualTreeHelper.GetChild(visual, index) is Visual child &&
+                FindTemplateViewportViewer(child, owner) is { } match)
+                return match;
+        }
+        return null;
     }
 
     internal static double ComputeMouseWheelDelta(int wheelDelta, double lineStep, double pageStep)
@@ -4220,14 +5592,15 @@ public partial class ScrollViewer : ContentControl
         // Report what the bars actually do, not a third independent derivation of it.
         // Before layout has committed a decision there is nothing to report yet, so
         // fall back to the scrollability test.
+        var hiddenByCss = CssScrollBarWidth == CssScrollBarWidthMode.None;
         SetValue(
             ComputedHorizontalScrollBarVisibilityPropertyKey,
-            GetComputedScrollBarVisibility(
+            hiddenByCss ? Visibility.Collapsed : GetComputedScrollBarVisibility(
                 HorizontalScrollBarVisibility,
                 _hasCommittedScrollBarVisibility ? _horizontalScrollBarShown : CanScrollHorizontally));
         SetValue(
             ComputedVerticalScrollBarVisibilityPropertyKey,
-            GetComputedScrollBarVisibility(
+            hiddenByCss ? Visibility.Collapsed : GetComputedScrollBarVisibility(
                 VerticalScrollBarVisibility,
                 _hasCommittedScrollBarVisibility ? _verticalScrollBarShown : CanScrollVertically));
     }
@@ -4435,6 +5808,47 @@ public enum FillViewportMode
 
     /// <summary>The content is measured with the viewport on both axes.</summary>
     Both,
+}
+
+internal enum CssScrollBarWidthMode
+{
+    Auto,
+    Thin,
+    None,
+}
+
+internal enum CssScrollBarGutterMode
+{
+    Auto,
+    Stable,
+    StableBothEdges,
+}
+
+internal sealed class CssScrollBarColors
+{
+    internal CssScrollBarColors(Color thumb, Color track)
+        : this(CssColorParser.CssColorData.Srgb(thumb),
+            CssColorParser.CssColorData.Srgb(track)) { }
+
+    internal CssScrollBarColors(CssColorParser.CssColorData thumb,
+        CssColorParser.CssColorData track)
+    {
+        ThumbData = thumb;
+        TrackData = track;
+        Thumb = thumb.Rendered;
+        Track = track.Rendered;
+        ThumbBrush = new SolidColorBrush(Thumb);
+        TrackBrush = new SolidColorBrush(Track);
+        if (ThumbBrush.CanFreeze) ThumbBrush.Freeze();
+        if (TrackBrush.CanFreeze) TrackBrush.Freeze();
+    }
+
+    internal Color Thumb { get; }
+    internal Color Track { get; }
+    internal CssColorParser.CssColorData ThumbData { get; }
+    internal CssColorParser.CssColorData TrackData { get; }
+    internal SolidColorBrush ThumbBrush { get; }
+    internal SolidColorBrush TrackBrush { get; }
 }
 
 /// <summary>

@@ -6,6 +6,7 @@
 #include "d3d12_shader_bytecode.h"  // kcolor_matrix_ps / kemboss_ps (D6 effects)
 #include "jalium_text_stats.h"
 #include "jalium_flatten.h"  // PreferAnalyticFill / PathCommandExtent / TransformedExtent
+#include "jalium_path_clip.h"
 #include <d3dcompiler.h>   // D3DCompile — runtime HLSL→DXBC for DrawShaderEffectFromSource
 #pragma comment(lib, "d3dcompiler.lib")
 #include <cstring>
@@ -14,10 +15,122 @@
 #include <cstdio>
 #include <cstdlib>   // _wdupenv_s / _wtoi / free —— JALIUM_SWAPCHAIN_BUFFERS 解析
 #include <limits>
+#include <bit>
 
 namespace jalium {
 
 namespace {
+
+bool VelloUiGeometryFastPathEnabled()
+{
+    static const bool enabled = [] {
+        char value[16] = {};
+        size_t length = 0;
+        if (getenv_s(&length, value, sizeof(value),
+                     "JALIUM_VELLO_UI_GEOMETRY_FASTPATH") != 0 || length == 0) {
+            return false;
+        }
+        return value[0] != '0';
+    }();
+    return enabled;
+}
+
+bool GpuSelectionTraceEnabled()
+{
+    wchar_t value[16] = {};
+    DWORD length = GetEnvironmentVariableW(
+        L"JALIUM_GPU_SELECTION_TRACE", value, static_cast<DWORD>(std::size(value)));
+    if (length == 0 || length >= std::size(value)) return false;
+    return _wcsicmp(value, L"1") == 0 ||
+           _wcsicmp(value, L"true") == 0 ||
+           _wcsicmp(value, L"yes") == 0 ||
+           _wcsicmp(value, L"on") == 0;
+}
+
+bool IsSoftwareDisplayAdapter(const DXGI_ADAPTER_DESC1& desc)
+{
+    return (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ||
+           (desc.VendorId == 0x1414 && desc.DedicatedVideoMemory == 0);
+}
+
+bool TryGetDisplayConfigSourceLuid(HWND hwnd, LUID& adapterLuid)
+{
+    if (!hwnd) return false;
+
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!monitor) return false;
+
+    MONITORINFOEXW monitorInfo = {};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (!GetMonitorInfoW(monitor, &monitorInfo)) return false;
+
+    // QueryDisplayConfig reads the system's active display paths rather than
+    // the process-specific DXGI adapter view. NativeAOT executables export the
+    // AMD/NVIDIA hybrid preference hints; on affected systems those hints can
+    // make EnumOutputs claim that a Basic-routed monitor belongs to AMD even
+    // though DWM still presents it through Microsoft Basic.
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        UINT32 pathCount = 0;
+        UINT32 modeCount = 0;
+        if (GetDisplayConfigBufferSizes(
+                QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS ||
+            pathCount == 0) {
+            return false;
+        }
+
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+        LONG result = QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &pathCount,
+            paths.data(),
+            &modeCount,
+            modes.data(),
+            nullptr);
+        if (result == ERROR_INSUFFICIENT_BUFFER) continue;
+        if (result != ERROR_SUCCESS) return false;
+
+        paths.resize(pathCount);
+        for (const auto& path : paths) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName = {};
+            sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sourceName.header.size = sizeof(sourceName);
+            sourceName.header.adapterId = path.sourceInfo.adapterId;
+            sourceName.header.id = path.sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&sourceName.header) != ERROR_SUCCESS) {
+                continue;
+            }
+
+            if (_wcsicmp(
+                    sourceName.viewGdiDeviceName,
+                    monitorInfo.szDevice) == 0) {
+                adapterLuid = path.sourceInfo.adapterId;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    return false;
+}
+
+bool TryGetAdapterDescByLuid(
+    IDXGIFactory2* factory,
+    const LUID& adapterLuid,
+    DXGI_ADAPTER_DESC1& desc)
+{
+    if (!factory) return false;
+    ComPtr<IDXGIFactory4> factory4;
+    if (FAILED(factory->QueryInterface(IID_PPV_ARGS(&factory4)))) return false;
+    ComPtr<IDXGIAdapter1> adapter;
+    if (FAILED(factory4->EnumAdapterByLuid(adapterLuid, IID_PPV_ARGS(&adapter)))) {
+        return false;
+    }
+    return SUCCEEDED(adapter->GetDesc1(&desc));
+}
+
+constexpr float kVelloUiGeometryMaxExtentPx = 160.0f;
 
 DWORD GetFrameLatencyWaitTimeoutMs(HWND hwnd)
 {
@@ -139,6 +252,12 @@ D3D12RenderTarget::~D3D12RenderTarget() {
         isDrawing_ = false;
     }
     WaitForAllFrames();
+    // Commit the removal before releasing the composition objects. The host
+    // HWND may immediately return to GDI/Software rendering, so its last GPU
+    // visual must not continue covering the redirection surface.
+    if (dcompTarget_) dcompTarget_->SetRoot(nullptr);
+    if (dcompSwapChainVisual_) dcompSwapChainVisual_->SetContent(nullptr);
+    if (dcompDevice_) dcompDevice_->Commit();
     directRenderer_.reset();
     if (fenceEvent_) { CloseHandle(fenceEvent_); fenceEvent_ = nullptr; }
     if (frameLatencyWaitable_) { CloseHandle(frameLatencyWaitable_); frameLatencyWaitable_ = nullptr; }
@@ -273,6 +392,7 @@ JaliumResult D3D12RenderTarget::QueryGpuStats(JaliumGpuStats* out) const {
     // wait/work numbers below explain how close we are to that ceiling.
     out->swapBufferCount = static_cast<int32_t>(swapBufferCount_);
     if (directRenderer_) {
+        out->reserved0                 = static_cast<int32_t>(directRenderer_->GetVelloDispatchCount());
         out->frameGpuWaitNs            = static_cast<int64_t>(directRenderer_->GetLastFrameGpuWaitNs());
         out->lastFramePresentToReadyNs = static_cast<int64_t>(directRenderer_->GetLastFramePresentToReadyNs());
         out->presentBlockNs            = static_cast<int64_t>(directRenderer_->GetLastFramePresentBlockNs());
@@ -288,6 +408,10 @@ JaliumResult D3D12RenderTarget::QueryGpuTiming(JaliumGpuTimingStats* out) const
     *out = JaliumGpuTimingStats{};
     if (!directRenderer_) return JALIUM_ERROR_NOT_SUPPORTED;
 
+    // Diagnostics opt in on first query. Resource creation occurs at the next
+    // BeginFrame on the render thread, so this read API remains safe when called
+    // from the UI thread after presenting a frame.
+    directRenderer_->RequestGpuTiming();
     auto snap = directRenderer_->GetGpuTimingSnapshot();
     if (!snap.valid) {
         // First frame after init, or backend can't initialise the query heap.
@@ -311,9 +435,14 @@ JaliumResult D3D12RenderTarget::QueryGpuTiming(JaliumGpuTimingStats* out) const
     return JALIUM_OK;
 }
 
+JaliumResult D3D12RenderTarget::WaitForCompletion()
+{
+    WaitForAllFrames();
+    return JALIUM_OK;
+}
+
 JaliumResult D3D12RenderTarget::ReclaimIdleResources() {
-    // Glyph atlas: the only persistent GPU cache the D3D12 backend keeps
-    // across frames. Mid-frame Reset() would shift the UV coordinates of
+    // Mid-frame glyph-atlas Reset() would shift the UV coordinates of
     // every glyph already emitted earlier in the current frame
     // (see project_d3d12_glyph_atlas_no_midframe_reset memory entry), so we
     // cannot just call atlas->Reset() here. Instead we set the atlas's
@@ -322,10 +451,11 @@ JaliumResult D3D12RenderTarget::ReclaimIdleResources() {
     // which honors the flag and recreates the atlas exactly once on the
     // safe boundary. Lazily rebuilt as text re-renders.
     //
-    // Other D3D12 caches (bitmap-batch textures, instance buffers, blur
-    // temps, snapshot RTs) either reset every frame or are ComPtr-managed
-    // scratch resources that don't benefit from explicit eviction.
+    // Completed upload staging can be freed without another present. Vello's
+    // working storage and output pool are discarded after two quiet seconds,
+    // once the renderer has observed every submitted frame's fence.
     if (directRenderer_) {
+        directRenderer_->ReclaimIdleResources();
         if (auto* atlas = directRenderer_->GetGlyphAtlas()) {
             atlas->RequestResetAtFrameBoundary();
         }
@@ -344,12 +474,61 @@ bool D3D12RenderTarget::EnsureImpellerEngine() {
     if (!backend_ || !backend_->GetDevice()) return false;
 
     DXGI_FORMAT fmt = directRenderer_ ? directRenderer_->GetSwapChainFormat() : DXGI_FORMAT_R8G8B8A8_UNORM;
-    impellerEngine_ = std::make_unique<ImpellerD3D12Engine>(backend_->GetDevice(), fmt);
-    return impellerEngine_->Initialize();
+    auto engine = std::make_unique<ImpellerD3D12Engine>(backend_->GetDevice(), fmt);
+    if (!engine->InitializeEncoder()) return false;
+    impellerEngine_ = std::move(engine);
+    return true;
+}
+
+bool D3D12RenderTarget::EnsureImpellerFrame() {
+    if (!EnsureImpellerEngine()) return false;
+    if (!impellerFrameBegun_) {
+        impellerEngine_->BeginFrame(static_cast<uint32_t>(width_),
+                                    static_cast<uint32_t>(height_));
+        impellerFrameBegun_ = true;
+        // The engine may have been created after this frame's deferred state
+        // was committed, so seed both clip mirrors from DirectRenderer now.
+        SyncScissorToImpeller();
+    }
+    return true;
+}
+
+bool D3D12RenderTarget::IsVelloUiGeometryFastPathEligible(
+    float minX, float minY, float maxX, float maxY, float inflate) const
+{
+    if (IsImpellerActive() || !VelloUiGeometryFastPathEnabled() || !directRenderer_ ||
+        !(minX <= maxX) || !(minY <= maxY)) {
+        return false;
+    }
+
+    auto t = directRenderer_->GetCurrentTransform();
+    const float s = directRenderer_->GetDpiScale();
+    float devW = 0.0f, devH = 0.0f;
+    TransformedExtent(minX - inflate, minY - inflate,
+                      maxX + inflate, maxY + inflate,
+                      t.m11 * s, t.m12 * s, t.m21 * s, t.m22 * s,
+                      t.dx * s, t.dy * s, devW, devH);
+    return std::isfinite(devW) && std::isfinite(devH) &&
+           devW <= kVelloUiGeometryMaxExtentPx &&
+           devH <= kVelloUiGeometryMaxExtentPx;
+}
+
+void D3D12RenderTarget::FlushVelloBeforeHybridGeometry(
+    float minX, float minY, float maxX, float maxY, float inflate)
+{
+    if (!directRenderer_ || !directRenderer_->HasVelloPaths()) return;
+    const float x = minX - inflate;
+    const float y = minY - inflate;
+    const float w = (maxX - minX) + inflate * 2.0f;
+    const float h = (maxY - minY) + inflate * 2.0f;
+    if (directRenderer_->VelloPendingHitsDipRect(x, y, w, h)) {
+        directRenderer_->FlushVelloPaths();
+    }
 }
 
 void D3D12RenderTarget::SyncScissorToImpeller() {
     if (!impellerEngine_) return;
+    impellerEngine_->SetEllipticalClips(directRenderer_ ? directRenderer_->ResolveCurrentEllipticalClips() : EllipticalClipSnapshot{});
     if (directRenderer_ && directRenderer_->HasScissor()) {
         auto s = directRenderer_->GetCurrentScissor();
         impellerEngine_->SetScissorRect(
@@ -379,6 +558,44 @@ bool D3D12RenderTarget::CreateSwapChain() {
     auto factory = backend_->GetDXGIFactory();
     auto commandQueue = backend_->GetCommandQueue();
     if (!factory || !commandQueue) return false;
+
+    softwareDisplayRoute_ = false;
+    const bool traceGpuSelection = GpuSelectionTraceEnabled();
+    if (traceGpuSelection) {
+        fwprintf(stderr, L"[Jalium.D3D12] target-kind=%ls hwnd=0x%p\n",
+            isComposition_ ? L"composition" : L"hwnd", hwnd_);
+        fflush(stderr);
+    }
+
+    LUID displayConfigLuid = {};
+    if (TryGetDisplayConfigSourceLuid(hwnd_, displayConfigLuid)) {
+        DXGI_ADAPTER_DESC1 displayConfigDesc = {};
+        bool resolvedDisplayConfigAdapter = TryGetAdapterDescByLuid(
+            factory, displayConfigLuid, displayConfigDesc);
+        bool softwareDisplay = resolvedDisplayConfigAdapter &&
+            IsSoftwareDisplayAdapter(displayConfigDesc);
+        softwareDisplayRoute_ = softwareDisplayRoute_ || softwareDisplay;
+        if (traceGpuSelection) {
+            if (resolvedDisplayConfigAdapter) {
+                fwprintf(stderr,
+                    L"[Jalium.D3D12] display-config-route=\"%ls\" "
+                    L"luid=%08X:%08X vendor=0x%04X dedicated=%llu flags=0x%X software=%d\n",
+                    displayConfigDesc.Description,
+                    static_cast<unsigned int>(displayConfigLuid.HighPart),
+                    displayConfigLuid.LowPart,
+                    displayConfigDesc.VendorId,
+                    static_cast<unsigned long long>(displayConfigDesc.DedicatedVideoMemory),
+                    displayConfigDesc.Flags,
+                    softwareDisplay ? 1 : 0);
+            } else {
+                fwprintf(stderr,
+                    L"[Jalium.D3D12] display-config-route luid=%08X:%08X unresolved\n",
+                    static_cast<unsigned int>(displayConfigLuid.HighPart),
+                    displayConfigLuid.LowPart);
+            }
+            fflush(stderr);
+        }
+    }
 
     // 解析后台缓冲数：默认 kDefaultSwapBufferCount(2)，JALIUM_SWAPCHAIN_BUFFERS
     // 可覆盖并钳到 [2, FrameCount]。只在创建期定一次，后续 Resize 沿用。
@@ -566,10 +783,20 @@ bool D3D12RenderTarget::CreateSwapChain() {
                     DXGI_OUTPUT_DESC od{};
                     if (FAILED(o->GetDesc(&od)) || od.Monitor != mon) continue;
                     // This is the adapter that drives the window's monitor.
-                    const bool softwareDisplay =
-                        (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ||
-                        (d.VendorId == 0x1414 && d.DedicatedVideoMemory == 0);
+                    const bool softwareDisplay = IsSoftwareDisplayAdapter(d);
+                    if (traceGpuSelection) {
+                        fwprintf(stderr,
+                            L"[Jalium.D3D12] display-route-candidate=\"%ls\" "
+                            L"vendor=0x%04X dedicated=%llu flags=0x%X software=%d\n",
+                            d.Description,
+                            d.VendorId,
+                            static_cast<unsigned long long>(d.DedicatedVideoMemory),
+                            d.Flags,
+                            softwareDisplay ? 1 : 0);
+                        fflush(stderr);
+                    }
                     if (softwareDisplay) {
+                        softwareDisplayRoute_ = true;
                         fwprintf(stderr,
                             L"[Jalium.D3D12] display-route=\"%ls\". DXGI reports this route "
                             L"separately from the selected render adapter; this can be transitional "
@@ -1100,6 +1327,7 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
 
     isDrawing_ = true;
     preGlassSnapshotCaptured_ = false;
+    impellerFrameBegun_ = false;
 
     // A render exception can abandon a managed Begin/End effect pair while the
     // window keeps this render target alive. DirectRenderer::BeginFrame resets
@@ -1113,11 +1341,11 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
     // a balanced push/pop sequence within each Begin/EndDraw scope.
     pendingStateOps_.clear();
 
-    // Initialize only the active path engine for this frame
-    if (IsImpellerActive()) {
-        if (EnsureImpellerEngine()) {
-            impellerEngine_->BeginFrame(static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
-        }
+    // Impeller owns the whole path stream when selected. In Vello mode it is
+    // also prepared when the UI-geometry hybrid is opted in; it remains idle
+    // unless a bounded icon/control path actually takes that route.
+    if (IsImpellerActive() || VelloUiGeometryFastPathEnabled()) {
+        EnsureImpellerFrame();
     }
     // Vello BeginFrame is handled inside DirectRenderer::BeginFrame
     // (skipped when velloEnabled_==false)
@@ -1150,8 +1378,14 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     // Flush the active path engine — only one runs at a time
     if (IsImpellerActive()) {
         FlushImpellerBatches();
-    } else if (directRenderer_->HasVelloPaths()) {
-        directRenderer_->FlushVelloPaths();
+    } else {
+        // Hybrid batches, when present, were emitted after the pending Vello
+        // scene. Keep that order at the final frame boundary. They can coexist
+        // only when their bounds are disjoint, but preserving order is free.
+        if (directRenderer_->HasVelloPaths()) {
+            directRenderer_->FlushVelloPaths();
+        }
+        FlushImpellerBatches();
     }
 
     // External pacing forces sync interval 0: the frame-latency waitable is
@@ -1554,6 +1788,59 @@ void D3D12RenderTarget::Clear(float r, float g, float b, float a) {
     }
 }
 
+extern uint64_t g_velloGateSkip;
+extern uint64_t g_velloGateHit;
+extern uint64_t g_velloGateUnbounded;
+extern uint64_t g_velloGateHitSite[8];
+extern uint64_t g_velloGateDumpBudget;
+extern uint64_t g_velloGateReroute;
+
+void D3D12RenderTarget::FlushVelloIfNeeded(float x, float y, float w, float h, int siteTag) {
+    if (!pendingStateOps_.empty()) {
+        CommitDeferredState();
+    }
+    if (IsImpellerActive()) {
+        if (impellerEngine_ && impellerEngine_->HasPendingWork()) {
+            FlushImpellerBatches();
+        }
+        return;
+    }
+    if (!directRenderer_) return;
+    const bool hasHybridBatches = impellerEngine_ && impellerEngine_->HasPendingWork();
+    if (!directRenderer_->HasVelloPaths()) {
+        if (hasHybridBatches) FlushImpellerBatches();
+        return;
+    }
+    // Painter-order gate: the pending Vello sub-scene only has to composite
+    // BEFORE this draw when the two can touch the same pixels. Icon-dense UIs
+    // interleave paths with rects/text hundreds of times per frame; without
+    // this gate every one of those draws cut a sub-scene and paid a full
+    // compute dispatch. Disjoint bounds -> order irrelevant -> keep
+    // accumulating into the same sub-scene.
+    if (!directRenderer_->VelloPendingHitsDipRect(x, y, w, h)) {
+        g_velloGateSkip++;
+    } else {
+        g_velloGateHit++;
+        g_velloGateHitSite[siteTag & 7]++;
+        if (VelloPerfLevel() >= 2) {
+            if (g_velloGateDumpBudget > 0) {
+                g_velloGateDumpBudget--;
+                float bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+                auto* vr = directRenderer_->GetVelloRenderer();
+                if (vr) vr->PendingDeviceBounds(bx0, by0, bx1, by1);
+                std::fprintf(stderr,
+                             "[GateHit] site=%d draw=(%.0f,%.0f %.0fx%.0f)dip pend=(%.0f,%.0f)-(%.0f,%.0f)px\n",
+                             siteTag, x, y, w, h, bx0, by0, bx1, by1);
+            }
+        }
+        // The pending Vello scene predates every still-pending hybrid batch.
+        directRenderer_->FlushVelloPaths();
+    }
+    // A direct draw cannot pass a prior hybrid path. Flushing here retains
+    // Impeller-style consecutive-path coalescing while preserving painter order.
+    if (hasHybridBatches) FlushImpellerBatches();
+}
+
 void D3D12RenderTarget::FlushVelloIfNeeded() {
     // First commit any deferred Push* — every real draw method calls this
     // hook, so it is the single right place to materialise queued state
@@ -1578,7 +1865,11 @@ void D3D12RenderTarget::FlushVelloIfNeeded() {
         }
         return;
     }
-    if (!directRenderer_ || !directRenderer_->HasVelloPaths()) return;
+    if (!directRenderer_) return;
+    const bool hasVelloPaths = directRenderer_->HasVelloPaths();
+    const bool hasHybridBatches = impellerEngine_ && impellerEngine_->HasPendingWork();
+    if (!hasVelloPaths && !hasHybridBatches) return;
+    if (hasVelloPaths) g_velloGateUnbounded++;
 
     // Vello accumulates all path encodes (FillPath / StrokePath) across the
     // whole frame and produces a single offscreen RT in Dispatch. Compositing
@@ -1614,7 +1905,8 @@ void D3D12RenderTarget::FlushVelloIfNeeded() {
     //   - DrainRetired moves all those ComPtrs onto FrameResources's
     //     retiredInstanceBuffers / retiredDescriptorHeaps, whose lifetime is
     //     gated by this slot's fence.
-    directRenderer_->FlushVelloPaths();
+    if (hasVelloPaths) directRenderer_->FlushVelloPaths();
+    if (hasHybridBatches) FlushImpellerBatches();
 }
 
 void D3D12RenderTarget::FlushImpellerBatches() {
@@ -1687,6 +1979,7 @@ void D3D12RenderTarget::FlushImpellerBatches() {
         } else {
             directRenderer_->SetForcedRoundedClipNone();
         }
+        directRenderer_->SetForcedEllipticalClips(batch.ellipticalClips);
 
         // Expand indexed vertices to flat triangle list, converting pixel→DIP.
         // resize(N) + indexed write is faster than reserve + N push_backs:
@@ -1717,9 +2010,188 @@ void D3D12RenderTarget::FlushImpellerBatches() {
     impellerEngine_->ClearBatches();
 }
 
+
+
+bool D3D12RenderTarget::TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx, float ry,
+                                                         Brush* brush, float strokeWidth, bool fill)
+{
+    if (IsImpellerActive() || !directRenderer_ || !brush) return false;
+    if (impellerEngine_ && impellerEngine_->HasPendingWork()) FlushImpellerBatches();
+    if (rx <= 0.0f || ry <= 0.0f || rx > 80.0f || ry > 80.0f) return false;
+    if (!pendingStateOps_.empty()) CommitDeferredState();
+    if (!directRenderer_->HasVelloPaths()) return false;
+    const float inflate = fill ? 0.0f : strokeWidth;
+    if (!directRenderer_->VelloPendingHitsDipRect(cx - rx - inflate, cy - ry - inflate,
+                                                  (rx + inflate) * 2.0f, (ry + inflate) * 2.0f)) {
+        return false;
+    }
+    auto* vello = directRenderer_->GetVelloRenderer();
+    if (!vello) return false;
+
+    const float k = 0.5522847498f;
+    float kx = rx * k, ky = ry * k;
+    float cmds[] = {
+        1.0f, cx + rx, cy + ky, cx + kx, cy + ry, cx,      cy + ry,
+        1.0f, cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy,
+        1.0f, cx - rx, cy - ky, cx - kx, cy - ry, cx,      cy - ry,
+        1.0f, cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy,
+        5.0f
+    };
+    directRenderer_->ApplyScissorToVello();
+    float opacity = directRenderer_->GetOpacity();
+    auto t = directRenderer_->GetCurrentTransform();
+    float s = directRenderer_->GetDpiScale();
+    float m11 = t.m11 * s, m12 = t.m12 * s, m21 = t.m21 * s, m22 = t.m22 * s;
+    float mdx = t.dx * s, mdy = t.dy * s;
+    bool ok;
+    if (fill) {
+        ok = vello->EncodeFillPathBrush(cx + rx, cy, cmds, (uint32_t)(sizeof(cmds) / sizeof(float)),
+                                        brush, 1u, opacity, m11, m12, m21, m22, mdx, mdy);
+    } else {
+        ok = vello->EncodeStrokePathBrush(cx + rx, cy, cmds, (uint32_t)(sizeof(cmds) / sizeof(float)),
+                                          brush, strokeWidth, true, 2, 4.0f, opacity,
+                                          0, nullptr, 0, 0.0f, m11, m12, m21, m22, mdx, mdy);
+    }
+    if (ok) g_velloGateReroute++;
+    return ok;
+}
+
+bool D3D12RenderTarget::TryEncodeRectIntoPendingVello(float x, float y, float w, float h,
+                                                      float rTL, float rTR, float rBR, float rBL,
+                                                      Brush* brush, float strokeWidth, bool fill)
+{
+    if (IsImpellerActive() || !directRenderer_ || !brush) return false;
+    if (impellerEngine_ && impellerEngine_->HasPendingWork()) FlushImpellerBatches();
+    if (w <= 0.0f || h <= 0.0f || w > 160.0f || h > 160.0f) return false;
+    if (!pendingStateOps_.empty()) CommitDeferredState();
+    if (!directRenderer_->HasVelloPaths()) return false;
+    const float inflate = fill ? 0.0f : strokeWidth;
+    if (!directRenderer_->VelloPendingHitsDipRect(x - inflate, y - inflate,
+                                                  w + inflate * 2.0f, h + inflate * 2.0f)) {
+        return false;
+    }
+    auto* vello = directRenderer_->GetVelloRenderer();
+    if (!vello) return false;
+
+    const float maxR = std::fmin(w, h) * 0.5f;
+    float tl = std::fmin(std::fmax(rTL, 0.0f), maxR);
+    float tr = std::fmin(std::fmax(rTR, 0.0f), maxR);
+    float br = std::fmin(std::fmax(rBR, 0.0f), maxR);
+    float bl = std::fmin(std::fmax(rBL, 0.0f), maxR);
+    const float k = 0.5522847498f;
+
+    float sx = x + tl, sy = y;
+    std::vector<float> cmds;
+    cmds.reserve(44);
+    cmds.push_back(0.0f); cmds.push_back(x + w - tr); cmds.push_back(y);
+    if (tr > 0.0f) {
+        float kk = tr * k;
+        cmds.push_back(1.0f);
+        cmds.push_back(x + w - tr + kk); cmds.push_back(y);
+        cmds.push_back(x + w); cmds.push_back(y + tr - kk);
+        cmds.push_back(x + w); cmds.push_back(y + tr);
+    }
+    cmds.push_back(0.0f); cmds.push_back(x + w); cmds.push_back(y + h - br);
+    if (br > 0.0f) {
+        float kk = br * k;
+        cmds.push_back(1.0f);
+        cmds.push_back(x + w); cmds.push_back(y + h - br + kk);
+        cmds.push_back(x + w - br + kk); cmds.push_back(y + h);
+        cmds.push_back(x + w - br); cmds.push_back(y + h);
+    }
+    cmds.push_back(0.0f); cmds.push_back(x + bl); cmds.push_back(y + h);
+    if (bl > 0.0f) {
+        float kk = bl * k;
+        cmds.push_back(1.0f);
+        cmds.push_back(x + bl - kk); cmds.push_back(y + h);
+        cmds.push_back(x); cmds.push_back(y + h - bl + kk);
+        cmds.push_back(x); cmds.push_back(y + h - bl);
+    }
+    cmds.push_back(0.0f); cmds.push_back(x); cmds.push_back(y + tl);
+    if (tl > 0.0f) {
+        float kk = tl * k;
+        cmds.push_back(1.0f);
+        cmds.push_back(x); cmds.push_back(y + tl - kk);
+        cmds.push_back(x + tl - kk); cmds.push_back(y);
+        cmds.push_back(x + tl); cmds.push_back(y);
+    }
+    cmds.push_back(5.0f);
+
+    directRenderer_->ApplyScissorToVello();
+    float opacity = directRenderer_->GetOpacity();
+    auto t = directRenderer_->GetCurrentTransform();
+    float s = directRenderer_->GetDpiScale();
+    float m11 = t.m11 * s, m12 = t.m12 * s, m21 = t.m21 * s, m22 = t.m22 * s;
+    float mdx = t.dx * s, mdy = t.dy * s;
+    bool ok;
+    if (fill) {
+        ok = vello->EncodeFillPathBrush(sx, sy, cmds.data(), (uint32_t)cmds.size(),
+                                        brush, 1u, opacity, m11, m12, m21, m22, mdx, mdy);
+    } else {
+        ok = vello->EncodeStrokePathBrush(sx, sy, cmds.data(), (uint32_t)cmds.size(),
+                                          brush, strokeWidth, true, 0, 4.0f, opacity,
+                                          0, nullptr, 0, 0.0f, m11, m12, m21, m22, mdx, mdy);
+    }
+    if (ok) g_velloGateReroute++;
+    return ok;
+}
+
+bool D3D12RenderTarget::TryEncodePolygonIntoPendingVello(const float* points, uint32_t pointCount,
+                                                         Brush* brush, float strokeWidth, bool closed,
+                                                         int32_t lineJoin, float miterLimit,
+                                                         bool fill, int32_t fillRule)
+{
+    if (IsImpellerActive() || !directRenderer_ || !brush || !points) return false;
+    if (impellerEngine_ && impellerEngine_->HasPendingWork()) FlushImpellerBatches();
+    if (fill ? (pointCount < 3) : (pointCount < 2)) return false;
+    if (!pendingStateOps_.empty()) CommitDeferredState();
+    float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
+    for (uint32_t pi = 0; pi + 1 < pointCount * 2; pi += 2) {
+        pminX = std::fmin(pminX, points[pi]);     pminY = std::fmin(pminY, points[pi + 1]);
+        pmaxX = std::fmax(pmaxX, points[pi]);     pmaxY = std::fmax(pmaxY, points[pi + 1]);
+    }
+    if (!(pminX <= pmaxX)) return false;
+    if (pmaxX - pminX > 160.0f || pmaxY - pminY > 160.0f) return false;
+    // This is also the primary quality route for small straight-line Path
+    // figures, not merely an overlap reroute. It must be allowed to OPEN a
+    // fresh Vello scene: otherwise the first/isolated icon in a frame falls
+    // through to binary CPU triangles and has exactly two output colours.
+    auto* vello = directRenderer_->GetVelloRenderer();
+    if (!vello) return false;
+
+    std::vector<float> cmds;
+    cmds.reserve((size_t)pointCount * 3 + 1);
+    for (uint32_t i = 1; i < pointCount; i++) {
+        cmds.push_back(0.0f);
+        cmds.push_back(points[i * 2]);
+        cmds.push_back(points[i * 2 + 1]);
+    }
+    if (fill || closed) cmds.push_back(5.0f);
+
+    directRenderer_->ApplyScissorToVello();
+    float opacity = directRenderer_->GetOpacity();
+    auto t = directRenderer_->GetCurrentTransform();
+    float s = directRenderer_->GetDpiScale();
+    float m11 = t.m11 * s, m12 = t.m12 * s, m21 = t.m21 * s, m22 = t.m22 * s;
+    float mdx = t.dx * s, mdy = t.dy * s;
+    bool ok;
+    if (fill) {
+        ok = vello->EncodeFillPathBrush(points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                                        brush, (uint32_t)fillRule, opacity,
+                                        m11, m12, m21, m22, mdx, mdy);
+    } else {
+        ok = vello->EncodeStrokePathBrush(points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                                          brush, strokeWidth, closed, lineJoin, miterLimit, opacity,
+                                          0, nullptr, 0, 0.0f, m11, m12, m21, m22, mdx, mdy);
+    }
+    if (ok) g_velloGateReroute++;
+    return ok;
+}
+
 void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, 0, 0, 0, 0, brush, 0.0f, true)) return;
+    FlushVelloIfNeeded(x, y, w, h, 0);
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
@@ -1734,7 +2206,8 @@ void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush*
 
 void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, 0, 0, 0, 0, brush, strokeWidth, false)) return;
+    FlushVelloIfNeeded(x - strokeWidth, y - strokeWidth, w + strokeWidth * 2.0f, h + strokeWidth * 2.0f, 0);
     if (TryDrawGradientStroke(
             x, y, w, h, 0.0f, 0.0f, 0.0f, 0.0f, brush, strokeWidth)) return;
     // Gradient outline → TRUE per-pixel gradient stroke via the engine (the SDF
@@ -1773,7 +2246,8 @@ void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush*
 
 void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, rx, rx, rx, rx, brush, 0.0f, true)) return;
+    FlushVelloIfNeeded(x, y, w, h, 0);
     SdfRectInstance inst = {};
     bool brushOk = FillBrushToInstance(brush, inst);
     if (brushOk) {
@@ -1786,7 +2260,8 @@ void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h,
 
 void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, rx, rx, rx, rx, brush, strokeWidth, false)) return;
+    FlushVelloIfNeeded(x - strokeWidth, y - strokeWidth, w + strokeWidth * 2.0f, h + strokeWidth * 2.0f, 0);
     if (TryDrawGradientStroke(
             x, y, w, h, rx, rx, rx, rx, brush, strokeWidth)) return;
 
@@ -1836,7 +2311,8 @@ void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h,
 void D3D12RenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, tl, tr, br, bl, brush, 0.0f, true)) return;
+    FlushVelloIfNeeded(x, y, w, h, 0);
 
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
@@ -1850,7 +2326,8 @@ void D3D12RenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w,
 void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeRectIntoPendingVello(x, y, w, h, tl, tr, br, bl, brush, strokeWidth, false)) return;
+    FlushVelloIfNeeded(x - strokeWidth, y - strokeWidth, w + strokeWidth * 2.0f, h + strokeWidth * 2.0f, 0);
     if (TryDrawGradientStroke(
             x, y, w, h, tl, tr, br, bl, brush, strokeWidth)) return;
 
@@ -1908,7 +2385,8 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
 
 void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeEllipseIntoPendingVello(cx, cy, rx, ry, brush, 0.0f, true)) return;
+    FlushVelloIfNeeded(cx - rx, cy - ry, rx * 2.0f, ry * 2.0f, 3);
 
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
@@ -1957,7 +2435,8 @@ void D3D12RenderTarget::FillEllipseBatch(const float* data, uint32_t count) {
 
 void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    if (TryEncodeEllipseIntoPendingVello(cx, cy, rx, ry, brush, strokeWidth, false)) return;
+    FlushVelloIfNeeded(cx - rx - strokeWidth, cy - ry - strokeWidth, (rx + strokeWidth) * 2.0f, (ry + strokeWidth) * 2.0f, 3);
     // Gradient ring → TRUE per-pixel gradient stroke via the engine (4 cubic
     // beziers approximating the ellipse). Solids fall through to the SDF ring.
     if (IsImpellerActive() && rx > 0.0f && ry > 0.0f &&
@@ -2006,7 +2485,7 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
 
 void D3D12RenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    FlushVelloIfNeeded(std::fmin(x1, x2) - strokeWidth, std::fmin(y1, y2) - strokeWidth, std::fabs(x2 - x1) + strokeWidth * 2.0f, std::fabs(y2 - y1) + strokeWidth * 2.0f, 4);
     // Gradient line → TRUE per-pixel gradient stroke via the engine (the 3-strip
     // AA path below is solid-only). Solids fall straight through; if the gradient
     // encode fails, ExtractStrokeColor degrades it to a representative solid.
@@ -2132,8 +2611,23 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
     // detour therefore only added a second code path, its own scissor/rounded-
     // clip caveat, and a full-screen MSAA resolve per path-mode exit.
 
-    // Impeller engine path
-    if (IsImpellerActive() && EnsureImpellerEngine()) {
+    float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
+    for (uint32_t pi = 0; pi < pointCount; pi++) {
+        pminX = std::fmin(pminX, points[pi * 2]);
+        pminY = std::fmin(pminY, points[pi * 2 + 1]);
+        pmaxX = std::fmax(pmaxX, points[pi * 2]);
+        pmaxY = std::fmax(pmaxY, points[pi * 2 + 1]);
+    }
+    const bool useVelloUiFastPath =
+        IsVelloUiGeometryFastPathEligible(pminX, pminY, pmaxX, pmaxY);
+
+    // Impeller engine path. Vello may borrow the same cached analytic coverage
+    // for bounded UI geometry so a tiny icon does not create its own compute
+    // sub-scene every time an overlapping text run follows it.
+    if ((IsImpellerActive() || useVelloUiFastPath) && EnsureImpellerFrame()) {
+        if (useVelloUiFastPath) {
+            FlushVelloBeforeHybridGeometry(pminX, pminY, pmaxX, pmaxY);
+        }
         auto t = directRenderer_->GetCurrentTransform();
         float dpiScale = directRenderer_->GetDpiScale();
         float opacity = directRenderer_->GetOpacity();
@@ -2173,8 +2667,15 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
         }
     }
 
-    // Route non-solid brushes (gradients) through Vello for GPU rendering
-    if (!IsImpellerActive() && brush->GetType() != JALIUM_BRUSH_SOLID) {
+    // Route every brush through Vello while that engine is active. Restricting
+    // this to gradients left solid, straight-line icon fills on the binary
+    // triangulation fallback whenever they were the first path in a scene.
+    if (!IsImpellerActive()) {
+        // A hybrid path recorded before this fallback must acquire its direct
+        // draw order before a later Vello scene starts accumulating.
+        if (impellerEngine_ && impellerEngine_->HasPendingWork()) {
+            FlushImpellerBatches();
+        }
         auto* vello = directRenderer_->GetVelloRenderer();
         if (vello) {
             directRenderer_->ApplyScissorToVello();
@@ -2200,7 +2701,17 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
         }
     }
 
-    FlushVelloIfNeeded();
+    if (TryEncodePolygonIntoPendingVello(points, pointCount, brush, 0.0f, true,
+                                         0, 4.0f, true, fillRule)) return;
+    {
+        const float ppad = 0.0f;
+        if (pminX <= pmaxX) {
+            FlushVelloIfNeeded(pminX - ppad, pminY - ppad,
+                               (pmaxX - pminX) + ppad * 2.0f, (pmaxY - pminY) + ppad * 2.0f, 2);
+        } else {
+            FlushVelloIfNeeded();
+        }
+    }
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
@@ -2241,8 +2752,22 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
 
     CommitDeferredState();
 
+    float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
+    for (uint32_t pi = 0; pi < pointCount; pi++) {
+        pminX = std::fmin(pminX, points[pi * 2]);
+        pminY = std::fmin(pminY, points[pi * 2 + 1]);
+        pmaxX = std::fmax(pmaxX, points[pi * 2]);
+        pmaxY = std::fmax(pmaxY, points[pi * 2 + 1]);
+    }
+    const float pathInflate = strokeWidth * std::max(1.0f, miterLimit);
+    const bool useVelloUiFastPath =
+        IsVelloUiGeometryFastPathEligible(pminX, pminY, pmaxX, pmaxY, pathInflate);
+
     // Impeller engine path: convert polygon to LineTo commands and stroke via Impeller
-    if (IsImpellerActive() && EnsureImpellerEngine()) {
+    if ((IsImpellerActive() || useVelloUiFastPath) && EnsureImpellerFrame()) {
+        if (useVelloUiFastPath) {
+            FlushVelloBeforeHybridGeometry(pminX, pminY, pmaxX, pmaxY, pathInflate);
+        }
         auto t = directRenderer_->GetCurrentTransform();
         float dpiScale = directRenderer_->GetDpiScale();
         float opacity = directRenderer_->GetOpacity();
@@ -2279,7 +2804,20 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
         }
     }
 
-    FlushVelloIfNeeded();
+    if (!IsImpellerActive() && impellerEngine_ && impellerEngine_->HasPendingWork()) {
+        FlushImpellerBatches();
+    }
+    if (TryEncodePolygonIntoPendingVello(points, pointCount, brush, strokeWidth, closed,
+                                         lineJoin, miterLimit, false, 0)) return;
+    {
+        const float ppad = strokeWidth;
+        if (pminX <= pmaxX) {
+            FlushVelloIfNeeded(pminX - ppad, pminY - ppad,
+                               (pmaxX - pminX) + ppad * 2.0f, (pmaxY - pminY) + ppad * 2.0f, 2);
+        } else {
+            FlushVelloIfNeeded();
+        }
+    }
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
@@ -2373,6 +2911,14 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
 
     CommitDeferredState();
 
+    float pathMinX = 0.0f, pathMinY = 0.0f, pathMaxX = 0.0f, pathMaxY = 0.0f;
+    const bool hasPathBounds = PathCommandExtent(
+        startX, startY, commands, commandLength,
+        pathMinX, pathMinY, pathMaxX, pathMaxY);
+    const bool useVelloUiFastPath = hasPathBounds &&
+        IsVelloUiGeometryFastPathEligible(
+            pathMinX, pathMinY, pathMaxX, pathMaxY);
+
     // ── Stencil-then-cover fast path (solid color brushes only).
     //
     // Mirrors docs/reference/pure_d3d12_path_renderer.h:
@@ -2401,13 +2947,11 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
     {
         bool smallEnoughForAnalytic = false;
         {
-            float lminX, lminY, lmaxX, lmaxY;
-            if (PathCommandExtent(startX, startY, commands, commandLength,
-                                  lminX, lminY, lmaxX, lmaxY)) {
+            if (hasPathBounds) {
                 auto t = directRenderer_->GetCurrentTransform();
                 const float s = directRenderer_->GetDpiScale();
                 float devW, devH;
-                TransformedExtent(lminX, lminY, lmaxX, lmaxY,
+                TransformedExtent(pathMinX, pathMinY, pathMaxX, pathMaxY,
                                   t.m11 * s, t.m12 * s, t.m21 * s, t.m22 * s,
                                   t.dx * s, t.dy * s, devW, devH);
                 smallEnoughForAnalytic = PreferAnalyticFill(devW, devH);
@@ -2420,6 +2964,10 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
                 auto geom = directRenderer_->GetOrBuildStencilPathGeometry(
                     startX, startY, commands, commandLength);
                 if (directRenderer_->AddStencilPath(geom, r, g, b, a, fillRule)) {
+                    if (VelloPerfLevel() >= 3 && g_velloGateDumpBudget > 0) {
+                        g_velloGateDumpBudget--;
+                        std::fprintf(stderr, "[FP] stencil at(%.0f,%.0f)%c", startX, startY, (char)10);
+                    }
                     return;
                 }
             }
@@ -2429,9 +2977,13 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
     }
 
     // Route based on active rendering engine
-    if (IsImpellerActive()) {
+    if (IsImpellerActive() || useVelloUiFastPath) {
         // Impeller engine: CPU tessellation + D3D12 rasterization
-        if (EnsureImpellerEngine()) {
+        if (EnsureImpellerFrame()) {
+            if (useVelloUiFastPath) {
+                FlushVelloBeforeHybridGeometry(
+                    pathMinX, pathMinY, pathMaxX, pathMaxY);
+            }
             auto t = directRenderer_->GetCurrentTransform();
             float dpiScale = directRenderer_->GetDpiScale();
             float opacity = directRenderer_->GetOpacity();
@@ -2454,7 +3006,11 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
             }
         }
         // Impeller encoding failed — fall through to CPU fallback
-    } else {
+    }
+    if (!IsImpellerActive()) {
+        if (impellerEngine_ && impellerEngine_->HasPendingWork()) {
+            FlushImpellerBatches();
+        }
         // Vello engine (default): GPU compute path renderer
         auto* vello = directRenderer_->GetVelloRenderer();
         if (vello) {
@@ -2467,9 +3023,16 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
             float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
             float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
             float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
-            if (vello->EncodeFillPathBrush(startX, startY, commands, commandLength,
+            bool fpOk = vello->EncodeFillPathBrush(startX, startY, commands, commandLength,
                     brush, (uint32_t)fillRule, opacity,
-                    vm11, vm12, vm21, vm22, vdx, vdy))
+                    vm11, vm12, vm21, vm22, vdx, vdy);
+            if (VelloPerfLevel() >= 3 && g_velloGateDumpBudget > 0) {
+                g_velloGateDumpBudget--;
+                std::fprintf(stderr, "[FP] vello %s brush=%d at(%.0f,%.0f) op=%.2f m=(%.2f,%.2f)+(%.0f,%.0f)%c",
+                             fpOk ? "ok" : "FAIL", (int)brush->GetType(), startX, startY,
+                             opacity, vm11, vm22, vdx, vdy, (char)10);
+            }
+            if (fpOk)
                 return;
             // Vello encoding failed (unsupported brush, degenerate path, etc.) — fall through to CPU
         }
@@ -2520,10 +3083,23 @@ void D3D12RenderTarget::StrokePath(float startX, float startY, const float* comm
 
     CommitDeferredState();
 
+    float pathMinX = 0.0f, pathMinY = 0.0f, pathMaxX = 0.0f, pathMaxY = 0.0f;
+    const bool hasPathBounds = PathCommandExtent(
+        startX, startY, commands, commandLength,
+        pathMinX, pathMinY, pathMaxX, pathMaxY);
+    const float pathInflate = strokeWidth * std::max(1.0f, miterLimit);
+    const bool useVelloUiFastPath = hasPathBounds &&
+        IsVelloUiGeometryFastPathEligible(
+            pathMinX, pathMinY, pathMaxX, pathMaxY, pathInflate);
+
     // Route based on active rendering engine
-    if (IsImpellerActive()) {
+    if (IsImpellerActive() || useVelloUiFastPath) {
         // Impeller engine: CPU stroke expansion + D3D12 rasterization
-        if (EnsureImpellerEngine()) {
+        if (EnsureImpellerFrame()) {
+            if (useVelloUiFastPath) {
+                FlushVelloBeforeHybridGeometry(
+                    pathMinX, pathMinY, pathMaxX, pathMaxY, pathInflate);
+            }
             auto t = directRenderer_->GetCurrentTransform();
             float dpiScale = directRenderer_->GetDpiScale();
             float opacity = directRenderer_->GetOpacity();
@@ -2550,7 +3126,11 @@ void D3D12RenderTarget::StrokePath(float startX, float startY, const float* comm
             }
         }
         // Impeller encoding failed — fall through to CPU
-    } else {
+    }
+    if (!IsImpellerActive()) {
+        if (impellerEngine_ && impellerEngine_->HasPendingWork()) {
+            FlushImpellerBatches();
+        }
         // Vello engine (default)
         auto* vello = directRenderer_->GetVelloRenderer();
         if (vello) {
@@ -2561,10 +3141,17 @@ void D3D12RenderTarget::StrokePath(float startX, float startY, const float* comm
             float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
             float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
             float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
-            if (vello->EncodeStrokePathBrush(startX, startY, commands, commandLength,
+            bool spOk = vello->EncodeStrokePathBrush(startX, startY, commands, commandLength,
                     brush, strokeWidth, closed, lineJoin, miterLimit, opacity,
                     lineCap, dashPattern, dashCount, dashOffset,
-                    vm11, vm12, vm21, vm22, vdx, vdy))
+                    vm11, vm12, vm21, vm22, vdx, vdy);
+            if (VelloPerfLevel() >= 3 && g_velloGateDumpBudget > 0) {
+                g_velloGateDumpBudget--;
+                std::fprintf(stderr, "[SP] vello %s brush=%d at(%.0f,%.0f) sw=%.2f cmds=%u%c",
+                             spOk ? "ok" : "FAIL", (int)brush->GetType(), startX, startY,
+                             strokeWidth, commandLength, (char)10);
+            }
+            if (spOk)
                 return;
             // Vello encoding failed — fall through to CPU
         }
@@ -2581,7 +3168,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
     Brush* fillBrush, Brush* strokeBrush, float strokeWidth)
 {
     if (!isDrawing_ || !directRenderer_) return;
-    FlushVelloIfNeeded();
+    FlushVelloIfNeeded(x, y, w, h, 0);
     // Fill with bottom corner radii
     if (fillBrush) {
         SdfRectInstance inst = {};
@@ -2618,7 +3205,6 @@ void D3D12RenderTarget::RenderText(
     Brush* brush)
 {
     if (!isDrawing_ || !directRenderer_ || !format || !text || textLength == 0) return;
-    FlushVelloIfNeeded();
     jalium::text_stats::AddDrawTextCall();
 
     auto* tf = static_cast<D3D12TextFormat*>(format);
@@ -2650,6 +3236,23 @@ void D3D12RenderTarget::RenderText(
     ComPtr<IDWriteTextLayout> layout;
     uint64_t layoutKey = 0;
     if (FAILED(tf->CreateLayout(text, textLength, w, h, &layout, &layoutKey))) return;
+
+    // Painter-order gate bounds: the LAYOUT box arrives as "practically
+    // unbounded" (10000 DIP) for auto-sized text, which would make every text
+    // run overlap every pending path on its row band. The DWrite metrics give
+    // the real ink extent (cached inside the layout object, which is itself
+    // cached by layoutKey).
+    {
+        float gx = x, gy = y, gw = w, gh = h;
+        DWRITE_TEXT_METRICS tm{};
+        if (SUCCEEDED(layout->GetMetrics(&tm))) {
+            gx = x + tm.left;
+            gy = y + tm.top;
+            gw = tm.widthIncludingTrailingWhitespace;
+            gh = tm.height;
+        }
+        FlushVelloIfNeeded(gx, gy, gw, gh, 1);
+    }
     // Resolve per-element TextOptions against the process-wide fallback chain
     // here at the boundary so AddText / GenerateGlyphs / RasterizeGlyph only
     // see concrete modes; the glyph atlas keys off the resolved AA mode so
@@ -2674,7 +3277,7 @@ void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, fl
 
 void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode) {
     if (!isDrawing_ || !directRenderer_ || !bitmap) return;
-    FlushVelloIfNeeded();
+    FlushVelloIfNeeded(x, y, w, h, 5);
 
     auto* d3d12Bmp = static_cast<D3D12Bitmap*>(bitmap);
     auto* cl = directRenderer_->GetCommandList();
@@ -2690,6 +3293,7 @@ void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, fl
     // ref hits zero while the just-recorded CopyTextureRegion is still
     // pending GPU execution — D3D12 ERROR #921.
     auto uploadBuffer = d3d12Bmp->GetCurrentUploadBuffer();
+    directRenderer_->KeepResourceAliveForFrame(d3d12Bmp->TakeStaticUploadBuffer());
     // AddBitmap multiplies currentOpacity_ once (inst.opacity = opacity *
     // currentOpacity_); pre-multiplying GetOpacity() here squared PushOpacity
     // groups for bitmaps — same lesion as the AddSdfRect callers above.
@@ -3010,7 +3614,8 @@ void D3D12RenderTarget::PopClip() {
             return;
         }
     }
-    bool wasRounded = false;
+    if (directRenderer_->ResolveCurrentEllipticalClips()) directRenderer_->FlushVelloPaths();
+    uint8_t wasRounded = 0;
     if (!clipFrameIsRounded_.empty()) {
         wasRounded = clipFrameIsRounded_.back();
         clipFrameIsRounded_.pop_back();
@@ -3022,8 +3627,54 @@ void D3D12RenderTarget::PopClip() {
         // override. (See EmitDeferredOp::ClipRoundedRect.)
         directRenderer_->PopRoundedClip();
     }
-    directRenderer_->PopScissor();
+    if (wasRounded != 2) directRenderer_->PopScissor();
     SyncScissorToImpeller();
+}
+
+JaliumResult D3D12RenderTarget::PushEllipticalRectClip(const JaliumEllipticalRectClip& clip)
+{
+    if (!directRenderer_ || !isDrawing_) return JALIUM_ERROR_INVALID_STATE;
+    if (!IsValidEllipticalClip(clip)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    CommitDeferredState();
+    directRenderer_->FlushVelloPaths();
+    clipFrameIsRounded_.push_back(2);
+    bool pushed = false;
+    try {
+        directRenderer_->PushEllipticalClip(clip); pushed = true;
+        SyncScissorToImpeller();
+    } catch (...) {
+        if (pushed) directRenderer_->PopRoundedClip();
+        clipFrameIsRounded_.pop_back();
+        throw;
+    }
+    return JALIUM_OK;
+}
+
+JaliumResult D3D12RenderTarget::PushPathClip(float startX, float startY,
+    const float* commands, uint32_t commandLength, int32_t fillRule)
+{
+    if (!directRenderer_ || !isDrawing_) return JALIUM_ERROR_INVALID_STATE;
+    CommitDeferredState();
+    directRenderer_->FlushVelloPaths();
+    const auto t = directRenderer_->GetCurrentTransform();
+    const float scale = directRenderer_->GetDpiScale();
+    const float matrix[6] { t.m11 * scale, t.m12 * scale,
+        t.m21 * scale, t.m22 * scale, t.dx * scale, t.dy * scale };
+    auto path = std::make_shared<PathClip>(startX, startY,
+        commands, commandLength, fillRule, matrix);
+    if (!path->IsValid()) return JALIUM_ERROR_INVALID_ARGUMENT;
+    clipFrameIsRounded_.push_back(2);
+    bool pushed = false;
+    try {
+        directRenderer_->PushPathClip(std::move(path));
+        pushed = true;
+        SyncScissorToImpeller();
+    } catch (...) {
+        if (pushed) directRenderer_->PopRoundedClip();
+        clipFrameIsRounded_.pop_back();
+        throw;
+    }
+    return JALIUM_OK;
 }
 
 void D3D12RenderTarget::PunchTransparentRect(float x, float y, float w, float h) {
@@ -3759,9 +4410,21 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
     float uvOffsetX, float uvOffsetY,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL)
 {
+    DrawDropShadowEffectCore(x, y, w, h, blurRadius, offsetX, offsetY,
+        r, g, b, a, uvOffsetX, uvOffsetY,
+        cornerTL, cornerTR, cornerBR, cornerBL, true);
+}
+
+void D3D12RenderTarget::DrawDropShadowEffectCore(float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL,
+    bool compositeContent)
+{
     if (!isDrawing_ || !directRenderer_) return;
     CommitDeferredState();
-    if (!lastEffectCaptureOk_) return;
+    if (compositeContent && !lastEffectCaptureOk_) return;
 
     // Soft drop shadow via layered SDF rounded-rects drawn DIRECTLY on the main RT.
     //
@@ -3781,7 +4444,13 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
     // (cumulative centre alpha ≈ a, since over-blending N layers of a/N gives 1-(1-a/N)^N ≈ a),
     // so callers still tune the shadow purely from DropShadowEffect.Opacity — no native rebuild.
     float baseOpacity = directRenderer_->GetOpacity();
-    if (a > 0.0f && baseOpacity > 0.0f) {
+    const float shapeX = hasPendingEffectContour_ ? pendingEffectContour_.x : x;
+    const float shapeY = hasPendingEffectContour_ ? pendingEffectContour_.y : y;
+    const float shapeW = hasPendingEffectContour_ ? pendingEffectContour_.width : w;
+    const float shapeH = hasPendingEffectContour_ ? pendingEffectContour_.height : h;
+    if (hasPendingBoxShadowKnockout_)
+        directRenderer_->PushEllipticalClipExclude(pendingBoxShadowKnockoutContour_);
+    if (a > 0.0f && baseOpacity > 0.0f && shapeW > 0.0f && shapeH > 0.0f) {
         // Analytic Gaussian shadow (plan C): a SINGLE expanded rounded-rect whose
         // coverage is an erf falloff evaluated in the PS, replacing the old 7-layer
         // equal-alpha concentric-rect approximation. The old layers were discrete
@@ -3792,8 +4461,9 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
         //   - sigma = BlurRadius/3 so 3*sigma ~= BlurRadius (outer reach matches the
         //     old outermost ring);
         //   - the 3*sigma+1px quad expansion is done in the VERTEX SHADER, so keep
-        //     posX/posY/sizeX/sizeY at the element's own size here and DO NOT add
-        //     spread (otherwise it double-expands);
+        //     posX/posY/sizeX/sizeY at the requested shadow perimeter. The
+        //     optional spread path supplies an expanded/contracted contour;
+        //     the shader adds only the Gaussian reach.
         //   - _xfPad0=shadowMode, _xfPad1=sigma reuse SdfRectInstance's spare slots
         //     (= HLSL xform1.zw); AddSdfRect passes them through untouched and they
         //     never feed shape/transform;
@@ -3811,16 +4481,27 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
         if (!forceLayered) {
             float sigma = (blurRadius > 0.0f) ? (blurRadius / 3.0f) : 0.5f;
             SdfRectInstance inst = {};
-            inst.posX = x + offsetX;
-            inst.posY = y + offsetY;
-            inst.sizeX = w;
-            inst.sizeY = h;
-            inst.cornerTL = cornerTL; inst.cornerTR = cornerTR;
-            inst.cornerBR = cornerBR; inst.cornerBL = cornerBL;
+            inst.posX = shapeX + offsetX;
+            inst.posY = shapeY + offsetY;
+            inst.sizeX = shapeW;
+            inst.sizeY = shapeH;
+            if (hasPendingEffectContour_) {
+                inst.cornerTL = pendingEffectContour_.radiusX[0];
+                inst.cornerTR = pendingEffectContour_.radiusX[1];
+                inst.cornerBR = pendingEffectContour_.radiusX[2];
+                inst.cornerBL = pendingEffectContour_.radiusX[3];
+                inst._stopPad0 = std::bit_cast<uint32_t>(pendingEffectContour_.radiusY[0]);
+                inst._stopPad1 = std::bit_cast<uint32_t>(pendingEffectContour_.radiusY[1]);
+                inst._stopPad2 = std::bit_cast<uint32_t>(pendingEffectContour_.radiusY[2]);
+                inst._pad3 = pendingEffectContour_.radiusY[3];
+            } else {
+                inst.cornerTL = cornerTL; inst.cornerTR = cornerTR;
+                inst.cornerBR = cornerBR; inst.cornerBL = cornerBL;
+            }
             inst.fillR = r; inst.fillG = g;
             inst.fillB = b; inst.fillA = a;
             inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
-            inst._xfPad0 = 1.0f;     // shadowMode = 1 -> PS takes the erf Gaussian branch
+            inst._xfPad0 = hasPendingEffectContour_ ? 2.0f : 1.0f;
             inst._xfPad1 = sigma;    // gaussian sigma (screen px)
             directRenderer_->AddSdfRect(inst);
         } else {
@@ -3833,12 +4514,14 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
             for (int i = LAYERS; i >= 1; --i) {
                 float spread = maxSpread * (static_cast<float>(i) / static_cast<float>(LAYERS));
                 SdfRectInstance inst = {};
-                inst.posX = x + offsetX - spread;
-                inst.posY = y + offsetY - spread;
-                inst.sizeX = w + 2.0f * spread;
-                inst.sizeY = h + 2.0f * spread;
-                inst.cornerTL = cornerTL + spread; inst.cornerTR = cornerTR + spread;
-                inst.cornerBR = cornerBR + spread; inst.cornerBL = cornerBL + spread;
+                inst.posX = shapeX + offsetX - spread;
+                inst.posY = shapeY + offsetY - spread;
+                inst.sizeX = shapeW + 2.0f * spread;
+                inst.sizeY = shapeH + 2.0f * spread;
+                inst.cornerTL = (hasPendingEffectContour_ ? pendingEffectContour_.radiusX[0] : cornerTL) + spread;
+                inst.cornerTR = (hasPendingEffectContour_ ? pendingEffectContour_.radiusX[1] : cornerTR) + spread;
+                inst.cornerBR = (hasPendingEffectContour_ ? pendingEffectContour_.radiusX[2] : cornerBR) + spread;
+                inst.cornerBL = (hasPendingEffectContour_ ? pendingEffectContour_.radiusX[3] : cornerBL) + spread;
                 inst.fillR = r; inst.fillG = g;
                 inst.fillB = b; inst.fillA = perLayerA;
                 inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
@@ -3847,9 +4530,98 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
         }
     }
 
+    if (hasPendingBoxShadowKnockout_)
+        directRenderer_->PopRoundedClip();
+
     // Composite original element content on top of shadow
-    directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
-        uvOffsetX, uvOffsetY, 1.0f);
+    if (compositeContent)
+        directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
+            uvOffsetX, uvOffsetY, 1.0f);
+}
+
+JaliumResult D3D12RenderTarget::DrawDropShadowEffectElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& contour)
+{
+    pendingEffectContour_ = contour;
+    hasPendingEffectContour_ = true;
+    struct ResetFlag {
+        bool& flag;
+        ~ResetFlag() { flag = false; }
+    } reset { hasPendingEffectContour_ };
+    DrawDropShadowEffect(x, y, w, h, blurRadius, offsetX, offsetY,
+        r, g, b, a, uvOffsetX, uvOffsetY,
+        contour.radiusX[0], contour.radiusX[1],
+        contour.radiusX[2], contour.radiusX[3]);
+    return JALIUM_OK;
+}
+
+JaliumResult D3D12RenderTarget::DrawDropShadowEffectSpreadElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& spreadContour)
+{
+    return DrawDropShadowEffectElliptical(x, y, w, h,
+        blurRadius, offsetX, offsetY, r, g, b, a,
+        uvOffsetX, uvOffsetY, spreadContour);
+}
+
+JaliumResult D3D12RenderTarget::DrawCssBoxShadowEffectElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& originalContour,
+    const JaliumEllipticalRectClip& spreadContour)
+{
+    pendingBoxShadowKnockoutContour_ = originalContour;
+    hasPendingBoxShadowKnockout_ = true;
+    struct ResetFlag {
+        bool& flag;
+        ~ResetFlag() { flag = false; }
+    } reset { hasPendingBoxShadowKnockout_ };
+    return DrawDropShadowEffectSpreadElliptical(x, y, w, h,
+        blurRadius, offsetX, offsetY, r, g, b, a,
+        uvOffsetX, uvOffsetY, spreadContour);
+}
+
+JaliumResult D3D12RenderTarget::PaintCssOuterShadowLayerElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    const JaliumEllipticalRectClip& originalContour,
+    const JaliumEllipticalRectClip& spreadContour)
+{
+    pendingEffectContour_ = spreadContour;
+    pendingBoxShadowKnockoutContour_ = originalContour;
+    hasPendingEffectContour_ = true;
+    hasPendingBoxShadowKnockout_ = true;
+    struct ResetFlags {
+        bool& contour;
+        bool& knockout;
+        ~ResetFlags() { contour = false; knockout = false; }
+    } reset { hasPendingEffectContour_, hasPendingBoxShadowKnockout_ };
+    DrawDropShadowEffectCore(x, y, w, h, blurRadius, offsetX, offsetY,
+        r, g, b, a, 0, 0,
+        spreadContour.radiusX[0], spreadContour.radiusX[1],
+        spreadContour.radiusX[2], spreadContour.radiusX[3], false);
+    return JALIUM_OK;
+}
+
+JaliumResult D3D12RenderTarget::PaintCssInnerShadowLayerElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    const JaliumEllipticalRectClip& contour)
+{
+    return DrawInnerShadowEllipticalCore(x, y, w, h,
+        blurRadius, offsetX, offsetY, spreadRadius,
+        r, g, b, a, 0, 0, contour, false);
 }
 
 void D3D12RenderTarget::DrawInnerShadowEffect(float x, float y, float w, float h,
@@ -3934,6 +4706,66 @@ void D3D12RenderTarget::DrawInnerShadowEffect(float x, float y, float w, float h
     directRenderer_->PopScissor();
 }
 
+JaliumResult D3D12RenderTarget::DrawInnerShadowEffectElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& contour)
+{
+    return DrawInnerShadowEllipticalCore(x, y, w, h,
+        blurRadius, offsetX, offsetY, spreadRadius,
+        r, g, b, a, uvOffsetX, uvOffsetY, contour, true);
+}
+
+JaliumResult D3D12RenderTarget::DrawInnerShadowLayerElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& contour)
+{
+    return DrawInnerShadowEllipticalCore(x, y, w, h,
+        blurRadius, offsetX, offsetY, spreadRadius,
+        r, g, b, a, uvOffsetX, uvOffsetY, contour, false);
+}
+
+JaliumResult D3D12RenderTarget::DrawInnerShadowEllipticalCore(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& contour, bool compositeContent)
+{
+    if (!isDrawing_ || !directRenderer_) return JALIUM_ERROR_INVALID_STATE;
+    CommitDeferredState();
+    if (compositeContent && !lastEffectCaptureOk_) return JALIUM_OK;
+
+    if (compositeContent)
+        directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
+            uvOffsetX, uvOffsetY, 1.0f);
+    if (a <= 0.004f || contour.width <= 0.0f || contour.height <= 0.0f)
+        return JALIUM_OK;
+
+    SdfRectInstance inst = {};
+    inst.posX = contour.x; inst.posY = contour.y;
+    inst.sizeX = contour.width; inst.sizeY = contour.height;
+    inst.cornerTL = contour.radiusX[0]; inst.cornerTR = contour.radiusX[1];
+    inst.cornerBR = contour.radiusX[2]; inst.cornerBL = contour.radiusX[3];
+    inst._stopPad0 = std::bit_cast<uint32_t>(contour.radiusY[0]);
+    inst._stopPad1 = std::bit_cast<uint32_t>(contour.radiusY[1]);
+    inst._stopPad2 = std::bit_cast<uint32_t>(contour.radiusY[2]);
+    inst._pad3 = contour.radiusY[3];
+    inst.fillR = r; inst.fillG = g; inst.fillB = b; inst.fillA = a;
+    inst.opacity = 1.0f;
+    inst.gradGeom0 = offsetX; inst.gradGeom1 = offsetY;
+    inst.gradGeom2 = spreadRadius; inst.gradGeom3 = 0.0f;
+    inst._xfPad0 = 3.0f;
+    inst._xfPad1 = (blurRadius > 0.0f) ? blurRadius / 3.0f : 0.5f;
+    directRenderer_->AddSdfRect(inst);
+    return JALIUM_OK;
+}
+
 // Pixel shader for the alpha-based outer glow. Runtime-compiled + cached by source
 // hash via DrawShaderEffectFromSource. It multi-tap gaussian-blurs the captured
 // element's ALPHA (offscreen slot 0 holds the silhouette on a transparent {0,0,0,0}
@@ -4015,6 +4847,126 @@ float4 main(PsInput input) : SV_Target
     return outc;
 }
 )HLSL";
+
+static const char kFilterDropShadowPS[] = R"HLSL(
+Texture2D<float4> srcTex : register(t1);
+SamplerState linearSampler : register(s0);
+cbuffer ShadowConstants : register(b0)
+{
+    float4 tint;         // RGB and shadow opacity
+    float4 sampleInfo;   // texel U/V, capture UV scale X/Y
+    float4 blurInfo;     // K, sigma in taps, step in pixels, unused
+    float4 shiftInfo;    // source UV offset X/Y, unused
+};
+struct PsInput { float4 clipPos : SV_Position; float2 uv : TEXCOORD0; };
+float4 main(PsInput input) : SV_Target
+{
+    const int K = clamp((int)blurInfo.x, 1, 12);
+    const float sigma = max(blurInfo.y, 0.5f);
+    const float2 texel = sampleInfo.xy;
+    const float2 uvScale = sampleInfo.zw;
+    const float2 lo = 0.5f * texel;
+    const float2 hi = max(lo, uvScale - lo);
+    const float2 sourceUv = input.uv * uvScale - shiftInfo.xy;
+    const float2 step = texel * blurInfo.z;
+    float alpha = 0.0f;
+    float weights = 0.0f;
+    [loop]
+    for (int dy = -K; dy <= K; ++dy)
+    {
+        [loop]
+        for (int dx = -K; dx <= K; ++dx)
+        {
+            const float weight = exp(-(float)(dx * dx + dy * dy) /
+                                     (2.0f * sigma * sigma));
+            const float2 uv = clamp(sourceUv + float2((float)dx, (float)dy) * step,
+                                    lo, hi);
+            alpha += srcTex.SampleLevel(linearSampler, uv, 0).a * weight;
+            weights += weight;
+        }
+    }
+    const float shadowAlpha = saturate(alpha / max(weights, 0.0001f)) * tint.a;
+    return float4(tint.rgb * shadowAlpha, shadowAlpha);
+}
+)HLSL";
+
+JaliumResult D3D12RenderTarget::DrawFilterDropShadowEffect(
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a)
+{
+    if (!isDrawing_ || !directRenderer_) return JALIUM_ERROR_INVALID_STATE;
+    CommitDeferredState();
+    if (!lastEffectCaptureOk_) return JALIUM_ERROR_NOT_SUPPORTED;
+
+    const float offW = static_cast<float>(directRenderer_->GetOffscreenWidth());
+    const float offH = static_cast<float>(directRenderer_->GetOffscreenHeight());
+    const float capPxW = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureW(0)));
+    const float capPxH = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureH(0)));
+    const float texelU = offW > 0 ? 1.0f / offW : 1.0f / capPxW;
+    const float texelV = offH > 0 ? 1.0f / offH : 1.0f / capPxH;
+    const float dpi = directRenderer_->GetDpiScale();
+    const float radiusPx = std::max(0.0f, blurRadius * dpi);
+    const float kf = radiusPx > 0
+        ? std::clamp(std::ceil(radiusPx / 3.0f), 4.0f, 12.0f) : 1.0f;
+    const float constants[16] = {
+        r, g, b, std::clamp(a, 0.0f, 1.0f),
+        texelU, texelV,
+        offW > 0 ? capPxW / offW : 1.0f,
+        offH > 0 ? capPxH / offH : 1.0f,
+        kf, std::max(0.5f, kf / 3.0f), radiusPx / kf, 0.0f,
+        offsetX * dpi * texelU, offsetY * dpi * texelV, 0.0f, 0.0f,
+    };
+    if (a > 0.0f)
+        DrawShaderEffectFromSource(captureX, captureY, captureW, captureH,
+            kFilterDropShadowPS, constants, 16);
+    directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
+        x - captureX, y - captureY, 1.0f);
+    return JALIUM_OK;
+}
+
+JaliumResult D3D12RenderTarget::DrawCssTextShadows(
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    const float* layers, uint32_t layerCount, bool compositeSource)
+{
+    if (!isDrawing_ || !directRenderer_) return JALIUM_ERROR_INVALID_STATE;
+    CommitDeferredState();
+    if (!lastEffectCaptureOk_ || !layers || layerCount == 0)
+        return JALIUM_ERROR_NOT_SUPPORTED;
+
+    const float offW = static_cast<float>(directRenderer_->GetOffscreenWidth());
+    const float offH = static_cast<float>(directRenderer_->GetOffscreenHeight());
+    const float capPxW = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureW(0)));
+    const float capPxH = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureH(0)));
+    const float texelU = offW > 0 ? 1.0f / offW : 1.0f / capPxW;
+    const float texelV = offH > 0 ? 1.0f / offH : 1.0f / capPxH;
+    const float dpi = directRenderer_->GetDpiScale();
+    const float uvScaleX = offW > 0 ? capPxW / offW : 1.0f;
+    const float uvScaleY = offH > 0 ? capPxH / offH : 1.0f;
+    // The shader outputs only one tinted alpha mask. Paint the last authored
+    // layer first and the captured glyphs once after every layer.
+    for (uint32_t i = layerCount; i-- > 0;) {
+        const float* layer = layers + static_cast<size_t>(i) * 7;
+        if (layer[6] <= 0.0f) continue;
+        const float radiusPx = std::max(0.0f, layer[0] * dpi);
+        const float kf = radiusPx > 0.0f
+            ? std::clamp(std::ceil(radiusPx / 3.0f), 4.0f, 12.0f) : 1.0f;
+        const float constants[16] = {
+            layer[3], layer[4], layer[5], std::clamp(layer[6], 0.0f, 1.0f),
+            texelU, texelV, uvScaleX, uvScaleY,
+            kf, std::max(0.5f, kf / 3.0f), radiusPx / kf, 0.0f,
+            layer[1] * dpi * texelU, layer[2] * dpi * texelV, 0.0f, 0.0f,
+        };
+        DrawShaderEffectFromSource(captureX, captureY, captureW, captureH,
+            kFilterDropShadowPS, constants, 16);
+    }
+    if (compositeSource)
+        directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
+            x - captureX, y - captureY, 1.0f);
+    return JALIUM_OK;
+}
 
 void D3D12RenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
     float glowSize, float r, float g, float b, float a, float intensity,
@@ -4148,6 +5100,63 @@ void D3D12RenderTarget::DrawColorMatrixEffect(float x, float y, float w, float h
     directRenderer_->DrawCustomShaderEffect(0, x, y, w, h,
         shader_bytecode::kcolor_matrix_ps, shader_bytecode::kcolor_matrix_psSize,
         constants, 24);
+}
+
+static const char kCssColorMatrixChainPS[] = R"HLSL(
+Texture2D<float4> content : register(t1);
+SamplerState contentSampler : register(s0);
+cbuffer ChainConstants : register(b0)
+{
+    float4 meta;       // count, capture UV scale X/Y, unused
+    float4 rows[320];  // 64 stages × (four coefficient rows + one offset row)
+};
+struct PsInput { float4 clipPos : SV_Position; float2 uv : TEXCOORD0; };
+float4 main(PsInput input) : SV_Target
+{
+    float4 source = content.SampleLevel(contentSampler,
+        input.uv * meta.yz, 0);
+    float4 value = float4(source.a > 0.0001f ? source.rgb / source.a :
+        float3(0, 0, 0), source.a);
+    [loop]
+    for (int stage = 0; stage < (int)meta.x; ++stage)
+    {
+        const int base = stage * 5;
+        const float4 before = value;
+        value = saturate(float4(
+            dot(rows[base + 0], before) + rows[base + 4].x,
+            dot(rows[base + 1], before) + rows[base + 4].y,
+            dot(rows[base + 2], before) + rows[base + 4].z,
+            dot(rows[base + 3], before) + rows[base + 4].w));
+    }
+    return float4(value.rgb * value.a, value.a);
+}
+)HLSL";
+
+JaliumResult D3D12RenderTarget::DrawColorMatrixChainEffect(
+    float x, float y, float w, float h,
+    const float* matrices, uint32_t matrixCount)
+{
+    constexpr uint32_t kMaxStages = 64;
+    if (!isDrawing_ || !directRenderer_) return JALIUM_ERROR_INVALID_STATE;
+    if (!matrices || matrixCount == 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (matrixCount > kMaxStages) return JALIUM_ERROR_NOT_SUPPORTED;
+    CommitDeferredState();
+    if (!lastEffectCaptureOk_) return JALIUM_ERROR_NOT_SUPPORTED;
+
+    const float offW = static_cast<float>(directRenderer_->GetOffscreenWidth());
+    const float offH = static_cast<float>(directRenderer_->GetOffscreenHeight());
+    const float capW = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureW(0)));
+    const float capH = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureH(0)));
+    std::vector<float> constants(4u + kMaxStages * 20u, 0.0f);
+    constants[0] = static_cast<float>(matrixCount);
+    constants[1] = offW > 0 ? capW / offW : 1.0f;
+    constants[2] = offH > 0 ? capH / offH : 1.0f;
+    std::copy_n(matrices, static_cast<size_t>(matrixCount) * 20u,
+                constants.data() + 4);
+    DrawShaderEffectFromSource(x, y, w, h,
+        kCssColorMatrixChainPS, constants.data(),
+        static_cast<uint32_t>(constants.size()));
+    return JALIUM_OK;
 }
 
 void D3D12RenderTarget::DrawEmbossEffect(float x, float y, float w, float h,

@@ -78,7 +78,9 @@ public sealed class Ellipse : Shape
             }
         }
 
-        dc.DrawEllipse(Fill, pen, new Point(centerX, centerY), radiusX, radiusY);
+        pen = ResolveStrokePen(pen);
+
+        dc.DrawEllipse(ResolveFillBrush(), pen, new Point(centerX, centerY), radiusX, radiusY);
     }
 
     /// <inheritdoc />

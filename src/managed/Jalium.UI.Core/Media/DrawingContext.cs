@@ -209,7 +209,7 @@ public abstract class DrawingContext : DispatcherObject, IDisposable, IClipDrawi
     /// <summary>
     /// Creates a PathGeometry for a rounded rectangle with non-uniform corner radii.
     /// </summary>
-    private static PathGeometry CreateRoundedRectGeometry(Rect rect, CornerRadius cornerRadius)
+    internal static PathGeometry CreateRoundedRectGeometry(Rect rect, CornerRadius cornerRadius)
     {
         var geometry = new PathGeometry();
         var figure = new PathFigure();
@@ -392,6 +392,7 @@ public abstract class DrawingContext : DispatcherObject, IDisposable, IClipDrawi
     public void DrawText(FormattedText formattedText, Point origin)
     {
         ArgumentNullException.ThrowIfNull(formattedText);
+        if (formattedText.FontSize == 0) return;
 
         // DrawingContext.DrawText is concrete and non-virtual in WPF. Existing Jalium
         // backends historically overrode the abstract member, so dispatch through the
@@ -655,6 +656,7 @@ public abstract class DrawingContextAdapter : DrawingContext
     public new virtual void DrawText(FormattedText formattedText, Point origin)
     {
         ArgumentNullException.ThrowIfNull(formattedText);
+        if (formattedText.FontSize == 0) return;
         DrawGeometry(formattedText.Foreground, null, formattedText.BuildGeometry(origin));
     }
 

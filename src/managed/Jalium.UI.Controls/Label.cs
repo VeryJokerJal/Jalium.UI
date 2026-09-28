@@ -1,6 +1,7 @@
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
@@ -21,6 +22,9 @@ public class Label : ContentControl
 
     private bool _pendingTemplateTextFocus;
     private bool _isSelectingDirectText;
+    private bool _ownsDirectSelectionCursor;
+    private TextBlock? _presentedSelectionTextBlock;
+    private bool _ownsPresentedSelectionValue;
     private int _directSelectionStart;
     private int _directSelectionLength;
     private int _directSelectionAnchor;
@@ -139,12 +143,15 @@ public class Label : ContentControl
     #region Template Parts
 
     private Border? _labelBorder;
+    private Border? _cssBorderPainter;
 
     /// <inheritdoc />
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
         _labelBorder = GetTemplateChild("LabelBorder") as Border;
+        _presentedSelectionTextBlock = null;
+        _ownsPresentedSelectionValue = false;
         ApplyPresentedTextStyle();
     }
 
@@ -200,7 +207,7 @@ public class Label : ContentControl
     {
         if (_labelBorder == null)
         {
-            Cursor = null;
+            ClearDirectSelectionCursor();
         }
     }
 
@@ -274,17 +281,19 @@ public class Label : ContentControl
 
     private bool TryHandleTemplateTextMouseDown(MouseButtonEventArgs mouseArgs)
     {
-        if (!IsTextSelectionEnabled)
-        {
-            return false;
-        }
-
         if (_labelBorder == null)
         {
             return false;
         }
 
         if (FindDescendantTextBlock(_labelBorder) is not TextBlock textBlock)
+        {
+            return false;
+        }
+
+        if (!CssUserSelectProperties.AllowsSelection(textBlock,
+                textBlock.IsTextSelectionEnabled,
+                textBlock.HasLocalValue(TextBlock.IsTextSelectionEnabledProperty)))
         {
             return false;
         }
@@ -300,14 +309,14 @@ public class Label : ContentControl
 
     private bool TryHandleDirectTextMouseDown(MouseButtonEventArgs mouseArgs)
     {
-        if (!IsTextSelectionEnabled || _labelBorder != null || Content is not string text || string.IsNullOrEmpty(text))
+        if (!IsUserSelectionEnabled() || _labelBorder != null || Content is not string text || string.IsNullOrEmpty(text))
         {
             return false;
         }
 
         var index = GetDirectTextCharacterIndex(mouseArgs.GetPosition(this), text);
 
-        if (mouseArgs.ClickCount >= 3)
+        if (CssUserSelectProperties.Resolve(this) == CssUserSelect.All || mouseArgs.ClickCount >= 3)
         {
             _directSelectionAnchor = 0;
             _isDirectWordSelecting = false;
@@ -532,7 +541,7 @@ public class Label : ContentControl
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (!IsTextSelectionEnabled || _labelBorder != null || e.Handled || Content is not string text)
+        if (!IsUserSelectionEnabled() || _labelBorder != null || e.Handled || Content is not string text)
         {
             return;
         }
@@ -554,10 +563,29 @@ public class Label : ContentControl
 
     private void UpdateDirectTextCursor()
     {
-        if (_labelBorder == null)
+        if (_ownsDirectSelectionCursor && Cursor != Jalium.UI.Input.Cursors.IBeam)
+            _ownsDirectSelectionCursor = false;
+        if (_labelBorder != null || HasLocalValue(CursorProperty) && !_ownsDirectSelectionCursor) return;
+        if (CssRuntimeState?.Applied?.ContainsKey(CursorProperty) == true)
         {
-            Cursor = CanShowDirectTextCursor() ? Jalium.UI.Input.Cursors.IBeam : null;
+            ClearDirectSelectionCursor();
+            return;
         }
+        if (CanShowDirectTextCursor())
+        {
+            Cursor = Jalium.UI.Input.Cursors.IBeam;
+            _ownsDirectSelectionCursor = true;
+        }
+        else
+            ClearDirectSelectionCursor();
+    }
+
+    private void ClearDirectSelectionCursor()
+    {
+        if (!_ownsDirectSelectionCursor) return;
+        _ownsDirectSelectionCursor = false;
+        if (Cursor == Jalium.UI.Input.Cursors.IBeam)
+            ClearValue(CursorProperty);
     }
 
     private void OnKeyboardFocusChanged(object sender, KeyboardFocusChangedEventArgs e)
@@ -568,10 +596,26 @@ public class Label : ContentControl
     private bool CanShowDirectTextCursor()
     {
         return IsEnabled &&
-            IsTextSelectionEnabled &&
+            IsUserSelectionEnabled() &&
             _labelBorder == null &&
             Content is string text &&
             !string.IsNullOrEmpty(text);
+    }
+
+    private bool IsUserSelectionEnabled() => CssUserSelectProperties.AllowsSelection(this,
+        IsTextSelectionEnabled, HasLocalValue(IsTextSelectionEnabledProperty));
+
+    internal void RefreshCssUserSelect()
+    {
+        if (_isSelectingDirectText && !IsUserSelectionEnabled())
+        {
+            _isSelectingDirectText = false;
+            _isDirectWordSelecting = false;
+            ReleaseMouseCapture();
+        }
+        ApplyPresentedTextStyle();
+        if (IsMouseOver || _ownsDirectSelectionCursor) UpdateDirectTextCursor();
+        InvalidateVisual();
     }
 
     #endregion
@@ -607,8 +651,8 @@ public class Label : ContentControl
     {
         if (Content is string text)
         {
-            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-            var fontSize = FontSize > 0 ? FontSize : 14;
+            var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+            var fontSize = FontSize;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             TextMeasurement.MeasureText(formattedText);
             return new Size(formattedText.Width, formattedText.Height);
@@ -642,42 +686,25 @@ public class Label : ContentControl
         // Draw background if set
         if (Background != null)
         {
-            dc.DrawRectangle(Background, null, rect);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                    rect, default, BorderThickness, padding,
+                    brush => dc.DrawRectangle(brush, null, rect)))
+                dc.DrawRectangle(Background, null, rect);
         }
 
         // Draw content
-        if (Content is string text && Foreground != null)
+        if (Content is string text && Foreground != null && FontSize > 0)
         {
-            var formattedText = new FormattedText(text, FontFamily.Source, FontSize)
+            var formattedText = new FormattedText(text, FontFamily.GetRenderingSource(this), FontSize)
             {
                 Foreground = Foreground
             };
 
             TextMeasurement.MeasureText(formattedText);
 
-            // Calculate text position based on alignment
-            var textX = padding.Left;
-            var textY = padding.Top;
-
-            switch (HorizontalAlignment)
-            {
-                case HorizontalAlignment.Center:
-                    textX = (rect.Width - formattedText.Width) / 2;
-                    break;
-                case HorizontalAlignment.Right:
-                    textX = rect.Width - formattedText.Width - padding.Right;
-                    break;
-            }
-
-            switch (VerticalAlignment)
-            {
-                case VerticalAlignment.Center:
-                    textY = (rect.Height - formattedText.Height) / 2;
-                    break;
-                case VerticalAlignment.Bottom:
-                    textY = rect.Height - formattedText.Height - padding.Bottom;
-                    break;
-            }
+            var origin = GetDirectTextOrigin(formattedText.Width, formattedText.Height);
+            var textX = origin.X;
+            var textY = origin.Y;
 
             if (_directSelectionLength > 0)
             {
@@ -694,11 +721,11 @@ public class Label : ContentControl
                 {
                     // Calculate underline position (approximate)
                     var preText = text.Substring(0, accessKeyIndex);
-                    var preFormattedText = new FormattedText(preText, FontFamily.Source, FontSize);
+                    var preFormattedText = new FormattedText(preText, FontFamily.GetRenderingSource(this), FontSize);
                     TextMeasurement.MeasureText(preFormattedText);
 
                     var charText = text.Substring(accessKeyIndex, 1);
-                    var charFormattedText = new FormattedText(charText, FontFamily.Source, FontSize);
+                    var charFormattedText = new FormattedText(charText, FontFamily.GetRenderingSource(this), FontSize);
                     TextMeasurement.MeasureText(charFormattedText);
 
                     var underlineX = textX + preFormattedText.Width;
@@ -710,6 +737,14 @@ public class Label : ContentControl
                 }
             }
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (_labelBorder == null)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     #endregion
@@ -738,7 +773,8 @@ public class Label : ContentControl
         }
 
         label.ApplyPresentedTextStyle();
-        label.UpdateDirectTextCursor();
+        if (label.IsMouseOver || label._ownsDirectSelectionCursor)
+            label.UpdateDirectTextCursor();
         label.InvalidateVisual();
     }
 
@@ -764,10 +800,20 @@ public class Label : ContentControl
         textBlock.FontSize = FontSize;
         textBlock.FontStyle = FontStyle;
         textBlock.FontWeight = FontWeight;
-        textBlock.IsTextSelectionEnabled = IsTextSelectionEnabled;
-        if (!IsTextSelectionEnabled)
+        if (!ReferenceEquals(_presentedSelectionTextBlock, textBlock))
         {
-            textBlock.ClearSelection();
+            _presentedSelectionTextBlock = textBlock;
+            _ownsPresentedSelectionValue = false;
+        }
+        if (IsTextSelectionEnabled || HasLocalValue(IsTextSelectionEnabledProperty))
+        {
+            textBlock.IsTextSelectionEnabled = IsTextSelectionEnabled;
+            _ownsPresentedSelectionValue = true;
+        }
+        else if (_ownsPresentedSelectionValue)
+        {
+            textBlock.ClearValue(TextBlock.IsTextSelectionEnabledProperty);
+            _ownsPresentedSelectionValue = false;
         }
     }
 
@@ -863,31 +909,36 @@ public class Label : ContentControl
 
     private Point GetDirectTextOrigin(string text)
     {
-        var rect = new Rect(RenderSize);
-        var padding = Padding;
-        var formattedText = new FormattedText(text, FontFamily.Source, FontSize);
+        var formattedText = new FormattedText(text, FontFamily.GetRenderingSource(this), FontSize);
         TextMeasurement.MeasureText(formattedText);
+        return GetDirectTextOrigin(formattedText.Width, formattedText.Height);
+    }
 
-        var textX = padding.Left;
-        var textY = padding.Top;
+    private Point GetDirectTextOrigin(double textWidth, double textHeight)
+    {
+        var rect = new Rect(RenderSize);
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+        var textX = insets.Left;
+        var textY = insets.Top;
 
         switch (HorizontalAlignment)
         {
             case HorizontalAlignment.Center:
-                textX = (rect.Width - formattedText.Width) / 2;
+                textX = insets.Left + (rect.Width - insets.Left - insets.Right - textWidth) / 2;
                 break;
             case HorizontalAlignment.Right:
-                textX = rect.Width - formattedText.Width - padding.Right;
+                textX = rect.Width - textWidth - insets.Right;
                 break;
         }
 
         switch (VerticalAlignment)
         {
             case VerticalAlignment.Center:
-                textY = (rect.Height - formattedText.Height) / 2;
+                textY = insets.Top + (rect.Height - insets.Top - insets.Bottom - textHeight) / 2;
                 break;
             case VerticalAlignment.Bottom:
-                textY = rect.Height - formattedText.Height - padding.Bottom;
+                textY = rect.Height - textHeight - insets.Bottom;
                 break;
         }
 
@@ -901,7 +952,7 @@ public class Label : ContentControl
             return 0;
         }
 
-        var formattedText = new FormattedText(text, FontFamily.Source, FontSize);
+        var formattedText = new FormattedText(text, FontFamily.GetRenderingSource(this), FontSize);
         TextMeasurement.MeasureText(formattedText);
         return formattedText.Width;
     }

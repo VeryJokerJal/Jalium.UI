@@ -85,7 +85,7 @@ public class FontIcon : IconElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        double size = FontSize > 0 ? FontSize : 20;
+        double size = double.IsFinite(FontSize) && FontSize > 0 ? FontSize : 0;
         return new Size(
             Math.Min(size, availableSize.Width),
             Math.Min(size, availableSize.Height));
@@ -95,18 +95,18 @@ public class FontIcon : IconElement
     protected override void OnRender(DrawingContext drawingContext)
     {
         var dc = drawingContext;
-        if (string.IsNullOrEmpty(Glyph)) return;
+        if (string.IsNullOrEmpty(Glyph) || !double.IsFinite(FontSize) || FontSize <= 0) return;
 
         var foreground = GetEffectiveForeground();
         var fontFamily = FontFamily ?? DefaultFontFamily;
-        double fontSize = FontSize > 0 ? FontSize : 16;
+        double fontSize = FontSize;
 
-        var ft = new FormattedText(Glyph, fontFamily.Source, fontSize)
+        var ft = new FormattedText(Glyph, fontFamily.GetRenderingSource(this), fontSize)
         {
             Foreground = foreground,
             MaxTextWidth = RenderSize.Width,
             MaxTextHeight = RenderSize.Height
-        };
+        }.ApplyTextOptionsFrom(this);
 
         // Measure with DirectWrite to get accurate glyph dimensions
         TextMeasurement.MeasureText(ft);

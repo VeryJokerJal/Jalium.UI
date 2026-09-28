@@ -68,8 +68,12 @@ VideoSurface* D3D12Backend::WrapExternalVideoSurface(
     if (!descriptor) return nullptr;
 
     if (descriptor->kind == JALIUM_VS_KIND_D3D11_SHARED) {
-        // Stage 3b.2: DXVA decoder (stage 3b.1) gave us a D3D11
-        // SHARED_NTHANDLE BGRA8 texture; import it into our D3D12 device.
+        // The producer must publish a complete immutable frame, not a live
+        // decoder-pool slot. Opening a handle neither waits for D3D11 writes
+        // nor prevents the next decode from overwriting a queued frame.
+        if ((descriptor->descriptor_flags & JALIUM_VS_FLAG_IMMUTABLE_READY) == 0)
+            return nullptr;
+        // Import the SHARED_NTHANDLE packed RGB texture into our D3D12 device.
         // Requires the source D3D11 device and our D3D12 device to be on the
         // same IDXGIAdapter (LUID match). Single-GPU systems hit this
         // automatically; multi-GPU laptops (Intel iGPU + NVIDIA dGPU) may
@@ -88,6 +92,16 @@ VideoSurface* D3D12Backend::WrapExternalVideoSurface(
         if (FAILED(hr) || !imported) {
             return nullptr;
         }
+        const auto desc = imported->GetDesc();
+        const bool supportedFormat =
+            (descriptor->format_hint == JALIUM_VS_FORMAT_BGRA8 && desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM) ||
+            (descriptor->format_hint == JALIUM_VS_FORMAT_BGRX8 && desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM);
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+            desc.Width != descriptor->width || desc.Height != descriptor->height ||
+            desc.DepthOrArraySize != 1 || desc.MipLevels != 1 ||
+            desc.SampleDesc.Count != 1 || !supportedFormat ||
+            (desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0)
+            return nullptr;
         return new ImportedD3D12VideoSurface(
             this, std::move(imported), descriptor->width, descriptor->height);
     }
@@ -106,33 +120,18 @@ ImportedD3D12VideoSurface::ImportedD3D12VideoSurface(
     , bitmap(backend, width, height)
 {
     // Hand the imported texture to the embedded bitmap so DrawBitmap's existing
-    // SRV / shader path can sample it. Mark it valid + dynamic so
+    // SRV / shader path can sample it. Mark it valid so
     // GetOrCreateD3D12Texture takes the fast path and skips upload from
     // pixelData_ (which stays empty for imported surfaces).
     bitmap.d3d12Texture_ = importedTexture;
     bitmap.d3d12TextureValid_ = true;
-    bitmap.isDynamic_ = true;
-
-    // Stage 3b.3: try to surface the underlying IDXGIKeyedMutex so we can sync
-    // with the D3D11 writer. Whether this succeeds depends on (a) the resource
-    // having been created with D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX on the
-    // D3D11 side (stage 3b.1 always does), and (b) the driver allowing
-    // QueryInterface from a D3D12-imported resource. When it fails, keyedMutex
-    // stays null and Acquire/Release reader lock degrade to no-ops — the
-    // stage 3b.2 in-order-execution assumption takes over (correct in practice
-    // for single-adapter / same-driver pipelines).
-    importedTexture.As(&keyedMutex);
+    // The shared resource is read-only on this device. COMMON permits implicit
+    // shader-read promotion. The producer has already completed its writes and
+    // will never use this allocation again, including while playback is paused.
+    bitmap.isDynamic_ = false;
 }
 
-ImportedD3D12VideoSurface::~ImportedD3D12VideoSurface()
-{
-    // Defensive: if we crashed mid-frame holding the reader lock, releasing
-    // it on destroy avoids a permanent stall on the writer side.
-    if (holdsReaderLock && keyedMutex) {
-        keyedMutex->ReleaseSync(0);
-        holdsReaderLock = false;
-    }
-}
+ImportedD3D12VideoSurface::~ImportedD3D12VideoSurface() = default;
 
 bool ImportedD3D12VideoSurface::Lock(uint8_t** outPtr, uint32_t* outStride)
 {
@@ -144,28 +143,8 @@ bool ImportedD3D12VideoSurface::Lock(uint8_t** outPtr, uint32_t* outStride)
 
 bool ImportedD3D12VideoSurface::Unlock(const JaliumVideoSurfaceDirtyRect* /*dirty*/)
 {
-    // No-op on the surface ABI: cross-device sync happens at draw time via
-    // AcquireReaderLock / ReleaseReaderLock (driven by DrawVideoSurface).
-    return true;
-}
-
-void ImportedD3D12VideoSurface::AcquireReaderLock()
-{
-    if (!keyedMutex || holdsReaderLock) return;
-    // MF writer (stage 3b.1) released to key 1 after each CopyResource + Flush.
-    // We grab key 1 here. INFINITE wait — if MF is mid-write we yield until it
-    // finishes; in practice the wait is sub-millisecond on a real DXVA stream.
-    HRESULT hr = keyedMutex->AcquireSync(1, INFINITE);
-    holdsReaderLock = SUCCEEDED(hr);
-}
-
-void ImportedD3D12VideoSurface::ReleaseReaderLock()
-{
-    if (!keyedMutex || !holdsReaderLock) return;
-    // Release to key 0 so MF's next CopyResource (stage 3b.1's
-    // writeMutex->AcquireSync(0, 16ms)) can pick it up immediately.
-    keyedMutex->ReleaseSync(0);
-    holdsReaderLock = false;
+    // Immutable imported frames cannot be CPU-mapped or updated.
+    return false;
 }
 
 // ─── Render-target draw routing ──────────────────────────────────────────
@@ -183,18 +162,9 @@ void D3D12RenderTarget::DrawVideoSurface(VideoSurface* surface,
         return;
     }
     if (auto* imp = dynamic_cast<ImportedD3D12VideoSurface*>(surface)) {
-        // Stage 3b.2 path: DXVA-decoded shared NT texture imported via
-        // OpenSharedHandle. The wrapped bitmap's d3d12Texture_ is the imported
-        // resource itself + d3d12TextureValid_=true, so GetOrCreateD3D12Texture
-        // takes the fast path and we sample the GPU-decoded pixels directly
-        // (no staging upload, no CPU copy).
-        //
-        // Stage 3b.3: acquire keyed-mutex reader lock around the sample so
-        // we don't read a half-written frame on systems where D3D11/D3D12
-        // GPU work isn't strictly in-order (multi-queue drivers, async copy).
-        imp->AcquireReaderLock();
+        // AddBitmap retains the texture through the submission fence. Releasing
+        // a decoder frame or navigating away cannot destroy in-flight pixels.
         DrawBitmap(&imp->bitmap, x, y, w, h, opacity, scalingMode);
-        imp->ReleaseReaderLock();
         return;
     }
 }

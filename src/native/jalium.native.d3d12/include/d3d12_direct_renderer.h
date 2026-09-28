@@ -3,6 +3,7 @@
 #include "d3d12_backend.h"
 #include "d3d12_glyph_atlas.h"
 #include "jalium_stencil_path.h"
+#include "jalium_elliptical_clip.h"
 #include "jalium_gradient_sample.h"   // EngineBrushData / SampleBrushGradient (AddText gradients)
 #include <vector>
 #include <stack>
@@ -13,6 +14,7 @@ namespace jalium {
 
 class D3D12VelloRenderer;  // forward declaration
 class D3D12RetainedLayer;  // forward declaration (retained GPU layer fast path)
+class PathClip;
 
 // ============================================================================
 // 3x2 affine transform (column-major)
@@ -179,6 +181,8 @@ struct DrawBatch {
     float roundedClipRect[4]        = { 0, 0, 0, 0 }; // left, top, right, bottom
     float roundedClipCornerRadii[4] = { 0, 0, 0, 0 }; // TL, TR, BR, BL (in physical pixels)
     bool  roundedClipInverse = false;                 // true → keep outside, mask the interior
+    EllipticalClipSnapshot ellipticalClips;
+    size_t ellipticalClipByteOffset = 0;
 
     // Text-only: this batch is deformed (transform-scaled) text and must be drawn
     // with the bilinear text PSO (smooth sub-pixel positioning under animation, no
@@ -205,6 +209,9 @@ struct RoundedClipState {
     // Captured transform at push time so the clip can be projected to physical
     // pixels regardless of subsequent transform pushes/pops.
     Transform2D transform;
+    bool elliptical = false;
+    JaliumEllipticalRectClip ellipse {};
+    std::shared_ptr<const PathClip> path;
 };
 
 // ============================================================================
@@ -551,6 +558,11 @@ public:
     // back inside the rect). Used for outer-glow effects hugging an element.
     void PushRoundedClipExclude(float x, float y, float w, float h, float rx, float ry);
     void PopRoundedClip();
+    void PushEllipticalClip(const JaliumEllipticalRectClip& clip);
+    void PushPathClip(std::shared_ptr<const PathClip> clip);
+    void PushEllipticalClipExclude(const JaliumEllipticalRectClip& clip);
+    EllipticalClipSnapshot ResolveCurrentEllipticalClips() const;
+    void SetForcedEllipticalClips(EllipticalClipSnapshot clips) { forcedEllipticalClips_ = std::move(clips); }
     bool HasRoundedClip() const { return !roundedClipStack_.empty(); }
 
     // Forced rounded-clip override, used when replaying snapshotted Impeller
@@ -576,6 +588,7 @@ public:
     void ClearForcedRoundedClip() {
         forcedRoundedClipActive_ = false;
         forcedRoundedClipPresent_ = false;
+        forcedEllipticalClips_.reset();
     }
 
     // Resolves the innermost live rounded clip into physical-pixel rect/radii
@@ -648,6 +661,17 @@ public:
     uint64_t GetFenceCompletedValue() const { return fence_ ? fence_->GetCompletedValue() : 0; }
     uint64_t GetFrameFenceValue(UINT frameIndex) const { return frameIndex < frameCount_ ? frames_[frameIndex].fenceValue : 0; }
 
+    // Mid-frame effect growth can submit an auxiliary fence. Keep resources
+    // referenced by the open main list on its frame slot, not that auxiliary
+    // fence or a bitmap batch that FlushGraphicsForCompute may clear.
+    void KeepResourceAliveForFrame(ComPtr<ID3D12Resource> resource) {
+        if (resource) frames_[currentFrame_].retiredInstanceBuffers.push_back(std::move(resource));
+    }
+
+    // Serialized with drawing by the host; never waits for an unfinished GPU
+    // submission. Large working buffers are released only after a quiet period.
+    void ReclaimIdleResources();
+
     // Flush pending graphics draws so compute or external code can safely read
     // the current render target contents.  Called by D3D12RenderTarget before
     // effect capture / blur that need rasterised content on the back buffer.
@@ -661,9 +685,15 @@ public:
     // --- Vello GPU path renderer ---
     D3D12VelloRenderer* GetVelloRenderer() const { return velloEnabled_ ? velloRenderer_.get() : nullptr; }
     bool HasVelloPaths() const;
+    // True when the pending (un-dispatched) Vello content could share pixels
+    // with the given DIP-space rect under the CURRENT transform. False means
+    // the upcoming non-path draw is disjoint from every pending path, so the
+    // painter-order flush can be skipped.
+    bool VelloPendingHitsDipRect(float x, float y, float w, float h) const;
     void FlushVelloPaths();
     void ApplyScissorToVello();
     void SetVelloEnabled(bool enabled) { velloEnabled_ = enabled; }
+    uint32_t GetVelloDispatchCount() const { return velloDispatchCountThisFrame_; }
 
     // TEST-ONLY (#921 Vello-output regression self-check). Must be called with the
     // command list already open. Reproduces the 'JaliumVelloOutput' orphan and reports
@@ -740,7 +770,9 @@ private:
     bool CreateRootSignature();
     bool CreateFrameResources();
     bool CreateBlurResources();
+    bool EnsureBlurResources();
     bool CreateStencilPathResources();
+    bool EnsureStencilPathResources();
     // Rebuilds only the stencil/cover PSOs against the current
     // pathMsaaSampleCount_ (shaders + root sig + heaps are reused). Called once
     // from CreateStencilPathResources and again whenever the sample count
@@ -829,6 +861,8 @@ private:
     ComPtr<ID3D12Fence> fence_;
     HANDLE fenceEvent_ = nullptr;
     uint64_t nextFenceValue_ = 1;
+    uint64_t lastFrameSubmissionTickMs_ = 0;
+    void ReclaimCompletedFrameResources(uint64_t completedFenceValue);
 
     // ── Two-phase back-buffer readback (parity verification) ────────────
     // readbackPending_ arms the capture; EndFrame consumes it by calling
@@ -930,6 +964,13 @@ public:
     /// no-op when timing is disabled or no slot is available.
     void MarkGpuTimingPoint(GpuTimingCategory category);
 
+    /// Requests GPU timestamp collection for subsequent frames. The request is
+    /// lock-free so diagnostics can issue it from the UI thread; the query heap
+    /// and readback buffers are created later by BeginFrame on the render thread.
+    void RequestGpuTiming() {
+        timingRequested_.store(true, std::memory_order_release);
+    }
+
     struct GpuTimingSnapshot {
         uint64_t totalNs = 0;
         uint64_t categoryNs[static_cast<size_t>(GpuTimingCategory::kCount)] = {};
@@ -944,6 +985,7 @@ public:
     uint64_t GetLastFramePresentToReadyNs() const { return lastFramePresentToReadyNs_; }
     uint64_t GetLastFramePresentBlockNs() const { return lastFramePresentBlockNs_; }
 private:
+    bool EnsureGpuTimingResources();
     // Decode the previous frame's resolved timestamps and update
     // lastGpuTimingSnapshot_. Called from BeginFrame after fence wait
     // confirms the GPU resolved the queries.
@@ -952,6 +994,8 @@ private:
     static constexpr UINT kMaxTimingSlotsPerFrame = 512;
     ComPtr<ID3D12QueryHeap> timingQueryHeap_;
     bool timingSupported_ = false;
+    std::atomic<bool> timingRequested_{false};
+    bool timingInitializationAttempted_ = false;
     uint64_t timestampFrequency_ = 0;
     struct PerFrameTiming {
         ComPtr<ID3D12Resource> readback;
@@ -1102,6 +1146,7 @@ private:
     D3D12_RESOURCE_STATES pathMsaaColorState_   = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES pathResolveTexState_  = D3D12_RESOURCE_STATE_COMMON;
     bool  stencilPathReady_   = false;
+    bool  stencilPathInitAttempted_ = false;
 
     // Per-frame queue of stencil-path draws. DrawBatch references entries by
     // index (DrawBatch::instanceOffset). Cleared each BeginFrame.
@@ -1181,6 +1226,9 @@ private:
     std::stack<D3D12_RECT> scissorStack_;
     std::stack<Transform2D> transformStack_;
     std::vector<RoundedClipState> roundedClipStack_;
+    mutable EllipticalClipSnapshot cachedEllipticalClips_;
+    EllipticalClipSnapshot forcedEllipticalClips_;
+    void BindRoundedClip(const DrawBatch& batch, UINT constantsSlot, UINT bufferSlot);
 
     // Forced rounded-clip override (see SetForcedRoundedClip).  When active,
     // ResolveRoundedClipForBatch short-circuits to this snapshot instead of
@@ -1274,6 +1322,7 @@ private:
     // Vello GPU path renderer
     std::unique_ptr<D3D12VelloRenderer> velloRenderer_;
     bool velloEnabled_ = true;
+    uint32_t velloDispatchCountThisFrame_ = 0;
 
     // Swap chain format (queried at init, used for PSO creation)
     DXGI_FORMAT swapChainFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1398,6 +1447,7 @@ private:
     D3D12_RESOURCE_STATES blurTempAState_ = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES blurTempBState_ = D3D12_RESOURCE_STATE_COMMON;
     bool blurResourcesReady_ = false;
+    bool blurResourcesInitAttempted_ = false;
     bool blurTempsUsedThisFrame_ = false;
     // [#921] Set once the path-stencil MSAA scratch (pathMsaaColor_/Depth_/
     // pathResolveTexture_) has been bound into the open command list this frame;

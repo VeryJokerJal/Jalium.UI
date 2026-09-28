@@ -9,6 +9,7 @@ public sealed class NativeBrush : IDisposable
 {
     private nint _handle;
     private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for thread-safety)
+    private RenderContext.BackendResourceLease? _contextLease;
 
     /// <summary>
     /// Gets the native handle.
@@ -84,10 +85,21 @@ public sealed class NativeBrush : IDisposable
         B = b;
         A = a;
 
-        _handle = NativeMethods.BrushCreateSolid(context.Handle, r, g, b, a);
-        if (_handle == nint.Zero)
+        RenderContext.BackendResourceLease? lease = context.AcquireBackendResourceLease();
+        try
         {
-            throw new InvalidOperationException("Failed to create brush");
+            _handle = NativeMethods.BrushCreateSolid(context.Handle, r, g, b, a);
+            if (_handle == nint.Zero)
+            {
+                throw new InvalidOperationException("Failed to create brush");
+            }
+
+            _contextLease = lease;
+            lease = null;
+        }
+        finally
+        {
+            lease?.Dispose();
         }
     }
 
@@ -95,8 +107,21 @@ public sealed class NativeBrush : IDisposable
         float startX, float startY, float endX, float endY,
         float[] stops, uint stopCount, uint extendMode = 0)
     {
-        _handle = NativeMethods.BrushCreateLinearGradient(
-            context.Handle, startX, startY, endX, endY, stops, stopCount, extendMode);
+        RenderContext.BackendResourceLease? lease = context.AcquireBackendResourceLease();
+        try
+        {
+            _handle = NativeMethods.BrushCreateLinearGradient(
+                context.Handle, startX, startY, endX, endY, stops, stopCount, extendMode);
+            if (_handle != nint.Zero)
+            {
+                _contextLease = lease;
+                lease = null;
+            }
+        }
+        finally
+        {
+            lease?.Dispose();
+        }
     }
 
     internal NativeBrush(RenderContext context,
@@ -104,9 +129,22 @@ public sealed class NativeBrush : IDisposable
         float originX, float originY,
         float[] stops, uint stopCount, uint extendMode = 0)
     {
-        _handle = NativeMethods.BrushCreateRadialGradient(
-            context.Handle, centerX, centerY, radiusX, radiusY,
-            originX, originY, stops, stopCount, extendMode);
+        RenderContext.BackendResourceLease? lease = context.AcquireBackendResourceLease();
+        try
+        {
+            _handle = NativeMethods.BrushCreateRadialGradient(
+                context.Handle, centerX, centerY, radiusX, radiusY,
+                originX, originY, stops, stopCount, extendMode);
+            if (_handle != nint.Zero)
+            {
+                _contextLease = lease;
+                lease = null;
+            }
+        }
+        finally
+        {
+            lease?.Dispose();
+        }
     }
 
     /// <inheritdoc />
@@ -114,18 +152,46 @@ public sealed class NativeBrush : IDisposable
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
 
-        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
-        if (handle != nint.Zero)
+        try
         {
-            NativeMethods.BrushDestroy(handle);
+            var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+            if (handle != nint.Zero)
+            {
+                NativeMethods.BrushDestroy(handle);
+            }
         }
-
-        GC.SuppressFinalize(this);
+        finally
+        {
+            ReleaseContextLease();
+            GC.SuppressFinalize(this);
+        }
     }
 
     ~NativeBrush()
     {
-        Volatile.Write(ref _disposed, 1);
-        Volatile.Write(ref _handle, nint.Zero);
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+        try
+        {
+            if (handle != nint.Zero)
+            {
+                NativeMethods.BrushDestroy(handle);
+            }
+        }
+        catch
+        {
+            // Finalizers must not surface native cleanup failures.
+        }
+        finally
+        {
+            ReleaseContextLease();
+        }
     }
+
+    private void ReleaseContextLease()
+        => Interlocked.Exchange(ref _contextLease, null)?.Dispose();
 }

@@ -11,9 +11,11 @@
 struct GlyphInstance
 {
     float2 pos;     // screen-space top-left, physical px (matches VkGlyphInstance posX/posY)
-    float2 size;    // quad size, physical px (sizeX/sizeY)
+    float2 size;    // basis diagonal: X-axis.x, Y-axis.y
+    float2 skew;    // basis off-diagonal: Y-axis.x, X-axis.y
     float2 uvMin;   // atlas UV top-left, normalized (uvMinX/uvMinY)
     float2 uvMax;   // atlas UV bottom-right, normalized (uvMaxX/uvMaxY)
+    float2 padding; // std430 aligns color to offset 48; total stride = 64
     float4 color;   // premultiplied RGBA; colorR < 0 = colour-emoji sentinel
 };
 
@@ -61,7 +63,9 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     const GlyphInstance g = gGlyphs[instanceId];
     const float2 corner = corners[vertexId];
 
-    const float2 pixelPosition = g.pos + corner * g.size;
+    const float2 pixelPosition = g.pos +
+        corner.x * float2(g.size.x, g.skew.y) +
+        corner.y * float2(g.skew.x, g.size.y);
     const float2 screenSize = max(gPushConstants.screenSize, float2(1.0f, 1.0f));
 
     VsOutput output;

@@ -1,4 +1,5 @@
 #pragma once
+#include "jalium_font_resource.h"
 
 #include "jalium_backend.h"
 #include "vulkan_minimal.h"
@@ -197,7 +198,7 @@ private:
     std::atomic<bool> needsInitialTransition_{true};
 };
 
-class VulkanTextFormat : public TextFormat {
+class VulkanTextFormat : public TextFormat, public FontUnitMetricsProvider, public FontMathConstantsProvider {
 public:
 #ifdef _WIN32
     VulkanTextFormat(
@@ -231,6 +232,8 @@ public:
         JaliumTextMetrics* metrics) override;
 
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+    JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) override;
+    JaliumResult GetFontMathConstants(JaliumFontMathConstants* constants) override;
 
     JaliumResult HitTestPoint(
         const wchar_t* text, uint32_t textLength,
@@ -295,6 +298,7 @@ private:
 #endif
 
     std::wstring fontFamily_;
+    FontResourceReference registeredFont_;
     float fontSize_ = 12.0f;
     int32_t fontWeight_ = 400;
     int32_t fontStyle_ = 0;

@@ -17,6 +17,13 @@ struct PsInput
     nointerpolation float4 shapeParams : TEXCOORD8;  // x=shapeType, y=shapeN, z=shadowMode, w=paintMode
     nointerpolation float  shadowSigma : TEXCOORD9;  // gaussian sigma (screen px), used when shadowMode>0.5
     nointerpolation float  gradientOpacity : TEXCOORD10;
+    // Coverage-band widening, computed once per instance in the VS from the
+    // 2x3 affine: 1.0 when axis-aligned (bit-identical to the legacy path),
+    // rising to 1.4 once the rotation/skew passes ~3.6 degrees. See the VS for
+    // why a shallow rotation needs a wider box filter than the exact 1px one.
+    nointerpolation float  aaScale     : TEXCOORD11;
+    nointerpolation float4 cornerRadiusY : TEXCOORD12;
+    nointerpolation float4 effectParams : TEXCOORD13;
 };
 
 ByteAddressBuffer gradientStopData : register(t2);
@@ -27,6 +34,43 @@ float sdRoundedBox(float2 p, float2 b, float4 r)
     r.x  = (p.y > 0.0) ? r.x  : r.y;
     float2 q = abs(p) - b + r.x;
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r.x;
+}
+
+float sdEllipticalRoundedBox(float2 p, float2 halfSize, float4 radiusX, float4 radiusY)
+{
+    uint corner = (p.y < 0.0)
+        ? ((p.x < 0.0) ? 0u : 1u)
+        : ((p.x >= 0.0) ? 2u : 3u);
+    float2 radius = float2(
+        min(max(radiusX[corner], 0.0), halfSize.x),
+        min(max(radiusY[corner], 0.0), halfSize.y));
+    float2 edgeDistance = halfSize - abs(p);
+    float distance = max(-edgeDistance.x, -edgeDistance.y);
+    if (all(radius > 0.0) && edgeDistance.x < radius.x && edgeDistance.y < radius.y)
+    {
+        float2 q = (edgeDistance - radius) / radius;
+        float len = length(q);
+        float gradient = length(q / radius);
+        if (gradient > 0.0) distance = max(distance, len * (len - 1.0) / gradient);
+    }
+    return distance;
+}
+
+float InsetSpreadRadius(float radius, float spread)
+{
+    if (spread >= 0.0) return max(0.0, radius - spread);
+    const float expansion = -spread;
+    const float delta = radius / expansion - 1.0;
+    const float correction = radius < expansion ? 1.0 + delta * delta * delta : 1.0;
+    return radius + expansion * correction;
+}
+
+float4 InsetSpreadRadii(float4 radii, float spread)
+{
+    return float4(InsetSpreadRadius(radii.x, spread),
+                  InsetSpreadRadius(radii.y, spread),
+                  InsetSpreadRadius(radii.z, spread),
+                  InsetSpreadRadius(radii.w, spread));
 }
 
 // erf approximation (Abramowitz & Stegun 7.1.26); max abs error ~1.5e-7 on [-6,6] << 1/255.
@@ -117,8 +161,10 @@ float4 main(PsInput input) : SV_Target
         cornerRadii.w);
 
     float dist;
-    if (input.shapeParams.z > 0.5)
-        dist = sdRoundedBox(p, halfSize, r);            // shadow forced to rounded-box SDF (orthogonal to SuperEllipse)
+    if (input.shapeParams.z > 1.5)
+        dist = sdEllipticalRoundedBox(p, halfSize, cornerRadii, input.cornerRadiusY);
+    else if (input.shapeParams.z > 0.5)
+        dist = sdRoundedBox(p, halfSize, r);            // scalar shadow path
     else if (input.shapeParams.x > 1.5)
         dist = JaliumSdFullSuperellipse(p, halfSize, input.shapeParams.y); // internal true ellipse/full Lam? primitive
     else if (input.shapeParams.x > 0.5)
@@ -126,6 +172,27 @@ float4 main(PsInput input) : SV_Target
             p, halfSize, cornerRadii, cornerRadii, input.shapeParams.y);
     else
         dist = sdRoundedBox(p, halfSize, r);
+
+    // Analytic inner shadow. The exact outer contour clips the result; the shifted contour's
+    // signed distance supplies distance from the inset edge. Positive spread widens the band.
+    if (input.shapeParams.z > 2.5)
+    {
+        float2 shiftedP = p - input.effectParams.xy;
+        const float spread = input.effectParams.z;
+        const float2 shadowHalf = max(halfSize - spread, 0.0);
+        float shiftedDist = sdEllipticalRoundedBox(
+            shiftedP, shadowHalf,
+            InsetSpreadRadii(max(input.cornerRadius, 0.0), spread),
+            InsetSpreadRadii(max(input.cornerRadiusY, 0.0), spread));
+        float sigma = max(input.shadowSigma, 0.5);
+        float cov = 0.5 + 0.5 * erf_approx(
+            shiftedDist / (1.4142135 * sigma));
+        float aa = max(fwidth(dist), 0.0001);
+        float inside = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, dist);
+        float4 outc = input.fillColor * (cov * inside * clipCoverage);
+        if (outc.a < 1.0 / 255.0) discard;
+        return outc;
+    }
 
     // Soft drop-shadow / outer-glow: analytic Gaussian falloff from the rounded-rect SDF.
     // coverage = 0.5*(1 - erf(dist/(sqrt(2)*sigma))) -> single draw, single over-blend,
@@ -150,6 +217,7 @@ float4 main(PsInput input) : SV_Target
             p, halfSize, cornerRadii, cornerRadii, input.shapeParams.y);
     else
         aa = JaliumSdfAaWidth(dist);
+    aa *= input.aaScale;
     float fillAlpha = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, dist);
 
     float4 fill;
@@ -228,6 +296,7 @@ float4 main(PsInput input) : SV_Target
             centerDist = sdRoundedBox(p, centerHalf, centerR);
             centerAa = JaliumSdfAaWidth(centerDist);
         }
+        centerAa *= input.aaScale;
 
         const float strokeDistance = abs(centerDist) - halfStroke;
         const float borderMask =

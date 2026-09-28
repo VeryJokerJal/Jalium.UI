@@ -2,6 +2,7 @@
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -311,10 +312,12 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
 
     #region Template Parts
 
+    private Border? _rootBorder;
     private FrameworkElement? _trackBorder;
     private FrameworkElement? _selectionRangeBorder;
     private FrameworkElement? _thumbBorder;
     private SegmentedTrackBar? _segmentBar;
+    private Border? _cssBorderPainter;
 
     #endregion
 
@@ -422,6 +425,7 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
     {
         base.OnApplyTemplate();
 
+        _rootBorder = GetTemplateChild("PART_Root") as Border;
         _trackBorder = GetTemplateChild("PART_Track") as FrameworkElement;
         _selectionRangeBorder = GetTemplateChild("PART_SelectionRange") as FrameworkElement;
         _thumbBorder = GetTemplateChild("PART_Thumb") as FrameworkElement;
@@ -439,13 +443,14 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
         if (_thumbBorder == null) return;
 
         var percentage = GetVisualPercentage(val);
+        var content = GetContentBounds();
 
         if (Orientation == Orientation.Horizontal)
         {
             // OnApplyTemplate runs before the first arrange, when RenderSize is
             // commonly zero. Never write a negative computed Width into a
             // template child; FrameworkElement correctly rejects such sizes.
-            var trackWidth = Math.Max(0, RenderSize.Width - ThumbSize);
+            var trackWidth = ControlRenderGeometry.GetTrackLength(content.Width, ThumbSize);
             var thumbX = percentage * trackWidth;
 
             _thumbBorder.Margin = new Thickness(thumbX, 0, 0, 0);
@@ -462,7 +467,7 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
         }
         else
         {
-            var trackHeight = Math.Max(0, RenderSize.Height - ThumbSize);
+            var trackHeight = ControlRenderGeometry.GetTrackLength(content.Height, ThumbSize);
             var thumbY = (1 - percentage) * trackHeight;
 
             _thumbBorder.Margin = new Thickness(0, thumbY, 0, 0);
@@ -478,6 +483,18 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
                 _selectionRangeBorder.VerticalAlignment = VerticalAlignment.Top;
             }
         }
+    }
+
+    private Rect GetContentBounds()
+    {
+        if (_thumbBorder != null && _rootBorder == null)
+            return new Rect(RenderSize);
+
+        var border = BorderThickness;
+        var padding = Padding;
+        return ControlRenderGeometry.GetContentRect(new Rect(RenderSize), new Thickness(
+            border.Left + padding.Left, border.Top + padding.Top,
+            border.Right + padding.Right, border.Bottom + padding.Bottom));
     }
 
     /// <summary>
@@ -524,16 +541,21 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
     {
         // MUST measure template children so they get correct PreviousAvailableSize.
         base.MeasureOverride(availableSize);
+        var horizontalChrome = Math.Max(0, BorderThickness.TotalWidth + Padding.TotalWidth);
+        var verticalChrome = Math.Max(0, BorderThickness.TotalHeight + Padding.TotalHeight);
 
         if (Orientation == Orientation.Horizontal)
         {
             var height = double.IsNaN(Height) || Height <= 0 ? 24 : Height;
-            return new Size(Math.Min(availableSize.Width, double.IsPositiveInfinity(availableSize.Width) ? 200 : availableSize.Width), height);
+            return new Size(Math.Min(availableSize.Width,
+                double.IsPositiveInfinity(availableSize.Width) ? 200 + horizontalChrome : availableSize.Width),
+                height + verticalChrome);
         }
         else
         {
             var width = double.IsNaN(Width) || Width <= 0 ? 24 : Width;
-            return new Size(width, Math.Min(availableSize.Height, double.IsPositiveInfinity(availableSize.Height) ? 200 : availableSize.Height));
+            return new Size(width + horizontalChrome, Math.Min(availableSize.Height,
+                double.IsPositiveInfinity(availableSize.Height) ? 200 + verticalChrome : availableSize.Height));
         }
     }
 
@@ -779,18 +801,19 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
         var range = Maximum - Minimum;
         if (range <= 0) return Minimum;
 
+        var content = GetContentBounds();
         double percentage;
         if (Orientation == Orientation.Horizontal)
         {
-            var trackWidth = RenderSize.Width - ThumbSize;
+            var trackWidth = content.Width - ThumbSize;
             if (trackWidth <= 0) return Value;
-            percentage = (position.X - ThumbSize / 2) / trackWidth;
+            percentage = (position.X - content.Left - ThumbSize / 2) / trackWidth;
         }
         else
         {
-            var trackHeight = RenderSize.Height - ThumbSize;
+            var trackHeight = content.Height - ThumbSize;
             if (trackHeight <= 0) return Value;
-            percentage = 1 - (position.Y - ThumbSize / 2) / trackHeight;
+            percentage = 1 - (position.Y - content.Top - ThumbSize / 2) / trackHeight;
         }
 
         percentage = Math.Clamp(percentage, 0, 1);
@@ -837,19 +860,20 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
     private Rect GetThumbRect()
     {
         var percentage = GetVisualPercentage(Value);
+        var content = GetContentBounds();
 
         if (Orientation == Orientation.Horizontal)
         {
-            var trackWidth = ControlRenderGeometry.GetTrackLength(RenderSize.Width, ThumbSize);
-            var thumbX = percentage * trackWidth;
-            var thumbY = (RenderSize.Height - ThumbSize) / 2;
+            var trackWidth = ControlRenderGeometry.GetTrackLength(content.Width, ThumbSize);
+            var thumbX = content.Left + percentage * trackWidth;
+            var thumbY = content.Top + (content.Height - ThumbSize) / 2;
             return new Rect(thumbX, thumbY, ThumbSize, ThumbSize);
         }
         else
         {
-            var trackHeight = ControlRenderGeometry.GetTrackLength(RenderSize.Height, ThumbSize);
-            var thumbY = (1 - percentage) * trackHeight;
-            var thumbX = (RenderSize.Width - ThumbSize) / 2;
+            var trackHeight = ControlRenderGeometry.GetTrackLength(content.Height, ThumbSize);
+            var thumbY = content.Top + (1 - percentage) * trackHeight;
+            var thumbX = content.Left + (content.Width - ThumbSize) / 2;
             return new Rect(thumbX, thumbY, ThumbSize, ThumbSize);
         }
     }
@@ -869,7 +893,26 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
 
         var dc = drawingContext;
 
-        var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
+        var bounds = GetContentBounds();
+
+        if (Background is { } background)
+        {
+            var outer = new Rect(RenderSize);
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            if (cssRadius is null && GetEffectiveValueLayer(BackgroundProperty) is not
+                    (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                dc.DrawRoundedRectangle(background, null, outer, CornerRadius);
+            else
+            {
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(outer, radii);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background,
+                        dc, outer, radii, BorderThickness, Padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
+        }
 
         if (TrackMode == SliderTrackMode.Segmented)
         {
@@ -894,6 +937,13 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
 
         // Draw thumb
         DrawThumb(dc);
+    }
+
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (_thumbBorder == null)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     private void DrawTrack(DrawingContext dc, Rect bounds)
@@ -1008,6 +1058,13 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
     #endregion
 
     #region Property Changed Callbacks
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == BorderThicknessProperty || e.Property == PaddingProperty)
+            UpdateSliderLayout();
+    }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {

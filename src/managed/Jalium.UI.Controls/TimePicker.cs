@@ -3,6 +3,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -116,6 +117,7 @@ public class TimePicker : Control
     private const double DefaultHeight = 32;
     private const double DropdownButtonWidth = 32;
     private Rect _dropdownButtonRect;
+    private Border? _cssBorderPainter;
 
     // Popup
     private Popup? _popup;
@@ -587,13 +589,17 @@ public class TimePicker : Control
 
         if (Header is string headerText)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+            var headerFormatted = new FormattedText(headerText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
             TextMeasurement.MeasureText(headerFormatted);
             headerHeight = headerFormatted.Height + 4;
         }
 
-        var width = double.IsPositiveInfinity(availableSize.Width) ? 150 : availableSize.Width;
-        var height = DefaultHeight + headerHeight;
+        var cssEdges = UsesCssBoxGeometry();
+        var width = double.IsPositiveInfinity(availableSize.Width)
+            ? 150 + (cssEdges ? BorderThickness.TotalWidth + Padding.TotalWidth : 0)
+            : availableSize.Width;
+        var height = DefaultHeight + headerHeight +
+            (cssEdges ? BorderThickness.TotalHeight + Padding.TotalHeight : 0);
 
         return new Size(width, height);
     }
@@ -608,36 +614,59 @@ public class TimePicker : Control
 
         var rect = new Rect(RenderSize);
         var padding = Padding;
+        var border = BorderThickness;
         var cornerRadius = CornerRadius;
+        var cssEdges = UsesCssBoxGeometry();
         var headerHeight = 0.0;
 
-        // Draw header
-        if (Header is string headerText && Foreground != null)
+        // CSS background layers cover the complete picker box, including its header.
+        var cssBackgroundDrawn = false;
+        if (Background is { } cssBackground)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
-            {
-                Foreground = Foreground
-            };
-            TextMeasurement.MeasureText(headerFormatted);
-            dc.DrawText(headerFormatted, new Point(0, 0));
-            headerHeight = headerFormatted.Height + 4;
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize);
+            var shape = new CssRoundedRectangleGeometry(rect, radii);
+            cssBackgroundDrawn = CssBackgroundPainter.TryDraw(this, BackgroundProperty,
+                cssBackground, dc, rect, radii, border, padding,
+                brush => dc.DrawGeometry(brush, null, shape));
         }
 
+        // Draw header
+        if (Header is string headerText)
+        {
+            var headerFormatted = new FormattedText(headerText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
+            TextMeasurement.MeasureText(headerFormatted);
+            headerHeight = headerFormatted.Height + 4;
+            if (Foreground != null && FontSize > 0)
+            {
+                headerFormatted.Foreground = Foreground;
+                dc.DrawText(headerFormatted, cssEdges
+                    ? new Point(border.Left + padding.Left, border.Top + padding.Top)
+                    : new Point(0, 0));
+            }
+        }
+
+        var contentRect = cssEdges
+            ? ControlRenderGeometry.GetContentRect(rect, new Thickness(
+                border.Left + padding.Left, border.Top + padding.Top,
+                border.Right + padding.Right, border.Bottom + padding.Bottom))
+            : rect;
         var inputRect = ControlRenderGeometry.GetContentRect(
-            rect, new Thickness(0, headerHeight, 0, 0));
-        var strokeThickness = BorderThickness.Left;
-        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+            contentRect, new Thickness(0, headerHeight, 0, 0));
+        var strokeThickness = border.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(
+            cssEdges ? rect : inputRect, strokeThickness);
         var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background
-        if (Background != null)
+        if (!cssBackgroundDrawn && Background is { } background)
         {
-            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
+            dc.DrawRoundedRectangle(background, null, borderRect, borderRadius);
         }
 
         // Draw border
         var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
-        if (borderBrush != null && BorderThickness.TotalWidth > 0)
+        if (CssBorderPaintProperties.Get(this) is null && borderBrush != null && border.TotalWidth > 0)
         {
             var pen = new Pen(borderBrush, strokeThickness);
             dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
@@ -660,19 +689,35 @@ public class TimePicker : Control
             textBrush = ResolvePlaceholderBrush();
         }
 
-        var textFormatted = new FormattedText(displayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+        var textFormatted = new FormattedText(displayText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = textBrush
         };
         TextMeasurement.MeasureText(textFormatted);
 
         var textY = inputRect.Top + (inputRect.Height - textFormatted.Height) / 2;
-        dc.DrawText(textFormatted, new Point(padding.Left, textY));
+        if (FontSize > 0)
+            dc.DrawText(textFormatted, new Point(cssEdges ? inputRect.Left : padding.Left, textY));
 
         // Draw dropdown button
         _dropdownButtonRect = ControlRenderGeometry.GetTrailingRect(inputRect, DropdownButtonWidth);
         DrawDropdownButton(dc, _dropdownButtonRect);
     }
+
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+    }
+
+    private bool UsesCssBoxGeometry()
+        => GetEffectiveValueLayer(BorderThicknessProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(PaddingProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(BackgroundProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           CssBorderRadiusProperties.Get(this) is not null;
 
     private Brush ResolveFocusedBorderBrush()
     {

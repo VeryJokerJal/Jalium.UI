@@ -84,7 +84,7 @@ public sealed class Polyline : Shape
         if (points == null || points.Count < 2)
             return;
 
-        var fill = Fill;
+        var fill = ResolveFillBrush();
         var stroke = Stroke;
 
         if (fill == null && stroke == null)
@@ -107,6 +107,8 @@ public sealed class Polyline : Shape
                 pen.DashStyle = new DashStyle(dashArray, StrokeDashOffset);
             }
         }
+
+        pen = ResolveStrokePen(pen);
 
         var geometry = EnsureGeometry();
         if (geometry == null) return;

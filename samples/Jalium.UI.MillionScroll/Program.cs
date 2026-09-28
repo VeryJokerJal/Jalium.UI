@@ -133,6 +133,7 @@ internal sealed class MillionScrollWindow
     private readonly RenderingEngine _actualEngine;
     private readonly Stopwatch _benchmarkClock = new();
     private readonly List<FrameHistory.Sample> _benchmarkSamples = [];
+    private readonly List<RenderDiagnostics.GpuTimingSnapshot> _benchmarkGpuSamples = [];
     private readonly FrameHistory.Sample[] _historyBuffer = new FrameHistory.Sample[FrameHistory.Capacity];
 
     private ScrollViewer? _scrollViewer;
@@ -143,6 +144,7 @@ internal sealed class MillionScrollWindow
     private bool _benchmarkStarted;
     private bool _benchmarkMeasuring;
     private long _lastCollectedFrame;
+    private DateTime _lastCollectedGpuTimestamp;
     private long _benchmarkStartMemory;
     private long _benchmarkStartAllocatedBytes;
     private readonly int[] _benchmarkStartGc = new int[3];
@@ -490,6 +492,10 @@ internal sealed class MillionScrollWindow
         _benchmarkStarted = true;
         _autoScrollEnabled = true;
         SetButtonText(_autoButton, "Stop auto scroll");
+        // Hardware timestamp readback is opt-in. Enabling it only for an
+        // explicit benchmark keeps normal sample runs free of query overhead
+        // while giving Vello/Impeller comparisons direct GPU evidence.
+        RenderDiagnostics.ApiStatsEnabled = true;
         _autoScrollTimer.Start();
         _benchmarkClock.Restart();
         _benchmarkTimer.Start();
@@ -526,8 +532,10 @@ internal sealed class MillionScrollWindow
         }
 
         _benchmarkSamples.Clear();
+        _benchmarkGpuSamples.Clear();
         _window.FrameHistory.Clear();
         _lastCollectedFrame = 0;
+        _lastCollectedGpuTimestamp = default;
         _benchmarkStartMemory = GC.GetTotalMemory(false);
         _benchmarkStartAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
         for (var generation = 0; generation < _benchmarkStartGc.Length; generation++)
@@ -556,6 +564,13 @@ internal sealed class MillionScrollWindow
             _benchmarkSamples.Add(_historyBuffer[i]);
         }
         _lastCollectedFrame = totalFrames;
+
+        var gpu = RenderDiagnostics.LatestGpuTiming;
+        if (gpu is { Valid: true } && gpu.Timestamp > _lastCollectedGpuTimestamp)
+        {
+            _benchmarkGpuSamples.Add(gpu);
+            _lastCollectedGpuTimestamp = gpu.Timestamp;
+        }
     }
 
     private void FinishBenchmark()
@@ -594,7 +609,7 @@ internal sealed class MillionScrollWindow
 
         var result = new
         {
-            schemaVersion = 2,
+            schemaVersion = 3,
             startedUtc = _measurementStartedUtc,
             backend = _actualBackend.ToString(),
             engine = _actualEngine.ToString(),
@@ -609,6 +624,17 @@ internal sealed class MillionScrollWindow
             layoutMs = Distribution(_benchmarkSamples, static sample => sample.LayoutMs),
             renderMs = Distribution(_benchmarkSamples, static sample => sample.RenderMs),
             presentMs = Distribution(_benchmarkSamples, static sample => sample.PresentMs),
+            gpuTimingAvailable = _benchmarkGpuSamples.Count > 0,
+            gpuTimingSamples = _benchmarkGpuSamples.Count,
+            gpuMs = new
+            {
+                total = Distribution(_benchmarkGpuSamples, static sample => sample.TotalGpuNs / 1_000_000.0),
+                path = Distribution(_benchmarkGpuSamples, static sample => sample.PathNs / 1_000_000.0),
+                sdfRect = Distribution(_benchmarkGpuSamples, static sample => sample.SdfRectNs / 1_000_000.0),
+                text = Distribution(_benchmarkGpuSamples, static sample => sample.TextNs / 1_000_000.0),
+                bitmap = Distribution(_benchmarkGpuSamples, static sample => sample.BitmapNs / 1_000_000.0),
+                other = Distribution(_benchmarkGpuSamples, static sample => sample.OtherNs / 1_000_000.0),
+            },
             trend = new
             {
                 earlyMedianMs = earlyMedian,
@@ -651,9 +677,9 @@ internal sealed class MillionScrollWindow
         }
     }
 
-    private static object Distribution(
-        IReadOnlyList<FrameHistory.Sample> samples,
-        Func<FrameHistory.Sample, double> selector) => new
+    private static object Distribution<T>(
+        IReadOnlyList<T> samples,
+        Func<T, double> selector) => new
     {
         p50 = Percentile(samples, 0, samples.Count, 0.50, selector),
         p95 = Percentile(samples, 0, samples.Count, 0.95, selector),
@@ -661,12 +687,12 @@ internal sealed class MillionScrollWindow
         max = Percentile(samples, 0, samples.Count, 1.00, selector),
     };
 
-    private static double Percentile(
-        IReadOnlyList<FrameHistory.Sample> samples,
+    private static double Percentile<T>(
+        IReadOnlyList<T> samples,
         int start,
         int count,
         double percentile,
-        Func<FrameHistory.Sample, double> selector)
+        Func<T, double> selector)
     {
         if (count <= 0)
         {

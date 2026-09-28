@@ -44,6 +44,8 @@ public sealed class JaliumApp : IHost
     private Application? _application;
     private Func<Application>? _applicationFactory;
     private bool _disposed;
+    private int _hostedState; // 0 = not started, 1 = running, 2 = stopped
+    private int _hostedExitCode;
 
     internal JaliumApp(IHost host, Action<Application>[] configureApplication, string[]? args)
     {
@@ -309,6 +311,96 @@ public sealed class JaliumApp : IHost
         }
 
         return exitCode;
+    }
+
+    /// <summary>
+    /// Starts the host and Jalium application without entering an operating-
+    /// system message loop. Use this from AppKit/UIKit application delegates,
+    /// where the platform owns the main run loop.
+    /// </summary>
+    public void StartHosted()
+    {
+        var args = _args ?? System.Environment.GetCommandLineArgs().Skip(1).ToArray();
+        StartHosted(args);
+    }
+
+    /// <summary>
+    /// Starts the host and application with explicit startup arguments, shows
+    /// the startup window, and returns control to the external platform host.
+    /// </summary>
+    public void StartHosted(string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (Interlocked.CompareExchange(ref _hostedState, 1, 0) != 0)
+            throw new InvalidOperationException("The hosted application has already been started.");
+
+        EnsureApplication();
+        bool hostStarted = false;
+        try
+        {
+            using (StartupDiagnostics.Begin("JaliumApp.HostStart", blocksUiThread: true))
+            {
+                RunHostOperationBlocking(() => _host.StartAsync(CancellationToken.None));
+                hostStarted = true;
+            }
+
+            _application!.StartHosted(args);
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _hostedState, 2);
+            if (hostStarted)
+            {
+                try
+                {
+                    RunHostOperationBlocking(() => _host.StopAsync(CancellationToken.None));
+                }
+                catch
+                {
+                    // Preserve the startup exception.
+                }
+            }
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Stops an externally hosted application, raises its Exit event, tears
+    /// down rendering state, stops the generic host, and disposes this object.
+    /// </summary>
+    /// <returns>The final exit code after Exit handlers have run.</returns>
+    public int StopHosted(int exitCode = 0)
+    {
+        int state = Volatile.Read(ref _hostedState);
+        if (state == 2)
+            return Volatile.Read(ref _hostedExitCode);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (state == 0)
+            throw new InvalidOperationException("The hosted application has not been started.");
+        if (Interlocked.CompareExchange(ref _hostedState, 2, 1) != 1)
+            return Volatile.Read(ref _hostedExitCode);
+
+        int finalExitCode = exitCode;
+        try
+        {
+            finalExitCode = _application?.StopHosted(exitCode) ?? exitCode;
+            Volatile.Write(ref _hostedExitCode, finalExitCode);
+        }
+        finally
+        {
+            try
+            {
+                RunHostOperationBlocking(() => _host.StopAsync(CancellationToken.None));
+            }
+            catch
+            {
+                // The UI side has already shut down; do not hide its exit code.
+            }
+            Dispose();
+        }
+
+        return finalExitCode;
     }
 
     /// <summary>

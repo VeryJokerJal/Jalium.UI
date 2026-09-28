@@ -42,20 +42,20 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)bin\native-static\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native-static\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\static\</IntDir>
     <TargetName>jalium.native.vulkan.static</TargetName>
     <JaliumSdkRoot Condition="'$(JALIUM_SDK_ROOT)' != ''">$(JALIUM_SDK_ROOT)</JaliumSdkRoot>
-    <JaliumSdkRoot Condition="'$(JaliumSdkRoot)' == ''">$(SolutionDir)..\..\..\Jalium.SDK</JaliumSdkRoot>
+    <JaliumSdkRoot Condition="'$(JaliumSdkRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\Jalium.SDK</JaliumSdkRoot>
     <VulkanSdkRoot Condition="'$(VULKAN_SDK)' != ''">$(VULKAN_SDK)</VulkanSdkRoot>
     <VulkanSdkRoot Condition="'$(VulkanSdkRoot)' == ''">$(JaliumSdkRoot)\VulkanSDK\1.4.341.1</VulkanSdkRoot>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)bin\native-static\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native-static\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\static\</IntDir>
     <TargetName>jalium.native.vulkan.static</TargetName>
     <JaliumSdkRoot Condition="'$(JALIUM_SDK_ROOT)' != ''">$(JALIUM_SDK_ROOT)</JaliumSdkRoot>
-    <JaliumSdkRoot Condition="'$(JaliumSdkRoot)' == ''">$(SolutionDir)..\..\..\Jalium.SDK</JaliumSdkRoot>
+    <JaliumSdkRoot Condition="'$(JaliumSdkRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\Jalium.SDK</JaliumSdkRoot>
     <VulkanSdkRoot Condition="'$(VULKAN_SDK)' != ''">$(VULKAN_SDK)</VulkanSdkRoot>
     <VulkanSdkRoot Condition="'$(VulkanSdkRoot)' == ''">$(JaliumSdkRoot)\VulkanSDK\1.4.341.1</VulkanSdkRoot>
   </PropertyGroup>
@@ -63,7 +63,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>JALIUM_STATIC;WIN32_LEAN_AND_MEAN;NOMINMAX;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>JALIUM_STATIC;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -76,7 +76,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>JALIUM_STATIC;WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>JALIUM_STATIC;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -96,9 +96,20 @@
     <ClInclude Include="include\vulkan_render_target.h" />
     <ClInclude Include="include\vulkan_resources.h" />
     <ClInclude Include="include\vulkan_runtime.h" />
+    <ClInclude Include="include\vulkan_environment.h" />
     <ClInclude Include="include\vulkan_shader_compiler.h" />
     <ClInclude Include="include\vulkan_vello_compute.h" />
     <ClInclude Include="include\vulkan_vello_engine.h" />
+    <ClInclude Include="include\vulkan_bitmap_lcd_shaders.h" />
+    <ClInclude Include="include\vulkan_bitmap_premul_shaders.h" />
+    <ClInclude Include="include\vulkan_effect_builtin_shaders.h" />
+    <ClInclude Include="include\vulkan_impeller_shaders.h" />
+    <ClInclude Include="include\vulkan_ink_composite_shaders.h" />
+    <ClInclude Include="include\vulkan_lcd_staging.h" />
+    <ClInclude Include="include\vulkan_minimal.h" />
+    <ClInclude Include="include\vulkan_triangle_vc_shaders.h" />
+    <ClInclude Include="include\vulkan_vello_composite_shaders.h" />
+    <ClInclude Include="include\vulkan_vello_shaders.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\vulkan_backend.cpp" />
@@ -115,10 +126,8 @@
     <ClCompile Include="src\vulkan_video_surface.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="shaders\liquid_glass_quad.frag.hlsl" />
-    <None Include="shaders\liquid_glass_quad.vert.hlsl" />
-    <None Include="shaders\solid_rect.frag.hlsl" />
-    <None Include="shaders\solid_rect.vert.hlsl" />
+    <None Include="shaders\**\*" />
+    <None Include="tests\**\*" />
     <None Include="..\jalium.native.core\shaders\continuous_corner.hlsli">
       <Link>shaders\continuous_corner.hlsli</Link>
     </None>

@@ -7,6 +7,11 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed class SvgImage : ImageSource, IDisposable
 {
+    private Drawing? _drawing;
+    private long _contentGeneration;
+
+    internal override long ContentGeneration => Interlocked.Read(ref _contentGeneration);
+
     /// <inheritdoc />
     public override ImageMetadata? Metadata => null;
 
@@ -23,7 +28,26 @@ public sealed class SvgImage : ImageSource, IDisposable
     /// <summary>
     /// Gets or sets the Drawing that provides the SVG content.
     /// </summary>
-    public Drawing? Drawing { get; set; }
+    public Drawing? Drawing
+    {
+        get => _drawing;
+        set
+        {
+            if (ReferenceEquals(_drawing, value)) return;
+            if (_drawing is not null) _drawing.Changed -= OnDrawingChanged;
+            _drawing = value;
+            if (_drawing is not null) _drawing.Changed += OnDrawingChanged;
+            NotifyRasterChanged();
+        }
+    }
+
+    private void OnDrawingChanged(object? sender, EventArgs args) => NotifyRasterChanged();
+
+    private void NotifyRasterChanged()
+    {
+        Interlocked.Increment(ref _contentGeneration);
+        RaiseRasterChanged(this);
+    }
 
     /// <summary>
     /// Gets the width of the SVG image.
@@ -378,6 +402,7 @@ public sealed class SvgImage : ImageSource, IDisposable
         _httpCts?.Cancel();
         _httpCts?.Dispose();
         _httpCts = null;
+        if (_drawing is not null) _drawing.Changed -= OnDrawingChanged;
     }
 
     /// <summary>

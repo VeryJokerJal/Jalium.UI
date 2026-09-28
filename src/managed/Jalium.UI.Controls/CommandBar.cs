@@ -2,6 +2,7 @@
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -27,6 +28,7 @@ public class CommandBar : Control
     private Button? _moreButton;
     private Popup? _overflowPopup;
     private Border? _overflowBorder;
+    private Border? _cssBorderPainter;
     private bool _isSyncingPopupState;
 
     #region Dependency Properties
@@ -176,6 +178,9 @@ public class CommandBar : Control
     {
         EnsureVisualTree();
         UpdateMoreButtonVisibility();
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var contentAvailable = CssBoxMetrics.InnerSize(availableSize, insets);
 
         if (_primaryItemsPanel != null)
         {
@@ -188,12 +193,12 @@ public class CommandBar : Control
                     toggle.IsCompact = DefaultLabelPosition == CommandBarDefaultLabelPosition.Collapsed;
             }
 
-            _primaryItemsPanel.Measure(availableSize);
+            _primaryItemsPanel.Measure(contentAvailable);
         }
 
         if (_moreButton != null)
         {
-            _moreButton.Measure(new Size(MoreButtonWidth, availableSize.Height));
+            _moreButton.Measure(new Size(MoreButtonWidth, contentAvailable.Height));
         }
 
         var width = (_primaryItemsPanel?.DesiredSize.Width ?? 0) +
@@ -203,14 +208,16 @@ public class CommandBar : Control
 
         var desiredHeight = Math.Max(height, 48);
         return new Size(
-            ControlRenderGeometry.GetAvailableLength(width, availableSize.Width),
-            ControlRenderGeometry.GetAvailableLength(desiredHeight, availableSize.Height));
+            ControlRenderGeometry.GetAvailableLength(width + insets.Left + insets.Right, availableSize.Width),
+            ControlRenderGeometry.GetAvailableLength(desiredHeight + insets.Top + insets.Bottom, availableSize.Height));
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var bounds = new Rect(finalSize);
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? finalSize.Width);
+        var bounds = ControlRenderGeometry.GetContentRect(new Rect(finalSize), insets);
         var hasMoreButton = _moreButton?.Visibility == Visibility.Visible;
         var moreButtonRect = hasMoreButton ? ControlRenderGeometry.GetTrailingRect(bounds, MoreButtonWidth) : Rect.Empty;
         var primaryRect = new Rect(bounds.X, bounds.Y, bounds.Width - moreButtonRect.Width, bounds.Height);
@@ -231,14 +238,46 @@ public class CommandBar : Control
         var dc = drawingContext;
         base.OnRender(drawingContext);
 
-        // Draw background
-        var bg = ResolveBackgroundBrush();
-        dc.DrawRectangle(bg, null, new Rect(RenderSize));
+        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+        var bg = Background;
+        if (bg is null && backgroundLayer is not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+            bg = ResolveBackgroundBrush();
+        if (bg is not null)
+        {
+            var outer = new Rect(RenderSize);
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            if (cssRadius is null && backgroundLayer is not
+                    (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                dc.DrawRoundedRectangle(bg, null, outer, CornerRadius);
+            else
+            {
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(outer, radii);
+                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, bg, dc,
+                        outer, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(bg, null, shape);
+            }
+        }
 
-        // Draw bottom border
-        var borderBrush = ResolveBorderBrush();
-        var pen = new Jalium.UI.Media.Pen(borderBrush, 1);
-        dc.DrawLine(pen, new Point(0, RenderSize.Height), new Point(RenderSize.Width, RenderSize.Height));
+        // The built-in separator is chrome, not an authored border side.
+        if (GetEffectiveValueLayer(BorderThicknessProperty) is null)
+        {
+            var pen = new Pen(ResolveBorderBrush(), 1);
+            dc.DrawLine(pen, new Point(0, RenderSize.Height),
+                new Point(RenderSize.Width, RenderSize.Height));
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     /// <inheritdoc />

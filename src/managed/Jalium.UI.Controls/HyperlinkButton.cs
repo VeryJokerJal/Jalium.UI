@@ -158,8 +158,8 @@ public class HyperlinkButton : ButtonBase
         // content+chrome summation sink.
         if (Content is string text)
         {
-            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-            var fontSize = FontSize > 0 ? FontSize : 14;
+            var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+            var fontSize = FontSize;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             TextMeasurement.MeasureText(formattedText);
             return new Size(
@@ -223,9 +223,9 @@ public class HyperlinkButton : ButtonBase
                 : Foreground ?? ResolveHyperlinkBrush("HyperlinkForeground", s_defaultBrush);
 
         // Draw content
-        if (Content is string text && fgBrush != null)
+        if (Content is string text && fgBrush != null && FontSize > 0)
         {
-            var formattedText = new FormattedText(text, FontFamily.Source, FontSize)
+            var formattedText = new FormattedText(text, FontFamily.GetRenderingSource(this), FontSize)
             {
                 Foreground = fgBrush
             };

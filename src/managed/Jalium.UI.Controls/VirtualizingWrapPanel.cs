@@ -825,6 +825,16 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         var coerced = double.IsNaN(offset) || double.IsInfinity(offset)
             ? 0
             : Math.Clamp(offset, 0, maxOffset);
+        if (Jalium.UI.Diagnostics.ScrollDiagnostics.Enabled)
+        {
+            Jalium.UI.Diagnostics.ScrollDiagnostics.RecordEvent(
+                Name,
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this),
+                "vwp-set-offset",
+                $"raw={offset:R} coerced={coerced:R} old={_scrollOffset:R} " +
+                $"extent={axisExtent:R} viewport={GetViewportAxisSize():R} max={maxOffset:R} " +
+                $"itemsPerRow={_itemsPerRow}");
+        }
         if (Math.Abs(coerced - _scrollOffset) <= 0.01) return;
         _scrollOffset = coerced;
 

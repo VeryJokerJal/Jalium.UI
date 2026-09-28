@@ -858,7 +858,7 @@ public class SankeyDiagram : ChartBase
     {
         bool isHorizontal = Orientation == Orientation.Horizontal;
         double nodeW = NodeWidth;
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var labelPos = LabelPosition;
         bool showVals = ShowValues;
 

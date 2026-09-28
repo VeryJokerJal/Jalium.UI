@@ -1,0 +1,34 @@
+<Project>
+  <Target Name="JaliumDeferUnusedWindowsImports"
+          AfterTargets="SetupOSSpecificProps"
+          Condition="'$(JaliumLazyWindowsImports)' == 'true' and '$(RuntimeIdentifier)' == 'win-x64' and '$(PublishAot)' == 'true'">
+    <!-- Only refine the SDK's automatic list. Explicit application lists and
+         DirectPInvoke declarations retain their ordinary priority/meaning. -->
+    <ItemGroup>
+      <_JaliumSdkWindowsApiList Include="@(DirectPInvokeList)"
+          Condition="'%(DirectPInvokeList.Filename)%(DirectPInvokeList.Extension)' == 'WindowsAPIs.txt' and $([System.String]::Copy('%(DirectPInvokeList.Identity)').Contains('microsoft.dotnet.ilcompiler'))" />
+    </ItemGroup>
+    <ReadLinesFromFile File="%(_JaliumSdkWindowsApiList.Identity)"
+                       Condition="'@(_JaliumSdkWindowsApiList)' != ''">
+      <Output TaskParameter="Lines" ItemName="_JaliumWindowsApiLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_JaliumDeferredWindowsApi Include="@(_JaliumWindowsApiLine)"
+          Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(_JaliumWindowsApiLine.Identity)', '^(?i:crypt32|ncrypt|iphlpapi|oleaut32|ws2_32|mswsock|secur32|normaliz|version)(\.dll)?!'))" />
+      <_JaliumEagerWindowsApi Include="@(_JaliumWindowsApiLine)" Exclude="@(_JaliumDeferredWindowsApi)" />
+    </ItemGroup>
+    <MakeDir Directories="$(NativeIntermediateOutputPath)" />
+    <WriteLinesToFile File="$(NativeIntermediateOutputPath)jalium-sdk-windows-api.txt"
+                      Lines="@(_JaliumWindowsApiLine)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <WriteLinesToFile File="$(NativeIntermediateOutputPath)jalium-eager-windows-api.txt"
+                      Lines="@(_JaliumEagerWindowsApi)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <WriteLinesToFile File="$(NativeIntermediateOutputPath)jalium-lazy-windows-api.txt"
+                      Lines="@(_JaliumDeferredWindowsApi)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup Condition="'@(_JaliumDeferredWindowsApi)' != ''">
+      <DirectPInvokeList Remove="@(_JaliumSdkWindowsApiList)" />
+      <DirectPInvokeList Include="$(NativeIntermediateOutputPath)jalium-eager-windows-api.txt" />
+    </ItemGroup>
+    <Warning Condition="'@(_JaliumDeferredWindowsApi)' == ''"
+             Text="The installed SDK Windows API list did not match Jalium's optional lazy-import rule. The original SDK import policy is retained." />
+  </Target>
+</Project>

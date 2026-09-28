@@ -831,6 +831,7 @@ public class Terminal : Control, IImeSupport
     internal void RenderView(DrawingContext dc, Size viewSize)
     {
         EnsureCellMetrics();
+        if (FontSize <= 0) return;
 
         var clipRect = new Rect(0, 0,
             Math.Max(0, Math.Round(viewSize.Width)),
@@ -981,9 +982,6 @@ public class Terminal : Control, IImeSupport
             ? (int)Math.Ceiling(contentRect.Height / _cellHeight) + 1
             : _buffer.Rows;
         int totalLines = scrollbackCount + _buffer.Rows;
-        string fontFamily = ResolveFontFamily();
-        double fontSize = FontSize > 0 ? FontSize : 14;
-
         for (int screenRow = 0; screenRow < rowsToDraw; screenRow++)
         {
             int totalRow = topLine + screenRow;
@@ -1038,9 +1036,6 @@ public class Terminal : Control, IImeSupport
         }
         _caretPen = null; // Force pen recreation with new brush
 
-        string fontFamily = ResolveFontFamily();
-        double fontSize = FontSize > 0 ? FontSize : 14;
-        string cursorRowText = _buffer.GetRowTextRaw(_buffer.CursorRow);
         int cursorTotalRow = _buffer.ScrollbackCount + _buffer.CursorRow;
         double x = contentRect.X + _buffer.CursorCol * _cellWidth;
         double y = contentRect.Y + (cursorTotalRow - TopLine) * _cellHeight;
@@ -1072,8 +1067,6 @@ public class Terminal : Control, IImeSupport
     private void RenderImeComposition(DrawingContext dc, Rect contentRect)
     {
         string fontFamily = ResolveFontFamily();
-        double fontSize = FontSize > 0 ? FontSize : 14;
-        string rowText = _buffer.GetRowTextRaw(_buffer.CursorRow);
         int cursorTotalRow = _buffer.ScrollbackCount + _buffer.CursorRow;
         double x = contentRect.X + _buffer.CursorCol * _cellWidth;
         double y = contentRect.Y + (cursorTotalRow - TopLine) * _cellHeight;
@@ -1111,7 +1104,7 @@ public class Terminal : Control, IImeSupport
     /// </summary>
     private string ResolveFontFamily()
     {
-        var ff = FontFamily?.Source;
+        var ff = FontFamily?.GetRenderingSource(this);
         if (!string.IsNullOrEmpty(ff) && !string.Equals(ff, "Segoe UI", StringComparison.OrdinalIgnoreCase))
             return ff;
         // Consolas ships with every supported version of Windows and is
@@ -1123,8 +1116,15 @@ public class Terminal : Control, IImeSupport
 
     private void EnsureCellMetrics()
     {
+        if (FontSize <= 0)
+        {
+            _cellWidth = 0;
+            _cellHeight = 0;
+            return;
+        }
+
         string fontFamily = ResolveFontFamily();
-        double fontSize = FontSize > 0 ? FontSize : 14;
+        double fontSize = FontSize;
 
         // Use DirectWrite font metrics for line height, snapped to pixel grid
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);

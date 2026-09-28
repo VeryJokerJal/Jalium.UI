@@ -13,9 +13,9 @@ namespace Jalium.UI.Media.Rendering;
 /// <remarks>
 /// <para>
 /// The recorder mirrors but does not forward to the live drawing context.
-/// Ambient state read during <c>OnRender</c> — <c>Offset</c>, clip bounds —
-/// is proxied through to the live context so user code that queries it
-/// still observes correct values. <c>PushTransform</c> / <c>PushClip</c> /
+/// The ambient <c>Offset</c> is proxied through to the live context. Per-visual
+/// caches hide the viewport clip so they remain reusable after scrolling;
+/// whole-frame captures track clips to skip invisible subtrees. <c>PushTransform</c> / <c>PushClip</c> /
 /// <c>PushOpacity</c> and their <c>Pop</c> counterparts are recorded as
 /// commands; they do not mutate the live context at record time. Effects
 /// (<c>PushEffect</c> / <c>PopEffect</c>) are likewise recorded.
@@ -50,13 +50,18 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     // Whole-frame mode (BindWholeFrame): capture the ENTIRE visual tree as a
     // self-contained command list with NO live target — Offset sets are RECORDED
     // as SetOffset commands (so Visual.RenderChildVisualInline's per-child offsets
-    // are captured) instead of proxied, and bounds/clip culling is disabled.
+    // are captured) instead of proxied. Clip culling applies to this frame's
+    // tree walk; reusable per-visual recordings remain independent of the clip.
     // Used by the render-thread path (record on UI thread, replay on render thread).
     private bool _wholeFrame;
     private bool _snapshotInputs;
     private bool _simplifyElementEffects;
     private Point _recordedOffset;
     private (bool recording, bool unrecordable) _wholeFrameSavedScope;
+    private readonly Stack<(Rect? Clip, bool Transform)> _frameClipStates = new();
+    private Rect? _frameClipBounds;
+    private int _frameTransformDepth;
+    private int _frameEffectDepth;
 
     /// <summary>
     /// Prepares the recorder for a fresh recording scope. Clears any
@@ -68,6 +73,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     {
         _commands.Clear();
         _bounds.Reset();
+        ResetFrameClips();
         _offsetProxy = target as IOffsetDrawingContext;
         _wholeFrame = false;
         // A per-visual cache can be created by the pre-show inline frame and
@@ -85,13 +91,15 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     /// Prepares the recorder to capture an ENTIRE frame (the whole visual tree)
     /// as a self-contained command list with NO live target. Offset sets are
     /// recorded as <c>SetOffset</c> commands (not proxied to a live context), and
-    /// bounds/clip culling is disabled (the recorded bounds would be meaningless
-    /// once per-child offsets vary across the frame). Consumed via <see cref="Commit"/>.
+    /// viewport clips are tracked for this frame's visual-tree traversal. The
+    /// committed frame has no aggregate replay bounds because its per-child
+    /// offsets vary. Consumed via <see cref="Commit"/>.
     /// </summary>
     public void BindWholeFrame(bool simplifyElementEffects = false)
     {
         _commands.Clear();
         _bounds.Reset();
+        ResetFrameClips();
         _offsetProxy = null;
         _wholeFrame = true;
         _snapshotInputs = true;
@@ -114,6 +122,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         // and learn whether any un-recordable content was seen this frame.
         bool fullyRecordable = !(_wholeFrame
             && DrawingContext.EndWholeFrameRecordingScope(_wholeFrameSavedScope));
+        ResetFrameClips();
 
         if (_commands.Count == 0)
         {
@@ -155,6 +164,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         if (_wholeFrame) DrawingContext.EndWholeFrameRecordingScope(_wholeFrameSavedScope);
         _commands.Clear();
         _bounds.Reset();
+        ResetFrameClips();
         _offsetProxy = null;
         _wholeFrame = false;
         _snapshotInputs = false;
@@ -181,19 +191,18 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         }
     }
 
-    // A recorded Drawing is replayed at ANY position/clip later — a per-visual cache
-    // replays as its element scrolls; the whole-frame cache replays the whole tree — so
-    // OnRender must NOT observe the live viewport clip and cull content OUT of the
-    // recording. Baking the record-time clip stranded clipped-at-record-time content
-    // (TextBlock's per-line cull, etc.): a NavigationView label recorded while below the
-    // fold cached an EMPTY line set and then replayed BLANK after being scrolled into
-    // view — content-clean, so OnRender never re-ran — until a click marked it
-    // render-dirty and forced a re-record (the "scrolled-in nav item blank until clicked"
-    // bug). Returning null for BOTH modes makes the cache position/clip-independent;
-    // viewport culling happens correctly at REPLAY time via the DrawingReplayer AABB
-    // short-circuit + the native GPU scissor. Slight over-record, always correct — the
-    // whole-frame path already relied on this; the per-visual path needs it too.
-    Rect? IClipBoundsDrawingContext.CurrentClipBounds => null;
+    // Per-visual OnRender caches MUST remain clip-independent: recording only the
+    // currently visible text lines would leave blank content after scrolling.
+    // A whole-frame capture instead belongs to one layout/offset snapshot and is
+    // rebuilt on the next scroll. Exposing its clips lets Visual skip offscreen
+    // subtrees before allocating/replaying commands for every expanded tree row.
+    // Transform and effect scopes conservatively defer to the replay backend:
+    // native transforms change the comparison space, and effects need complete
+    // offscreen input even outside an ancestor's viewport.
+    Rect? IClipBoundsDrawingContext.CurrentClipBounds =>
+        _wholeFrame && _frameTransformDepth == 0 && _frameEffectDepth == 0
+            ? _frameClipBounds
+            : null;
 
     /// <summary>
     /// Appends an immutable per-visual drawing as one scene-graph node instead
@@ -227,6 +236,21 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     // FormattedText) are already value-snapshotted by DrawingObjectPool and pass
     // through untouched. No-op on the default per-visual path (zero added cost).
     private Brush? SnapBrush(Brush? b) => _snapshotInputs ? DrawInputSnapshotter.SnapshotBrush(b) : b;
+    private Brush? SnapBrush(Brush? brush, Rect bounds)
+    {
+        if (brush is CssLayeredBackgroundBrush layers)
+        {
+            var bottom = SnapBrush(layers.Bottom, bounds);
+            var top = SnapBrush(layers.Top, bounds);
+            return bottom is not null && top is not null
+                ? new CssLayeredBackgroundBrush(bottom, top) { Opacity = layers.Opacity }
+                : bottom ?? top;
+        }
+        if (brush?.CssGradientLayout is { } layout &&
+            bounds.Width > 0 && bounds.Height > 0)
+            brush = layout.Resolve(bounds.Width, bounds.Height);
+        return SnapBrush(brush);
+    }
     private Pen? SnapPen(Pen? p) => _snapshotInputs ? DrawInputSnapshotter.SnapshotPen(p) : p;
     private Transform SnapTransform(Transform t) => _snapshotInputs ? DrawInputSnapshotter.SnapshotTransform(t) : t;
     private Geometry SnapGeometry(Geometry g) => _snapshotInputs ? DrawInputSnapshotter.SnapshotGeometry(g) : g;
@@ -255,7 +279,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
     {
-        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush), rectangle);
         var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.Rectangle(canonicalBrush, canonicalPen, rectangle));
         _bounds.AccumulateRect(rectangle, StrokeSlop(canonicalPen));
@@ -263,7 +287,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY)
     {
-        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush), rectangle);
         var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.RoundedRectangle(canonicalBrush, canonicalPen, rectangle, radiusX, radiusY));
         _bounds.AccumulateRect(rectangle, StrokeSlop(canonicalPen));
@@ -275,7 +299,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         // DrawGeometry and loses the "this was originally a rounded rect
         // with a CornerRadius" intent. Record the high-level call verbatim
         // so replay re-dispatches to the target context's own fast paths.
-        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush), rectangle);
         var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.RoundedRectangleCorner(canonicalBrush, canonicalPen, rectangle, cornerRadius));
         _bounds.AccumulateRect(rectangle, StrokeSlop(canonicalPen));
@@ -284,7 +308,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     public override void DrawContentBorder(Brush? fillBrush, Pen? strokePen, Rect rectangle,
         double bottomLeftRadius, double bottomRightRadius)
     {
-        var canonicalFill = SnapBrush(DrawingObjectPool.CanonicalizeBrush(fillBrush));
+        var canonicalFill = SnapBrush(DrawingObjectPool.CanonicalizeBrush(fillBrush), rectangle);
         var canonicalStroke = SnapPen(DrawingObjectPool.CanonicalizePen(strokePen));
         _commands.Add(DrawCommand.ContentBorder(canonicalFill, canonicalStroke, rectangle, bottomLeftRadius, bottomRightRadius));
         _bounds.AccumulateRect(rectangle, StrokeSlop(canonicalStroke));
@@ -292,7 +316,8 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     public override void DrawEllipse(Brush? brush, Pen? pen, Point center, double radiusX, double radiusY)
     {
-        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush),
+            new Rect(center.X - radiusX, center.Y - radiusY, 2 * radiusX, 2 * radiusY));
         var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.Ellipse(canonicalBrush, canonicalPen, center, radiusX, radiusY));
         var rect = new Rect(center.X - radiusX, center.Y - radiusY, 2 * radiusX, 2 * radiusY);
@@ -355,6 +380,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     public override void DrawText(FormattedText formattedText, Point origin)
     {
+        if (Jalium.UI.Styling.CssFontFaces.IsBlocked(formattedText.FontFamily)) return;
         var canonical = DrawingObjectPool.CanonicalizeFormattedText(formattedText);
         // A gradient/image text foreground is shared by-reference (the pool only
         // canonicalizes a solid foreground); on the whole-frame path a later UI
@@ -386,7 +412,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
     {
-        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush), geometry.Bounds);
         var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         var capturedGeometry = SnapGeometry(geometry);
         _commands.Add(DrawCommand.GeometryCmd(canonicalBrush, canonicalPen, capturedGeometry));
@@ -466,6 +492,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     {
         _commands.Add(DrawCommand.PushTransformCmd(SnapTransform(transform)));
         _bounds.PushTransform(transform);
+        PushFrameClipState(transform: true);
     }
 
     public override void PushClip(Geometry clipGeometry)
@@ -473,23 +500,45 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         var capturedGeometry = SnapGeometry(clipGeometry);
         _commands.Add(DrawCommand.PushClipCmd(capturedGeometry));
         _bounds.PushClip(capturedGeometry);
+        PushFrameClipState();
+        if (_wholeFrame && _frameTransformDepth == 0 &&
+            capturedGeometry is not RectangleGeometry { BoundsClipEdges: not ClipEdges.All })
+        {
+            // Clips and child offsets use the same absolute managed coordinates.
+            // A partial-edge layout clip cannot be represented by its finite
+            // geometry bounds; retain the ancestor clip in that case.
+            var bounds = capturedGeometry.Bounds;
+            var clip = bounds.IsEmpty ? Rect.Empty : new Rect(
+                bounds.X + _recordedOffset.X, bounds.Y + _recordedOffset.Y,
+                bounds.Width, bounds.Height);
+            _frameClipBounds = _frameClipBounds is Rect parent
+                ? Rect.Intersect(parent, clip)
+                : clip;
+        }
     }
 
     public override void PushOpacity(double opacity)
     {
         _commands.Add(DrawCommand.PushOpacityCmd(opacity));
         _bounds.PushOpacity();
+        PushFrameClipState();
     }
 
     public override void Pop()
     {
         _commands.Add(DrawCommand.PopCmd());
         _bounds.Pop();
+        if (_wholeFrame && _frameClipStates.TryPop(out var state))
+        {
+            _frameClipBounds = state.Clip;
+            if (state.Transform) _frameTransformDepth--;
+        }
     }
 
     public override void PushEffect(IEffect effect, Rect captureBounds)
     {
         _commands.Add(DrawCommand.PushEffectCmd(effect, captureBounds));
+        if (_wholeFrame) _frameEffectDepth++;
         // The captureBounds parameter tells us exactly how much area the
         // offscreen capture will cover, so contribute it directly. The
         // effect may expand that (shadow / glow padding) but callers are
@@ -502,6 +551,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     public override void PopEffect()
     {
         _commands.Add(DrawCommand.PopEffectCmd());
+        if (_wholeFrame && _frameEffectDepth > 0) _frameEffectDepth--;
         // PushEffect/PopEffect live on a separate stack from PushTransform
         // / PushClip / PushOpacity — they don't go through Pop(), so no
         // bounds-stack pop is needed here.
@@ -517,6 +567,24 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     bool IEffectDrawingContext.IsElementEffectCaptureEnabled =>
         !_simplifyElementEffects;
+
+    bool IEffectDrawingContext.SupportsCssShadowLayers => !_simplifyElementEffects;
+
+    bool IEffectDrawingContext.SupportsCssTextShadowsOnly => !_simplifyElementEffects;
+
+    void IEffectDrawingContext.ApplyCssTextShadowsOnly(IEffect shadows,
+        float x, float y, float w, float h, float captureOriginX, float captureOriginY) =>
+        _commands.Add(DrawCommand.ApplyCssTextShadowsOnlyCmd(shadows,
+            x, y, w, h, captureOriginX, captureOriginY));
+
+    void IEffectDrawingContext.PaintCssShadowLayers(IEffect shadows, bool inset,
+        float x, float y, float w, float h,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY,
+        Thickness borderThickness) =>
+        _commands.Add(DrawCommand.PaintCssShadowLayersCmd(shadows, inset, x, y, w, h,
+            topLeftX, topLeftY, topRightX, topRightY,
+            bottomRightX, bottomRightY, bottomLeftX, bottomLeftY, borderThickness));
 
     void IOpacityDrawingContext.PopOpacity() => Pop();
 
@@ -539,17 +607,42 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     void ITransformDrawingContext.PopTransform() => Pop();
 
-    void IEffectDrawingContext.BeginEffectCapture(float x, float y, float w, float h) =>
+    void IEffectDrawingContext.BeginEffectCapture(float x, float y, float w, float h)
+    {
         _commands.Add(DrawCommand.BeginEffectCaptureCmd(x, y, w, h));
+        if (_wholeFrame) _frameEffectDepth++;
+    }
 
-    void IEffectDrawingContext.EndEffectCapture() =>
+    void IEffectDrawingContext.EndEffectCapture()
+    {
         _commands.Add(DrawCommand.EndEffectCaptureCmd());
+        if (_wholeFrame && _frameEffectDepth > 0) _frameEffectDepth--;
+    }
 
     void IEffectDrawingContext.ApplyElementEffect(IEffect effect, float x, float y, float w, float h,
         float captureOriginX, float captureOriginY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL) =>
         _commands.Add(DrawCommand.ApplyElementEffectCmd(effect, x, y, w, h,
             captureOriginX, captureOriginY, cornerTL, cornerTR, cornerBR, cornerBL));
+
+    void IEffectDrawingContext.ApplyElementEffectElliptical(IEffect effect,
+        float x, float y, float w, float h, float captureOriginX, float captureOriginY,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY) =>
+        _commands.Add(DrawCommand.ApplyElementEffectEllipticalCmd(effect, x, y, w, h,
+            captureOriginX, captureOriginY,
+            topLeftX, topLeftY, topRightX, topRightY,
+            bottomRightX, bottomRightY, bottomLeftX, bottomLeftY));
+
+    void IEffectDrawingContext.ApplyElementEffectEllipticalWithBorder(IEffect effect,
+        float x, float y, float w, float h, float captureOriginX, float captureOriginY,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY,
+        Thickness borderThickness) =>
+        _commands.Add(DrawCommand.ApplyElementEffectEllipticalWithBorderCmd(effect, x, y, w, h,
+            captureOriginX, captureOriginY,
+            topLeftX, topLeftY, topRightX, topRightY,
+            bottomRightX, bottomRightY, bottomLeftX, bottomLeftY, borderThickness));
 
     // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -563,6 +656,21 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
+
+    private void PushFrameClipState(bool transform = false)
+    {
+        if (!_wholeFrame) return;
+        _frameClipStates.Push((_frameClipBounds, transform));
+        if (transform) _frameTransformDepth++;
+    }
+
+    private void ResetFrameClips()
+    {
+        _frameClipStates.Clear();
+        _frameClipBounds = null;
+        _frameTransformDepth = 0;
+        _frameEffectDepth = 0;
+    }
 
     private static double StrokeSlop(Pen? pen) =>
         pen is null ? 0 : Math.Max(0, pen.Thickness) / 2.0;

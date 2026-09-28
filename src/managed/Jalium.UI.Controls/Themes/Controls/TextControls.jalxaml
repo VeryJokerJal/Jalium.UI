@@ -87,6 +87,8 @@
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
 
         <Style.Triggers>
             <Trigger Property="IsMouseOver" Value="True">

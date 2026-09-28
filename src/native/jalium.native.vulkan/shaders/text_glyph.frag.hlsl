@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 // Dedicated text-glyph pipeline — fragment shader.
 //
 // One source, two COMPILE-TIME variants (gen_text_glyph_spv.ps1 compiles this
@@ -173,7 +176,7 @@ float RoundedClipCoveragePerCorner(float2 fragPos, float4 rect,
     return RoundedClipCoverage(fragPos, rect, float2(rx, ry), inverse);
 }
 
-PsOutput main(PsInput input)
+PsOutput UnclippedMain(PsInput input)
 {
     PsOutput o;
 
@@ -252,4 +255,15 @@ PsOutput main(PsInput input)
     o.coverage = float4(coverage * input.color.a, maxCoverage * input.color.a);
     return o;
 #endif
+}
+
+PsOutput main(PsInput input)
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    PsOutput output = UnclippedMain(input);
+    output.color *= coverage;
+#ifdef JALIUM_CLEARTYPE
+    output.coverage *= coverage;
+#endif
+    return output;
 }

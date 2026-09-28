@@ -104,7 +104,11 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
         sb.AppendLine("    internal static void Register()");
         sb.AppendLine("    {");
         sb.AppendLine(
-            $"        global::Jalium.UI.AotTypeRegistry.RegisterAssembly(typeof({generatedTypeName}).Assembly);");
+            $"        global::Jalium.UI.AotTypeRegistry.RegisterAssembly(typeof({generatedTypeName}).Assembly, ProvideTypes);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    private static void ProvideTypes()");
+        sb.AppendLine("    {");
 
         foreach (var typeName in typeNames)
         {
@@ -281,7 +285,15 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
                     return;
                 }
 
-                var builderCode = GeneratePrebuiltDictionaryCode(context, parseResult, manifestName!, file.Path, symbols, xmlnsResolver, rootNs);
+                var builderCode = GeneratePrebuiltDictionaryCode(
+                    context,
+                    parseResult,
+                    manifestName!,
+                    file.Path,
+                    symbols,
+                    xmlnsResolver,
+                    rootNs,
+                    IsFrameworkThemeDictionary(file.Path));
                 if (builderCode == null)
                     return; // diagnostic already reported
 
@@ -406,6 +418,19 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
         return sb.ToString();
     }
 
+    private static bool IsFrameworkThemeDictionary(string filePath)
+    {
+        if (string.IsNullOrEmpty(filePath))
+        {
+            return false;
+        }
+
+        var normalized = filePath.Replace('\\', '/');
+        return normalized.IndexOf(
+            "/Jalium.UI.Controls/Themes/",
+            StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     private string? GeneratePrebuiltDictionaryCode(
         SourceProductionContext context,
         JalxamlParseResult result,
@@ -413,14 +438,19 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
         string filePath,
         SymbolTypeHelper symbols,
         XmlnsTypeResolver xmlnsResolver,
-        string rootNs)
+        string rootNs,
+        bool deferFrameworkThemeStyles)
     {
         // The dictionary codegen MUST succeed — runtime jalxaml parsing is gone, there is
         // no embedded-resource fallback to land on. When TryEmitDictionaryBuildBody returns
         // null we surface a diagnostic so the developer can fix the offending element
         // (typically an unresolved CLR type or an x:Class attribute on a node we don't yet
         // pin to a typed builder).
-        var buildBody = JalxamlCodeGenerator.TryEmitDictionaryBuildBody(result, symbols, xmlnsResolver);
+        var buildBody = JalxamlCodeGenerator.TryEmitDictionaryBuildBody(
+            result,
+            symbols,
+            xmlnsResolver,
+            deferFrameworkThemeStyles);
         if (buildBody == null)
         {
             ReportCodegenBail(context, filePath, result);

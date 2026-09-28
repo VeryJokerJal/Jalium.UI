@@ -721,51 +721,72 @@ internal sealed class FontStretchTypeConverter : TypeConverter
 
 public static class TypeConverterRegistry
 {
-    private static readonly Dictionary<Type, TypeConverter> _converters = new()
+    private static Dictionary<Type, TypeConverter>? _converters;
+
+    private static Dictionary<Type, TypeConverter> Converters =>
+        System.Threading.Volatile.Read(ref _converters) ?? ConverterTable.Instance;
+
+    private static class ConverterTable
     {
-        [typeof(FontWeight)] = new FontWeightTypeConverter(),
-        [typeof(FontStyle)] = new FontStyleTypeConverter(),
-        [typeof(FontStretch)] = new FontStretchTypeConverter(),
-        [typeof(Thickness)] = new ThicknessConverter(),
-        [typeof(CornerRadius)] = new CornerRadiusConverter(),
-        [typeof(Brush)] = new BrushConverter(),
-        [typeof(SolidColorBrush)] = new BrushConverter(),
-        [typeof(Color)] = new ColorConverter(),
-        [typeof(GridLength)] = new GridLengthConverter(),
-        [typeof(RowDefinitionCollection)] = new RowDefinitionCollectionConverter(),
-        [typeof(ColumnDefinitionCollection)] = new ColumnDefinitionCollectionConverter(),
-        [typeof(HorizontalAlignment)] = new HorizontalAlignmentConverter(),
-        [typeof(VerticalAlignment)] = new VerticalAlignmentConverter(),
-        [typeof(Orientation)] = new OrientationConverter(),
-        [typeof(AnimationDuration)] = new DurationValueConverter(),
-        [typeof(TransitionPropertyCollection)] = new TransitionPropertyCollectionConverter(),
-        [typeof(Uri)] = new UriValueConverter(),
-        [typeof(Type)] = new TypeTypeConverter(),
-        [typeof(IconElement)] = new IconElementConverter(),
-        [typeof(MediaPointCollection)] = new PointCollectionConverter(),
-        [typeof(MediaDoubleCollection)] = new DoubleCollectionValueConverter(),
-        [typeof(Point)] = new PointConverter(),
-        [typeof(Vector)] = new VectorConverter(),
-        [typeof(Size)] = new SizeConverter(),
-        [typeof(Geometry)] = new GeometryTypeConverter(),
-        [typeof(ColorMatrix)] = new ColorMatrixConverter(),
-        // 基类一条即可：GetConverter 找不到精确匹配时会按 IsAssignableFrom 回退，
-        // 所以 BitmapImage / SvgImage 这些派生类型的属性也一并覆盖。
-        [typeof(ImageSource)] = new ImageSourceTypeConverter(),
-    };
+        // Prevent beforefieldinit from moving this allocation ahead of first use.
+        static ConverterTable() { }
+
+        internal static readonly Dictionary<Type, TypeConverter> Instance = CreateConverters();
+    }
+
+    private static Dictionary<Type, TypeConverter> CreateConverters()
+    {
+        var converters = new Dictionary<Type, TypeConverter>
+        {
+            [typeof(FontWeight)] = new FontWeightTypeConverter(),
+            [typeof(FontStyle)] = new FontStyleTypeConverter(),
+            [typeof(FontStretch)] = new FontStretchTypeConverter(),
+            [typeof(Thickness)] = new ThicknessConverter(),
+            [typeof(CornerRadius)] = new CornerRadiusConverter(),
+            [typeof(Brush)] = new BrushConverter(),
+            [typeof(SolidColorBrush)] = new BrushConverter(),
+            [typeof(Color)] = new ColorConverter(),
+            [typeof(GridLength)] = new GridLengthConverter(),
+            [typeof(RowDefinitionCollection)] = new RowDefinitionCollectionConverter(),
+            [typeof(ColumnDefinitionCollection)] = new ColumnDefinitionCollectionConverter(),
+            [typeof(HorizontalAlignment)] = new HorizontalAlignmentConverter(),
+            [typeof(VerticalAlignment)] = new VerticalAlignmentConverter(),
+            [typeof(Orientation)] = new OrientationConverter(),
+            [typeof(AnimationDuration)] = new DurationValueConverter(),
+            [typeof(TransitionPropertyCollection)] = new TransitionPropertyCollectionConverter(),
+            [typeof(Uri)] = new UriValueConverter(),
+            [typeof(Type)] = new TypeTypeConverter(),
+            [typeof(IconElement)] = new IconElementConverter(),
+            [typeof(MediaPointCollection)] = new PointCollectionConverter(),
+            [typeof(MediaDoubleCollection)] = new DoubleCollectionValueConverter(),
+            [typeof(Point)] = new PointConverter(),
+            [typeof(Vector)] = new VectorConverter(),
+            [typeof(Size)] = new SizeConverter(),
+            [typeof(Geometry)] = new GeometryTypeConverter(),
+            [typeof(ColorMatrix)] = new ColorMatrixConverter(),
+            // 基类一条即可：GetConverter 找不到精确匹配时会按 IsAssignableFrom 回退，
+            // 所以 BitmapImage / SvgImage 这些派生类型的属性也一并覆盖。
+            [typeof(ImageSource)] = new ImageSourceTypeConverter(),
+        };
+
+        System.Threading.Volatile.Write(ref _converters, converters);
+        return converters;
+    }
 
     /// <summary>
     /// Gets a type converter for the specified type.
     /// </summary>
     public static TypeConverter? GetConverter(Type type)
     {
-        if (_converters.TryGetValue(type, out var converter))
+        var converters = Converters;
+
+        if (converters.TryGetValue(type, out var converter))
         {
             return converter;
         }
 
         // Check for base types/interfaces
-        foreach (var (converterType, converterInstance) in _converters)
+        foreach (var (converterType, converterInstance) in converters)
         {
             if (converterType.IsAssignableFrom(type))
             {
@@ -781,7 +802,7 @@ public static class TypeConverterRegistry
     /// </summary>
     public static void Register(Type type, TypeConverter converter)
     {
-        _converters[type] = converter;
+        Converters[type] = converter;
     }
 
     /// <summary>

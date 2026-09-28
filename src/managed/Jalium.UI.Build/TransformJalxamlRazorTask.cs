@@ -93,6 +93,7 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
         var usingNamespaces = new HashSet<string>(StringComparer.Ordinal);
         var outputRoot = Path.GetFullPath(OutputDirectory);
         var seenSourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var taskTime = File.GetLastWriteTimeUtc(typeof(TransformJalxamlRazorTask).Assembly.Location);
 
         foreach (var sourceItem in SourceFiles)
         {
@@ -123,44 +124,62 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
             if (!string.IsNullOrWhiteSpace(outputDir))
                 Directory.CreateDirectory(outputDir);
 
-            var content = File.ReadAllText(sourcePath);
+            var sourceContent = File.ReadAllText(sourcePath);
 
             // Extract @using Namespace; directives
-            foreach (Match m in UsingDirectiveRegex.Matches(content))
+            foreach (Match m in UsingDirectiveRegex.Matches(sourceContent))
                 usingNamespaces.Add(m.Groups[1].Value);
 
-            // Expand @{ } Razor code blocks at build time.
-            // Protect @section and @RenderSection directives — these are handled at runtime.
-            const string escapedSectionPlaceholder = "\x01__ESCSECTION__\x01";
-            const string escapedRenderSectionPlaceholder = "\x01__ESCRENDERSECTION__\x01";
-            const string sectionPlaceholder = "\x01__SECTION__\x01";
-            const string renderSectionPlaceholder = "\x01__RENDERSECTION__\x01";
-            try
+            // Reuse transformed pages whose source and transform implementation
+            // are unchanged. Metadata below is rebuilt from their saved output.
+            var sourceTime = File.GetLastWriteTimeUtc(sourcePath);
+            string content;
+            if (File.Exists(outputPath) && File.GetLastWriteTimeUtc(outputPath) >= sourceTime &&
+                File.GetLastWriteTimeUtc(outputPath) >= taskTime)
             {
-                var protected_ = content
-                    .Replace("@@section ", escapedSectionPlaceholder)
-                    .Replace("@@RenderSection(", escapedRenderSectionPlaceholder)
-                    .Replace("@section ", sectionPlaceholder)
-                    .Replace("@RenderSection(", renderSectionPlaceholder);
-                var expanded = RazorCodeBlockExpander.Expand(protected_);
-                if (expanded != null)
+                content = File.ReadAllText(outputPath);
+            }
+            else
+            {
+                content = sourceContent;
+                // Protect directives handled by the runtime while expanding
+                // build-time @{ } blocks.
+                const string escapedSectionPlaceholder = "\x01__ESCSECTION__\x01";
+                const string escapedRenderSectionPlaceholder = "\x01__ESCRENDERSECTION__\x01";
+                const string sectionPlaceholder = "\x01__SECTION__\x01";
+                const string renderSectionPlaceholder = "\x01__RENDERSECTION__\x01";
+                try
                 {
-                    Log.LogMessage(MessageImportance.Normal, "Expanded Razor code blocks in: {0}", sourcePath);
-                    content = expanded
-                        .Replace(sectionPlaceholder, "@section ")
-                        .Replace(renderSectionPlaceholder, "@RenderSection(")
-                        .Replace(escapedSectionPlaceholder, "@@section ")
-                        .Replace(escapedRenderSectionPlaceholder, "@@RenderSection(");
+                    var protected_ = content
+                        .Replace("@@section ", escapedSectionPlaceholder)
+                        .Replace("@@RenderSection(", escapedRenderSectionPlaceholder)
+                        .Replace("@section ", sectionPlaceholder)
+                        .Replace("@RenderSection(", renderSectionPlaceholder);
+                    var expanded = RazorCodeBlockExpander.Expand(protected_);
+                    if (expanded != null)
+                    {
+                        Log.LogMessage(MessageImportance.Normal, "Expanded Razor code blocks in: {0}", sourcePath);
+                        content = expanded
+                            .Replace(sectionPlaceholder, "@section ")
+                            .Replace(renderSectionPlaceholder, "@RenderSection(")
+                            .Replace(escapedSectionPlaceholder, "@@section ")
+                            .Replace(escapedRenderSectionPlaceholder, "@@RenderSection(");
+                    }
+                    // else: no expansion needed, keep original directives intact
                 }
-                // else: no expansion needed, keep original with @section/@RenderSection intact
-            }
-            catch (Exception ex)
-            {
-                Log.LogError("Failed to expand @{{ }} code blocks in '{0}': {1}", sourcePath, ex.Message);
-                continue;
-            }
+                catch (Exception ex)
+                {
+                    Log.LogError("Failed to expand @{{ }} code blocks in '{0}': {1}", sourcePath, ex.Message);
+                    continue;
+                }
 
-            File.WriteAllText(outputPath, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                if (!WriteTextIfDifferent(outputPath, content))
+                {
+                    var inputTime = sourceTime > taskTime ? sourceTime : taskTime;
+                    if (File.GetLastWriteTimeUtc(outputPath) < inputTime)
+                        File.SetLastWriteTimeUtc(outputPath, inputTime);
+                }
+            }
 
             var relativeLogicalPath = BuildRelativeLogicalPath(sourceItem, sourcePath);
             var transformedItem = new TaskItem(outputPath);
@@ -185,16 +204,30 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
         var namespaceTypes = ResolveNamespaceTypes(usingNamespaces);
 
         var generated = new List<ITaskItem>();
+        var generatedPath = Path.Combine(OutputDirectory!, "Jalxaml.RazorMetadata.g.cs");
         if (metadataRows.Count > 0 || templateRows.Count > 0 || namespaceTypes.Count > 0)
         {
-            var generatedPath = Path.Combine(OutputDirectory!, "Jalxaml.RazorMetadata.g.cs");
-            File.WriteAllText(generatedPath, GenerateRegistryCode(metadataRows, templateRows, namespaceTypes), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            WriteTextIfDifferent(generatedPath, GenerateRegistryCode(metadataRows, templateRows, namespaceTypes));
             generated.Add(new TaskItem(generatedPath));
+        }
+        else if (File.Exists(generatedPath))
+        {
+            File.Delete(generatedPath);
         }
 
         TransformedFiles = transformed.ToArray();
         GeneratedCodeFiles = generated.ToArray();
         return !Log.HasLoggedErrors;
+    }
+
+    private static bool WriteTextIfDifferent(string path, string content)
+    {
+        if (!File.Exists(path) || File.ReadAllText(path) != content)
+        {
+            File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            return true;
+        }
+        return false;
     }
 
     private string ComputeRelativePath(string sourcePath, ITaskItem sourceItem)

@@ -7,6 +7,7 @@
 #endif
 #include "jalium_flatten.h"
 #include "jalium_triangulate.h"  // FlattenPathToContours / TriangulateCompoundPath / DispatchPathCommand
+#include "jalium_path_clip.h"
 #include "jalium_gradient_sample.h"  // SampleBrushGradient / FlattenGradientStops — in-order gradient squircle fill
 
 #include "vulkan_backend.h"
@@ -53,6 +54,51 @@
 #define VK_LOG(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
 #endif
 
+// ── Damage/present trace (diagnostic, opt-in) ────────────────────────────────
+// JALIUM_VK_DAMAGE_TRACE=1 writes per-frame damage bookkeeping to
+// %TEMP%\jalium_vk_damage.log (or =path for an explicit file): the host dirty
+// rects, the frame render area, the per-image stale-region decision and the
+// present result. For chasing partial-presentation artifacts (e.g. stale hover
+// highlights) on real scenarios; near-zero cost when the env var is unset.
+static FILE* VkDamageTraceFile()
+{
+    static FILE* s_file = []() -> FILE* {
+        const char* env = std::getenv("JALIUM_VK_DAMAGE_TRACE");
+        if (env == nullptr || env[0] == '\0' || (env[0] == '0' && env[1] == '\0')) {
+            return nullptr;
+        }
+        char pathBuf[512];
+        const char* path = env;
+        if (env[0] == '1' && env[1] == '\0') {
+            const char* tmp = std::getenv("TEMP");
+            if (tmp == nullptr || tmp[0] == '\0') tmp = ".";
+            snprintf(pathBuf, sizeof(pathBuf), "%s\\jalium_vk_damage.log", tmp);
+            path = pathBuf;
+        }
+#ifdef _WIN32
+        // _fsopen with _SH_DENYNO so the log can be tailed while the app runs
+        // (fopen_s opens files non-sharable).
+        FILE* f = _fsopen(path, "a", _SH_DENYNO);
+        if (f == nullptr) return nullptr;
+#else
+        FILE* f = std::fopen(path, "a");
+        if (f == nullptr) return nullptr;
+#endif
+        fprintf(f, "==== jalium vk damage trace start ====\n");
+        fflush(f);
+        return f;
+    }();
+    return s_file;
+}
+#define VK_DMG(fmt, ...)                                            \
+    do {                                                            \
+        FILE* _dmgf = VkDamageTraceFile();                          \
+        if (_dmgf) {                                                \
+            fprintf(_dmgf, fmt "\n", ##__VA_ARGS__);                \
+            fflush(_dmgf);                                          \
+        }                                                           \
+    } while (0)
+
 #ifdef _WIN32
 #include <Windows.h>
 // Dedicated Vulkan text-glyph pipeline (B4) — Windows-only because the CPU glyph
@@ -72,7 +118,23 @@
 #include "glyph_atlas.h"
 #endif
 
+#include "vulkan_environment.h"
+
 namespace jalium {
+
+namespace {
+int VkVelloDbgLevel()
+{
+    static int level = []() {
+        char buf[8];
+        if (!ReadVulkanEnvironment("JALIUM_VELLO_PERF", buf)) return 0;
+        int v = atoi(buf);
+        return v > 0 ? v : (buf[0] != '0' ? 1 : 0);
+    }();
+    return level;
+}
+int g_vkVelloDbgBudget = 2000;
+}  // namespace
 
 namespace {
 
@@ -448,6 +510,7 @@ struct SolidRectPushConstants {
     float quadPoint01[4];
     float quadPoint23[4];
     float geometryFlags[2];
+    // padding3[0] selects CSS pixelated sampling for bitmap draws.
     float padding3[2];
     // Per-corner radii (TL, TR, BR, BL). Switching the fragment shader
     // into per-corner-SDF mode is implicit: any non-zero entry here
@@ -1907,6 +1970,25 @@ public:
             deferredInkImageGenerations;
     };
     PerFrameState perFrameStates_[MAX_FRAMES_IN_FLIGHT];
+    struct EllipticalClipFrame {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        VkDeviceSize capacity = 0;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        uint32_t poolCapacity = 0;
+    } ellipticalFrames_[MAX_FRAMES_IN_FLIGHT];
+    VkDescriptorSetLayout ellipticalSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout ellipticalEmptySetLayout_ = VK_NULL_HANDLE;
+    std::unordered_map<const void*, VkDescriptorSet> ellipticalSets_;
+    const void* currentEllipticalKey_ = nullptr;
+    bool EnsureEllipticalLayouts();
+    VkResult CreateEllipticalPipelineLayout(const VkPipelineLayoutCreateInfo& info, VkPipelineLayout* output);
+    bool PrepareEllipticalFrame(const std::vector<GpuReplayCommand>& commands, const std::vector<VkImpellerDrawBatch>* batches);
+    void BindEllipticalSet(VkCommandBuffer cmd, VkPipelineLayout layout, bool enabled = true);
+    void PushGraphicsConstants(VkCommandBuffer cmd, VkPipelineLayout layout, VkShaderStageFlags stages,
+        uint32_t offset, uint32_t size, const void* values, bool clip = true);
+    void DestroyEllipticalFrames();
     uint32_t currentFrame_ = 0;
     // renderFinished is **per swap-chain image**, not per frame, because present
     // uses imageIndex as the wait target; two frames in flight may reference the
@@ -2025,7 +2107,7 @@ public:
                          const float clearColor[4],
                          bool fullClear,
                          const std::vector<VkImpellerDrawBatch>* engineBatches = nullptr,
-                         const VelloScene* velloScene = nullptr,
+                         const std::vector<VelloSubScene>* velloSubScenes = nullptr,
                          std::vector<VulkanImportedVideoSurface*>*
                              externalVideoSurfaces = nullptr);
     /// Lazy-create the fullscreen composite pipeline (samples the Vello output
@@ -2037,10 +2119,16 @@ public:
     /// rect instead of the full extent — used by the engine-batch stencil path
     /// when a degraded offscreen capture bounds the span to the record-time
     /// clip (see RenderEngineBatches' extraScissorBound). Null = full screen.
+    /// `dstRect` is where the sampled image lands in the target. A Vello
+    /// sub-scene renders only its own region, so it passes that region here and
+    /// the fullscreen triangle is mapped onto it via the viewport; null means
+    /// full-target (the stencil-resolve caller).
     void CompositeVelloOutput(VkCommandBuffer cmd, VkImageView outputView, VkSampler sampler,
                               VkExtent2D extent, uint32_t frameIdx,
                               VkRenderPass renderPass, VkFramebuffer framebuffer,
-                              const VkRect2D* scissorBound = nullptr);
+                              const VkRect2D* scissorBound = nullptr,
+                              const VkRect2D* dstRect = nullptr,
+                              VkExtent2D srcExtent = {});
     /// Lazy-create the POSITION+COLOR pipeline used to drain Impeller / Vello
     /// engine batches.
     bool EnsureEngineBatchPipeline();
@@ -3409,21 +3497,23 @@ JaliumResult VulkanRenderTarget::EndDraw()
     // submission order.
     MaybeEmitEngineSpan();
 
-    // Pick the active rendering engine's pending work so the EngineBatchSpan
-    // commands inside the GPU replay stream can drain sub-ranges of it in
-    // painter order. Only one engine is active at a time. Vello in compute
-    // mode hands over a scene (consumed at frame end by the GPU compute graph
-    // + composite); everything else hands over CPU-tessellation triangle
-    // batches indexed by the spans.
+    // Pick the active rendering engine's pending work so the EngineBatchSpan /
+    // VelloSceneSpan commands inside the GPU replay stream can drain
+    // sub-ranges of it in painter order. Only one engine is active at a time.
+    // Vello in compute mode hands over the sub-scenes cut by
+    // MaybeEmitEngineSpan (the tail call above sealed the last one, so the
+    // encoder itself is drained here); everything else hands over
+    // CPU-tessellation triangle batches indexed by the spans.
     const std::vector<VkImpellerDrawBatch>* engineBatches = nullptr;
-    const VelloScene* velloScene = nullptr;
+    const std::vector<VelloSubScene>* velloSubScenes = nullptr;
     if (IsImpellerActive() && impellerEngine_ && impellerEngine_->HasPendingWork()) {
         engineBatches = &impellerEngine_->GetBatches();
-    } else if (IsVelloActive() && velloEngine_ && velloEngine_->HasPendingWork()) {
+    } else if (IsVelloActive() && velloEngine_) {
         if (velloEngine_->IsComputeMode() && impl_ && impl_->velloCompute_) {
-            velloEngine_->FinalizeScene();
-            velloScene = &velloEngine_->GetScene();
-        } else {
+            if (velloEngine_->SubSceneCount() > 0) {
+                velloSubScenes = &velloEngine_->SubScenes();
+            }
+        } else if (velloEngine_->HasPendingWork()) {
             engineBatches = &velloEngine_->GetBatches();
         }
     }
@@ -3492,6 +3582,17 @@ JaliumResult VulkanRenderTarget::EndDraw()
                 impl_->pendingDamageValid_ = true;
             }
         }
+        if (VkDamageTraceFile() != nullptr) {
+            VK_DMG("ED seq=%llu full=%d rects=%zu bounds=(%d,%d %ux%u) valid=%d cmds=%zu",
+                   static_cast<unsigned long long>(impl_->frameSequence_ + 1),
+                   fullInvalidation_ ? 1 : 0, dirtyRects_.size(),
+                   impl_->pendingDamageBounds_.offset.x, impl_->pendingDamageBounds_.offset.y,
+                   impl_->pendingDamageBounds_.extent.width, impl_->pendingDamageBounds_.extent.height,
+                   impl_->pendingDamageValid_ ? 1 : 0, gpuReplayCommands_.size());
+            for (const auto& dr : dirtyRects_) {
+                VK_DMG("  rect (%.1f,%.1f %.1fx%.1f)", dr.x, dr.y, dr.width, dr.height);
+            }
+        }
     }
 
     bool ok = false;
@@ -3515,10 +3616,31 @@ JaliumResult VulkanRenderTarget::EndDraw()
             if (!impl_->DeviceUsable()) {
                 ok = false;
             } else if (useGpuReplay) {
+                const auto drfT0 = std::chrono::steady_clock::now();
                 ok = impl_->DrawReplayFrame(
                     gpuReplayCommands_, clearColor_, fullInvalidation_,
-                    engineBatches, velloScene,
+                    engineBatches, velloSubScenes,
                     &recordedExternalVideoSurfaces_);
+                if (VkVelloDbgLevel() >= 1) {
+                    static uint64_t s_us = 0, s_n = 0;
+                    static std::chrono::steady_clock::time_point s_w0 =
+                        std::chrono::steady_clock::now();
+                    s_us += (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - drfT0)
+                                .count();
+                    if (++s_n >= 120) {
+                        const auto now = std::chrono::steady_clock::now();
+                        const double wallSec =
+                            std::chrono::duration<double>(now - s_w0).count();
+                        std::fprintf(stderr,
+                                     "[VkFrame] drawReplay=%.2fms fps=%.1f (%llu frames)",
+                                     (double)s_us / 1000.0 / (double)s_n,
+                                     wallSec > 0.0 ? (double)s_n / wallSec : 0.0,
+                                     (unsigned long long)s_n);
+                        std::fputc(10, stderr);
+                        s_us = 0; s_n = 0; s_w0 = now;
+                    }
+                }
             } else {
                 ok = impl_->DrawFrame(
                     pixelBuffer_.data(), static_cast<uint32_t>(width_),
@@ -6143,7 +6265,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &solidRectPipelineLayout) != VK_SUCCESS || solidRectPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &solidRectPipelineLayout) != VK_SUCCESS || solidRectPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -6363,7 +6485,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.pSetLayouts = &frameDescriptorSetLayout;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &bitmapPipelineLayout) != VK_SUCCESS || bitmapPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &bitmapPipelineLayout) != VK_SUCCESS || bitmapPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -6900,7 +7022,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.pSetLayouts = &textDescriptorSetLayout;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &textPipelineLayout) != VK_SUCCESS || textPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &textPipelineLayout) != VK_SUCCESS || textPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -7066,7 +7188,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.pSetLayouts = &frameDescriptorSetLayout;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &blurPipelineLayout) != VK_SUCCESS || blurPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &blurPipelineLayout) != VK_SUCCESS || blurPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -7190,7 +7312,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.pSetLayouts = &frameDescriptorSetLayout;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &backdropPipelineLayout) != VK_SUCCESS || backdropPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &backdropPipelineLayout) != VK_SUCCESS || backdropPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -7422,7 +7544,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.pSetLayouts = &frameDescriptorSetLayout;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &liquidGlassPipelineLayout) != VK_SUCCESS || liquidGlassPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &liquidGlassPipelineLayout) != VK_SUCCESS || liquidGlassPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -7537,7 +7659,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &triangleFillPipelineLayout) != VK_SUCCESS || triangleFillPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &triangleFillPipelineLayout) != VK_SUCCESS || triangleFillPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -7673,7 +7795,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &vcTrianglePipelineLayout) != VK_SUCCESS || vcTrianglePipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &vcTrianglePipelineLayout) != VK_SUCCESS || vcTrianglePipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -7868,7 +7990,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.pSetLayouts = &transitionDescriptorSetLayout;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &transitionPipelineLayout) != VK_SUCCESS || transitionPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &transitionPipelineLayout) != VK_SUCCESS || transitionPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -8317,6 +8439,147 @@ bool VulkanRenderTarget::Impl::RefreshSharedImageDescriptorsForCompletedSlot(
     }
 #endif
     return true;
+}
+
+bool VulkanRenderTarget::Impl::EnsureEllipticalLayouts()
+{
+    if (ellipticalSetLayout_ && ellipticalEmptySetLayout_) return true;
+    VkDescriptorSetLayoutCreateInfo info {};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    if (!ellipticalEmptySetLayout_ && createDescriptorSetLayout(device, &info, nullptr, &ellipticalEmptySetLayout_) != VK_SUCCESS) return false;
+    VkDescriptorSetLayoutBinding binding {};
+    binding.binding = 0; binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    binding.descriptorCount = 1; binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    info.bindingCount = 1; info.pBindings = &binding;
+    return ellipticalSetLayout_ || createDescriptorSetLayout(device, &info, nullptr, &ellipticalSetLayout_) == VK_SUCCESS;
+}
+
+VkResult VulkanRenderTarget::Impl::CreateEllipticalPipelineLayout(const VkPipelineLayoutCreateInfo& info, VkPipelineLayout* output)
+{
+    if (!EnsureEllipticalLayouts()) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    VkDescriptorSetLayout layouts[2] { info.setLayoutCount ? info.pSetLayouts[0] : ellipticalEmptySetLayout_, ellipticalSetLayout_ };
+    auto extended = info; extended.setLayoutCount = 2; extended.pSetLayouts = layouts;
+    return createPipelineLayout(device, &extended, nullptr, output);
+}
+
+bool VulkanRenderTarget::Impl::PrepareEllipticalFrame(const std::vector<GpuReplayCommand>& commands,
+    const std::vector<VkImpellerDrawBatch>* batches)
+{
+    if (!EnsureEllipticalLayouts()) return false;
+    auto& frame = ellipticalFrames_[currentFrame_];
+    ellipticalSets_.clear(); currentEllipticalKey_ = nullptr;
+    std::vector<EllipticalClipSnapshot> clips;
+    std::unordered_map<const void*, size_t> indices;
+    auto Add = [&](const EllipticalClipSnapshot& value) {
+        if (indices.try_emplace(value.get(), clips.size()).second) clips.push_back(value);
+    };
+    Add({});
+    for (const auto& command : commands) Add(command.ellipticalClips);
+    if (batches) for (const auto& batch : *batches) Add(batch.ellipticalClips);
+    std::vector<VkDeviceSize> offsets;
+    VkDeviceSize bytes = 0;
+    for (const auto& clip : clips) {
+        // 256 satisfies Vulkan's maximum minimum SSBO offset alignment, and
+        // matches the existing glyph-instance arena's alignment contract.
+        bytes = (bytes + 255) & ~VkDeviceSize(255);
+        offsets.push_back(bytes);
+        bytes += 16 + (clip ? clip->size() * sizeof(EllipticalClipGpu) : 0);
+    }
+    // DrawReplayFrame has already observed this slot's fence. Reset its pool
+    // before replacing a buffer still referenced by the previous descriptors.
+    if (frame.pool && frame.poolCapacity >= clips.size()) {
+        if (!resetDescriptorPool || NoteVk(resetDescriptorPool(device, frame.pool, 0), "ellipticalClip.resetPool") != VK_SUCCESS) return false;
+    } else {
+        if (frame.pool) destroyDescriptorPool(device, frame.pool, nullptr);
+        frame.pool = VK_NULL_HANDLE;
+        frame.poolCapacity = std::max(8u, static_cast<uint32_t>(clips.size()));
+        VkDescriptorPoolSize size { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.poolCapacity };
+        VkDescriptorPoolCreateInfo info {};
+        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        info.maxSets = frame.poolCapacity; info.poolSizeCount = 1; info.pPoolSizes = &size;
+        if (NoteVk(createDescriptorPool(device, &info, nullptr, &frame.pool), "ellipticalClip.createPool") != VK_SUCCESS) return false;
+    }
+    if (!frame.buffer || frame.capacity < bytes) {
+        VkBuffer buffer = VK_NULL_HANDLE; VkDeviceMemory memory = VK_NULL_HANDLE; void* mapped = nullptr;
+        auto Cleanup = [&] {
+            if (mapped) unmapMemory(device, memory);
+            if (buffer) destroyBuffer(device, buffer, nullptr);
+            if (memory) freeMemory(device, memory, nullptr);
+        };
+        VkBufferCreateInfo info {}; info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size = std::max<VkDeviceSize>(4096, (bytes + 4095) & ~VkDeviceSize(4095));
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (NoteVk(createBuffer(device, &info, nullptr, &buffer), "ellipticalClip.createBuffer") != VK_SUCCESS) return false;
+        VkMemoryRequirements requirements {}; getBufferMemoryRequirements(device, buffer, &requirements);
+        auto type = FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (type == VK_QUEUE_FAMILY_IGNORED) { Cleanup(); return false; }
+        VkMemoryAllocateInfo allocation {}; allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = type;
+        if (NoteVk(allocateMemory(device, &allocation, nullptr, &memory), "ellipticalClip.allocateMemory") != VK_SUCCESS ||
+            NoteVk(bindBufferMemory(device, buffer, memory, 0), "ellipticalClip.bindBuffer") != VK_SUCCESS ||
+            NoteVk(mapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &mapped), "ellipticalClip.mapMemory") != VK_SUCCESS) {
+            Cleanup(); return false;
+        }
+        if (frame.mapped) unmapMemory(device, frame.memory);
+        if (frame.buffer) destroyBuffer(device, frame.buffer, nullptr);
+        if (frame.memory) freeMemory(device, frame.memory, nullptr);
+        frame.buffer = buffer; frame.memory = memory; frame.mapped = mapped; frame.capacity = info.size;
+    }
+    for (size_t index = 0; index < clips.size(); ++index) {
+        const auto& clip = clips[index];
+        auto* destination = static_cast<uint8_t*>(frame.mapped) + offsets[index];
+        std::memset(destination, 0, 16);
+        const uint32_t count = clip ? static_cast<uint32_t>(clip->size()) : 0;
+        std::memcpy(destination, &count, sizeof(count));
+        if (count) std::memcpy(destination + 16, clip->data(), count * sizeof(EllipticalClipGpu));
+        VkDescriptorSetAllocateInfo allocation {}; allocation.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocation.descriptorPool = frame.pool; allocation.descriptorSetCount = 1; allocation.pSetLayouts = &ellipticalSetLayout_;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        if (NoteVk(allocateDescriptorSets(device, &allocation, &set), "ellipticalClip.allocateSet") != VK_SUCCESS) return false;
+        VkDescriptorBufferInfo buffer { frame.buffer, offsets[index], 16 + count * sizeof(EllipticalClipGpu) };
+        VkWriteDescriptorSet write {}; write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = set; write.dstBinding = 0; write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; write.pBufferInfo = &buffer;
+        updateDescriptorSets(device, 1, &write, 0, nullptr);
+        ellipticalSets_.emplace(clip.get(), set);
+    }
+    return true;
+}
+
+void VulkanRenderTarget::Impl::BindEllipticalSet(VkCommandBuffer cmd, VkPipelineLayout layout, bool enabled)
+{
+    if (layout == VK_NULL_HANDLE) return;
+    const bool compatible = layout == solidRectPipelineLayout || layout == bitmapPipelineLayout ||
+        layout == triangleFillPipelineLayout || layout == vcTrianglePipelineLayout || layout == engineBatchPipelineLayout ||
+        layout == blurPipelineLayout || layout == backdropPipelineLayout || layout == liquidGlassPipelineLayout ||
+        layout == transitionPipelineLayout || layout == velloCompositePipelineLayout
+#ifdef _WIN32
+        || layout == textPipelineLayout
+#endif
+        ;
+    if (!compatible) return;
+    auto entry = ellipticalSets_.find(enabled ? currentEllipticalKey_ : nullptr);
+    if (entry != ellipticalSets_.end())
+        cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &entry->second, 0, nullptr);
+}
+
+void VulkanRenderTarget::Impl::PushGraphicsConstants(VkCommandBuffer cmd, VkPipelineLayout layout,
+    VkShaderStageFlags stages, uint32_t offset, uint32_t size, const void* values, bool clip)
+{
+    BindEllipticalSet(cmd, layout, clip);
+    cmdPushConstants(cmd, layout, stages, offset, size, values);
+}
+
+void VulkanRenderTarget::Impl::DestroyEllipticalFrames()
+{
+    for (auto& frame : ellipticalFrames_) {
+        if (frame.pool && destroyDescriptorPool) destroyDescriptorPool(device, frame.pool, nullptr);
+        if (frame.mapped && unmapMemory) unmapMemory(device, frame.memory);
+        if (frame.buffer && destroyBuffer) destroyBuffer(device, frame.buffer, nullptr);
+        if (frame.memory && freeMemory) freeMemory(device, frame.memory, nullptr);
+        frame = {};
+    }
+    ellipticalSets_.clear(); currentEllipticalKey_ = nullptr;
 }
 
 bool VulkanRenderTarget::Impl::EnsureStagingCapacity(VkDeviceSize requiredSize)
@@ -9232,6 +9495,7 @@ void VulkanRenderTarget::Impl::DestroyPerFrameResources()
     if (!device) {
         return;
     }
+    DestroyEllipticalFrames();
     // Commit any currently-aliased state back into its slot so we free the latest
     // pointers rather than stale ones.
     CommitCurrentFrame();
@@ -10207,7 +10471,7 @@ bool VulkanRenderTarget::Impl::EnsureEngineBatchPipeline()
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &engineBatchPipelineLayout) != VK_SUCCESS
+        if (CreateEllipticalPipelineLayout(layoutInfo, &engineBatchPipelineLayout) != VK_SUCCESS
             || engineBatchPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
@@ -12342,6 +12606,7 @@ bool VulkanRenderTarget::Impl::RenderEngineBatches(
         EngineBatchPushConstants ebpc {};
         std::memcpy(ebpc.mvp, mvp, sizeof(mvp));
         for (const auto& rec : recs) {
+            currentEllipticalKey_ = rec.src->ellipticalClips.get();
             // Batch scissor ∩ degraded-capture bound ∩ renderArea: the bound
             // keeps out-of-bound geometry from rasterizing at all, and the
             // renderArea clamp keeps every draw inside the narrowed pass (a
@@ -12365,7 +12630,7 @@ bool VulkanRenderTarget::Impl::RenderEngineBatches(
             } else {
                 ebpc.clipFlags[0] = 0.0f;
             }
-            cmdPushConstants(cmd, engineBatchPipelineLayout,
+            PushGraphicsConstants(cmd, engineBatchPipelineLayout,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                              0, sizeof(ebpc), &ebpc);
             if (rec.type == 0) {
@@ -12396,6 +12661,9 @@ bool VulkanRenderTarget::Impl::RenderEngineBatches(
         // already carries the degraded-capture bound, preserving the hard
         // guarantee that no pixel outside the bound is touched regardless of
         // what the offscreen pass rasterized.
+        // Each source batch was already clipped in the MSAA cover pass.
+        // Reapplying the final batch's contour would erase earlier batches.
+        currentEllipticalKey_ = nullptr;
         CompositeVelloOutput(cmd, stencilResolveView, stencilResolveSampler,
                              extent, frameIdx, renderPass, framebuffer,
                              &spanDamage);
@@ -12531,6 +12799,7 @@ bool VulkanRenderTarget::Impl::RenderEngineBatches(
         // intersection means the batch lies entirely outside the damage rect,
         // so skip its draw instead of double-blending it on a partial frame.
         const auto& source = *batch.src;
+        currentEllipticalKey_ = source.ellipticalClips.get();
         VkRect2D scissor {};
         if (source.hasScissor) {
             const int32_t left = static_cast<int32_t>(std::max(0.0f, source.scissorL));
@@ -12560,7 +12829,7 @@ bool VulkanRenderTarget::Impl::RenderEngineBatches(
             std::memcpy(ebpc.roundedClipRadii, source.roundedClipCornerRadii, sizeof(ebpc.roundedClipRadii));
             ebpc.clipFlags[0] = 1.0f;
         }
-        cmdPushConstants(cmd, engineBatchPipelineLayout,
+        PushGraphicsConstants(cmd, engineBatchPipelineLayout,
                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                          0, sizeof(ebpc), &ebpc);
         const VkDeviceSize vertexOffset = batch.vertexByteOffset;
@@ -12625,23 +12894,27 @@ bool VulkanRenderTarget::Impl::EnsureVelloCompositePipeline()
         pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pli.setLayoutCount = 1;
         pli.pSetLayouts = &velloCompositeDescSetLayout;
-        if (createPipelineLayout(device, &pli, nullptr, &velloCompositePipelineLayout) != VK_SUCCESS) {
+        if (CreateEllipticalPipelineLayout(pli, &velloCompositePipelineLayout) != VK_SUCCESS) {
             return false;
         }
     }
     for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
         if (velloCompositeDescPools[f] != VK_NULL_HANDLE) continue;
-        // 32 sets per frame slot: the composite runs once per engine-batch
-        // span taking the stencil path (plus the Vello compute composite)
-        // instead of once per frame. A frame needing more than 32 fails the
-        // allocate and skips that span's composite — bounded and non-fatal.
+        // One set per composite call. Sized for the Vello compute path: every
+        // sub-scene span composites individually (kMaxRecordsPerFrame of them),
+        // plus the engine-batch stencil-path composites. The old 32-set pool
+        // predates mid-frame sub-scenes; with 97 spans per frame the 33rd+
+        // allocate failed and those spans' composites were SILENTLY skipped --
+        // that is exactly the "icons missing" symptom on Vulkan.
+        const uint32_t kCompositeSets =
+            VelloComputePipeline::kMaxRecordsPerFrame + 32;
         VkDescriptorPoolSize sizes[2] = {
-            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 32 },
-            { VK_DESCRIPTOR_TYPE_SAMPLER, 32 },
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kCompositeSets },
+            { VK_DESCRIPTOR_TYPE_SAMPLER, kCompositeSets },
         };
         VkDescriptorPoolCreateInfo pi {};
         pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pi.maxSets = 32;
+        pi.maxSets = kCompositeSets;
         pi.poolSizeCount = 2;
         pi.pPoolSizes = sizes;
         if (createDescriptorPool(device, &pi, nullptr, &velloCompositeDescPools[f]) != VK_SUCCESS) {
@@ -12739,12 +13012,14 @@ bool VulkanRenderTarget::Impl::EnsureVelloCompositePipeline()
     return result == VK_SUCCESS && velloCompositePipeline != VK_NULL_HANDLE;
 }
 
+
 void VulkanRenderTarget::Impl::CompositeVelloOutput(
     VkCommandBuffer cmd, VkImageView outputView, VkSampler sampler,
     VkExtent2D extent, uint32_t frameIdx,
     VkRenderPass renderPass, VkFramebuffer framebuffer,
-    const VkRect2D* scissorBound)
+    const VkRect2D* scissorBound, const VkRect2D* dstRect, VkExtent2D srcExtent)
 {
+    if (srcExtent.width == 0 || srcExtent.height == 0) srcExtent = extent;
     if (cmd == VK_NULL_HANDLE || outputView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
     if (frameIdx >= MAX_FRAMES_IN_FLIGHT) return;
     if (!EnsureVelloCompositePipeline()) return;
@@ -12819,6 +13094,22 @@ void VulkanRenderTarget::Impl::CompositeVelloOutput(
         sc.extent = extent;
     }
 
+    // A sub-scene's output only covers `dstRect`; clamp the write area to it so
+    // the surrounding pixels are untouched.
+    if (dstRect) {
+        const int32_t l2 = std::max(sc.offset.x, dstRect->offset.x);
+        const int32_t t2 = std::max(sc.offset.y, dstRect->offset.y);
+        const int32_t r2 = std::min(sc.offset.x + static_cast<int32_t>(sc.extent.width),
+                                    dstRect->offset.x + static_cast<int32_t>(dstRect->extent.width));
+        const int32_t b2 = std::min(sc.offset.y + static_cast<int32_t>(sc.extent.height),
+                                    dstRect->offset.y + static_cast<int32_t>(dstRect->extent.height));
+        if (r2 <= l2 || b2 <= t2) return;   // sub-scene lies outside the damage area
+        sc.offset.x = l2;
+        sc.offset.y = t2;
+        sc.extent.width = static_cast<uint32_t>(r2 - l2);
+        sc.extent.height = static_cast<uint32_t>(b2 - t2);
+    }
+
     VkClearValue dummyClear {};
     VkRenderPassBeginInfo rpBegin {};
     rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -12829,9 +13120,23 @@ void VulkanRenderTarget::Impl::CompositeVelloOutput(
     rpBegin.pClearValues = &dummyClear;
     cmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
     cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, velloCompositePipeline);
+    BindEllipticalSet(cmd, velloCompositePipelineLayout);
+    // The vertex shader emits a fullscreen triangle whose uv spans 0..1 across
+    // the WHOLE sampled image, so the viewport is sized to the full image and
+    // placed at dstRect's origin: texel (0,0) lands on dstRect's corner at 1:1
+    // scale. The scissor (already clamped to dstRect above) then keeps only the
+    // sub-scene's region -- the image may legitimately be larger, since it only
+    // ever grows. No shader change needed.
     VkViewport vp {};
-    vp.width = static_cast<float>(extent.width);
-    vp.height = static_cast<float>(extent.height);
+    if (dstRect) {
+        vp.x = static_cast<float>(dstRect->offset.x);
+        vp.y = static_cast<float>(dstRect->offset.y);
+        vp.width = static_cast<float>(srcExtent.width);
+        vp.height = static_cast<float>(srcExtent.height);
+    } else {
+        vp.width = static_cast<float>(extent.width);
+        vp.height = static_cast<float>(extent.height);
+    }
     vp.maxDepth = 1.0f;
     cmdSetViewport(cmd, 0, 1, &vp);
     cmdSetScissor(cmd, 0, 1, &sc);
@@ -12918,6 +13223,15 @@ VkPipeline VulkanRenderTarget::Impl::EnsureCustomShaderPipeline(uint64_t hash, c
                                                                 const uint32_t* prebuiltPsSpirv,
                                                                 size_t prebuiltPsSpirvSize)
 {
+    // Built-in effects can request a pipeline while recording the very first
+    // frame, before DrawReplayFrame has created its render pass. A null pass
+    // is not legal here: this device does not enable dynamic rendering.
+    if (frameRenderPass == VK_NULL_HANDLE) {
+        if (!EnsureGraphicsResources()) return VK_NULL_HANDLE;
+        // Recording precedes DrawReplayFrame::BeginFrame. Preserve the newly
+        // allocated per-slot descriptors before BeginFrame reloads the aliases.
+        CommitCurrentFrame();
+    }
     auto it = customShaderPipelines.find(hash);
     if (it != customShaderPipelines.end()) return it->second;
     if (!EnsureCustomShaderBase()) return VK_NULL_HANDLE;
@@ -13154,7 +13468,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                                                const float clearColor[4],
                                                bool fullClear,
                                                const std::vector<VkImpellerDrawBatch>* engineBatches,
-                                               const VelloScene* velloScene,
+                                               const std::vector<VelloSubScene>* velloSubScenes,
                                                std::vector<VulkanImportedVideoSurface*>*
                                                    externalVideoSurfaces)
 {
@@ -13366,7 +13680,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     bool hasTransitionSlotCommands = false;
     bool hasVcTriangleCommands = false;
 #ifdef _WIN32
-    // Glyph-instance SSBO sizing (B4b). Each TextRun contributes glyphCount*48
+    // Glyph-instance SSBO sizing (B4b). Each TextRun contributes glyphCount*64
     // bytes to the trailing glyph region of the staging buffer; textRunOffsets is
     // the per-command byte offset WITHIN that region (added to textGlyphStagingBase
     // below).
@@ -13383,6 +13697,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             // the dedicated draw-loop branch (mirror Transition useSlotImages / Blur
             // captureLiveScene). Leaving bitmapOffsets[index] = 0 is fine (the draw branch never
             // reads it), and it must NOT abort the frame on the empty-pixels check below.
+            if (command.retainedLayerKey != nullptr && VkVelloDbgLevel() >= 2 &&
+                g_vkVelloDbgBudget > 0) {
+                g_vkVelloDbgBudget--;
+                std::fprintf(stderr, "[VkLayerComp] key=%p dst=(%.0f,%.0f %.0fx%.0f)",
+                             command.retainedLayerKey, command.bitmap.x, command.bitmap.y,
+                             command.bitmap.w, command.bitmap.h);
+                std::fputc(10, stderr);
+            }
             if (command.retainedLayerKey != nullptr) {
                 continue;
             }
@@ -13580,7 +13902,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         if (command.kind == GpuReplayCommandKind::TextRun) {
             const uint32_t gc = command.textRun.glyphCount;
             if (gc > 0) {
-                if (command.textRun.glyphs.size() != static_cast<size_t>(gc) * 12u) { EndFrame(); return false; }
+                if (command.textRun.glyphs.size() != static_cast<size_t>(gc) * 16u) { EndFrame(); return false; }
                 textRunOffsets[index] = totalTextBytes;
                 totalTextBytes += static_cast<VkDeviceSize>(command.textRun.glyphs.size() * sizeof(float));
                 hasTextCommands = true;
@@ -13638,6 +13960,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
         return &residentIt->second;
     };
+
+    if (!PrepareEllipticalFrame(commands, engineBatches)) { EndFrame(); return false; }
 
     // Compact only the bitmap portion of staging. Existing uploaded resident
     // images need no bytes. Repeated commands with one immutable sharedPixels
@@ -14511,9 +14835,9 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
         cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             blurPipelineLayout, 0, 1, &frameDescriptorSet, 0, nullptr);
-        cmdPushConstants(commandBuffer, blurPipelineLayout,
+        PushGraphicsConstants(commandBuffer, blurPipelineLayout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            0, sizeof(horizontal), &horizontal);
+            0, sizeof(horizontal), &horizontal, false);
         cmdDraw(commandBuffer, 6, 1, 0, 0);
         cmdEndRenderPass(commandBuffer);
         return true;
@@ -14568,7 +14892,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         pushConstants.screenSize[1] = static_cast<float>(extent.height);
         cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipeline);
         cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipelineLayout, 0, 1, &effectOffscreenDescriptorSet, 0, nullptr);
-        cmdPushConstants(commandBuffer, bitmapPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
+        PushGraphicsConstants(commandBuffer, bitmapPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants, false);
         cmdDraw(commandBuffer, 6, 1, 0, 0);
     };
 
@@ -14612,6 +14936,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
 
     for (size_t index = 0; index < commands.size(); ++index) {
         const auto& command = commands[index];
+        currentEllipticalKey_ = command.ellipticalClips.get();
         VkRect2D commandScissor = scissor;
         if (command.hasScissor) {
             commandScissor.offset.x = std::max(0, command.scissorLeft);
@@ -14717,6 +15042,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 cat = GpuTimingCategory::Bitmap; break;
             case GpuReplayCommandKind::FilledPolygon:
             case GpuReplayCommandKind::EngineBatchSpan:
+            case GpuReplayCommandKind::VelloSceneSpan:
                 cat = GpuTimingCategory::Path; break;
             case GpuReplayCommandKind::Backdrop:
             case GpuReplayCommandKind::Blur:         // Blur shares the backdrop blur pipeline
@@ -14800,6 +15126,91 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                                     spanBoundPtr);
                 if (spanToOffscreen && spanRendered) {
                     offscreenFirstDraw = false;
+                }
+            }
+            continue;
+        }
+
+        if (command.kind == GpuReplayCommandKind::VelloSceneSpan) {
+            // Dispatch + composite ONE cut Vello-compute sub-scene at this
+            // point of the stream — the compute-mode analogue of the CPU-batch
+            // span above (closes B2: the old frame-end single-scene consume
+            // composited every path of the frame on top of all content drawn
+            // after it). The loop sits between render passes here, which both
+            // the 19-stage dispatch graph and the composite's own load-op pass
+            // require.
+            const uint32_t subIndex = command.engineBatchSpan.firstBatch;
+            if (velloSubScenes && subIndex < velloSubScenes->size() &&
+                velloFrameSlotPrepared && velloCompute_ &&
+                EnsureVelloCompositePipeline() &&
+                velloCompute_->Record(commandBuffer, (*velloSubScenes)[subIndex],
+                                      currentFrame_)) {
+                // Capture-follow — identical target/bound selection to the
+                // CPU-batch span above: inside an OffscreenBegin..End region
+                // the sub-scene belongs to the isolated element, so composite
+                // into the offscreen pair (CLEAR variant on the region's
+                // first draw); a degraded capture bounds the composite to the
+                // record-time clip snapshot; a partial main-target frame stays
+                // inside the frame damage.
+                const bool spanToOffscreen = offscreenActive && offscreenReady;
+                VkRenderPass  spanPass = frameRenderPass;
+                VkFramebuffer spanFb   = sceneFramebuffer_;
+                if (spanToOffscreen) {
+                    spanPass = offscreenFirstDraw ? effectOffscreenRenderPassClear  : effectOffscreenRenderPassLoad;
+                    spanFb   = offscreenFirstDraw ? effectOffscreenFramebufferClear : effectOffscreenFramebufferLoad;
+                }
+                VkRect2D spanBound {};
+                const VkRect2D* spanBoundPtr = nullptr;
+                if (spanToOffscreen) {
+                    spanBound = offscreenRegionArea;
+                    spanBoundPtr = &spanBound;
+                } else if (degradedCaptureScissorActive) {
+                    spanBound = damageFull ? degradedCaptureScissor
+                                           : intersectRect(degradedCaptureScissor, frameRenderArea);
+                    spanBoundPtr = &spanBound;
+                } else if (!damageFull) {
+                    spanBound = frameRenderArea;
+                    spanBoundPtr = &spanBound;
+                }
+                const VelloRenderRegion& vreg = (*velloSubScenes)[subIndex].packed.region;
+                VkRect2D velloDst {};
+                velloDst.offset.x = static_cast<int32_t>(vreg.originX);
+                velloDst.offset.y = static_cast<int32_t>(vreg.originY);
+                velloDst.extent.width = vreg.width;
+                velloDst.extent.height = vreg.height;
+                if (VkVelloDbgLevel() >= 2 && g_vkVelloDbgBudget > 0) {
+                    g_vkVelloDbgBudget--;
+                    std::fprintf(stderr,
+                                 "[VkSpan] #%u dst=(%d,%d %ux%u) off=%d damageFull=%d bound=(%d,%d %ux%u)",
+                                 subIndex, velloDst.offset.x, velloDst.offset.y,
+                                 velloDst.extent.width, velloDst.extent.height,
+                                 spanToOffscreen ? 1 : 0, damageFull ? 1 : 0,
+                                 spanBoundPtr ? spanBoundPtr->offset.x : -1,
+                                 spanBoundPtr ? spanBoundPtr->offset.y : -1,
+                                 spanBoundPtr ? spanBoundPtr->extent.width : 0,
+                                 spanBoundPtr ? spanBoundPtr->extent.height : 0);
+                    std::fputc(10, stderr);
+                }
+                CompositeVelloOutput(commandBuffer, velloCompute_->OutputView(),
+                                     velloCompute_->OutputSampler(), extent, currentFrame_,
+                                     spanPass, spanFb, spanBoundPtr, &velloDst,
+                                     velloCompute_->OutputExtent());
+                if (spanToOffscreen) {
+                    offscreenFirstDraw = false;
+                }
+            } else if (velloSubScenes && subIndex < velloSubScenes->size()) {
+                // Sub-scene dropped (record cap / allocation failure): the
+                // paths of this span are missing from the frame. Log once per
+                // process so the degradation is attributable.
+                if (VkVelloDbgLevel() >= 2 && g_vkVelloDbgBudget > 0) {
+                    g_vkVelloDbgBudget--;
+                    std::fprintf(stderr, "[VkSpan] #%u DROPPED", subIndex);
+                    std::fputc(10, stderr);
+                }
+                static bool s_loggedVelloSpanDrop = false;
+                if (!s_loggedVelloSpanDrop) {
+                    s_loggedVelloSpanDrop = true;
+                    VK_LOG("[Vulkan] VelloSceneSpan dropped (record cap or allocation failure) — paths missing this frame\n");
                 }
             }
             continue;
@@ -15041,6 +15452,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             offscreenActive = false;
             const int32_t elemW = static_cast<int32_t>(std::floor(command.solidRect.w + 0.5f));
             const int32_t elemH = static_cast<int32_t>(std::floor(command.solidRect.h + 0.5f));
+            if (VkVelloDbgLevel() >= 2 && g_vkVelloDbgBudget > 0) {
+                g_vkVelloDbgBudget--;
+                std::fprintf(stderr, "[VkLayerEnd] key=%p src=(%.0f,%.0f %.0fx%.0f) open=%d ready=%d",
+                             command.retainedLayerKey, command.solidRect.x, command.solidRect.y,
+                             command.solidRect.w, command.solidRect.h,
+                             hadOpenRegion ? 1 : 0, offscreenReady ? 1 : 0);
+                std::fputc(10, stderr);
+            }
             RetainedLayerGpuImage* layerImg = (command.retainedLayerKey && elemW > 0 && elemH > 0)
                 ? EnsureRetainedLayerImage(command.retainedLayerKey,
                                            static_cast<uint32_t>(elemW), static_cast<uint32_t>(elemH))
@@ -15155,6 +15574,13 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             // grow + FS erf branch. Zero for every non-shadow SolidRect.
             pushConstants.shadowParams[0] = command.shadowMode;
             pushConstants.shadowParams[1] = command.shadowSigma;
+            if (command.shadowMode > 2.5f) {
+                // geometryFlags.x drives custom-quad selection in the VS. The effect offset
+                // lives in padding2, which is unused by ordinary shadow commands.
+                pushConstants.padding2[0] = command.effectOffsetX;
+                pushConstants.padding2[1] = command.effectOffsetY;
+                pushConstants.padding3[0] = command.effectSpread;
+            }
             if (command.hasRoundedClip) {
                 pushConstants.roundedClipRect[0] = command.roundedClipLeft;
                 pushConstants.roundedClipRect[1] = command.roundedClipTop;
@@ -15223,7 +15649,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pushConstants.geometryFlags[0] = 1.0f;
             }
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, solidRectPipeline);
-            cmdPushConstants(
+            PushGraphicsConstants(
                 commandBuffer,
                 solidRectPipelineLayout,
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -15254,7 +15680,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pushConstants.geometryFlags[0] = 1.0f;
             }
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, clearRectPipeline);
-            cmdPushConstants(
+            PushGraphicsConstants(
                 commandBuffer,
                 solidRectPipelineLayout,
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -15292,7 +15718,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             pushConstants.screenSize[0] = static_cast<float>(extent.width);
             pushConstants.screenSize[1] = static_cast<float>(extent.height);
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, glowPipeline);
-            cmdPushConstants(commandBuffer, glowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
+            PushGraphicsConstants(commandBuffer, glowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 3, 1, 0, 0);
             continue;
         }
@@ -15332,7 +15758,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             const auto& verts = command.filledPolygon.GetTriangleVertices();
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, triangleFillPipeline);
             cmdBindVertexBuffers(commandBuffer, 0, 1, &stagingBuffer, &vertexOffset);
-            cmdPushConstants(
+            PushGraphicsConstants(
                 commandBuffer,
                 triangleFillPipelineLayout,
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -15477,7 +15903,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 ? perFrameStates_[currentFrame_].blurTempDescriptorSet
                 : frameDescriptorSet;
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipelineLayout, 0, 1, &blurSourceDescriptor, 0, nullptr);
-            cmdPushConstants(commandBuffer, blurPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
+            PushGraphicsConstants(commandBuffer, blurPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
             continue;
         }
@@ -15624,7 +16050,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 ? perFrameStates_[currentFrame_].blurTempDescriptorSet
                 : frameDescriptorSet;
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backdropPipelineLayout, 0, 1, &backdropSourceDescriptor, 0, nullptr);
-            cmdPushConstants(commandBuffer, backdropPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
+            PushGraphicsConstants(commandBuffer, backdropPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
             continue;
         }
@@ -15742,7 +16168,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             }
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, liquidGlassPipeline);
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, liquidGlassPipelineLayout, 0, 1, &frameDescriptorSet, 0, nullptr);
-            cmdPushConstants(commandBuffer, liquidGlassPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
+            PushGraphicsConstants(commandBuffer, liquidGlassPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
             continue;
         }
@@ -15896,7 +16322,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             }
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, transitionPipeline);
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, transitionPipelineLayout, 0, 1, &transitionDescriptorSet, 0, nullptr);
-            cmdPushConstants(
+            PushGraphicsConstants(
                 commandBuffer,
                 transitionPipelineLayout,
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -15949,7 +16375,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             }
 
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vcTrianglePipeline);
-            cmdPushConstants(
+            PushGraphicsConstants(
                 commandBuffer,
                 vcTrianglePipelineLayout,
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -16009,10 +16435,10 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 (command.textRun.clearType && textClearTypePipeline != VK_NULL_HANDLE) ? textClearTypePipeline : textPipeline);
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                   textPipelineLayout, 0, 1, &selectedTextSet, 0, nullptr);
-            cmdPushConstants(commandBuffer, textPipelineLayout,
+            PushGraphicsConstants(commandBuffer, textPipelineLayout,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                              0, sizeof(pc), &pc);
-            const uint32_t firstInstance = static_cast<uint32_t>(textRunOffsets[index] / (12u * sizeof(float)));
+            const uint32_t firstInstance = static_cast<uint32_t>(textRunOffsets[index] / (16u * sizeof(float)));
             cmdDraw(commandBuffer, 6, command.textRun.glyphCount, 0, firstInstance);
             continue;
         }
@@ -16182,7 +16608,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             // SrcOver blend (srcColorBlendFactor = ONE) is correct.
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sampledPipeline);
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipelineLayout, 0, 1, &inkSet, 0, nullptr);
-            cmdPushConstants(commandBuffer, bitmapPipelineLayout,
+            PushGraphicsConstants(commandBuffer, bitmapPipelineLayout,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                              0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
@@ -16423,7 +16849,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             geom.uvScale[1] = uploadHeight == 0 ? 1.0f : static_cast<float>(cs.pixelHeight) / static_cast<float>(uploadHeight);
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, csPipeline);
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, customShaderPipelineLayout, 0, 1, &csSet, 0, nullptr);
-            cmdPushConstants(commandBuffer, customShaderPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(geom), &geom);
+            PushGraphicsConstants(commandBuffer, customShaderPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(geom), &geom);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
             continue;
         }
@@ -16514,7 +16940,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             bitmapPremulPipeline != VK_NULL_HANDLE ? bitmapPremulPipeline : bitmapPipeline);
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipelineLayout, 0, 1, &li.descSet, 0, nullptr);
-            cmdPushConstants(commandBuffer, bitmapPipelineLayout,
+            PushGraphicsConstants(commandBuffer, bitmapPipelineLayout,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
             continue;
@@ -16615,6 +17041,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             pc.uvOpacity[0] = 1.0f;
             pc.uvOpacity[1] = 1.0f;
             pc.uvOpacity[2] = command.bitmap.opacity;
+            pc.padding3[0] = command.bitmap.usePixelatedSampling ? 1.0f : 0.0f;
             pc.screenSize[0] = static_cast<float>(extent.width);
             pc.screenSize[1] = static_cast<float>(extent.height);
             if (command.bitmap.lcdCoverage) {
@@ -16662,7 +17089,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                                        ? bitmapPremulPipeline
                                        : bitmapPipeline));
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipelineLayout, 0, 1, &rSet, 0, nullptr);
-            cmdPushConstants(commandBuffer, bitmapPipelineLayout,
+            PushGraphicsConstants(commandBuffer, bitmapPipelineLayout,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
             continue;   // resident path complete — skip the shared uploadImage path
@@ -16726,6 +17153,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         pushConstants.uvOpacity[0] = uploadWidth == 0 ? 1.0f : static_cast<float>(command.bitmap.pixelWidth) / static_cast<float>(uploadWidth);
         pushConstants.uvOpacity[1] = uploadHeight == 0 ? 1.0f : static_cast<float>(command.bitmap.pixelHeight) / static_cast<float>(uploadHeight);
         pushConstants.uvOpacity[2] = command.bitmap.opacity;
+        pushConstants.padding3[0] = command.bitmap.usePixelatedSampling ? 1.0f : 0.0f;
         pushConstants.screenSize[0] = static_cast<float>(extent.width);
         pushConstants.screenSize[1] = static_cast<float>(extent.height);
         if (command.bitmap.lcdCoverage) {
@@ -16787,7 +17215,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                                    ? bitmapPremulPipeline
                                    : bitmapPipeline));
         cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipelineLayout, 0, 1, &bitmapSet, 0, nullptr);
-        cmdPushConstants(
+        PushGraphicsConstants(
             commandBuffer,
             bitmapPipelineLayout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -16808,60 +17236,21 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // fence-gated). Host-side only; the retired images drain post-fence next frame.
     EvictBitmapResidentImagesIfNeeded();
 
-    // AFTER all GPU-replay commands (the command buffer is outside a render
-    // pass here): run the real Vello GPU compute graph + composite its output
-    // image. The Impeller / Vello CPU-tessellation batches are NO LONGER
-    // drained here — they render in painter order through the EngineBatchSpan
-    // commands inside the loop above (EndDraw's tail MaybeEmitEngineSpan
-    // guarantees every batch is covered by a span before handoff).
-    //
-    // ── B2 (Vello COMPUTE-mode painter order) — KNOWN FOLLOW-UP ──────────────
-    // Vello in GPU-COMPUTE mode still consumes ONE monolithic scene here at
-    // frame end, so a rect/text/bitmap drawn AFTER a path in the same frame is
-    // painted BEFORE this composite and then covered by it (z-order inverted for
-    // path-then-opaque sequences). This is the compute-mode analogue of the
-    // Impeller interleaving that B1 already fixed via EngineBatchSpan; the
-    // CPU-tessellation Vello path is also already interleaved (see
-    // MaybeEmitEngineSpan). Only real-GPU-compute Vello is affected.
-    //
-    // Why it is NOT a localized change: VelloComputePipeline::Record (see
-    // vulkan_vello_compute.cpp) is structurally single-scene-per-frame —
-    //   1. it calls resetDescriptorPool_ at entry, so a 2nd Record in the same
-    //      frame invalidates the 1st sub-scene's already-recorded stage sets;
-    //   2. it writes ONE shared outputImage_ (the composite reads it), so a 2nd
-    //      Record overwrites the 1st sub-scene's pixels before they composite;
-    //   3. its host-visible input buffers (config_/pathSegment_/… ) are indexed
-    //      by frameIdx only, so a 2nd Record clobbers the 1st sub-scene's inputs
-    //      that the 1st sub-scene's GPU dispatch still reads;
-    //   4. the single shared device-local scratch (bump_/ptcl_/velloTile_/…) is
-    //      zeroed each Record and only barrier-serialized against the PREVIOUS
-    //      frame, not against an earlier sub-scene in THIS frame.
-    // Splitting sub-scenes therefore requires the full D3D12 mid-frame
-    // multi-Dispatch machinery ported to Vulkan: a per-sub-scene output-image
-    // pool with fence-gated retirement (D3D12 ForceNewOutputTexture /
-    // RetireOutputTexture / pendingRetiredResources_), deferred or per-sub-scene
-    // descriptor-pool + input/scratch regions with inter-sub-scene compute
-    // barriers, and threading each sub-scene's CompositeVelloOutput into the
-    // GPU-replay stream at its EngineBatchSpan position (the composite
-    // descriptor pool at velloCompositeDescPools already supports >1 composite
-    // per frame — see DrawReplayFrame's once-per-frame reset — so only the
-    // compute pipeline is the blocker). Vello is the NON-default engine
-    // (Auto -> Impeller), the default Impeller painter order is correct and
-    // parity-harness-verified, and the harness has no engine-select hook to
-    // exercise compute-mode Vello — so this is deferred rather than risk a large
-    // unverified compute-pipeline restructure. MaybeEmitEngineSpan deliberately
-    // excludes compute-mode Vello from spans to keep this the ONLY Vello-compute
-    // composite site (see its comment).
-    if (velloFrameSlotPrepared && velloScene && velloCompute_ &&
-        EnsureVelloCompositePipeline() &&
-        velloCompute_->Record(commandBuffer, *velloScene, currentFrame_)) {
-        // On a partial frame the composite must stay inside the frame render
-        // area like every other main-target draw.
-        CompositeVelloOutput(commandBuffer, velloCompute_->OutputView(),
-                             velloCompute_->OutputSampler(), extent, currentFrame_,
-                             frameRenderPass, sceneFramebuffer_,
-                             damageFull ? nullptr : &frameRenderArea);
-    }
+    // NOTE (B2 closed, 2026-08-30): Vello GPU-COMPUTE work no longer
+    // composites here at frame end. Each span of consecutive path encodes is
+    // cut into a self-contained sub-scene (MaybeEmitEngineSpan →
+    // VelloVulkanEngine::CutPendingToSubScene) and dispatched + composited at
+    // ITS VelloSceneSpan position inside the loop above — the compute-mode
+    // analogue of the CPU-batch EngineBatchSpan interleaving (B1) and of
+    // D3D12's lazy FlushVelloIfNeeded. The old frame-end single-scene consume
+    // z-inverted every path over content drawn after it (hidden-tab toolbar
+    // icons floating over the editor, hover highlights covering row text).
+    // Multi-Record safety lives in VelloComputePipeline::Record: per-frame
+    // descriptor pools sized for kMaxRecordsPerFrame 19-set groups (reset only
+    // in PrepareFrameSlot), host-visible inputs + ramp image retired-not-
+    // rewritten between same-frame Records, the shared scratch serialized by
+    // the leading barrier, and the single output image reused serially
+    // (composite sample → next Record's clear is barrier-ordered).
 
     // ── Readback (parity verification) — from the scene image ──────────────
     // Recorded after every draw of this frame, so the captured bytes are exactly
@@ -16912,6 +17301,17 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             staleRegion.offset.y = t;
             staleRegion.extent.width  = static_cast<uint32_t>(r - l);
             staleRegion.extent.height = static_cast<uint32_t>(b - t);
+        }
+        if (VkDamageTraceFile() != nullptr) {
+            VK_DMG("PC seq=%llu img=%u imgSeq=%llu covered=%d full=%d stale=(%d,%d %ux%u) fra=(%d,%d %ux%u) dmgFull=%d clear=%d",
+                   static_cast<unsigned long long>(thisFrameSeq), imageIndex,
+                   static_cast<unsigned long long>(imageSeq), staleCovered ? 1 : 0,
+                   staleFull ? 1 : 0,
+                   staleRegion.offset.x, staleRegion.offset.y,
+                   staleRegion.extent.width, staleRegion.extent.height,
+                   frameRenderArea.offset.x, frameRenderArea.offset.y,
+                   frameRenderArea.extent.width, frameRenderArea.extent.height,
+                   damageFull ? 1 : 0, doClear ? 1 : 0);
         }
 
         // Scene image -> SHADER_READ_ONLY for the composite sample.
@@ -17085,6 +17485,11 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     const VkResult presentResult = QueuePresentSynchronized(
         &presentInfo, "DrawReplayFrame.queuePresent");
     lastPresentBlockNs = MonotonicDiffNs(presentStartNs, MonotonicNowNs());
+    if (VkDamageTraceFile() != nullptr) {
+        VK_DMG("PR seq=%llu img=%u result=%d hintRects=%zu",
+               static_cast<unsigned long long>(thisFrameSeq), imageIndex,
+               static_cast<int>(presentResult), pendingPresentRegions_.size());
+    }
     if (presentResult != VK_SUCCESS) {
         swapchainRecreatePending = true;
     }
@@ -17216,6 +17621,9 @@ void VulkanRenderTarget::Impl::Destroy()
         // the command pool and descriptor pool are destroyed because it relies on
         // them still being valid.
         DestroyPerFrameResources();
+        if (destroyDescriptorSetLayout && ellipticalSetLayout_) destroyDescriptorSetLayout(device, ellipticalSetLayout_, nullptr);
+        if (destroyDescriptorSetLayout && ellipticalEmptySetLayout_) destroyDescriptorSetLayout(device, ellipticalEmptySetLayout_, nullptr);
+        ellipticalSetLayout_ = ellipticalEmptySetLayout_ = VK_NULL_HANDLE;
         if (destroyQueryPool && timingQueryPool != VK_NULL_HANDLE) {
             destroyQueryPool(device, timingQueryPool, nullptr);
             timingQueryPool = VK_NULL_HANDLE;
@@ -17459,6 +17867,11 @@ void VulkanRenderTarget::ApplyTransform(const CpuTransform& transform, float x, 
 void VulkanRenderTarget::SyncClipToEngine(IRenderingEngine* engine) const
 {
     if (!engine) return;
+    auto elliptical = ResolveEllipticalClips();
+    if (engine->GetType() == JALIUM_ENGINE_IMPELLER)
+        static_cast<ImpellerVulkanEngine*>(engine)->SetEllipticalClips(elliptical);
+    else if (engine->GetType() == JALIUM_ENGINE_VELLO)
+        static_cast<VelloVulkanEngine*>(engine)->SetEllipticalClips(elliptical);
 
     // SetRoundedClip / ClearRoundedClip are not part of IRenderingEngine
     // (mirrors D3D12, whose render target talks to its concrete Impeller
@@ -17543,8 +17956,40 @@ void VulkanRenderTarget::SyncClipToEngine(IRenderingEngine* engine) const
     }
 }
 
+EllipticalClipSnapshot VulkanRenderTarget::ResolveEllipticalClips() const
+{
+    if (std::none_of(clipStack_.begin(), clipStack_.end(),
+        [](const auto& clip) { return bool(clip.elliptical) || bool(clip.path); })) return {};
+    std::vector<EllipticalClipGpu> values;
+    values.reserve(clipStack_.size());
+    for (const auto& clip : clipStack_) {
+        if (effectCaptureClipSuspendDepth_ > 0 && clip.aliased) continue;
+        if (clip.path) {
+            clip.path->AppendGpu(values);
+            continue;
+        }
+        JaliumEllipticalRectClip shape {};
+        if (clip.elliptical) shape = clip.elliptical->shape;
+        else {
+            shape.structSize = sizeof(shape); shape.edges = 15;
+            shape.x = clip.x; shape.y = clip.y; shape.width = clip.w; shape.height = clip.h;
+            const float radii[4] { clip.radiusTL, clip.radiusTR, clip.radiusBR, clip.radiusBL };
+            const float limit = std::max(0.f, std::min(clip.w, clip.h) * .5f);
+            for (int i = 0; i < 4; ++i) shape.radiusX[i] = shape.radiusY[i] = std::clamp(radii[i], 0.f, limit);
+        }
+        const auto& t = clip.transform;
+        const float matrix[6] { t.m11, t.m12, t.m21, t.m22, t.dx, t.dy };
+        values.emplace_back(shape, matrix, clip.exclude);
+    }
+    if (!cachedEllipticalClips_ || cachedEllipticalClips_->size() != values.size() ||
+        std::memcmp(cachedEllipticalClips_->data(), values.data(), values.size() * sizeof(EllipticalClipGpu)) != 0)
+        cachedEllipticalClips_ = std::make_shared<const std::vector<EllipticalClipGpu>>(std::move(values));
+    return cachedEllipticalClips_;
+}
+
 bool VulkanRenderTarget::TryPopulateReplayClip(GpuReplayCommand& command) const
 {
+    command.ellipticalClips = ResolveEllipticalClips();
     command.hasScissor = false;
     command.scissorLeft = 0;
     command.scissorTop = 0;
@@ -17569,6 +18014,7 @@ bool VulkanRenderTarget::TryPopulateReplayClip(GpuReplayCommand& command) const
     int32_t bottom = height_;
     constexpr float kEpsilon = 0.0001f;
     for (const auto& clip : clipStack_) {
+        if (clip.elliptical || clip.path) continue; // contours live in the analytic stack
         // Inside a GPU-RT effect capture the ALIASED entry (the managed
         // dirty-region scissor) is skipped: the capture must hold the COMPLETE
         // element, or the effect samples a truncated silhouette and the halo
@@ -17646,7 +18092,7 @@ bool VulkanRenderTarget::TryPopulateReplayClip(GpuReplayCommand& command) const
         // is exactly D3D12's ResolveLiveRoundedClip approximation. That is
         // geometrically loose for a rotated rounded rect, but pixel-identical
         // across backends - the parity contract.
-        if (clip.rounded) {
+        if (clip.rounded && !command.ellipticalClips) {
             // INNERMOST rounded clip wins — D3D12 ResolveLiveRoundedClip parity
             // (roundedClipStack_.back(): "innermost dominates"). Every rounded
             // entry overwrites the selection, so the LAST one on the stack is
@@ -17709,6 +18155,15 @@ bool VulkanRenderTarget::TryPopulateReplayClip(GpuReplayCommand& command) const
 bool VulkanRenderTarget::IsInsideClip(float x, float y) const
 {
     for (const auto& clip : clipStack_) {
+        if (clip.path) {
+            if (!clip.path->Contains(x, y)) return false;
+            continue;
+        }
+        if (clip.elliptical) {
+            const bool inside = clip.elliptical->Contains(x, y);
+            if (clip.exclude ? inside : !inside) return false;
+            continue;
+        }
         if (!clip.hasInverse) {
             return false;
         }
@@ -18229,11 +18684,13 @@ void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
             // switch exhaustive (no -Wswitch).
             break;
         case GpuReplayCommandKind::EngineBatchSpan:
-            // GPU-only marker indexing the engines' batch vectors. On the CPU
-            // fallback the engine-routed primitives never became replay
-            // commands in the first place (their CPU mirror draws are gated on
-            // cpuRasterNeeded_ inside FillPath/StrokePath/FillPolygon), so
-            // there is nothing to replay here; keeps the switch exhaustive.
+        case GpuReplayCommandKind::VelloSceneSpan:
+            // GPU-only markers indexing the engines' batch/sub-scene vectors.
+            // On the CPU fallback the engine-routed primitives never became
+            // replay commands in the first place (their CPU mirror draws are
+            // gated on cpuRasterNeeded_ inside FillPath/StrokePath/
+            // FillPolygon), so there is nothing to replay here; keeps the
+            // switch exhaustive.
             break;
     }
 }
@@ -18245,53 +18702,62 @@ std::vector<uint8_t> VulkanRenderTarget::BlurPixels(const std::vector<uint8_t>& 
         return source;
     }
 
-    std::vector<uint8_t> horizontal = source;
+    // Match the GPU's separable Gaussian (sigma=radius/3). The CPU framebuffer
+    // stores premultiplied BGRA; return straight BGRA because BlendBuffer
+    // applies source alpha when it composites this result.
+    const int kernelRadius = std::clamp(radius, 1, 64);
+    const double sigma = std::max(0.5, kernelRadius / 3.0);
+    std::vector<double> weights(static_cast<size_t>(2 * kernelRadius + 1));
+    double weightSum = 0;
+    for (int k = -kernelRadius; k <= kernelRadius; ++k) {
+        const double weight = std::exp(-0.5 * (k / sigma) * (k / sigma));
+        weights[static_cast<size_t>(k + kernelRadius)] = weight;
+        weightSum += weight;
+    }
+
+    const int left = std::max(0, static_cast<int>(std::floor(x - kernelRadius)));
+    const int top = std::max(0, static_cast<int>(std::floor(y - kernelRadius)));
+    const int right = std::min(sourceWidth, static_cast<int>(std::ceil(x + w + kernelRadius)));
+    const int bottom = std::min(sourceHeight, static_cast<int>(std::ceil(y + h + kernelRadius)));
+    if (left >= right || top >= bottom) return source;
+    const int regionWidth = right - left;
+    const int regionHeight = bottom - top;
+    std::vector<float> horizontal(static_cast<size_t>(regionWidth) * regionHeight * 4u);
+    for (int py = top; py < bottom; ++py)
+    for (int px = left; px < right; ++px) {
+        double channels[4] {};
+        for (int k = -kernelRadius; k <= kernelRadius; ++k) {
+            const int sx = std::clamp(px + k, 0, sourceWidth - 1);
+            const size_t src = (static_cast<size_t>(py) * sourceWidth + sx) * 4u;
+            const double weight = weights[static_cast<size_t>(k + kernelRadius)];
+            for (int c = 0; c < 4; ++c)
+                channels[c] += source[src + c] * weight;
+        }
+        const size_t dst = (static_cast<size_t>(py - top) * regionWidth + (px - left)) * 4u;
+        for (int c = 0; c < 4; ++c)
+            horizontal[dst + c] = static_cast<float>(channels[c] / weightSum);
+    }
+
     std::vector<uint8_t> blurred = source;
-    const int left = std::max(0, static_cast<int>(std::floor(x - radius)));
-    const int top = std::max(0, static_cast<int>(std::floor(y - radius)));
-    const int right = std::min(sourceWidth, static_cast<int>(std::ceil(x + w + radius)));
-    const int bottom = std::min(sourceHeight, static_cast<int>(std::ceil(y + h + radius)));
-
-    for (int py = top; py < bottom; ++py) {
-        for (int px = left; px < right; ++px) {
-            uint32_t sumB = 0, sumG = 0, sumR = 0, sumA = 0, count = 0;
-            for (int sx = std::max(left, px - radius); sx <= std::min(right - 1, px + radius); ++sx) {
-                const size_t offset = (static_cast<size_t>(py) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(sx)) * 4u;
-                sumB += source[offset + 0];
-                sumG += source[offset + 1];
-                sumR += source[offset + 2];
-                sumA += source[offset + 3];
-                ++count;
-            }
-
-            const size_t destOffset = (static_cast<size_t>(py) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(px)) * 4u;
-            horizontal[destOffset + 0] = static_cast<uint8_t>(sumB / count);
-            horizontal[destOffset + 1] = static_cast<uint8_t>(sumG / count);
-            horizontal[destOffset + 2] = static_cast<uint8_t>(sumR / count);
-            horizontal[destOffset + 3] = static_cast<uint8_t>(sumA / count);
+    for (int py = top; py < bottom; ++py)
+    for (int px = left; px < right; ++px) {
+        double channels[4] {};
+        for (int k = -kernelRadius; k <= kernelRadius; ++k) {
+            const int sy = std::clamp(py + k, top, bottom - 1);
+            const size_t src = (static_cast<size_t>(sy - top) * regionWidth + (px - left)) * 4u;
+            const double weight = weights[static_cast<size_t>(k + kernelRadius)];
+            for (int c = 0; c < 4; ++c)
+                channels[c] += horizontal[src + c] * weight;
+        }
+        const size_t dst = (static_cast<size_t>(py) * sourceWidth + px) * 4u;
+        const double alpha = std::clamp(channels[3] / weightSum, 0.0, 255.0);
+        blurred[dst + 3] = static_cast<uint8_t>(alpha + 0.5);
+        for (int c = 0; c < 3; ++c) {
+            const double premultiplied = channels[c] / weightSum;
+            blurred[dst + c] = alpha <= 0.0001 ? 0 : static_cast<uint8_t>(
+                std::clamp(premultiplied * 255.0 / alpha, 0.0, 255.0) + 0.5);
         }
     }
-
-    for (int py = top; py < bottom; ++py) {
-        for (int px = left; px < right; ++px) {
-            uint32_t sumB = 0, sumG = 0, sumR = 0, sumA = 0, count = 0;
-            for (int sy = std::max(top, py - radius); sy <= std::min(bottom - 1, py + radius); ++sy) {
-                const size_t offset = (static_cast<size_t>(sy) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(px)) * 4u;
-                sumB += horizontal[offset + 0];
-                sumG += horizontal[offset + 1];
-                sumR += horizontal[offset + 2];
-                sumA += horizontal[offset + 3];
-                ++count;
-            }
-
-            const size_t destOffset = (static_cast<size_t>(py) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(px)) * 4u;
-            blurred[destOffset + 0] = static_cast<uint8_t>(sumB / count);
-            blurred[destOffset + 1] = static_cast<uint8_t>(sumG / count);
-            blurred[destOffset + 2] = static_cast<uint8_t>(sumR / count);
-            blurred[destOffset + 3] = static_cast<uint8_t>(sumA / count);
-        }
-    }
-
     return blurred;
 }
 
@@ -18301,7 +18767,8 @@ void VulkanRenderTarget::BlendBuffer(const std::vector<uint8_t>& source, int sou
         return;
     }
     const size_t expectedSize = static_cast<size_t>(sourceWidth) * static_cast<size_t>(sourceHeight) * 4u;
-    if (source.empty() || source.size() != expectedSize || sourceWidth <= 0 || sourceHeight <= 0 || opacity <= 0.0f) {
+    if (source.empty() || source.size() != expectedSize || sourceWidth <= 0 || sourceHeight <= 0 ||
+        opacity <= 0.0f || w <= 0.0f || h <= 0.0f) {
         return;
     }
 
@@ -18313,8 +18780,11 @@ void VulkanRenderTarget::BlendBuffer(const std::vector<uint8_t>& source, int sou
 
     for (int py = top; py < bottom; ++py) {
         for (int px = left; px < right; ++px) {
-            const float u = (static_cast<float>(px - left) + 0.5f) / std::max(1, right - left);
-            const float v = (static_cast<float>(py - top) + 0.5f) / std::max(1, bottom - top);
+            // Clipping changes the iteration bounds, not the source mapping.
+            // Normalizing by the clipped width scaled shifted captures back
+            // into the visible slice (notably offset drop shadows).
+            const float u = (static_cast<float>(px) + 0.5f - x) / w;
+            const float v = (static_cast<float>(py) + 0.5f - y) / h;
             const int srcX = std::clamp(static_cast<int>(u * sourceWidth), 0, sourceWidth - 1);
             const int srcY = std::clamp(static_cast<int>(v * sourceHeight), 0, sourceHeight - 1);
             const size_t offset = (static_cast<size_t>(srcY) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(srcX)) * 4u;
@@ -18452,19 +18922,291 @@ void VulkanRenderTarget::StrokeRoundedRectApprox(float x, float y, float w, floa
 // point of the stream instead of on top of the whole frame — the Vulkan
 // analogue of D3D12's FlushVelloIfNeeded lazy flush at each non-path draw
 // entry point.
-void VulkanRenderTarget::MaybeEmitEngineSpan()
+
+bool VulkanRenderTarget::VelloReroutePreflight(float bx, float by, float bw, float bh,
+                                               float inflate)
 {
-    // Only the CPU-tessellation engine outputs interleave (they render via
-    // RenderEngineBatches). Vello COMPUTE mode keeps its frame-end scene
-    // consume — sub-scene splitting is B2 — so it must not be folded into
-    // spans; the condition mirrors EndDraw's engine pick exactly.
+    // Opt-in until the retained-layer capture interaction is fully understood
+    // on Vulkan (the reroute changes which commands exist inside a capture,
+    // which perturbs where the sub-scene cuts land).
+    static const bool s_on = []() {
+        char buf[8];
+        if (!ReadVulkanEnvironment("JALIUM_VK_VELLO_REROUTE", buf)) {
+            return true;  // default ON; JALIUM_VK_VELLO_REROUTE=0 disables
+        }
+        return buf[0] != '0';
+    }();
+    if (!s_on) return false;
+    if (!IsVelloActive() || !velloEngine_ || !velloEngine_->IsComputeMode()) return false;
+    if (!impl_ || !impl_->velloCompute_) return false;
+    // Captures raster on the CPU / transition surface; content encoded into the
+    // compute scene would escape them. Same gate the engine batch route uses.
+    if (cpuRasterNeeded_ || activeTransitionSlot_ >= 0 || !effectCaptureStack_.empty()) {
+        return false;
+    }
+    if (bw <= 0.0f || bh <= 0.0f || bw > 160.0f || bh > 160.0f) return false;
+    auto& enc = velloEngine_->SceneEncoder();
+    if (!enc.HasWork()) return false;
+    const auto t = GetCurrentTransform();
+    const float cxs[4] = { bx, bx + bw, bx, bx + bw };
+    const float cys[4] = { by, by, by + bh, by + bh };
+    float dx0 = 1e30f, dy0 = 1e30f, dx1 = -1e30f, dy1 = -1e30f;
+    for (int i = 0; i < 4; i++) {
+        float px, py;
+        ApplyTransform(t, cxs[i], cys[i], px, py);
+        dx0 = std::min(dx0, px); dy0 = std::min(dy0, py);
+        dx1 = std::max(dx1, px); dy1 = std::max(dy1, py);
+    }
+    const float pad = inflate + 0.5f;
+    return enc.PendingHitsDeviceRect(dx0 - pad, dy0 - pad, dx1 + pad, dy1 + pad);
+}
+
+bool VulkanRenderTarget::VelloRerouteEncode(float sx, float sy, const float* cmds,
+                                            uint32_t cmdLen, Brush* brush,
+                                            float strokeWidth, bool fill, int32_t fillRule,
+                                            bool closed, int32_t lineJoin, float miterLimit)
+{
+    float opacity = GetCurrentOpacity();
+    EngineBrushData bd;
+    std::vector<EngineBrushData::GradientStop> stopStore;
+    if (!BuildEngineBrush(brush, opacity, bd, stopStore)) return false;
+    const auto t = GetCurrentTransform();
+    EngineTransform et;
+    et.m11 = t.m11; et.m12 = t.m12;
+    et.m21 = t.m21; et.m22 = t.m22;
+    et.dx = t.dx; et.dy = t.dy;
+    SyncClipToEngine(velloEngine_.get());
+    if (fill) {
+        FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+        return velloEngine_->EncodeFillPath(sx, sy, cmds, cmdLen, bd, fr, et, -1);
+    }
+    return velloEngine_->EncodeStrokePath(sx, sy, cmds, cmdLen, bd, strokeWidth, closed,
+                                          lineJoin, miterLimit, 0, nullptr, 0, 0.0f, et, -1);
+}
+
+bool VulkanRenderTarget::TryEncodeRoundedRectIntoPendingVello(float x, float y, float w,
+                                                              float h, float tl, float tr,
+                                                              float br, float bl,
+                                                              Brush* brush,
+                                                              float strokeWidth, bool fill)
+{
+    if (!brush) return false;
+    // SuperEllipse / continuous corners have their own analytic shape; the
+    // cubic approximation below is only valid for plain rounded rects.
+    if (currentShapeType_ != 0) return false;
+    if (!VelloReroutePreflight(x, y, w, h, fill ? 0.0f : strokeWidth)) return false;
+
+    const float maxR = std::min(w, h) * 0.5f;
+    float ctl = std::min(std::max(tl, 0.0f), maxR);
+    float ctr = std::min(std::max(tr, 0.0f), maxR);
+    float cbr = std::min(std::max(br, 0.0f), maxR);
+    float cbl = std::min(std::max(bl, 0.0f), maxR);
+    const float k = 0.5522847498f;
+    float sx = x + ctl, sy = y;
+    float cmds[64];
+    uint32_t n = 0;
+    auto line = [&](float px, float py) { cmds[n++] = 0.0f; cmds[n++] = px; cmds[n++] = py; };
+    auto cubic = [&](float c1x, float c1y, float c2x, float c2y, float px, float py) {
+        cmds[n++] = 1.0f;
+        cmds[n++] = c1x; cmds[n++] = c1y;
+        cmds[n++] = c2x; cmds[n++] = c2y;
+        cmds[n++] = px; cmds[n++] = py;
+    };
+    line(x + w - ctr, y);
+    if (ctr > 0.0f) {
+        float kk = ctr * k;
+        cubic(x + w - ctr + kk, y, x + w, y + ctr - kk, x + w, y + ctr);
+    }
+    line(x + w, y + h - cbr);
+    if (cbr > 0.0f) {
+        float kk = cbr * k;
+        cubic(x + w, y + h - cbr + kk, x + w - cbr + kk, y + h, x + w - cbr, y + h);
+    }
+    line(x + cbl, y + h);
+    if (cbl > 0.0f) {
+        float kk = cbl * k;
+        cubic(x + cbl - kk, y + h, x, y + h - cbl + kk, x, y + h - cbl);
+    }
+    line(x, y + ctl);
+    if (ctl > 0.0f) {
+        float kk = ctl * k;
+        cubic(x, y + ctl - kk, x + ctl - kk, y, x + ctl, y);
+    }
+    cmds[n++] = 5.0f;
+    return VelloRerouteEncode(sx, sy, cmds, n, brush, strokeWidth, fill, 1, true, 0, 4.0f);
+}
+
+bool VulkanRenderTarget::TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx,
+                                                          float ry, Brush* brush,
+                                                          float strokeWidth, bool fill)
+{
+    if (!brush) return false;
+    if (rx <= 0.0f || ry <= 0.0f || rx > 80.0f || ry > 80.0f) return false;
+    if (!VelloReroutePreflight(cx - rx, cy - ry, rx * 2.0f, ry * 2.0f,
+                               fill ? 0.0f : strokeWidth)) {
+        return false;
+    }
+    const float k = 0.5522847498f;
+    float kx = rx * k, ky = ry * k;
+    float cmds[] = {
+        1.0f, cx + rx, cy + ky, cx + kx, cy + ry, cx,      cy + ry,
+        1.0f, cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy,
+        1.0f, cx - rx, cy - ky, cx - kx, cy - ry, cx,      cy - ry,
+        1.0f, cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy,
+        5.0f
+    };
+    return VelloRerouteEncode(cx + rx, cy, cmds,
+                              (uint32_t)(sizeof(cmds) / sizeof(float)), brush,
+                              strokeWidth, fill, 1, true, 2, 4.0f);
+}
+
+bool VulkanRenderTarget::TryEncodePolylineIntoPendingVello(const float* points,
+                                                           uint32_t pointCount,
+                                                           Brush* brush, float strokeWidth,
+                                                           bool closed, int32_t lineJoin,
+                                                           float miterLimit)
+{
+    if (!brush || !points || pointCount < 2) return false;
+    float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
+    for (uint32_t i = 0; i + 1 < pointCount * 2; i += 2) {
+        pminX = std::min(pminX, points[i]);     pminY = std::min(pminY, points[i + 1]);
+        pmaxX = std::max(pmaxX, points[i]);     pmaxY = std::max(pmaxY, points[i + 1]);
+    }
+    if (!(pminX <= pmaxX)) return false;
+    if (!VelloReroutePreflight(pminX, pminY, pmaxX - pminX, pmaxY - pminY, strokeWidth)) {
+        return false;
+    }
+    std::vector<float> cmds;
+    cmds.reserve((size_t)pointCount * 3 + 1);
+    for (uint32_t i = 1; i < pointCount; i++) {
+        cmds.push_back(0.0f);
+        cmds.push_back(points[i * 2]);
+        cmds.push_back(points[i * 2 + 1]);
+    }
+    if (closed) cmds.push_back(5.0f);
+    return VelloRerouteEncode(points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                              brush, strokeWidth, false, 0, closed, lineJoin, miterLimit);
+}
+
+bool VulkanRenderTarget::ReplayCommandDeviceBounds(const GpuReplayCommand& c,
+                                                   float& x0, float& y0,
+                                                   float& x1, float& y1)
+{
+    auto fromRect = [&](float rx, float ry, float rw, float rh) {
+        x0 = rx; y0 = ry; x1 = rx + rw; y1 = ry + rh;
+    };
+    switch (c.kind) {
+        case GpuReplayCommandKind::SolidRect:
+        case GpuReplayCommandKind::ClearRect: {
+            if (c.hasCustomQuad) {
+                x0 = std::min(std::min(c.quadPoint0X, c.quadPoint1X),
+                              std::min(c.quadPoint2X, c.quadPoint3X));
+                y0 = std::min(std::min(c.quadPoint0Y, c.quadPoint1Y),
+                              std::min(c.quadPoint2Y, c.quadPoint3Y));
+                x1 = std::max(std::max(c.quadPoint0X, c.quadPoint1X),
+                              std::max(c.quadPoint2X, c.quadPoint3X));
+                y1 = std::max(std::max(c.quadPoint0Y, c.quadPoint1Y),
+                              std::max(c.quadPoint2Y, c.quadPoint3Y));
+            } else {
+                fromRect(c.solidRect.x, c.solidRect.y, c.solidRect.w, c.solidRect.h);
+            }
+            if (c.shadowMode > 0.5f) {
+                const float grow = c.shadowSigma * 3.0f + 1.0f;
+                x0 -= grow; y0 -= grow; x1 += grow; y1 += grow;
+            }
+            return true;
+        }
+        case GpuReplayCommandKind::Bitmap:
+            fromRect(c.bitmap.x, c.bitmap.y, c.bitmap.w, c.bitmap.h);
+            return true;
+        case GpuReplayCommandKind::InkLayer:
+            fromRect(c.inkLayer.x, c.inkLayer.y, c.inkLayer.w, c.inkLayer.h);
+            return true;
+        case GpuReplayCommandKind::ExternalVideo:
+            fromRect(c.externalVideo.x, c.externalVideo.y, c.externalVideo.w, c.externalVideo.h);
+            return true;
+        case GpuReplayCommandKind::TextRun: {
+            if (c.textRun.glyphCount == 0) return false;
+            x0 = 1e30f; y0 = 1e30f; x1 = -1e30f; y1 = -1e30f;
+            const auto& g = c.textRun.glyphs;
+            for (size_t i = 0; i + 3 < g.size(); i += 12) {
+                x0 = std::min(x0, g[i]);
+                y0 = std::min(y0, g[i + 1]);
+                x1 = std::max(x1, g[i] + g[i + 2]);
+                y1 = std::max(y1, g[i + 1] + g[i + 3]);
+            }
+            return x0 <= x1;
+        }
+        case GpuReplayCommandKind::VcTriangles: {
+            if (c.vcTriangles.vertexCount == 0) return false;
+            x0 = 1e30f; y0 = 1e30f; x1 = -1e30f; y1 = -1e30f;
+            const auto& v = c.vcTriangles.vertices;
+            for (size_t i = 0; i + 1 < v.size(); i += 6) {
+                x0 = std::min(x0, v[i]);
+                y0 = std::min(y0, v[i + 1]);
+                x1 = std::max(x1, v[i]);
+                y1 = std::max(y1, v[i + 1]);
+            }
+            return x0 <= x1;
+        }
+        default:
+            return false;  // no extractable bounds -> caller cuts unconditionally
+    }
+}
+
+void VulkanRenderTarget::MaybeEmitEngineSpan(const GpuReplayCommand* upcoming)
+{
+    // Vello COMPUTE mode: cut the encoder's pending path work into a
+    // self-contained sub-scene and mark ITS position in the stream with a
+    // VelloSceneSpan — the compute analogue of the CPU-batch span below and
+    // of D3D12's lazy FlushVelloIfNeeded. This is what keeps painter order
+    // correct (the old frame-end single-scene consume composited every path
+    // of the frame ON TOP of all content drawn after it — B2 z-inversion).
+    if (IsVelloActive() && velloEngine_ && velloEngine_->IsComputeMode() &&
+        impl_ && impl_->velloCompute_) {
+        static const bool s_spanGate = []() {
+            char buf[8];
+            if (!ReadVulkanEnvironment("JALIUM_VK_VELLO_SPAN_GATE", buf)) {
+                return true;  // default ON; JALIUM_VK_VELLO_SPAN_GATE=0 disables
+            }
+            return buf[0] != '0';
+        }();
+        if (s_spanGate && upcoming && velloEngine_->SceneEncoder().HasWork()) {
+            float bx0, by0, bx1, by1;
+            if (ReplayCommandDeviceBounds(*upcoming, bx0, by0, bx1, by1) &&
+                !velloEngine_->SceneEncoder().PendingHitsDeviceRect(
+                    bx0 - 0.5f, by0 - 0.5f, bx1 + 0.5f, by1 + 0.5f)) {
+                return;  // disjoint from every pending path -> keep accumulating
+            }
+        }
+        const int32_t subIndex = velloEngine_->CutPendingToSubScene();
+        if (subIndex >= 0) {
+            if (VkVelloDbgLevel() >= 2 && g_vkVelloDbgBudget > 0) {
+                g_vkVelloDbgBudget--;
+                const auto& reg = velloEngine_->SubScene((size_t)subIndex).packed.region;
+                std::fprintf(stderr, "[VkCut] #%d region=(%u,%u %ux%u) trigger=%d",
+                             subIndex, reg.originX, reg.originY, reg.width, reg.height,
+                             upcoming ? (int)upcoming->kind : -1);
+                std::fputc(10, stderr);
+            }
+            GpuReplayCommand span {};
+            span.kind = GpuReplayCommandKind::VelloSceneSpan;
+            span.ellipticalClips = ResolveEllipticalClips();
+            span.engineBatchSpan.firstBatch = static_cast<uint32_t>(subIndex);
+            span.engineBatchSpan.batchCount = 0;
+            // Raw push_back on purpose: RecordReplayCommand calls back into
+            // this function, so routing the span through it would recurse.
+            gpuReplayCommands_.push_back(span);
+        }
+        return;
+    }
+
+    // CPU-tessellation engine outputs interleave via RenderEngineBatches.
     const std::vector<VkImpellerDrawBatch>* batches = nullptr;
     if (IsImpellerActive() && impellerEngine_) {
         batches = &impellerEngine_->GetBatches();
     } else if (IsVelloActive() && velloEngine_) {
-        if (!(velloEngine_->IsComputeMode() && impl_ && impl_->velloCompute_)) {
-            batches = &velloEngine_->GetBatches();
-        }
+        batches = &velloEngine_->GetBatches();
     }
     if (!batches) {
         return;
@@ -18493,13 +19235,13 @@ void VulkanRenderTarget::MaybeEmitEngineSpan()
 // semantics of the raw push_back call sites they replaced.
 void VulkanRenderTarget::RecordReplayCommand(const GpuReplayCommand& command)
 {
-    MaybeEmitEngineSpan();
+    MaybeEmitEngineSpan(&command);
     gpuReplayCommands_.push_back(command);
 }
 
 void VulkanRenderTarget::RecordReplayCommand(GpuReplayCommand&& command)
 {
-    MaybeEmitEngineSpan();
+    MaybeEmitEngineSpan(&command);
     gpuReplayCommands_.push_back(std::move(command));
 }
 
@@ -18585,6 +19327,8 @@ void VulkanRenderTarget::ResetGpuReplay()
     gpuReplayHasClear_ = false;
     gpuReplayCommands_.clear();
     lastOffscreenEndIndex_ = -1;
+    pendingShadowInsertIndex_ = -1;
+    pendingShadowTailSize_ = -1;
     // A mid-frame reset (or a torn frame) may abandon an open effect capture;
     // the suspend depth must not leak into commands recorded afterwards.
     effectCaptureClipSuspendDepth_ = 0;
@@ -19599,12 +20343,10 @@ bool VulkanRenderTarget::TryRecordGpuPixelBufferCommandShared(
     replayCommand.bitmap.pixelWidth = pixelWidth;
     replayCommand.bitmap.pixelHeight = pixelHeight;
     replayCommand.bitmap.sharedPixels = std::move(pixels);
-    // Sampler mapping mirrors D3D12DirectRenderer::AddBitmap: only
-    // NearestNeighbor (3) selects the point sampler; Unspecified / LowQuality
-    // / HighQuality / Linear / Fant keep the shared linear+anisotropic
-    // frameSampler (Vulkan's single high-quality sampler), so the existing
-    // HighQuality/aniso behaviour is untouched.
+    // NearestNeighbor selects the point sampler. Pixelated uses direct texel
+    // loads in the bitmap shader; the remaining modes use the shared sampler.
     replayCommand.bitmap.useNearestSampler = (scalingMode == 3 /* NearestNeighbor */);
+    replayCommand.bitmap.usePixelatedSampling = (scalingMode == 6 /* Pixelated */);
     replayCommand.bitmap.lcdCoverage = lcdCoverage;
     replayCommand.bitmap.lcdTextR = std::clamp(lcdTextR, 0.0f, 1.0f);
     replayCommand.bitmap.lcdTextG = std::clamp(lcdTextG, 0.0f, 1.0f);
@@ -20472,9 +21214,10 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, fl
 }
 
 bool VulkanRenderTarget::TryRecordGpuShadowRectCommand(float x, float y, float w, float h,
-    float radius, float r, float g, float b, float a, float sigma)
+    const float radiusX[4], const float radiusY[4],
+    float r, float g, float b, float a, float sigma)
 {
-    // Analytic erf drop-shadow rounded rect: a SINGLE SolidRect command whose
+    // Analytic erf drop-shadow contour: a SINGLE SolidRect command whose
     // fragment shader replaces the hard rounded fill with a gaussian (erf)
     // falloff of the rect's SDF (D3D12 DrawDropShadowEffect / sdf_rect shadowMode
     // parity). Colour is STRAIGHT (r,g,b) with alpha a — the SolidRect blend is
@@ -20516,7 +21259,6 @@ bool VulkanRenderTarget::TryRecordGpuShadowRectCommand(float x, float y, float w
         const float scaleX = std::sqrt(transform.m11 * transform.m11 + transform.m12 * transform.m12);
         const float scaleY = std::sqrt(transform.m21 * transform.m21 + transform.m22 * transform.m22);
         const float avgScale = 0.5f * (scaleX + scaleY);
-        radius *= avgScale;
         sigma *= avgScale;
         if (w <= 0.0f || h <= 0.0f) return true;
     }
@@ -20554,9 +21296,17 @@ bool VulkanRenderTarget::TryRecordGpuShadowRectCommand(float x, float y, float w
     replayCommand.roundedClipTop    = y;
     replayCommand.roundedClipRight  = x + w;
     replayCommand.roundedClipBottom = y + h;
-    replayCommand.roundedClipRadiusX = std::max(0.0f, std::min(radius, std::min(w, h) * 0.5f));
-    replayCommand.roundedClipRadiusY = replayCommand.roundedClipRadiusX;
-    replayCommand.shadowMode  = 1.0f;
+    const float scaleX = std::sqrt(transform.m11 * transform.m11 + transform.m12 * transform.m12);
+    const float scaleY = std::sqrt(transform.m21 * transform.m21 + transform.m22 * transform.m22);
+    const float halfW = std::max(0.0f, w * 0.5f);
+    const float halfH = std::max(0.0f, h * 0.5f);
+    for (int i = 0; i < 4; ++i) {
+        replayCommand.perCornerRadiusX[i] = std::clamp(radiusX[i] * scaleX, 0.0f, halfW);
+        replayCommand.perCornerRadiusY[i] = std::clamp(radiusY[i] * scaleY, 0.0f, halfH);
+    }
+    replayCommand.roundedClipRadiusX = replayCommand.perCornerRadiusX[0];
+    replayCommand.roundedClipRadiusY = replayCommand.perCornerRadiusY[0];
+    replayCommand.shadowMode  = 2.0f;
     replayCommand.shadowSigma = std::max(0.5f, sigma);
     RecordReplayCommand(replayCommand);
     return true;
@@ -21973,6 +22723,9 @@ void VulkanRenderTarget::FillRectangle(float x, float y, float w, float h, Brush
             return;
         }
     }
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, 0, 0, 0, 0, brush, 0.0f, true)) {
+        return;
+    }
     if (!TryRecordGpuSolidRectCommand(x, y, w, h, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -22014,6 +22767,9 @@ void VulkanRenderTarget::DrawRectangle(float x, float y, float w, float h, Brush
                        /*lineCap*/ 0, nullptr, 0, 0.0f, /*edgeMode*/ -1);
             return;
         }
+    }
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, 0, 0, 0, 0, brush, strokeWidth, false)) {
+        return;
     }
     if (!TryRecordGpuRectangleStrokeCommand(x, y, w, h, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
@@ -22066,8 +22822,11 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
     // local space), transform to world, then premultiply — the vc pipeline blends
     // premultiplied alpha and opacity is already folded into bd's stop alpha.
     auto emitVertexAtWorld = [&](float lx, float ly,
-                                 float wx, float wy, float coverage) {
-        GradientColor gc = SampleBrushGradient(bd, flatStops.data(), lx, ly);
+                                 float wx, float wy, float coverage,
+                                 float stopSide = std::numeric_limits<float>::quiet_NaN()) {
+        GradientColor gc = std::isnan(stopSide)
+            ? SampleBrushGradient(bd, flatStops.data(), lx, ly)
+            : SampleGradientStops(stopSide, flatStops.data(), bd.stopCount);
         const float pa = std::clamp(gc.a, 0.0f, 1.0f) *
             std::clamp(coverage, 0.0f, 1.0f);
         cmd.vcTriangles.vertices.push_back(wx);
@@ -22099,7 +22858,7 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
     BuildGradientRampBreakpoints(bd, stopPos);
 
     bool subdivided = false;
-    if (bd.type == 1 && stopPos.size() > 1) {
+    if (bd.type == 1 && !stopPos.empty()) {
         // LINEAR: t(p) is affine, every iso-line t = s is a straight line.
         // Sutherland-Hodgman-slice the convex perimeter at each stop; the
         // colour field inside one strip is affine, so its fan triangles
@@ -22112,10 +22871,23 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
             auto tOf = [&](float lx, float ly) {
                 return ((lx - bd.startX) * gdx + (ly - bd.startY) * gdy) / glen2;
             };
-            auto triangulate = [&](const std::vector<float>& p) {
+            auto triangulate = [&](const std::vector<float>& p, float leftOfStop) {
                 const size_t m = p.size() / 2;
                 for (size_t i = 1; i + 1 < m; ++i) {
-                    emitTriangle(p[0], p[1], p[i * 2], p[i * 2 + 1], p[i * 2 + 2], p[i * 2 + 3]);
+                    const float vertices[][2] = {
+                        { p[0], p[1] },
+                        { p[i * 2], p[i * 2 + 1] },
+                        { p[i * 2 + 2], p[i * 2 + 3] },
+                    };
+                    for (const auto& vertex : vertices) {
+                        const float localT = tOf(vertex[0], vertex[1]);
+                        const float side = std::abs(localT - leftOfStop) <= 1e-5f
+                            ? std::nextafter(leftOfStop, -std::numeric_limits<float>::infinity())
+                            : std::numeric_limits<float>::quiet_NaN();
+                        float wx = 0.0f, wy = 0.0f;
+                        ApplyTransform(transform, vertex[0], vertex[1], wx, wy);
+                        emitVertexAtWorld(vertex[0], vertex[1], wx, wy, 1.0f, side);
+                    }
                 }
             };
             std::vector<float> poly(perimeterLocal);   // remaining (convex) polygon
@@ -22140,13 +22912,13 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
                         above.push_back(ix); above.push_back(iy);
                     }
                 }
-                if (below.size() >= 6) triangulate(below);
+                if (below.size() >= 6) triangulate(below, s);
                 poly.swap(above);
             }
-            if (poly.size() >= 6) triangulate(poly);
+            if (poly.size() >= 6) triangulate(poly, std::numeric_limits<float>::quiet_NaN());
             subdivided = true;
         }
-    } else if (bd.type == 2 && stopPos.size() > 1) {
+    } else if (bd.type == 2 && !stopPos.empty()) {
         // RADIAL: t = |(p-center)/radius| is LINEAR along rays from the
         // centre, so spokes cast FROM THE GRADIENT CENTRE split at
         // u = s / t(perimeter) place every stop on a vertex; within a ring
@@ -22508,6 +23280,9 @@ void VulkanRenderTarget::FillRoundedRectangle(float x, float y, float w, float h
         }
     }
 
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, rx, rx, rx, rx, brush, 0.0f, true)) {
+        return;
+    }
     if (!TryRecordGpuRoundedRectFillCommand(x, y, w, h, rx, ry, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -22578,6 +23353,9 @@ void VulkanRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w
         }
     }
 
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, tl, tr, br, bl, brush, 0.0f, true)) {
+        return;
+    }
     if (!TryRecordGpuPerCornerRoundedRectFillCommand(x, y, w, h, tl, tr, br, bl, brush)) {
         // GPU path can't represent this (effect capture, rotated transform,
         // non-replayable brush). Degrade to the largest-radius uniform
@@ -22690,6 +23468,9 @@ void VulkanRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w
         }
     }
 
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, tl, tr, br, bl, brush, strokeWidth, false)) {
+        return;
+    }
     if (!TryRecordGpuPerCornerRoundedRectStrokeCommand(x, y, w, h, tl, tr, br, bl, strokeWidth, brush)) {
         const float maxR = std::max({ tl, tr, br, bl, 0.0f });
         DrawRoundedRectangle(x, y, w, h, maxR, maxR, brush, strokeWidth);
@@ -22722,6 +23503,9 @@ void VulkanRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h
         }
     }
 
+    if (TryEncodeRoundedRectIntoPendingVello(x, y, w, h, rx, rx, rx, rx, brush, strokeWidth, false)) {
+        return;
+    }
     if (!TryRecordGpuRoundedRectStrokeCommand(x, y, w, h, rx, ry, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -22791,6 +23575,9 @@ void VulkanRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Bru
         }
     }
 
+    if (TryEncodeEllipseIntoPendingVello(cx, cy, rx, ry, brush, 0.0f, true)) {
+        return;
+    }
     if (!TryRecordGpuEllipseFillCommand(cx, cy, rx, ry, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -22849,6 +23636,9 @@ void VulkanRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Bru
                        /*lineCap*/ 0, nullptr, 0, 0.0f, /*edgeMode*/ -1);
             return;
         }
+    }
+    if (TryEncodeEllipseIntoPendingVello(cx, cy, rx, ry, brush, strokeWidth, false)) {
+        return;
     }
     if (!TryRecordGpuEllipseStrokeCommand(cx, cy, rx, ry, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
@@ -22964,7 +23754,8 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
             // latch cpuRasterNeeded_). The GPU-RT offscreen region is NOT
             // bypassed: its batches stay engine-encoded and the EngineBatchSpan
             // replay case redirects them into the offscreen framebuffer.
-        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty()) {
+        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty() &&
+            !cpuRasterNeeded_) {
             // Route solid AND gradient brushes through the engine. BuildEngineBrush
             // packs linear/radial stops into bd; the Impeller engine bakes a true
             // per-vertex gradient (ImpellerVulkanEngine::EncodeFillPolygon gradient
@@ -23043,26 +23834,27 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
 void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit)
 {
     TouchFrame();
-    // Gradient stroke: route through StrokePath so the Impeller/Vello engine bakes
-    // a TRUE per-vertex gradient stroke (same engine path StrokePath/DrawContentBorder
-    // use), instead of collapsing to a representative solid via TryGetApproximateBrushColor
-    // below. Solid/image brushes fall through to the existing fast path unchanged.
-    if (brush && points && pointCount >= 2) {
-        EngineBrushData gbd {};
-        std::vector<EngineBrushData::GradientStop> gstops;
-        if (BuildEngineBrush(brush, GetCurrentOpacity(), gbd, gstops) && gbd.type != 0) {
-            std::vector<float> gcmds;
-            gcmds.reserve(static_cast<size_t>(pointCount - 1) * 3u);
-            for (uint32_t i = 1; i < pointCount; ++i) {
-                gcmds.push_back(0.0f);                 // tag 0 = LineTo
-                gcmds.push_back(points[i * 2]);
-                gcmds.push_back(points[i * 2 + 1]);
-            }
-            StrokePath(points[0], points[1], gcmds.data(), static_cast<uint32_t>(gcmds.size()),
-                       brush, strokeWidth, closed, lineJoin, miterLimit, /*lineCap*/ 0,
-                       nullptr, 0, 0.0f, /*edgeMode*/ -1);
-            return;
+    // A line-only managed Path specializes to DrawPolygon. Keep that
+    // specialization inside the selected rendering engine for solid AND
+    // gradient brushes; the old solid fast path bypassed both engines and
+    // emitted a binary GPU polyline (0 partial-coverage pixels). StrokePath
+    // already owns capture fallback, clip sync, Vello scene cutting, and the
+    // Impeller icon-scale analytic gate, so use it as the single source of
+    // stroke semantics.
+    if (brush && points && pointCount >= 2 &&
+        (IsImpellerActive() || IsVelloActive())) {
+        std::vector<float> commands;
+        commands.reserve(static_cast<size_t>(pointCount - 1) * 3u + 1u);
+        for (uint32_t i = 1; i < pointCount; ++i) {
+            commands.push_back(0.0f);                 // tag 0 = LineTo
+            commands.push_back(points[i * 2]);
+            commands.push_back(points[i * 2 + 1]);
         }
+        if (closed) commands.push_back(5.0f);          // ClosePath
+        StrokePath(points[0], points[1], commands.data(), static_cast<uint32_t>(commands.size()),
+                   brush, strokeWidth, closed, lineJoin, miterLimit, /*lineCap*/ 0,
+                   nullptr, 0, 0.0f, /*edgeMode*/ -1);
+        return;
     }
     if (points && pointCount >= 2) {
         std::vector<float> localPoints;
@@ -23070,6 +23862,10 @@ void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, B
         for (uint32_t index = 0; index < pointCount; ++index) {
             localPoints.push_back(points[index * 2]);
             localPoints.push_back(points[index * 2 + 1]);
+        }
+        if (TryEncodePolylineIntoPendingVello(points, pointCount, brush, strokeWidth,
+                                              closed, lineJoin, miterLimit)) {
+            return;
         }
         if (!TryRecordGpuPolylineCommand(localPoints, closed, strokeWidth, brush)) {
             // Same fallback as FillPolygon — CPU-rasterize the stroked
@@ -23128,7 +23924,8 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
             // latch cpuRasterNeeded_). The GPU-RT offscreen region is NOT
             // bypassed: its batches stay engine-encoded and the EngineBatchSpan
             // replay case redirects them into the offscreen framebuffer.
-        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty()) {
+        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty() &&
+            !cpuRasterNeeded_) {
             // Route solid AND gradient brushes through the engine. BuildEngineBrush
             // packs linear/radial stops into bd; the Impeller engine bakes a true
             // per-vertex gradient (ImpellerVulkanEngine::EncodeFillPath gradient
@@ -23320,7 +24117,8 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
             // latch cpuRasterNeeded_). The GPU-RT offscreen region is NOT
             // bypassed: its batches stay engine-encoded and the EngineBatchSpan
             // replay case redirects them into the offscreen framebuffer.
-        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty()) {
+        if (engine && activeTransitionSlot_ < 0 && effectCaptureStack_.empty() &&
+            !cpuRasterNeeded_) {
             auto t = GetCurrentTransform();
             float opacity = GetCurrentOpacity();
 
@@ -23339,6 +24137,13 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
                 // vector-text-stroke / stroked icons to the active clip before
                 // the batch is emitted.
                 SyncClipToEngine(engine);
+                if (VkVelloDbgLevel() >= 3 && g_vkVelloDbgBudget > 0) {
+                    g_vkVelloDbgBudget--;
+                    std::fprintf(stderr, "[VkSP] engine try at(%.0f,%.0f) sw=%.2f cap=%d ts=%d",
+                                 startX, startY, strokeWidth,
+                                 (int)effectCaptureStack_.size(), (int)activeTransitionSlot_);
+                    std::fputc(10, stderr);
+                }
                 if (engine->EncodeStrokePath(startX, startY, commands, commandLength,
                         bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
                         dashPattern, dashCount, dashOffset, et, edgeMode))
@@ -23587,6 +24392,7 @@ void VulkanRenderTarget::PopTransform()
 void VulkanRenderTarget::PushClip(float x, float y, float w, float h)
 {
     TouchFrame();
+    if (ResolveEllipticalClips()) MaybeEmitEngineSpan(nullptr);
 
     ClipState clip {};
     clip.rounded = false;
@@ -23628,6 +24434,7 @@ void VulkanRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float w,
     float tl, float tr, float br, float bl)
 {
     TouchFrame();
+    if (ResolveEllipticalClips()) MaybeEmitEngineSpan(nullptr);
 
     ClipState clip {};
     clip.rounded = true;
@@ -23647,6 +24454,7 @@ void VulkanRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float w,
 void VulkanRenderTarget::PushRoundedRectClipExclude(float x, float y, float w, float h, float rx, float ry)
 {
     TouchFrame();
+    if (ResolveEllipticalClips()) MaybeEmitEngineSpan(nullptr);
 
     // TRUE inverse rounded clip (D3D12 D3D12DirectRenderer::PushRoundedClipExclude
     // parity): the kept area is the rounded rect's COMPLEMENT. min(rx, ry)
@@ -23674,9 +24482,42 @@ void VulkanRenderTarget::PushRoundedRectClipExclude(float x, float y, float w, f
 void VulkanRenderTarget::PopClip()
 {
     TouchFrame();
+    if (ResolveEllipticalClips()) MaybeEmitEngineSpan(nullptr);
     if (!clipStack_.empty()) {
         clipStack_.pop_back();
     }
+}
+
+JaliumResult VulkanRenderTarget::PushEllipticalRectClip(const JaliumEllipticalRectClip& value)
+{
+    if (!IsValidEllipticalClip(value)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    TouchFrame();
+    ClipState clip {};
+    clip.transform = GetCurrentTransform();
+    clip.hasInverse = TryInvertTransform(clip.transform, clip.inverseTransform);
+    const auto& t = clip.transform;
+    const float matrix[6] { t.m11, t.m12, t.m21, t.m22, t.dx, t.dy };
+    clip.elliptical = std::make_shared<EllipticalClip>(value, matrix);
+    MaybeEmitEngineSpan(nullptr);
+    clipStack_.push_back(std::move(clip));
+    return JALIUM_OK;
+}
+
+JaliumResult VulkanRenderTarget::PushPathClip(float startX, float startY,
+    const float* commands, uint32_t commandLength, int32_t fillRule)
+{
+    if (!isDrawing_) return JALIUM_ERROR_INVALID_STATE;
+    const auto& t = GetCurrentTransform();
+    const float matrix[6] { t.m11, t.m12, t.m21, t.m22, t.dx, t.dy };
+    auto path = std::make_shared<PathClip>(startX, startY,
+        commands, commandLength, fillRule, matrix);
+    if (!path->IsValid()) return JALIUM_ERROR_INVALID_ARGUMENT;
+    TouchFrame();
+    MaybeEmitEngineSpan(nullptr);
+    ClipState clip {};
+    clip.path = std::move(path);
+    clipStack_.push_back(std::move(clip));
+    return JALIUM_OK;
 }
 void VulkanRenderTarget::PunchTransparentRect(float x, float y, float w, float h)
 {
@@ -24243,13 +25084,18 @@ void VulkanRenderTarget::DrawBitmapInternal(
         std::clamp(lcdTextR, 0.0f, 1.0f) * 255.0f + 0.5f);
 
     // Map JaliumBitmapScalingMode → CPU sampler kernel.
-    // NearestNeighbor (3) is the only mode that gets nearest sampling.
-    // Everything else (Unspecified, LowQuality, HighQuality, Linear, Fant)
-    // uses bilinear — bilinear is the right CPU-fallback default because
-    // the GPU path already gets anisotropic via frameSampler.
+    // NearestNeighbor uses point sampling; Pixelated expands to the closest
+    // integer scale and then interpolates. Remaining modes use bilinear.
     const bool useNearest = (scalingMode == 3 /* NearestNeighbor */);
+    const bool usePixelated = (scalingMode == 6 /* Pixelated */);
     const uint32_t srcW = sourceBitmap->GetWidth();
     const uint32_t srcH = sourceBitmap->GetHeight();
+    const float pixelatedScaleX = usePixelated
+        ? std::max(1.0f, std::floor(std::hypot(quad[2] - quad[0], quad[3] - quad[1]) / srcW + 0.5f))
+        : 1.0f;
+    const float pixelatedScaleY = usePixelated
+        ? std::max(1.0f, std::floor(std::hypot(quad[6] - quad[0], quad[7] - quad[1]) / srcH + 0.5f))
+        : 1.0f;
     const float invW = 1.0f / std::max(0.0001f, w);
     const float invH = 1.0f / std::max(0.0001f, h);
 
@@ -24279,12 +25125,14 @@ void VulkanRenderTarget::DrawBitmapInternal(
                 // centre and blend by fractional position. Half-texel offset
                 // matches the GPU pixel-centre convention so a 1:1-mapped
                 // bitmap is byte-identical to its source.
-                const float fx = u * srcW - 0.5f;
-                const float fy = v * srcH - 0.5f;
-                const int ix0 = std::clamp(static_cast<int>(std::floor(fx)), 0, static_cast<int>(srcW) - 1);
-                const int iy0 = std::clamp(static_cast<int>(std::floor(fy)), 0, static_cast<int>(srcH) - 1);
-                const int ix1 = std::min<int>(ix0 + 1, static_cast<int>(srcW) - 1);
-                const int iy1 = std::min<int>(iy0 + 1, static_cast<int>(srcH) - 1);
+                const float fx = u * srcW * pixelatedScaleX - 0.5f;
+                const float fy = v * srcH * pixelatedScaleY - 0.5f;
+                const float lx = std::floor(fx);
+                const float ly = std::floor(fy);
+                const int ix0 = std::clamp(static_cast<int>(std::floor(lx / pixelatedScaleX)), 0, static_cast<int>(srcW) - 1);
+                const int iy0 = std::clamp(static_cast<int>(std::floor(ly / pixelatedScaleY)), 0, static_cast<int>(srcH) - 1);
+                const int ix1 = std::clamp(static_cast<int>(std::floor((lx + 1.0f) / pixelatedScaleX)), 0, static_cast<int>(srcW) - 1);
+                const int iy1 = std::clamp(static_cast<int>(std::floor((ly + 1.0f) / pixelatedScaleY)), 0, static_cast<int>(srcH) - 1);
                 const float wx = std::clamp(fx - std::floor(fx), 0.0f, 1.0f);
                 const float wy = std::clamp(fy - std::floor(fy), 0.0f, 1.0f);
                 const size_t o00 = (static_cast<size_t>(iy0) * srcW + ix0) * 4u;
@@ -24419,8 +25267,8 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // screen pen instead of whole-pixel pen snapping. Same crisp path.
     const bool subpixelPositioning = format->GetSubpixelPositioning();
     // Vulkan's root transform already includes dpi/96, so the quads below end
-    // in PHYSICAL pixels. Fixed/Auto axis-aligned text can therefore be snapped
-    // and point-sampled exactly; Animated or rotated/skewed text stays smooth.
+    // in PHYSICAL pixels. Axis-aligned Fixed/Auto text stays point-sampled;
+    // oriented rotated/skewed quads use smooth texture resolution.
     const bool crispAxisAligned = axisAligned && hintingMode != 2;
     const float effectiveA = (static_cast<float>(a) / 255.0f) * GetCurrentOpacity();
     if (effectiveA <= 0.0f) {
@@ -24452,9 +25300,14 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // isotropic high-res bitmap is point-minified in one axis and thin stems
     // vanish. Isotropic DPI keeps the crisp 1:1 path.
     const bool anisoText = std::abs(txScaleX - txScaleY) > 0.01f * std::max(txScaleX, txScaleY);
+    // A ROTATED run joins the anisotropic branch so scaleX/scaleY and the full
+    // 2x2 reach GenerateGlyphs, which builds the final oriented glyph basis.
+    // dpiScale_=1 keeps those quads in physical-pixel space; the re-magnify loop
+    // below is skipped for them.
+    const bool rotatedText = !axisAligned;
     float glyphRasterScaleX = 1.0f;
     float glyphRasterScaleY = 1.0f;
-    if (anisoText) {
+    if (anisoText || rotatedText) {
         impl_->glyphAtlas_->SetDpiScale(1.0f);  // size carried by the final per-axis scale buckets
         glyphRasterScaleX = txScaleX;
         glyphRasterScaleY = txScaleY;
@@ -24499,6 +25352,10 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     const auto effectiveAaMode = (resolvedAaMode == JALIUM_TEXT_AA_CLEARTYPE && !runClearType)
                                      ? JALIUM_TEXT_AA_GRAYSCALE
                                      : resolvedAaMode;
+    const float textLinear2x2[4] = { transform.m11, transform.m12,
+                                     transform.m21, transform.m22 };
+    const float textDecorationOrigin[2] = { x, y };
+    bool requiresSmoothSampling = false;
     const uint32_t count = impl_->glyphAtlas_->GenerateGlyphs(
         layout.Get(), tx, ty, colR, colG, colB, effectiveA,
         instances, &decorations,
@@ -24507,7 +25364,20 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         /*hintingMode=*/hintingMode,
         /*scaleX=*/glyphRasterScaleX, /*scaleY=*/glyphRasterScaleY,
         /*crispAxisAligned=*/crispAxisAligned,
-        /*subpixelPositioning=*/subpixelPositioning);
+        /*subpixelPositioning=*/subpixelPositioning,
+        /*linear2x2=*/textLinear2x2,
+        // Decorations are emitted as SDF rects further down, and that path
+        // applies the ambient transform to them — so they must be handed the
+        // UNtransformed origin, or they get transformed twice. (Before this they
+        // shared the glyph origin and a scaled/rotated run's underline drifted
+        // away from its text.) Routing them through the transform is also what
+        // rotates the bar along with the baseline.
+        /*decorationOrigin=*/textDecorationOrigin,
+        /*outRequiresSmoothSampling=*/&requiresSmoothSampling);
+    // Rotated/skewed text now uses an oriented quad over an upright strike;
+    // smooth sampling resolves that texture mapping (and any 2x strike).
+    const bool smoothText = hintingMode == 2 || requiresSmoothSampling ||
+        (rotatedText && effectiveAaMode != JALIUM_TEXT_AA_ALIASED);
     if (count == 0 || instances.empty()) {
         return;
     }
@@ -24515,8 +25385,17 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // Re-magnify each base-DIP quad by the transform's axis scales around the
     // transformed origin (tx, ty) — byte-identical to D3D12 AddText. Identity
     // transform (scale 1) leaves the quads untouched.
-    const bool scaled = std::abs(txScaleX - 1.0f) > 0.001f ||
-                        std::abs(txScaleY - 1.0f) > 0.001f;
+    // A rotated run is exempt: GenerateGlyphs already emitted its quads in the
+    // final space (oriented basis and pen both mapped through the 2x2), so
+    // re-magnifying by the axis scales would double-apply the transform.
+    const bool scaled = !rotatedText &&
+                        (std::abs(txScaleX - 1.0f) > 0.001f ||
+                         std::abs(txScaleY - 1.0f) > 0.001f);
+    // A rotated glyph bitmap is already in final physical-pixel space. Keep a
+    // single phase for the whole run: independently rounding every glyph AABB
+    // perturbs the transformed advances and turns the baseline into a staircase.
+    const float rotatedSnapX = rotatedText ? std::round(tx) - tx : 0.0f;
+    const float rotatedSnapY = rotatedText ? std::round(ty) - ty : 0.0f;
     for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
         auto& gi = instances[i];
         if (scaled) {
@@ -24528,6 +25407,9 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         if (crispAxisAligned) {
             gi.posX = std::round(gi.posX);
             gi.posY = std::round(gi.posY);
+        } else if (rotatedText) {
+            gi.posX += rotatedSnapX;
+            gi.posY += rotatedSnapY;
         }
     }
 
@@ -24561,6 +25443,20 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
             if (!stopData.empty()) {
                 const float invSx = (scaled && std::abs(txScaleX) > 1e-6f) ? 1.0f / txScaleX : 1.0f;
                 const float invSy = (scaled && std::abs(txScaleY) > 1e-6f) ? 1.0f / txScaleY : 1.0f;
+                // Per-axis reciprocals ARE the inverse for an axis-aligned
+                // transform. Under rotation they are not, so invert the real
+                // 2x2 — otherwise the gradient is sampled at a sheared position
+                // and a rotated gradient caption picks up visibly wrong colours.
+                float gi11 = invSx, gi12 = 0.0f, gi21 = 0.0f, gi22 = invSy;
+                if (rotatedText) {
+                    const float det = transform.m11 * transform.m22 -
+                                      transform.m12 * transform.m21;
+                    if (std::abs(det) > 1e-9f) {
+                        const float invDet = 1.0f / det;
+                        gi11 =  transform.m22 * invDet; gi12 = -transform.m12 * invDet;
+                        gi21 = -transform.m21 * invDet; gi22 =  transform.m11 * invDet;
+                    }
+                }
                 const float runOpacity = GetCurrentOpacity();
                 for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
                     auto& gi = instances[i];
@@ -24569,8 +25465,10 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
                     // foreground and equally wrong for a gradient.
                     if (gi.colorR < 0.0f) continue;
 
-                    const float cx = x + ((gi.posX + gi.sizeX * 0.5f) - tx) * invSx;
-                    const float cy = y + ((gi.posY + gi.sizeY * 0.5f) - ty) * invSy;
+                    const float ox = (gi.posX + (gi.sizeX + gi.skewX) * 0.5f) - tx;
+                    const float oy = (gi.posY + (gi.skewY + gi.sizeY) * 0.5f) - ty;
+                    const float cx = x + (ox * gi11 + oy * gi21);
+                    const float cy = y + (ox * gi12 + oy * gi22);
 
                     GradientColor gc = SampleBrushGradient(textGradient, stopData.data(), cx, cy);
                     const float ga = gc.a * runOpacity;
@@ -24583,27 +25481,30 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         }
     }
 
-    // Flatten to the 12-float-per-glyph SSBO layout the TextRun command expects
-    // (posX,posY, sizeX,sizeY, uvMinX,uvMinY, uvMaxX,uvMaxY, colorR,colorG,colorB,
-    // colorA — UVs + PREMULTIPLIED colour pass through unchanged).
+    // Flatten to the 16-float/64-byte SSBO layout the TextRun command expects
+    // (position, oriented basis, UV rectangle, std430 pad, premultiplied colour).
     std::vector<float> glyphFloats;
-    glyphFloats.reserve(static_cast<size_t>(count) * 12u);
+    glyphFloats.reserve(static_cast<size_t>(count) * 16u);
     for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
         const auto& gi = instances[i];
         glyphFloats.push_back(gi.posX);
         glyphFloats.push_back(gi.posY);
         glyphFloats.push_back(gi.sizeX);
         glyphFloats.push_back(gi.sizeY);
+        glyphFloats.push_back(gi.skewX);
+        glyphFloats.push_back(gi.skewY);
         glyphFloats.push_back(gi.uvMinX);
         glyphFloats.push_back(gi.uvMinY);
         glyphFloats.push_back(gi.uvMaxX);
         glyphFloats.push_back(gi.uvMaxY);
+        glyphFloats.push_back(0.0f);
+        glyphFloats.push_back(0.0f);
         glyphFloats.push_back(gi.colorR);
         glyphFloats.push_back(gi.colorG);
         glyphFloats.push_back(gi.colorB);
         glyphFloats.push_back(gi.colorA);
     }
-    const uint32_t glyphCount = static_cast<uint32_t>(glyphFloats.size() / 12u);
+    const uint32_t glyphCount = static_cast<uint32_t>(glyphFloats.size() / 16u);
     if (glyphCount == 0) {
         return;
     }
@@ -24616,7 +25517,9 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     cmd.textRun.glyphs = std::move(glyphFloats);
     cmd.textRun.glyphCount = glyphCount;
     cmd.textRun.clearType = runClearType;
-    cmd.textRun.smoothText = !crispAxisAligned;
+    // Animated text needs continuous bilinear motion; a small supersampled
+    // symbol glyph needs the same sampler to resolve its 2x coverage strike.
+    cmd.textRun.smoothText = smoothText;
     if (!TryPopulateReplayClip(cmd)) {
         return;
     }
@@ -24627,16 +25530,22 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
 
     // Text decorations (underline / strikethrough): emit each as a solid rect in
     // the SAME physical/screen space as the glyph quads. GenerateGlyphs returns
-    // them at (origin + base-DIP offset) with PREMULTIPLIED colour; re-magnify the
-    // position by the per-axis transform scale around (tx,ty) exactly like the
-    // glyph quads above, and un-premultiply the colour for the straight-colour
-    // solid_rect pipeline. Mirrors D3D12, which emits decorations as SdfRects.
+    // them at the PRE-transform origin with PREMULTIPLIED colour, so the anchor
+    // maps through the FULL matrix here (the previous per-axis re-magnify around
+    // (tx,ty) sheared the bar off its text under rotation, and double-applied the
+    // translation under a plain scale). The bar's own extent still uses the axis
+    // scales: GpuSolidRectCommand is screen-axis-aligned, so a steeply rotated
+    // underline stays horizontal — correct placement without an oriented
+    // decoration primitive. Un-premultiply for the straight-colour solid_rect
+    // pipeline. Mirrors D3D12, which emits decorations as SdfRects.
     for (const auto& dec : decorations) {
         if (dec.colorA <= 0.0f) {
             continue;
         }
-        const float decPhysX = tx + (dec.x - tx) * txScaleX;
-        const float decPhysY = ty + (dec.y - ty) * txScaleY;
+        float decPhysX = 0.0f, decPhysY = 0.0f;
+        ApplyTransform(transform, dec.x, dec.y, decPhysX, decPhysY);
+        decPhysX += rotatedSnapX;
+        decPhysY += rotatedSnapY;
         const float decPhysW = dec.width * txScaleX;
         const float decPhysH = dec.thickness * txScaleY;
         if (decPhysW <= 0.0f || decPhysH <= 0.0f) {
@@ -25537,12 +26446,18 @@ static bool VulkanEffectCpuCaptureEnabled()
 void VulkanRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
 {
     TouchFrame();
+    pendingShadowInsertIndex_ = -1;
+    pendingShadowTailSize_ = -1;
 
     // Opt-in: promote to the CPU canvas up front so the capture below is a TRUE
     // capture on every frame (not just frames already on the CPU path). Default
     // OFF; the GPU offscreen RT (below) is the default true-capture path now, so
     // this env is only for forcing the CPU raster path specifically.
     if (VulkanEffectCpuCaptureEnabled()) {
+        // EnsureCpuRasterization normally returns early while GPU replay is
+        // healthy. This explicit gate must retire that path first so the
+        // captured element really is rasterized into the CPU canvas.
+        gpuReplaySupported_ = false;
         EnsureCpuRasterization();
     }
 
@@ -25808,7 +26723,8 @@ void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, floa
         if (!TryRecordGpuPixelBufferCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
             /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
         }
-        BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
+        BlendBuffer(lastCapturedPixels_, width_, height_, 0, 0,
+                    static_cast<float>(width_), static_cast<float>(height_), 1.0f);
         return;
     }
 
@@ -25817,7 +26733,11 @@ void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, floa
     if (!TryRecordGpuBlurCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, radius, 1.0f)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
-    BlendBuffer(blurred, width_, height_, x, y, w, h, 1.0f);
+    // CPU captures are full-surface transparent canvases. Composite at their
+    // original coordinates instead of scaling the whole canvas into the
+    // element rect (which shifted and widened the blur fringe).
+    BlendBuffer(blurred, width_, height_, 0, 0,
+                static_cast<float>(width_), static_cast<float>(height_), 1.0f);
 }
 
 // Stable, unique cache-key seeds: the shared customShaderPipelines cache is
@@ -25828,6 +26748,8 @@ void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, floa
 static const char* kBuiltinColorMatrixCacheKey = "__jalium_builtin_effect::color_matrix::v1__";
 static const char* kBuiltinEmbossCacheKey      = "__jalium_builtin_effect::emboss::v1__";
 static const char* kBuiltinOuterGlowCacheKey   = "__jalium_builtin_effect::outer_glow::v1__";
+static const char* kBuiltinFilterDropShadowCacheKey = "__jalium_builtin_effect::filter_drop_shadow::v1__";
+static const char* kBuiltinColorMatrixChainCacheKey = "__jalium_builtin_effect::color_matrix_chain::v1__";
 
 // Same FNV-1a the user custom-shader path keys its pipeline cache with, so the
 // built-in shaders share the cache without collisions.
@@ -25932,27 +26854,50 @@ bool VulkanRenderTarget::SpliceErfShadowBehindContent(float x, float y, float w,
     // continuous gaussian — the dominant drop-shadow parity gap (esp. saturated
     // colors). Same tail-invariant + content-on-top reorder as
     // SpliceGlowBehindContent.
-    if (pendingGlowStart_ < 0 || pendingGlowEnd_ < 0) return false;
-    const int start = pendingGlowStart_;
-    const int end = pendingGlowEnd_;
+    if (cpuRasterNeeded_ || !gpuReplaySupported_) return false;
+    const int n = static_cast<int>(gpuReplayCommands_.size());
+    int start, end;
+    if (pendingGlowStart_ >= 0 && pendingGlowEnd_ >= 0) {
+        start = pendingGlowStart_;
+        end = pendingGlowEnd_;
+    } else if (pendingShadowInsertIndex_ >= 0 && pendingShadowTailSize_ == n) {
+        // Another shadow in the same CSS list belongs after the earlier
+        // back-layer shadows and before the original content.
+        start = pendingShadowInsertIndex_;
+        end = n;
+    } else {
+        pendingShadowInsertIndex_ = -1;
+        pendingShadowTailSize_ = -1;
+        return false;
+    }
     pendingGlowStart_ = -1;
     pendingGlowEnd_ = -1;
-    const int n = static_cast<int>(gpuReplayCommands_.size());
     if (start < 0 || start > end || end != n) {
+        pendingShadowInsertIndex_ = -1;
+        pendingShadowTailSize_ = -1;
         return true;  // stale/consumed — skip the halo but DON'T fall to the CPU path
     }
+    const float shapeX = hasPendingEffectContour_ ? pendingEffectContour_.x : x;
+    const float shapeY = hasPendingEffectContour_ ? pendingEffectContour_.y : y;
+    const float shapeW = hasPendingEffectContour_ ? pendingEffectContour_.width : w;
+    const float shapeH = hasPendingEffectContour_ ? pendingEffectContour_.height : h;
     const float alpha = std::clamp(a, 0.0f, 1.0f);
-    if (alpha > 0.004f && w > 0.0f && h > 0.0f) {
-        float baseRad = (cTL + cTR + cBR + cBL) * 0.25f;
-        if (baseRad < 0.0f) baseRad = 0.0f;
+    if (alpha > 0.004f && shapeW > 0.0f && shapeH > 0.0f) {
+        float radiiX[4] { cTL, cTR, cBR, cBL };
+        float radiiY[4] { cTL, cTR, cBR, cBL };
+        if (hasPendingEffectContour_) {
+            std::copy(pendingEffectContour_.radiusX, pendingEffectContour_.radiusX + 4, radiiX);
+            std::copy(pendingEffectContour_.radiusY, pendingEffectContour_.radiusY + 4, radiiY);
+        }
         const float sigma = (blurRadius > 0.0f) ? (blurRadius / 3.0f) : 0.5f;
         std::vector<GpuReplayCommand> content(
             std::make_move_iterator(gpuReplayCommands_.begin() + start),
             std::make_move_iterator(gpuReplayCommands_.end()));
         gpuReplayCommands_.resize(static_cast<size_t>(start));
-        // Single erf shadow rect at (x+off, y+off), element-sized, behind content.
-        if (!TryRecordGpuShadowRectCommand(x + offsetX, y + offsetY, w, h, baseRad,
-                                           r, g, b, alpha, sigma)
+        // The optional spread path changes the shadow perimeter but keeps the
+        // original content commands at their unexpanded coordinates.
+        if (!TryRecordGpuShadowRectCommand(shapeX + offsetX, shapeY + offsetY, shapeW, shapeH,
+                                           radiiX, radiiY, r, g, b, alpha, sigma)
             && gpuReplaySupported_) {
             // The erf rect was REFUSED (an ancestor rounded clip owns the FS
             // slot the shadow parameters ride in, or the clip is degenerate).
@@ -25965,13 +26910,15 @@ bool VulkanRenderTarget::SpliceErfShadowBehindContent(float x, float y, float w,
             // of the element (the splice reorder only affects GPU commands) —
             // so the invalidated frame keeps the legacy silent skip and the
             // CPU path below draws the shadow in its own correct order.
-            DrawGlowLayers(x, y, w, h,
+            DrawGlowLayers(shapeX, shapeY, shapeW, shapeH,
                            std::max(blurRadius, 1.0f), r, g, b, alpha,
-                           offsetX, offsetY, cTL, cTR, cBR, cBL);
+                           offsetX, offsetY, radiiX[0], radiiX[1], radiiX[2], radiiX[3]);
         }
+        pendingShadowInsertIndex_ = static_cast<int>(gpuReplayCommands_.size());
         gpuReplayCommands_.insert(gpuReplayCommands_.end(),
                                   std::make_move_iterator(content.begin()),
                                   std::make_move_iterator(content.end()));
+        pendingShadowTailSize_ = static_cast<int>(gpuReplayCommands_.size());
     }
     // Content paints on top (composite-back kept); the splice shifted indices so
     // the OffscreenEnd suppression handle is stale.
@@ -25987,9 +26934,30 @@ void VulkanRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h
     // element content (offset by offsetX/offsetY) — the D3D12 DrawDropShadowEffect
     // erf-SDF port. Replaces the 8-layer DrawGlowLayers halo. Falls through to the
     // CPU capture path otherwise.
-    if (SpliceErfShadowBehindContent(x, y, w, h, blurRadius, offsetX, offsetY,
-                                     r, g, b, std::clamp(a, 0.0f, 1.0f),
-                                     cornerTL, cornerTR, cornerBR, cornerBL)) {
+    const auto recordShadow = [&] {
+        return SpliceErfShadowBehindContent(x, y, w, h, blurRadius, offsetX, offsetY,
+            r, g, b, std::clamp(a, 0.0f, 1.0f),
+            cornerTL, cornerTR, cornerBR, cornerBL);
+    };
+    bool shadowRecorded = false;
+    if (hasPendingBoxShadowKnockout_ && !cpuRasterNeeded_ && gpuReplaySupported_) {
+        ClipState clip {};
+        clip.transform = GetCurrentTransform();
+        const auto& t = clip.transform;
+        const float matrix[6] { t.m11, t.m12, t.m21, t.m22, t.dx, t.dy };
+        clip.elliptical = std::make_shared<EllipticalClip>(
+            pendingBoxShadowKnockoutContour_, matrix);
+        clip.exclude = true;
+        clipStack_.push_back(std::move(clip));
+        struct PopClip {
+            std::vector<ClipState>& stack;
+            ~PopClip() { stack.pop_back(); }
+        } pop { clipStack_ };
+        shadowRecorded = recordShadow();
+    } else {
+        shadowRecorded = recordShadow();
+    }
+    if (shadowRecorded) {
         return;
     }
 
@@ -26009,6 +26977,62 @@ void VulkanRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h
     // pure waste — a page with several drop-shadow/glow effects spent seconds per
     // frame here (≈0.3 fps). Gate the whole CPU branch on cpuRasterNeeded_.
     if (cpuRasterNeeded_) {
+        const bool hasSpreadContour = hasPendingEffectContour_ &&
+            (pendingBoxShadowContour_ ||
+             pendingEffectContour_.x != x || pendingEffectContour_.y != y ||
+             pendingEffectContour_.width != w || pendingEffectContour_.height != h);
+        if (hasSpreadContour) {
+            auto shifted = pendingEffectContour_;
+            shifted.x += offsetX;
+            shifted.y += offsetY;
+            if (shifted.width > 0.0f && shifted.height > 0.0f && a > 0.0f) {
+                const auto transform = GetCurrentTransform();
+                const float matrix[6] { transform.m11, transform.m12,
+                    transform.m21, transform.m22, transform.dx, transform.dy };
+                const EllipticalClip shape(shifted, matrix);
+                const EllipticalClip originalShape(
+                    hasPendingBoxShadowKnockout_ ? pendingBoxShadowKnockoutContour_ : shifted,
+                    matrix);
+                float minX = std::numeric_limits<float>::infinity();
+                float minY = std::numeric_limits<float>::infinity();
+                float maxX = -std::numeric_limits<float>::infinity();
+                float maxY = -std::numeric_limits<float>::infinity();
+                for (float cy : {shifted.y, shifted.y + shifted.height})
+                for (float cx : {shifted.x, shifted.x + shifted.width}) {
+                    float px, py;
+                    ApplyTransform(transform, cx, cy, px, py);
+                    minX = std::min(minX, px); minY = std::min(minY, py);
+                    maxX = std::max(maxX, px); maxY = std::max(maxY, py);
+                }
+                const double sigma = std::max(0.5, static_cast<double>(blurRadius) / 3.0);
+                const double denominator = std::sqrt(2.0) * sigma;
+                const int reach = static_cast<int>(std::ceil(std::max(blurRadius, 0.0f))) + 2;
+                const int left = std::max(0, static_cast<int>(std::floor(minX)) - reach);
+                const int top = std::max(0, static_cast<int>(std::floor(minY)) - reach);
+                const int right = std::min(width_, static_cast<int>(std::ceil(maxX)) + reach);
+                const int bottom = std::min(height_, static_cast<int>(std::ceil(maxY)) + reach);
+                const uint8_t sb = static_cast<uint8_t>(std::clamp(b, 0.0f, 1.0f) * 255.0f + 0.5f);
+                const uint8_t sg = static_cast<uint8_t>(std::clamp(g, 0.0f, 1.0f) * 255.0f + 0.5f);
+                const uint8_t sr = static_cast<uint8_t>(std::clamp(r, 0.0f, 1.0f) * 255.0f + 0.5f);
+                for (int py = top; py < bottom; ++py)
+                for (int px = left; px < right; ++px) {
+                    const double distance = shape.SignedDistance(px + 0.5, py + 0.5);
+                    const double coverage = blurRadius > 0.0f
+                        ? 0.5 * std::erfc(distance / denominator)
+                        : (distance <= 0.0 ? 1.0 : 0.0);
+                    const double outside = hasPendingBoxShadowKnockout_
+                        ? std::clamp(originalShape.SignedDistance(px + 0.5, py + 0.5) + 0.5,
+                            0.0, 1.0)
+                        : 1.0;
+                    const uint8_t alpha = static_cast<uint8_t>(
+                        std::clamp(coverage * outside * a, 0.0, 1.0) * 255.0 + 0.5);
+                    if (alpha != 0) BlendPixel(px, py, sb, sg, sr, alpha);
+                }
+            }
+            BlendBuffer(lastCapturedPixels_, width_, height_, 0, 0,
+                        static_cast<float>(width_), static_cast<float>(height_), 1.0f);
+            return;
+        }
         const int shadowRadius = std::max(1, static_cast<int>(std::round(blurRadius)));
         auto blurred = BlurPixels(lastCapturedPixels_, width_, height_, shadowRadius, x, y, w, h);
 
@@ -26026,9 +27050,300 @@ void VulkanRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h
             shadowPixels[offset + 3] = alpha;
         }
 
-        BlendBuffer(shadowPixels, width_, height_, x + offsetX, y + offsetY, w, h, 1.0f);
-        BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
+        BlendBuffer(shadowPixels, width_, height_, offsetX, offsetY,
+                    static_cast<float>(width_), static_cast<float>(height_), 1.0f);
+        BlendBuffer(lastCapturedPixels_, width_, height_, 0, 0,
+                    static_cast<float>(width_), static_cast<float>(height_), 1.0f);
     }
+}
+
+JaliumResult VulkanRenderTarget::DrawDropShadowEffectElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& contour)
+{
+    pendingEffectContour_ = contour;
+    hasPendingEffectContour_ = true;
+    struct ResetFlag {
+        bool& flag;
+        ~ResetFlag() { flag = false; }
+    } reset { hasPendingEffectContour_ };
+    DrawDropShadowEffect(x, y, w, h, blurRadius, offsetX, offsetY,
+        r, g, b, a, uvOffsetX, uvOffsetY,
+        contour.radiusX[0], contour.radiusX[1],
+        contour.radiusX[2], contour.radiusX[3]);
+    return JALIUM_OK;
+}
+
+JaliumResult VulkanRenderTarget::DrawDropShadowEffectSpreadElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& spreadContour)
+{
+    pendingBoxShadowContour_ = true;
+    struct ResetBoxContour {
+        bool& flag;
+        ~ResetBoxContour() { flag = false; }
+    } reset { pendingBoxShadowContour_ };
+    return DrawDropShadowEffectElliptical(x, y, w, h,
+        blurRadius, offsetX, offsetY, r, g, b, a,
+        uvOffsetX, uvOffsetY, spreadContour);
+}
+
+JaliumResult VulkanRenderTarget::DrawCssBoxShadowEffectElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& originalContour,
+    const JaliumEllipticalRectClip& spreadContour)
+{
+    pendingBoxShadowKnockoutContour_ = originalContour;
+    hasPendingBoxShadowKnockout_ = true;
+    struct ResetFlag {
+        bool& flag;
+        ~ResetFlag() { flag = false; }
+    } reset { hasPendingBoxShadowKnockout_ };
+    return DrawDropShadowEffectSpreadElliptical(x, y, w, h,
+        blurRadius, offsetX, offsetY, r, g, b, a,
+        uvOffsetX, uvOffsetY, spreadContour);
+}
+
+JaliumResult VulkanRenderTarget::PaintCssOuterShadowLayerElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    const JaliumEllipticalRectClip& originalContour,
+    const JaliumEllipticalRectClip& spreadContour)
+{
+    (void)x; (void)y; (void)w; (void)h;
+    TouchFrame();
+    if (a <= 0.0f || spreadContour.width <= 0.0f || spreadContour.height <= 0.0f)
+        return JALIUM_OK;
+    if (cpuRasterNeeded_) {
+        auto shifted = spreadContour;
+        shifted.x += offsetX; shifted.y += offsetY;
+        const auto transform = GetCurrentTransform();
+        const float matrix[6] { transform.m11, transform.m12,
+            transform.m21, transform.m22, transform.dx, transform.dy };
+        const EllipticalClip shadowShape(shifted, matrix);
+        const EllipticalClip originalShape(originalContour, matrix);
+        float minX = std::numeric_limits<float>::infinity();
+        float minY = std::numeric_limits<float>::infinity();
+        float maxX = -std::numeric_limits<float>::infinity();
+        float maxY = -std::numeric_limits<float>::infinity();
+        for (float cy : {shifted.y, shifted.y + shifted.height})
+        for (float cx : {shifted.x, shifted.x + shifted.width}) {
+            float px, py;
+            ApplyTransform(transform, cx, cy, px, py);
+            minX = std::min(minX, px); minY = std::min(minY, py);
+            maxX = std::max(maxX, px); maxY = std::max(maxY, py);
+        }
+        const int reach = static_cast<int>(std::ceil(std::max(0.0f, blurRadius))) + 2;
+        const int left = std::max(0, static_cast<int>(std::floor(minX)) - reach);
+        const int top = std::max(0, static_cast<int>(std::floor(minY)) - reach);
+        const int right = std::min(width_, static_cast<int>(std::ceil(maxX)) + reach);
+        const int bottom = std::min(height_, static_cast<int>(std::ceil(maxY)) + reach);
+        const double sigma = std::max(0.5, static_cast<double>(blurRadius) / 3.0);
+        const double denominator = std::sqrt(2.0) * sigma;
+        const uint8_t sb = static_cast<uint8_t>(std::clamp(b, 0.0f, 1.0f) * 255.0f + 0.5f);
+        const uint8_t sg = static_cast<uint8_t>(std::clamp(g, 0.0f, 1.0f) * 255.0f + 0.5f);
+        const uint8_t sr = static_cast<uint8_t>(std::clamp(r, 0.0f, 1.0f) * 255.0f + 0.5f);
+        for (int py = top; py < bottom; ++py)
+        for (int px = left; px < right; ++px) {
+            const double sampleX = px + 0.5, sampleY = py + 0.5;
+            const double distance = shadowShape.SignedDistance(sampleX, sampleY);
+            const double coverage = blurRadius > 0.0f
+                ? 0.5 * std::erfc(distance / denominator)
+                : (distance <= 0.0 ? 1.0 : 0.0);
+            const double outside = std::clamp(
+                originalShape.SignedDistance(sampleX, sampleY) + 0.5, 0.0, 1.0);
+            const uint8_t alpha = static_cast<uint8_t>(
+                std::clamp(coverage * outside * a, 0.0, 1.0) * 255.0 + 0.5);
+            if (alpha != 0) BlendPixel(px, py, sb, sg, sr, alpha);
+        }
+        return JALIUM_OK;
+    }
+
+    ClipState clip {};
+    clip.transform = GetCurrentTransform();
+    const auto& t = clip.transform;
+    const float matrix[6] { t.m11, t.m12, t.m21, t.m22, t.dx, t.dy };
+    clip.elliptical = std::make_shared<EllipticalClip>(originalContour, matrix);
+    clip.exclude = true;
+    clipStack_.push_back(std::move(clip));
+    struct PopClip {
+        std::vector<ClipState>& stack;
+        ~PopClip() { stack.pop_back(); }
+    } pop { clipStack_ };
+    if (TryRecordGpuShadowRectCommand(
+            spreadContour.x + offsetX, spreadContour.y + offsetY,
+            spreadContour.width, spreadContour.height,
+            spreadContour.radiusX, spreadContour.radiusY,
+            r, g, b, a, blurRadius / 3.0f))
+        return JALIUM_OK;
+    if (gpuReplaySupported_) {
+        DrawGlowLayers(spreadContour.x, spreadContour.y,
+            spreadContour.width, spreadContour.height,
+            std::max(blurRadius, 1.0f), r, g, b, a, offsetX, offsetY,
+            spreadContour.radiusX[0], spreadContour.radiusX[1],
+            spreadContour.radiusX[2], spreadContour.radiusX[3]);
+        return JALIUM_OK;
+    }
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult VulkanRenderTarget::PaintCssInnerShadowLayerElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    const JaliumEllipticalRectClip& contour)
+{
+    return DrawInnerShadowEllipticalCore(x, y, w, h,
+        blurRadius, offsetX, offsetY, spreadRadius,
+        r, g, b, a, 0, 0, contour, false, true);
+}
+
+JaliumResult VulkanRenderTarget::DrawFilterDropShadowEffect(
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a)
+{
+    TouchFrame();
+    if (HasPendingOffscreenComposite()) {
+        const auto transform = GetCurrentTransform();
+        const float scaleX = std::hypot(transform.m11, transform.m12);
+        const float scaleY = std::hypot(transform.m21, transform.m22);
+        const float scale = 0.5f * (scaleX + scaleY);
+        const float radiusPx = std::max(0.0f, blurRadius * scale);
+        const float kf = radiusPx > 0.0f
+            ? std::clamp(std::ceil(radiusPx / 3.0f), 4.0f, 12.0f) : 1.0f;
+        const float constants[16] = {
+            r, g, b, std::clamp(a, 0.0f, 1.0f),
+            // Replay patches [4..7] with texel size and capture UV scale.
+            0.0f, 0.0f, 0.0f, 0.0f,
+            kf, std::max(0.5f, kf / 3.0f), radiusPx / kf, offsetX * scale,
+            offsetY * scale, 0.0f, 0.0f, 0.0f,
+        };
+        const uint64_t hash = FnvHashShaderSource(kBuiltinFilterDropShadowCacheKey);
+        if (impl_->EnsureCustomShaderPipeline(hash, nullptr,
+                kEffectBuiltinFilterDropShadowPsSpv,
+                kEffectBuiltinFilterDropShadowPsSpvSize) != VK_NULL_HANDLE &&
+            TryRecordGpuCustomShaderCommand(captureX, captureY, captureW, captureH,
+                hash, constants, 16, /*sampleOffscreen*/ true, /*patchUvInfo*/ true)) {
+            TrySuppressPendingOffscreenComposite(/*requireTail*/ false);
+            pendingGlowStart_ = -1;
+            pendingGlowEnd_ = -1;
+            return JALIUM_OK;
+        }
+    }
+
+    if (!lastCapturedPixels_.empty() && cpuRasterNeeded_) {
+        DrawDropShadowEffect(x, y, w, h, blurRadius, offsetX, offsetY,
+            r, g, b, a, x - captureX, y - captureY, 0, 0, 0, 0);
+        return JALIUM_OK;
+    }
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult VulkanRenderTarget::DrawCssTextShadows(
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    const float* layers, uint32_t layerCount, bool compositeSource)
+{
+    TouchFrame();
+    if (!layers || layerCount == 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (HasPendingOffscreenComposite()) {
+        const uint64_t hash = FnvHashShaderSource(kBuiltinFilterDropShadowCacheKey);
+        if (impl_->EnsureCustomShaderPipeline(hash, nullptr,
+                kEffectBuiltinFilterDropShadowPsSpv,
+                kEffectBuiltinFilterDropShadowPsSpvSize) == VK_NULL_HANDLE)
+            return JALIUM_ERROR_NOT_SUPPORTED;
+
+        const auto transform = GetCurrentTransform();
+        const float scaleX = std::hypot(transform.m11, transform.m12);
+        const float scaleY = std::hypot(transform.m21, transform.m22);
+        const float scale = 0.5f * (scaleX + scaleY);
+        const size_t start = gpuReplayCommands_.size();
+        for (uint32_t i = layerCount; i-- > 0;) {
+            const float* layer = layers + static_cast<size_t>(i) * 7;
+            if (layer[6] <= 0.0f) continue;
+            const float radiusPx = std::max(0.0f, layer[0] * scale);
+            const float kf = radiusPx > 0.0f
+                ? std::clamp(std::ceil(radiusPx / 3.0f), 4.0f, 12.0f) : 1.0f;
+            const float constants[16] = {
+                layer[3], layer[4], layer[5], std::clamp(layer[6], 0.0f, 1.0f),
+                0.0f, 0.0f, 0.0f, 0.0f, // replay patches texel size and UV scale
+                kf, std::max(0.5f, kf / 3.0f), radiusPx / kf, layer[1] * scale,
+                layer[2] * scale, 1.0f, 0.0f, 0.0f, // shadow-only
+            };
+            if (!TryRecordGpuCustomShaderCommand(captureX, captureY,
+                    captureW, captureH, hash, constants, 16,
+                    /*sampleOffscreen*/ true, /*patchUvInfo*/ true)) {
+                gpuReplayCommands_.resize(start);
+                return JALIUM_ERROR_NOT_SUPPORTED;
+            }
+        }
+        if (compositeSource) {
+            // The last pass copies the isolated source above every shadow.
+            // Alpha zero bypasses the blur loop in the built-in shader.
+            const float sourceConstants[16] = {
+                0, 0, 0, 0, 0, 0, 0, 0,
+                1, 0.5f, 0, 0, 0, 0, 0, 0,
+            };
+            if (!TryRecordGpuCustomShaderCommand(captureX, captureY,
+                    captureW, captureH, hash, sourceConstants, 16,
+                    /*sampleOffscreen*/ true, /*patchUvInfo*/ true)) {
+                gpuReplayCommands_.resize(start);
+                return JALIUM_ERROR_NOT_SUPPORTED;
+            }
+        }
+        if (!TrySuppressPendingOffscreenComposite(/*requireTail*/ false)) {
+            gpuReplayCommands_.resize(start);
+            return JALIUM_ERROR_NOT_SUPPORTED;
+        }
+        pendingGlowStart_ = -1;
+        pendingGlowEnd_ = -1;
+        return JALIUM_OK;
+    }
+
+    if (!lastCapturedPixels_.empty() && cpuRasterNeeded_) {
+        for (uint32_t i = layerCount; i-- > 0;) {
+            const float* layer = layers + static_cast<size_t>(i) * 7;
+            if (layer[6] <= 0.0f) continue;
+            const auto blurred = layer[0] > 0.0f
+                ? BlurPixels(lastCapturedPixels_, width_, height_,
+                    std::max(1, static_cast<int>(std::round(layer[0]))), x, y, w, h)
+                : lastCapturedPixels_;
+            std::vector<uint8_t> shadowPixels = blurred;
+            const uint8_t blue = static_cast<uint8_t>(
+                std::clamp(layer[5], 0.0f, 1.0f) * 255.0f + 0.5f);
+            const uint8_t green = static_cast<uint8_t>(
+                std::clamp(layer[4], 0.0f, 1.0f) * 255.0f + 0.5f);
+            const uint8_t red = static_cast<uint8_t>(
+                std::clamp(layer[3], 0.0f, 1.0f) * 255.0f + 0.5f);
+            const float opacity = std::clamp(layer[6], 0.0f, 1.0f);
+            for (size_t pixel = 0; pixel + 3 < shadowPixels.size(); pixel += 4) {
+                shadowPixels[pixel] = blue;
+                shadowPixels[pixel + 1] = green;
+                shadowPixels[pixel + 2] = red;
+                shadowPixels[pixel + 3] = static_cast<uint8_t>(
+                    shadowPixels[pixel + 3] * opacity);
+            }
+            BlendBuffer(shadowPixels, width_, height_, layer[1], layer[2],
+                static_cast<float>(width_), static_cast<float>(height_), 1.0f);
+        }
+        if (compositeSource)
+            BlendBuffer(lastCapturedPixels_, width_, height_, 0, 0,
+                static_cast<float>(width_), static_cast<float>(height_), 1.0f);
+        return JALIUM_OK;
+    }
+    return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
 void VulkanRenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
@@ -26208,6 +27523,188 @@ void VulkanRenderTarget::DrawInnerShadowEffect(float x, float y, float w, float 
     PopTemporaryClip();
 }
 
+JaliumResult VulkanRenderTarget::DrawInnerShadowEffectElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& contour)
+{
+    return DrawInnerShadowEllipticalCore(x, y, w, h,
+        blurRadius, offsetX, offsetY, spreadRadius,
+        r, g, b, a, uvOffsetX, uvOffsetY, contour, true);
+}
+
+JaliumResult VulkanRenderTarget::DrawInnerShadowLayerElliptical(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& contour)
+{
+    return DrawInnerShadowEllipticalCore(x, y, w, h,
+        blurRadius, offsetX, offsetY, spreadRadius,
+        r, g, b, a, uvOffsetX, uvOffsetY, contour, false);
+}
+
+JaliumResult VulkanRenderTarget::DrawInnerShadowEllipticalCore(
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip& contour, bool compositeContent,
+    bool paintDirect)
+{
+    (void)uvOffsetX; (void)uvOffsetY;
+    TouchFrame();
+    if (cpuRasterNeeded_ && (paintDirect || !lastCapturedPixels_.empty())) {
+        if (compositeContent)
+            BlendBuffer(lastCapturedPixels_, width_, height_, 0, 0,
+                static_cast<float>(width_), static_cast<float>(height_), 1.0f);
+        if (contour.width <= 0.0f || contour.height <= 0.0f || a <= 0.0f)
+            return JALIUM_OK;
+
+        auto spreadContour = contour;
+        const float insetX = spreadRadius > 0.0f
+            ? std::min(spreadRadius, contour.width * 0.5f) : spreadRadius;
+        const float insetY = spreadRadius > 0.0f
+            ? std::min(spreadRadius, contour.height * 0.5f) : spreadRadius;
+        spreadContour.x += insetX;
+        spreadContour.y += insetY;
+        spreadContour.width = std::max(0.0f, contour.width - 2.0f * insetX);
+        spreadContour.height = std::max(0.0f, contour.height - 2.0f * insetY);
+        const auto spreadCorner = [spreadRadius](float radius) {
+            if (spreadRadius >= 0.0f)
+                return std::max(0.0f, radius - spreadRadius);
+            const float expansion = -spreadRadius;
+            const float ratio = radius / expansion;
+            const float fraction = radius < expansion
+                ? 1.0f + (ratio - 1.0f) * (ratio - 1.0f) * (ratio - 1.0f)
+                : 1.0f;
+            return radius + expansion * fraction;
+        };
+        for (int corner = 0; corner < 4; ++corner) {
+            spreadContour.radiusX[corner] = spreadCorner(contour.radiusX[corner]);
+            spreadContour.radiusY[corner] = spreadCorner(contour.radiusY[corner]);
+        }
+
+        const auto transform = GetCurrentTransform();
+        const float matrix[6] { transform.m11, transform.m12,
+            transform.m21, transform.m22, transform.dx, transform.dy };
+        const EllipticalClip shape(contour, matrix);
+        const EllipticalClip spreadShape(spreadContour, matrix);
+        float minX = std::numeric_limits<float>::infinity();
+        float minY = std::numeric_limits<float>::infinity();
+        float maxX = -std::numeric_limits<float>::infinity();
+        float maxY = -std::numeric_limits<float>::infinity();
+        for (float cy : {contour.y, contour.y + contour.height})
+        for (float cx : {contour.x, contour.x + contour.width}) {
+            float px, py;
+            ApplyTransform(transform, cx, cy, px, py);
+            minX = std::min(minX, px); minY = std::min(minY, py);
+            maxX = std::max(maxX, px); maxY = std::max(maxY, py);
+        }
+        const int left = std::max(0, static_cast<int>(std::floor(minX)));
+        const int top = std::max(0, static_cast<int>(std::floor(minY)));
+        const int right = std::min(width_, static_cast<int>(std::ceil(maxX)));
+        const int bottom = std::min(height_, static_cast<int>(std::ceil(maxY)));
+        const double sigma = std::max(0.5, static_cast<double>(blurRadius) / 3.0);
+        const double denominator = std::sqrt(2.0) * sigma;
+        const uint8_t sb = static_cast<uint8_t>(std::clamp(b, 0.0f, 1.0f) * 255.0f + 0.5f);
+        const uint8_t sg = static_cast<uint8_t>(std::clamp(g, 0.0f, 1.0f) * 255.0f + 0.5f);
+        const uint8_t sr = static_cast<uint8_t>(std::clamp(r, 0.0f, 1.0f) * 255.0f + 0.5f);
+        for (int py = top; py < bottom; ++py)
+        for (int px = left; px < right; ++px) {
+            const double sampleX = px + 0.5, sampleY = py + 0.5;
+            if (shape.SignedDistance(sampleX, sampleY) > 0.0) continue;
+            const double shiftedDistance = spreadShape.SignedDistance(
+                sampleX - offsetX, sampleY - offsetY);
+            const double coverage = 0.5 * (1.0 + std::erf(shiftedDistance / denominator));
+            const uint8_t alpha = static_cast<uint8_t>(
+                std::clamp(coverage * a, 0.0, 1.0) * 255.0 + 0.5);
+            if (alpha != 0) BlendPixel(px, py, sb, sg, sr, alpha);
+        }
+        return JALIUM_OK;
+    }
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_ ||
+        !effectCaptureStack_.empty() || activeTransitionSlot_ >= 0)
+        return JALIUM_ERROR_NOT_SUPPORTED;
+
+    GpuReplayCommand command {};
+    command.kind = GpuReplayCommandKind::SolidRect;
+    if (!TryPopulateReplayClip(command) || command.hasInnerRoundedClip)
+        return JALIUM_ERROR_NOT_SUPPORTED;
+
+    // The inset paints after content. Keep the pending offscreen composite-back and consume any
+    // glow splice handle so an earlier effect cannot reorder this shadow ahead of the content.
+    pendingGlowStart_ = -1;
+    pendingGlowEnd_ = -1;
+    if (contour.width <= 0.0f || contour.height <= 0.0f || a <= 0.0f ||
+        command.scissorRight <= command.scissorLeft ||
+        command.scissorBottom <= command.scissorTop)
+        return JALIUM_OK;
+
+    const auto transform = GetCurrentTransform();
+    float px[4] {}, py[4] {};
+    ApplyTransform(transform, contour.x, contour.y, px[0], py[0]);
+    ApplyTransform(transform, contour.x + contour.width, contour.y, px[1], py[1]);
+    ApplyTransform(transform, contour.x + contour.width, contour.y + contour.height, px[2], py[2]);
+    ApplyTransform(transform, contour.x, contour.y + contour.height, px[3], py[3]);
+    const float left = std::min({ px[0], px[1], px[2], px[3] });
+    const float top = std::min({ py[0], py[1], py[2], py[3] });
+    const float right = std::max({ px[0], px[1], px[2], px[3] });
+    const float bottom = std::max({ py[0], py[1], py[2], py[3] });
+    const float drawW = right - left, drawH = bottom - top;
+    if (drawW <= 0.0f || drawH <= 0.0f) return JALIUM_OK;
+
+    const float scaleX = std::hypot(transform.m11, transform.m21);
+    const float scaleY = std::hypot(transform.m12, transform.m22);
+    const float averageScale = 0.5f * (scaleX + scaleY);
+    command.solidRect.x = left;
+    command.solidRect.y = top;
+    command.solidRect.w = drawW;
+    command.solidRect.h = drawH;
+    command.solidRect.r = std::clamp(r, 0.0f, 1.0f);
+    command.solidRect.g = std::clamp(g, 0.0f, 1.0f);
+    command.solidRect.b = std::clamp(b, 0.0f, 1.0f);
+    command.solidRect.a = std::clamp(a, 0.0f, 1.0f) *
+        std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+    if (command.solidRect.a <= 0.0f) return JALIUM_OK;
+
+    // The ordinary rounded-clip slot remains available to the ancestor. The inset contour
+    // occupies the independent inner geometry slot, which the mode-3 fragment path reads as
+    // its own shape and which is otherwise unused for this command.
+    command.hasInnerRoundedClip = true;
+    command.innerRoundedClipLeft = left;
+    command.innerRoundedClipTop = top;
+    command.innerRoundedClipRight = right;
+    command.innerRoundedClipBottom = bottom;
+    const float halfW = drawW * 0.5f, halfH = drawH * 0.5f;
+    const bool flipX = std::fabs(transform.m12) < 0.0001f && transform.m11 < 0.0f;
+    const bool flipY = std::fabs(transform.m21) < 0.0001f && transform.m22 < 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        const bool screenRight = i == 1 || i == 2;
+        const bool screenBottom = i >= 2;
+        const bool sourceRight = flipX ? !screenRight : screenRight;
+        const bool sourceBottom = flipY ? !screenBottom : screenBottom;
+        const int sourceCorner = sourceBottom ? (sourceRight ? 2 : 3) : (sourceRight ? 1 : 0);
+        command.innerPerCornerRadiusX[i] = std::clamp(
+            contour.radiusX[sourceCorner] * scaleX, 0.0f, halfW);
+        command.innerPerCornerRadiusY[i] = std::clamp(
+            contour.radiusY[sourceCorner] * scaleY, 0.0f, halfH);
+    }
+    command.innerRoundedClipRadiusX = command.innerPerCornerRadiusX[0];
+    command.innerRoundedClipRadiusY = command.innerPerCornerRadiusY[0];
+    command.shadowMode = 3.0f;
+    command.shadowSigma = std::max(0.5f,
+        blurRadius > 0.0f ? blurRadius * averageScale / 3.0f : 0.5f);
+    command.effectOffsetX = offsetX * transform.m11 + offsetY * transform.m12;
+    command.effectOffsetY = offsetX * transform.m21 + offsetY * transform.m22;
+    command.effectSpread = spreadRadius * averageScale;
+    RecordReplayCommand(command);
+    return JALIUM_OK;
+}
+
 // ── Built-in offscreen-sampling effect shaders (Stage 4 / S1) ────────────────
 // ColorMatrix / Emboss on the GPU-RT path reuse the custom-shader pipeline
 // family (shared VS + descriptor/pipeline layout, constants through the b0 UBO,
@@ -26275,10 +27772,66 @@ void VulkanRenderTarget::DrawColorMatrixEffect(float x, float y, float w, float 
         out[o + 3] = static_cast<uint8_t>(std::clamp(na, 0.0f, 1.0f) * 255.0f + 0.5f);
     }
 
-    if (!TryRecordGpuPixelBufferCommand(out, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
+    if (!TryRecordGpuPixelBufferCommand(out, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_),
+            0, 0, static_cast<float>(width_), static_cast<float>(height_), 1.0f)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
-    BlendBuffer(out, width_, height_, x, y, w, h, 1.0f);
+    // CPU effect captures are full-surface transparent canvases. Keep their
+    // original coordinates instead of scaling the whole image into the box.
+    BlendBuffer(out, width_, height_, 0, 0,
+                static_cast<float>(width_), static_cast<float>(height_), 1.0f);
+}
+
+JaliumResult VulkanRenderTarget::DrawColorMatrixChainEffect(
+    float x, float y, float w, float h,
+    const float* matrices, uint32_t matrixCount)
+{
+    constexpr uint32_t kMaxStages = 64;
+    if (!matrices || matrixCount == 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (matrixCount > kMaxStages) return JALIUM_ERROR_NOT_SUPPORTED;
+    TouchFrame();
+
+    if (lastCapturedPixels_.empty()) {
+        if (!HasPendingOffscreenComposite()) return JALIUM_ERROR_NOT_SUPPORTED;
+        std::vector<float> constants(4u + kMaxStages * 20u, 0.0f);
+        constants[0] = static_cast<float>(matrixCount);
+        std::copy_n(matrices, static_cast<size_t>(matrixCount) * 20u,
+                    constants.data() + 4);
+        const uint64_t hash = FnvHashShaderSource(kBuiltinColorMatrixChainCacheKey);
+        if (impl_->EnsureCustomShaderPipeline(hash, nullptr,
+                kEffectBuiltinColorMatrixChainPsSpv,
+                kEffectBuiltinColorMatrixChainPsSpvSize) == VK_NULL_HANDLE ||
+            !TryRecordGpuCustomShaderCommand(x, y, w, h, hash,
+                constants.data(), static_cast<uint32_t>(constants.size()),
+                /*sampleOffscreen*/ true, /*patchUvInfo*/ false))
+            return JALIUM_ERROR_NOT_SUPPORTED;
+        TrySuppressPendingOffscreenComposite(/*requireTail*/ false);
+        return JALIUM_OK;
+    }
+
+    if (!cpuRasterNeeded_) return JALIUM_ERROR_NOT_SUPPORTED;
+    std::vector<uint8_t> out = lastCapturedPixels_;
+    for (size_t pixel = 0; pixel + 3 < out.size(); pixel += 4) {
+        float a = lastCapturedPixels_[pixel + 3] / 255.0f;
+        float r = a > 0.0001f ? (lastCapturedPixels_[pixel + 2] / 255.0f) / a : 0.0f;
+        float g = a > 0.0001f ? (lastCapturedPixels_[pixel + 1] / 255.0f) / a : 0.0f;
+        float b = a > 0.0001f ? (lastCapturedPixels_[pixel + 0] / 255.0f) / a : 0.0f;
+        for (uint32_t stage = 0; stage < matrixCount; ++stage) {
+            const float* m = matrices + static_cast<size_t>(stage) * 20u;
+            const float nr = std::clamp(m[0] * r + m[1] * g + m[2] * b + m[3] * a + m[16], 0.0f, 1.0f);
+            const float ng = std::clamp(m[4] * r + m[5] * g + m[6] * b + m[7] * a + m[17], 0.0f, 1.0f);
+            const float nb = std::clamp(m[8] * r + m[9] * g + m[10] * b + m[11] * a + m[18], 0.0f, 1.0f);
+            const float na = std::clamp(m[12] * r + m[13] * g + m[14] * b + m[15] * a + m[19], 0.0f, 1.0f);
+            r = nr; g = ng; b = nb; a = na;
+        }
+        out[pixel + 0] = static_cast<uint8_t>(b * 255.0f + 0.5f);
+        out[pixel + 1] = static_cast<uint8_t>(g * 255.0f + 0.5f);
+        out[pixel + 2] = static_cast<uint8_t>(r * 255.0f + 0.5f);
+        out[pixel + 3] = static_cast<uint8_t>(a * 255.0f + 0.5f);
+    }
+    BlendBuffer(out, width_, height_, 0, 0,
+                static_cast<float>(width_), static_cast<float>(height_), 1.0f);
+    return JALIUM_OK;
 }
 
 void VulkanRenderTarget::DrawEmbossEffect(float x, float y, float w, float h,

@@ -7,6 +7,7 @@ using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -63,6 +64,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     private Pen? _caretPen;
     private Brush? _caretPenBrush;
     private double _caretPenOpacity;
+    private Border? _cssBorderPainter;
 
     // Spell checking
     private List<SpellingError> _spellingErrors = new();
@@ -495,8 +497,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
     }
@@ -507,8 +509,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
         var fontStretch = FontStretch.ToOpenTypeStretch();
@@ -575,7 +577,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
         // Use weighted character widths for more accurate estimation
         double width = 0;
-        double fontSize = FontSize > 0 ? FontSize : 14;
+        double fontSize = FontSize;
 
         foreach (char c in text)
         {
@@ -803,8 +805,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
         if (lineText.Length > 0)
         {
-            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-            var fontSize = FontSize > 0 ? FontSize : 14;
+            var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+            var fontSize = FontSize;
             var fontWeight = FontWeight.ToOpenTypeWeight();
             var fontStyle = FontStyle.ToOpenTypeStyle();
 
@@ -914,8 +916,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         var lineText = Text.Substring(targetLine.StartIndex, targetLine.Length);
         var localY = (float)Math.Max(0, contentY - targetLineTopY);
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
 
@@ -1125,8 +1127,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
         if (lineText.Length > 0 && TextMeasurement.HitTestTextPositionWrapped(
                 lineText,
-                FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName,
-                FontSize > 0 ? FontSize : 14,
+                FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+                FontSize,
                 FontWeight.ToOpenTypeWeight(),
                 FontStyle.ToOpenTypeStyle(),
                 TextWrapping == TextWrapping.NoWrap ? 100000f : (float)Math.Max(1, viewport.Width),
@@ -1297,8 +1299,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         EnsureLinesValid();
 
         var wrapMode = TextWrapping;
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
 
@@ -1585,10 +1587,13 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
         if (Background != null)
         {
-            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                    bounds, CssBackgroundPainter.CircularRadii(cornerRadius), border, padding,
+                    brush => dc.DrawRoundedRectangle(brush, null, bounds, cornerRadius)))
+                dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
-        if (BorderBrush != null && strokeThickness > 0)
+        if (CssBorderPaintProperties.Get(this) is null && BorderBrush != null && strokeThickness > 0)
         {
             var borderPen = new Pen(BorderBrush, strokeThickness);
             dc.DrawRoundedRectangle(null, borderPen, borderRect, borderRadius);
@@ -1605,6 +1610,14 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         RenderTextContentCore(dc, contentRect, lineHeight);
 
         // Focus indicator is painted by FocusVisualManager into the adorner layer.
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (!HasContentHost)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     /// <inheritdoc />
@@ -1661,7 +1674,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
                 var placeholderBrush = ResolvePlaceholderBrush();
                 var roundedHorizontalOffset = Math.Round(_horizontalOffset);
                 var roundedVerticalOffset = Math.Round(_verticalOffset);
-                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = placeholderBrush,
                     MaxTextWidth = contentRect.Width,
@@ -1713,6 +1726,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
     {
+        if (FontSize == 0) return;
         var text = Text;
         var textBrush = ResolveTextForegroundBrush();
         // Round scroll offsets to prevent sub-pixel jittering
@@ -1725,6 +1739,25 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         // behavior stay in lockstep.
         var wrapWidth = Math.Max(0, contentRect.Width);
         EnsureVisualLineCounts(wrapWidth, lineHeight);
+
+        var firstDecoratedLine = -1;
+        var lastDecoratedLine = -1;
+        var decorationInset = CssTextDecorationProperties.Inset(this);
+        var decorationSizePrefix = decorationInset == CssTextDecorationInset.Zero
+            ? null : new double[_lines.Count + 1];
+        if (decorationInset != CssTextDecorationInset.Zero)
+        {
+            for (var lineIndex = 0; lineIndex < _lines.Count; lineIndex++)
+            {
+                var decoratedLine = _lines[lineIndex];
+                decorationSizePrefix![lineIndex + 1] = decorationSizePrefix[lineIndex];
+                if (decoratedLine.Length == 0) continue;
+                if (firstDecoratedLine < 0) firstDecoratedLine = lineIndex;
+                lastDecoratedLine = lineIndex;
+                decorationSizePrefix[lineIndex + 1] += MeasureTextWidth(
+                    text.Substring(decoratedLine.StartIndex, decoratedLine.Length));
+            }
+        }
 
         double accumulatedY = 0;
         for (int i = 0; i < _lines.Count; i++)
@@ -1756,7 +1789,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
                 ? double.MaxValue
                 : wrapWidth;
 
-            var formattedText = new FormattedText(lineText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+            var formattedText = new FormattedText(lineText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = textBrush,
                 MaxTextWidth = maxTextWidth,
@@ -1770,18 +1803,33 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
             // Apply text alignment
             var lineWidth = MeasureTextWidth(lineText);
-            if (TextAlignment == TextAlignment.Center)
+            var alignment = CssFlowProperties.NativeLineTextAlignment(this, TextAlignmentProperty,
+                isLast: visualRows == 1);
+            if (alignment == TextAlignment.Center)
             {
                 x = contentRect.X + (contentRect.Width - lineWidth) / 2;
             }
-            else if (TextAlignment == TextAlignment.Right)
+            else if (alignment == TextAlignment.Right)
             {
                 x = contentRect.X + contentRect.Width - lineWidth;
             }
 
             // Round to pixel boundaries to prevent sub-pixel jittering
-            dc.DrawText(formattedText, new Point(x, y));
-            DrawTextDecorations(dc, x, y, lineWidth, wrapWidth, visualRows, lineHeight, textBrush, wrapMode);
+            var shadowCapture = CssTextShadowPainter.Begin(dc, this,
+                new Rect(x - FontSize, y - FontSize,
+                    Math.Max(1, lineWidth) + 2 * FontSize, lineBlockHeight + 2 * FontSize));
+            try
+            {
+                dc.DrawText(formattedText, new Point(x, y));
+                DrawTextDecorations(dc, x, y, lineWidth, wrapWidth, visualRows, lineHeight,
+                    textBrush, wrapMode, decorationSizePrefix?[^1] ?? -1,
+                    i == firstDecoratedLine, i == lastDecoratedLine,
+                    decorationSizePrefix?[i] ?? -1);
+            }
+            finally
+            {
+                shadowCapture?.End();
+            }
         }
     }
 
@@ -1794,19 +1842,30 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         int visualRows,
         double lineHeight,
         Brush? textBrush,
-        TextWrapping wrapMode)
+        TextWrapping wrapMode,
+        double totalInlineSize,
+        bool firstLogicalFragment,
+        bool lastLogicalFragment,
+        double inlineSizeBeforeLogicalLine)
     {
-        if (unwrappedLineWidth <= 0 || TextDecorations is not { Count: > 0 } decorations)
+        var cssOwnsDecorations = GetEffectiveValueLayer(TextDecorationsProperty) is
+            (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState);
+        var decorations = cssOwnsDecorations ? null : TextDecorations;
+        var cssLines = cssOwnsDecorations
+            ? CssTextDecorationProperties.Line(this) : CssTextDecorationLine.None;
+        if (unwrappedLineWidth <= 0 || decorations is null && cssLines == CssTextDecorationLine.None ||
+            decorations is { Count: 0 })
             return;
 
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontSize = FontSize;
         var metrics = TextMeasurement.GetFontMetrics(
-            FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
             fontSize,
             FontWeight.ToOpenTypeWeight(),
             FontStyle.ToOpenTypeStyle());
         var baselineOffset = metrics.Ascent > 0 ? metrics.Ascent : lineHeight * 0.8;
         var rowCount = wrapMode == TextWrapping.NoWrap ? 1 : Math.Max(1, visualRows);
+        var completedLineWidth = 0.0;
 
         for (var row = 0; row < rowCount; row++)
         {
@@ -1819,7 +1878,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
                 if (rowWidth <= 0)
                     rowWidth = wrapWidth;
             }
-            else if (double.IsFinite(wrapWidth))
+            else if (wrapMode != TextWrapping.NoWrap && double.IsFinite(wrapWidth))
             {
                 rowWidth = Math.Min(rowWidth, wrapWidth);
             }
@@ -1827,8 +1886,31 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
             if (rowWidth <= 0)
                 continue;
 
+            var inlineSizeBefore = totalInlineSize >= 0
+                ? inlineSizeBeforeLogicalLine + Math.Min(completedLineWidth, unwrappedLineWidth)
+                : -1;
+            completedLineWidth += rowWidth;
+            var inlineSizeAfter = totalInlineSize >= 0
+                ? Math.Max(0, totalInlineSize - inlineSizeBeforeLogicalLine -
+                    (row == rowCount - 1 ? unwrappedLineWidth
+                        : Math.Min(completedLineWidth, unwrappedLineWidth)))
+                : -1;
+
             var rowTop = lineY + row * lineHeight;
             var baseline = rowTop + baselineOffset;
+            if (decorations is null)
+            {
+                var brush = CssTextDecorationProperties.Color(this) ?? textBrush;
+                if (brush is not null)
+                    CssTextDecorationPainter.Draw(drawingContext, this, this, brush, cssLines,
+                        lineOriginX, lineOriginX + rowWidth, rowTop, baseline, fontSize,
+                        baseline + Math.Max(0, metrics.Descent),
+                        totalInlineSize >= 0 ? totalInlineSize : unwrappedLineWidth,
+                        firstLogicalFragment && row == 0,
+                        lastLogicalFragment && row == rowCount - 1,
+                        inlineSizeBefore, inlineSizeAfter);
+                continue;
+            }
             foreach (var decoration in decorations)
             {
                 var brush = decoration.Brush ?? textBrush;
@@ -2002,8 +2084,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
                         // last row from the left edge to endCaret. This matches
                         // the glyph extents exactly, so there is no trailing
                         // whitespace tail on the final wrapped row.
-                        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-                        var fontSize = FontSize > 0 ? FontSize : 14;
+                        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+                        var fontSize = FontSize;
                         var fontWeight = FontWeight.ToOpenTypeWeight();
                         var fontStyle = FontStyle.ToOpenTypeStyle();
                         float wrapWidthF = (float)wrapWidth;
@@ -2135,7 +2217,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
 
         // Draw composition text
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -2209,8 +2291,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
             // regardless of which wrap row the caret index actually belongs
             // to. Use DirectWrite's wrapped hit-test to land on the exact
             // (x, y) of the glyph the user clicked.
-            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-            var fontSize = FontSize > 0 ? FontSize : 14;
+            var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+            var fontSize = FontSize;
             var fontWeight = FontWeight.ToOpenTypeWeight();
             var fontStyle = FontStyle.ToOpenTypeStyle();
 
@@ -2249,6 +2331,16 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         else
         {
             caretBrushWithOpacity = caretBrush;
+        }
+
+        var caretShape = Styling.CssCaretShapeProperties.Get(this);
+        if (caretShape != Styling.CssCaretShape.Auto)
+        {
+            var advance = CssCaretPainter.NextAdvance(lineText, clampedColumn,
+                index => GetCharacterXInLine(lineText, index), MeasureTextWidth("0"));
+            _lastRenderedCaretRect = CssCaretPainter.Draw(dc, caretBrushWithOpacity,
+                caretShape, x, y, caretHeight, advance, 1.5);
+            return;
         }
 
         if (_caretPen == null || _caretPenBrush != caretBrushWithOpacity || _caretPenOpacity != caretOpacity)

@@ -1,0 +1,8 @@
+<Project>
+  <!-- Method ordering changes locality only. Unlisted methods remain available. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' and '$(PublishAot)' == 'true'">
+    <JaliumUseEmptyWindowLayout Condition="'$(JaliumUseEmptyWindowLayout)' == ''">true</JaliumUseEmptyWindowLayout>
+    <IlcOrderFile Condition="'$(JaliumUseEmptyWindowLayout)' == 'true' and '$(IlcOrderFile)' == ''">$(MSBuildThisFileDirectory)windows-empty-startup.order.txt</IlcOrderFile>
+  </PropertyGroup>
+  <Import Project="$(MSBuildThisFileDirectory)LazyWindowsImports.targets" />
+</Project>

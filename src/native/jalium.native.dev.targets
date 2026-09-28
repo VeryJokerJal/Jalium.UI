@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!--
-    The checked-in shared vcxproj files are convenient for focused Visual
-    Studio builds and intentionally keep their legacy bin/native/<Config>
-    output. Invalidate the canonical CMake completion stamp before such a
-    build so project-reference consumers cannot silently keep using an older
-    bin/native/win-x64/<Config> payload. Interop then uses the freshly built
-    legacy DLLs for development. Only the aggregate CMake target is allowed to
-    recreate the canonical completion stamp.
+    The checked-in shared vcxproj files keep their legacy
+    bin/native/<Config> link output because the projects' explicit import-lib
+    dependencies use that common directory. Project-reference applications,
+    however, consume bin/native/win-x64/<Config>. A focused Visual Studio build
+    therefore mirrors the just-linked DLL into the canonical RID directory and
+    invalidates its aggregate-completion stamp. This guarantees that F5 loads
+    the DLL just built by the hand-authored vcxproj, while packaging still
+    requires the full CMake aggregate to recreate the stamp.
   -->
   <PropertyGroup>
+    <_JaliumCanonicalNativeDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)bin\native\win-x64\$(Configuration)\'))</_JaliumCanonicalNativeDir>
     <_JaliumCanonicalNativeStamp>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)bin\native\win-x64\$(Configuration)\.jalium-native-complete'))</_JaliumCanonicalNativeStamp>
   </PropertyGroup>
 
@@ -18,5 +20,15 @@
           Condition="'$(DesignTimeBuild)' != 'true' and '$(ConfigurationType)' == 'DynamicLibrary' and '$(Platform)' == 'x64'">
     <Delete Files="$(_JaliumCanonicalNativeStamp)" />
     <Message Text="Invalidated canonical native payload stamp before focused vcxproj build: $(_JaliumCanonicalNativeStamp)" Importance="low" />
+  </Target>
+
+  <Target Name="JaliumMirrorDevDllToCanonicalRid"
+          AfterTargets="Link"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(ConfigurationType)' == 'DynamicLibrary' and '$(Platform)' == 'x64'">
+    <MakeDir Directories="$(_JaliumCanonicalNativeDir)" />
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFiles="$(_JaliumCanonicalNativeDir)$(TargetFileName)"
+          SkipUnchangedFiles="true" />
+    <Message Text="Mirrored focused vcxproj output for app consumption: $(TargetPath) -&gt; $(_JaliumCanonicalNativeDir)$(TargetFileName)" Importance="high" />
   </Target>
 </Project>

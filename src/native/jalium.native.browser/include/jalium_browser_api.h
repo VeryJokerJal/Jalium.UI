@@ -11,7 +11,10 @@
         #define JALIUM_BROWSER_API __declspec(dllimport)
     #endif
 #else
-    #define JALIUM_BROWSER_API
+    #define JALIUM_BROWSER_API __attribute__((visibility("default")))
+    #ifndef __stdcall
+        #define __stdcall
+    #endif
 #endif
 
 #ifdef __cplusplus

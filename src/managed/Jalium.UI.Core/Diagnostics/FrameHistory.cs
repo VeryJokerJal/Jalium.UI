@@ -41,8 +41,9 @@ public sealed class FrameHistory
     }
 
     public const int Capacity = 300;
+    private const int InitialCapacity = 8;
 
-    private readonly Sample[] _samples = new Sample[Capacity];
+    private Sample[] _samples = Array.Empty<Sample>();
     private int _head;
     private int _count;
     private long _totalFrames;
@@ -59,9 +60,11 @@ public sealed class FrameHistory
 
         lock (_lock)
         {
+            EnsureCapacityForOneMore();
             _samples[_head] = stamped;
-            _head = (_head + 1) % Capacity;
-            if (_count < Capacity) _count++;
+            _head++;
+            if (_head == _samples.Length) _head = 0;
+            if (_count < Capacity) Volatile.Write(ref _count, _count + 1);
             Interlocked.Increment(ref _totalFrames);
         }
     }
@@ -71,8 +74,16 @@ public sealed class FrameHistory
         lock (_lock)
         {
             _head = 0;
-            _count = 0;
-            Array.Clear(_samples);
+            Volatile.Write(ref _count, 0);
+
+            // Clearing a long diagnostics session should make its large payload
+            // collectible, while a history that only reached the startup buffer can
+            // reuse that small allocation on the next Push.
+            if (_samples.Length > InitialCapacity)
+            {
+                _samples = Array.Empty<Sample>();
+            }
+
             Interlocked.Exchange(ref _totalFrames, 0);
         }
     }
@@ -86,12 +97,49 @@ public sealed class FrameHistory
         lock (_lock)
         {
             int n = Math.Min(_count, destination.Length);
-            int start = (_head - _count + Capacity) % Capacity;
-            for (int i = 0; i < n; i++)
+            if (n == 0) return 0;
+
+            int start = _head - _count;
+            if (start < 0) start += _samples.Length;
+
+            int firstLength = Math.Min(n, _samples.Length - start);
+            _samples.AsSpan(start, firstLength).CopyTo(destination);
+            if (firstLength < n)
             {
-                destination[i] = _samples[(start + i) % Capacity];
+                _samples.AsSpan(0, n - firstLength).CopyTo(destination[firstLength..]);
             }
+
             return n;
         }
+    }
+
+    private void EnsureCapacityForOneMore()
+    {
+        int currentCapacity = _samples.Length;
+        if (_count < currentCapacity || currentCapacity == Capacity)
+        {
+            return;
+        }
+
+        int newCapacity = currentCapacity == 0
+            ? InitialCapacity
+            : Math.Min(currentCapacity * 2, Capacity);
+        var expanded = new Sample[newCapacity];
+
+        if (_count != 0)
+        {
+            int start = _head - _count;
+            if (start < 0) start += currentCapacity;
+
+            int firstLength = Math.Min(_count, currentCapacity - start);
+            _samples.AsSpan(start, firstLength).CopyTo(expanded);
+            if (firstLength < _count)
+            {
+                _samples.AsSpan(0, _count - firstLength).CopyTo(expanded.AsSpan(firstLength));
+            }
+        }
+
+        _samples = expanded;
+        _head = _count;
     }
 }

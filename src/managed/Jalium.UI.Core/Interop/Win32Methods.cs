@@ -175,6 +175,12 @@ internal static partial class Win32Methods
     [LibraryImport("dwmapi.dll")]
     internal static partial int DwmExtendFrameIntoClientArea(nint hwnd, ref MARGINS pMarInset);
 
+    [LibraryImport("dwmapi.dll")]
+    internal static partial int DwmEnableBlurBehindWindow(nint hwnd, ref DWM_BLURBEHIND pBlurBehind);
+
+    [LibraryImport("gdi32.dll")]
+    internal static partial nint CreateRectRgn(int x1, int y1, int x2, int y2);
+
     [DllImport("dwmapi.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool DwmDefWindowProc(nint hwnd, uint msg, nint wParam, nint lParam, out nint plResult);

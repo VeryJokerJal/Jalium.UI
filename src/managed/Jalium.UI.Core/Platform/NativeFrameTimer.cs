@@ -9,7 +9,7 @@ namespace Jalium.UI.Core.Platform;
 /// </summary>
 internal sealed partial class NativeFrameTimer : IFrameTimer
 {
-    private const string PlatformLib = "jalium.native.platform";
+    private const string PlatformLib = JaliumNativeLibraryNames.Platform;
 
     private nint _handle;
     private bool _disposed;

@@ -145,6 +145,13 @@ internal sealed class LayoutManager
         if (_isUpdating)
             return default;
 
+        // Pending CSS evaluation must land before measure so first-frame styling is in
+        // place (no flash of unstyled content). One static-bool read when CSS is unused.
+        if (Jalium.UI.Styling.CssEngine.IsActive)
+        {
+            Jalium.UI.Styling.CssEvaluationScheduler.FlushIfPending(root.Dispatcher);
+        }
+
         _isUpdating = true;
         _layoutIterations = 0;
         _reportedRunawayLayout = false;
@@ -172,18 +179,21 @@ internal sealed class LayoutManager
                 root.Arrange(new Rect(0, 0, availableSize.Width, availableSize.Height));
                 arrangeTicks += Stopwatch.GetTimestamp() - aStart;
                 arrangedItems++;
-                return new LayoutPassResult(
-                    Stopwatch.GetTimestamp() - totalStart,
-                    measureTicks, arrangeTicks,
-                    measuredItems, arrangedItems, 1);
+                _layoutIterations = 1;
+                if (!Jalium.UI.Styling.CssEvaluationScheduler.HasPending(root.Dispatcher))
+                    return new LayoutPassResult(
+                        Stopwatch.GetTimestamp() - totalStart,
+                        measureTicks, arrangeTicks,
+                        measuredItems, arrangedItems, 1);
             }
 
             // Iterative layout: measure and arrange may trigger further invalidations.
-            while ((_measureQueue.Count > 0 || _arrangeQueue.Count > 0)
+            while ((_measureQueue.Count > 0 || _arrangeQueue.Count > 0 || Jalium.UI.Styling.CssEvaluationScheduler.HasPending(root.Dispatcher))
                    && _layoutIterations < MaxLayoutIterations)
             {
                 _layoutIterations++;
                 ReportRunawayLayoutIfNeeded();
+                Jalium.UI.Styling.CssEvaluationScheduler.FlushIfPending(root.Dispatcher);
 
                 // Process measure queue: sort by depth (shallowest first).
                 if (_measureQueue.Count > 0)

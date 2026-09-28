@@ -4,6 +4,7 @@ using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -21,6 +22,7 @@ public class MenuBarItem : Control
 
     private readonly ObservableCollection<Control> _items = new();
     private MenuFlyout? _flyout;
+    private Border? _cssBorderPainter;
 
     #region Dependency Properties
 
@@ -81,18 +83,25 @@ public class MenuBarItem : Control
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var fontSize = FontSize;
         double textWidth = 0;
+        double textHeight = 0;
         if (!string.IsNullOrEmpty(Title))
         {
             var formattedText = new Jalium.UI.Media.FormattedText(
-                Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize);
+                Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize);
             TextMeasurement.MeasureText(formattedText);
             textWidth = formattedText.Width;
+            textHeight = formattedText.Height;
         }
 
-        var width = textWidth + 24; // 12px padding each side
-        return new Size(Math.Min(width, availableSize.Width), Math.Min(32, availableSize.Height));
+        var width = textWidth + Math.Max(24, insets.Left + insets.Right);
+        var height = Math.Max(32, textHeight + insets.Top + insets.Bottom);
+        return new Size(
+            ControlRenderGeometry.GetAvailableLength(width, availableSize.Width),
+            ControlRenderGeometry.GetAvailableLength(height, availableSize.Height));
     }
 
     /// <inheritdoc />
@@ -100,33 +109,72 @@ public class MenuBarItem : Control
     {
         var dc = drawingContext;
         base.OnRender(drawingContext);
+        if (RenderSize.Width <= 0 || RenderSize.Height <= 0)
+            return;
 
-        // Background
-        if (IsMouseOver || IsMenuOpen || IsKeyboardFocused)
+        var rect = new Rect(RenderSize);
+        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+        var cssBackground = backgroundLayer is
+            DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
+        var hoverFallback = (IsMouseOver || IsMenuOpen || IsKeyboardFocused) &&
+            (backgroundLayer is null or DependencyValueStore.Layer.StyleSetter);
+        var background = hoverFallback
+            ? ResolveBrush("OneSurfaceHover", "MenuBarItemBackgroundHover", s_fallbackHoverBrush)
+            : Background;
+        if (background is not null)
         {
-            var hoverBrush = ResolveBrush("OneSurfaceHover", "MenuBarItemBackgroundHover", s_fallbackHoverBrush);
-            dc.DrawRoundedRectangle(hoverBrush, null, new Rect(RenderSize), 4, 4);
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            if (hoverFallback && cssRadius is null)
+                dc.DrawRoundedRectangle(background, null, rect, 4, 4);
+            else if (!cssBackground && cssRadius is null)
+                dc.DrawRoundedRectangle(background, null, rect, CornerRadius);
+            else
+            {
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(rect, radii);
+                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
+                        rect, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
         }
 
         // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Title text
-        if (!string.IsNullOrEmpty(Title))
+        if (!string.IsNullOrEmpty(Title) && FontSize > 0)
         {
-            var fontSize = FontSize > 0 ? FontSize : 14;
+            var fontSize = FontSize;
             var textBrush = ResolveForegroundBrush();
             var textFormatted = new Jalium.UI.Media.FormattedText(
-                Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
+                Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
             TextMeasurement.MeasureText(textFormatted);
+            var content = ControlRenderGeometry.GetContentRect(rect,
+                CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? RenderSize.Width));
             dc.DrawText(textFormatted,
-                new Point((RenderSize.Width - textFormatted.Width) / 2,
-                          (RenderSize.Height - textFormatted.Height) / 2));
+                new Point(content.X + (content.Width - textFormatted.Width) / 2,
+                          content.Y + (content.Height - textFormatted.Height) / 2));
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     private Brush ResolveForegroundBrush()
     {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
+        if (Foreground != null &&
+            (HasLocalOrAnimatedValue(ForegroundProperty) ||
+             GetEffectiveValueLayer(ForegroundProperty) is
+                 (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState) ||
+             DependencyPropertyHelper.GetValueSource(this, ForegroundProperty).BaseValueSource ==
+                 BaseValueSource.Inherited))
         {
             return Foreground;
         }

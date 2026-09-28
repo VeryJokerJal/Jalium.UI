@@ -45,6 +45,7 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Interop.TextHitTestResult))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Interop.TextMeasurement))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Interop.TextMetrics))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Interop.FontUnitMetrics))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Interop.TextRenderingBridge))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Interop.TextTrimmingMode))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Interop.ThreadMessageEventHandler))]

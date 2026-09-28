@@ -557,20 +557,25 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
         if (Content is string text)
         {
             var fgBrush = ResolveForegroundBrush();
-            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
+            double textWidth = 0;
+            if (FontSize > 0)
             {
-                Foreground = fgBrush
-            };
-            TextMeasurement.MeasureText(formattedText);
+                var formattedText = new FormattedText(text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+                {
+                    Foreground = fgBrush
+                };
+                TextMeasurement.MeasureText(formattedText);
 
-            var textX = padding.Left;
-            var textY = (rect.Height - formattedText.Height) / 2;
-            dc.DrawText(formattedText, new Point(textX, textY));
+                var textX = padding.Left;
+                var textY = (rect.Height - formattedText.Height) / 2;
+                dc.DrawText(formattedText, new Point(textX, textY));
+                textWidth = formattedText.Width;
+            }
 
             // Draw sort indicator
             if (SortDirection.HasValue)
             {
-                DrawSortIndicator(dc, rect, formattedText.Width + padding.Left + 4, fgBrush);
+                DrawSortIndicator(dc, rect, textWidth + padding.Left + 4, fgBrush);
             }
         }
 

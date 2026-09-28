@@ -36,6 +36,7 @@ constexpr uint32_t kTag_GPOS = MakeTag('G', 'P', 'O', 'S');
 constexpr uint32_t kTag_GSUB = MakeTag('G', 'S', 'U', 'B');
 constexpr uint32_t kTag_GDEF = MakeTag('G', 'D', 'E', 'F');
 constexpr uint32_t kTag_post = MakeTag('p', 'o', 's', 't');
+constexpr uint32_t kTag_MATH = MakeTag('M', 'A', 'T', 'H');
 constexpr uint32_t kTag_name = MakeTag('n', 'a', 'm', 'e');
 constexpr uint32_t kTag_COLR = MakeTag('C', 'O', 'L', 'R');
 constexpr uint32_t kTag_CPAL = MakeTag('C', 'P', 'A', 'L');

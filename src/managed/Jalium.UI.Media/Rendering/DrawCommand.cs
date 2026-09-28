@@ -32,6 +32,8 @@ internal enum DrawCommandKind : byte
     BeginEffectCapture,          // IEffectDrawingContext (element BlurEffect/DropShadow)
     EndEffectCapture,
     ApplyElementEffect,
+    ApplyCssTextShadowsOnly,
+    PaintCssShadowLayers,
     SetShapeType,                // SuperEllipse shape-type state (V0=type, V1=exponent)
     DrawRecordedDrawing,         // whole-frame scene graph: immutable per-visual command list
 }
@@ -208,6 +210,11 @@ internal readonly struct DrawCommand
         new(DrawCommandKind.EndEffectCapture, null, null, null,
             0, 0, 0, 0, 0, 0, 0, 0);
 
+    public static DrawCommand ApplyCssTextShadowsOnlyCmd(IEffect shadows,
+        float x, float y, float w, float h, float captureOriginX, float captureOriginY) =>
+        new(DrawCommandKind.ApplyCssTextShadowsOnly, shadows, null, null,
+            x, y, w, h, captureOriginX, captureOriginY, 0, 0);
+
     /// <summary>
     /// SuperEllipse shape-type state for the subsequent rounded-rectangle
     /// draw(s). <c>V0</c> = type (0 = rounded rect, 1 = SuperEllipse),
@@ -220,14 +227,48 @@ internal readonly struct DrawCommand
             type, exponent, 0, 0, 0, 0, 0, 0);
 
     /// <summary>
-    /// <c>A</c> = the <see cref="IEffect"/>; V0-V7 carry x,y,w,h,captureOriginX,
-    /// captureOriginY,cornerTL,cornerTR; <c>C</c> = double[2] { cornerBR, cornerBL }
-    /// (10 floats don't fit the 8 V-slots).
+    /// <c>A</c> = the <see cref="IEffect"/>; V0-V5 carry x,y,w,h and capture origin;
+    /// <c>C</c> = double[12] containing TL/TR/BR/BL X/Y radii and L/T/R/B border widths.
     /// </summary>
     public static DrawCommand ApplyElementEffectCmd(IEffect effect,
         float x, float y, float w, float h,
         float captureOriginX, float captureOriginY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL) =>
-        new(DrawCommandKind.ApplyElementEffect, effect, null, new double[] { cornerBR, cornerBL },
-            x, y, w, h, captureOriginX, captureOriginY, cornerTL, cornerTR);
+        ApplyElementEffectEllipticalCmd(effect, x, y, w, h, captureOriginX, captureOriginY,
+            cornerTL, cornerTL, cornerTR, cornerTR, cornerBR, cornerBR, cornerBL, cornerBL);
+
+    public static DrawCommand ApplyElementEffectEllipticalCmd(IEffect effect,
+        float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY) =>
+        ApplyElementEffectEllipticalWithBorderCmd(effect, x, y, w, h,
+            captureOriginX, captureOriginY,
+            topLeftX, topLeftY, topRightX, topRightY,
+            bottomRightX, bottomRightY, bottomLeftX, bottomLeftY, default);
+
+    public static DrawCommand ApplyElementEffectEllipticalWithBorderCmd(IEffect effect,
+        float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY,
+        Thickness borderThickness) =>
+        new(DrawCommandKind.ApplyElementEffect, effect, null,
+            new double[] { topLeftX, topLeftY, topRightX, topRightY,
+                bottomRightX, bottomRightY, bottomLeftX, bottomLeftY,
+                borderThickness.Left, borderThickness.Top,
+                borderThickness.Right, borderThickness.Bottom },
+            x, y, w, h, captureOriginX, captureOriginY, 0, 0);
+
+    public static DrawCommand PaintCssShadowLayersCmd(IEffect shadows, bool inset,
+        float x, float y, float w, float h,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY,
+        Thickness borderThickness) =>
+        new(DrawCommandKind.PaintCssShadowLayers, shadows, null,
+            new double[] { topLeftX, topLeftY, topRightX, topRightY,
+                bottomRightX, bottomRightY, bottomLeftX, bottomLeftY,
+                borderThickness.Left, borderThickness.Top,
+                borderThickness.Right, borderThickness.Bottom },
+            x, y, w, h, inset ? 1 : 0, 0, 0, 0);
 }

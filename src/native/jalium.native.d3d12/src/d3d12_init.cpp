@@ -1,5 +1,6 @@
 #include "jalium_api.h"
 #include "d3d12_backend.h"
+#include "d3d12_render_target.h"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -49,6 +50,20 @@ extern "C" {
     __declspec(dllexport) void jalium_d3d12_init() {
 #endif
         jalium::RegisterD3D12Backend();
+    }
+
+#if defined(JALIUM_STATIC)
+    int32_t jalium_d3d12_render_target_uses_software_display_route(
+#else
+    __declspec(dllexport) int32_t jalium_d3d12_render_target_uses_software_display_route(
+#endif
+        JaliumRenderTarget* rt) {
+        if (!rt) return 0;
+        // This ABI belongs to the D3D12 module and managed code calls it only
+        // after checking RenderTarget.Backend. Keeping the cast here avoids
+        // adding a virtual slot to the cross-backend RenderTarget ABI.
+        auto* target = reinterpret_cast<jalium::D3D12RenderTarget*>(rt);
+        return target->UsesSoftwareDisplayRoute() ? 1 : 0;
     }
 }
 

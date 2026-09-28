@@ -6453,7 +6453,7 @@ public partial class DevToolsWindow : Window
         _perfGpuPanel = new StackPanel();
         _perfGpuPanel.Children.Add(DevToolsUi.Muted("(no snapshot published)"));
         _perfGpuScroll = new ScrollViewer { Content = _perfGpuPanel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var gpuCard = DevToolsUi.Panel("GPU Snapshot", _perfGpuScroll, DevToolsTheme.Success);
+        var gpuCard = DevToolsUi.Panel("Renderer Snapshot", _perfGpuScroll, DevToolsTheme.Success);
         gpuCard.Margin = new Thickness(DevToolsTheme.GutterBase, 0, 0, DevToolsTheme.GutterBase);
         Grid.SetColumn(gpuCard, 0);
         bottomGrid.Children.Add(gpuCard);
@@ -6574,14 +6574,25 @@ public partial class DevToolsWindow : Window
     private void RefreshPerfStats()
     {
         if (_perfBackendText == null) return;
-        _perfBackendText.Text = $"Backend  {_targetWindow.CurrentRenderBackend}";
+        var currentBackend = _targetWindow.CurrentRenderBackend;
+        bool isCpuRaster = currentBackend == RenderBackend.Software;
+        _perfBackendText.Text = $"Backend  {currentBackend}";
         if (_perfEngineText != null)
         {
-            _perfEngineText.Text = $"Engine  {_targetWindow.CurrentRenderingEngine}";
+            _perfEngineText.Text = isCpuRaster
+                ? "Engine  CPU Raster"
+                : $"Engine  {_targetWindow.CurrentRenderingEngine}";
             _perfEngineText.Foreground = DevToolsTheme.TextPrimary;
         }
         if (_perfAdapterText != null)
         {
+            if (isCpuRaster)
+            {
+                _perfAdapterText.Text = "Adapter  CPU / system memory";
+                _perfAdapterText.Foreground = DevToolsTheme.TextPrimary;
+            }
+            else
+            {
             // Cheap to call once per perf refresh — context caches the adapter
             // description struct, no DXGI re-enumeration. If the host context
             // is gone or the backend lacks adapter info, leave the placeholder.
@@ -6610,12 +6621,25 @@ public partial class DevToolsWindow : Window
                 _perfAdapterText.Text = "Adapter  —";
                 _perfAdapterText.Foreground = DevToolsTheme.TextMuted;
             }
+            }
         }
 
         var currentEngine = _targetWindow.CurrentRenderingEngine;
-        if (_perfEngineAuto != null)     _perfEngineAuto.IsActive     = currentEngine == RenderingEngine.Auto;
-        if (_perfEngineVello != null)    _perfEngineVello.IsActive    = currentEngine == RenderingEngine.Vello;
-        if (_perfEngineImpeller != null) _perfEngineImpeller.IsActive = currentEngine == RenderingEngine.Impeller;
+        if (_perfEngineAuto != null)
+        {
+            _perfEngineAuto.IsEnabled = !isCpuRaster;
+            _perfEngineAuto.IsActive = !isCpuRaster && currentEngine == RenderingEngine.Auto;
+        }
+        if (_perfEngineVello != null)
+        {
+            _perfEngineVello.IsEnabled = !isCpuRaster;
+            _perfEngineVello.IsActive = !isCpuRaster && currentEngine == RenderingEngine.Vello;
+        }
+        if (_perfEngineImpeller != null)
+        {
+            _perfEngineImpeller.IsEnabled = !isCpuRaster;
+            _perfEngineImpeller.IsActive = !isCpuRaster && currentEngine == RenderingEngine.Impeller;
+        }
 
         var history = _targetWindow.FrameHistory;
         var buffer = _perfSampleBuffer;
@@ -6769,12 +6793,51 @@ public partial class DevToolsWindow : Window
             p.Children.Add(DevToolsUi.KeyValueRow("API / gap", $"{apiMs:F1} / {gap:F1} ms"));
         }
 
-        // 2. GPU breakdown — the hero: hardware-timestamped split by category.
+        // 2. Software raster breakdown. GPU backends leave the appended ABI
+        // fields at zero, so this section appears only for CPU Raster.
+        if (snap.SoftwareRasterNs > 0)
+        {
+            GpuSection(p, "SOFTWARE RASTER");
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "Raster wall", $"{snap.SoftwareRasterNs / 1_000_000.0:F2} ms"));
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "Visited / blended",
+                $"{snap.SoftwarePixelsVisited:N0} / {snap.SoftwarePixelsBlended:N0} px"));
+            double clipCull = snap.SoftwarePixelsVisited > 0
+                ? (double)snap.SoftwareClipRejectedPixels / snap.SoftwarePixelsVisited
+                : 0;
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "Clip rejected",
+                $"{snap.SoftwareClipRejectedPixels:N0} · {clipCull * 100:F1}%"));
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "AA edge samples", $"{snap.SoftwareAaSamples:N0}"));
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "Workers",
+                $"{snap.SoftwareWorkerCount} · {snap.SoftwareWorkerUtilizationPermille / 10.0:F1}% parallel"));
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "Parallel wall", $"{snap.SoftwareParallelNs / 1_000_000.0:F2} ms"));
+            long effectLookups = snap.SoftwareEffectCacheHits +
+                snap.SoftwareEffectCacheMisses;
+            string effectRate = effectLookups > 0
+                ? $"{snap.SoftwareEffectCacheHits}/{effectLookups} · " +
+                  $"{(double)snap.SoftwareEffectCacheHits / effectLookups * 100:F0}%"
+                : "—";
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "Effect cache", $"{snap.SoftwareEffectCacheEntries} · {effectRate}"));
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "Gradient cache", snap.SoftwareGradientCacheEntries.ToString()));
+            p.Children.Add(DevToolsUi.KeyValueRow(
+                "Tracked memory",
+                $"{snap.SoftwareCacheBytes / (1024.0 * 1024.0):F2} MB"));
+        }
+
+        // 3. GPU breakdown — the hero: hardware-timestamped split by category.
         var timing = RenderDiagnostics.LatestGpuTiming;
         if (timing != null && timing.Valid)
         {
             GpuSection(p, "GPU BREAKDOWN");
             p.Children.Add(DevToolsUi.KeyValueRow("Total GPU", $"{timing.TotalGpuMs:F1} ms · {timing.BatchCount} batches"));
+            p.Children.Add(DevToolsUi.KeyValueRow("Vello dispatches", snap.VelloDispatchCount.ToString()));
             var cats = new (string Name, long Ns)[]
             {
                 ("Path",        timing.PathNs),

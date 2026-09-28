@@ -44,7 +44,7 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <!-- TargetName matches the P/Invoke library name in NativeMediaInterop:
          [LibraryImport("jalium.native.media")]. The OUTPUT_NAME override in the
@@ -52,7 +52,7 @@
     <TargetName>jalium.native.media</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <OutDir>$(MSBuildThisFileDirectory)..\bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.media</TargetName>
   </PropertyGroup>

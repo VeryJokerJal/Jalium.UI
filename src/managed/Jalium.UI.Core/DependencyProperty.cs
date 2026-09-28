@@ -30,18 +30,24 @@ public sealed class DependencyProperty
     /// <see cref="OverrideMetadata(Type, PropertyMetadata)"/>.
     /// Enables different types sharing the same DependencyProperty to have different callbacks and defaults.
     /// </summary>
-    private readonly Dictionary<Type, PropertyMetadata> _typeMetadata = new();
+    // OwnerType/DefaultMetadata already represent the original owner's entry.
+    // Allocate an override map only when another type supplies metadata.
+    private Dictionary<Type, PropertyMetadata>? _typeMetadata;
 
     /// <summary>
     /// Cache for <see cref="GetMetadata(Type)"/> lookups to avoid repeated type-hierarchy walks.
     /// </summary>
-    private readonly ConcurrentDictionary<Type, PropertyMetadata> _metadataCache = new();
+    private MetadataLookupCache? _metadataCache;
 
-    // Most render/layout loops query one dependency property repeatedly for the same
-    // concrete control type. Keep that monomorphic case out of ConcurrentDictionary;
-    // metadata is immutable after publication, so a two-field volatile cache is safe.
-    private Type? _lastMetadataType;
-    private PropertyMetadata? _lastMetadata;
+    private sealed record MetadataCacheEntry(Type Type, PropertyMetadata Metadata);
+
+    private sealed class MetadataLookupCache
+    {
+        // Writers already hold _metadataSync. One stripe retains lock-free
+        // reads without allocating a CPU-count-sized lock array per property.
+        internal readonly ConcurrentDictionary<Type, MetadataCacheEntry> Entries = new(1, 4);
+        internal MetadataCacheEntry? Last;
+    }
 
     /// <summary>
     /// Serializes metadata-map mutations with cache lookups. A per-property lock keeps unrelated
@@ -73,6 +79,22 @@ public sealed class DependencyProperty
     /// Gets the property type.
     /// </summary>
     public Type PropertyType { get; }
+
+    // A non-brush property can never participate in mutable render-brush
+    // ownership, even if its owner also has Background/Foreground entries.
+    internal bool IsBrushProperty { get; }
+    private bool _typeMetadataInherits;
+    private bool _typeMetadataCoerces;
+    private long _inheritanceVersion;
+    private bool _isApplyingMetadata;
+    internal bool MayInherit => DefaultMetadata.Inherits || Volatile.Read(ref _typeMetadataInherits) || Volatile.Read(ref _isApplyingMetadata);
+    internal bool MayCoerce => DefaultMetadata.CoerceValueCallback != null || Volatile.Read(ref _typeMetadataCoerces) || Volatile.Read(ref _isApplyingMetadata);
+    internal long InheritanceVersion => Volatile.Read(ref _inheritanceVersion);
+
+    internal void InvalidateInheritedSources()
+    {
+        if (MayInherit) Interlocked.Increment(ref _inheritanceVersion);
+    }
 
     /// <summary>
     /// Gets the owner type that registered this property.
@@ -111,14 +133,13 @@ public sealed class DependencyProperty
     {
         Name = name;
         PropertyType = propertyType;
+        IsBrushProperty = typeof(Jalium.UI.Media.Brush).IsAssignableFrom(propertyType);
         OwnerType = ownerType;
         DefaultMetadata = metadata ?? new PropertyMetadata();
         ReadOnly = readOnly;
         ValidateValueCallback = validateValueCallback;
         GlobalIndex = Interlocked.Increment(ref _globalIndex);
 
-        // Store the initial owner's metadata for GetMetadata lookups
-        _typeMetadata[ownerType] = DefaultMetadata;
     }
 
     /// <summary>
@@ -409,7 +430,7 @@ public sealed class DependencyProperty
         // preserves the existing AddOwner invalidation behavior.
         lock (_metadataSync)
         {
-            _metadataCache.Clear();
+            Volatile.Write(ref _metadataCache, null);
         }
 
         return this;
@@ -457,7 +478,7 @@ public sealed class DependencyProperty
             if (typeMetadata.Sealed)
                 throw new ArgumentException("Property metadata is already in use.", nameof(typeMetadata));
 
-            if (_typeMetadata.ContainsKey(forType))
+            if (forType == OwnerType || _typeMetadata?.ContainsKey(forType) == true)
                 throw new ArgumentException($"Metadata is already registered for type '{forType.FullName}'.", nameof(forType));
 
             var baseMetadata = forType.BaseType is null
@@ -475,29 +496,46 @@ public sealed class DependencyProperty
                 ValidateDefaultValue(typeMetadata, PropertyType, forType, Name, ValidateValueCallback);
 
             typeMetadata.InvokeMerge(baseMetadata, this);
+            // These are conservative capabilities, not the metadata for a
+            // particular owner. Failed overrides may leave a slow path enabled.
+            if (typeMetadata.Inherits) Volatile.Write(ref _typeMetadataInherits, true);
+            if (typeMetadata.CoerceValueCallback != null) Volatile.Write(ref _typeMetadataCoerces, true);
+            Interlocked.Increment(ref _inheritanceVersion);
 
             // Empty the old inherited answers before publishing the slow-path
             // flag. Once readers observe the flag they can no longer return a
             // stale cache entry while OnApply is still running.
-            Volatile.Write(ref _lastMetadataType, null);
-            Volatile.Write(ref _lastMetadata, null);
-            _metadataCache.Clear();
+            var metadataByType = _typeMetadata ??= new Dictionary<Type, PropertyMetadata>();
+            Volatile.Write(ref _metadataCache, null);
             Volatile.Write(ref _hasTypeMetadata, 1);
-            _typeMetadata[forType] = typeMetadata;
+            metadataByType[forType] = typeMetadata;
+            bool wasApplyingMetadata = _isApplyingMetadata;
+            Volatile.Write(ref _isApplyingMetadata, true);
 
             try
             {
                 typeMetadata.Seal(this, forType);
+                if (typeMetadata.Inherits) Volatile.Write(ref _typeMetadataInherits, true);
+                if (typeMetadata.CoerceValueCallback != null) Volatile.Write(ref _typeMetadataCoerces, true);
+                Interlocked.Increment(ref _inheritanceVersion);
             }
             catch
             {
-                _typeMetadata.Remove(forType);
-                Volatile.Write(ref _lastMetadataType, null);
-                Volatile.Write(ref _lastMetadata, null);
-                _metadataCache.Clear();
-                if (_typeMetadata.Count == 0)
+                metadataByType.Remove(forType);
+                Volatile.Write(ref _metadataCache, null);
+                if (metadataByType.Count == 0)
+                {
+                    _typeMetadata = null;
                     Volatile.Write(ref _hasTypeMetadata, 0);
+                }
                 throw;
+            }
+            finally
+            {
+                Volatile.Write(ref _isApplyingMetadata, wasApplyingMetadata);
+                // OnApply can query descendants before failing. Invalidate
+                // those provisional source answers after rollback as well.
+                Interlocked.Increment(ref _inheritanceVersion);
             }
         }
     }
@@ -515,54 +553,70 @@ public sealed class DependencyProperty
         if (Volatile.Read(ref _hasTypeMetadata) == 0)
             return DefaultMetadata;
 
-        if (ReferenceEquals(Volatile.Read(ref _lastMetadataType), forType))
-            return Volatile.Read(ref _lastMetadata)!;
-
-        // Metadata is immutable once published and overrides are exceptionally
-        // rare compared with GetValue. Keep the steady-state cache hit outside
-        // _metadataSync so every dependency-property read on the UI/render path
-        // does not contend with unrelated threads querying the same property.
-        if (_metadataCache.TryGetValue(forType, out var cached))
+        // Keep the type and metadata in one immutable entry: two independent
+        // volatile fields can pair one reader's type with another reader's value.
+        // Replacing the cache on an override also prevents an in-flight old
+        // lookup from publishing its answer into the new cache generation.
+        var cache = Volatile.Read(ref _metadataCache);
+        if (cache != null)
         {
-            PublishLastMetadata(forType, cached);
-            return cached;
+            var last = Volatile.Read(ref cache.Last);
+            if (last?.Type == forType)
+                return last.Metadata;
+
+            if (cache.Entries.TryGetValue(forType, out var cached))
+            {
+                Volatile.Write(ref cache.Last, cached);
+                return cached.Metadata;
+            }
         }
 
         lock (_metadataSync)
         {
-            // Another reader may have populated this miss while we waited.
-            if (_metadataCache.TryGetValue(forType, out cached))
+            if (_hasTypeMetadata == 0)
+                return DefaultMetadata;
+
+            // An override may have replaced the cache while this reader waited.
+            // Reentrant OnApply lookups can inspect provisional metadata, but
+            // must not expose it to a reader outside this property lock.
+            cache = _metadataCache;
+            if (cache != null && cache.Entries.TryGetValue(forType, out var cached))
             {
-                PublishLastMetadata(forType, cached);
-                return cached;
+                Volatile.Write(ref cache.Last, cached);
+                return cached.Metadata;
             }
 
-            // Walk up the type hierarchy
+            var resolved = DefaultMetadata;
             var type = forType;
             while (type != null)
             {
-                if (_typeMetadata.TryGetValue(type, out var metadata))
+                // Preserve the original owner's metadata barrier even when an
+                // override is registered for one of that owner's base types.
+                if (type == OwnerType)
+                    break;
+
+                if (_typeMetadata?.TryGetValue(type, out var metadata) == true)
                 {
-                    _metadataCache[forType] = metadata;
-                    PublishLastMetadata(forType, metadata);
-                    return metadata;
+                    resolved = metadata;
+                    break;
                 }
                 type = type.BaseType;
             }
 
-            _metadataCache[forType] = DefaultMetadata;
-            PublishLastMetadata(forType, DefaultMetadata);
-            return DefaultMetadata;
-        }
-    }
+            if (!_isApplyingMetadata)
+            {
+                if (cache == null)
+                {
+                    cache = new MetadataLookupCache();
+                    Volatile.Write(ref _metadataCache, cache);
+                }
 
-    private void PublishLastMetadata(Type forType, PropertyMetadata metadata)
-    {
-        // Publish the value first. A reader that observes the matching type is then
-        // guaranteed to observe its metadata; seeing an older type only causes a normal
-        // dictionary lookup.
-        Volatile.Write(ref _lastMetadata, metadata);
-        Volatile.Write(ref _lastMetadataType, forType);
+                var entry = new MetadataCacheEntry(forType, resolved);
+                cache.Entries[forType] = entry;
+                Volatile.Write(ref cache.Last, entry);
+            }
+            return resolved;
+        }
     }
 
     /// <summary>

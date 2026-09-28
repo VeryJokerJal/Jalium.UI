@@ -128,6 +128,26 @@ internal struct WNDCLASSEX
         public int Bottom;
     }
 
+    /// <summary>
+    /// <c>DWM_BLURBEHIND</c>. Used with an <em>empty</em> blur region to make DWM honour
+    /// the per-pixel alpha of a window that still owns a redirection surface — the only
+    /// way to get a transparent HWND for backends that cannot present through
+    /// DirectComposition (Vulkan / software on Windows).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct DWM_BLURBEHIND
+    {
+        public uint dwFlags;
+
+        /// <summary>Win32 <c>BOOL</c>. Kept as <see cref="int"/> so the struct stays blittable for <c>LibraryImport</c>.</summary>
+        public int fEnable;
+
+        public nint hRgnBlur;
+
+        /// <summary>Win32 <c>BOOL</c> — see <see cref="fEnable"/>.</summary>
+        public int fTransitionOnMaximized;
+    }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     internal struct MONITORINFOEX
     {

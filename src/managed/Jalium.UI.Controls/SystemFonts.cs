@@ -280,7 +280,7 @@ public static class SystemFonts
     {
         if (string.IsNullOrWhiteSpace(description.Family) ||
             !double.IsFinite(description.Size) || description.Size <= 0 ||
-            description.Weight is < 1 or > 999)
+            description.Weight is < 1 or > 1000)
         {
             return fallback;
         }
@@ -310,7 +310,7 @@ public static class SystemFonts
             }
         }
 
-        var weight = logFont.Weight is >= 1 and <= 999
+        var weight = logFont.Weight is >= 1 and <= 1000
             ? FontWeight.FromOpenTypeWeight(logFont.Weight)
             : fallback.Weight;
         var decorations = new TextDecorationCollection();

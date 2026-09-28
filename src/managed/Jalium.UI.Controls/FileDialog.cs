@@ -1187,29 +1187,51 @@ public sealed class FolderBrowserDialog
 
     private bool? ShowWindowsDialog(IntPtr owner)
     {
-        // SHBrowseForFolder is a plain (non-COM) shell export, so this path is already
-        // NativeAOT-safe: blittable BROWSEINFO + PIDL handling, no [ComImport] activation.
-        var bi = new BROWSEINFO();
-        bi.hwndOwner = owner;
-        bi.lpszTitle = Description ?? Title;
-        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-        if (!ShowNewFolderButton) bi.ulFlags |= BIF_NONEWFOLDERBUTTON;
-
-        var pidl = SHBrowseForFolder(ref bi);
-        if (pidl != IntPtr.Zero)
+        var initialDirectory = InitialDirectory;
+        if (string.IsNullOrWhiteSpace(initialDirectory) && !string.IsNullOrWhiteSpace(SelectedPath))
         {
-            var path = new char[260];
-            if (SHGetPathFromIDList(pidl, path))
-            {
-                SelectedPath = new string(path).TrimEnd('\0');
-                SelectedPaths = new[] { SelectedPath };
-                Marshal.FreeCoTaskMem(pidl);
-                return true;
-            }
-            Marshal.FreeCoTaskMem(pidl);
+            initialDirectory = SelectedPath;
         }
 
-        return false;
+        if (string.IsNullOrWhiteSpace(initialDirectory))
+        {
+            var rootDirectory = Environment.GetFolderPath(RootFolder);
+            if (!string.IsNullOrWhiteSpace(rootDirectory))
+            {
+                initialDirectory = rootDirectory;
+            }
+        }
+
+        // Use the Windows Common Item Dialog in folder-picking mode. This gives callers the
+        // modern Explorer surface (address bar, search, navigation pane, recent locations) and
+        // reuses the same NativeAOT-safe IFileOpenDialog implementation as OpenFileDialog.
+        var picker = new OpenFileDialog
+        {
+            IsFolderPicker = true,
+            Multiselect = Multiselect,
+            Title = Title ?? Description,
+            InitialDirectory = initialDirectory,
+            CheckFileExists = false,
+            CheckPathExists = true,
+        };
+
+        if (picker.ShowDialog(owner) != true)
+        {
+            return false;
+        }
+
+        var paths = picker.FileNames
+            .Where(Directory.Exists)
+            .Take(Multiselect ? int.MaxValue : 1)
+            .ToArray();
+        if (paths.Length == 0)
+        {
+            return false;
+        }
+
+        SelectedPaths = paths;
+        SelectedPath = paths[0];
+        return true;
     }
 
     private bool? ShowLinuxDialog(nint owner)
@@ -1243,32 +1265,6 @@ public sealed class FolderBrowserDialog
         return true;
     }
 
-    #region Native Methods
-
-    private const uint BIF_RETURNONLYFSDIRS = 0x00000001;
-    private const uint BIF_NEWDIALOGSTYLE = 0x00000040;
-    private const uint BIF_NONEWFOLDERBUTTON = 0x00000200;
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct BROWSEINFO
-    {
-        public IntPtr hwndOwner;
-        public IntPtr pidlRoot;
-        public IntPtr pszDisplayName;
-        public string? lpszTitle;
-        public uint ulFlags;
-        public IntPtr lpfn;
-        public IntPtr lParam;
-        public int iImage;
-    }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr SHBrowseForFolder(ref BROWSEINFO lpbi);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern bool SHGetPathFromIDList(IntPtr pidl, [MarshalAs(UnmanagedType.LPArray)] char[] pszPath);
-
-    #endregion
 }
 
 /// <summary>

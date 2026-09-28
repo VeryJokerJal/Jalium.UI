@@ -3,6 +3,8 @@ using Jalium.UI.Input;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Effects;
+using Jalium.UI.Styling;
 using Jalium.UI.Threading;
 using WpfClipboard = global::Jalium.UI.Clipboard;
 
@@ -38,6 +40,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
     #region Fields
 
     private FlowDocument _document;
+    private DocumentChangeSubscription? _documentChangeSubscription;
     private TextPointer? _caretPosition;
     private TextSelection? _selection;
     private List<SpellingError> _spellingErrors = new();
@@ -83,6 +86,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     /// <summary>边框画笔。BorderBrush/厚度不变时跨帧复用，光标闪烁的重绘不再每帧建 Pen。</summary>
     private RenderPenCache _borderPen;
+    private Border? _cssBorderPainter;
 
     /// <summary>
     /// Tick interval during fade phases (ms). Hold phases use longer dynamic intervals.
@@ -194,6 +198,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
             {
                 RestoreDocumentElementEnabledStates();
                 _document = value ?? new FlowDocument();
+                TrackDocumentChanges();
                 _caretPosition = _document.ContentStart;
                 _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
                 _spellCheckedText = null;
@@ -284,6 +289,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
     public RichTextBox()
     {
         _document = new FlowDocument();
+        TrackDocumentChanges();
         _caretPosition = _document.ContentStart;
         _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
 
@@ -312,6 +318,43 @@ public class RichTextBox : TextBoxBase, IImeSupport
     public RichTextBox(FlowDocument document) : this()
     {
         Document = document;
+    }
+
+    private void TrackDocumentChanges()
+    {
+        _documentChangeSubscription?.Dispose();
+        _documentChangeSubscription = new DocumentChangeSubscription(this, _document);
+    }
+
+    private sealed class DocumentChangeSubscription : IDisposable
+    {
+        private readonly WeakReference<RichTextBox> _owner;
+        private FlowDocument? _document;
+
+        internal DocumentChangeSubscription(RichTextBox owner, FlowDocument document)
+        {
+            _owner = new(owner);
+            _document = document;
+            document.ViewerPaginationChanged += Changed;
+        }
+
+        private void Changed(object? _, EventArgs __)
+        {
+            if (_document is not { } document) return;
+            if (_owner.TryGetTarget(out var owner) && ReferenceEquals(owner._document, document))
+            {
+                owner.InvalidateLayout();
+                owner.InvalidateVisual();
+            }
+            else Dispose();
+        }
+
+        public void Dispose()
+        {
+            if (_document is not { } document) return;
+            _document = null;
+            document.ViewerPaginationChanged -= Changed;
+        }
     }
 
     #endregion
@@ -510,6 +553,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         PushUndo();
         RestoreDocumentElementEnabledStates();
         _document = FlowDocument.FromText(text);
+        TrackDocumentChanges();
         _caretPosition = _document.ContentEnd;
         _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
         _spellCheckedText = null;
@@ -526,8 +570,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = _document.FontFamily ?? FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = _document.FontSize > 0 ? _document.FontSize : (FontSize > 0 ? FontSize : 14);
+        var fontFamily = _document.FontFamily ?? FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = _document.FontSize;
         return TextMeasurement.GetFontMetrics(fontFamily, fontSize).LineHeight;
     }
 
@@ -537,8 +581,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = _document.FontFamily ?? FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = _document.FontSize > 0 ? _document.FontSize : (FontSize > 0 ? FontSize : 14);
+        var fontFamily = _document.FontFamily ?? FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = _document.FontSize;
         var formattedText = new FormattedText(text, fontFamily, fontSize)
         {
             FontWeight = FontWeight.ToOpenTypeWeight(),
@@ -1218,6 +1262,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
     private void RestoreDocumentState(DocumentState state)
     {
         _document = FlowDocument.FromText(state.Text);
+        TrackDocumentChanges();
         _caretPosition = _document.GetPositionAtOffset(state.CaretOffset, LogicalDirection.Forward);
         var start = _document.GetPositionAtOffset(state.SelectionStart, LogicalDirection.Forward);
         var end = _document.GetPositionAtOffset(state.SelectionEnd, LogicalDirection.Forward);
@@ -1320,6 +1365,12 @@ public class RichTextBox : TextBoxBase, IImeSupport
         RefreshLinuxImeContext();
     }
 
+    internal override void OnFontResourcesChanged()
+    {
+        InvalidateLayout();
+        base.OnFontResourcesChanged();
+    }
+
     private void RefreshLinuxImeContext()
     {
         for (Visual? current = this; current != null; current = current.VisualParent)
@@ -1349,11 +1400,14 @@ public class RichTextBox : TextBoxBase, IImeSupport
         // Draw background
         if (Background != null)
         {
-            dc.DrawRectangle(Background, null, bounds);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                    bounds, default, BorderThickness, Padding,
+                    brush => dc.DrawRectangle(brush, null, bounds)))
+                dc.DrawRectangle(Background, null, bounds);
         }
 
         // Draw border
-        if (BorderBrush != null && BorderThickness.Left > 0)
+        if (CssBorderPaintProperties.Get(this) is null && BorderBrush != null && BorderThickness.Left > 0)
         {
             dc.DrawRectangle(null, _borderPen.Get(BorderBrush, BorderThickness.Left), bounds);
         }
@@ -1399,6 +1453,13 @@ public class RichTextBox : TextBoxBase, IImeSupport
         {
             dc.Pop();
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     private void RenderDocument(DrawingContext dc, Rect contentBounds)
@@ -1449,33 +1510,239 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderLine(DrawingContext dc, LineLayoutInfo lineLayout, double x, double y)
     {
-        foreach (var runLayout in lineLayout.Runs)
+        var pad = Math.Max(1, lineLayout.Height);
+        var bounds = new Rect(x - pad, y - pad,
+            Math.Max(1, lineLayout.Width) + 2 * pad, lineLayout.Height + 2 * pad);
+        void DrawLineContent()
         {
-            if (runLayout.Run != null)
+            Dictionary<TextElement, DecorationSegment>? decorations = null;
+            foreach (var runLayout in lineLayout.Runs)
             {
-                var text = runLayout.Run.Text;
-                var foreground = runLayout.Run.Foreground
-                    ?? _document.Foreground
-                    ?? ResolveDocumentForegroundBrush();
-                var fontFamily = runLayout.Run.FontFamily?.Source
-                    ?? _document.FontFamily
-                    ?? FrameworkElement.DefaultFontFamilyName;
-                var fontSize = runLayout.Run.FontSize;
-                if (fontSize <= 0)
-                    fontSize = _document.FontSize;
-                var fontWeight = runLayout.Run.FontWeight;
-                var fontStyle = runLayout.Run.FontStyle;
-
-                var formattedText = new FormattedText(text, fontFamily, fontSize)
+                if (runLayout.Run != null)
                 {
-                    Foreground = foreground,
-                    FontWeight = fontWeight.ToOpenTypeWeight(),
-                    FontStyle = fontStyle.ToOpenTypeStyle()
-                };
+                    var text = runLayout.Run.Text;
+                    var foreground = runLayout.Run.Foreground
+                        ?? _document.Foreground
+                        ?? ResolveDocumentForegroundBrush();
+                    var fontFamily = runLayout.Run.FontFamily?.Source
+                        ?? _document.FontFamily
+                        ?? FrameworkElement.DefaultFontFamilyName;
+                    var fontSize = runLayout.Run.FontSize;
+                    if (fontSize <= 0)
+                        fontSize = _document.FontSize;
+                    var fontWeight = runLayout.Run.FontWeight;
+                    var fontStyle = runLayout.Run.FontStyle;
 
-                dc.DrawText(formattedText, new Point(x + runLayout.X, y));
+                    var formattedText = new FormattedText(text, fontFamily, fontSize)
+                    {
+                        Foreground = foreground,
+                        FontWeight = fontWeight.ToOpenTypeWeight(),
+                        FontStyle = fontStyle.ToOpenTypeStyle()
+                    };
+
+                    var runX = x + runLayout.X;
+                    dc.DrawText(formattedText, new Point(runX, y));
+                    CollectRunTextDecorations(runLayout, runX, fontFamily, fontSize,
+                        fontWeight, fontStyle, ref decorations);
+                }
+            }
+            if (decorations is not null)
+                foreach (var segment in decorations.Values.OrderBy(static item => item.Depth))
+                    DrawTextDecorationSegment(dc, segment, y);
+        }
+        if (TryDrawDocumentTextShadows(dc, lineLayout, x, y, bounds,
+                DrawLineContent))
+            return;
+        var shadowCapture = CssTextShadowPainter.Begin(dc, this, bounds);
+        try { DrawLineContent(); }
+        finally
+        {
+            shadowCapture?.End();
+        }
+    }
+
+    private bool TryDrawDocumentTextShadows(DrawingContext context,
+        LineLayoutInfo line, double x, double y, Rect bounds, Action drawLine)
+    {
+        if (context is not IEffectDrawingContext
+                { IsElementEffectCaptureEnabled: true, SupportsCssTextShadowsOnly: true } ||
+            context is not IOffsetDrawingContext)
+            return false;
+
+        var rootEffect = CssTextShadowProperties.Value(this);
+        var segments = new List<(double Start, double End, Effect? Effect)>();
+        var hasOverride = false;
+        void Add(double start, double end, Effect? effect)
+        {
+            if (end <= start) return;
+            hasOverride |= !ReferenceEquals(effect, rootEffect);
+            if (segments.Count > 0 && segments[^1] is var previous &&
+                Math.Abs(previous.End - start) < 0.001 &&
+                ReferenceEquals(previous.Effect, effect))
+                segments[^1] = (previous.Start, end, effect);
+            else
+                segments.Add((start, end, effect));
+        }
+
+        var cursor = x;
+        foreach (var run in line.Runs)
+        {
+            var start = x + run.X;
+            var end = start + run.Width;
+            Add(cursor, start, rootEffect);
+            Add(start, end, run.Run is { } source
+                ? ResolveRunTextShadow(source, rootEffect) : rootEffect);
+            cursor = end;
+        }
+        Add(cursor, x + line.Width, rootEffect);
+        if (!hasOverride) return false;
+
+        var pad = Math.Max(1, line.Height);
+        foreach (var segment in segments)
+        {
+            if (segment.Effect?.HasEffect != true) continue;
+            var capture = CssTextShadowPainter.Begin(context, segment.Effect,
+                bounds, shadowsOnly: true);
+            if (capture is null) continue;
+            context.PushClip(new RectangleGeometry(new Rect(segment.Start,
+                y - pad, segment.End - segment.Start, 3 * pad)));
+            try { drawLine(); }
+            finally
+            {
+                context.Pop();
+                capture.Value.End();
             }
         }
+        drawLine();
+        return true;
+    }
+
+    private Effect? ResolveRunTextShadow(Run run, Effect? controlEffect)
+    {
+        // FlowDocument is rendered by RichTextBox but has no inheritance parent
+        // pointing at the control. Preserve explicit document/inline `none`;
+        // otherwise the control's inherited CSS shadow is the effective value.
+        for (TextElement? source = run; source is not null; source = source.Parent)
+            if (source.GetEffectiveValueLayer(CssTextShadowProperties.ValueProperty) is not null)
+                return CssTextShadowProperties.Value(source);
+        var documentEffect = CssTextShadowProperties.Value(_document);
+        if (documentEffect is not null ||
+            _document.GetEffectiveValueLayer(CssTextShadowProperties.ValueProperty) is not null)
+            return documentEffect;
+        return controlEffect;
+    }
+
+    private static void CollectRunTextDecorations(RunLayoutInfo layout, double x,
+        string fontFamily, double fontSize, FontWeight fontWeight, FontStyle fontStyle,
+        ref Dictionary<TextElement, DecorationSegment>? segments)
+    {
+        if (layout.Run is not { } run || layout.Width <= 0) return;
+
+        var ascent = double.NaN;
+        var descent = double.NaN;
+        for (TextElement? source = run; source is not null; source = source.Parent as TextElement)
+        {
+            var cssOwnsDecorations = source.GetEffectiveValueLayer(TextElement.TextDecorationsProperty) is
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState);
+            var cssLines = cssOwnsDecorations
+                ? CssTextDecorationProperties.Line(source) : CssTextDecorationLine.None;
+            var native = cssOwnsDecorations
+                ? null : source.GetValue(TextElement.TextDecorationsProperty) as TextDecorationCollection;
+            // An explicit CSS `none` starts no line and leaves ancestor lines intact.
+            if (cssLines == CssTextDecorationLine.None && native is not { Count: > 0 }) continue;
+
+            if (double.IsNaN(ascent))
+            {
+                var metrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize,
+                    fontWeight.ToOpenTypeWeight(), fontStyle.ToOpenTypeStyle());
+                ascent = metrics.Ascent > 0 ? metrics.Ascent : fontSize * 0.8;
+                descent = metrics.Descent > 0 ? metrics.Descent : fontSize * 0.2;
+            }
+            segments ??= new(ReferenceEqualityComparer.Instance);
+            if (!segments.TryGetValue(source, out var segment))
+            {
+                var depth = 0;
+                for (var parent = source.Parent as TextElement; parent is not null;
+                    parent = parent.Parent as TextElement) depth++;
+                segment = new DecorationSegment(source, cssLines, native, x, x + layout.Width,
+                    fontSize, ascent, descent, depth, layout.StartOffset, layout.EndOffset);
+                segments.Add(source, segment);
+            }
+            else
+            {
+                segment.StartX = Math.Min(segment.StartX, x);
+                segment.EndX = Math.Max(segment.EndX, x + layout.Width);
+                segment.FontSize = Math.Max(segment.FontSize, fontSize);
+                segment.Ascent = Math.Max(segment.Ascent, ascent);
+                segment.Descent = Math.Max(segment.Descent, descent);
+                segment.StartOffset = Math.Min(segment.StartOffset, layout.StartOffset);
+                segment.EndOffset = Math.Max(segment.EndOffset, layout.EndOffset);
+            }
+        }
+    }
+
+    private void DrawTextDecorationSegment(DrawingContext context, DecorationSegment segment, double lineTop)
+    {
+        var source = segment.Source;
+        var foreground = source.GetEffectiveForeground();
+        var baseline = lineTop + segment.Ascent;
+        if (segment.CssLines != CssTextDecorationLine.None)
+        {
+            var brush = CssTextDecorationProperties.Color(source) ?? foreground;
+            DecorationFragmentMetrics? fragments = null;
+            _layoutCache?.DecorationFragments.TryGetValue(source, out fragments);
+            var inlineSizeBefore = -1.0;
+            var inlineSizeAfter = -1.0;
+            if (fragments is not null)
+            {
+                if (fragments.BeforeOffset.TryGetValue(segment.StartOffset, out var before))
+                    inlineSizeBefore = before;
+                if (fragments.ThroughOffset.TryGetValue(segment.EndOffset, out var through))
+                    inlineSizeAfter = Math.Max(0, fragments.InlineSize - through);
+            }
+            CssTextDecorationPainter.Draw(context, source, this, brush, segment.CssLines,
+                segment.StartX, segment.EndX, lineTop, baseline, segment.FontSize,
+                baseline + segment.Descent, fragments?.InlineSize ?? -1,
+                fragments is null || segment.StartOffset == fragments.FirstOffset,
+                fragments is null || segment.EndOffset == fragments.LastOffset,
+                inlineSizeBefore, inlineSizeAfter);
+            return;
+        }
+
+        foreach (var decoration in segment.Native!)
+        {
+            var brush = decoration.Brush ?? foreground;
+            var thickness = decoration.Thickness > 0 ? decoration.Thickness : 1;
+            var offset = decoration.OffsetUnit == TextDecorationUnit.Pixel
+                ? decoration.Offset : decoration.Offset * segment.FontSize;
+            var lineY = decoration.Location switch
+            {
+                TextDecorationLocation.OverLine => lineTop + offset,
+                TextDecorationLocation.Strikethrough => lineTop + segment.Ascent * 0.55 + offset,
+                TextDecorationLocation.Baseline => baseline + offset,
+                _ => baseline + Math.Max(1, segment.FontSize * 0.08) + offset,
+            };
+            context.DrawLine(new Pen(brush, thickness), new Point(segment.StartX, lineY),
+                new Point(segment.EndX, lineY));
+        }
+    }
+
+    private sealed class DecorationSegment(
+        TextElement source, CssTextDecorationLine cssLines, TextDecorationCollection? native,
+        double startX, double endX, double fontSize, double ascent, double descent, int depth,
+        int startOffset, int endOffset)
+    {
+        internal TextElement Source { get; } = source;
+        internal CssTextDecorationLine CssLines { get; } = cssLines;
+        internal TextDecorationCollection? Native { get; } = native;
+        internal double StartX = startX;
+        internal double EndX = endX;
+        internal double FontSize = fontSize;
+        internal double Ascent = ascent;
+        internal double Descent = descent;
+        internal int Depth { get; } = depth;
+        internal int StartOffset = startOffset;
+        internal int EndOffset = endOffset;
     }
 
     private void RenderSelection(DrawingContext dc, Rect contentBounds)
@@ -1587,6 +1854,26 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
         // Apply opacity for animation
         caretBrush = ApplyCaretFade(caretBrush, _caretOpacity);
+
+        var caretShape = CssCaretShapeProperties.Get(this);
+        if (caretShape != CssCaretShape.Auto)
+        {
+            var text = GetText();
+            var index = Math.Clamp(_caretPosition!.DocumentOffset, 0, text.Length);
+            double CaretXAt(int offset)
+            {
+                var position = _document.GetPositionAtOffset(offset, LogicalDirection.Forward);
+                var point = GetCaretScreenPosition(contentBounds, position);
+                return point is { } value && Math.Abs(value.Y - caretPos.Value.Y) < 1
+                    ? value.X : double.NaN;
+            }
+
+            var advance = CssCaretPainter.NextAdvance(text, index, CaretXAt,
+                Math.Max(1, _document.FontSize * 0.6));
+            _lastRenderedCaretRect = CssCaretPainter.Draw(dc, caretBrush, caretShape,
+                caretPos.Value.X, caretPos.Value.Y, lineHeight, advance, 2);
+            return;
+        }
 
         dc.DrawRectangle(caretBrush, null,
             new Rect(caretPos.Value.X, caretPos.Value.Y, 2, lineHeight));
@@ -1742,6 +2029,13 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     private double UpdateRichCaretAnimation()
     {
+        if (CssCaretAnimationProperties.IsManual(this))
+        {
+            _caretOpacity = 1.0;
+            _caretVisible = true;
+            return 1.0;
+        }
+
         var now = DateTime.Now;
         var elapsed = (now - _lastCaretBlink).TotalMilliseconds;
 
@@ -1842,7 +2136,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (HasLocalValue(CaretBrushProperty))
             return CaretBrush;
 
-        return CaretBrush
+        return CssCaretColorProperties.Get(this)
+            ?? CaretBrush
             ?? ((HasLocalValue(Control.ForegroundProperty) && Foreground != null) ? Foreground : null)
             ?? ResolveThemeBrush("TextPrimary", s_defaultCaretBrush, "TextFillColorPrimaryBrush");
     }
@@ -1881,7 +2176,40 @@ public class RichTextBox : TextBoxBase, IImeSupport
             layout.Blocks.Add(blockLayout);
         }
 
+        foreach (var block in layout.Blocks)
+            CollectDecorationFragments(block, layout.DecorationFragments);
+
         return layout;
+    }
+
+    private static void CollectDecorationFragments(BlockLayoutInfo block,
+        Dictionary<TextElement, DecorationFragmentMetrics> fragments)
+    {
+        foreach (var line in block.Lines)
+            foreach (var layout in line.Runs)
+            {
+                if (layout.Run is not { } run || layout.Width <= 0) continue;
+                for (TextElement? source = run; source is not null; source = source.Parent)
+                {
+                    if (CssTextDecorationProperties.Inset(source) == CssTextDecorationInset.Zero)
+                        continue;
+                    if (!fragments.TryGetValue(source, out var metrics))
+                    {
+                        metrics = new DecorationFragmentMetrics(layout.StartOffset, layout.EndOffset);
+                        fragments.Add(source, metrics);
+                    }
+                    else
+                    {
+                        metrics.FirstOffset = Math.Min(metrics.FirstOffset, layout.StartOffset);
+                        metrics.LastOffset = Math.Max(metrics.LastOffset, layout.EndOffset);
+                    }
+                    metrics.BeforeOffset[layout.StartOffset] = metrics.InlineSize;
+                    metrics.InlineSize += layout.Width;
+                    metrics.ThroughOffset[layout.EndOffset] = metrics.InlineSize;
+                }
+            }
+        foreach (var child in block.ChildBlocks)
+            CollectDecorationFragments(child, fragments);
     }
 
     private BlockLayoutInfo LayoutBlock(Block block, double maxWidth, ref int currentOffset)
@@ -1933,7 +2261,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
         foreach (var inline in paragraph.Inlines)
         {
-            LayoutInline(inline, blockLayout, lineLayout, maxWidth, ref x, ref currentOffset);
+            LayoutInline(inline, blockLayout, ref lineLayout, maxWidth, ref x, ref currentOffset);
         }
 
         lineLayout.EndOffset = currentOffset;
@@ -1945,7 +2273,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         }
     }
 
-    private void LayoutInline(Inline inline, BlockLayoutInfo blockLayout, LineLayoutInfo lineLayout,
+    private void LayoutInline(Inline inline, BlockLayoutInfo blockLayout, ref LineLayoutInfo lineLayout,
         double maxWidth, ref double x, ref int currentOffset)
     {
         if (inline is Run run)
@@ -2000,7 +2328,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         {
             foreach (var child in span.Inlines)
             {
-                LayoutInline(child, blockLayout, lineLayout, maxWidth, ref x, ref currentOffset);
+                LayoutInline(child, blockLayout, ref lineLayout, maxWidth, ref x, ref currentOffset);
             }
         }
         else if (inline is LineBreak)
@@ -2576,7 +2904,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     private void StartCaretTimer()
     {
-        if (IsReadOnly)
+        if (IsReadOnly || CssCaretAnimationProperties.IsManual(this))
             return;
 
         if (_caretTimer == null)
@@ -2596,7 +2924,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     private void OnCaretTimerTick(object? sender, EventArgs e)
     {
-        if (!IsKeyboardFocused || IsReadOnly)
+        if (!IsKeyboardFocused || IsReadOnly || CssCaretAnimationProperties.IsManual(this))
         {
             StopCaretTimer();
             return;
@@ -2611,6 +2939,24 @@ public class RichTextBox : TextBoxBase, IImeSupport
             InvalidateVisual();
         }
         ScheduleNextCaretTick(DateTime.Now);
+    }
+
+    protected override void OnCssCaretAnimationChanged()
+    {
+        base.OnCssCaretAnimationChanged();
+        if (CssCaretAnimationProperties.IsManual(this))
+        {
+            StopCaretTimer();
+            _caretOpacity = 1.0;
+            _caretVisible = true;
+        }
+        else
+        {
+            ResetCaretBlink();
+            if (IsKeyboardFocused) StartCaretTimer();
+        }
+
+        InvalidateVisual();
     }
 
     /// <summary>
@@ -3360,7 +3706,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
             string fontFamily = run.FontFamily?.Source is { } runFamily && !string.IsNullOrWhiteSpace(runFamily)
                 ? runFamily
                 : _document.FontFamily ?? FrameworkElement.DefaultFontFamilyName;
-            double fontSize = run.FontSize > 0 ? run.FontSize : _document.FontSize;
+            double fontSize = run.FontSize;
             return (fontFamily, fontSize, run.FontWeight, run.FontStyle);
         }
 
@@ -3444,7 +3790,18 @@ public class RichTextBox : TextBoxBase, IImeSupport
     private class FlowDocumentLayoutInfo
     {
         public List<BlockLayoutInfo> Blocks { get; } = new();
+        public Dictionary<TextElement, DecorationFragmentMetrics> DecorationFragments { get; } =
+            new(ReferenceEqualityComparer.Instance);
         public double TotalHeight { get; set; }
+    }
+
+    private sealed class DecorationFragmentMetrics(int firstOffset, int lastOffset)
+    {
+        internal int FirstOffset = firstOffset;
+        internal int LastOffset = lastOffset;
+        internal double InlineSize;
+        internal Dictionary<int, double> BeforeOffset { get; } = new();
+        internal Dictionary<int, double> ThroughOffset { get; } = new();
     }
 
     /// <summary>

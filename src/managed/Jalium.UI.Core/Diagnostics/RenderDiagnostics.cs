@@ -49,11 +49,39 @@ public static class RenderDiagnostics
         public long PathCacheBytes { get; }
         public int TextureCount { get; }
         public long TextureBytes { get; }
+        public int VelloDispatchCount { get; }
+        public long SoftwareRasterNs { get; }
+        public long SoftwarePixelsVisited { get; }
+        public long SoftwarePixelsBlended { get; }
+        public long SoftwareAaSamples { get; }
+        public long SoftwareClipRejectedPixels { get; }
+        public long SoftwareParallelNs { get; }
+        public long SoftwareCacheBytes { get; }
+        public long SoftwareEffectCacheHits { get; }
+        public long SoftwareEffectCacheMisses { get; }
+        public int SoftwareWorkerCount { get; }
+        public int SoftwareWorkerUtilizationPermille { get; }
+        public int SoftwareEffectCacheEntries { get; }
+        public int SoftwareGradientCacheEntries { get; }
 
         internal GpuResourceSnapshot(
             int glyphUsed, int glyphTotal, long glyphBytes,
             int pathEntries, long pathBytes,
-            int textureCount, long textureBytes)
+            int textureCount, long textureBytes,
+            int velloDispatchCount = 0,
+            long softwareRasterNs = 0,
+            long softwarePixelsVisited = 0,
+            long softwarePixelsBlended = 0,
+            long softwareAaSamples = 0,
+            long softwareClipRejectedPixels = 0,
+            long softwareParallelNs = 0,
+            long softwareCacheBytes = 0,
+            long softwareEffectCacheHits = 0,
+            long softwareEffectCacheMisses = 0,
+            int softwareWorkerCount = 0,
+            int softwareWorkerUtilizationPermille = 0,
+            int softwareEffectCacheEntries = 0,
+            int softwareGradientCacheEntries = 0)
         {
             Timestamp = DateTime.Now;
             GlyphAtlasSlotsUsed = glyphUsed;
@@ -63,6 +91,20 @@ public static class RenderDiagnostics
             PathCacheBytes = pathBytes;
             TextureCount = textureCount;
             TextureBytes = textureBytes;
+            VelloDispatchCount = velloDispatchCount;
+            SoftwareRasterNs = softwareRasterNs;
+            SoftwarePixelsVisited = softwarePixelsVisited;
+            SoftwarePixelsBlended = softwarePixelsBlended;
+            SoftwareAaSamples = softwareAaSamples;
+            SoftwareClipRejectedPixels = softwareClipRejectedPixels;
+            SoftwareParallelNs = softwareParallelNs;
+            SoftwareCacheBytes = softwareCacheBytes;
+            SoftwareEffectCacheHits = softwareEffectCacheHits;
+            SoftwareEffectCacheMisses = softwareEffectCacheMisses;
+            SoftwareWorkerCount = softwareWorkerCount;
+            SoftwareWorkerUtilizationPermille = softwareWorkerUtilizationPermille;
+            SoftwareEffectCacheEntries = softwareEffectCacheEntries;
+            SoftwareGradientCacheEntries = softwareGradientCacheEntries;
         }
     }
 
@@ -107,11 +149,32 @@ public static class RenderDiagnostics
     public static void PublishGpuSnapshot(
         int glyphUsed, int glyphTotal, long glyphBytes,
         int pathEntries = 0, long pathBytes = 0,
-        int textureCount = 0, long textureBytes = 0)
+        int textureCount = 0, long textureBytes = 0,
+        int velloDispatchCount = 0,
+        long softwareRasterNs = 0,
+        long softwarePixelsVisited = 0,
+        long softwarePixelsBlended = 0,
+        long softwareAaSamples = 0,
+        long softwareClipRejectedPixels = 0,
+        long softwareParallelNs = 0,
+        long softwareCacheBytes = 0,
+        long softwareEffectCacheHits = 0,
+        long softwareEffectCacheMisses = 0,
+        int softwareWorkerCount = 0,
+        int softwareWorkerUtilizationPermille = 0,
+        int softwareEffectCacheEntries = 0,
+        int softwareGradientCacheEntries = 0)
     {
         s_latestGpuSnapshot = new GpuResourceSnapshot(
             glyphUsed, glyphTotal, glyphBytes,
-            pathEntries, pathBytes, textureCount, textureBytes);
+            pathEntries, pathBytes, textureCount, textureBytes,
+            velloDispatchCount,
+            softwareRasterNs, softwarePixelsVisited, softwarePixelsBlended,
+            softwareAaSamples, softwareClipRejectedPixels, softwareParallelNs,
+            softwareCacheBytes, softwareEffectCacheHits,
+            softwareEffectCacheMisses, softwareWorkerCount,
+            softwareWorkerUtilizationPermille, softwareEffectCacheEntries,
+            softwareGradientCacheEntries);
     }
 
     public static void RecordDirtyRegion(Rect region)

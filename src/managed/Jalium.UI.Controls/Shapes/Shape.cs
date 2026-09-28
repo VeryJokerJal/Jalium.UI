@@ -1,4 +1,5 @@
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Shapes;
 
@@ -233,6 +234,27 @@ public abstract class Shape : FrameworkElement
     internal double GetStrokeThickness()
     {
         return IsPenNoOp ? 0 : Math.Abs(StrokeThickness);
+    }
+
+    /// <summary>Applies the inherited CSS sampling hint to an image fill.</summary>
+    protected Brush? ResolveFillBrush() => CssImageRenderingProperties.ResolveBrush(this, Fill);
+
+    /// <summary>Applies the inherited sampling hint to an image stroke.</summary>
+    protected Pen? ResolveStrokePen(Pen? pen)
+    {
+        if (pen?.Brush is not ImageBrush) return pen;
+        var brush = CssImageRenderingProperties.ResolveBrush(this, pen.Brush);
+        if (ReferenceEquals(brush, pen.Brush)) return pen;
+
+        return new Pen(brush!, pen.Thickness)
+        {
+            StartLineCap = pen.StartLineCap,
+            EndLineCap = pen.EndLineCap,
+            DashCap = pen.DashCap,
+            LineJoin = pen.LineJoin,
+            MiterLimit = pen.MiterLimit,
+            DashStyle = pen.DashStyle,
+        };
     }
 
     #endregion

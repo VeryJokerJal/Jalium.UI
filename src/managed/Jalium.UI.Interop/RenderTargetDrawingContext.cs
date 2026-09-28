@@ -7,6 +7,7 @@ using Jalium.UI.Diagnostics;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
 using Jalium.UI.Rendering;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Interop;
 
@@ -34,22 +35,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     private const int MaxBrushCacheSize = 256;
     private const int MaxTextFormatCacheSize = 64;
-    // Entry count, not bytes, is what evicts in practice: a catalog page with a
-    // hundred-odd thumbnails blew past 64 and thrashed the LRU while sitting far
-    // under the byte budget below (114 cards x 312 KiB is only ~35 MB). Keep the
-    // count high enough that the byte ceiling is the real limit.
-    private const int MaxBitmapCacheSize = 192;
-    // GPU texture-cache byte budget (hard ceiling). This is VRAM usage and must NOT
-    // be throttled by the managed process WorkingSet: doing so collapsed the budget
-    // to 32MB under any real IDE memory footprint, forcing currently-visible card
-    // textures to be LRU-evicted and re-uploaded every single frame (~42MB/frame on
-    // the New-Solution wizard). With adaptive downscaling the live working set is
-    // tiny; this ceiling only backstops pages that draw many full-resolution images.
-    private const long MaxBitmapCacheBytes = 256L * 1024 * 1024;
+    // Bitmap limits belong to RenderContext so a small catalog can choose a
+    // bounded hot set without reducing the defaults for larger applications.
+    // Current-frame textures remain protected from cache-pressure eviction.
 
     private readonly RenderTarget _renderTarget;
     private readonly RenderContext _context;
-    private readonly Dictionary<Brush, NativeBrush> _brushCache = new();
+    private readonly Dictionary<BrushCacheKey, NativeBrush> _brushCache = new();
     private readonly Dictionary<TextFormatCacheKey, NativeTextFormat> _textFormatCache = new();
     private readonly Dictionary<ImageSource, BitmapCacheEntry> _bitmapCache = new();
     private readonly Stack<DrawingState> _stateStack = new();
@@ -156,7 +148,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// when <see cref="ScreenX"/>/<see cref="ScreenY"/> differ from the untransformed
     /// rect the caller passed.
     /// </summary>
-    internal readonly record struct EffectCaptureFrame(double ScreenX, double ScreenY, bool Transformed);
+    internal readonly record struct EffectCaptureFrame(
+        double ScreenX, double ScreenY, double ScreenWidth, double ScreenHeight, bool Transformed);
 
     // Scoped opt-out for effects that deliberately deform their content with
     // the active matrix. Liquid glass drag uses this so text follows the same
@@ -175,6 +168,34 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private long _brushCacheSequence;
     private long _textFormatCacheSequence;
     private bool _closed;
+
+    /// <summary>
+    /// A relative gradient's native coordinates depend on the destination
+    /// bounds. Keying only by managed brush identity made a shared gradient
+    /// thrash between every differently-positioned control on every frame.
+    /// Keep reference identity semantics while retaining one native resource
+    /// per distinct mapping rectangle.
+    /// </summary>
+    private readonly struct BrushCacheKey : IEquatable<BrushCacheKey>
+    {
+        public BrushCacheKey(Brush brush, long boundsKey)
+        {
+            Brush = brush;
+            BoundsKey = boundsKey;
+        }
+
+        public Brush Brush { get; }
+        public long BoundsKey { get; }
+
+        public bool Equals(BrushCacheKey other) =>
+            ReferenceEquals(Brush, other.Brush) && BoundsKey == other.BoundsKey;
+
+        public override bool Equals(object? obj) =>
+            obj is BrushCacheKey other && Equals(other);
+
+        public override int GetHashCode() =>
+            HashCode.Combine(RuntimeHelpers.GetHashCode(Brush), BoundsKey);
+    }
 
     private readonly record struct TextFormatCacheKey(
         string FontFamily,
@@ -279,6 +300,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     // GetNativeBitmap / _bitmapCache pipeline handles D3D12 resource lifecycle.
     private sealed class VectorDrawingCacheEntry
     {
+        public long SourceGeneration;
         public BitmapImage? RasterizedBitmap;
         public int PixelWidth;
         public int PixelHeight;
@@ -350,6 +372,263 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
     }
     private readonly Dictionary<ImageSource, VectorDrawingCacheEntry> _vectorDrawingCache = new();
+    private readonly Dictionary<(PathGeometry Geometry, ImageBrush Brush, Pen? StrokePen), MaskedImageSource> _imageMaskSources = new();
+    private long _imageMaskSequence;
+
+    private sealed class MaskedImageSource : IDisposable
+    {
+        private readonly PathGeometry _original;
+        private readonly PathGeometry _shape;
+        private readonly GeometryDrawing _drawing;
+        internal DrawingImage Image { get; }
+        internal long LastUsed;
+
+        internal MaskedImageSource(PathGeometry geometry, ImageBrush brush, Pen? strokePen)
+        {
+            _original = geometry;
+            // Geometry.Transform is already on the native drawing stack.
+            _shape = new PathGeometry { Figures = geometry.Figures, FillRule = geometry.FillRule };
+            _drawing = strokePen is null
+                ? new GeometryDrawing(brush, null, _shape)
+                : new GeometryDrawing(null, strokePen, _shape);
+            Image = new DrawingImage(_drawing);
+            if (!geometry.IsFrozen) geometry.Changed += GeometryChanged;
+        }
+
+        private void GeometryChanged(object? sender, EventArgs args)
+        {
+            if (!ReferenceEquals(_shape.Figures, _original.Figures)) _shape.Figures = _original.Figures;
+            _shape.FillRule = _original.FillRule;
+        }
+
+        public void Dispose()
+        {
+            _original.Changed -= GeometryChanged;
+            _shape.Figures = new PathFigureCollection();
+            _drawing.Brush = null;
+            _drawing.Pen = null;
+            Image.Drawing = null;
+        }
+    }
+
+    private void DrawMaskedImageBrush(ImageBrush brush, PathGeometry geometry, Pen? strokePen = null)
+    {
+        if (brush.CssGradientLayout is { } layout &&
+            geometry.Bounds.Width > 0 && geometry.Bounds.Height > 0)
+        {
+            if (layout.Resolve(geometry.Bounds.Width, geometry.Bounds.Height) is not ImageBrush resolved) return;
+            brush = resolved;
+            if (strokePen is not null) strokePen.Brush = brush;
+        }
+        var key = (geometry, brush, strokePen);
+        if (!_imageMaskSources.TryGetValue(key, out var source))
+            _imageMaskSources[key] = source = new MaskedImageSource(geometry, brush, strokePen);
+        source.LastUsed = ++_imageMaskSequence;
+        DrawImage(source.Image, source.Image.Drawing!.Bounds);
+        // Vector raster caching supplies decode dependency tracking and device
+        // lifetime handling; this adapter bounds the extra geometry/brush pairs.
+        while (_imageMaskSources.Count > 16 || MaskRasterBytes() > 64L * 1024 * 1024 && _imageMaskSources.Count > 1)
+        {
+            var oldest = _imageMaskSources.Where(pair => !ReferenceEquals(pair.Value, source)).MinBy(pair => pair.Value.LastUsed);
+            if (_vectorDrawingCache.TryGetValue(oldest.Value.Image, out var raster)) DropVectorRaster(oldest.Value.Image, raster);
+            _imageMaskSources.Remove(oldest.Key);
+            oldest.Value.Dispose();
+        }
+    }
+
+    private bool TryDrawImageBrushStroke(Pen? pen, Geometry geometry)
+    {
+        if (pen?.Brush is not ImageBrush imageBrush ||
+            !double.IsFinite(pen.Thickness) || pen.Thickness <= 0)
+            return false;
+
+        var hasUnstrokedSegments = false;
+        if (geometry is PathGeometry path)
+        {
+            foreach (var figure in path.Figures)
+            foreach (var segment in figure.Segments)
+                if (!segment.IsStroked) hasUnstrokedSegments = true;
+        }
+
+        var hasEffectiveDashes = pen.DashStyle.Dashes.Count > 0;
+        if (hasEffectiveDashes)
+        {
+            double dashLength = 0;
+            foreach (var dash in pen.DashStyle.Dashes)
+            {
+                if (!double.IsFinite(dash) || dash < 0) return true;
+                dashLength += dash;
+            }
+            if (!double.IsFinite(dashLength) ||
+                !double.IsFinite(pen.DashStyle.Offset)) return true;
+            hasEffectiveDashes = dashLength > 0;
+        }
+
+        if (hasEffectiveDashes || hasUnstrokedSegments)
+        {
+            // Keep the visible centerline runs together as the brush's
+            // reference box. The software vector rasterizer splits the dash
+            // runs while sampling the image in that shared coordinate system.
+            var centerline = geometry.GetFlattenedPathGeometry();
+            if (hasUnstrokedSegments)
+                centerline = FilterUnstrokedSegments(centerline);
+            if (centerline.Figures.Count == 0) return true;
+            var strokePen = new Pen(imageBrush, pen.Thickness)
+            {
+                StartLineCap = pen.StartLineCap,
+                EndLineCap = pen.EndLineCap,
+                DashCap = pen.DashCap,
+                LineJoin = pen.LineJoin,
+                MiterLimit = pen.MiterLimit,
+                DashStyle = pen.DashStyle,
+            };
+            DrawMaskedImageBrush(imageBrush, centerline, strokePen);
+            return true;
+        }
+
+        // The native brush API has no bitmap stroke. Widen the contour in the
+        // same coordinate space as the fill, then use the existing path mask to
+        // preserve image pixels, transforms, opacity and source updates.
+        var outline = geometry.GetWidenedPathGeometry(pen);
+        if (outline.Figures.Count == 0) return false;
+        DrawMaskedImageBrush(imageBrush, outline);
+        return true;
+    }
+
+    private static PathGeometry FilterUnstrokedSegments(PathGeometry flattened)
+    {
+        var visible = new PathGeometry { FillRule = flattened.FillRule };
+        foreach (var figure in flattened.Figures)
+        {
+            var current = figure.StartPoint;
+            PathFigure? run = null;
+            var runs = new List<PathFigure>();
+            var allStroked = true;
+
+            void FinishRun()
+            {
+                if (run is null) return;
+                runs.Add(run);
+                run = null;
+            }
+
+            void AddEdge(Point end, bool stroked)
+            {
+                if (!stroked)
+                {
+                    allStroked = false;
+                    FinishRun();
+                }
+                else if (end != current)
+                {
+                    run ??= new PathFigure { StartPoint = current, IsFilled = false };
+                    run.Segments.Add(new LineSegment(end));
+                }
+                current = end;
+            }
+
+            foreach (var segment in figure.Segments)
+            {
+                if (segment is LineSegment line)
+                    AddEdge(line.Point, line.IsStroked);
+                else if (segment is PolyLineSegment polyline)
+                    foreach (var point in polyline.Points)
+                        AddEdge(point, polyline.IsStroked);
+            }
+
+            if (figure.IsClosed)
+            {
+                if (allStroked && run is not null)
+                    run.IsClosed = true;
+                else
+                    AddEdge(figure.StartPoint, stroked: true);
+            }
+            FinishRun();
+
+            // The implicit closing edge can connect the last visible run to
+            // the first one. Keep their join at the original start point.
+            if (figure.IsClosed && !allStroked && runs.Count > 1 &&
+                runs[0].StartPoint == figure.StartPoint &&
+                runs[^1].Segments[^1] is LineSegment lastEdge &&
+                lastEdge.Point == figure.StartPoint)
+            {
+                var first = runs[0];
+                var last = runs[^1];
+                foreach (LineSegment edge in first.Segments)
+                    last.Segments.Add(new LineSegment(edge.Point));
+                runs.RemoveAt(0);
+            }
+
+            foreach (var visibleRun in runs) visible.Figures.Add(visibleRun);
+        }
+        return visible;
+    }
+
+    private long MaskRasterBytes() => _imageMaskSources.Values.Sum(source =>
+        _vectorDrawingCache.TryGetValue(source.Image, out var raster) ? (long)raster.PixelWidth * raster.PixelHeight * 4 : 0);
+
+    private static bool TryResolveVectorImageSource(ImageSource source, out Drawing? drawing, out Rect viewport)
+    {
+        switch (source)
+        {
+            case SvgImage { Drawing: { } svgDrawing } svg:
+                drawing = svgDrawing;
+                viewport = svg.Width > 0 && svg.Height > 0
+                    ? new Rect(0, 0, svg.Width, svg.Height)
+                    : svgDrawing.Bounds;
+                return !viewport.IsEmpty && viewport.Width > 0 && viewport.Height > 0;
+            case DrawingImage { Drawing: { } imageDrawing }:
+                drawing = imageDrawing;
+                viewport = imageDrawing.Bounds;
+                return !viewport.IsEmpty && viewport.Width > 0 && viewport.Height > 0;
+            default:
+                drawing = null;
+                viewport = Rect.Empty;
+                return false;
+        }
+    }
+
+    private NativeBitmap? GetOrCreateVectorNativeBitmap(
+        ImageSource source, Drawing drawing, Rect viewport, int targetWidth, int targetHeight)
+    {
+        targetWidth = Math.Clamp(targetWidth, 1, 4096);
+        targetHeight = Math.Clamp(targetHeight, 1, 4096);
+        if (_vectorDrawingCache.TryGetValue(source, out var cached) &&
+            cached.RasterizedBitmap is not null &&
+            cached.PixelWidth == targetWidth && cached.PixelHeight == targetHeight &&
+            cached.SourceGeneration == source.ContentGeneration &&
+            cached.MatchesTouchedSourceGenerations())
+        {
+            return GetNativeBitmap(cached.RasterizedBitmap, targetWidth, targetHeight);
+        }
+
+        if (cached is not null) DropVectorRaster(source, cached);
+
+        var sourceGeneration = source.ContentGeneration;
+        var touchedSources = new HashSet<ImageSource>();
+        var pixels = SoftwareVectorRasterizer.Rasterize(
+            drawing, targetWidth, targetHeight, viewport, touchedSources);
+        if (pixels is null) return null;
+
+        var rasterized = BitmapImage.FromPixels(pixels, targetWidth, targetHeight, targetWidth * 4);
+        List<(ImageSource Source, long Generation)>? dependencies = null;
+        if (touchedSources.Count > 0)
+        {
+            dependencies = new List<(ImageSource, long)>(touchedSources.Count);
+            foreach (var touched in touchedSources)
+                dependencies.Add((touched, touched.ContentGeneration));
+        }
+
+        _vectorDrawingCache[source] = new VectorDrawingCacheEntry
+        {
+            RasterizedBitmap = rasterized,
+            PixelWidth = targetWidth,
+            PixelHeight = targetHeight,
+            SourceGeneration = sourceGeneration,
+            TouchedSources = dependencies,
+        };
+        return GetNativeBitmap(rasterized, targetWidth, targetHeight);
+    }
 
     /// <summary>
     /// Gets the underlying render target.
@@ -627,7 +906,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (layer == 0) return 0;
 
         _inLayerCapture = true;
-        _layerCaptureClipBounds = worldBounds;
+        // D3D12 captures on the physical pixel grid. Use its actual origin for
+        // culling and nested-transform compensation, not the fractional layout
+        // origin; the native layer retains the padding for later composites.
+        _layerCaptureClipBounds = _renderTarget.Backend == RenderBackend.D3D12
+            ? ComputeScreenEffectCaptureRect(worldBounds, Matrix.Identity,
+                _renderTarget.DpiScaleX, _renderTarget.DpiScaleX)
+            : worldBounds;
         return layer;
     }
 
@@ -760,6 +1045,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     internal bool SimplifyElementEffects { get; set; }
 
     bool IEffectDrawingContext.IsElementEffectCaptureEnabled =>
+        !SimplifyElementEffects;
+
+    bool IEffectDrawingContext.SupportsCssShadowLayers =>
+        !SimplifyElementEffects && _renderTarget.SupportsCssShadowLayers();
+
+    bool IEffectDrawingContext.SupportsCssTextShadowsOnly =>
         !SimplifyElementEffects;
 
     // DrawingRecorder replay can contain explicit Begin/End effect commands
@@ -1097,10 +1388,45 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         return double.IsFinite(value) ? (float)value : 0f;
     }
 
+    private static bool TryCreateNativeDash(Pen pen, out float[]? pattern, out float offset)
+    {
+        pattern = null;
+        offset = 0;
+        var dashStyle = pen.DashStyle;
+        var dashes = dashStyle.Dashes;
+        if (dashes.Count == 0) return true;
+        if (dashes.Count > int.MaxValue / 2) return false;
+
+        var nativeDashes = new float[dashes.Count];
+        double cycleLength = 0;
+        for (int i = 0; i < dashes.Count; i++)
+        {
+            double dash = dashes[i] * pen.Thickness;
+            if (!double.IsFinite(dash) || dash < 0 || dash > float.MaxValue)
+                return false;
+            nativeDashes[i] = (float)dash;
+            cycleLength += dash;
+        }
+        if (!double.IsFinite(cycleLength)) return false;
+        if (cycleLength == 0) return true;
+
+        if ((dashes.Count & 1) != 0) cycleLength *= 2;
+        double phase = dashStyle.Offset * pen.Thickness;
+        if (!double.IsFinite(phase) || !double.IsFinite(cycleLength)) return false;
+        phase %= cycleLength;
+        if (Math.Abs(phase) > float.MaxValue) return false;
+        pattern = nativeDashes;
+        offset = (float)phase;
+        return true;
+    }
+
     /// <inheritdoc />
     public override void DrawLine(Pen pen, Point point0, Point point1)
     {
-        if (_closed || pen?.Brush == null) return;
+        if (_closed || pen?.Brush == null ||
+            !double.IsFinite(pen.Thickness) || pen.Thickness <= 0) return;
+
+        if (TryDrawImageBrushStroke(pen, new LineGeometry(point0, point1))) return;
 
         var brush = GetNativeBrush(pen.Brush);
         if (brush == null) return;
@@ -1111,56 +1437,42 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var y1 = SnapCoordinate(point1.Y + Offset.Y);
         var thickness = (float)pen.Thickness;
 
-        // Dashed line: split into segments
-        if (pen.DashStyle is { Dashes.Count: > 0 })
+        // Use the same native path stroker as other dashed geometry. It owns
+        // odd-pattern repetition, phase normalization and dash-cap geometry;
+        // splitting here made large negative offsets disappear and all-zero
+        // arrays loop forever.
+        if (pen.DashStyle.Dashes.Count > 0)
         {
-            DrawDashedLine(x0, y0, x1, y1, brush, thickness, pen.DashStyle, pen.Thickness);
-            return;
+            if (!TryCreateNativeDash(pen, out var nativeDashes, out var offset)) return;
+            if (nativeDashes is not null)
+            {
+                int cap = pen.DashCap switch
+                {
+                    PenLineCap.Round => 2,
+                    PenLineCap.Square => 1,
+                    _ => 0,
+                };
+                _renderTarget.StrokePath(x0, y0, [0f, x1, y1], brush, thickness,
+                    closed: false, lineJoin: (int)pen.LineJoin,
+                    miterLimit: (float)pen.MiterLimit, lineCap: cap,
+                    dashPattern: nativeDashes, dashOffset: offset);
+                return;
+            }
         }
 
         _renderTarget.DrawLine(x0, y0, x1, y1, brush, thickness);
-    }
-
-    private void DrawDashedLine(float x0, float y0, float x1, float y1,
-        NativeBrush nativeBrush, float thickness, DashStyle dashStyle, double penThickness)
-    {
-        var dx = x1 - x0;
-        var dy = y1 - y0;
-        var lineLength = Math.Sqrt(dx * dx + dy * dy);
-        if (lineLength < 0.5) return;
-
-        var dashes = dashStyle.Dashes;
-        var offset = dashStyle.Offset * penThickness;
-        var ux = (float)(dx / lineLength);
-        var uy = (float)(dy / lineLength);
-
-        double pos = -offset;
-        int dashIndex = 0;
-        while (pos < lineLength)
-        {
-            var dashLen = dashes[dashIndex % dashes.Count] * penThickness;
-            var gapLen = dashes[(dashIndex + 1) % dashes.Count] * penThickness;
-
-            var start = Math.Max(0, pos);
-            var end = Math.Min(lineLength, pos + dashLen);
-
-            if (end > start)
-            {
-                _renderTarget.DrawLine(
-                    x0 + ux * (float)start, y0 + uy * (float)start,
-                    x0 + ux * (float)end, y0 + uy * (float)end,
-                    nativeBrush, thickness);
-            }
-
-            pos += dashLen + gapLen;
-            dashIndex += 2;
-        }
     }
 
     /// <inheritdoc />
     public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
     {
         if (_closed) return;
+        if (brush is CssLayeredBackgroundBrush layers)
+        {
+            DrawRectangle(layers.Bottom, null, rectangle);
+            DrawRectangle(layers.Top, pen, rectangle);
+            return;
+        }
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_RECT2);
 
         // Preserve intentional half-pixel alignment for odd-width strokes.
@@ -1183,6 +1495,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
+            if (TryDrawImageBrushStroke(pen, new RectangleGeometry(rectangle))) return;
+            if (pen.DashStyle.Dashes.Count > 0)
+            {
+                DrawPathFigureNative(null, pen,
+                    CssRoundedRectangleGeometry.Figure(rectangle, default),
+                    FillRule.Nonzero, rectangle);
+                return;
+            }
             var strokeRight = SnapCoordinate(rectangle.X + rectangle.Width + Offset.X);
             var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
             var strokeW = strokeRight - x;
@@ -1199,6 +1519,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY)
     {
         if (_closed) return;
+        if (brush is CssLayeredBackgroundBrush layers)
+        {
+            DrawRoundedRectangle(layers.Bottom, null, rectangle, radiusX, radiusY);
+            DrawRoundedRectangle(layers.Top, pen, rectangle, radiusX, radiusY);
+            return;
+        }
 
         // Preserve intentional half-pixel alignment for odd-width strokes.
         var x = SnapCoordinate(rectangle.X + Offset.X);
@@ -1221,11 +1547,22 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
+            if (TryDrawImageBrushStroke(pen,
+                    new RectangleGeometry(rectangle, radiusX, radiusY))) return;
             var strokeRight = SnapCoordinate(rectangle.X + rectangle.Width + Offset.X);
             var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
             var strokeW = strokeRight - x;
             var strokeH = strokeBottom - y;
             var (strokeRx, strokeRy) = NormalizeRoundedRectRadii(strokeW, strokeH, radiusX, radiusY);
+            if (pen.DashStyle.Dashes.Count > 0)
+            {
+                var radius = new Size(strokeRx, strokeRy);
+                DrawPathFigureNative(null, pen,
+                    CssRoundedRectangleGeometry.Figure(rectangle,
+                        new CssUsedBorderRadii(radius, radius, radius, radius)),
+                    FillRule.Nonzero, rectangle);
+                return;
+            }
             var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
             if (strokeBrush != null)
             {
@@ -1240,6 +1577,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, CornerRadius cornerRadius)
     {
         if (_closed) return;
+        if (brush is CssLayeredBackgroundBrush layers)
+        {
+            DrawRoundedRectangle(layers.Bottom, null, rectangle, cornerRadius);
+            DrawRoundedRectangle(layers.Top, pen, rectangle, cornerRadius);
+            return;
+        }
 
         var x = SnapCoordinate(rectangle.X + Offset.X);
         var y = SnapCoordinate(rectangle.Y + Offset.Y);
@@ -1262,6 +1605,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         if (pen?.Brush != null)
         {
+            if (TryDrawImageBrushStroke(pen,
+                    new RectangleGeometry(rectangle, cornerRadius))) return;
+            if (pen.DashStyle.Dashes.Count > 0)
+            {
+                DrawPathFigureNative(null, pen,
+                    CssRoundedRectangleGeometry.Figure(rectangle,
+                        new CssUsedBorderRadii(new Size(tl, tl), new Size(tr, tr),
+                            new Size(br, br), new Size(bl, bl))),
+                    FillRule.Nonzero, rectangle);
+                return;
+            }
             var strokeRight = SnapCoordinate(rectangle.X + rectangle.Width + Offset.X);
             var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
             var strokeW = strokeRight - x;
@@ -1287,16 +1641,29 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <inheritdoc />
     public override void DrawLines(Pen pen, ReadOnlySpan<Point> endpoints)
     {
-        if (_closed || pen?.Brush is null || endpoints.Length < 2)
+        if (_closed || pen?.Brush is null ||
+            !double.IsFinite(pen.Thickness) || pen.Thickness <= 0 ||
+            endpoints.Length < 2)
         {
             return;
         }
 
-        // One brush-cache lookup for the whole batch, then a tight loop of
-        // native DrawLine calls. Dashed pens fall through to per-segment
-        // dashing via DrawDashedLine, which cannot be amortised across
-        // segments without compromising the dash phase alignment — the
-        // loop still saves N-1 GetNativeBrush hash lookups either way.
+        if (pen.Brush is ImageBrush)
+        {
+            for (int i = 0; i + 1 < endpoints.Length; i += 2)
+                DrawLine(pen, endpoints[i], endpoints[i + 1]);
+            return;
+        }
+
+        if (pen.DashStyle.Dashes.Count > 0)
+        {
+            for (int i = 0; i + 1 < endpoints.Length; i += 2)
+                DrawLine(pen, endpoints[i], endpoints[i + 1]);
+            return;
+        }
+
+        // One brush-cache lookup for the whole solid batch, then a tight
+        // loop of native DrawLine calls.
         var nativeBrush = GetNativeBrush(pen.Brush);
         if (nativeBrush is null)
         {
@@ -1304,7 +1671,6 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
 
         var thickness = (float)pen.Thickness;
-        var dashed = pen.DashStyle is { Dashes.Count: > 0 };
         var pairs = endpoints.Length / 2;
 
         for (int i = 0; i < pairs; i++)
@@ -1316,14 +1682,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             var x1 = SnapCoordinate(p1.X + Offset.X);
             var y1 = SnapCoordinate(p1.Y + Offset.Y);
 
-            if (dashed)
-            {
-                DrawDashedLine(x0, y0, x1, y1, nativeBrush, thickness, pen.DashStyle!, pen.Thickness);
-            }
-            else
-            {
-                _renderTarget.DrawLine(x0, y0, x1, y1, nativeBrush, thickness);
-            }
+            _renderTarget.DrawLine(x0, y0, x1, y1, nativeBrush, thickness);
         }
     }
 
@@ -1378,6 +1737,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public override void DrawEllipse(Brush? brush, Pen? pen, Point center, double radiusX, double radiusY)
     {
         if (_closed) return;
+        if (brush is CssLayeredBackgroundBrush layers)
+        {
+            DrawEllipse(layers.Bottom, null, center, radiusX, radiusY);
+            DrawEllipse(layers.Top, pen, center, radiusX, radiusY);
+            return;
+        }
 
         // Pass center through SnapCoordinate so it follows the same rule as all
         // other shapes: snap only when the value already sits on a device-pixel
@@ -1423,12 +1788,41 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // Stroke
         if (pen?.Brush != null)
         {
+            if (TryDrawImageBrushStroke(pen,
+                    new EllipseGeometry(center, radiusX, radiusY))) return;
+            if (pen.DashStyle.Dashes.Count > 0 && radiusX > 0 && radiusY > 0)
+            {
+                DrawPathFigureNative(null, pen, CreateEllipseStrokeFigure(center, radiusX, radiusY),
+                    FillRule.Nonzero, new Rect(center.X - radiusX, center.Y - radiusY,
+                        radiusX * 2, radiusY * 2));
+                return;
+            }
             var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
             if (strokeBrush != null)
             {
                 _renderTarget.DrawEllipse(cx, cy, rx, ry, strokeBrush, (float)pen.Thickness);
             }
         }
+    }
+
+    private static PathFigure CreateEllipseStrokeFigure(Point center, double radiusX, double radiusY)
+    {
+        var figure = new PathFigure
+        {
+            StartPoint = new Point(center.X + radiusX, center.Y),
+            IsClosed = true,
+            IsFilled = false,
+        };
+        var radius = new Size(radiusX, radiusY);
+        figure.Segments.Add(new ArcSegment(new Point(center.X, center.Y + radiusY),
+            radius, 0, false, SweepDirection.Clockwise, true));
+        figure.Segments.Add(new ArcSegment(new Point(center.X - radiusX, center.Y),
+            radius, 0, false, SweepDirection.Clockwise, true));
+        figure.Segments.Add(new ArcSegment(new Point(center.X, center.Y - radiusY),
+            radius, 0, false, SweepDirection.Clockwise, true));
+        figure.Segments.Add(new ArcSegment(new Point(center.X + radiusX, center.Y),
+            radius, 0, false, SweepDirection.Clockwise, true));
+        return figure;
     }
 
     private void EnsureBatchCapacity()
@@ -1447,7 +1841,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <inheritdoc />
     public override void DrawText(FormattedText formattedText, Point origin)
     {
-        if (_closed || formattedText == null || string.IsNullOrEmpty(formattedText.Text)) return;
+        if (_closed || formattedText == null || formattedText.FontSize == 0 || string.IsNullOrEmpty(formattedText.Text)) return;
+        if (Jalium.UI.Styling.CssFontFaces.IsBlocked(formattedText.FontFamily)) return;
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_TEXT2);
 
         var mx = origin.X + Offset.X;
@@ -1502,6 +1897,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
              Math.Abs(nm21) < 1e-6 && Math.Abs(nm22 - 1.0) < 1e-6 &&
              Math.Abs(ndx) < 1e-6 && Math.Abs(ndy) < 1e-6);
 
+
         // Pixel-snap the effective font size (mirrors WPF TextFormattingMode.Display) and
         // degrade heavy weights at sizes where CJK strokes collide (WinUI's gasp-table
         // hinting does the same implicitly). These passes apply to both identity-matrix
@@ -1509,7 +1905,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // already an integer so snapping is a no-op, but the weight degradation matters
         // for small-size bold that's blurry regardless of scale.
         var fontScale = 1.0;
-        var preserveNativeScaleDeformation = _nativeTextTransformDepth > 0;
+        // D3D12 rasterizes transformed glyphs at the final device resolution.
+        // Keep its original layout and pass the matrix through: recreating a
+        // layout at the scaled font size rounds fallback baselines differently
+        // from the surrounding geometry (a 1px jump during a 1.00 -> 1.03 zoom).
+        var preserveNativeScaleDeformation = _nativeTextTransformDepth > 0 ||
+            _renderTarget.Backend == RenderBackend.D3D12;
         if (!isIdentity)
         {
             var scaleX = Math.Sqrt(nm11 * nm11 + nm12 * nm12);
@@ -1675,6 +2076,26 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         const double axisAlignmentEpsilon = 1e-6;
         const double scaleDifferenceEpsilon = 0.001;
 
+        // Rotation / skew: the screen-resolution compensation below can only
+        // express the matrix as ONE font size, which is exactly what an angle
+        // cannot be folded into — so it used to be dropped outright and a
+        // rotated card rendered with upright glyphs. Keeping the live matrix
+        // instead hands the rotation to the native glyph rasterizer, which bakes
+        // it into the atlas bitmap (D3D12GlyphAtlas / VulkanGlyphAtlas take the
+        // full 2x2 and rasterize THROUGH it).
+        //
+        // The threshold is scale-RELATIVE and matches the native side's own
+        // axis-aligned test, so the two never disagree about which class a
+        // transform belongs to: a matrix native treats as axis-aligned must not
+        // be sent down this path, or the run would be laid out at 1x while
+        // native still expects the compensated size.
+        double scaleReference = Math.Max(Math.Max(scaleX, scaleY), 1.0);
+        double rotationEpsilon = 1e-3 * scaleReference;
+        if (Math.Abs(m12) > rotationEpsilon || Math.Abs(m21) > rotationEpsilon)
+        {
+            return true;
+        }
+
         return Math.Abs(m12) <= axisAlignmentEpsilon &&
                Math.Abs(m21) <= axisAlignmentEpsilon &&
                Math.Abs(scaleX - scaleY) > scaleDifferenceEpsilon;
@@ -1697,6 +2118,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
     {
         if (_closed || geometry == null) return;
+        if (brush is CssLayeredBackgroundBrush layers)
+        {
+            DrawGeometry(layers.Bottom, null, geometry);
+            DrawGeometry(layers.Top, pen, geometry);
+            return;
+        }
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_GEO);
 
         if (_svgDiagActive)
@@ -1724,6 +2151,19 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     private void DrawGeometryCore(Brush? brush, Pen? pen, Geometry geometry)
     {
+        if (geometry is Jalium.UI.Styling.CssRoundedRectangleGeometry cssRounded)
+        {
+            if (brush is ImageBrush imageBrush)
+            {
+                var bounds = new Rect(cssRounded.Rect.X + Offset.X, cssRounded.Rect.Y + Offset.Y, cssRounded.Rect.Width, cssRounded.Rect.Height);
+                var contour = new NativeEllipticalClip(bounds, cssRounded.Radii, ClipEdges.All);
+                FillImageBrushTiles(imageBrush, bounds, ImageBrushClipKind.Rect,
+                    (float)bounds.X, (float)bounds.Y, (float)bounds.Width, (float)bounds.Height, 0, 0, contour);
+                if (pen is not null) DrawPathGeometry(null, pen, cssRounded.Path);
+            }
+            else DrawPathGeometry(brush, pen, cssRounded.Path);
+            return;
+        }
         // Handle geometry types
         if (geometry is RectangleGeometry rectGeom)
         {
@@ -1826,13 +2266,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     private void DrawPathGeometry(Brush? brush, Pen? pen, PathGeometry pathGeom)
     {
+        if (brush is ImageBrush imageBrush)
+        {
+            DrawMaskedImageBrush(imageBrush, pathGeom);
+            if (pen is null) return;
+            brush = null;
+        }
         // Check if we need managed dashed stroke rendering
         bool hasDash = pen?.DashStyle?.Dashes is { Count: > 0 };
-        // Use managed widening only for non-Flat line caps (which the native
-        // DrawPolygon cannot render).  LineJoin differences (Miter vs Bevel)
-        // are handled natively — the managed widening + FillPolygon path
-        // cannot correctly render closed stroke outlines on D3D12 (triangle
-        // fan doesn't support concave/ring polygons).
+        // Native StrokePath handles caps and joins for every dashed figure.
+        // The solid straight-line polygon route still appends round endpoint
+        // caps below because native DrawPolygon has only butt caps.
         bool hasNonFlatCaps = pen != null && (
             pen.StartLineCap != PenLineCap.Flat ||
             pen.EndLineCap != PenLineCap.Flat);
@@ -1913,6 +2357,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // Stroke rendering: each figure stroked individually.
         if (pen?.Brush != null)
         {
+            if (TryDrawImageBrushStroke(pen, pathGeom)) return;
             foreach (var figure in pathGeom.Figures)
             {
                 // Whether the route taken below already renders the pen's line caps.
@@ -1923,26 +2368,22 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 // StrokePath too would double-paint the cap, which darkens visibly the
                 // moment the stroke brush is translucent.
                 bool routeRendersCaps;
-                if (hasDash && FigureHasCurves(figure))
+                double capSnapDx = 0, capSnapDy = 0;
+                if (hasDash || FigureHasCurves(figure))
                 {
-                    // Route dashed curved paths through native StrokePath (Vello handles dash expansion)
-                    DrawPathFigureNative(null, pen, figure, pathGeom.FillRule, geoBounds);
-                    routeRendersCaps = true;
-                }
-                else if (hasDash)
-                {
-                    // Straight-line dashed paths: managed dash expansion (avoids Vello overhead)
-                    DrawDashedPathFigure(pen, figure);
-                    routeRendersCaps = false;
-                }
-                else if (FigureHasCurves(figure))
-                {
+                    // The shared native traversal keeps dash phase continuous
+                    // around corners and across the closure seam.
                     DrawPathFigureNative(null, pen, figure, pathGeom.FillRule, geoBounds);
                     routeRendersCaps = true;
                 }
                 else
                 {
-                    DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule, geoBounds);
+                    // The polygon route may snap the stroke onto the crisp device
+                    // phase; the manually appended cap circles below must follow
+                    // the same translation or they sit up to half a pixel off the
+                    // stroke they terminate.
+                    DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule, geoBounds,
+                        out capSnapDx, out capSnapDy);
                     routeRendersCaps = false;
                 }
 
@@ -1963,9 +2404,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                         else if (seg is ArcSegment arcs) endPt = arcs.Point;
                     }
                     if (pen.StartLineCap == PenLineCap.Round)
-                        DrawEllipse(pen.Brush, null, startPt, capRadius, capRadius);
+                        DrawEllipse(pen.Brush, null,
+                            new Point(startPt.X + capSnapDx, startPt.Y + capSnapDy), capRadius, capRadius);
                     if (pen.EndLineCap == PenLineCap.Round)
-                        DrawEllipse(pen.Brush, null, endPt, capRadius, capRadius);
+                        DrawEllipse(pen.Brush, null,
+                            new Point(endPt.X + capSnapDx, endPt.Y + capSnapDy), capRadius, capRadius);
                 }
             }
         }
@@ -2016,11 +2459,6 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (cmds.Count == 0) return;
 
         var screenBounds = new Rect(geoBounds.X + ox, geoBounds.Y + oy, geoBounds.Width, geoBounds.Height);
-        if (TryFillPathAsImageBrush(brush, screenBounds))
-        {
-            return;
-        }
-
         var nativeBrush = GetNativeBrush(brush,
             (float)screenBounds.X, (float)screenBounds.Y,
             (float)screenBounds.Width, (float)screenBounds.Height);
@@ -2047,192 +2485,6 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             DrawPathFigurePolygon(strokeBrush, null, wFigure, FillRule.Nonzero, wBounds);
         }
-    }
-
-    private void DrawDashedPathFigure(Pen pen, PathFigure figure)
-    {
-        // Flatten the figure to get all points
-        var points = new List<Point> { figure.StartPoint };
-        var currentPoint = figure.StartPoint;
-        foreach (var segment in figure.Segments)
-        {
-            switch (segment)
-            {
-                case LineSegment ls:
-                    points.Add(ls.Point);
-                    currentPoint = ls.Point;
-                    break;
-                case PolyLineSegment pls:
-                    points.AddRange(pls.Points);
-                    if (pls.Points.Count > 0) currentPoint = pls.Points[^1];
-                    break;
-                case BezierSegment bez:
-                    points.AddRange(GetBezierPoints(currentPoint, bez.Point1, bez.Point2, bez.Point3));
-                    currentPoint = bez.Point3;
-                    break;
-                case PolyBezierSegment pbez:
-                    var bpts = pbez.Points;
-                    for (int i = 0; i + 2 < bpts.Count; i += 3)
-                    {
-                        points.AddRange(GetBezierPoints(currentPoint, bpts[i], bpts[i + 1], bpts[i + 2]));
-                        currentPoint = bpts[i + 2];
-                    }
-                    break;
-                case QuadraticBezierSegment q:
-                    points.AddRange(GetQuadBezierPoints(currentPoint, q.Point1, q.Point2));
-                    currentPoint = q.Point2;
-                    break;
-                case PolyQuadraticBezierSegment pq:
-                    var qpts = pq.Points;
-                    for (int i = 0; i + 1 < qpts.Count; i += 2)
-                    {
-                        points.AddRange(GetQuadBezierPoints(currentPoint, qpts[i], qpts[i + 1]));
-                        currentPoint = qpts[i + 1];
-                    }
-                    break;
-                case ArcSegment arc:
-                    points.AddRange(GetArcPoints(currentPoint, arc));
-                    currentPoint = arc.Point;
-                    break;
-            }
-        }
-
-        if (figure.IsClosed && points.Count > 1)
-        {
-            var first = points[0];
-            var last = points[^1];
-            if (Math.Abs(first.X - last.X) > 1e-10 || Math.Abs(first.Y - last.Y) > 1e-10)
-                points.Add(first);
-        }
-
-        if (points.Count < 2) return;
-
-        // Compute cumulative distances
-        var dashes = pen.DashStyle!.Dashes;
-        var dashOffset = pen.DashStyle.Offset * pen.Thickness;
-        if (dashes.Count == 0) return;
-
-        // Build the dash pattern in absolute units
-        var pattern = new double[dashes.Count];
-        double patternLength = 0;
-        for (int i = 0; i < dashes.Count; i++)
-        {
-            pattern[i] = dashes[i] * pen.Thickness;
-            patternLength += pattern[i];
-        }
-        if (patternLength <= 0) return;
-
-        // Walk along the polyline, emitting dashed sub-segments
-        if (pen.Brush == null) return;
-        var strokeBrush = GetNativeBrush(pen.Brush);
-        if (strokeBrush == null) return;
-
-        int dashIndex = 0;
-        bool drawing = true; // true = dash (visible), false = gap
-        double remaining = pattern[0];
-
-        // Apply dash offset
-        double offset = dashOffset % patternLength;
-        if (offset < 0) offset += patternLength;
-        while (offset > 0)
-        {
-            if (offset >= remaining)
-            {
-                offset -= remaining;
-                dashIndex = (dashIndex + 1) % pattern.Length;
-                drawing = !drawing;
-                remaining = pattern[dashIndex];
-            }
-            else
-            {
-                remaining -= offset;
-                offset = 0;
-            }
-        }
-
-        var dashStart = points[0];
-        int ptIndex = 0;
-
-        while (ptIndex < points.Count - 1)
-        {
-            var segStart = points[ptIndex];
-            var segEnd = points[ptIndex + 1];
-            var segDx = segEnd.X - segStart.X;
-            var segDy = segEnd.Y - segStart.Y;
-            var segLen = Math.Sqrt(segDx * segDx + segDy * segDy);
-
-            if (segLen < 1e-10)
-            {
-                ptIndex++;
-                continue;
-            }
-
-            double consumed = 0;
-            while (consumed < segLen - 1e-10)
-            {
-                var available = segLen - consumed;
-                if (remaining <= available)
-                {
-                    // Finish this dash/gap segment
-                    var t = (consumed + remaining) / segLen;
-                    var endPt = new Point(
-                        segStart.X + segDx * t,
-                        segStart.Y + segDy * t);
-
-                    if (drawing)
-                    {
-                        // Emit stroke from dashStart to endPt
-                        EmitStrokeLine(dashStart, endPt, strokeBrush, (float)pen.Thickness);
-                    }
-
-                    consumed += remaining;
-                    dashStart = endPt;
-                    dashIndex = (dashIndex + 1) % pattern.Length;
-                    drawing = !drawing;
-                    remaining = pattern[dashIndex];
-                }
-                else
-                {
-                    // This segment ends before the current dash/gap completes
-                    remaining -= available;
-                    if (drawing)
-                    {
-                        // dashStart to segEnd is part of a visible dash; don't emit yet
-                    }
-                    consumed = segLen;
-                }
-            }
-
-            ptIndex++;
-            if (ptIndex < points.Count && !drawing)
-            {
-                // In a gap, update dashStart to next point
-            }
-            else if (ptIndex < points.Count && drawing)
-            {
-                // Continuing a dash into the next segment, dashStart stays
-            }
-        }
-
-        // Emit final dash segment if we're still drawing
-        if (drawing && ptIndex > 0)
-        {
-            var lastPt = points[^1];
-            if (Math.Abs(dashStart.X - lastPt.X) > 1e-10 || Math.Abs(dashStart.Y - lastPt.Y) > 1e-10)
-            {
-                EmitStrokeLine(dashStart, lastPt, strokeBrush, (float)pen.Thickness);
-            }
-        }
-    }
-
-    private void EmitStrokeLine(Point from, Point to, NativeBrush brush, float strokeWidth)
-    {
-        var ox = Offset.X;
-        var oy = Offset.Y;
-        _renderTarget.DrawLine(
-            (float)(from.X + ox), (float)(from.Y + oy),
-            (float)(to.X + ox), (float)(to.Y + oy),
-            brush, strokeWidth);
     }
 
     /// <summary>
@@ -2524,25 +2776,18 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         if (brush != null && figure.IsFilled)
         {
-            if (brush is ImageBrush)
-            {
-                TryFillPathAsImageBrush(brush, new Rect(bx, by, bw, bh));
-            }
-            else
-            {
-                long brushStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
-                var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
-                if (_svgDiagActive)
-                    _svgGetBrushTicks += Stopwatch.GetTimestamp() - brushStart;
+            long brushStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
+            var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
+            if (_svgDiagActive)
+                _svgGetBrushTicks += Stopwatch.GetTimestamp() - brushStart;
 
-                if (nativeBrush != null)
-                {
-                    int rule = fillRule == FillRule.Nonzero ? 1 : 0;
-                    long nativeStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
-                    _renderTarget.FillPath(startX, startY, cmdArray, commandCount, nativeBrush, rule);
-                    if (_svgDiagActive)
-                        _svgNativeCallTicks += Stopwatch.GetTimestamp() - nativeStart;
-                }
+            if (nativeBrush != null)
+            {
+                int rule = fillRule == FillRule.Nonzero ? 1 : 0;
+                long nativeStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
+                _renderTarget.FillPath(startX, startY, cmdArray, commandCount, nativeBrush, rule);
+                if (_svgDiagActive)
+                    _svgNativeCallTicks += Stopwatch.GetTimestamp() - nativeStart;
             }
         }
 
@@ -2555,22 +2800,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
             if (strokeBrush != null)
             {
-                int nativeLineCap = pen.StartLineCap switch
+                if (!TryCreateNativeDash(pen, out var dashArray, out var dashOff)) return;
+                var cap = dashArray is null ? pen.StartLineCap : pen.DashCap;
+                int nativeLineCap = cap switch
                 {
-                    PenLineCap.Round => 2,    // kLineCapRound
-                    PenLineCap.Square => 1,   // kLineCapSquare
-                    _ => 0                    // kLineCapButt (Flat, Triangle)
+                    PenLineCap.Round => 2,
+                    PenLineCap.Square => 1,
+                    _ => 0,
                 };
-                // Marshal dash pattern if present
-                float[]? dashArray = null;
-                float dashOff = 0f;
-                if (pen.DashStyle?.Dashes is { Count: > 0 } dashes)
-                {
-                    dashArray = new float[dashes.Count];
-                    for (int di = 0; di < dashes.Count; di++)
-                        dashArray[di] = (float)(dashes[di] * pen.Thickness);
-                    dashOff = (float)(pen.DashStyle.Offset * pen.Thickness);
-                }
                 long nativeStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
                 _renderTarget.StrokePath(startX, startY, cmdArray, commandCount, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit, nativeLineCap, dashArray, dashOff);
                 if (_svgDiagActive)
@@ -2586,7 +2823,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private List<Point>? _polygonPointBuffer;
 
     private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds)
+        => DrawPathFigurePolygon(brush, pen, figure, fillRule, geoBounds, out _, out _);
+
+    private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds,
+        out double appliedSnapDx, out double appliedSnapDy)
     {
+        appliedSnapDx = 0;
+        appliedSnapDy = 0;
+
         if (_svgDiagActive)
             _svgDrawPathPolygonCount++;
 
@@ -2657,30 +2901,33 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
         }
 
-        // The native DrawPolygon already adds a 0.5 offset for odd-pixel strokes
-        // to align to pixel centers.  The managed side must therefore snap to the
-        // nearest *integer* so the combined result lands on half-pixel → crisp 1px.
-        // Using SnapCoordinate (which preserves half-pixel values) would cause a
-        // double offset: 0.5 (snap) + 0.5 (native) = 1.0 → integer position →
-        // the stroke spans two pixel rows and appears ~2px thick.
+        // Axis-aligned figures are snapped so their DEVICE-space stroke phase is
+        // crisp. The old contract here ("managed rounds to the nearest integer,
+        // native DrawPolygon adds 0.5 for odd widths") is dead: the Impeller
+        // stroke path applies no such shift, so integer-rounded coordinates
+        // parked every 1px line exactly on a pixel BOUNDARY — anti-aliasing then
+        // splits it across two ~60% columns and a 1px stroke reads as a fuzzy
+        // 2px one.
         //
-        // For paths that contain diagonal segments we skip snapping entirely so
-        // that the native 0.5 shift is a uniform translation (no visual impact on
-        // thickness) and anti-aliased diagonals render at their natural weight.
+        // The snap therefore happens in device pixels (native scale × DPI folded
+        // in) and picks the phase from the rounded device stroke width: odd
+        // widths get a half-pixel center, even widths an integer center,
+        // fill-only polygons an integer edge. Under rotation/skew "axis-aligned"
+        // has no device meaning and the snap is skipped, as it is for diagonal
+        // segments, so anti-aliased diagonals render at their natural weight.
         bool isAxisAligned = !hasCurvedSegments && IsAxisAlignedPath(points);
 
         var pointArray = new float[points.Count * 2];
-        if (isAxisAligned && points.Count > 0)
+        double snapDx = 0, snapDy = 0;
+        bool hasStroke = pen?.Brush != null && pen.Thickness > 0;
+        if (isAxisAligned && points.Count > 0
+            && TryComputeAxisAlignedSnap(
+                points[0].X + Offset.X, points[0].Y + Offset.Y,
+                hasStroke ? pen!.Thickness : 0.0, hasStroke,
+                out snapDx, out snapDy))
         {
-            // Snap the first point to the nearest integer, then apply the
-            // same fractional offset to all subsequent points.  This preserves
-            // relative distances (lengths) between points while still aligning
-            // the path to the pixel grid for crisp rendering.
-            var baseX = points[0].X + Offset.X;
-            var baseY = points[0].Y + Offset.Y;
-            var snapDx = Math.Round(baseX) - baseX;
-            var snapDy = Math.Round(baseY) - baseY;
-
+            appliedSnapDx = snapDx;
+            appliedSnapDy = snapDy;
             for (int i = 0; i < points.Count; i++)
             {
                 pointArray[i * 2] = (float)(points[i].X + Offset.X + snapDx);
@@ -2703,18 +2950,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         if (brush != null && figure.IsFilled && points.Count >= 3)
         {
-            if (brush is ImageBrush)
+            int rule = fillRule == FillRule.Nonzero ? 1 : 0;
+            var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
+            if (nativeBrush != null)
             {
-                TryFillPathAsImageBrush(brush, new Rect(bx, by, bw, bh));
-            }
-            else
-            {
-                int rule = fillRule == FillRule.Nonzero ? 1 : 0;
-                var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
-                if (nativeBrush != null)
-                {
-                    _renderTarget.FillPolygon(pointArray, nativeBrush, rule);
-                }
+                _renderTarget.FillPolygon(pointArray, nativeBrush, rule);
             }
         }
 
@@ -2726,6 +2966,121 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit);
             }
         }
+    }
+
+    /// <summary>
+    /// Computes the translation that parks an axis-aligned polygon figure on the crisp
+    /// device-pixel phase, folding the mirrored native transform and the render target's
+    /// DPI scale into the calculation. Returns false when the accumulated transform
+    /// rotates or skews (axis alignment has no device meaning there) — callers then
+    /// draw unsnapped.
+    /// </summary>
+    private bool TryComputeAxisAlignedSnap(
+        double baseX, double baseY, double strokeThickness, bool hasStroke,
+        out double snapDx, out double snapDy)
+    {
+        double m11 = 1, m12 = 0, m21 = 0, m22 = 1, tdx = 0, tdy = 0;
+        if (_nativeTransformDepth > 0)
+        {
+            m11 = _currentNativeMatrix[0];
+            m12 = _currentNativeMatrix[1];
+            m21 = _currentNativeMatrix[2];
+            m22 = _currentNativeMatrix[3];
+            tdx = _currentNativeMatrix[4];
+            tdy = _currentNativeMatrix[5];
+        }
+
+        return ComputeAxisAlignedSnap(
+            baseX, baseY, strokeThickness, hasStroke,
+            m11, m12, m21, m22, tdx, tdy,
+            _renderTarget.DpiScaleX, _renderTarget.DpiScaleY,
+            out snapDx, out snapDy);
+    }
+
+    /// <summary>
+    /// Device-phase snap arithmetic for axis-aligned polygon figures, separated from
+    /// the drawing-context state so it is testable. The returned offsets are in the
+    /// caller's (pre-transform) coordinate space and are applied uniformly to every
+    /// point of the figure, preserving segment lengths.
+    /// </summary>
+    /// <remarks>
+    /// The native renderer multiplies coordinates by transform × dpiScale, so the
+    /// device-space center of a stroked line is <c>coord·scale·dpi + translate·dpi</c>.
+    /// A stroke whose rounded device width is ODD is crispest with its center on a
+    /// half-pixel (covers a whole pixel column exactly); an EVEN width wants an
+    /// integer center (covers whole columns on both sides). A fill-only polygon wants
+    /// its EDGE on an integer. Getting this phase wrong is not subtle: a 1px line
+    /// centered on a pixel boundary is split by anti-aliasing into two half-covered
+    /// columns and visibly reads as a blurry 2px line.
+    /// </remarks>
+    internal static bool ComputeAxisAlignedSnap(
+        double baseX, double baseY, double strokeThickness, bool hasStroke,
+        double m11, double m12, double m21, double m22, double tdx, double tdy,
+        double dpiScaleX, double dpiScaleY,
+        out double snapDx, out double snapDy)
+    {
+        snapDx = 0;
+        snapDy = 0;
+
+        // Rotation / skew / mirroring / degenerate scale: no meaningful device phase.
+        if (Math.Abs(m12) > 1e-6 || Math.Abs(m21) > 1e-6) return false;
+        if (!(m11 > 0) || !(m22 > 0) || !double.IsFinite(m11) || !double.IsFinite(m22)) return false;
+
+        var dpiX = dpiScaleX > 0 && double.IsFinite(dpiScaleX) ? dpiScaleX : 1.0;
+        var dpiY = dpiScaleY > 0 && double.IsFinite(dpiScaleY) ? dpiScaleY : 1.0;
+        var sx = m11 * dpiX;
+        var sy = m22 * dpiY;
+        if (!(sx > 0) || !(sy > 0) || !double.IsFinite(sx) || !double.IsFinite(sy)) return false;
+
+        var devX = baseX * sx + tdx * dpiX;
+        var devY = baseY * sy + tdy * dpiY;
+        if (!double.IsFinite(devX) || !double.IsFinite(devY)) return false;
+
+        double targetX, targetY;
+        if (hasStroke && strokeThickness > 0)
+        {
+            targetX = SnapStrokeCenter(devX, strokeThickness * sx);
+            targetY = SnapStrokeCenter(devY, strokeThickness * sy);
+        }
+        else
+        {
+            targetX = Math.Round(devX);
+            targetY = Math.Round(devY);
+        }
+
+        snapDx = (targetX - devX) / sx;
+        snapDy = (targetY - devY) / sy;
+        return double.IsFinite(snapDx) && double.IsFinite(snapDy);
+    }
+
+    /// <summary>
+    /// Snaps a device-space stroke center-line coordinate to the phase matching its
+    /// device-space width: odd rounded widths → half-pixel center, even → integer center.
+    /// </summary>
+    internal static double SnapStrokeCenter(double deviceCoord, double deviceWidth)
+    {
+        if (!(deviceWidth > 0) || !double.IsFinite(deviceWidth))
+            return Math.Round(deviceCoord);
+
+        return RoundWidthPreferOdd(deviceWidth) % 2 == 1
+            ? Math.Floor(deviceCoord) + 0.5
+            : Math.Round(deviceCoord);
+    }
+
+    /// <summary>
+    /// Rounds a device stroke width to whole pixels for the phase decision. Exact
+    /// midpoints (x.5) resolve toward the ODD neighbour: at e.g. 1.5px the half-pixel
+    /// phase renders one full column with light side bleed (reads as one line) while
+    /// the integer phase renders two 75% columns (reads as a fuzzy pair).
+    /// </summary>
+    internal static int RoundWidthPreferOdd(double deviceWidth)
+    {
+        var floor = Math.Floor(deviceWidth);
+        var frac = deviceWidth - floor;
+        var lower = Math.Max(0, (int)floor);
+        if (frac > 0.5 + 1e-9) return lower + 1;
+        if (frac < 0.5 - 1e-9) return Math.Max(1, lower);
+        return lower % 2 == 1 ? lower : lower + 1;
     }
 
     /// <summary>
@@ -2947,24 +3302,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // stretch the visible geometry to fill the target rect, breaking
         // centering (e.g. settings cog) and clipping content positioned at
         // the viewport edges (e.g. notification bell decorations).
-        Drawing? vectorDrawing = null;
-        Rect vectorViewport = Rect.Empty;
-        switch (imageSource)
+        if (TryResolveVectorImageSource(imageSource, out var vectorDrawing, out var vectorViewport))
         {
-            case SvgImage svg when svg.Drawing != null:
-                vectorDrawing = svg.Drawing;
-                vectorViewport = (svg.Width > 0 && svg.Height > 0)
-                    ? new Rect(0, 0, svg.Width, svg.Height)
-                    : svg.Drawing.Bounds;
-                break;
-            case DrawingImage di when di.Drawing != null:
-                vectorDrawing = di.Drawing;
-                vectorViewport = di.Drawing.Bounds;
-                break;
-        }
-        if (vectorDrawing != null)
-        {
-            var drawing = vectorDrawing;
+            var drawing = vectorDrawing!;
             if (vectorViewport.IsEmpty || vectorViewport.Width <= 0 || vectorViewport.Height <= 0) return;
 
             // Rasterize at device-pixel resolution so the software anti-aliasing isn't
@@ -3002,7 +3342,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             if (_vectorDrawingCache.TryGetValue(imageSource, out var cached) &&
                 cached.RasterizedBitmap != null &&
                 cached.PixelWidth == targetW && cached.PixelHeight == targetH &&
-                cached.MatchesTouchedSourceGenerations())
+                cached.SourceGeneration == imageSource.ContentGeneration && cached.MatchesTouchedSourceGenerations())
             {
                 // Cache hit — draw via the standard bitmap pipeline (< 0.1ms)
                 var cachedNative = GetNativeBitmap(cached.RasterizedBitmap);
@@ -3018,6 +3358,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                     return;
                 }
             }
+
+            if (_vectorDrawingCache.TryGetValue(imageSource, out var staleVector))
+                DropVectorRaster(imageSource, staleVector);
 
             // ── Cache miss: rasterize SVG to BGRA pixel buffer ──
             _svgDiagStopwatch ??= new Stopwatch();
@@ -3040,6 +3383,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // staleness signal: this raster is a flat snapshot of sources that publish
             // asynchronously, and the very first rasterization of a URI-backed inner bitmap
             // necessarily happens before its decode has produced anything.
+            var drawingGeneration = imageSource.ContentGeneration;
             var touchedSources = new HashSet<ImageSource>();
             var pixels = SoftwareVectorRasterizer.Rasterize(
                 drawing, targetW, targetH, vectorViewport, touchedSources);
@@ -3068,6 +3412,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                     RasterizedBitmap = rasterized,
                     PixelWidth = targetW,
                     PixelHeight = targetH,
+                    SourceGeneration = drawingGeneration,
                     TouchedSources = dependencies,
                 };
 
@@ -3348,10 +3693,33 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 _currentNativeMatrix[0], _currentNativeMatrix[1],
                 _currentNativeMatrix[2], _currentNativeMatrix[3],
                 _currentNativeMatrix[4], _currentNativeMatrix[5]);
-            Jalium.UI.Media.Matrix toNative;
-            if (current.TryInvert(out var currentInv))
+            // D3D12 offscreen captures add a native-only translation from surface
+            // coordinates to the capture origin. Include it in the conjugation so
+            // a child's local scale/rotation does not transform that translation.
+            // Keep the managed mirror in surface space for offsets and culling.
+            var nativeCurrent = current;
+            if (_inLayerCapture && _renderTarget.Backend == RenderBackend.D3D12 &&
+                _layerCaptureClipBounds is Rect layerBounds)
             {
-                toNative = currentInv * incoming * current;
+                nativeCurrent *= new Jalium.UI.Media.Matrix(
+                    1, 0, 0, 1, -layerBounds.X, -layerBounds.Y);
+            }
+            else if (_renderTarget.Backend == RenderBackend.D3D12 &&
+                _effectCaptureFrameStack.Count > 0)
+            {
+                // Native effect captures cannot nest: inner effect scopes draw
+                // into the first capture, so its origin remains authoritative.
+                // Omitting this translation rotates children around the window
+                // origin instead of their position in a shadow/blur texture.
+                var capture = _effectCaptureFrameStack.Last();
+                nativeCurrent *= new Jalium.UI.Media.Matrix(
+                    1, 0, 0, 1, -capture.ScreenX, -capture.ScreenY);
+            }
+
+            Jalium.UI.Media.Matrix toNative;
+            if (nativeCurrent.TryInvert(out var currentInv))
+            {
+                toNative = currentInv * incoming * nativeCurrent;
             }
             else
             {
@@ -3417,6 +3785,63 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public override void PushClip(Geometry clipGeometry)
     {
         if (_closed || clipGeometry == null) return;
+
+        if (clipGeometry is Jalium.UI.Styling.CssRoundedRectangleGeometry cssRounded)
+        {
+            var reference = cssRounded.ClipReferenceRect;
+            var offsetReference = new Rect(reference.X + Offset.X, reference.Y + Offset.Y, reference.Width, reference.Height);
+            var native = new NativeEllipticalClip(offsetReference, cssRounded.Radii, cssRounded.ClipEdges);
+            if (_renderTarget.TryPushEllipticalRectClip(native))
+            {
+                var cull = ResolveBoundsClip(offsetReference, cssRounded.ClipEdges, GetBoundsClipLimit());
+                PushClipBounds(cull);
+                _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
+                return;
+            }
+            Jalium.UI.Styling.CssDiagnostics.Report("border-radius", Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                typeof(RenderTargetDrawingContext), "this native backend does not implement two-axis corner clipping");
+            if (cssRounded.Radii.IsCircular)
+                clipGeometry = new RectangleGeometry(cssRounded.Rect, cssRounded.Radii.Circular);
+        }
+
+        if (clipGeometry.Bounds.IsEmpty)
+        {
+            PushClipBounds(new Rect(0, 0, 0, 0));
+            _renderTarget.PushClip(0, 0, 0, 0);
+            _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
+            return;
+        }
+
+        if (clipGeometry is PathGeometry path && path.Figures.Count > 0)
+        {
+            _pathCommandBuffer ??= new List<float>(128);
+            _pathCommandBuffer.Clear();
+            var commands = _pathCommandBuffer;
+            var first = path.Figures[0];
+            var startX = (float)(first.StartPoint.X + Offset.X);
+            var startY = (float)(first.StartPoint.Y + Offset.Y);
+            for (var index = 0; index < path.Figures.Count; index++)
+            {
+                var figure = path.Figures[index];
+                if (index > 0)
+                {
+                    commands.Add(2f);
+                    commands.Add((float)(figure.StartPoint.X + Offset.X));
+                    commands.Add((float)(figure.StartPoint.Y + Offset.Y));
+                }
+                AppendFigureSegments(commands, figure, figure.StartPoint, Offset.X, Offset.Y);
+                if (figure.IsClosed) commands.Add(5f);
+            }
+            if (commands.Count > 0 && _renderTarget.TryPushPathClip(startX, startY,
+                    CopyPathCommands(commands), commands.Count, path.FillRule == FillRule.Nonzero ? 1 : 0))
+            {
+                var pathBounds = path.Bounds;
+                PushClipBounds(new Rect(pathBounds.X + Offset.X, pathBounds.Y + Offset.Y,
+                    pathBounds.Width, pathBounds.Height));
+                _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
+                return;
+            }
+        }
 
         var rectangleGeometry = clipGeometry as RectangleGeometry;
         var bounds = rectangleGeometry is
@@ -3858,13 +4283,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         _effectCaptureCullSuspendDepth++;
 
         float nativeX = x, nativeY = y, nativeW = w, nativeH = h;
-        var frame = new EffectCaptureFrame(x, y, Transformed: false);
+        var frame = new EffectCaptureFrame(x, y, w, h, Transformed: false);
         if (TryGetActiveNativeTransform(out var liveMatrix))
         {
             var screenRect = ComputeScreenEffectCaptureRect(
                 new Rect(x, y, w, h), liveMatrix,
                 _renderTarget.DpiScaleX, _renderTarget.DpiScaleY);
-            frame = new EffectCaptureFrame(screenRect.X, screenRect.Y, Transformed: true);
+            frame = new EffectCaptureFrame(screenRect.X, screenRect.Y,
+                screenRect.Width, screenRect.Height, Transformed: true);
             if (NativeEffectCaptureRectIsPostTransform)
             {
                 nativeX = (float)screenRect.X;
@@ -3993,7 +4419,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// of the native call (pushes its inverse — the same trick DrawText uses to
     /// rasterize glyphs at screen resolution) and hands native SCREEN-space geometry:
     /// the AABB of the transformed element rect, the shadow/glow offsets mapped through
-    /// the linear part, isotropic radii scaled by the average axis scale, and a UV
+    /// the linear part, circular radii scaled by the average (or CSS X/Y radii by their
+    /// corresponding axis scales), and a UV
     /// offset relative to the screen-space capture origin recorded at
     /// <see cref="BeginEffectCapture"/>. Rotation/skew degrade to the AABB for the
     /// analytic shadow shape (the content composite stays exact) — the same
@@ -4002,6 +4429,76 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public void ApplyElementEffect(IEffect effect, float x, float y, float w, float h,
         float captureOriginX = 0, float captureOriginY = 0,
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
+        => ApplyElementEffectInternal(effect, x, y, w, h,
+            captureOriginX, captureOriginY,
+            cornerTL, cornerTR, cornerBR, cornerBL, null, null);
+
+    public void ApplyCssTextShadowsOnly(IEffect shadows,
+        float x, float y, float w, float h, float captureOriginX, float captureOriginY)
+        => ApplyElementEffectInternal(shadows, x, y, w, h,
+            captureOriginX, captureOriginY,
+            0, 0, 0, 0, null, null, textShadowOnly: true);
+
+    /// <inheritdoc />
+    public void ApplyElementEffectElliptical(IEffect effect, float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY)
+        => ApplyElementEffectEllipticalWithBorder(effect, x, y, w, h,
+            captureOriginX, captureOriginY,
+            topLeftX, topLeftY, topRightX, topRightY,
+            bottomRightX, bottomRightY, bottomLeftX, bottomLeftY, default);
+
+    /// <inheritdoc />
+    public void ApplyElementEffectEllipticalWithBorder(IEffect effect, float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY,
+        Thickness borderThickness)
+    {
+        var radii = new Jalium.UI.Styling.CssUsedBorderRadii(
+            new(topLeftX, topLeftY), new(topRightX, topRightY),
+            new(bottomRightX, bottomRightY), new(bottomLeftX, bottomLeftY));
+        var contour = new NativeEllipticalClip(new Rect(x, y, w, h), radii, ClipEdges.All);
+        static double Edge(double value) => double.IsFinite(value) && value > 0 ? value : 0;
+        var border = new Thickness(Edge(borderThickness.Left), Edge(borderThickness.Top),
+            Edge(borderThickness.Right), Edge(borderThickness.Bottom));
+        var innerRect = new Rect(x + border.Left, y + border.Top,
+            Math.Max(0, w - border.Left - border.Right),
+            Math.Max(0, h - border.Top - border.Bottom));
+        var insetContour = new NativeEllipticalClip(innerRect, radii.Inset(border), ClipEdges.All);
+        ApplyElementEffectInternal(effect, x, y, w, h,
+            captureOriginX, captureOriginY,
+            topLeftX, topRightX, bottomRightX, bottomLeftX, contour, insetContour);
+    }
+
+    public void PaintCssShadowLayers(IEffect shadows, bool inset,
+        float x, float y, float w, float h,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY,
+        Thickness borderThickness)
+    {
+        var radii = new Jalium.UI.Styling.CssUsedBorderRadii(
+            new(topLeftX, topLeftY), new(topRightX, topRightY),
+            new(bottomRightX, bottomRightY), new(bottomLeftX, bottomLeftY));
+        var contour = new NativeEllipticalClip(new Rect(x, y, w, h), radii, ClipEdges.All);
+        static double Edge(double value) => double.IsFinite(value) && value > 0 ? value : 0;
+        var border = new Thickness(Edge(borderThickness.Left), Edge(borderThickness.Top),
+            Edge(borderThickness.Right), Edge(borderThickness.Bottom));
+        var innerRect = new Rect(x + border.Left, y + border.Top,
+            Math.Max(0, w - border.Left - border.Right),
+            Math.Max(0, h - border.Top - border.Bottom));
+        var insetContour = new NativeEllipticalClip(innerRect, radii.Inset(border), ClipEdges.All);
+        ApplyElementEffectInternal(shadows, x, y, w, h, x, y,
+            topLeftX, topRightX, bottomRightX, bottomLeftX,
+            contour, insetContour, paintInsetLayer: inset);
+    }
+
+    private void ApplyElementEffectInternal(IEffect effect, float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL,
+        NativeEllipticalClip? ellipticalContour, NativeEllipticalClip? insetContour,
+        bool? paintInsetLayer = null, bool textShadowOnly = false)
     {
         if (_closed || effect == null || SimplifyElementEffects) return;
 
@@ -4010,17 +4507,23 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             // Identity (or singular — nothing sensible to draw): the historical path,
             // untouched. UV offset = element position relative to the capture origin.
-            ApplyElementEffectCore(effect, x, y, w, h,
-                x - captureOriginX, y - captureOriginY,
-                Jalium.UI.Media.Matrix.Identity, 1.0,
-                cornerTL, cornerTR, cornerBR, cornerBL);
+            if (paintInsetLayer is { } inset)
+                PaintCssShadowLayerCore(effect, inset, x, y, w, h,
+                    Jalium.UI.Media.Matrix.Identity, 1.0,
+                    ellipticalContour, insetContour);
+            else
+                ApplyElementEffectCore(effect, x, y, w, h,
+                    x - captureOriginX, y - captureOriginY,
+                    Jalium.UI.Media.Matrix.Identity, 1.0,
+                    cornerTL, cornerTR, cornerBR, cornerBL, ellipticalContour, insetContour,
+                    textShadowOnly: textShadowOnly);
             return;
         }
 
         var elementRect = TransformRectAabb(new Rect(x, y, w, h),
             liveMatrix.M11, liveMatrix.M12, liveMatrix.M21, liveMatrix.M22,
             liveMatrix.OffsetX, liveMatrix.OffsetY);
-        GetTransformScales(liveMatrix, out _, out _, out var scale);
+        GetTransformScales(liveMatrix, out var scaleX, out var scaleY, out var scale);
 
         // Screen-space capture origin: what BeginEffectCapture recorded for this scope.
         // A frame that was NOT recorded under a transform (unbalanced push between Begin
@@ -4029,7 +4532,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // the element instead of drawing from a stale field.
         var frame = _lastEndedEffectCapture;
         double captureScreenX, captureScreenY;
-        if (frame.Transformed)
+        if (paintInsetLayer is not null)
+        {
+            // Direct CSS shadow layers draw during the current capture and do
+            // not sample the previously ended capture's UV origin.
+            captureScreenX = elementRect.X;
+            captureScreenY = elementRect.Y;
+        }
+        else if (frame.Transformed)
         {
             captureScreenX = frame.ScreenX;
             captureScreenY = frame.ScreenY;
@@ -4054,13 +4564,39 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         _renderTarget.PushTransform(inv);
         try
         {
-            ApplyElementEffectCore(effect,
-                (float)elementRect.X, (float)elementRect.Y,
-                (float)elementRect.Width, (float)elementRect.Height,
-                (float)(elementRect.X - captureScreenX), (float)(elementRect.Y - captureScreenY),
-                liveMatrix, scale,
-                (float)(cornerTL * scale), (float)(cornerTR * scale),
-                (float)(cornerBR * scale), (float)(cornerBL * scale));
+            NativeEllipticalClip TransformContour(NativeEllipticalClip sourceContour)
+            {
+                var sourceRect = new Rect(sourceContour.X, sourceContour.Y,
+                    sourceContour.Width, sourceContour.Height);
+                var screenRect = TransformRectAabb(sourceRect,
+                    liveMatrix.M11, liveMatrix.M12, liveMatrix.M21, liveMatrix.M22,
+                    liveMatrix.OffsetX, liveMatrix.OffsetY);
+                var transformedRadii = new Jalium.UI.Styling.CssUsedBorderRadii(
+                    new(sourceContour.TopLeftX * scaleX, sourceContour.TopLeftY * scaleY),
+                    new(sourceContour.TopRightX * scaleX, sourceContour.TopRightY * scaleY),
+                    new(sourceContour.BottomRightX * scaleX, sourceContour.BottomRightY * scaleY),
+                    new(sourceContour.BottomLeftX * scaleX, sourceContour.BottomLeftY * scaleY));
+                return new NativeEllipticalClip(screenRect, transformedRadii, ClipEdges.All);
+            }
+            var transformedContour = ellipticalContour is { } outer
+                ? TransformContour(outer) : (NativeEllipticalClip?)null;
+            var transformedInset = insetContour is { } inner
+                ? TransformContour(inner) : (NativeEllipticalClip?)null;
+            if (paintInsetLayer is { } inset)
+                PaintCssShadowLayerCore(effect, inset,
+                    (float)elementRect.X, (float)elementRect.Y,
+                    (float)elementRect.Width, (float)elementRect.Height,
+                    liveMatrix, scale, transformedContour, transformedInset);
+            else
+                ApplyElementEffectCore(effect,
+                    (float)elementRect.X, (float)elementRect.Y,
+                    (float)elementRect.Width, (float)elementRect.Height,
+                    (float)(elementRect.X - captureScreenX), (float)(elementRect.Y - captureScreenY),
+                    liveMatrix, scale,
+                    (float)(cornerTL * scale), (float)(cornerTR * scale),
+                    (float)(cornerBR * scale), (float)(cornerBL * scale),
+                    transformedContour, transformedInset,
+                    textShadowOnly: textShadowOnly);
         }
         finally
         {
@@ -4069,28 +4605,178 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     }
 
     /// <summary>
-    /// Effect dispatch in the space native will draw in. <paramref name="space"/> is the
-    /// live matrix whose linear part maps effect OFFSET vectors (shadow/inner-shadow
-    /// offsets, emboss light direction) into that space; <paramref name="scale"/> scales
-    /// isotropic pixel quantities (blur radii, glow size, emboss relief). Identity /
-    /// 1.0 at identity, where the arguments are the caller's untransformed values.
-    /// EffectGroup recursion stays inside this method so the compensation above is
-    /// applied exactly once per capture.
+    /// Paints CSS shadow geometry into the active filter capture. The live
+    /// <paramref name="space"/> maps shadow offsets; <paramref name="scale"/>
+    /// maps blur and spread lengths. The caller has already compensated the
+    /// native transform and resolved both border and padding contours.
     /// </summary>
+    private void PaintCssShadowLayerCore(IEffect shadows, bool inset,
+        float x, float y, float w, float h,
+        Jalium.UI.Media.Matrix space, double scale,
+        NativeEllipticalClip? outerContour, NativeEllipticalClip? insetContour)
+    {
+        var outer = outerContour ?? new NativeEllipticalClip(new Rect(x, y, w, h),
+            new Jalium.UI.Styling.CssUsedBorderRadii(default, default, default, default),
+            ClipEdges.All);
+        var inner = insetContour ?? outer;
+
+        void Paint(IEffect child)
+        {
+            if (!inset && child is Media.Effects.DropShadowEffect drop)
+            {
+                var color = drop.Color;
+                MapEffectVector(space, drop.OffsetX, drop.OffsetY, out var offX, out var offY);
+                var painted = _renderTarget.TryPaintCssOuterShadowLayerElliptical(
+                    x, y, w, h,
+                    NativeGaussianBlurRadius(drop, drop.BlurRadius, scale, softwareAnalytic: true),
+                    (float)offX, (float)offY,
+                    color.R / 255f, color.G / 255f, color.B / 255f,
+                    (color.A / 255f) * (float)drop.Opacity,
+                    outer, outer.Outset((float)(drop.SpreadRadius * scale)));
+                if (!painted)
+                    Jalium.UI.Styling.CssDiagnostics.Report("box-shadow",
+                        Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                        typeof(RenderTargetDrawingContext),
+                        "this native backend cannot paint a CSS outer-shadow layer inside a filter capture");
+            }
+            else if (inset && child is Media.Effects.InnerShadowEffect innerShadow)
+            {
+                var color = innerShadow.Color;
+                MapEffectVector(space, innerShadow.OffsetX, innerShadow.OffsetY,
+                    out var offX, out var offY);
+                var painted = _renderTarget.TryPaintCssInnerShadowLayerElliptical(
+                    x, y, w, h,
+                    NativeGaussianBlurRadius(innerShadow, innerShadow.BlurRadius, scale,
+                        softwareAnalytic: true),
+                    (float)offX, (float)offY,
+                    (float)(innerShadow.SpreadRadius * scale),
+                    color.R / 255f, color.G / 255f, color.B / 255f,
+                    (color.A / 255f) * (float)innerShadow.Opacity, inner);
+                if (!painted)
+                    Jalium.UI.Styling.CssDiagnostics.Report("box-shadow",
+                        Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                        typeof(RenderTargetDrawingContext),
+                        "this native backend cannot paint a CSS inner-shadow layer inside a filter capture");
+            }
+        }
+
+        if (shadows is Media.Effects.EffectGroup group && group.CssShadowsFrontToBack)
+        {
+            var children = group.ActiveEffects;
+            for (var i = children.Count - 1; i >= 0; i--)
+                Paint(children[i]);
+        }
+        else
+        {
+            Paint(shadows);
+        }
+    }
+
+    private float NativeGaussianBlurRadius(Media.Effects.Effect effect, double blurRadius,
+        double scale, bool softwareAnalytic)
+    {
+        var sigma = effect.CssGaussianSigma;
+        if (!double.IsFinite(sigma)) return (float)(blurRadius * scale);
+
+        // GPU Gaussian kernels and analytic shadows use sigma=radius/3.
+        // The software alpha-mask path uses three box passes with sigma≈radius/2.
+        var divisor = _renderTarget.Backend switch
+        {
+            RenderBackend.Software when !softwareAnalytic => 2.0,
+            RenderBackend.Software or RenderBackend.D3D12 or RenderBackend.Vulkan => 3.0,
+            _ => 0.0,
+        };
+        return (float)((divisor == 0 ? blurRadius : sigma * divisor) * scale);
+    }
+
+    private bool TryDrawCssTextShadowList(IEffect effect,
+        float x, float y, float w, float h, float uvOffX, float uvOffY,
+        Jalium.UI.Media.Matrix space, double scale, bool compositeSource)
+    {
+        var group = effect as Media.Effects.EffectGroup;
+        if (group is not null && (!group.CssShadowsFrontToBack || group.CssBoxShadowLayer ||
+            group.ActiveEffects.Any(static child =>
+                child is not Media.Effects.DropShadowEffect { CssUsesAlphaMask: true })))
+            return false;
+        if (group is null &&
+            effect is not Media.Effects.DropShadowEffect { CssUsesAlphaMask: true })
+            return false;
+
+        var count = group?.ActiveEffects.Count ?? 1;
+        if (count == 0) return false;
+        var layers = new float[count * 7];
+        for (var i = 0; i < count; i++)
+        {
+            var shadow = group is null
+                ? (Media.Effects.DropShadowEffect)effect
+                : (Media.Effects.DropShadowEffect)group.ActiveEffects[i];
+            var color = shadow.Color;
+            MapEffectVector(space, shadow.OffsetX, shadow.OffsetY,
+                out var offsetX, out var offsetY);
+            var layer = i * 7;
+            layers[layer] = NativeGaussianBlurRadius(shadow,
+                shadow.BlurRadius, scale, softwareAnalytic: false);
+            layers[layer + 1] = (float)offsetX;
+            layers[layer + 2] = (float)offsetY;
+            layers[layer + 3] = color.R / 255f;
+            layers[layer + 4] = color.G / 255f;
+            layers[layer + 5] = color.B / 255f;
+            layers[layer + 6] = (color.A / 255f) * (float)shadow.Opacity;
+        }
+        var capture = _lastEndedEffectCapture;
+        var captureX = capture.ScreenWidth > 0 ? (float)capture.ScreenX : x - uvOffX;
+        var captureY = capture.ScreenHeight > 0 ? (float)capture.ScreenY : y - uvOffY;
+        var captureW = capture.ScreenWidth > 0 ? (float)capture.ScreenWidth : w;
+        var captureH = capture.ScreenHeight > 0 ? (float)capture.ScreenHeight : h;
+        return _renderTarget.TryDrawCssTextShadows(x, y, w, h,
+            captureX, captureY, captureW, captureH,
+            layers, (uint)count, compositeSource);
+    }
+
     private void ApplyElementEffectCore(IEffect effect, float x, float y, float w, float h,
         float uvOffX, float uvOffY,
         Jalium.UI.Media.Matrix space, double scale,
-        float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL,
+        NativeEllipticalClip? ellipticalContour = null,
+        NativeEllipticalClip? insetContour = null,
+        bool skipInsetContentComposite = false, bool textShadowOnly = false)
     {
         if (!_effectApplicationPath.Add(effect)) return;
 
         try
         {
 
+        if (textShadowOnly)
+        {
+            if (!TryDrawCssTextShadowList(effect, x, y, w, h,
+                    uvOffX, uvOffY, space, scale, compositeSource: false))
+                Jalium.UI.Styling.CssDiagnostics.Report("text-shadow",
+                    Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                    typeof(RenderTargetDrawingContext),
+                    "this native backend cannot paint CSS inline text shadows");
+            return;
+        }
+
         if (effect is Media.Effects.BlurEffect blur)
         {
             if (blur.Radius > 0)
             {
+                var nativeRadius = NativeGaussianBlurRadius(blur, blur.Radius, scale,
+                    softwareAnalytic: false);
+                if (double.IsFinite(blur.CssGaussianSigma))
+                {
+                    // CSS filter blur paints the whole Gaussian apron. The
+                    // captured source is already isolated and padded; draw its
+                    // full rect without clipping the result to the element.
+                    var capture = _lastEndedEffectCapture;
+                    var captureX = capture.ScreenWidth > 0 ? (float)capture.ScreenX : x - uvOffX;
+                    var captureY = capture.ScreenHeight > 0 ? (float)capture.ScreenY : y - uvOffY;
+                    var captureW = capture.ScreenWidth > 0 ? (float)capture.ScreenWidth : w;
+                    var captureH = capture.ScreenHeight > 0 ? (float)capture.ScreenHeight : h;
+                    _renderTarget.DrawBlurEffect(captureX, captureY, captureW, captureH,
+                        nativeRadius, 0, 0);
+                    return;
+                }
                 // Blur content should be clipped to element's rounded corners.
                 // x,y already contain the element's screen position (= Offset).
                 bool hasCorners = cornerTL > 0 || cornerTR > 0 || cornerBR > 0 || cornerBL > 0;
@@ -4099,7 +4785,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                     float maxR = Math.Max(Math.Max(cornerTL, cornerTR), Math.Max(cornerBR, cornerBL));
                     _renderTarget.PushRoundedRectClip(x, y, w, h, maxR, maxR);
                 }
-                _renderTarget.DrawBlurEffect(x, y, w, h, (float)(blur.Radius * scale), uvOffX, uvOffY);
+                _renderTarget.DrawBlurEffect(x, y, w, h, nativeRadius, uvOffX, uvOffY);
                 if (hasCorners)
                 {
                     _renderTarget.PopClip();
@@ -4116,14 +4802,84 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             var color = shadow.Color;
             var effectiveAlpha = (color.A / 255f) * (float)shadow.Opacity;
             MapEffectVector(space, shadow.OffsetX, shadow.OffsetY, out var offsetX, out var offsetY);
-            _renderTarget.DrawDropShadowEffect(x, y, w, h,
-                (float)(shadow.BlurRadius * scale),
-                (float)offsetX,
-                (float)offsetY,
-                color.R / 255f, color.G / 255f, color.B / 255f,
-                effectiveAlpha,
-                uvOffX, uvOffY,
-                cornerTL, cornerTR, cornerBR, cornerBL);
+            var regularBlurRadius = NativeGaussianBlurRadius(shadow, shadow.BlurRadius, scale,
+                softwareAnalytic: false);
+            if (shadow.CssUsesAlphaMask)
+            {
+                var capture = _lastEndedEffectCapture;
+                var captureX = capture.ScreenWidth > 0 ? (float)capture.ScreenX : x - uvOffX;
+                var captureY = capture.ScreenHeight > 0 ? (float)capture.ScreenY : y - uvOffY;
+                var captureW = capture.ScreenWidth > 0 ? (float)capture.ScreenWidth : w;
+                var captureH = capture.ScreenHeight > 0 ? (float)capture.ScreenHeight : h;
+                if (_renderTarget.TryDrawFilterDropShadowEffect(
+                    x, y, w, h, captureX, captureY, captureW, captureH,
+                    regularBlurRadius, (float)offsetX, (float)offsetY,
+                    color.R / 255f, color.G / 255f, color.B / 255f, effectiveAlpha))
+                    return;
+                Jalium.UI.Styling.CssDiagnostics.Report("filter",
+                    Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                    typeof(RenderTargetDrawingContext),
+                    "this native backend does not implement alpha-mask drop-shadow()");
+            }
+            var usedEllipticalPath = false;
+            var cssBoxShadow = shadow.CssBoxShadowLayer;
+            if (shadow.SpreadRadius != 0 || cssBoxShadow)
+            {
+                var contour = ellipticalContour ?? new NativeEllipticalClip(
+                    new Rect(x, y, w, h),
+                    new Jalium.UI.Styling.CssUsedBorderRadii(
+                        new(cornerTL, cornerTL), new(cornerTR, cornerTR),
+                        new(cornerBR, cornerBR), new(cornerBL, cornerBL)), ClipEdges.All);
+                var spreadContour = contour.Outset((float)(shadow.SpreadRadius * scale));
+                var nativeBlur = NativeGaussianBlurRadius(shadow, shadow.BlurRadius, scale,
+                    softwareAnalytic: true);
+                if (cssBoxShadow)
+                {
+                    usedEllipticalPath = _renderTarget.TryDrawCssBoxShadowEffectElliptical(
+                        x, y, w, h, nativeBlur,
+                        (float)offsetX, (float)offsetY,
+                        color.R / 255f, color.G / 255f, color.B / 255f,
+                        effectiveAlpha, uvOffX, uvOffY, contour, spreadContour);
+                    if (!usedEllipticalPath)
+                        Jalium.UI.Styling.CssDiagnostics.Report("box-shadow",
+                            Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                            typeof(RenderTargetDrawingContext),
+                            "this native backend does not exclude the CSS outer-shadow interior");
+                }
+                if (!usedEllipticalPath)
+                    usedEllipticalPath = _renderTarget.TryDrawDropShadowEffectSpreadElliptical(
+                        x, y, w, h, nativeBlur,
+                        (float)offsetX, (float)offsetY,
+                        color.R / 255f, color.G / 255f, color.B / 255f,
+                        effectiveAlpha, uvOffX, uvOffY, spreadContour);
+                if (!usedEllipticalPath)
+                    Jalium.UI.Styling.CssDiagnostics.Report("box-shadow",
+                        Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                        typeof(RenderTargetDrawingContext),
+                        "this native backend does not implement the CSS outer-shadow contour and spread");
+            }
+            if (!usedEllipticalPath && ellipticalContour is { } originalContour)
+                usedEllipticalPath = _renderTarget.TryDrawDropShadowEffectElliptical(
+                    x, y, w, h, regularBlurRadius,
+                    (float)offsetX, (float)offsetY,
+                    color.R / 255f, color.G / 255f, color.B / 255f,
+                    effectiveAlpha, uvOffX, uvOffY, originalContour);
+            if (!usedEllipticalPath)
+            {
+                if (ellipticalContour is not null)
+                    Jalium.UI.Styling.CssDiagnostics.Report("box-shadow",
+                        Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                        typeof(RenderTargetDrawingContext),
+                        "this native backend does not implement two-axis drop-shadow corners");
+                _renderTarget.DrawDropShadowEffect(x, y, w, h,
+                    regularBlurRadius,
+                    (float)offsetX,
+                    (float)offsetY,
+                    color.R / 255f, color.G / 255f, color.B / 255f,
+                    effectiveAlpha,
+                    uvOffX, uvOffY,
+                    cornerTL, cornerTR, cornerBR, cornerBL);
+            }
         }
         else if (effect is Media.Effects.OuterGlowEffect glow)
         {
@@ -4141,14 +4897,47 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             var color = innerShadow.Color;
             var effectiveAlpha = (color.A / 255f) * (float)innerShadow.Opacity;
             MapEffectVector(space, innerShadow.OffsetX, innerShadow.OffsetY, out var offsetX, out var offsetY);
-            _renderTarget.DrawInnerShadowEffect(x, y, w, h,
-                (float)(innerShadow.BlurRadius * scale),
-                (float)offsetX,
-                (float)offsetY,
-                color.R / 255f, color.G / 255f, color.B / 255f,
-                effectiveAlpha,
-                uvOffX, uvOffY,
-                cornerTL, cornerTR, cornerBR, cornerBL);
+            var contour = insetContour ?? ellipticalContour ?? new NativeEllipticalClip(
+                new Rect(x, y, w, h),
+                new Jalium.UI.Styling.CssUsedBorderRadii(
+                    new(cornerTL, cornerTL), new(cornerTR, cornerTR),
+                    new(cornerBR, cornerBR), new(cornerBL, cornerBL)), ClipEdges.All);
+            var nativeBlurRadius = NativeGaussianBlurRadius(innerShadow,
+                innerShadow.BlurRadius, scale, softwareAnalytic: true);
+            var usedEllipticalPath = skipInsetContentComposite
+                ? _renderTarget.TryDrawInnerShadowLayerElliptical(
+                    x, y, w, h, nativeBlurRadius,
+                    (float)offsetX, (float)offsetY,
+                    (float)(innerShadow.SpreadRadius * scale),
+                    color.R / 255f, color.G / 255f, color.B / 255f,
+                    effectiveAlpha, uvOffX, uvOffY, contour)
+                : _renderTarget.TryDrawInnerShadowEffectElliptical(
+                    x, y, w, h, nativeBlurRadius,
+                    (float)offsetX, (float)offsetY,
+                    (float)(innerShadow.SpreadRadius * scale),
+                    color.R / 255f, color.G / 255f, color.B / 255f,
+                    effectiveAlpha, uvOffX, uvOffY, contour);
+            if (!usedEllipticalPath)
+            {
+                if (skipInsetContentComposite)
+                    Jalium.UI.Styling.CssDiagnostics.Report("box-shadow",
+                        Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                        typeof(RenderTargetDrawingContext),
+                        "this native backend does not preserve earlier inset-shadow layers");
+                if (ellipticalContour is not null || innerShadow.SpreadRadius != 0)
+                    Jalium.UI.Styling.CssDiagnostics.Report("box-shadow",
+                        Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                        typeof(RenderTargetDrawingContext),
+                        "this native backend does not implement two-axis inset-shadow corners and spread");
+                _renderTarget.DrawInnerShadowEffect(x, y, w, h,
+                    (float)(innerShadow.BlurRadius * scale),
+                    (float)offsetX,
+                    (float)offsetY,
+                    color.R / 255f, color.G / 255f, color.B / 255f,
+                    effectiveAlpha,
+                    uvOffX, uvOffY,
+                    cornerTL, cornerTR, cornerBR, cornerBL);
+            }
         }
         else if (effect is Media.Effects.EmbossEffect emboss)
         {
@@ -4158,6 +4947,35 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 (float)lightX,
                 (float)lightY,
                 (float)(emboss.Relief * scale));
+        }
+        else if (effect is Media.Effects.CssColorMatrixChainEffect matrixChain)
+        {
+            var matrices = matrixChain.Matrices;
+            var packed = new float[matrices.Length * 20];
+            for (var i = 0; i < matrices.Length; i++)
+            {
+                var m = matrices[i];
+                var j = i * 20;
+                packed[j + 0] = m.M11; packed[j + 1] = m.M12; packed[j + 2] = m.M13; packed[j + 3] = m.M14;
+                packed[j + 4] = m.M21; packed[j + 5] = m.M22; packed[j + 6] = m.M23; packed[j + 7] = m.M24;
+                packed[j + 8] = m.M31; packed[j + 9] = m.M32; packed[j + 10] = m.M33; packed[j + 11] = m.M34;
+                packed[j + 12] = m.M41; packed[j + 13] = m.M42; packed[j + 14] = m.M43; packed[j + 15] = m.M44;
+                packed[j + 16] = m.M15; packed[j + 17] = m.M25; packed[j + 18] = m.M35; packed[j + 19] = m.M45;
+            }
+            if (!_renderTarget.TryDrawColorMatrixChainEffect(x, y, w, h,
+                    packed, (uint)matrices.Length))
+            {
+                Jalium.UI.Styling.CssDiagnostics.Report("filter",
+                    Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                    typeof(RenderTargetDrawingContext),
+                    "this native backend does not implement per-stage color-matrix clipping");
+                var fused = Media.Effects.ColorMatrix.Identity;
+                foreach (var matrix in matrices)
+                    fused = Media.Effects.ColorMatrix.Multiply(matrix, fused);
+                ApplyElementEffectCore(new Media.Effects.ColorMatrixEffect(fused),
+                    x, y, w, h, uvOffX, uvOffY, space, scale,
+                    cornerTL, cornerTR, cornerBR, cornerBL, ellipticalContour, insetContour);
+            }
         }
         else if (effect is Media.Effects.ColorMatrixEffect colorMatrix)
         {
@@ -4200,20 +5018,59 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         else if (effect is Media.Effects.EffectGroup group)
         {
             // A group must never silently discard all but its first child. Each
-            // supported child reads the same isolated capture and is dispatched in
-            // declaration order. Preserve the original capture origin and corner
+            // supported child receives the same isolated capture; later CSS
+            // inset layers draw without compositing it again. Other groups
+            // retain child order.
+            // Preserve the original capture origin and corner
             // radii; resetting them to zero shifts sampling for padded effects and
             // was enough to make grouped shadows/glows disappear. The arguments are
             // already in native's drawing space — recurse into the core, not the
             // public entry, so the transform compensation is not applied twice.
             var activeEffects = group.ActiveEffects;
-            for (int i = 0; i < activeEffects.Count; i++)
+            if (group.CssShadowsFrontToBack && !group.CssBoxShadowLayer &&
+                activeEffects.Count > 1 && activeEffects.All(static child =>
+                    child is Media.Effects.DropShadowEffect { CssUsesAlphaMask: true }))
             {
-                var child = activeEffects[i];
-                ApplyElementEffectCore(child, x, y, w, h,
-                    uvOffX, uvOffY,
-                    space, scale,
-                    cornerTL, cornerTR, cornerBR, cornerBL);
+                // Native paints the authored list back-to-front from one alpha
+                // capture and composites the original text exactly once.
+                if (!TryDrawCssTextShadowList(group, x, y, w, h,
+                        uvOffX, uvOffY, space, scale, compositeSource: true))
+                {
+                    Jalium.UI.Styling.CssDiagnostics.Report("text-shadow",
+                        Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                        typeof(RenderTargetDrawingContext),
+                        "this native backend cannot paint a CSS text-shadow list");
+                    _renderTarget.DrawBlurEffect(x, y, w, h, 0, uvOffX, uvOffY);
+                }
+                return;
+            }
+            if (group.CssShadowsFrontToBack)
+            {
+                // Outer shadows sit below the element background; inset
+                // shadows sit above it. Reverse the authored order separately
+                // within each paint layer.
+                for (var i = activeEffects.Count - 1; i >= 0; i--)
+                    if (activeEffects[i] is Media.Effects.DropShadowEffect outer)
+                        ApplyElementEffectCore(outer, x, y, w, h, uvOffX, uvOffY,
+                            space, scale, cornerTL, cornerTR, cornerBR, cornerBL,
+                            ellipticalContour, insetContour);
+                var paintedInset = false;
+                for (var i = activeEffects.Count - 1; i >= 0; i--)
+                    if (activeEffects[i] is Media.Effects.InnerShadowEffect inner)
+                    {
+                        ApplyElementEffectCore(inner, x, y, w, h, uvOffX, uvOffY,
+                            space, scale, cornerTL, cornerTR, cornerBR, cornerBL,
+                            ellipticalContour, insetContour,
+                            skipInsetContentComposite: paintedInset);
+                        paintedInset = true;
+                    }
+            }
+            else
+            {
+                foreach (var child in activeEffects)
+                    ApplyElementEffectCore(child, x, y, w, h, uvOffX, uvOffY,
+                        space, scale, cornerTL, cornerTR, cornerBR, cornerBL,
+                        ellipticalContour, insetContour);
             }
         }
         else
@@ -4249,6 +5106,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         _closed = true;
         ImageSource.GpuCacheEvictionRequested -= _gpuEvictionHandler;
         ImageSource.RasterChanged -= _rasterChangedHandler;
+        foreach (var source in _imageMaskSources.Values)
+        {
+            if (_vectorDrawingCache.TryGetValue(source.Image, out var raster)) DropVectorRaster(source.Image, raster);
+            source.Dispose();
+        }
+        _imageMaskSources.Clear();
 
         // Nothing will drain the queue once this context stops getting frames, and every entry in
         // it is a strong reference to an application bitmap, so release them here. A raise that was
@@ -4331,7 +5194,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// (window/popup teardown, render-thread handover, and the low-memory notification), so that
     /// cost is not on any hot path.
     /// </remarks>
-    private void ClearVectorDrawingCache() => _vectorDrawingCache.Clear();
+    private void ClearVectorDrawingCache()
+    {
+        _vectorDrawingCache.Clear();
+        foreach (var source in _imageMaskSources.Values) source.Dispose();
+        _imageMaskSources.Clear();
+    }
 
     /// <summary>
     /// Trims caches if they exceed their maximum size.
@@ -4377,13 +5245,21 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (brush == null) return null;
 
+        if (brush.CssGradientLayout is { } cssLayout &&
+            bw > 0 && bh > 0)
+        {
+            if (cssLayout.Resolve(bw, bh) is not { } resolved) return null;
+            brush = resolved;
+        }
+
         if (brush is SolidColorBrush solidBrush)
         {
+            var cacheKey = new BrushCacheKey(brush, 0);
             var color = solidBrush.Color;
             double opacity = Math.Clamp(solidBrush.Opacity, 0.0, 1.0);
             // Cache based on (brush reference, current color) to invalidate
             // when the same brush object's color or opacity changes.
-            if (_brushCache.TryGetValue(brush, out var cached))
+            if (_brushCache.TryGetValue(cacheKey, out var cached))
             {
                 if (cached.CachedColor == color &&
                     cached.CachedOpacity == opacity)
@@ -4393,7 +5269,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 }
                 // Color changed — dispose old native brush and recreate
                 cached.Dispose();
-                _brushCache.Remove(brush);
+                _brushCache.Remove(cacheKey);
             }
 
             // Pass sRGB values to native: D2D expects sRGB, and the direct D3D12
@@ -4406,7 +5282,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             nb.CachedColor = color;
             nb.CachedOpacity = opacity;
             nb.LastAccessSequence = ++_brushCacheSequence;
-            _brushCache[brush] = nb;
+            _brushCache[cacheKey] = nb;
             return nb;
         }
 
@@ -4417,7 +5293,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 linear.MappingMode == BrushMappingMode.RelativeToBoundingBox
                     ? ComputeGradientBoundsKey(bx, by, bw, bh)
                     : 0;
-            if (_brushCache.TryGetValue(brush, out var cachedLinear) &&
+            var cacheKey = new BrushCacheKey(brush, boundsKey);
+            if (_brushCache.TryGetValue(cacheKey, out var cachedLinear) &&
                 cachedLinear.CachedGradientContentHash == contentHash &&
                 cachedLinear.CachedBoundsKey == boundsKey)
             {
@@ -4434,7 +5311,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 radial.MappingMode == BrushMappingMode.RelativeToBoundingBox
                     ? ComputeGradientBoundsKey(bx, by, bw, bh)
                     : 0;
-            if (_brushCache.TryGetValue(brush, out var cachedRadial) &&
+            var cacheKey = new BrushCacheKey(brush, boundsKey);
+            if (_brushCache.TryGetValue(cacheKey, out var cachedRadial) &&
                 cachedRadial.CachedGradientContentHash == contentHash &&
                 cachedRadial.CachedBoundsKey == boundsKey)
             {
@@ -4446,10 +5324,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         if (brush is ImageBrush imageBrush)
         {
-            // Stroke fallback: degrade an ImageBrush stroke to a SolidColorBrush
-            // approximating the average pixel of the image. The fill path uses
-            // the dedicated TryFill*AsImageBrush helpers, which clip + tile the
-            // bitmap directly and never reach this method for the fill brush.
+            // The ordinary solid, dashed and segment-filtered stroke routes
+            // paint the image through a path mask before reaching this method.
+            // Keep a visible fallback for any remaining unsupported caller.
             return GetImageBrushStrokeFallback(imageBrush);
         }
 
@@ -4458,11 +5335,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     /// <summary>
     /// Returns a <see cref="NativeBrush"/> approximating the average color of
-    /// <paramref name="imageBrush"/>'s source. Used as a graceful degradation
-    /// for code paths that paint a stroke or compound shape with an ImageBrush —
-    /// real bitmap-tiled strokes need a path-clipped opacity-mask backend that
-    /// the framework does not expose yet, so a flat-color stand-in keeps the
-    /// silhouette visible instead of dropping the stroke entirely.
+    /// <paramref name="imageBrush"/>'s source for callers that cannot use a
+    /// path mask.
     /// </summary>
     /// <remarks>
     /// Cached on the brush instance and invalidated when the underlying
@@ -4472,7 +5346,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// </remarks>
     private NativeBrush? GetImageBrushStrokeFallback(ImageBrush imageBrush)
     {
-        if (_brushCache.TryGetValue(imageBrush, out var cached))
+        var cacheKey = new BrushCacheKey(imageBrush, 0);
+        if (_brushCache.TryGetValue(cacheKey, out var cached))
         {
             // CachedSourceRef tracks the ImageSource the brush was sampled from.
             // When the brush points at a different source, drop the stale entry
@@ -4483,7 +5358,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 return cached;
             }
             cached.Dispose();
-            _brushCache.Remove(imageBrush);
+            _brushCache.Remove(cacheKey);
         }
 
         var color = SampleAverageColor(imageBrush.ImageSource) ?? Color.FromArgb(0, 0, 0, 0);
@@ -4497,7 +5372,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         nb.CachedColor = Color.FromArgb((byte)(alpha * 255f), color.R, color.G, color.B);
         nb.CachedImageSource = imageBrush.ImageSource;
         nb.LastAccessSequence = ++_brushCacheSequence;
-        _brushCache[imageBrush] = nb;
+        _brushCache[cacheKey] = nb;
         return nb;
     }
 
@@ -4573,7 +5448,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         /// <summary>Rounded-rectangle clip via <c>PushRoundedRectClip</c>.</summary>
         RoundedRect,
         /// <summary>Ellipse clip — degenerate rounded-rect with rx = w/2, ry = h/2.</summary>
-        Ellipse
+        Ellipse,
+        PerCorner
     }
 
     private bool TryFillRectangleAsImageBrush(Brush? brush, float x, float y, float w, float h)
@@ -4589,8 +5465,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (brush is not ImageBrush imageBrush) return false;
         var kind = (rx > 0 || ry > 0) ? ImageBrushClipKind.RoundedRect : ImageBrushClipKind.Rect;
+        var radius = new Size(rx, ry);
         FillImageBrushTiles(imageBrush, new Rect(x, y, w, h),
-            kind, x, y, w, h, rx, ry);
+            kind, x, y, w, h, rx, ry,
+            new NativeEllipticalClip(new Rect(x, y, w, h), new(radius, radius, radius, radius), ClipEdges.All));
         return true;
     }
 
@@ -4599,15 +5477,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         float tl, float tr, float br, float bl)
     {
         if (brush is not ImageBrush imageBrush) return false;
-        // Native side has no 4-corner clip primitive — degrade to a uniform
-        // clip using the largest corner radius. For the common case where
-        // all four corners are equal this is exact; otherwise the clip is
-        // looser than the rendered border but never tighter (image never
-        // bleeds past the visible border edge).
-        var maxR = Math.Max(Math.Max(tl, tr), Math.Max(br, bl));
-        var kind = maxR > 0 ? ImageBrushClipKind.RoundedRect : ImageBrushClipKind.Rect;
+        var radii = new Jalium.UI.Styling.CssUsedBorderRadii(new(tl, tl), new(tr, tr), new(br, br), new(bl, bl));
         FillImageBrushTiles(imageBrush, new Rect(x, y, w, h),
-            kind, x, y, w, h, maxR, maxR);
+            ImageBrushClipKind.PerCorner, x, y, w, h, 0, 0,
+            new NativeEllipticalClip(new Rect(x, y, w, h), radii, ClipEdges.All));
         return true;
     }
 
@@ -4623,25 +5496,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // is exactly an ellipse — the native rounded-rect clip degenerates
         // to a pure ellipse path when corner radius equals half-extent.
         FillImageBrushTiles(imageBrush, new Rect(x, y, w, h),
-            ImageBrushClipKind.Ellipse, x, y, w, h, radiusX, radiusY);
-        return true;
-    }
-
-    private bool TryFillPathAsImageBrush(Brush? brush, Rect geoBoundsScreen)
-    {
-        if (brush is not ImageBrush imageBrush) return false;
-        if (geoBoundsScreen.Width <= 0 || geoBoundsScreen.Height <= 0) return true;
-
-        // Arbitrary path geometry has no clip primitive on the native side —
-        // bound the image to the path's bounding box. The result fills more
-        // pixels than the path geometry for non-rectangular paths, but keeps
-        // the brush visible (and is correct for the common rectangle/rounded
-        // /ellipse paths that already route through their dedicated helpers).
-        FillImageBrushTiles(imageBrush, geoBoundsScreen,
-            ImageBrushClipKind.Rect,
-            (float)geoBoundsScreen.X, (float)geoBoundsScreen.Y,
-            (float)geoBoundsScreen.Width, (float)geoBoundsScreen.Height,
-            0, 0);
+            ImageBrushClipKind.Ellipse, x, y, w, h, radiusX, radiusY,
+            new NativeEllipticalClip(new Rect(x, y, w, h),
+                new(new(radiusX, radiusY), new(radiusX, radiusY), new(radiusX, radiusY), new(radiusX, radiusY)), ClipEdges.All));
         return true;
     }
 
@@ -4658,37 +5515,60 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private void FillImageBrushTiles(ImageBrush imageBrush, Rect shapeBounds,
         ImageBrushClipKind clipKind,
         float clipX, float clipY, float clipW, float clipH,
-        float clipRx, float clipRy)
+        float clipRx, float clipRy, NativeEllipticalClip? contour = null)
     {
+        if (imageBrush.CssGradientLayout is { } layout &&
+            shapeBounds.Width > 0 && shapeBounds.Height > 0)
+        {
+            if (layout.Resolve(shapeBounds.Width, shapeBounds.Height) is not ImageBrush resolved) return;
+            imageBrush = resolved;
+        }
         if (imageBrush.ImageSource is null) return;
+        var brushTransform = TileBrushHelper.ComputeBrushTransform(imageBrush, shapeBounds, Offset);
+        if (!brushTransform.TryInvert(out var inverseBrush)) return;
 
         // shapeBounds is already in this context's drawing space (callers add Offset before
-        // handing it over), so it converts to device pixels exactly like a DrawImage rect. Cover
-        // mode matters to the bucket resolver: UniformToFill has to satisfy the LARGER axis ratio,
-        // and asking for a contain-sized bucket there produces a visibly soft fill.
+        // handing it over). A CSS-sized tile can be larger than that paint area, so request
+        // enough source pixels for the full tile before converting to device pixels.
+        // Cover mode also asks the bucket resolver for the larger axis ratio.
+        var imageSource = imageBrush.ImageSource;
+        var requestWidth = shapeBounds.Width;
+        var requestHeight = shapeBounds.Height;
+        if (imageBrush.CssBackgroundLayout is { } cssLayout && imageSource.Width > 0 && imageSource.Height > 0)
+        {
+            var image = cssLayout.ImageRect(shapeBounds, imageSource.Width, imageSource.Height);
+            if (!image.IsEmpty)
+            {
+                requestWidth = Math.Max(requestWidth, image.Width);
+                requestHeight = Math.Max(requestHeight, image.Height);
+            }
+        }
         GetTransformScale(out var sx, out var sy);
         var (hintW, hintH) = ToDeviceHint(
-            (int)Math.Ceiling(shapeBounds.Width * sx),
-            (int)Math.Ceiling(shapeBounds.Height * sy));
+            (int)Math.Clamp(Math.Ceiling(requestWidth * sx), 0d, 16384d),
+            (int)Math.Clamp(Math.Ceiling(requestHeight * sy), 0d, 16384d));
 
-        var nativeBitmap = GetNativeBitmap(
-            imageBrush.ImageSource,
-            hintW,
-            hintH,
-            hintCover: imageBrush.Stretch == Stretch.UniformToFill);
+        var nativeBitmap = TryResolveVectorImageSource(imageSource, out var vectorDrawing, out var vectorViewport)
+            ? GetOrCreateVectorNativeBitmap(imageSource, vectorDrawing!, vectorViewport, hintW, hintH)
+            : GetNativeBitmap(
+                imageSource,
+                hintW,
+                hintH,
+                hintCover: imageBrush.Stretch == Stretch.UniformToFill);
         if (nativeBitmap is null) return;
 
-        var imgW = (double)nativeBitmap.Width;
-        var imgH = (double)nativeBitmap.Height;
+        var imgW = imageSource.Width > 0 ? imageSource.Width : nativeBitmap.Width;
+        var imgH = imageSource.Height > 0 ? imageSource.Height : nativeBitmap.Height;
         if (imgW <= 0 || imgH <= 0) return;
 
-        var placements = TileBrushHelper.ComputeTilePlacements(imageBrush, shapeBounds, imgW, imgH);
+        var placements = TileBrushHelper.ComputeTilePlacements(imageBrush, shapeBounds, imgW, imgH,
+            TileBrushHelper.TransformBounds(shapeBounds, inverseBrush));
         if (placements.Count == 0) return;
 
         var opacity = (float)Math.Clamp(imageBrush.Opacity, 0.0, 1.0);
         if (opacity <= 0) return;
 
-        var scalingMode = BitmapScalingMode.Unspecified;
+        var scalingMode = imageBrush.ScalingMode;
 
         // For the common default case (Viewport == shape, TileMode.None,
         // Stretch.Fill, no Viewbox crop) the single placement's ClipRect
@@ -4696,10 +5576,21 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // and skip it to halve native PushClip / PopClip pressure on the
         // hot path (Border.Background = ImageBrush is by far the most
         // common scenario).
-        bool perTileClipNeeded = placements.Count > 1 ||
+        bool perTileClipNeeded = !brushTransform.IsIdentity || placements.Count > 1 ||
             !RectsApproximatelyEqual(placements[0].ClipRect, shapeBounds);
 
-        PushImageBrushShapeClip(clipKind, clipX, clipY, clipW, clipH, clipRx, clipRy);
+        var usedContour = contour is { } nativeContour && _renderTarget.TryPushEllipticalRectClip(nativeContour);
+        if (!usedContour)
+        {
+            if (contour is { } fallbackContour)
+                PushImageBrushContourFallback(fallbackContour, clipX, clipY, clipW, clipH);
+            else
+                PushImageBrushShapeClip(clipKind, clipX, clipY, clipW, clipH, clipRx, clipRy);
+        }
+        var transformed = !brushTransform.IsIdentity;
+        if (transformed)
+            _renderTarget.PushTransform([(float)brushTransform.M11, (float)brushTransform.M12,
+                (float)brushTransform.M21, (float)brushTransform.M22, (float)brushTransform.OffsetX, (float)brushTransform.OffsetY]);
         try
         {
             for (int i = 0; i < placements.Count; i++)
@@ -4709,8 +5600,50 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
         finally
         {
+            if (transformed) _renderTarget.PopTransform();
             _renderTarget.PopClip();
         }
+    }
+
+    private void PushImageBrushContourFallback(in NativeEllipticalClip contour,
+        float x, float y, float w, float h)
+    {
+        static bool Same(float a, float b) => Math.Abs(a - b) <= 0.0001f;
+        var uniformX = Same(contour.TopLeftX, contour.TopRightX) &&
+                       Same(contour.TopLeftX, contour.BottomRightX) &&
+                       Same(contour.TopLeftX, contour.BottomLeftX);
+        var uniformY = Same(contour.TopLeftY, contour.TopRightY) &&
+                       Same(contour.TopLeftY, contour.BottomRightY) &&
+                       Same(contour.TopLeftY, contour.BottomLeftY);
+        if (uniformX && uniformY)
+        {
+            // The legacy rounded-rect ABI already carries independent X/Y radii. Preserve common
+            // ellipses and uniformly rounded image backgrounds even when an older native payload
+            // does not expose the optional per-corner elliptical side interface.
+            _renderTarget.PushRoundedRectClip(x, y, w, h, contour.TopLeftX, contour.TopLeftY);
+            return;
+        }
+
+        var circular = Same(contour.TopLeftX, contour.TopLeftY) &&
+                       Same(contour.TopRightX, contour.TopRightY) &&
+                       Same(contour.BottomRightX, contour.BottomRightY) &&
+                       Same(contour.BottomLeftX, contour.BottomLeftY);
+        if (circular)
+        {
+            _renderTarget.PushPerCornerRoundedRectClip(x, y, w, h,
+                contour.TopLeftX, contour.TopRightX, contour.BottomRightX, contour.BottomLeftX);
+            return;
+        }
+
+        Jalium.UI.Styling.CssDiagnostics.Report("border-radius",
+            Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+            typeof(RenderTargetDrawingContext),
+            "this native backend does not implement two-axis image-brush corner clipping");
+        // Keep all four horizontal radii on the legacy circular ABI. It cannot preserve the Y
+        // axis, but it still preserves square corners and corner independence instead of
+        // discarding the whole contour to a rectangular clip.
+        _renderTarget.PushPerCornerRoundedRectClip(x, y, w, h,
+            contour.TopLeftX, contour.TopRightX, contour.BottomRightX, contour.BottomLeftX);
     }
 
     private void PushImageBrushShapeClip(ImageBrushClipKind kind,
@@ -4841,6 +5774,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         return hash == 0 ? 1 : hash;
     }
 
+    /// <summary>
+    /// Maps the WPF-ordered <see cref="GradientSpreadMethod"/> (Pad=0, Reflect=1,
+    /// Repeat=2) to the native ABI extend convention (0=Pad, 1=Repeat, 2=Reflect).
+    /// </summary>
+    private static uint ToNativeExtendMode(GradientSpreadMethod spread) => spread switch
+    {
+        GradientSpreadMethod.Repeat => 1u,
+        GradientSpreadMethod.Reflect => 2u,
+        _ => 0u,
+    };
+
     private NativeBrush? CreateNativeLinearGradient(LinearGradientBrush brush,
         float bx, float by, float bw, float bh)
     {
@@ -4870,7 +5814,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var stops = MarshalGradientStops(
             brush.GradientStops,
             brush.Opacity);
-        var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count, (uint)brush.SpreadMethod);
+        var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count, ToNativeExtendMode(brush.SpreadMethod));
         if (!nb.IsValid)
         {
             nb.Dispose();
@@ -4883,11 +5827,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             brush.MappingMode == BrushMappingMode.RelativeToBoundingBox
                 ? ComputeGradientBoundsKey(bx, by, bw, bh)
                 : 0;
+        var cacheKey = new BrushCacheKey(brush, nb.CachedBoundsKey);
 
         // Replace previous cached entry if any
-        if (_brushCache.TryGetValue(brush, out var old))
+        if (_brushCache.TryGetValue(cacheKey, out var old))
             old.Dispose();
-        _brushCache[brush] = nb;
+        _brushCache[cacheKey] = nb;
         return nb;
     }
 
@@ -4920,7 +5865,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var stops = MarshalGradientStops(
             brush.GradientStops,
             brush.Opacity);
-        var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count, (uint)brush.SpreadMethod);
+        var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count, ToNativeExtendMode(brush.SpreadMethod));
         if (!nb.IsValid)
         {
             nb.Dispose();
@@ -4933,11 +5878,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             brush.MappingMode == BrushMappingMode.RelativeToBoundingBox
                 ? ComputeGradientBoundsKey(bx, by, bw, bh)
                 : 0;
+        var cacheKey = new BrushCacheKey(brush, nb.CachedBoundsKey);
 
         // Replace previous cached entry if any
-        if (_brushCache.TryGetValue(brush, out var old))
+        if (_brushCache.TryGetValue(cacheKey, out var old))
             old.Dispose();
-        _brushCache[brush] = nb;
+        _brushCache[cacheKey] = nb;
         return nb;
     }
 
@@ -5148,6 +6094,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             return GetNativeBitmap(animatedSubstitute, hintPixelWidth, hintPixelHeight, hintCover);
         }
+
+        // A cached upload must not prevent a resized ImageBrush from asking
+        // the deferred decoder for a larger display bucket.
+        if (imageSource is BitmapImage requestedImage && (hintPixelWidth > 0 || hintPixelHeight > 0))
+            requestedImage.RequestDecode(hintPixelWidth, hintPixelHeight, hintCover);
 
         // Reference identity is not enough for ANY source whose pixels can be replaced in place:
         // a rewritten WriteableBitmap and a BitmapImage that upgraded its display bucket both keep
@@ -5412,8 +6363,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // match every entry below and silently disable the cache budget forever.
         if (_bitmapCache.Count != 0)
         {
-            var bitmapCacheByteBudget = GetBitmapCacheByteBudget();
-            while (_bitmapCache.Count > MaxBitmapCacheSize || _bitmapCacheBytes > bitmapCacheByteBudget)
+            var bitmapCacheByteBudget = _context.BitmapCacheByteBudget;
+            var bitmapCacheCapacity = _context.BitmapCacheCapacity;
+            while (_bitmapCache.Count > bitmapCacheCapacity || _bitmapCacheBytes > bitmapCacheByteBudget)
             {
                 KeyValuePair<ImageSource, BitmapCacheEntry>? oldest = null;
                 foreach (var kvp in _bitmapCache)
@@ -5447,12 +6399,6 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // on the wrap frame — no correctness impact).
         unchecked { _currentFrameId++; }
     }
-
-    // Single hard ceiling. The previous WorkingSet-pressure tiers throttled a GPU
-    // (VRAM) cache by managed process memory — a category error that collapsed the
-    // budget to 32MB and drove per-frame texture re-upload. Evicting idle entries
-    // alone keeps this bounded; current-frame entries are protected in the trim loop.
-    private static long GetBitmapCacheByteBudget() => MaxBitmapCacheBytes;
 
     private void RemoveBitmapCacheEntry(ImageSource key, BitmapCacheEntry entry)
     {

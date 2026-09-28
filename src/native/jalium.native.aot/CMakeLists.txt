@@ -28,6 +28,9 @@ target_link_libraries(${PROJECT_NAME}
         jalium.native.core
         jalium.native.software
 )
+if(TARGET jalium.native.platform)
+    target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.platform)
+endif()
 
 if(WIN32 AND TARGET jalium.native.d3d12)
     target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.d3d12)
@@ -39,6 +42,11 @@ elseif(APPLE AND TARGET jalium.native.metal)
     target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.metal)
 endif()
 
+if(APPLE AND TARGET jalium.native.browser.apple)
+    target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.browser.apple)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE JALIUM_AOT_INCLUDE_BROWSER)
+endif()
+
 # Pull jalium.native.media (image/video/camera) into the static AOT image.
 if(TARGET jalium.native.media.core)
     target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.media.core)
@@ -47,6 +55,8 @@ if(WIN32 AND TARGET jalium.native.media.windows)
     target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.media.windows)
 elseif(ANDROID AND TARGET jalium.native.media.android)
     target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.media.android)
+elseif(APPLE AND TARGET jalium.native.media.apple)
+    target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.media.apple)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET jalium.native.media.linux)
     # The Linux implementation owns jalium_media_initialize and every
     # jalium_audio_* export. media.core only contains shared helpers, so linking

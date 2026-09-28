@@ -93,7 +93,8 @@ public sealed class EffectCollection : FreezableCollection<Effect>
 
 /// <summary>
 /// Composes multiple <see cref="Effect"/> instances into one element effect.
-/// Children are dispatched in declaration order.
+/// Children normally dispatch in declaration order. CSS box-shadow lists keep
+/// authored order in this collection but paint from back to front.
 /// </summary>
 [ContentProperty(nameof(Children))]
 public sealed class EffectGroup : Effect
@@ -108,6 +109,28 @@ public sealed class EffectGroup : Effect
             typeof(EffectCollection),
             typeof(EffectGroup),
             new PropertyMetadata(null));
+
+    internal static readonly DependencyProperty CssShadowsFrontToBackProperty =
+        DependencyProperty.Register(nameof(CssShadowsFrontToBack), typeof(bool),
+            typeof(EffectGroup), new PropertyMetadata(false,
+                static (d, _) => ((EffectGroup)d).OnEffectChanged()));
+
+    internal bool CssShadowsFrontToBack
+    {
+        get => (bool)GetValue(CssShadowsFrontToBackProperty)!;
+        set => SetValue(CssShadowsFrontToBackProperty, value);
+    }
+
+    internal static readonly DependencyProperty CssCombinedShadowAndFilterProperty =
+        DependencyProperty.Register(nameof(CssCombinedShadowAndFilter), typeof(bool),
+            typeof(EffectGroup), new PropertyMetadata(false,
+                static (d, _) => ((EffectGroup)d).OnEffectChanged()));
+
+    internal bool CssCombinedShadowAndFilter
+    {
+        get => (bool)GetValue(CssCombinedShadowAndFilterProperty)!;
+        set => SetValue(CssCombinedShadowAndFilterProperty, value);
+    }
 
     /// <summary>Initializes an empty effect group.</summary>
     public EffectGroup()
@@ -167,10 +190,19 @@ public sealed class EffectGroup : Effect
             if (!path.Add(this))
                 return Thickness.Zero;
 
-            // Every child reads the same captured source today, so the capture must
-            // cover the largest extent requested by any child.
+            // CSS shadow/filter pairs are serial; their extents add. Other
+            // groups retain the largest child capture extent.
             try
             {
+                if (CssCombinedShadowAndFilter && Children.Count == 2)
+                {
+                    var shadow = Children[0].EffectPadding;
+                    var filter = Children[1].EffectPadding;
+                    return new Thickness(shadow.Left + filter.Left,
+                        shadow.Top + filter.Top,
+                        shadow.Right + filter.Right,
+                        shadow.Bottom + filter.Bottom);
+                }
                 double left = 0, top = 0, right = 0, bottom = 0;
                 var children = Children;
                 for (int i = 0; i < children.Count; i++)

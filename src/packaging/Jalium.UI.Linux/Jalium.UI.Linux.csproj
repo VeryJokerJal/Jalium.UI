@@ -32,13 +32,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" PrivateAssets="none" />
-    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj" BuildReference="false" ReferenceOutputAssembly="false" PrivateAssets="none" UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers;IsTrimmable;IsAotCompatible" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" BuildReference="false" ReferenceOutputAssembly="false" TreatAsPackageReference="true" JaliumPackOnlyDependency="true" PrivateAssets="none" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj" BuildReference="false" ReferenceOutputAssembly="false" TreatAsPackageReference="true" JaliumPackOnlyDependency="true" PrivateAssets="none" UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers;IsTrimmable;IsAotCompatible" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jalium.UI.Build" Version="$(Version)" PrivateAssets="none" />
-    <PackageReference Include="Jalium.UI.Xaml.SourceGenerator" Version="$(Version)" PrivateAssets="none" />
     <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.10" />
   </ItemGroup>
 

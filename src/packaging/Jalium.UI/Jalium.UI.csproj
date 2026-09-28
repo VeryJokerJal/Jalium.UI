@@ -46,18 +46,14 @@
 
   <!-- Include build tools as dependencies -->
   <ItemGroup>
-    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" PrivateAssets="none" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" BuildReference="false" ReferenceOutputAssembly="false" TreatAsPackageReference="true" JaliumPackOnlyDependency="true" PrivateAssets="none" />
     <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
                       BuildReference="false"
                       ReferenceOutputAssembly="false"
+                      TreatAsPackageReference="true"
+                      JaliumPackOnlyDependency="true"
                       PrivateAssets="none"
                       UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers;IsTrimmable;IsAotCompatible" />
-  </ItemGroup>
-
-  <!-- Ensure Jalium.UI.Build appears as a NuGet dependency (DevelopmentDependency suppresses it by default) -->
-  <ItemGroup>
-    <PackageReference Include="Jalium.UI.Build" Version="$(Version)" PrivateAssets="none" />
-    <PackageReference Include="Jalium.UI.Xaml.SourceGenerator" Version="$(Version)" PrivateAssets="none" />
   </ItemGroup>
 
 </Project>

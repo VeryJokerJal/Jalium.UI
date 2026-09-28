@@ -1,8 +1,11 @@
 # Compiles the BUILT-IN GPU-RT effect shaders to SPIR-V (DXC) and SURGICALLY
-# replaces ONLY the three arrays inside ../include/vulkan_effect_builtin_shaders.h:
+# replaces ONLY the seven arrays inside ../include/vulkan_effect_builtin_shaders.h:
 #   kEffectBuiltinCustomShaderVsSpv   <- custom_shader_effect.vs.hlsl (vs_6_0)
 #   kEffectBuiltinColorMatrixPsSpv    <- color_matrix_effect.ps.hlsl  (ps_6_0)
 #   kEffectBuiltinEmbossPsSpv         <- emboss_effect.ps.hlsl        (ps_6_0)
+#   kEffectBuiltinOuterGlowPsSpv      <- outer_glow_effect.ps.hlsl    (ps_6_0)
+#   kEffectBuiltinFilterDropShadowPsSpv <- filter_drop_shadow_effect.ps.hlsl (ps_6_0)
+#   kEffectBuiltinColorMatrixChainPsSpv <- color_matrix_chain_effect.ps.hlsl (ps_6_0)
 #
 # CRITICAL: these must byte-compatibly match the SPIR-V the runtime compiler
 # (VulkanShaderCompiler::Compile) would have produced, because the same
@@ -13,7 +16,7 @@
 # (see src/vulkan_shader_compiler.cpp and include/vulkan_shader_compiler.h).
 #
 # Same splice-in-place pattern as gen_bitmap_quad_spv.ps1 — the header is not
-# fully regenerated, only the three arrays are replaced, everything else is left
+# fully regenerated, only those seven arrays are replaced, everything else is left
 # byte-for-byte intact.
 
 param(
@@ -75,11 +78,15 @@ $vs = Compile-Spv (Join-Path $ShaderSrcDir 'custom_shader_effect.vs.hlsl') 'vs_6
 $cm = Compile-Spv (Join-Path $ShaderSrcDir 'color_matrix_effect.ps.hlsl') 'ps_6_0'
 $em = Compile-Spv (Join-Path $ShaderSrcDir 'emboss_effect.ps.hlsl') 'ps_6_0'
 $og = Compile-Spv (Join-Path $ShaderSrcDir 'outer_glow_effect.ps.hlsl') 'ps_6_0'
+$ds = Compile-Spv (Join-Path $ShaderSrcDir 'filter_drop_shadow_effect.ps.hlsl') 'ps_6_0'
+$chain = Compile-Spv (Join-Path $ShaderSrcDir 'color_matrix_chain_effect.ps.hlsl') 'ps_6_0'
 
 $vsBody = Format-ArrayBody $vs
 $cmBody = Format-ArrayBody $cm
 $emBody = Format-ArrayBody $em
 $ogBody = Format-ArrayBody $og
+$dsBody = Format-ArrayBody $ds
+$chainBody = Format-ArrayBody $chain
 
 $origBytes = [System.IO.File]::ReadAllBytes($HeaderPath)
 $hadBom = ($origBytes.Length -ge 3 -and $origBytes[0] -eq 0xEF -and $origBytes[1] -eq 0xBB -and $origBytes[2] -eq 0xBF)
@@ -90,9 +97,11 @@ $text = Splice-Array $text 'kEffectBuiltinCustomShaderVsSpv' $vsBody
 $text = Splice-Array $text 'kEffectBuiltinColorMatrixPsSpv'  $cmBody
 $text = Splice-Array $text 'kEffectBuiltinEmbossPsSpv'       $emBody
 $text = Splice-Array $text 'kEffectBuiltinOuterGlowPsSpv'    $ogBody
+$text = Splice-Array $text 'kEffectBuiltinFilterDropShadowPsSpv' $dsBody
+$text = Splice-Array $text 'kEffectBuiltinColorMatrixChainPsSpv' $chainBody
 
 $text = $text -replace "`r`n", "`n"
 if ($usesCrlf) { $text = $text -replace "`n", "`r`n" }
 $enc = New-Object System.Text.UTF8Encoding($hadBom)
 [System.IO.File]::WriteAllText($HeaderPath, $text, $enc)
-Write-Host ("Spliced built-in effect SPIR-V into {0}  (vs={1}B color_matrix={2}B emboss={3}B outer_glow={4}B)" -f $HeaderPath, $vs.Length, $cm.Length, $em.Length, $og.Length)
+Write-Host ("Spliced built-in effect SPIR-V into {0}  (vs={1}B color_matrix={2}B emboss={3}B outer_glow={4}B drop_shadow={5}B matrix_chain={6}B)" -f $HeaderPath, $vs.Length, $cm.Length, $em.Length, $og.Length, $ds.Length, $chain.Length)

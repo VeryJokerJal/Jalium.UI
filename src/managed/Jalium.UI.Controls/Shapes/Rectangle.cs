@@ -120,13 +120,15 @@ public sealed class Rectangle : Shape
             }
         }
 
+        pen = ResolveStrokePen(pen);
+
         if (RadiusX > 0 || RadiusY > 0)
         {
-            dc.DrawRoundedRectangle(Fill, pen, rect, RadiusX, RadiusY);
+            dc.DrawRoundedRectangle(ResolveFillBrush(), pen, rect, RadiusX, RadiusY);
         }
         else
         {
-            dc.DrawRectangle(Fill, pen, rect);
+            dc.DrawRectangle(ResolveFillBrush(), pen, rect);
         }
     }
 

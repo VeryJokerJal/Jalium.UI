@@ -1,4 +1,5 @@
 #pragma once
+#include "jalium_font_resource.h"
 
 #include "jalium_types.h"
 #include "jalium_backend.h"
@@ -26,7 +27,7 @@ class GlyphRasterizer;
 // - Custom layout engine for line breaking, alignment, and hit testing
 // ============================================================================
 
-class JALIUM_TEXT_API JaliumTextFormat : public TextFormat {
+class JALIUM_TEXT_API JaliumTextFormat : public TextFormat, public FontUnitMetricsProvider, public FontMathConstantsProvider {
 public:
     JaliumTextFormat(
         TextEngine* engine,
@@ -50,6 +51,8 @@ public:
         JaliumTextMetrics* metrics) override;
 
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+    JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) override;
+    JaliumResult GetFontMathConstants(JaliumFontMathConstants* constants) override;
 
     JaliumResult HitTestPoint(
         const wchar_t* text, uint32_t textLength,
@@ -102,6 +105,11 @@ public:
     /// Gets the font size in pixels.
     float GetFontSizePx() const { return fontSizePx_; }
 
+    /// Produces shaped, flattened glyph contours in top-left layout coordinates.
+    /// Empty/whitespace runs return an empty path successfully.
+    bool BuildOutlinePath(const wchar_t* text, uint32_t textLength,
+        std::string& path, float& width, float& baseline);
+
     /// Process-unique identity of this format instance (never reused, unlike
     /// the object address) — backends key rendered-run caches on it.
     uint64_t GetInstanceId() const { return instanceId_; }
@@ -148,6 +156,7 @@ private:
 
     // Font state
     TextEngine*     engine_;
+    FontResourceReference registeredFont_;
     std::unique_ptr<FontFace> face_;
     uint64_t        fontId_ = 0;
     float           fontSizePx_;

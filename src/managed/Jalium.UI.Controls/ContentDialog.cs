@@ -141,6 +141,7 @@ public class ContentDialog : ContentControl
     private ContentDialogOverlayHost? _popupHost;
     private Window? _hostWindow;
     private TaskCompletionSource<ContentDialogResult>? _showTaskSource;
+    internal bool IsModalForCss => _showTaskSource != null;
     private Task? _closeTask;
     private ContentDialogPlacement _activePlacement;
     private Size _layoutViewport;
@@ -331,6 +332,7 @@ public class ContentDialog : ContentControl
 
         _activePlacement = effectivePlacement;
         _showTaskSource = new TaskCompletionSource<ContentDialogResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Styling.CssPresentationState.NotifyModalChange(this);
 
         if (effectivePlacement == ContentDialogPlacement.InPlace)
         {
@@ -696,6 +698,7 @@ public class ContentDialog : ContentControl
         }
 
         _showTaskSource = null;
+        Styling.CssPresentationState.NotifyModalChange(this);
 
         var hostWindow = _hostWindow;
         if (_activePlacement == ContentDialogPlacement.InPlace)

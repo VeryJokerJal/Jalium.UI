@@ -19,6 +19,8 @@ public class DependencyObject : DispatcherObject
     private DependencyValueStore? _valueStore;
     private Dictionary<DependencyProperty, BindingExpressionBase>? _bindings;
     private Dictionary<DependencyProperty, AnimatedPropertyValue>? _animatedValues;
+    private Dictionary<DependencyProperty, object?>? _cssAnimatedValues;
+    private HashSet<DependencyProperty>? _cssImportantProperties;
     private Dictionary<DependencyProperty, Brush>? _mutableRenderBrushValues;
     private WeakReference<FrameworkElement>? _bindingMentor;
     private List<WeakReference<DependencyObject>>? _bindingMentees;
@@ -127,6 +129,12 @@ public class DependencyObject : DispatcherObject
     public readonly Func<int, Visual?> GetVisualChild;
 
     public DependencyObject()
+        : this(Dispatcher.CurrentDispatcher)
+    {
+    }
+
+    internal DependencyObject(Dispatcher dispatcher)
+        : base(dispatcher)
     {
         GetVisualChild = GetVisualChildCompatibility;
     }
@@ -154,6 +162,31 @@ public class DependencyObject : DispatcherObject
     /// Internal event for property change notification used by triggers.
     /// </summary>
     internal event Action<DependencyProperty, object?, object?>? PropertyChangedInternal;
+    internal event Action? CssCornerRadiusPresentationChanged;
+    internal event Action? CssBorderPresentationChanged;
+
+    internal void NotifyCssCornerRadiusPresentationChanged()
+    {
+        if (this is UIElement visual) visual.InvalidateVisual();
+        CssCornerRadiusPresentationChanged?.Invoke();
+    }
+
+    internal void NotifyCssBorderPresentationChanged()
+    {
+        if (this is UIElement visual) visual.InvalidateVisual();
+        CssBorderPresentationChanged?.Invoke();
+    }
+
+    internal DependencyValueStore.Layer? GetEffectiveValueLayer(DependencyProperty property)
+        => _valueStore is { } store && store.TryGetEffectiveLayer(property, out var layer) ? layer : null;
+
+    internal bool TryGetValueWithoutCss(DependencyProperty property, out object? value)
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        if (_valueStore is { } store) return store.TryGetWithoutCss(property, out value);
+        value = null;
+        return false;
+    }
 
     private readonly struct ValueState
     {
@@ -203,7 +236,11 @@ public class DependencyObject : DispatcherObject
         TemplateTrigger,
         StyleSetter,
         /// <summary>模板对**自己生成的具名部件**下的 trigger（TargetName）。仅次于 local。</summary>
-        ParentTemplateTrigger
+        ParentTemplateTrigger,
+        /// <summary>CSS 引擎:胜者选择器含动态伪类(:hover 等)。高于 StyleTrigger、低于 ParentTemplate。</summary>
+        CssState,
+        /// <summary>CSS 引擎:普通命中值与内联 Css.Style。高于 StyleSetter、低于 TemplateTrigger。</summary>
+        CssBase,
     }
 
     private enum ValueMutationKind : byte
@@ -300,13 +337,37 @@ public class DependencyObject : DispatcherObject
     public virtual object? GetValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        object? value = GetValueState(dp).Value;
+        object? value;
+        if (!dp.MayCoerce)
+        {
+            // Layout only needs the effective value. Avoid constructing the
+            // diagnostic ValueState and probing binding/expression flags on
+            // every Width, Margin and font read. Coercion retains its complete
+            // existing path, including the re-entrancy guard and base value.
+            if (_animatedValues?.TryGetValue(dp, out var animated) == true)
+                value = animated.CurrentValue;
+            else if (_cssAnimatedValues?.TryGetValue(dp, out var cssAnimated) == true &&
+                     _cssImportantProperties?.Contains(dp) != true && !HasLocalValue(dp))
+                value = cssAnimated;
+            else if (_valueStore?.TryGetEffective(dp, out var stored, out var source) == true &&
+                     (source != BaseValueSource.Default || !dp.MayInherit))
+                value = stored;
+            else
+                value = dp.MayInherit
+                    ? GetUncoercedBaseValueInternal(dp).value
+                    : dp.GetEffectiveDefaultValue(GetType());
+        }
+        else
+        {
+            value = GetValueState(dp).Value;
+        }
 
         // Keep the ubiquitous non-brush GetValue path allocation-free and free of reflection-
         // based type checks. We only enter owner bookkeeping for a mutable brush, or when a
         // previously registered brush must be detached because this property's value changed.
-        if (value is Brush { IsFrozen: false }
-            || (_mutableRenderBrushValues?.ContainsKey(dp) ?? false))
+        if (dp.IsBrushProperty &&
+            (value is Brush { IsFrozen: false }
+             || (_mutableRenderBrushValues?.ContainsKey(dp) ?? false)))
         {
             return TrackMutableRenderBrushValue(dp, value);
         }
@@ -376,6 +437,16 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     /// <param name="dp">The dependency property to check.</param>
     /// <returns>True if a local value is set; otherwise, false.</returns>
+    /// <summary>
+    /// True when the property carries a local or animated value — the precedence tiers a
+    /// CSS layout-state override must never displace (used by the %-margin guard).
+    /// </summary>
+    internal bool HasLocalOrAnimatedValue(DependencyProperty dp)
+        => HasLocalValue(dp) || _animatedValues?.ContainsKey(dp) == true;
+
+    internal bool HasCssAnimatedValue(DependencyProperty dp)
+        => _cssAnimatedValues?.ContainsKey(dp) == true;
+
     public bool HasLocalValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
@@ -453,6 +524,27 @@ public class DependencyObject : DispatcherObject
         // directly, bypassing the SetLayerValueCore backstop.
         if (IsNullForNonNullableValueType(dp, value))
             return;
+
+        // When the effective value comes from a CSS layer, BaseValueSource reports the closest
+        // WPF analogue (Style/StyleTrigger); dispatching on it would misroute the write into the
+        // StyleSetter/StyleTrigger layer where it stays shadowed by the CSS layer. Write back to
+        // the owning CSS layer instead — the next CSS re-evaluation overwrites it, matching the
+        // "style reapplication overwrites SetCurrentValue" semantics.
+        if (_valueStore is { } cssProbe &&
+            cssProbe.TryGetEffectiveLayer(dp, out var effectiveLayer))
+        {
+            if (effectiveLayer == DependencyValueStore.Layer.CssBase)
+            {
+                SetLayerValue(dp, value, LayerValueSource.CssBase, allowAutoTransition: true);
+                return;
+            }
+
+            if (effectiveLayer == DependencyValueStore.Layer.CssState)
+            {
+                SetLayerValue(dp, value, LayerValueSource.CssState, allowAutoTransition: true);
+                return;
+            }
+        }
 
         var source = GetValueSourceInternal(dp);
         SetCurrentValueForSource(dp, value, source.BaseValueSource, allowAutoTransition: true);
@@ -579,6 +671,9 @@ public class DependencyObject : DispatcherObject
         ArgumentNullException.ThrowIfNull(binding);
         CheckSealedAccess();
 
+        var requiredBefore = Styling.CssOptionalityState.GetRequired(this);
+        var rangeBefore = Styling.CssRangeState.GetInRange(this);
+
         // Remove existing binding
         ClearBinding(dp);
 
@@ -586,6 +681,9 @@ public class DependencyObject : DispatcherObject
         var expression = binding.CreateBindingExpression(this, dp);
         (_bindings ??= new())[dp] = expression;
         expression.Activate();
+
+        Styling.CssOptionalityState.NotifyBindingChange(this, requiredBefore);
+        Styling.CssRangeState.NotifyBindingChange(this, rangeBefore);
 
         return expression;
     }
@@ -715,8 +813,12 @@ public class DependencyObject : DispatcherObject
 
         if (_bindings?.TryGetValue(dp, out var expression) == true)
         {
+            var requiredBefore = Styling.CssOptionalityState.GetRequired(this);
+            var rangeBefore = Styling.CssRangeState.GetInRange(this);
             expression.Deactivate();
             RemoveStoredValue(ref _bindings, dp);
+            Styling.CssOptionalityState.NotifyBindingChange(this, requiredBefore);
+            Styling.CssRangeState.NotifyBindingChange(this, rangeBefore);
         }
     }
 
@@ -729,6 +831,9 @@ public class DependencyObject : DispatcherObject
         if (bindings is null)
             return;
 
+        var requiredBefore = Styling.CssOptionalityState.GetRequired(this);
+        var rangeBefore = Styling.CssRangeState.GetInRange(this);
+
         foreach (var expression in bindings.Values)
         {
             expression.Deactivate();
@@ -736,6 +841,8 @@ public class DependencyObject : DispatcherObject
         bindings.Clear();
         if (ReferenceEquals(_bindings, bindings))
             _bindings = null;
+        Styling.CssOptionalityState.NotifyBindingChange(this, requiredBefore);
+        Styling.CssRangeState.NotifyBindingChange(this, rangeBefore);
     }
 
     /// <summary>
@@ -766,6 +873,12 @@ public class DependencyObject : DispatcherObject
         }
 
         ReactivateBindingMentees();
+    }
+
+    internal void InvalidateTemplateParentBindings()
+    {
+        if (_bindings is not { Count: > 0 } bindings) return;
+        foreach (var expression in bindings.Values.ToArray()) expression.OnTemplateParentChanged();
     }
 
     private void ReactivateBindingMentees()
@@ -962,6 +1075,68 @@ public class DependencyObject : DispatcherObject
 
     #region Animation Value Support
 
+    /// <summary>Sets a CSS keyframe value below native animations and local values.</summary>
+    internal bool SetCssAnimatedValue(DependencyProperty dp, object? value)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        try
+        {
+            if (!dp.IsValidType(value) || !dp.IsValidValue(value)) return false;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        var oldValue = GetValue(dp);
+        (_cssAnimatedValues ??= new())[dp] = value;
+        dp.InvalidateInheritedSources();
+        return NotifyCssAnimatedValueChanged(dp, oldValue);
+    }
+
+    internal bool ClearCssAnimatedValue(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        if (_cssAnimatedValues?.ContainsKey(dp) != true) return false;
+        var oldValue = GetValue(dp);
+        RemoveStoredValue(ref _cssAnimatedValues, dp);
+        return NotifyCssAnimatedValueChanged(dp, oldValue);
+    }
+
+    internal void ClearAllCssAnimatedValues()
+    {
+        if (_cssAnimatedValues is not { Count: > 0 } values) return;
+        foreach (var property in values.Keys.ToArray()) ClearCssAnimatedValue(property);
+    }
+
+    /// <summary>Updates the winners that must mask CSS animation values.</summary>
+    internal void SetCssImportantProperties(IEnumerable<DependencyProperty> properties)
+    {
+        var incoming = properties.ToHashSet();
+        var changed = new List<(DependencyProperty Property, object? OldValue)>();
+        if (_cssAnimatedValues is { Count: > 0 } animated)
+            foreach (var property in animated.Keys)
+                if ((_cssImportantProperties?.Contains(property) == true) != incoming.Contains(property))
+                    changed.Add((property, GetValue(property)));
+
+        _cssImportantProperties = incoming.Count == 0 ? null : incoming;
+        foreach (var (property, oldValue) in changed)
+            NotifyCssAnimatedValueChanged(property, oldValue);
+    }
+
+    private bool NotifyCssAnimatedValueChanged(DependencyProperty dp, object? oldValue)
+    {
+        var newValue = GetValue(dp);
+        if (Equals(oldValue, newValue)) return false;
+        OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+        if (this is UIElement visual && !DpHasInvalidationCallback(dp))
+        {
+            if (DpAffectsCompositionOnly(dp)) visual.InvalidateComposition();
+            else visual.InvalidateVisual();
+        }
+        return true;
+    }
+
     /// <summary>
     /// Sets an animated value for a dependency property. Called by the animation system.
     /// </summary>
@@ -982,6 +1157,7 @@ public class DependencyObject : DispatcherObject
         var oldValue = GetValue(dp);
 
         var animatedValues = _animatedValues ??= new();
+        dp.InvalidateInheritedSources();
         if (!animatedValues.TryGetValue(dp, out var existing))
         {
             // Store base value for restoration when animation ends
@@ -993,15 +1169,20 @@ public class DependencyObject : DispatcherObject
             animatedValues[dp] = existing with { CurrentValue = value, HoldEndValue = holdEndValue };
         }
 
+        var cssRadiusChanged = existing is null && InvalidateCssRadiusPrecedence(dp);
+        if (existing is null) InvalidateCssBorderPrecedence(dp);
         if (Equals(oldValue, value))
         {
             // No visible change: do not fire OnPropertyChanged and do not schedule a
             // present. This is the single source of truth that lets a frame on which
             // the animated value did not move skip rendering entirely.
-            return false;
+            return cssRadiusChanged;
         }
 
         OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, value));
+        if (this is UIElement visibilityElement &&
+            dp == Styling.CssDisplayProperties.VisibilityProperty)
+            Styling.CssDisplayProperties.RefreshVisibility(visibilityElement);
 
         // The metadata-callback path is the primary invalidation hook (e.g.
         // OnRenderPropertyChanged → InvalidateVisual, OnCompositionPropertyChanged
@@ -1072,6 +1253,14 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     private void InvalidateAfterAnimationCleared(DependencyProperty dp)
     {
+        InvalidateCssRadiusPrecedence(dp);
+        InvalidateCssBorderPrecedence(dp);
+        if (this is UIElement visibilityElement &&
+            dp == Styling.CssDisplayProperties.VisibilityProperty)
+            Styling.CssDisplayProperties.RefreshVisibility(visibilityElement);
+        if (this is UIElement displayElement &&
+            dp == Styling.CssDisplayProperties.SpecificationProperty)
+            Styling.CssDisplayProperties.ReleaseAnimatedPresentation(displayElement);
         if (this is UIElement uiElement)
         {
             if (DpAffectsCompositionOnly(dp))
@@ -1173,7 +1362,8 @@ public class DependencyObject : DispatcherObject
     internal bool HasValueAboveInherited(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        if (_animatedValues?.ContainsKey(dp) == true || _valueStore?.HasAnyLayer(dp) == true)
+        if (_animatedValues?.ContainsKey(dp) == true || _cssAnimatedValues?.ContainsKey(dp) == true ||
+            _valueStore?.HasAnyLayer(dp) == true)
             return true;
 
         return false;
@@ -1225,6 +1415,12 @@ public class DependencyObject : DispatcherObject
         bool isExpression = _bindings?.ContainsKey(dp) == true;
 
         object? effectiveValue = baseValue;
+        if (_cssAnimatedValues?.TryGetValue(dp, out var cssAnimated) == true &&
+            _cssImportantProperties?.Contains(dp) != true && !HasLocalValue(dp))
+        {
+            effectiveValue = cssAnimated;
+            isAnimated = true;
+        }
         if (_animatedValues?.TryGetValue(dp, out var animated) == true)
         {
             effectiveValue = animated.CurrentValue;
@@ -1324,22 +1520,98 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
+        var trackDocumentDirection = dp == FrameworkElement.FlowDirectionProperty && Styling.CssEngine.IsActive;
+        object? oldNativeDirection = null;
+        var hadNativeDirection = trackDocumentDirection && TryGetValueWithoutCss(dp, out oldNativeDirection);
+
+        var oldLayer = GetEffectiveValueLayer(dp);
         if (allowAutoTransition && TryMutateValueWithAutomaticTransition(dp, mutateCore, notifyBinding))
+        {
+            if (oldLayer != GetEffectiveValueLayer(dp))
+                OnEffectiveValueSourceChanged(dp);
+            if (trackDocumentDirection)
+                NotifyNativeDirectionChanged(dp, hadNativeDirection, oldNativeDirection);
             return;
+        }
 
         var oldValue = GetValue(dp);
         if (!mutateCore.Apply(this, dp))
             return;
 
+        if (trackDocumentDirection)
+            NotifyNativeDirectionChanged(dp, hadNativeDirection, oldNativeDirection);
+
+        // CSS pointer-events can be overridden by a native local hit-test
+        // value even when the effective bool remains true. Source changes must
+        // invalidate the window's same-point hit-test memo as well.
+        if (this is UIElement && dp == UIElement.IsHitTestVisibleProperty)
+            UIElement.InvalidateHitTestCache();
+
+        InvalidateCssRadiusPrecedence(dp);
+        InvalidateCssBorderPrecedence(dp);
+        var cssTransitionCleared = this is UIElement element && element.StopCssTransitionForLocalValue(dp);
         var newValue = GetValue(dp);
+        if (oldLayer != GetEffectiveValueLayer(dp))
+        {
+            OnEffectiveValueSourceChanged(dp);
+            // An explicit `text-shadow: none` and an absent declaration both
+            // read as null, but only the former blocks an inherited shadow.
+            if (dp == Styling.CssTextShadowProperties.ValueProperty && Equals(oldValue, newValue))
+                Styling.CssTextShadowProperties.NotifyPresentationChanged(this);
+        }
+        if (this is UIElement visibilityElement)
+        {
+            if (dp == Styling.CssDisplayProperties.VisibilityProperty ||
+                dp == UIElement.VisibilityProperty && Equals(oldValue, newValue) &&
+                Styling.CssDisplayProperties.HasVisibilityDeclarations)
+                Styling.CssDisplayProperties.RefreshVisibility(visibilityElement);
+        }
         if (!Equals(oldValue, newValue))
         {
-            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+            if (!cssTransitionCleared)
+                OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
             if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
             {
                 binding.UpdateSource();
             }
         }
+        if (this is UIElement displayElement && dp == UIElement.VisibilityProperty &&
+            displayElement.HasAnimatedValue(Styling.CssDisplayProperties.SpecificationProperty))
+            Styling.CssDisplayProperties.SyncAnimatedPresentation(displayElement);
+    }
+
+    private void NotifyNativeDirectionChanged(DependencyProperty property, bool hadOldValue, object? oldValue)
+    {
+        var hasNewValue = TryGetValueWithoutCss(property, out var newValue);
+        if (hadOldValue != hasNewValue || !Equals(oldValue, newValue))
+            Styling.CssSelectorDependencies.NativeValueChanged(this, property.Name);
+    }
+
+    // A control can depend on which source owns a value even when the value
+    // itself is unchanged (for example, authored padding equal to a default).
+    internal virtual void OnEffectiveValueSourceChanged(DependencyProperty property) { }
+
+    private bool InvalidateCssRadiusPrecedence(DependencyProperty dp)
+    {
+        // A native circular value can equal the CSS horizontal projection while
+        // replacing an ellipse. Source changes must still invalidate retained paint.
+        if (dp.PropertyType == typeof(CornerRadius) &&
+            (GetValue(Styling.CssBorderRadiusProperties.ValueProperty) is Styling.CssBorderRadiusValue ||
+             GetValue(Styling.CssBorderRadiusProperties.TemplateValueProperty) is Styling.CssTemplateRadiusValue))
+        {
+            NotifyCssCornerRadiusPresentationChanged();
+            return true;
+        }
+        return false;
+    }
+
+    private void InvalidateCssBorderPrecedence(DependencyProperty dp)
+    {
+        if ((dp.Name == "BorderBrush" && dp.PropertyType == typeof(Media.Brush) ||
+             dp.Name == "BorderThickness" && dp.PropertyType == typeof(Thickness)) &&
+            (GetValue(Styling.CssBorderPaintProperties.ValueProperty) is Styling.CssBorderPaint ||
+             GetValue(Styling.CssBorderStyleProperties.ValueProperty) is Styling.CssBorderStyles))
+            NotifyCssBorderPresentationChanged();
     }
 
     private bool TryMutateValueWithAutomaticTransition(DependencyProperty dp, ValueMutation mutateCore, bool notifyBinding)
@@ -1364,6 +1636,15 @@ public class DependencyObject : DispatcherObject
                 ClearAnimatedValue(dp);
             }
 
+            return true;
+        }
+
+        InvalidateCssRadiusPrecedence(dp);
+        InvalidateCssBorderPrecedence(dp);
+        if (uiElement.StopCssTransitionForLocalValue(dp))
+        {
+            if (notifyBinding && _bindings?.TryGetValue(dp, out var localBinding) == true)
+                localBinding.UpdateSource();
             return true;
         }
 
@@ -1487,6 +1768,7 @@ public class DependencyObject : DispatcherObject
         BaseValueSource currentSource = BaseValueSource.Unknown)
     {
         (_valueStore ??= new DependencyValueStore()).SetLayer(dp, layer, value, currentSource);
+        dp.InvalidateInheritedSources();
     }
 
     private bool RemoveStoredValue(DependencyProperty dp, DependencyValueStore.Layer layer)
@@ -1494,6 +1776,8 @@ public class DependencyObject : DispatcherObject
         var store = _valueStore;
         if (store is null || !store.RemoveLayer(dp, layer))
             return false;
+
+        dp.InvalidateInheritedSources();
 
         if (store.Count == 0 && ReferenceEquals(_valueStore, store))
             _valueStore = null;
@@ -1508,6 +1792,8 @@ public class DependencyObject : DispatcherObject
         if (existing is null || !existing.Remove(dp))
             return false;
 
+        dp.InvalidateInheritedSources();
+
         if (existing.Count == 0 && ReferenceEquals(values, existing))
             values = null;
 
@@ -1521,6 +1807,8 @@ public class DependencyObject : DispatcherObject
         LayerValueSource.TemplateTrigger => DependencyValueStore.Layer.TemplateTrigger,
         LayerValueSource.StyleSetter => DependencyValueStore.Layer.StyleSetter,
         LayerValueSource.ParentTemplateTrigger => DependencyValueStore.Layer.ParentTemplateTrigger,
+        LayerValueSource.CssState => DependencyValueStore.Layer.CssState,
+        LayerValueSource.CssBase => DependencyValueStore.Layer.CssBase,
         _ => throw new ArgumentOutOfRangeException(nameof(source), source, null),
     };
 
@@ -1532,6 +1820,8 @@ public class DependencyObject : DispatcherObject
             LayerValueSource.TemplateTrigger => BaseValueSource.TemplateTrigger,
             LayerValueSource.StyleSetter => BaseValueSource.Style,
             LayerValueSource.ParentTemplateTrigger => BaseValueSource.ParentTemplateTrigger,
+            LayerValueSource.CssState => BaseValueSource.StyleTrigger,
+            LayerValueSource.CssBase => BaseValueSource.Style,
             _ => BaseValueSource.Unknown
         };
 

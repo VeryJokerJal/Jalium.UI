@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 // PREMULTIPLIED-source variant of bitmap_quad.frag.hlsl for the GPU bitmap
 // replay path (DrawBitmap / pixel-buffer uploads).
 //
@@ -49,6 +52,7 @@ struct PushConstants
     float4 quadPoint01;
     float4 quadPoint23;
     float2 geometryFlags;
+    // .x selects CSS pixelated sampling; mirrors the C++ push constants.
     float2 padding3;
     // Per-corner OUTER-clip radii (TL, TR, BR, BL) — same clip semantics as
     // solid_rect.frag.hlsl / text_glyph.frag.hlsl. Must mirror the 192-byte
@@ -144,8 +148,36 @@ float CoveragePerCornerRoundRect(float2 pixel, float4 rect, float4 rxs, float4 r
     return CoverageRoundRect(pixel, rect, float2(rx, ry));
 }
 
-float4 main(PsInput input) : SV_Target
+float4 SamplePixelated(float2 uv)
 {
+    uint texWidth, texHeight;
+    bitmapTexture.GetDimensions(texWidth, texHeight);
+    float2 sourceSize = float2(texWidth, texHeight);
+    float2 texelPerPixel = float2(
+        length(float2(ddx(uv.x), ddy(uv.x))) * sourceSize.x,
+        length(float2(ddx(uv.y), ddy(uv.y))) * sourceSize.y);
+    float2 step = max(1.0f, floor(1.0f / max(texelPerPixel, 0.000001f) + 0.5f));
+    float2 grid = uv * sourceSize * step - 0.5f;
+    float2 lower = floor(grid);
+    float2 blend = frac(grid);
+    int2 lastPixel = max(int2(0, 0), int2(floor(gPushConstants.uvOpacity.xy * sourceSize - 0.0001f)));
+    int2 p00 = clamp(int2(floor(lower / step)), int2(0, 0), lastPixel);
+    int2 p10 = clamp(int2(floor((lower + float2(1, 0)) / step)), int2(0, 0), lastPixel);
+    int2 p01 = clamp(int2(floor((lower + float2(0, 1)) / step)), int2(0, 0), lastPixel);
+    int2 p11 = clamp(int2(floor((lower + 1.0f) / step)), int2(0, 0), lastPixel);
+    float4 c00 = bitmapTexture.Load(int3(p00, 0));
+    float4 c10 = bitmapTexture.Load(int3(p10, 0));
+    float4 c01 = bitmapTexture.Load(int3(p01, 0));
+    float4 c11 = bitmapTexture.Load(int3(p11, 0));
+    return lerp(lerp(c00, c10, blend.x), lerp(c01, c11, blend.x), blend.y);
+}
+
+float4 UnclippedMain(PsInput input) : SV_Target
+{
+    // Evaluate texture derivatives before any rounded-clip discard.
+    float4 color = gPushConstants.padding3.x > 0.5f
+        ? SamplePixelated(input.uv)
+        : bitmapTexture.Sample(bitmapSampler, input.uv);
     float coverage = 1.0f;
 
     // Outer rounded clip. Coverage (not boolean discard) so the clip edge is
@@ -187,11 +219,18 @@ float4 main(PsInput input) : SV_Target
         }
     }
 
-    float4 color = bitmapTexture.Sample(bitmapSampler, input.uv);
     // PREMULTIPLIED source + premultiplied-SrcOver pipeline (SrcBlend = ONE):
     // scale EVERY channel by opacity and clip coverage so the texel stays
     // premultiplied. This is the one line that differs from
     // bitmap_quad.frag.hlsl (which scales alpha only for its SRC_ALPHA blend).
     color *= saturate(gPushConstants.uvOpacity.z) * coverage;
+    return color;
+}
+
+float4 main(PsInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    color *= coverage;
     return color;
 }

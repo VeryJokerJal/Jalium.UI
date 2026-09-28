@@ -20,10 +20,17 @@ namespace jalium {
 /// glyph atlas text, bitmap quads, triangle fill).  No D2D/D3D11on12 bridge.
 /// When useComposition=true, uses CreateSwapChainForComposition + DirectComposition
 /// for per-pixel alpha transparency (used by popup windows).
-class D3D12RenderTarget : public RenderTarget {
+class D3D12RenderTarget : public RenderTarget, public EllipticalClipProvider, public PathClipProvider,
+    public EllipticalEffectProvider, public SpreadShadowProvider,
+    public CssBoxShadowProvider, public CssShadowLayerProvider,
+    public FilterDropShadowProvider, public CssTextShadowProvider, public ColorMatrixChainProvider,
+    public InsetShadowLayerProvider {
 public:
     D3D12RenderTarget(D3D12Backend* backend, void* hwnd, int32_t width, int32_t height, bool useComposition = false);
     ~D3D12RenderTarget() override;
+    JaliumResult PushEllipticalRectClip(const JaliumEllipticalRectClip& clip) override;
+    JaliumResult PushPathClip(float startX, float startY, const float* commands,
+        uint32_t commandLength, int32_t fillRule) override;
 
     /// Initializes the render target (swap chain, DirectRenderer, DComp if needed).
     bool Initialize();
@@ -36,12 +43,17 @@ public:
 
     /// Override: hardware-timestamp GPU breakdown for the previous frame.
     JaliumResult QueryGpuTiming(JaliumGpuTimingStats* out) const override;
+    JaliumResult WaitForCompletion() override;
 
     /// Override: return the swap-chain frame-latency waitable HANDLE as
     /// intptr_t. Returns 0 when the swap chain was created without the
     /// FRAME_LATENCY_WAITABLE_OBJECT flag (older runtimes).
     intptr_t GetFrameLatencyWaitable() const override {
         return reinterpret_cast<intptr_t>(frameLatencyWaitable_);
+    }
+
+    bool UsesSoftwareDisplayRoute() const {
+        return softwareDisplayRoute_;
     }
 
     /// Override: report current swap chain present configuration (SwapEffect /
@@ -248,6 +260,49 @@ public:
         float r, float g, float b, float a,
         float uvOffsetX = 0, float uvOffsetY = 0,
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) override;
+    JaliumResult DrawDropShadowEffectElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawDropShadowEffectSpreadElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& spreadContour) override;
+    JaliumResult DrawCssBoxShadowEffectElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& originalContour,
+        const JaliumEllipticalRectClip& spreadContour) override;
+    JaliumResult PaintCssOuterShadowLayerElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        const JaliumEllipticalRectClip& originalContour,
+        const JaliumEllipticalRectClip& spreadContour) override;
+    JaliumResult PaintCssInnerShadowLayerElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawFilterDropShadowEffect(float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a) override;
+    JaliumResult DrawCssTextShadows(float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        const float* layers, uint32_t layerCount,
+        bool compositeSource) override;
+    JaliumResult DrawInnerShadowEffectElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawInnerShadowLayerElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) override;
     void DrawOuterGlowEffect(float x, float y, float w, float h,
         float glowSize, float r, float g, float b, float a, float intensity,
         float uvOffsetX, float uvOffsetY,
@@ -259,6 +314,8 @@ public:
         float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
     void DrawColorMatrixEffect(float x, float y, float w, float h,
         const float* matrix) override;
+    JaliumResult DrawColorMatrixChainEffect(float x, float y, float w, float h,
+        const float* matrices, uint32_t matrixCount) override;
     void DrawEmbossEffect(float x, float y, float w, float h,
         float amount, float lightDirX, float lightDirY, float relief) override;
     void DrawShaderEffect(float x, float y, float w, float h,
@@ -272,6 +329,19 @@ public:
         const char* hlslSource, const float* constants, uint32_t constantFloatCount) override;
 
 private:
+    void DrawDropShadowEffectCore(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL,
+        bool compositeContent);
+
+    JaliumResult DrawInnerShadowEllipticalCore(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour, bool compositeContent);
+
     // 编译期上限：仅用于定长数组(fenceValues_)与不变循环边界。运行期实际
     // swapchain 后台缓冲数是 swapBufferCount_(<= FrameCount)。
     static constexpr uint32_t FrameCount = 3;
@@ -295,6 +365,12 @@ private:
     // 是否核显(UMA)。仅用于诊断/标签。
     bool isIntegratedAdapter_ = false;
 
+    // True when DXGI reports that the monitor containing hwnd_ belongs to a
+    // software adapter (normally Microsoft Basic Render Driver). Rendering may
+    // still happen on AMD/NVIDIA, but a D3D12 flip present then crosses adapters
+    // and can retire at only a few frames per second.
+    bool softwareDisplayRoute_ = false;
+
     bool CreateSwapChain();
     void WaitForAllFrames();
     JaliumResult CommitCompositionResizePlacement(bool waitForCompletion);
@@ -308,6 +384,35 @@ private:
     // observes the correct scissor and transform stacks. Call this before any
     // non-path draw (FillRect, DrawText, DrawBitmap, etc.).
     void FlushVelloIfNeeded();
+    // Bounded variant for draws with known DIP-space extents: skips the Vello
+    // flush when the draw cannot overlap any pending path content.
+    void FlushVelloIfNeeded(float x, float y, float w, float h, int siteTag = 6);
+    // Overlap reroute: when pending Vello content overlaps an incoming small
+    // rect / polygon, encode the primitive INTO the same sub-scene (painter
+    // order inside one dispatch) instead of flushing. Returns true when the
+    // primitive was fully handled.
+    bool TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx, float ry,
+                                          Brush* brush, float strokeWidth, bool fill);
+    bool TryEncodeRectIntoPendingVello(float x, float y, float w, float h,
+                                       float rTL, float rTR, float rBR, float rBL,
+                                       Brush* brush, float strokeWidth, bool fill);
+    bool TryEncodePolygonIntoPendingVello(const float* points, uint32_t pointCount,
+                                          Brush* brush, float strokeWidth, bool closed,
+                                          int32_t lineJoin, float miterLimit,
+                                          bool fill, int32_t fillRule);
+
+    // Vello is excellent at medium/large scenes, but a full compute dispatch
+    // per 12 px icon is disproportionately expensive when text repeatedly cuts
+    // painter-order sub-scenes. The hybrid UI path uses Impeller's cached
+    // analytic coverage only for bounded icon/control geometry, then feeds the
+    // resulting triangles back into DirectRenderer's normal ordered batches.
+    bool EnsureImpellerFrame();
+    bool IsVelloUiGeometryFastPathEligible(float minX, float minY,
+                                            float maxX, float maxY,
+                                            float inflate = 0.0f) const;
+    void FlushVelloBeforeHybridGeometry(float minX, float minY,
+                                         float maxX, float maxY,
+                                         float inflate = 0.0f);
 
     // Flush Impeller tessellated batches into DirectRenderer's triangle pipeline.
     // Called after each Impeller path encode to maintain correct Z-order.
@@ -423,6 +528,7 @@ private:
 
     // Impeller engine (lazy-initialized on first use when engine == IMPELLER)
     std::unique_ptr<ImpellerD3D12Engine> impellerEngine_;
+    bool impellerFrameBegun_ = false;
 
     /// Returns true if the active engine is Impeller.
     bool IsImpellerActive() const {
@@ -442,6 +548,10 @@ private:
     // outer capture's successful state before its matching End call.
     std::vector<bool> effectCaptureScopeStack_;
     bool lastEffectCaptureOk_ = false;  // result of the most recently ended scope
+    JaliumEllipticalRectClip pendingEffectContour_ {};
+    bool hasPendingEffectContour_ = false;
+    JaliumEllipticalRectClip pendingBoxShadowKnockoutContour_ {};
+    bool hasPendingBoxShadowKnockout_ = false;
     bool tearingSupported_ = false;
     bool isComposition_ = false;
     bool vsyncEnabled_ = false;
@@ -462,7 +572,8 @@ private:
     // Tracks whether each PushClip/PushClipAliased/PushRoundedRectClip frame was
     // a rounded clip, so the matching PopClip can pop both the scissor and the
     // rounded-clip stack on the underlying DirectRenderer.
-    std::vector<bool> clipFrameIsRounded_;
+    // 0: scissor, 1: circular + scissor, 2: analytic contour only.
+    std::vector<uint8_t> clipFrameIsRounded_;
 
     // Actual swap chain creation flags (tracked for correct ResizeBuffers calls)
     UINT swapChainCreationFlags_ = 0;

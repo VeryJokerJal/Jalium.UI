@@ -1034,3 +1034,4 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::System.Security.RightsManagement.UnsignedPublishLicense))]
 [assembly: TypeForwardedTo(typeof(global::System.Security.RightsManagement.UseLicense))]
 [assembly: TypeForwardedTo(typeof(global::System.Security.RightsManagement.UserActivationMode))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Styling.CssViewportMetrics))]

@@ -1,11 +1,13 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Text;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
@@ -14,7 +16,7 @@ namespace Jalium.UI.Controls;
 /// Displays text content.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty(nameof(Inlines))]
-public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContentHost
+public partial class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContentHost
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -27,6 +29,8 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private readonly Dictionary<string, TextMeasurementCacheEntry> _textWidthCache = new(StringComparer.Ordinal);
     private InlineCollection? _inlines;
+    private List<InlineDecorationRange>? _inlineDecorationRanges;
+    private List<InlineTextRange>? _inlineTextRanges;
     private string _displayText = string.Empty;
     private bool _synchronizingTextAndInlines;
     private bool _inlinesExplicitlyModified;
@@ -34,6 +38,11 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     private List<TextLayoutLine> _layoutLines = new();
     private bool _layoutDirty = true;
     private double _layoutConstraintWidth = double.NaN;
+    private bool _layoutIntrinsic;
+    private CssWordBreak _layoutWordBreak;
+    private CssLineBreak _layoutLineBreak;
+    private string? _layoutLanguageTag;
+    private bool _layoutUsesCjkWritingSystem;
     private string? _layoutText;
     private List<FormattedText>? _cachedFormattedLines;
     private bool _formattedLinesCacheDirty = true;
@@ -48,15 +57,21 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     private int _cachedFontWeight;
     private int _cachedFontStyle;
     private int _cachedFontStretch;
+    private double? _cachedLineHeight;
+    private int _lineHeightContextGeneration;
+    private long _lineHeightMetricsEpoch;
+    private (long Family, long Size, long Weight, long Style, long Height, long Stacking, long Tree) _lineHeightInputVersions;
 
     private int _selectionStart;
     private int _selectionLength;
     private int _selectionAnchor;
     private bool _isSelecting;
+    private bool _ownsSelectionCursor;
     private bool _isWordSelecting;
     private int _wordSelectionAnchorStart;
     private int _wordSelectionAnchorEnd;
     private bool _isRenderingText;
+    private Border? _cssBorderPainter;
     private FlowDocument? _contentPointerDocument;
     private string? _contentPointerText;
 
@@ -91,7 +106,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty BaselineOffsetProperty =
         DependencyProperty.RegisterAttached(nameof(BaselineOffset), typeof(double), typeof(TextBlock),
-            new PropertyMetadata(double.NaN, OnTextChanged));
+            new PropertyMetadata(double.NaN, OnBaselineOffsetChanged));
 
     /// <summary>
     /// Identifies the FontFamily dependency property.
@@ -302,7 +317,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         {
             if (_inlines is null)
             {
-                var inlines = new InlineCollection(OnInlinesChanged);
+                var inlines = new InlineCollection(OnInlinesChanged, this);
                 _inlines = inlines;
                 if (!_inlinesExplicitlyModified && _displayText.Length > 0)
                 {
@@ -860,29 +875,40 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // Explicit invalidation can reflect a changed coercion input; only
+        // constraint-only remeasures may reuse the resolved line metrics.
+        if (!IsMeasureValid) _cachedLineHeight = null;
+
         // Negative Padding is legal; the Size constructor is not — clamp both the
         // empty-text fast path and the measured-text sink below.
-        var horizontalPadding = Padding.Left + Padding.Right;
-        var verticalPadding = Padding.Top + Padding.Bottom;
+        var insets = GetTextInsets();
+        var horizontalPadding = insets.Left + insets.Right;
+        var verticalPadding = insets.Top + insets.Bottom;
         if (string.IsNullOrEmpty(_displayText))
         {
             return new Size(Math.Max(0, horizontalPadding), Math.Max(0, verticalPadding));
         }
 
-        EnsureLayout(GetLayoutConstraintWidth(availableSize.Width));
+        EnsureLayout(GetLayoutConstraintWidth(availableSize.Width),
+            intrinsic: availableSize.Width == 0 && UsesCssWrapMode());
 
-        var lineHeight = GetLineHeight();
         var maxLineWidth = 0.0;
+        var measuredLineHeight = 0.0;
         for (int i = 0; i < _layoutLines.Count; i++)
         {
-            maxLineWidth = Math.Max(maxLineWidth, _layoutLines[i].Width);
+            var line = _layoutLines[i];
+            var indent = ResolveTextIndent(line.IndentApplies, GetContentWidth(availableSize.Width));
+            maxLineWidth = Math.Max(maxLineWidth,
+                line.Width + Math.Max(0, indent) + line.StartPadding + line.EndPadding);
+            measuredLineHeight += line.Height;
         }
 
-        var measuredWidth = maxLineWidth + horizontalPadding + 2;
-        var measuredHeight = Math.Max(_layoutLines.Count, 1) * lineHeight + verticalPadding + 2;
+        var measurementSlack = maxLineWidth == 0 && measuredLineHeight == 0 ? 0 : 2;
+        var measuredWidth = maxLineWidth + horizontalPadding + measurementSlack;
+        var measuredHeight = Math.Max(measuredLineHeight, GetLineHeight()) + verticalPadding + measurementSlack;
 
         if (TextTrimming != TextTrimming.None &&
-            TextWrapping == TextWrapping.NoWrap &&
+            EffectiveTextWrapping() == TextWrapping.NoWrap &&
             !double.IsInfinity(availableSize.Width))
         {
             measuredWidth = Math.Min(measuredWidth, availableSize.Width);
@@ -911,10 +937,23 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
             if (Background != null)
             {
-                drawingContext.DrawRectangle(Background, null, new Rect(RenderSize));
+                var bounds = new Rect(RenderSize);
+                var cssRadius = Jalium.UI.Styling.CssBorderRadiusProperties.Get(this);
+                var radii = cssRadius?.Resolve(RenderSize) ?? default;
+                var rounded = cssRadius is null ? null : new Jalium.UI.Styling.CssRoundedRectangleGeometry(bounds, radii);
+                void DrawShape(Brush brush)
+                {
+                    if (rounded is null) drawingContext.DrawRectangle(brush, null, bounds);
+                    else drawingContext.DrawGeometry(brush, null, rounded);
+                }
+                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? bounds.Width);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, drawingContext,
+                        bounds, radii, border, padding, DrawShape))
+                    DrawShape(Background);
             }
 
-            if (string.IsNullOrEmpty(_displayText) || Foreground == null)
+            if (string.IsNullOrEmpty(_displayText))
             {
                 return;
             }
@@ -924,18 +963,27 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
             dc.PushClip(GetRenderClip());
 
+            DrawInlineBackgrounds(dc);
+
             if (_selectionLength > 0)
             {
                 DrawSelection(dc);
             }
 
-            DrawTextLines(dc);
+            if (Foreground is not null) DrawTextLines(dc);
             dc.Pop();
         }
         finally
         {
             _isRenderingText = false;
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     /// <inheritdoc />
@@ -948,6 +996,9 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private void DrawTextLines(DrawingContext dc)
     {
+        // A zero-sized base font has no glyph ink. Keep inline fragments alive
+        // when a Run overrides the size with a nonzero value.
+        if (FontSize == 0 && !_usesInlineFontLayout) return;
         var lineHeight = GetLineHeight();
         var renderWidth = GetContentWidth(RenderSize.Width);
         var verticalOffset = GetVerticalContentOffset(lineHeight);
@@ -956,7 +1007,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         if (_formattedLinesCacheDirty || _cachedFormattedLines == null ||
             _cachedFormattedLines.Count != _layoutLines.Count)
         {
-            var fontFamily = FontFamily.Source;
+            var fontFamily = FontFamily.GetRenderingSource(this);
             var fontSize = FontSize;
             var fontWeight = FontWeight.ToOpenTypeWeight();
             var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -974,8 +1025,16 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
                     continue;
                 }
 
+                if (_usesInlineFontLayout || _hasWordSpacing || _hasLetterSpacing ||
+                    ContainsPreservedTab(line.StartIndex, line.Length) ||
+                    _hasPaintTextChanges)
+                {
+                    _cachedFormattedLines.Add(null!);
+                    continue;
+                }
+
                 var formattedText = line.FormattedText ?? new FormattedText(
-                    _displayText.Substring(line.StartIndex, line.Length),
+                    PaintSlice(line.StartIndex, line.Length),
                     fontFamily,
                     fontSize)
                 {
@@ -995,14 +1054,14 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
                     FontWeight = fontWeight,
                     FontStyle = fontStyle,
                     FontStretch = fontStretch,
-                    Trimming = TextWrapping == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None
+                    Trimming = EffectiveTextWrapping() == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None
                 };
                 // Layout already measured this exact fragment. Reuse that object
                 // and add only the drawing-specific constraints here.
                 formattedText.Foreground = Foreground;
                 formattedText.MaxTextWidth = double.MaxValue;
                 formattedText.MaxTextHeight = lineHeight;
-                formattedText.Trimming = TextWrapping == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None;
+                formattedText.Trimming = EffectiveTextWrapping() == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None;
                 // Pull TextOptions.{TextRenderingMode,TextFormattingMode,TextHintingMode}
                 // off the TextBlock so the native glyph atlas can honour per-element
                 // overrides. Defaults are Auto/Ideal/Auto — same effective behaviour
@@ -1035,9 +1094,8 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         // (e.g. a ScrollViewer viewport, or this element's own RenderSize clip) and
         // the element's drawing offset, skip lines whose vertical band lies entirely
         // outside the clip. CurrentClipBounds is in absolute drawing coordinates, so
-        // a line's absolute band is [Offset.Y + lineY, Offset.Y + lineY + lineHeight]
-        // where lineY = verticalOffset + i * lineHeight (the same y handed to
-        // DrawText). Skipping a long off-screen block (e.g. a 10 000-line TextBlock
+        // a line's absolute band is [Offset.Y + lineY, Offset.Y + lineY + line.Height].
+        // lineY advances by each preceding line's height. Skipping a long off-screen block (e.g. a 10 000-line TextBlock
         // scrolled to the middle) turns O(lines) DrawText calls into O(visible lines).
         Rect? clipBounds = null;
         var offsetY = 0.0;
@@ -1048,17 +1106,49 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             offsetY = offsetContext.Offset.Y;
         }
 
+        var lineY = verticalOffset;
+        var firstDecoratedLine = -1;
+        var lastDecoratedLine = -1;
+        var ownDecorationInset = CssTextDecorationProperties.Inset(this);
+        var accessDecorationInset = VisualParent is AccessText accessText
+            ? CssTextDecorationProperties.Inset(accessText) : CssTextDecorationInset.Zero;
+        var hasDecorationInset = ownDecorationInset != CssTextDecorationInset.Zero ||
+            accessDecorationInset != CssTextDecorationInset.Zero;
+        var decorationSizePrefix = hasDecorationInset
+            ? new double[_layoutLines.Count + 1] : null;
+        if (hasDecorationInset)
+        {
+            for (var lineIndex = 0; lineIndex < _layoutLines.Count; lineIndex++)
+            {
+                decorationSizePrefix![lineIndex + 1] = decorationSizePrefix[lineIndex];
+                var decorationLine = _layoutLines[lineIndex];
+                if (decorationLine.Length > 0)
+                {
+                    if (firstDecoratedLine < 0) firstDecoratedLine = lineIndex;
+                    lastDecoratedLine = lineIndex;
+                    decorationSizePrefix[lineIndex + 1] += GetTextDecorationWidth(decorationLine);
+                }
+            }
+        }
+        var totalDecorationInlineSize = decorationSizePrefix?[^1] ?? -1;
+        var inlineInsetWidths = new Dictionary<TextElement, double[]>(ReferenceEqualityComparer.Instance);
         for (int i = 0; i < _cachedFormattedLines.Count; i++)
         {
+            var line = _layoutLines[i];
             var ft = _cachedFormattedLines[i];
-            if (ft == null) continue;
-
-            var lineY = verticalOffset + i * lineHeight;
+            var currentY = lineY;
+            lineY += line.Height;
+            var inlineSizeBefore = decorationSizePrefix?[i] ?? -1;
+            var inlineSizeAfter = decorationSizePrefix is null ? -1 : Math.Max(0,
+                totalDecorationInlineSize - decorationSizePrefix[i + 1]);
+            if (line.Length == 0 || !_usesInlineFontLayout && !_hasWordSpacing &&
+                !_hasLetterSpacing && !ContainsPreservedTab(line.StartIndex, line.Length) &&
+                !_hasPaintTextChanges && ft == null) continue;
 
             if (clipBounds is Rect clip)
             {
-                var top = offsetY + lineY;
-                var bottom = top + lineHeight;
+                var top = offsetY + currentY;
+                var bottom = top + line.Height;
                 // Cull when the band is fully above or fully below the clip. Touching
                 // edges (bottom == clip top, or top == clip bottom) contribute no
                 // visible pixels, so they are culled too.
@@ -1068,30 +1158,194 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
                 }
             }
 
-            var lineOriginX = GetLineOriginX(_layoutLines[i], renderWidth);
-            dc.DrawText(ft, new Point(lineOriginX, lineY));
-            DrawTextDecorations(dc, _layoutLines[i], lineOriginX, lineY, lineHeight);
+            var lineOriginX = GetLineOriginX(line, renderWidth);
+            void DrawLineContent()
+            {
+                if (TryGetTrimmedLine(line, renderWidth, out var trimmed))
+                    DrawTrimmedLine(dc, line, lineOriginX, currentY, trimmed);
+                else if (line.PaintWrap is not null)
+                    DrawPaintWrapLine(dc, line, lineOriginX, currentY);
+                else if (TryGetJustifiedLine(line, renderWidth, out var justified))
+                    DrawJustifiedLine(dc, line, lineOriginX, currentY, justified);
+                else if (_usesInlineFontLayout || _hasWordSpacing || _hasLetterSpacing ||
+                         ContainsPreservedTab(line.StartIndex, line.Length) ||
+                         _hasPaintTextChanges)
+                    DrawStyledInlineLine(dc, line, lineOriginX, currentY);
+                else if (!DrawInlineForegroundText(dc, ft!, line, lineOriginX, currentY, line.Height))
+                    dc.DrawText(ft!, new Point(lineOriginX, currentY));
+                DrawTextDecorations(dc, line, lineOriginX, currentY, line.Height,
+                    totalDecorationInlineSize,
+                    i == firstDecoratedLine, i == lastDecoratedLine,
+                    inlineSizeBefore, inlineSizeAfter);
+                DrawInlineTextDecorations(dc, line, lineOriginX, currentY, line.Height,
+                    i, inlineInsetWidths);
+            }
+            if (TryDrawInlineTextShadows(dc, line, lineOriginX, currentY,
+                    DrawLineContent))
+                continue;
+            var shadowCapture = CssTextShadowPainter.Begin(dc, this,
+                new Rect(0, currentY - line.Height, Math.Max(1, RenderSize.Width),
+                    3 * Math.Max(1, line.Height)));
+            try
+            {
+                DrawLineContent();
+            }
+            finally
+            {
+                shadowCapture?.End();
+            }
         }
     }
+
+    private bool DrawInlineForegroundText(DrawingContext context, FormattedText formattedText,
+        in TextLayoutLine line, double originX, double lineY, double lineHeight)
+    {
+        if (_inlines is null || line.Length == 0) return false;
+        var ranges = GetInlineTextRanges();
+        var lineEnd = line.StartIndex + line.Length;
+        var hasDifferentForeground = false;
+        foreach (var range in ranges)
+        {
+            if (range.End <= line.StartIndex || range.Start >= lineEnd) continue;
+            if (!ReferenceEquals(range.Run.Foreground ?? Foreground, Foreground))
+            {
+                hasDifferentForeground = true;
+                break;
+            }
+        }
+        if (!hasDifferentForeground) return false;
+
+        var originalForeground = formattedText.Foreground;
+        var cursor = line.StartIndex;
+        try
+        {
+            foreach (var range in ranges)
+            {
+                var start = Math.Max(range.Start, line.StartIndex);
+                var end = Math.Min(range.End, lineEnd);
+                if (end <= start) continue;
+                if (start > cursor)
+                    DrawForegroundRange(context, formattedText, line, originX, lineY,
+                        lineHeight, cursor, start, Foreground);
+                DrawForegroundRange(context, formattedText, line, originX, lineY,
+                    lineHeight, start, end, range.Run.Foreground ?? Foreground);
+                cursor = end;
+            }
+            if (cursor < lineEnd)
+                DrawForegroundRange(context, formattedText, line, originX, lineY,
+                    lineHeight, cursor, lineEnd, Foreground);
+        }
+        finally
+        {
+            formattedText.Foreground = originalForeground;
+        }
+        return true;
+    }
+
+    private void DrawForegroundRange(DrawingContext context, FormattedText formattedText,
+        in TextLayoutLine line, double originX, double lineY, double lineHeight,
+        int start, int end, Brush? foreground)
+    {
+        if (foreground is null || end <= start) return;
+        var left = GetInlineBoundaryX(line, originX, start);
+        var right = GetInlineBoundaryX(line, originX, end);
+        if (right <= left) return;
+
+        // Keep the original shaped line so color boundaries do not reflow glyphs.
+        // The vertical clip spans ink overhang above and below the line box.
+        context.PushClip(new RectangleGeometry(new Rect(left, lineY - lineHeight,
+            right - left, lineHeight * 3)));
+        try
+        {
+            formattedText.Foreground = foreground;
+            context.DrawText(formattedText, new Point(originX, lineY));
+        }
+        finally
+        {
+            context.Pop();
+        }
+    }
+
+    private List<InlineTextRange> GetInlineTextRanges()
+    {
+        if (_inlineTextRanges is not null) return _inlineTextRanges;
+        var ranges = new List<InlineTextRange>();
+        var offset = 0;
+        if (_inlines is not null)
+            foreach (var inline in _inlines)
+                CollectInlineTextRanges(inline, ref offset, ranges);
+        return _inlineTextRanges = ranges;
+    }
+
+    private static void CollectInlineTextRanges(Inline inline, ref int offset,
+        List<InlineTextRange> ranges)
+    {
+        switch (inline)
+        {
+            case Run run:
+                var start = offset;
+                offset += run.Text.Length;
+                if (offset > start) ranges.Add(new InlineTextRange(run, start, offset));
+                break;
+            case LineBreak:
+                offset++;
+                break;
+            case Span span:
+                foreach (var child in span.Inlines)
+                    CollectInlineTextRanges(child, ref offset, ranges);
+                break;
+        }
+    }
+
+    private readonly record struct InlineTextRange(Run Run, int Start, int End);
 
     private void DrawTextDecorations(
         DrawingContext drawingContext,
         in TextLayoutLine line,
         double lineOriginX,
         double lineY,
-        double lineHeight)
+        double lineHeight,
+        double totalInlineSize,
+        bool firstFragment,
+        bool lastFragment,
+        double inlineSizeBefore,
+        double inlineSizeAfter)
     {
-        if (line.Width <= 0 || GetValue(TextDecorationsProperty) is not TextDecorationCollection decorations || decorations.Count == 0)
+        var decorationWidth = GetTextDecorationWidth(line);
+        UIElement cssOwner = this;
+        var cssOwnsDecorations = GetEffectiveValueLayer(TextDecorationsProperty) is
+            (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState);
+        if (!cssOwnsDecorations && VisualParent is AccessText accessText &&
+            accessText.GetEffectiveValueLayer(AccessText.TextDecorationsProperty) is
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+        {
+            // AccessText forwards its CSS collection as a local value to the
+            // internal TextBlock. Its own CSS longhands still define the paint.
+            cssOwner = accessText;
+            cssOwnsDecorations = true;
+        }
+        var decorations = cssOwnsDecorations
+            ? null : GetValue(TextDecorationsProperty) as TextDecorationCollection;
+        var cssLines = cssOwnsDecorations
+            ? CssTextDecorationProperties.Line(cssOwner) : CssTextDecorationLine.None;
+        if (decorationWidth <= 0 || decorations is null && cssLines == CssTextDecorationLine.None ||
+            decorations is { Count: 0 })
         {
             return;
         }
 
-        var metrics = TextMeasurement.GetFontMetrics(
-            FontFamily.Source,
-            FontSize > 0 ? FontSize : 14,
-            FontWeight.ToOpenTypeWeight(),
-            FontStyle.ToOpenTypeStyle());
-        var baseline = lineY + (metrics.Ascent > 0 ? metrics.Ascent : lineHeight * 0.8);
+        var baseline = lineY + line.Baseline;
+
+        if (decorations is null)
+        {
+            var brush = CssTextDecorationProperties.Color(cssOwner) ?? Foreground;
+            if (brush is null) return;
+            CssTextDecorationPainter.Draw(drawingContext, cssOwner, this, brush, cssLines,
+                lineOriginX, lineOriginX + decorationWidth, lineY, baseline, FontSize,
+                lineY + line.GlyphHeight, totalInlineSize, firstFragment, lastFragment,
+                inlineSizeBefore, inlineSizeAfter);
+            return;
+        }
 
         foreach (var decoration in decorations)
         {
@@ -1116,9 +1370,243 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             drawingContext.DrawLine(
                 new Pen(brush, thickness),
                 new Point(lineOriginX, y),
-                new Point(lineOriginX + line.Width, y));
+                new Point(lineOriginX + decorationWidth, y));
         }
     }
+
+    private double GetTextDecorationWidth(in TextLayoutLine line)
+    {
+        var contentWidth = GetContentWidth(RenderSize.Width);
+        if (ContainsPreservedTab(line.StartIndex, line.Length))
+        {
+            var originX = GetLineOriginX(line, contentWidth);
+            return GetInlineBoundaryX(line, originX, line.StartIndex + line.Length) -
+                originX;
+        }
+        var logicalWidth = line.PaintWrap is not null
+            ? TryGetPaintWrapJustification(line, contentWidth, out var paintJustified)
+                ? paintJustified.FilledWidth : line.Width
+            : TryGetJustifiedLine(line, contentWidth, out var justified)
+                ? justified.FilledWidth : line.Width;
+        return logicalWidth + line.HangingStart + line.HangingEnd;
+    }
+
+    private void DrawInlineTextDecorations(DrawingContext context, in TextLayoutLine line,
+        double lineOriginX, double lineY, double lineHeight,
+        int lineIndex, Dictionary<TextElement, double[]> insetWidthCache)
+    {
+        if (_inlines is null || line.Length == 0 ||
+            line.Width + line.HangingStart + line.HangingEnd <= 0) return;
+        var ranges = GetInlineDecorationRanges();
+        if (ranges.Count == 0) return;
+
+        var lineEnd = line.StartIndex + line.Length;
+        var baseline = lineY + line.Baseline;
+        foreach (var range in ranges)
+        {
+            var start = Math.Max(range.Start, line.StartIndex);
+            var end = Math.Min(range.End, lineEnd);
+            if (end <= start) continue;
+
+            var startX = GetInlineBoundaryX(line, lineOriginX, start);
+            var endX = GetInlineBoundaryX(line, lineOriginX, end);
+            if (endX <= startX) continue;
+
+            var sourceFontSize = _usesInlineFontLayout ? range.Source.FontSize : FontSize;
+            var sourceLineTop = lineY;
+            if (_usesInlineFontLayout)
+            {
+                var sourceMetrics = TextMeasurement.GetFontMetrics(
+                    range.Source.FontFamily.GetRenderingSource(this), sourceFontSize,
+                    range.Source.FontWeight.ToOpenTypeWeight(),
+                    range.Source.FontStyle.ToOpenTypeStyle());
+                sourceLineTop = baseline - (sourceMetrics.Ascent > 0
+                    ? sourceMetrics.Ascent : sourceFontSize * 0.8);
+            }
+            var foreground = range.Source.Foreground ?? Foreground;
+            if (range.CssLines != CssTextDecorationLine.None)
+            {
+                var brush = CssTextDecorationProperties.Color(range.Source) ?? foreground;
+                if (brush is not null)
+                {
+                    var underEdge = (range.CssLines & CssTextDecorationLine.Underline) != 0 &&
+                        (CssTextDecorationProperties.UnderlinePosition(range.Source) & CssTextUnderlinePosition.Under) != 0
+                            ? GetInlineDecorationUnderEdge(line, start, end, baseline, lineY)
+                            : lineY + line.GlyphHeight;
+                    var prefix = GetInlineDecorationSizePrefix(range, insetWidthCache);
+                    CssTextDecorationPainter.Draw(context, range.Source, this, brush,
+                        range.CssLines, startX, endX, sourceLineTop, baseline, sourceFontSize,
+                        underEdge, prefix?[^1] ?? -1,
+                        start == range.Start, end == range.End,
+                        prefix?[lineIndex] ?? -1,
+                        prefix is null ? -1 : prefix[^1] - prefix[lineIndex + 1]);
+                }
+                continue;
+            }
+
+            foreach (var decoration in range.Native!)
+            {
+                var brush = decoration.Brush ?? foreground;
+                if (brush is null) continue;
+                var thickness = decoration.Thickness > 0 ? decoration.Thickness : 1;
+                var offset = decoration.OffsetUnit == TextDecorationUnit.Pixel
+                    ? decoration.Offset : decoration.Offset * sourceFontSize;
+                var y = decoration.Location switch
+                {
+                    TextDecorationLocation.OverLine => sourceLineTop + offset,
+                    TextDecorationLocation.Strikethrough => sourceLineTop + (baseline - sourceLineTop) * 0.55 + offset,
+                    TextDecorationLocation.Baseline => baseline + offset,
+                    _ => baseline + Math.Max(1, sourceFontSize * 0.08) + offset,
+                };
+                context.DrawLine(new Pen(brush, thickness),
+                    new Point(startX, y), new Point(endX, y));
+            }
+        }
+    }
+
+    private double[]? GetInlineDecorationSizePrefix(in InlineDecorationRange range,
+        Dictionary<TextElement, double[]> cache)
+    {
+        if (CssTextDecorationProperties.Inset(range.Source) == CssTextDecorationInset.Zero)
+            return null;
+        if (cache.TryGetValue(range.Source, out var prefix)) return prefix;
+        prefix = new double[_layoutLines.Count + 1];
+        for (var index = 0; index < _layoutLines.Count; index++)
+        {
+            var fragment = _layoutLines[index];
+            prefix[index + 1] = prefix[index];
+            var start = Math.Max(range.Start, fragment.StartIndex);
+            var end = Math.Min(range.End, fragment.StartIndex + fragment.Length);
+            if (end <= start) continue;
+            prefix[index + 1] += Math.Max(0,
+                GetInlineBoundaryX(fragment, 0, end) - GetInlineBoundaryX(fragment, 0, start));
+        }
+        cache[range.Source] = prefix;
+        return prefix;
+    }
+
+    private double GetInlineBoundaryX(in TextLayoutLine line, double originX, int index)
+    {
+        if (index <= line.StartIndex) return originX;
+        if (line.PaintWrap is not null)
+            return originX + GetPaintWrapBoundaryX(line, index);
+        if (ContainsPreservedTab(line.StartIndex, line.Length))
+        {
+            var lineEnd = line.StartIndex + line.Length;
+            var boundary = Math.Min(index, lineEnd);
+            var width = MeasureInlineRange(line.StartIndex, boundary - line.StartIndex,
+                includeTrailingWhitespace: true,
+                tabOrigin: originX - GetTextInsets().Left);
+            if (boundary < lineEnd)
+                width += WordSpacingBeforeSeparator(boundary) +
+                    LetterSpacingAtBoundary(boundary, line.StartIndex, lineEnd);
+            return originX + width;
+        }
+        var contentWidth = GetContentWidth(RenderSize.Width);
+        var physicalWidth = line.Width + line.HangingStart + line.HangingEnd;
+        if (TryGetJustifiedLine(line, contentWidth, out var justified))
+        {
+            var justifiedPhysical = justified.FilledWidth +
+                line.HangingStart + line.HangingEnd;
+            if (index >= justified.VisibleEnd) return originX + justifiedPhysical;
+            return originX + Math.Min(justifiedPhysical,
+                GetJustifiedBoundaryOffset(justified, index) + WordSpacingBeforeSeparator(index) +
+                LetterSpacingAtBoundary(index, line.StartIndex, justified.VisibleEnd));
+        }
+        if (index >= line.StartIndex + line.Length) return originX + physicalWidth;
+        if (_usesInlineFontLayout || _hasWordSpacing || _hasLetterSpacing ||
+            _hasPaintTextChanges)
+            return originX + Math.Min(physicalWidth,
+                MeasureInlineRange(line.StartIndex, index - line.StartIndex,
+                    includeTrailingWhitespace: true,
+                    tabOrigin: ResolveTextIndent(line.IndentApplies, contentWidth) +
+                        GetLineLeftPadding(line)) +
+                    WordSpacingBeforeSeparator(index) +
+                    LetterSpacingAtBoundary(index, line.StartIndex, line.StartIndex + line.Length));
+        var prefix = PaintSlice(line.StartIndex, index - line.StartIndex);
+        return originX + Math.Min(physicalWidth,
+            MeasureText(prefix).WidthIncludingTrailingWhitespace);
+    }
+
+    internal IReadOnlyList<(double StartX, double EndX, double Baseline)>
+        GetSourceRangeSegments(int start, int length)
+    {
+        if (length <= 0) return [];
+        EnsureLayout(GetLayoutConstraintWidth(RenderSize.Width));
+        var rangeStart = Math.Clamp(start, 0, _visualText.Length);
+        var rangeEnd = (int)Math.Clamp((long)start + length, 0, _visualText.Length);
+        if (rangeEnd <= rangeStart) return [];
+
+        var segments = new List<(double StartX, double EndX, double Baseline)>();
+        var renderWidth = GetContentWidth(RenderSize.Width);
+        var y = GetVerticalContentOffset(GetLineHeight());
+        foreach (var line in _layoutLines)
+        {
+            var visibleEnd = line.StartIndex + line.Length;
+            if (TryGetTrimmedLine(line, renderWidth, out var trimmed))
+                visibleEnd = Math.Min(visibleEnd, line.StartIndex + trimmed.PrefixLength);
+            var selectedStart = Math.Max(rangeStart, line.StartIndex);
+            var selectedEnd = Math.Min(rangeEnd, visibleEnd);
+            if (selectedEnd > selectedStart)
+            {
+                var originX = GetLineOriginX(line, renderWidth);
+                var left = GetInlineBoundaryX(line, originX, selectedStart);
+                var right = GetInlineBoundaryX(line, originX, selectedEnd);
+                if (right > left)
+                    segments.Add((left, right, y + line.Baseline));
+            }
+            y += line.Height;
+        }
+        return segments;
+    }
+
+    private List<InlineDecorationRange> GetInlineDecorationRanges()
+    {
+        if (_inlineDecorationRanges is not null) return _inlineDecorationRanges;
+        var ranges = new List<InlineDecorationRange>();
+        var offset = 0;
+        if (_inlines is not null)
+            foreach (var inline in _inlines)
+                CollectInlineDecorationRanges(inline, ref offset, 0, ranges);
+        ranges.Sort(static (left, right) =>
+        {
+            var depth = left.Depth.CompareTo(right.Depth);
+            return depth != 0 ? depth : left.Start.CompareTo(right.Start);
+        });
+        return _inlineDecorationRanges = ranges;
+    }
+
+    private static void CollectInlineDecorationRanges(Inline inline, ref int offset,
+        int depth, List<InlineDecorationRange> ranges)
+    {
+        var start = offset;
+        switch (inline)
+        {
+            case Run run:
+                offset += run.Text.Length;
+                break;
+            case LineBreak:
+                offset++;
+                break;
+            case Span span:
+                foreach (var child in span.Inlines)
+                    CollectInlineDecorationRanges(child, ref offset, depth + 1, ranges);
+                break;
+        }
+        if (offset == start) return;
+
+        var cssOwnsDecorations = inline.GetEffectiveValueLayer(TextElement.TextDecorationsProperty) is
+            (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState);
+        var cssLines = cssOwnsDecorations
+            ? CssTextDecorationProperties.Line(inline) : CssTextDecorationLine.None;
+        var native = cssOwnsDecorations
+            ? null : inline.TextDecorations;
+        if (cssLines != CssTextDecorationLine.None || native is { Count: > 0 })
+            ranges.Add(new InlineDecorationRange(inline, start, offset, depth, cssLines, native));
+    }
+
+    private readonly record struct InlineDecorationRange(TextElement Source, int Start,
+        int End, int Depth, CssTextDecorationLine CssLines, TextDecorationCollection? Native);
 
     /// <summary>
     /// Computes the vertical offset that visually centers the rendered glyphs inside the
@@ -1139,36 +1627,37 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     /// pixel area the user perceives as "the text".
     /// </summary>
     private double GetVerticalContentOffset(double lineHeight)
+        => GetVerticalContentOffset(lineHeight, RenderSize.Height);
+
+    internal double GetFirstBaselineOffset(double renderHeight)
     {
+        if (_layoutLines.Count == 0 || string.IsNullOrEmpty(_displayText)) return double.NaN;
+
+        var lineHeight = GetLineHeight();
+        return GetVerticalContentOffset(lineHeight, renderHeight) + _layoutLines[0].Baseline;
+    }
+
+    internal double GetLastBaselineOffset(double renderHeight)
+    {
+        if (_layoutLines.Count == 0 || string.IsNullOrEmpty(_displayText)) return double.NaN;
+        var offset = GetVerticalContentOffset(GetLineHeight(), renderHeight);
+        for (var i = 0; i < _layoutLines.Count - 1; i++) offset += _layoutLines[i].Height;
+        return offset + _layoutLines[^1].Baseline;
+    }
+
+    private double GetVerticalContentOffset(double lineHeight, double renderHeight)
+    {
+        var insets = GetTextInsets();
         if (lineHeight <= 0 || _layoutLines.Count == 0)
         {
-            return Padding.Top;
+            return insets.Top;
         }
 
-        var fontFamily = FontFamily.Source;
-        var fontSize = FontSize > 0 ? FontSize : 14;
-        var metrics = TextMeasurement.GetFontMetrics(
-            fontFamily,
-            fontSize,
-            FontWeight.ToOpenTypeWeight(),
-            FontStyle.ToOpenTypeStyle());
-
-        // Visible glyph height per line: Ascent + Descent (no LineGap).
-        var glyphHeight = metrics.Ascent + metrics.Descent;
-        if (glyphHeight <= 0)
-        {
-            // Native metrics unavailable; fall back to box-based centering.
-            var totalLinesHeight = _layoutLines.Count * lineHeight;
-            var fallbackSlack = Math.Max(0, RenderSize.Height - Padding.Top - Padding.Bottom) - totalLinesHeight;
-            return Padding.Top + (fallbackSlack > 0 ? fallbackSlack / 2 : 0);
-        }
-
-        // For N lines: lines 1..N-1 each advance by a full lineHeight (since the
-        // glyph + lineGap stack up between baselines), and the last line contributes
-        // its glyph height. So visible extent = (N-1) * lineHeight + glyphHeight.
-        var totalVisibleHeight = (_layoutLines.Count - 1) * lineHeight + glyphHeight;
-        var slack = Math.Max(0, RenderSize.Height - Padding.Top - Padding.Bottom) - totalVisibleHeight;
-        return Padding.Top + (slack > 0 ? slack / 2 : 0);
+        var totalVisibleHeight = _layoutLines[^1].GlyphHeight;
+        for (var i = 0; i < _layoutLines.Count - 1; i++)
+            totalVisibleHeight += _layoutLines[i].Height;
+        var slack = Math.Max(0, renderHeight - insets.Top - insets.Bottom) - totalVisibleHeight;
+        return insets.Top + (slack > 0 ? slack / 2 : 0);
     }
 
     private void DrawSelection(DrawingContext dc)
@@ -1184,9 +1673,12 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         var renderWidth = GetContentWidth(RenderSize.Width);
         var verticalOffset = GetVerticalContentOffset(lineHeight);
 
+        var y = verticalOffset;
         for (int i = 0; i < _layoutLines.Count; i++)
         {
             var line = _layoutLines[i];
+            var lineY = y;
+            y += line.Height;
             var lineEnd = line.StartIndex + line.Length;
             var intersectsLine = _selectionStart <= lineEnd && selectionEnd >= line.StartIndex;
             if (!intersectsLine)
@@ -1198,22 +1690,45 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             var startInLine = Math.Max(0, _selectionStart - line.StartIndex);
             var endInLine = Math.Min(line.Length, selectionEnd - line.StartIndex);
             var lineOriginX = GetLineOriginX(line, renderWidth);
-            var y = verticalOffset + i * lineHeight;
+            var fragmented = _usesInlineFontLayout || _hasWordSpacing || _hasLetterSpacing ||
+                ContainsPreservedTab(line.StartIndex, line.Length);
+            var justified = TryGetJustifiedLine(line, renderWidth, out _);
+            if (TryGetTrimmedLine(line, renderWidth, out var trimmed))
+            {
+                startInLine = Math.Min(startInLine, trimmed.PrefixLength);
+                endInLine = Math.Min(endInLine, trimmed.PrefixLength);
+                fragmented = trimmed.Fragmented;
+            }
 
             if (endInLine > startInLine)
             {
                 var textBefore = lineText.Substring(0, startInLine);
                 var selectedText = lineText.Substring(startInLine, endInLine - startInLine);
-                var startX = lineOriginX + MeasureTextWidth(textBefore, includeTrailingWhitespace: true);
-                var width = Math.Max(1, Math.Round(MeasureTextWidth(selectedText, includeTrailingWhitespace: true)));
+                var startX = justified || _hasWordSpacing || _hasLetterSpacing ||
+                    ContainsPreservedTab(line.StartIndex, line.Length) || _hasPaintTextChanges
+                    ? GetInlineBoundaryX(line, lineOriginX, line.StartIndex + startInLine)
+                    : fragmented
+                    ? lineOriginX + MeasureInlineRange(line.StartIndex, startInLine,
+                        includeTrailingWhitespace: true, forceFragmented: true)
+                    : lineOriginX + MeasureTextWidth(textBefore, includeTrailingWhitespace: true);
+                var width = justified || _hasWordSpacing || _hasLetterSpacing ||
+                    ContainsPreservedTab(line.StartIndex, line.Length) || _hasPaintTextChanges
+                    ? Math.Max(1, Math.Round(GetInlineBoundaryX(line, lineOriginX,
+                        line.StartIndex + endInLine) - startX))
+                    : fragmented
+                    ? Math.Max(1, Math.Round(lineOriginX + MeasureInlineRange(line.StartIndex,
+                        endInLine, includeTrailingWhitespace: true, forceFragmented: true) - startX))
+                    : Math.Max(1, Math.Round(MeasureTextWidth(selectedText,
+                        includeTrailingWhitespace: true)));
 
-                dc.DrawRectangle(selectionBrush, null, new Rect(startX, y, width, lineHeight));
+                dc.DrawRectangle(selectionBrush, null, new Rect(startX, lineY, width, line.Height));
             }
 
             if (selectionEnd > lineEnd && line.HasLineBreakAfter)
             {
-                var breakX = lineOriginX + line.Width;
-                dc.DrawRectangle(selectionBrush, null, new Rect(breakX, y, Math.Max(1, FontSize * 0.3), lineHeight));
+                var breakX = GetInlineBoundaryX(line, lineOriginX, lineEnd);
+                dc.DrawRectangle(selectionBrush, null, new Rect(breakX, lineY,
+                    Math.Max(1, FontSize * 0.3), line.Height));
             }
         }
     }
@@ -1233,7 +1748,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         Focus();
         var index = GetCharacterIndexFromPosition(e.GetPosition(this));
 
-        if (e.ClickCount >= 3)
+        if (CssUserSelectProperties.Resolve(this) == CssUserSelect.All || e.ClickCount >= 3)
         {
             SelectAll();
             _isWordSelecting = false;
@@ -1287,7 +1802,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
-        Cursor = null;
+        ClearSelectionCursor();
     }
 
     private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
@@ -1305,7 +1820,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e.Handled || !IsTextSelectionEnabled)
+        if (e.Handled || !IsUserSelectionEnabled())
         {
             return;
         }
@@ -1333,25 +1848,64 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private void UpdateHoverCursor()
     {
-        Cursor = CanShowTextSelectionCursor() ? Jalium.UI.Input.Cursors.IBeam : null;
+        if (_ownsSelectionCursor && Cursor != Jalium.UI.Input.Cursors.IBeam)
+            _ownsSelectionCursor = false;
+        if (HasLocalValue(CursorProperty) && !_ownsSelectionCursor) return;
+        if (CssRuntimeState?.Applied?.ContainsKey(CursorProperty) == true)
+        {
+            ClearSelectionCursor();
+            return;
+        }
+        if (CanShowTextSelectionCursor())
+        {
+            Cursor = Jalium.UI.Input.Cursors.IBeam;
+            _ownsSelectionCursor = true;
+        }
+        else
+            ClearSelectionCursor();
     }
+
+    private void ClearSelectionCursor()
+    {
+        if (!_ownsSelectionCursor) return;
+        _ownsSelectionCursor = false;
+        if (Cursor == Jalium.UI.Input.Cursors.IBeam)
+            ClearValue(CursorProperty);
+    }
+
+    internal void RefreshCssUserSelect()
+    {
+        if (_isSelecting && !CanStartSelection())
+        {
+            _isSelecting = false;
+            _isWordSelecting = false;
+            ReleaseMouseCapture();
+        }
+        if (IsMouseOver || _ownsSelectionCursor) UpdateHoverCursor();
+        InvalidateVisual();
+    }
+
+    private bool IsUserSelectionEnabled() => CssUserSelectProperties.AllowsSelection(this,
+        IsTextSelectionEnabled, HasLocalValue(IsTextSelectionEnabledProperty));
 
     private bool CanStartSelection()
     {
-        if (!IsEnabled || !IsTextSelectionEnabled || string.IsNullOrEmpty(_displayText))
+        if (!IsEnabled || !IsUserSelectionEnabled() || string.IsNullOrEmpty(_displayText))
         {
             return false;
         }
 
-        return !IsSelectionBlockedByInteractiveAncestor() || HasLocalValue(IsTextSelectionEnabledProperty);
+        return !IsSelectionBlockedByInteractiveAncestor() || HasLocalValue(IsTextSelectionEnabledProperty) ||
+            CssUserSelectProperties.Resolve(this) is { } mode && mode != CssUserSelect.None;
     }
 
     private bool CanShowTextSelectionCursor()
     {
         return IsEnabled &&
-            IsTextSelectionEnabled &&
+            IsUserSelectionEnabled() &&
             !string.IsNullOrEmpty(_displayText) &&
-            (!IsSelectionBlockedByInteractiveAncestor() || HasLocalValue(IsTextSelectionEnabledProperty));
+            (!IsSelectionBlockedByInteractiveAncestor() || HasLocalValue(IsTextSelectionEnabledProperty) ||
+             CssUserSelectProperties.Resolve(this) is { } mode && mode != CssUserSelect.None);
     }
 
     private bool IsSelectionBlockedByInteractiveAncestor()
@@ -1570,12 +2124,16 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             return 0;
         }
 
-        var lineHeight = GetLineHeight();
-        var verticalOffset = GetVerticalContentOffset(lineHeight);
+        var verticalOffset = GetVerticalContentOffset(GetLineHeight());
         var adjustedY = position.Y - verticalOffset;
-        var lineIndex = lineHeight <= 0
-            ? 0
-            : Math.Clamp((int)Math.Floor(Math.Max(0, adjustedY) / lineHeight), 0, _layoutLines.Count - 1);
+        var lineIndex = 0;
+        var lineTop = 0.0;
+        while (lineIndex + 1 < _layoutLines.Count &&
+            adjustedY >= lineTop + _layoutLines[lineIndex].Height)
+        {
+            lineTop += _layoutLines[lineIndex].Height;
+            lineIndex++;
+        }
 
         var line = _layoutLines[lineIndex];
         var lineOriginX = GetLineOriginX(line, GetContentWidth(RenderSize.Width));
@@ -1585,13 +2143,30 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             return line.StartIndex;
         }
 
-        var lineText = _displayText.Substring(line.StartIndex, line.Length);
-        int columnIndex = line.Length;
-        double previousWidth = 0;
-
-        for (int i = 0; i <= line.Length; i++)
+        var visibleLength = line.Length;
+        var fragmented = _usesInlineFontLayout;
+        if (TryGetTrimmedLine(line, GetContentWidth(RenderSize.Width), out var trimmed))
         {
-            var width = MeasureTextWidth(lineText.Substring(0, i), includeTrailingWhitespace: true);
+            visibleLength = trimmed.PrefixLength;
+            fragmented = trimmed.Fragmented;
+            if (relativeX >= trimmed.PrefixWidth)
+                return line.StartIndex + visibleLength;
+        }
+
+        var lineText = _displayText.Substring(line.StartIndex, visibleLength);
+        int columnIndex = visibleLength;
+        double previousWidth = 0;
+        var justified = TryGetJustifiedLine(line, GetContentWidth(RenderSize.Width), out _);
+
+        for (int i = 0; i <= visibleLength; i++)
+        {
+            var width = justified || _hasWordSpacing || _hasLetterSpacing ||
+                ContainsPreservedTab(line.StartIndex, line.Length) || _hasPaintTextChanges
+                ? GetInlineBoundaryX(line, lineOriginX, line.StartIndex + i) - lineOriginX
+                : fragmented
+                ? MeasureInlineRange(line.StartIndex, i,
+                    includeTrailingWhitespace: true, forceFragmented: true)
+                : MeasureTextWidth(lineText.Substring(0, i), includeTrailingWhitespace: true);
             if (width >= relativeX)
             {
                 columnIndex = i;
@@ -1612,29 +2187,65 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private double GetLineOriginX(in TextLayoutLine line, double renderWidth)
     {
-        if (TextAlignment == TextAlignment.Center)
+        var leftInset = GetTextInsets().Left;
+        var indent = ResolveTextIndent(line.IndentApplies, renderWidth);
+        var leftPadding = GetLineLeftPadding(line);
+        var rightPadding = GetLineRightPadding(line);
+        var groupPadding = GetGroupAlignmentPadding(renderWidth);
+        var lineBoxWidth = renderWidth - indent - groupPadding;
+        var paddedLineWidth = line.Width + leftPadding + rightPadding;
+        var lineBoxLeft = (FlowDirection == FlowDirection.RightToLeft ? 0 : indent) +
+            CssFlowProperties.GroupStartPadding(this, groupPadding);
+        var alignment = CssFlowProperties.NativeLineTextAlignment(this, TextAlignmentProperty,
+            isLast: !line.CanJustify);
+        if (alignment == TextAlignment.Justify &&
+            !HasLocalOrAnimatedValue(TextAlignmentProperty) &&
+            !(line.PaintWrap is not null
+                ? TryGetPaintWrapJustification(line, renderWidth, out _)
+                : TryGetJustifiedLine(line, renderWidth, out _)))
         {
-            return Padding.Left + Math.Max(0, (renderWidth - line.Width) / 2);
+            var last = CssFlowProperties.LineAlignment(this, true, TextAlignmentProperty);
+            alignment = last == CssFlowTextAlignment.Justify
+                ? TextAlignment.Center
+                : CssFlowProperties.ToNativeTextAlignment(last,
+                    FlowDirection == FlowDirection.RightToLeft);
+        }
+        if (alignment == TextAlignment.Center)
+        {
+            return leftInset + lineBoxLeft + leftPadding +
+                Math.Max(0, (lineBoxWidth - paddedLineWidth) / 2) - line.HangingStart;
         }
 
-        if (TextAlignment == TextAlignment.Right)
+        if (alignment == TextAlignment.Right)
         {
-            return Padding.Left + Math.Max(0, renderWidth - line.Width);
+            return leftInset + lineBoxLeft + leftPadding +
+                Math.Max(0, lineBoxWidth - paddedLineWidth) - line.HangingStart;
         }
 
-        return Padding.Left;
+        return leftInset + lineBoxLeft + leftPadding - line.HangingStart;
     }
 
-    private void EnsureLayout(double constraintWidth)
+    private double ResolveTextIndent(bool applies, double contentWidth)
+    {
+        if (!applies) return 0;
+        var indent = ((CssTextIndent)GetValue(CssFlowProperties.TextIndentProperty)!).Resolve(contentWidth);
+        return double.IsFinite(indent) ? indent : 0;
+    }
+
+    internal void InvalidateCssTextLayout() => InvalidateCaches();
+
+    private void EnsureLayout(double constraintWidth, bool intrinsic = false)
     {
         if (!_layoutDirty &&
             string.Equals(_displayText, _layoutText, StringComparison.Ordinal) &&
+            string.Equals(_layoutLanguageTag, Language.IetfLanguageTag, StringComparison.Ordinal) &&
+            _layoutIntrinsic == intrinsic &&
             ConstraintWidthUnchanged(_layoutConstraintWidth, constraintWidth))
         {
             return;
         }
 
-        RebuildLayout(constraintWidth);
+        RebuildLayout(constraintWidth, intrinsic);
     }
 
     /// <summary>
@@ -1658,11 +2269,29 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         return Math.Abs(previous - current) < 0.001;
     }
 
-    private void RebuildLayout(double constraintWidth)
+    private void RebuildLayout(double constraintWidth, bool intrinsic)
     {
         _layoutLines = new List<TextLayoutLine>();
+        _groupAlignmentCacheWidth = double.NaN;
+        RebuildVisualWhitespace();
+        RebuildTextTransform();
+        RebuildAutospaceReplacement();
+        RebuildLinePadding();
+        _hasPreservedTabs = (_whiteSpaceMode is CssWhiteSpaceCollapse.Preserve or
+            CssWhiteSpaceCollapse.BreakSpaces) && _visualText.Contains('\t') &&
+            HasAuthoredWhiteSpace();
+        _usesInlineFontLayout = HasInlineFontOverrides();
         _layoutText = _displayText;
         _layoutConstraintWidth = constraintWidth;
+        _layoutIntrinsic = intrinsic;
+        _layoutWordBreak = (CssWordBreak)GetValue(CssFlowProperties.WordBreakProperty)!;
+        _layoutLineBreak = (CssLineBreak)GetValue(CssFlowProperties.LineBreakProperty)!;
+        var languageTag = Language.IetfLanguageTag;
+        _layoutLanguageTag = languageTag;
+        _layoutUsesCjkWritingSystem = UsesChineseOrJapaneseWritingSystem(languageTag);
+        RebuildWordSpacing();
+        RebuildLetterSpacing();
+        RebuildHangingPunctuation();
         _layoutDirty = false;
 
         // Recomputing the wrapped lines invalidates the per-line FormattedText
@@ -1676,27 +2305,28 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         // only safeguard.
         _formattedLinesCacheDirty = true;
 
-        if (string.IsNullOrEmpty(_displayText))
+        if (string.IsNullOrEmpty(_visualText))
         {
-            _layoutLines.Add(new TextLayoutLine(0, 0, 0, false));
+            _layoutLines.Add(CreateTextLayoutLine(0, 0, 0, false));
             return;
         }
 
+        var indent = (CssTextIndent)GetValue(CssFlowProperties.TextIndentProperty)!;
         var index = 0;
-        while (index < _displayText.Length)
+        while (index < _visualText.Length)
         {
             var lineStart = index;
-            while (index < _displayText.Length && _displayText[index] != '\r' && _displayText[index] != '\n')
+            while (index < _visualText.Length && _visualText[index] != '\r' && _visualText[index] != '\n')
             {
                 index++;
             }
 
             var lineLength = index - lineStart;
             var hasLineBreakAfter = false;
-            if (index < _displayText.Length)
+            if (index < _visualText.Length)
             {
                 hasLineBreakAfter = true;
-                if (_displayText[index] == '\r' && index + 1 < _displayText.Length && _displayText[index + 1] == '\n')
+                if (_visualText[index] == '\r' && index + 1 < _visualText.Length && _visualText[index + 1] == '\n')
                 {
                     index += 2;
                 }
@@ -1706,57 +2336,159 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
                 }
             }
 
-            AppendLayoutLines(lineStart, lineLength, hasLineBreakAfter, constraintWidth);
+            AppendLayoutLines(lineStart, lineLength, hasLineBreakAfter, constraintWidth,
+                lineStart == 0, indent, intrinsic);
         }
 
-        if (EndsWithLineBreak(_displayText))
+        if (EndsWithLineBreak(_visualText))
         {
-            _layoutLines.Add(new TextLayoutLine(_displayText.Length, 0, 0, false));
+            _layoutLines.Add(CreateTextLayoutLine(_visualText.Length, 0, 0, false,
+                indentApplies: indent.Applies(false, true)));
         }
     }
 
-    private void AppendLayoutLines(int lineStart, int lineLength, bool hasLineBreakAfter, double constraintWidth)
+    private TextLayoutLine CreateTextLayoutLine(int start, int length, double width,
+        bool hasLineBreakAfter, FormattedText? formattedText = null,
+        bool canJustify = false, bool indentApplies = false,
+        PaintWrapLine? paintWrap = null, bool softHyphenVisible = false,
+        double availableWidth = double.PositiveInfinity)
     {
-        if (TextWrapping == TextWrapping.NoWrap || double.IsInfinity(constraintWidth) || constraintWidth <= 0)
+        var metrics = GetInlineLineMetrics(start, length);
+        var startPadding = GetLineStartPadding(start, start + length);
+        var endPadding = GetLineEndPadding(start, start + length);
+        var hanging = UsedHangingPunctuation(start, start + length, width,
+            availableWidth - startPadding - endPadding, softHyphenVisible);
+        return new TextLayoutLine(start, length,
+            Math.Max(0, width - hanging.Start - hanging.End), hasLineBreakAfter,
+            metrics.Height, metrics.Baseline, metrics.GlyphHeight, formattedText,
+            canJustify, indentApplies, paintWrap, softHyphenVisible,
+            startPadding, endPadding, hanging.Start, hanging.End);
+    }
+
+    private void AppendLayoutLines(int lineStart, int lineLength, bool hasLineBreakAfter,
+        double constraintWidth, bool firstLogicalLine, CssTextIndent indent, bool intrinsic)
+    {
+        var groupStart = _layoutLines.Count;
+        AppendLayoutLinesCore(lineStart, lineLength, hasLineBreakAfter,
+            constraintWidth, constraintWidth, firstLogicalLine, indent, intrinsic);
+        RebalanceLayoutLines(lineStart, lineLength, hasLineBreakAfter,
+            constraintWidth, firstLogicalLine, indent, intrinsic, groupStart);
+    }
+
+    private void AppendLayoutLinesCore(int lineStart, int lineLength, bool hasLineBreakAfter,
+        double wrapWidth, double indentPercentBasis, bool firstLogicalLine,
+        CssTextIndent indent, bool intrinsic)
+    {
+        var firstIndentApplies = indent.Applies(firstLogicalLine, !firstLogicalLine);
+        if (lineLength > 0 && WantsPaintExpansionJustification() &&
+            TryAppendPaintWrapLines(lineStart, lineLength, hasLineBreakAfter,
+                wrapWidth, indentPercentBasis, firstLogicalLine, indent, intrinsic))
+            return;
+        if (EffectiveTextWrapping() == TextWrapping.NoWrap || double.IsInfinity(wrapWidth) || wrapWidth < 0)
         {
-            var lineText = lineLength > 0 ? _displayText.Substring(lineStart, lineLength) : string.Empty;
-            var measurement = MeasureText(lineText);
-            _layoutLines.Add(new TextLayoutLine(
+            var lineText = PaintSlice(lineStart, lineLength);
+            var measurement = _usesInlineFontLayout ? default : MeasureText(lineText);
+            _layoutLines.Add(CreateTextLayoutLine(
                 lineStart,
                 lineLength,
-                measurement.Width,
+                _usesInlineFontLayout || _hasWordSpacing || _hasLetterSpacing ||
+                ContainsPreservedTab(lineStart, lineLength)
+                    ? MeasureInlineRange(lineStart, lineLength,
+                        tabOrigin: ResolveTextIndent(firstIndentApplies, indentPercentBasis) +
+                            GetLineStartPadding(lineStart, lineStart + lineLength))
+                    : _countTrailingWhitespace ? measurement.WidthIncludingTrailingWhitespace : measurement.Width,
                 hasLineBreakAfter,
-                measurement.FormattedText));
+                measurement.FormattedText,
+                indentApplies: firstIndentApplies,
+                availableWidth: wrapWidth - ResolveTextIndent(firstIndentApplies,
+                    indentPercentBasis)));
             return;
         }
 
         if (lineLength == 0)
         {
-            _layoutLines.Add(new TextLayoutLine(lineStart, 0, 0, hasLineBreakAfter));
+            _layoutLines.Add(CreateTextLayoutLine(lineStart, 0, 0, hasLineBreakAfter,
+                indentApplies: firstIndentApplies));
             return;
         }
 
+        if ((_layoutLineBreak == CssLineBreak.Anywhere ||
+             _layoutWordBreak == CssWordBreak.BreakAll || AllowsEmergencyWrap(intrinsic)) &&
+            TryAppendPaintWrapLines(lineStart, lineLength, hasLineBreakAfter,
+                wrapWidth, indentPercentBasis, firstLogicalLine, indent, intrinsic))
+            return;
+
         var consumed = 0;
+        var consecutiveHyphenatedLines = 0;
+        var hyphenatedLineLimit = ((CssHyphenateLimitLines)GetValue(
+            CssFlowProperties.HyphenateLimitLinesProperty)!).Maximum;
+        var avoidHyphenOnLastFullLine = !hasLineBreakAfter &&
+            (CssHyphenateLimitLast)GetValue(CssFlowProperties.HyphenateLimitLastProperty)! ==
+            CssHyphenateLimitLast.Always;
         while (consumed < lineLength)
         {
             var remaining = lineLength - consumed;
             var currentStart = lineStart + consumed;
-            var currentLength = FindWrapLength(currentStart, remaining, constraintWidth);
+            var indentApplies = indent.Applies(firstLogicalLine && consumed == 0,
+                !firstLogicalLine && consumed == 0);
+            var currentIndent = ResolveTextIndent(indentApplies, indentPercentBasis);
+            var tabOrigin = currentIndent + GetLineStartPadding(currentStart,
+                currentStart + remaining);
+            var currentWidth = wrapWidth - currentIndent;
+            var allowSoftHyphen = hyphenatedLineLimit is null ||
+                consecutiveHyphenatedLines < hyphenatedLineLimit.Value;
+            var currentLength = FindWrapLength(currentStart, remaining, currentWidth, intrinsic,
+                tabOrigin, allowSoftHyphen, indentPercentBasis);
+            if (avoidHyphenOnLastFullLine && allowSoftHyphen &&
+                currentLength > 0 && currentLength < remaining &&
+                IsAllowedSoftHyphen(currentStart + currentLength - 1))
+            {
+                // If the remainder would occupy one final line without another
+                // hyphenation break, this line is the last full line of the element.
+                var nextStart = currentStart + currentLength;
+                var nextLength = remaining - currentLength;
+                var nextIndent = ResolveTextIndent(indent.Applies(false, false),
+                    indentPercentBasis);
+                if (FindWrapLength(nextStart, nextLength, wrapWidth - nextIndent,
+                        intrinsic, nextIndent + GetLineStartPadding(nextStart,
+                            nextStart + nextLength), allowSoftHyphen: false,
+                        lineBoxWidth: indentPercentBasis) >= nextLength)
+                {
+                    allowSoftHyphen = false;
+                    currentLength = FindWrapLength(currentStart, remaining, currentWidth,
+                        intrinsic, tabOrigin, allowSoftHyphen, indentPercentBasis);
+                }
+            }
             if (currentLength <= 0)
             {
                 currentLength = 1;
             }
 
-            var currentText = _displayText.Substring(currentStart, currentLength);
+            var currentText = PaintSlice(currentStart, currentLength);
             var isLastFragment = consumed + currentLength >= lineLength;
-            var measurement = MeasureText(currentText);
-            _layoutLines.Add(new TextLayoutLine(
+            var softHyphenVisible = allowSoftHyphen && !isLastFragment &&
+                IsAllowedSoftHyphen(currentStart + currentLength - 1);
+            var measurement = _usesInlineFontLayout ? default : MeasureText(currentText);
+            var measuredWidth = _usesInlineFontLayout || _hasWordSpacing || _hasLetterSpacing ||
+                ContainsPreservedTab(currentStart, currentLength)
+                    ? MeasureInlineRange(currentStart, currentLength, tabOrigin: tabOrigin)
+                    : _countTrailingWhitespace ? measurement.WidthIncludingTrailingWhitespace : measurement.Width;
+            measuredWidth = Math.Max(0, measuredWidth -
+                EdgeAutospaceReplacementWidth(currentStart, currentStart + currentLength));
+            if (softHyphenVisible)
+                measuredWidth += MeasureSoftHyphenWidth(currentStart + currentLength - 1);
+            _layoutLines.Add(CreateTextLayoutLine(
                 currentStart,
                 currentLength,
-                measurement.Width,
+                measuredWidth,
                 isLastFragment && hasLineBreakAfter,
-                measurement.FormattedText));
+                measurement.FormattedText,
+                canJustify: !isLastFragment,
+                indentApplies: indentApplies,
+                softHyphenVisible: softHyphenVisible,
+                availableWidth: currentWidth));
 
+            consecutiveHyphenatedLines = softHyphenVisible ? consecutiveHyphenatedLines + 1 : 0;
             consumed += currentLength;
         }
     }
@@ -1766,30 +2498,65 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     /// only at grapheme boundaries; word-boundary selection then decides whether
     /// to use a standard break, an emergency break, or an overflowing token.
     /// </summary>
-    private int FindWrapLength(int startIndex, int maxLength, double availableWidth)
+    private int FindWrapLength(int startIndex, int maxLength, double availableWidth,
+        bool intrinsic, double tabOrigin = 0, bool allowSoftHyphen = true,
+        double lineBoxWidth = double.NaN)
     {
         if (maxLength <= 0)
         {
             return 0;
         }
 
-        var fittingLength = FindLargestFittingGraphemeLength(startIndex, maxLength, availableWidth);
+        var startPadding = GetLineStartPadding(startIndex, startIndex + maxLength);
+        var fittingLength = FindLargestFittingGraphemeLength(startIndex, maxLength,
+            availableWidth, tabOrigin, startPadding);
         if (fittingLength >= maxLength)
         {
             return maxLength;
+        }
+
+        if (_layoutLineBreak == CssLineBreak.Anywhere)
+        {
+            // These opportunities have equal priority, including beside NBSP,
+            // punctuation, and within words. Always take the longest fitting
+            // sequence of complete grapheme clusters.
+            return fittingLength > 0
+                ? fittingLength
+                : GraphemeClusters.NextBoundary(_visualText, startIndex) - startIndex;
         }
 
         var paragraphEnd = startIndex + maxLength;
         var fittingEnd = startIndex + fittingLength;
         var whitespaceLength = 0;
         var whitespaceContentLength = 0;
-        _ = TryFindWhitespaceBreak(
-            startIndex,
-            fittingEnd,
-            paragraphEnd,
-            out whitespaceLength,
-            out whitespaceContentLength);
-        var standardLength = FindStandardBreakAtOrBefore(startIndex, fittingEnd, paragraphEnd);
+        if (_whiteSpaceMode != CssWhiteSpaceCollapse.BreakSpaces)
+            _ = TryFindWhitespaceBreak(
+                startIndex,
+                fittingEnd,
+                paragraphEnd,
+                out whitespaceLength,
+                out whitespaceContentLength);
+        var standardLength = FindStandardBreakAtOrBefore(startIndex, fittingEnd, paragraphEnd,
+            availableWidth, tabOrigin, startPadding, allowSoftHyphen);
+
+        if (standardLength > 0 && IsAllowedSoftHyphen(startIndex + standardLength - 1))
+        {
+            var zone = ((CssLayoutLength)GetValue(CssFlowProperties.HyphenateLimitZoneProperty)!)
+                .Resolve(double.IsNaN(lineBoxWidth) ? availableWidth + tabOrigin : lineBoxWidth, 0);
+            if (zone > 0)
+            {
+                var plainStandardLength = FindStandardBreakAtOrBefore(startIndex, fittingEnd,
+                    paragraphEnd, availableWidth, tabOrigin, startPadding,
+                    allowSoftHyphen: false);
+                var plainContentLength = Math.Max(whitespaceContentLength, plainStandardLength);
+                if (plainContentLength > 0 &&
+                    availableWidth - startPadding -
+                    GetLineEndPadding(startIndex, startIndex + plainContentLength) -
+                    MeasureInlineRange(startIndex, plainContentLength,
+                        tabOrigin: tabOrigin) <= zone)
+                    standardLength = plainStandardLength;
+            }
+        }
 
         if (whitespaceLength > 0 || standardLength > 0)
         {
@@ -1801,27 +2568,38 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
                 : whitespaceLength;
         }
 
-        if (TextWrapping == TextWrapping.Wrap)
+        if (!intrinsic && _layoutWordBreak == CssWordBreak.KeepAll &&
+            (CssOverflowWrap)GetValue(CssFlowProperties.OverflowWrapProperty)! == CssOverflowWrap.Normal)
+        {
+            var relaxedLength = FindStandardBreakAtOrBefore(startIndex, fittingEnd, paragraphEnd,
+                availableWidth, tabOrigin, startPadding, allowSoftHyphen,
+                ignoreKeepAll: true);
+            if (relaxedLength > 0) return relaxedLength;
+        }
+
+        if (AllowsEmergencyWrap(intrinsic))
         {
             // Emergency wrapping must always make progress, but never split a
             // surrogate pair, combining sequence, emoji modifier, or ZWJ emoji.
             return fittingLength > 0
                 ? fittingLength
-                : GraphemeClusters.NextBoundary(_displayText, startIndex) - startIndex;
+                : GraphemeClusters.NextBoundary(_visualText, startIndex) - startIndex;
         }
 
         // WrapWithOverflow preserves an unbreakable token as one line. Search
         // forward for its next legal boundary; if there is none, consume the
         // remainder and allow that line to exceed the constraint.
-        return FindNextStandardBreak(startIndex, fittingEnd, paragraphEnd);
+        return FindNextStandardBreak(startIndex, fittingEnd, paragraphEnd, allowSoftHyphen);
     }
 
     private int FindLargestFittingGraphemeLength(
         int startIndex,
         int maxLength,
-        double availableWidth)
+        double availableWidth,
+        double tabOrigin,
+        double startPadding)
     {
-        var boundaries = GraphemeClusters.GetBoundaries(_displayText);
+        var boundaries = GraphemeClusters.GetBoundaries(_visualText);
         var paragraphEnd = startIndex + maxLength;
         var startBoundaryIndex = Array.BinarySearch(boundaries, startIndex);
         if (startBoundaryIndex < 0)
@@ -1835,23 +2613,38 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             endBoundaryIndex = ~endBoundaryIndex - 1;
         }
 
-        var low = startBoundaryIndex + 1;
-        var high = endBoundaryIndex;
         var bestBoundaryIndex = startBoundaryIndex;
-        while (low <= high)
+        var variableEndPadding = HasLinePaddingChange(startIndex, paragraphEnd);
+        for (var groupStart = startBoundaryIndex + 1; groupStart <= endBoundaryIndex;)
         {
-            var midpoint = low + ((high - low) / 2);
-            var candidateLength = boundaries[midpoint] - startIndex;
-            var candidate = _displayText.Substring(startIndex, candidateLength);
-            if (MeasureTextWidth(candidate) <= availableWidth)
+            var endPadding = GetLineEndPadding(startIndex, boundaries[groupStart]);
+            var groupEnd = groupStart;
+            if (variableEndPadding)
             {
-                bestBoundaryIndex = midpoint;
-                low = midpoint + 1;
+                while (groupEnd < endBoundaryIndex &&
+                       GetLineEndPadding(startIndex, boundaries[groupEnd + 1]) == endPadding)
+                    groupEnd++;
             }
-            else
+            else groupEnd = endBoundaryIndex;
+
+            var low = groupStart;
+            var high = groupEnd;
+            while (low <= high)
             {
-                high = midpoint - 1;
+                var midpoint = low + (high - low) / 2;
+                var candidateLength = boundaries[midpoint] - startIndex;
+                var measured = MeasureInlineRange(startIndex, candidateLength,
+                    tabOrigin: tabOrigin) -
+                    EdgeAutospaceReplacementWidth(startIndex, startIndex + candidateLength);
+                if (HangingFitWidth(startIndex, startIndex + candidateLength, measured) +
+                    startPadding + endPadding <= availableWidth)
+                {
+                    bestBoundaryIndex = Math.Max(bestBoundaryIndex, midpoint);
+                    low = midpoint + 1;
+                }
+                else high = midpoint - 1;
             }
+            groupStart = groupEnd + 1;
         }
 
         return boundaries[bestBoundaryIndex] - startIndex;
@@ -1875,7 +2668,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         // that fits must remain on this line even when its following separator
         // advance does not fit (the regression visible after "spacing,").
         var searchIndex = Math.Min(fittingEnd, paragraphEnd - 1);
-        while (searchIndex >= lineStart && !IsBreakableWhitespace(_displayText[searchIndex]))
+        while (searchIndex >= lineStart && !IsBreakableWhitespace(_visualText[searchIndex]))
         {
             searchIndex--;
         }
@@ -1886,7 +2679,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         }
 
         var whitespaceStart = searchIndex;
-        while (whitespaceStart > lineStart && IsBreakableWhitespace(_displayText[whitespaceStart - 1]))
+        while (whitespaceStart > lineStart && IsBreakableWhitespace(_visualText[whitespaceStart - 1]))
         {
             whitespaceStart--;
         }
@@ -1898,7 +2691,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         }
 
         var whitespaceEnd = searchIndex + 1;
-        while (whitespaceEnd < paragraphEnd && IsBreakableWhitespace(_displayText[whitespaceEnd]))
+        while (whitespaceEnd < paragraphEnd && IsBreakableWhitespace(_visualText[whitespaceEnd]))
         {
             whitespaceEnd++;
         }
@@ -1908,41 +2701,53 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         return true;
     }
 
-    private int FindStandardBreakAtOrBefore(int lineStart, int fittingEnd, int paragraphEnd)
+    private int FindStandardBreakAtOrBefore(int lineStart, int fittingEnd, int paragraphEnd,
+        double availableWidth, double tabOrigin, double startPadding, bool allowSoftHyphen,
+        bool ignoreKeepAll = false)
     {
         var boundary = fittingEnd;
         while (boundary > lineStart)
         {
-            if (IsStandardLineBreakOpportunity(boundary, lineStart, paragraphEnd))
+            if ((allowSoftHyphen || _visualText[boundary - 1] != '\u00AD') &&
+                IsStandardLineBreakOpportunity(boundary, lineStart, paragraphEnd, ignoreKeepAll) &&
+                (!IsAllowedSoftHyphen(boundary - 1) ||
+                 MeasureInlineRange(lineStart, boundary - lineStart, tabOrigin: tabOrigin) +
+                 MeasureSoftHyphenWidth(boundary - 1) + startPadding +
+                 GetLineEndPadding(lineStart, boundary) <= availableWidth))
             {
                 return boundary - lineStart;
             }
-            boundary = GraphemeClusters.PreviousBoundary(_displayText, boundary);
+            boundary = GraphemeClusters.PreviousBoundary(_visualText, boundary);
         }
         return 0;
     }
 
-    private int FindNextStandardBreak(int lineStart, int searchStart, int paragraphEnd)
+    private int FindNextStandardBreak(int lineStart, int searchStart, int paragraphEnd,
+        bool allowSoftHyphen)
     {
         var boundary = Math.Max(lineStart, searchStart);
         while (boundary < paragraphEnd)
         {
-            if (IsBreakableWhitespace(_displayText[boundary]))
+            if (IsBreakableWhitespace(_visualText[boundary]))
             {
+                if (_whiteSpaceMode == CssWhiteSpaceCollapse.BreakSpaces)
+                    return boundary + 1 - lineStart;
                 var whitespaceEnd = boundary + 1;
-                while (whitespaceEnd < paragraphEnd && IsBreakableWhitespace(_displayText[whitespaceEnd]))
+                while (whitespaceEnd < paragraphEnd && IsBreakableWhitespace(_visualText[whitespaceEnd]))
                 {
                     whitespaceEnd++;
                 }
                 return whitespaceEnd - lineStart;
             }
 
-            if (boundary > lineStart && IsStandardLineBreakOpportunity(boundary, lineStart, paragraphEnd))
+            if (boundary > lineStart &&
+                (allowSoftHyphen || _visualText[boundary - 1] != '\u00AD') &&
+                IsStandardLineBreakOpportunity(boundary, lineStart, paragraphEnd))
             {
                 return boundary - lineStart;
             }
 
-            var next = GraphemeClusters.NextBoundary(_displayText, boundary);
+            var next = GraphemeClusters.NextBoundary(_visualText, boundary);
             if (next <= boundary)
             {
                 break;
@@ -1952,24 +2757,61 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         return paragraphEnd - lineStart;
     }
 
-    private bool IsStandardLineBreakOpportunity(int boundary, int lineStart, int paragraphEnd)
+    private bool IsStandardLineBreakOpportunity(int boundary, int lineStart, int paragraphEnd,
+        bool ignoreKeepAll = false)
     {
         if (boundary <= lineStart || boundary >= paragraphEnd)
         {
             return false;
         }
 
-        var previousStart = GraphemeClusters.PreviousBoundary(_displayText, boundary);
-        if (!Rune.TryGetRuneAt(_displayText, previousStart, out var previous) ||
-            !Rune.TryGetRuneAt(_displayText, boundary, out var next))
+        var previousStart = GraphemeClusters.PreviousBoundary(_visualText, boundary);
+        var nextStart = boundary;
+        if (_autospaceReplacementWidths.TryGetValue(previousStart, out var replaced))
+        {
+            previousStart = replaced.LeftStart;
+            nextStart = replaced.RightStart;
+        }
+        if (!Rune.TryGetRuneAt(_visualText, previousStart, out var previous) ||
+            !Rune.TryGetRuneAt(_visualText, nextStart, out var next))
         {
             return false;
         }
+        if (_textTransformClassification?.TryGetValue(previousStart, out var classifiedPrevious) == true)
+            previous = classifiedPrevious;
+        if (_textTransformClassification?.TryGetValue(nextStart, out var classifiedNext) == true)
+            next = classifiedNext;
 
         if (previous.Value is 0x00A0 or 0x202F or 0x2060 or 0xFEFF ||
             next.Value is 0x00A0 or 0x202F or 0x2060 or 0xFEFF)
         {
             return false;
+        }
+
+        if (FrenchPunctuationSpace(previous, next) != '\0')
+        {
+            var ranges = GetInlineTextRanges();
+            var owner = AutospaceOwner(InlineRunAt(ranges, previousStart),
+                InlineRunAt(ranges, nextStart));
+            if (((CssTextAutospace)owner.GetValue(CssFlowProperties.TextAutospaceProperty)! &
+                    CssTextAutospace.Punctuation) != 0 && UsesFrenchPunctuation(owner))
+                return false;
+        }
+
+        if (previous.Value == 0x00AD)
+            return IsAllowedSoftHyphen(previousStart);
+
+        if (_whiteSpaceMode == CssWhiteSpaceCollapse.BreakSpaces &&
+            (previous.Value == '\t' ||
+             Rune.GetUnicodeCategory(previous) == UnicodeCategory.SpaceSeparator))
+            return true;
+
+        if (_layoutLineBreak is not CssLineBreak.Auto and not CssLineBreak.Anywhere)
+        {
+            var tailored = IsTailoredLineBreakOpportunity(previous, next);
+            if (tailored is { } allowed)
+                return allowed && (ignoreKeepAll || _layoutWordBreak != CssWordBreak.KeepAll ||
+                    !Rune.IsLetterOrDigit(previous) || !Rune.IsLetterOrDigit(next));
         }
 
         if (previous.Value is '-' or 0x058A or 0x05BE or 0x1400 or 0x1806 or
@@ -1978,10 +2820,70 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             return true;
         }
 
+        if (_layoutWordBreak == CssWordBreak.BreakAll &&
+            Rune.IsLetterOrDigit(previous) && Rune.IsLetterOrDigit(next))
+            return true;
+
+        if (!ignoreKeepAll && _layoutWordBreak == CssWordBreak.KeepAll &&
+            Rune.IsLetterOrDigit(previous) && Rune.IsLetterOrDigit(next))
+            return false;
+
         return (IsCjkLineBreakRune(previous) || IsCjkLineBreakRune(next)) &&
                !IsProhibitedLineEnd(previous) &&
                !IsProhibitedLineStart(next);
     }
+
+    private bool? IsTailoredLineBreakOpportunity(Rune previous, Rune next)
+    {
+        // CSS Text 3 defines these minimum distinctions. The wider Unicode
+        // line-break algorithm still supplies opportunities outside this subset.
+        if (next.Value is 0x301C or 0x30A0)
+            return _layoutLineBreak != CssLineBreak.Strict && _layoutUsesCjkWritingSystem &&
+                   !IsProhibitedLineEnd(previous);
+
+        if (next.Value is 0x2010 or 0x2013)
+            return _layoutLineBreak == CssLineBreak.Loose &&
+                   (CssUnicodeLineBreakData.IsIdeographic(previous) ||
+                    _layoutWordBreak == CssWordBreak.BreakAll && Rune.IsLetterOrDigit(previous));
+
+        if (CssUnicodeLineBreakData.IsConditionalJapanese(next) || IsIterationMark(next))
+            return _layoutLineBreak == CssLineBreak.Loose &&
+                   !IsProhibitedLineEnd(previous);
+
+        if (CssUnicodeLineBreakData.IsInseparable(next))
+            return _layoutLineBreak == CssLineBreak.Loose &&
+                   !IsProhibitedLineEnd(previous);
+
+        if (IsCenteredCjkPunctuation(next))
+            return _layoutLineBreak == CssLineBreak.Loose && _layoutUsesCjkWritingSystem &&
+                   !IsProhibitedLineEnd(previous);
+
+        if (CssUnicodeLineBreakData.IsWidePostfix(next))
+            return _layoutLineBreak == CssLineBreak.Loose && _layoutUsesCjkWritingSystem &&
+                   !IsProhibitedLineEnd(previous);
+
+        if (CssUnicodeLineBreakData.IsWidePrefix(previous))
+            return _layoutLineBreak == CssLineBreak.Loose && _layoutUsesCjkWritingSystem &&
+                   !IsProhibitedLineStart(next);
+
+        return null;
+    }
+
+    private static bool UsesChineseOrJapaneseWritingSystem(string tag)
+    {
+        var subtags = tag.Split('-');
+        if (subtags.Length > 1 && subtags[1].Length == 4)
+            return subtags[1] is "hant" or "hans" or "hani" or "hanb" or "bopo" or
+                "jpan" or "hrkt" or "hira" or "kana";
+        return subtags[0] is "zh" or "ja";
+    }
+
+    private static bool IsIterationMark(Rune rune) => rune.Value is
+        0x3005 or 0x303B or 0x309D or 0x309E or 0x30FD or 0x30FE;
+
+    private static bool IsCenteredCjkPunctuation(Rune rune) => rune.Value is
+        0x30FB or 0xFF1A or 0xFF1B or 0xFF65 or 0x203C or
+        >= 0x2047 and <= 0x2049 or 0xFF01 or 0xFF1F;
 
     private static bool IsBreakableWhitespace(char value)
     {
@@ -2000,12 +2902,15 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
                >= 0x4E00 and <= 0x9FFF or
                >= 0xAC00 and <= 0xD7AF or
                >= 0xF900 and <= 0xFAFF or
+               >= 0xFF01 and <= 0xFF60 or
+               >= 0xFF71 and <= 0xFF9D or
                >= 0x20000 and <= 0x323AF;
     }
 
     private static bool IsProhibitedLineEnd(Rune rune)
     {
         return rune.Value is '(' or '[' or '{' or 0x2018 or 0x201C or
+            0xFF08 or 0xFF3B or 0xFF5B or
             0x3008 or 0x300A or 0x300C or 0x300E or 0x3010 or 0x3014 or 0x3016 or 0x3018 or 0x301A;
     }
 
@@ -2019,17 +2924,76 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private double GetLayoutConstraintWidth(double availableWidth)
     {
-        if (TextWrapping == TextWrapping.NoWrap)
+        if (EffectiveTextWrapping() == TextWrapping.NoWrap)
         {
             return double.PositiveInfinity;
         }
 
+        if (availableWidth == 0 && UsesCssWrapMode()) return 0;
         if (double.IsNaN(availableWidth) || double.IsInfinity(availableWidth) || availableWidth <= 0)
         {
             return double.PositiveInfinity;
         }
 
         return GetContentWidth(availableWidth);
+    }
+
+    private bool UsesCssWrapMode()
+    {
+        if (HasLocalOrAnimatedValue(TextWrappingProperty)) return false;
+        return GetEffectiveValueLayer(TextWrappingProperty) is
+            DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+            GetValueSourceInternal(CssFlowProperties.OverflowWrapProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.WordBreakProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.LineBreakProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.LinePaddingProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredLinePaddingOnInlines() ||
+            GetValueSourceInternal(CssFlowProperties.WordSpacingProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredWordSpacingOnInlines() ||
+            GetValueSourceInternal(CssFlowProperties.WordSpaceTransformProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredWordSpaceTransformOnInlines() ||
+            GetValueSourceInternal(CssFlowProperties.LetterSpacingProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.TextAutospaceProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.HangingPunctuationProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredHangingPunctuationOnInlines() ||
+            GetValueSourceInternal(CssFlowProperties.HyphensProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.HyphenateCharacterProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.HyphenateLimitLinesProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.HyphenateLimitLastProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.HyphenateLimitZoneProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(CssFlowProperties.HyphenateLimitCharsProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredLetterSpacingOnInlines() ||
+            HasAuthoredWhiteSpace();
+    }
+
+    private TextWrapping EffectiveTextWrapping()
+    {
+        var wrapping = TextWrapping;
+        if (HasLocalOrAnimatedValue(TextWrappingProperty)) return wrapping;
+        if (GetEffectiveValueLayer(TextWrappingProperty) is
+            DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState)
+            return wrapping;
+        if (HasAuthoredWhiteSpace())
+        {
+            var mode = (CssTextWrapMode)GetValue(CssFlowProperties.TextWrapModeProperty)!;
+            return mode == CssTextWrapMode.NoWrap ? TextWrapping.NoWrap : TextWrapping.Wrap;
+        }
+        if (wrapping != TextWrapping.NoWrap || !UsesCssWrapMode())
+            return wrapping;
+        // CSS has white-space: normal unless a white-space declaration says otherwise.
+        return TextWrapping.Wrap;
+    }
+
+    private bool AllowsEmergencyWrap(bool intrinsic)
+    {
+        if (!UsesCssWrapMode()) return TextWrapping == TextWrapping.Wrap;
+        if (_layoutWordBreak == CssWordBreak.BreakWord) return true;
+        return (CssOverflowWrap)GetValue(CssFlowProperties.OverflowWrapProperty)! switch
+        {
+            CssOverflowWrap.Anywhere => true,
+            CssOverflowWrap.BreakWord => !intrinsic,
+            _ => false,
+        };
     }
 
     private double GetContentWidth(double width)
@@ -2039,8 +3003,12 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             return width;
         }
 
-        return Math.Max(0, width - Padding.Left - Padding.Right);
+        var insets = GetTextInsets();
+        return Math.Max(0, width - insets.Left - insets.Right);
     }
+
+    private Thickness GetTextInsets() => CssBoxMetrics.ContentInsets(this,
+        CssLayout?.ContainingWidthCache ?? RenderSize.Width);
 
     private double MeasureTextWidth(string text, bool includeTrailingWhitespace = false)
     {
@@ -2057,8 +3025,8 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             return default;
         }
 
-        var fontFamily = FontFamily.Source;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily.GetRenderingSource(this);
+        var fontSize = FontSize;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
         var fontStretch = FontStretch.ToOpenTypeStretch();
@@ -2149,10 +3117,18 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     private RectangleGeometry GetRenderClip()
     {
         var verticalSlack = GetLineHeight();
+        var hangingLeft = 0.0;
+        var hangingRight = 0.0;
+        foreach (var line in _layoutLines)
+        {
+            verticalSlack = Math.Max(verticalSlack, line.Height);
+            hangingLeft = Math.Max(hangingLeft, line.HangingStart);
+            hangingRight = Math.Max(hangingRight, line.HangingEnd);
+        }
         var clipRect = new Rect(
-            0,
+            -hangingLeft,
             -verticalSlack,
-            RenderSize.Width,
+            RenderSize.Width + hangingLeft + hangingRight,
             RenderSize.Height + verticalSlack * 2);
         if (_renderClipCache is null || _renderClipCache.Rect != clipRect)
         {
@@ -2224,8 +3200,23 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private double GetLineHeight()
     {
-        var fontFamily = FontFamily.Source;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var contextGeneration = RenderContext.Current is { IsValid: true } context ? context.Generation : 0;
+        var metricsEpoch = TextMeasurement.MetricsCacheEpoch;
+        var inputVersions = (FontFamilyProperty.InheritanceVersion, FontSizeProperty.InheritanceVersion,
+            FontWeightProperty.InheritanceVersion, FontStyleProperty.InheritanceVersion,
+            LineHeightProperty.InheritanceVersion, LineStackingStrategyProperty.InheritanceVersion,
+            FrameworkElement.InheritanceTreeVersion);
+        if (_cachedLineHeight is double cached &&
+            _lineHeightContextGeneration == contextGeneration &&
+            _lineHeightMetricsEpoch == metricsEpoch && _lineHeightInputVersions == inputVersions)
+            return cached;
+
+        _lineHeightContextGeneration = contextGeneration;
+        _lineHeightMetricsEpoch = metricsEpoch;
+        _lineHeightInputVersions = inputVersions;
+
+        var fontFamily = FontFamily.GetRenderingSource(this);
+        var fontSize = FontSize;
         var naturalLineHeight = TextMeasurement.GetLineHeight(
             fontFamily,
             fontSize,
@@ -2233,12 +3224,15 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             FontStyle.ToOpenTypeStyle());
         if (double.IsNaN(LineHeight))
         {
+            _cachedLineHeight = naturalLineHeight;
             return naturalLineHeight;
         }
 
-        return LineStackingStrategy == LineStackingStrategy.MaxHeight
+        var lineHeight = LineStackingStrategy == LineStackingStrategy.MaxHeight
             ? Math.Max(naturalLineHeight, LineHeight)
             : Math.Max(0, LineHeight);
+        _cachedLineHeight = lineHeight;
+        return lineHeight;
     }
 
     private static bool EndsWithLineBreak(string text)
@@ -2254,11 +3248,23 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private void InvalidateCaches()
     {
+        _inlineDecorationRanges = null;
+        _inlineTextRanges = null;
+        _inlineFontMeasurements.Clear();
+        _justifiedLineCache.Clear();
+        _paintWrapJustificationCache.Clear();
+        _cachedLineHeight = null;
         _layoutDirty = true;
         _formattedLinesCacheDirty = true;
         _layoutText = null;
         _layoutConstraintWidth = double.NaN;
         _textWidthCache.Clear();
+    }
+
+    internal override void OnFontResourcesChanged()
+    {
+        InvalidateCaches();
+        base.OnFontResourcesChanged();
     }
 
     private void SynchronizeInlinesFromText(string text)
@@ -2363,6 +3369,25 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         }
     }
 
+    private static void OnBaselineOffsetChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is TextBlock)
+            OnTextChanged(d, e);
+        else if (d is UIElement element)
+            element.InvalidateMeasure();
+
+        // A descendant's baseline can change the size and position of every
+        // containing baseline group. Propagate in detached layout trees too,
+        // where no LayoutManager is present to invalidate ancestors for us.
+        if (d is not UIElement source || source.IsLayoutIsolated) return;
+        for (var parent = source.VisualParent as UIElement;
+            parent is not null; parent = parent.VisualParent as UIElement)
+        {
+            if (parent.IsMeasureValid) parent.InvalidateMeasure();
+            if (parent.IsLayoutIsolated) break;
+        }
+    }
+
     private static void OnTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is not TextBlock textBlock)
@@ -2406,7 +3431,8 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             textBlock.ClearSelection();
         }
 
-        textBlock.UpdateHoverCursor();
+        if (textBlock.IsMouseOver || textBlock._ownsSelectionCursor)
+            textBlock.UpdateHoverCursor();
         textBlock.InvalidateVisual();
     }
 
@@ -2460,13 +3486,35 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             int length,
             double width,
             bool hasLineBreakAfter,
-            FormattedText? formattedText = null)
+            double height,
+            double baseline,
+            double glyphHeight,
+            FormattedText? formattedText = null,
+            bool canJustify = false,
+            bool indentApplies = false,
+            PaintWrapLine? paintWrap = null,
+            bool softHyphenVisible = false,
+            double startPadding = 0,
+            double endPadding = 0,
+            double hangingStart = 0,
+            double hangingEnd = 0)
         {
             StartIndex = startIndex;
             Length = length;
             Width = width;
             HasLineBreakAfter = hasLineBreakAfter;
+            Height = height;
+            Baseline = baseline;
+            GlyphHeight = glyphHeight;
             FormattedText = formattedText;
+            CanJustify = canJustify;
+            IndentApplies = indentApplies;
+            PaintWrap = paintWrap;
+            SoftHyphenVisible = softHyphenVisible;
+            StartPadding = startPadding;
+            EndPadding = endPadding;
+            HangingStart = hangingStart;
+            HangingEnd = hangingEnd;
         }
 
         public int StartIndex { get; }
@@ -2477,7 +3525,29 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
         public bool HasLineBreakAfter { get; }
 
+        public double Height { get; }
+
+        public double Baseline { get; }
+
+        public double GlyphHeight { get; }
+
         public FormattedText? FormattedText { get; }
+
+        public bool CanJustify { get; }
+
+        public bool IndentApplies { get; }
+
+        public PaintWrapLine? PaintWrap { get; }
+
+        public bool SoftHyphenVisible { get; }
+
+        public double StartPadding { get; }
+
+        public double EndPadding { get; }
+
+        public double HangingStart { get; }
+
+        public double HangingEnd { get; }
     }
 
     private readonly record struct TextMeasurementCacheEntry(
@@ -2485,4 +3555,3 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         double WidthIncludingTrailingWhitespace,
         FormattedText? FormattedText);
 }
-

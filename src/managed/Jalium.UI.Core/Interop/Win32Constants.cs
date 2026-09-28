@@ -127,6 +127,8 @@ internal static class Win32Constants
     public const uint WS_EX_LAYERED = 0x00080000;
     public const uint LWA_ALPHA = 0x02;
     public const int GWL_EXSTYLE = -20;
+    public const uint DWM_BB_ENABLE = 0x00000001;
+    public const uint DWM_BB_BLURREGION = 0x00000002;
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const uint SWP_NOMOVE = 0x0002;
     public static readonly nint HWND_NOTOPMOST = new(-2);
@@ -141,8 +143,11 @@ internal static class Win32Constants
     public const uint WM_GETMINMAXINFO = 0x0024;
     public const uint WM_QUERYENDSESSION = 0x0011;
     public const uint WM_ENDSESSION = 0x0016;
+    public const uint WM_SYSCOLORCHANGE = 0x0015;
     public const uint WM_SETTINGCHANGE = 0x001A;
     public const uint WM_THEMECHANGED = 0x031A;
+    public const uint WM_DEVICECHANGE = 0x0219;
+    public const int DBT_DEVNODES_CHANGED = 0x0007;
     public const uint WM_MOVE = 0x0003;
     public const uint WM_SIZE = 0x0005;
     public const uint WM_WINDOWPOSCHANGED = 0x0047;

@@ -349,7 +349,7 @@ public class Heatmap : AxisChartBase
             ? new Pen(CellBorderBrush, CellBorderThickness)
             : null;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var cellValueFontSize = Math.Max(7, Math.Min(cellHeight * 0.4, cellWidth * 0.3));
 
         for (int row = 0; row < rows; row++)

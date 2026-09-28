@@ -23,6 +23,7 @@ set(SOURCES
     src/text_engine.cpp
     src/text_shaper.cpp
     src/text_layout.cpp
+    src/text_outline.cpp
     src/font_provider.cpp
     src/glyph_rasterizer.cpp
     src/glyph_atlas.cpp
@@ -133,6 +134,8 @@ if(JALIUM_TEXT_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
         jalium.native.core)
     add_test(NAME jalium.native.text.pixel-and-fallback
              COMMAND jalium.native.text.tests)
+    add_test(NAME jalium.native.text.outline-path
+             COMMAND jalium.native.text.tests --outline-only)
     set_tests_properties(jalium.native.text.pixel-and-fallback PROPERTIES
         SKIP_RETURN_CODE 77)
 

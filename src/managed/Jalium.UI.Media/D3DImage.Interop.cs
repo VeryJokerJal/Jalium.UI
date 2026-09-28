@@ -87,7 +87,10 @@ public class D3DImage : ImageSource, IDisposable
     public sealed override ImageMetadata? Metadata => null;
 
     /// <inheritdoc />
-    public override IntPtr NativeHandle => _backBuffer;
+    public override IntPtr NativeHandle =>
+        _resourceType == D3DResourceType.NativeVideoSurface
+            ? _videoSurface?.Handle ?? IntPtr.Zero
+            : _backBuffer;
 
     /// <summary>Gets the bound Jalium resource kind.</summary>
     public D3DResourceType ResourceType => _resourceType;
@@ -141,7 +144,10 @@ public class D3DImage : ImageSource, IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         _videoSurface = surface;
         _resourceType = D3DResourceType.NativeVideoSurface;
-        _backBuffer = surface?.Handle ?? IntPtr.Zero;
+        // NativeVideoSurface is caller-owned and may be disposed independently.
+        // Never cache its handle: NativeHandle must observe the surface's current
+        // state so a released native allocation cannot be replayed later.
+        _backBuffer = IntPtr.Zero;
         _pixelWidth = surface?.PixelWidth ?? 0;
         _pixelHeight = surface?.PixelHeight ?? 0;
         _dirtyRects.Clear();
@@ -236,16 +242,8 @@ public class D3DImage : ImageSource, IDisposable
             throw new InvalidOperationException("No sized back buffer is available.");
         }
 
-        int stride = checked(_pixelWidth * 4);
-        return ImagingBitmapSource.Create(
-            _pixelWidth,
-            _pixelHeight,
-            _dpiX,
-            _dpiY,
-            PixelFormat.Bgra32,
-            palette: null,
-            new byte[checked(stride * _pixelHeight)],
-            stride);
+        throw new NotSupportedException(
+            "D3DImage back-buffer readback is not implemented for caller-owned native resources.");
     }
 
     /// <inheritdoc />

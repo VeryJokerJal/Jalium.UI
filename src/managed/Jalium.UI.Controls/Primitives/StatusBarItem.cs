@@ -1,5 +1,6 @@
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -9,6 +10,7 @@ namespace Jalium.UI.Controls.Primitives;
 public class StatusBarItem : ContentControl
 {
     private UIElement? _contentVisual;
+    private Border? _cssBorderPainter;
 
     #region Static Brushes & Pens
 
@@ -100,31 +102,33 @@ public class StatusBarItem : ContentControl
     protected override Size MeasureOverride(Size availableSize)
     {
         var padding = Padding;
+        var border = BorderThickness;
         var separatorWidth = Separator ? 9 : 0;
 
         if (Content is string text)
         {
-            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-            var fontSize = FontSize > 0 ? FontSize : 12;
+            var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+            var fontSize = FontSize;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             TextMeasurement.MeasureText(formattedText);
             return new Size(
-                formattedText.Width + padding.TotalWidth + separatorWidth,
-                Math.Max(24, formattedText.Height + padding.TotalHeight));
+                formattedText.Width + padding.TotalWidth + border.TotalWidth + separatorWidth,
+                Math.Max(24, formattedText.Height + padding.TotalHeight) + border.TotalHeight);
         }
 
         if (_contentVisual != null)
         {
             var contentAvailable = new Size(
-                Math.Max(0, availableSize.Width - padding.TotalWidth - separatorWidth),
-                Math.Max(0, availableSize.Height - padding.TotalHeight));
+                Math.Max(0, availableSize.Width - padding.TotalWidth - border.TotalWidth - separatorWidth),
+                Math.Max(0, availableSize.Height - padding.TotalHeight - border.TotalHeight));
             _contentVisual.Measure(contentAvailable);
             return new Size(
-                _contentVisual.DesiredSize.Width + padding.TotalWidth + separatorWidth,
-                Math.Max(24, _contentVisual.DesiredSize.Height + padding.TotalHeight));
+                _contentVisual.DesiredSize.Width + padding.TotalWidth + border.TotalWidth + separatorWidth,
+                Math.Max(24, _contentVisual.DesiredSize.Height + padding.TotalHeight) + border.TotalHeight);
         }
 
-        return new Size(padding.TotalWidth + separatorWidth, 24);
+        return new Size(padding.TotalWidth + border.TotalWidth + separatorWidth,
+            24 + border.TotalHeight);
     }
 
     /// <inheritdoc />
@@ -133,12 +137,13 @@ public class StatusBarItem : ContentControl
         if (_contentVisual != null)
         {
             var padding = Padding;
+            var border = BorderThickness;
             var separatorWidth = Separator ? 9 : 0;
             _contentVisual.Arrange(new Rect(
-                padding.Left,
-                padding.Top,
-                Math.Max(0, finalSize.Width - padding.TotalWidth - separatorWidth),
-                Math.Max(0, finalSize.Height - padding.TotalHeight)));
+                border.Left + padding.Left,
+                border.Top + padding.Top,
+                Math.Max(0, finalSize.Width - border.TotalWidth - padding.TotalWidth - separatorWidth),
+                Math.Max(0, finalSize.Height - border.TotalHeight - padding.TotalHeight)));
         }
 
         return finalSize;
@@ -155,34 +160,58 @@ public class StatusBarItem : ContentControl
 
         var rect = new Rect(RenderSize);
         var padding = Padding;
+        var border = BorderThickness;
 
         // Draw background if set
-        if (Background != null)
+        if (Background is { } background)
         {
-            dc.DrawRectangle(Background, null, rect);
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+            var shape = new CssRoundedRectangleGeometry(rect, radii);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
+                    rect, radii, border, padding,
+                    brush => dc.DrawGeometry(brush, null, shape)))
+                dc.DrawRectangle(background, null, rect);
         }
 
         // Draw content
-        if (Content is string text)
+        if (Content is string text && FontSize > 0)
         {
             var fgBrush = ResolveForegroundBrush();
-            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
+            var formattedText = new FormattedText(text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = fgBrush
             };
             TextMeasurement.MeasureText(formattedText);
 
-            var textX = padding.Left;
-            var textY = (rect.Height - formattedText.Height) / 2;
+            var textX = border.Left + padding.Left;
+            var contentHeight = Math.Max(0, rect.Height - border.TotalHeight - padding.TotalHeight);
+            var textY = border.Top + padding.Top + (contentHeight - formattedText.Height) / 2;
             dc.DrawText(formattedText, new Point(textX, textY));
         }
 
         // Draw separator
         if (Separator)
         {
-            var separatorX = rect.Width - 5;
-            dc.DrawLine(s_separatorPen, new Point(separatorX, 4), new Point(separatorX, rect.Height - 4));
+            var separatorX = rect.Width - border.Right - 5;
+            dc.DrawLine(s_separatorPen,
+                new Point(separatorX, border.Top + 4),
+                new Point(separatorX, rect.Height - border.Bottom - 4));
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        var border = BorderThickness;
+        if (CssBorderPaintProperties.Get(this) is null && BorderBrush is { } brush && border.Left > 0)
+        {
+            var rect = ControlRenderGeometry.GetStrokeAlignedRect(new Rect(RenderSize), border.Left);
+            var radius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(CornerRadius, border.Left);
+            drawingContext.DrawRoundedRectangle(null, new Pen(brush, border.Left), rect, radius);
+        }
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     private Brush ResolveForegroundBrush()

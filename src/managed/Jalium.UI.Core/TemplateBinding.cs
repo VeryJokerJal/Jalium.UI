@@ -38,6 +38,8 @@ public sealed class TemplateBinding : BindingBase
 /// </summary>
 internal sealed class TemplateBindingExpression : BindingExpressionBase
 {
+    internal override void OnTemplateParentChanged() => Deactivate();
+
     private readonly TemplateBinding _binding;
     private FrameworkElement? _templatedParent;
 
@@ -65,6 +67,10 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
 
         // Subscribe to property changes on the templated parent
         _templatedParent.PropertyChangedInternal += OnTemplatedParentPropertyChanged;
+        if (Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_binding.Property, TargetProperty))
+            _templatedParent.CssCornerRadiusPresentationChanged += TransferCssRadius;
+        if (IsCssBorderBinding())
+            _templatedParent.CssBorderPresentationChanged += TransferCssBorder;
 
         // Initial value transfer
         TransferValue();
@@ -81,10 +87,18 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
         if (_templatedParent != null)
         {
             _templatedParent.PropertyChangedInternal -= OnTemplatedParentPropertyChanged;
+            _templatedParent.CssCornerRadiusPresentationChanged -= TransferCssRadius;
+            _templatedParent.CssBorderPresentationChanged -= TransferCssBorder;
             _templatedParent = null;
         }
 
         Target.ClearLayerValue(TargetProperty, DependencyObject.LayerValueSource.ParentTemplate);
+        if (Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_binding.Property, TargetProperty))
+            Styling.CssBorderRadiusProperties.ClearTemplate(Target);
+        if (Styling.CssBorderPaintProperties.IsTemplateBrushBinding(_binding.Property, TargetProperty))
+            Styling.CssBorderPaintProperties.ClearTemplate(Target);
+        if (Styling.CssBorderStyleProperties.IsTemplateThicknessBinding(_binding.Property, TargetProperty))
+            Styling.CssBorderStyleProperties.ClearTemplate(Target);
     }
 
     public override void UpdateSource()
@@ -103,6 +117,26 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
         {
             TransferValue();
         }
+        else if (Styling.CssBorderRadiusProperties.IsTemplatePresentationInput(dp)) TransferCssRadius();
+    }
+
+    private void TransferCssRadius()
+    {
+        if (IsActive && _templatedParent is not null && Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_binding.Property, TargetProperty))
+            Styling.CssBorderRadiusProperties.TransferTemplate(_templatedParent, Target);
+    }
+
+    private bool IsCssBorderBinding() =>
+        Styling.CssBorderPaintProperties.IsTemplateBrushBinding(_binding.Property, TargetProperty) ||
+        Styling.CssBorderStyleProperties.IsTemplateThicknessBinding(_binding.Property, TargetProperty);
+
+    private void TransferCssBorder()
+    {
+        if (!IsActive || _templatedParent is null) return;
+        if (Styling.CssBorderPaintProperties.IsTemplateBrushBinding(_binding.Property, TargetProperty))
+            Styling.CssBorderPaintProperties.TransferTemplate(_templatedParent, Target);
+        if (Styling.CssBorderStyleProperties.IsTemplateThicknessBinding(_binding.Property, TargetProperty))
+            Styling.CssBorderStyleProperties.TransferTemplate(_templatedParent, Target);
     }
 
     private void TransferValue()
@@ -131,6 +165,8 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
         }
 
         Target.SetLayerValue(TargetProperty, effectiveValue, DependencyObject.LayerValueSource.ParentTemplate);
+        TransferCssRadius();
+        TransferCssBorder();
     }
 
     private static FrameworkElement? FindTemplatedParent(DependencyObject target)

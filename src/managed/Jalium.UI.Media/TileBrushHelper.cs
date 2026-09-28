@@ -10,6 +10,31 @@ namespace Jalium.UI.Media;
 /// </summary>
 public static class TileBrushHelper
 {
+    internal static Matrix ComputeBrushTransform(Brush brush, Rect bounds, Point offset)
+    {
+        var relative = Matrix.Identity;
+        if (brush.RelativeTransform is { } transform && !transform.Value.IsIdentity && bounds.Width > 0 && bounds.Height > 0)
+        {
+            var normalize = new Matrix(1 / bounds.Width, 0, 0, 1 / bounds.Height, -bounds.X / bounds.Width, -bounds.Y / bounds.Height);
+            var denormalize = new Matrix(bounds.Width, 0, 0, bounds.Height, bounds.X, bounds.Y);
+            relative = normalize * transform.Value * denormalize;
+        }
+        var absolute = brush.Transform?.Value ?? Matrix.Identity;
+        absolute = new Matrix(1, 0, 0, 1, -offset.X, -offset.Y) * absolute * new Matrix(1, 0, 0, 1, offset.X, offset.Y);
+        return relative * absolute;
+    }
+
+    internal static Rect TransformBounds(Rect bounds, Matrix transform)
+    {
+        var a = transform.Transform(new Point(bounds.Left, bounds.Top));
+        var b = transform.Transform(new Point(bounds.Right, bounds.Top));
+        var c = transform.Transform(new Point(bounds.Right, bounds.Bottom));
+        var d = transform.Transform(new Point(bounds.Left, bounds.Bottom));
+        var left = Math.Min(Math.Min(a.X, b.X), Math.Min(c.X, d.X));
+        var top = Math.Min(Math.Min(a.Y, b.Y), Math.Min(c.Y, d.Y));
+        return new(left, top, Math.Max(Math.Max(a.X, b.X), Math.Max(c.X, d.X)) - left,
+            Math.Max(Math.Max(a.Y, b.Y), Math.Max(c.Y, d.Y)) - top);
+    }
     /// <summary>
     /// One tile of a <see cref="TileBrush"/> in screen-space. <see cref="ImageDestRect"/>
     /// is where the FULL source bitmap is drawn (potentially extending past
@@ -182,6 +207,10 @@ public static class TileBrushHelper
         Rect shapeBounds,
         double contentWidth,
         double contentHeight)
+        => ComputeTilePlacements(brush, shapeBounds, contentWidth, contentHeight, null);
+
+    internal static List<TilePlacement> ComputeTilePlacements(
+        TileBrush brush, Rect shapeBounds, double contentWidth, double contentHeight, Rect? coverageBounds)
     {
         if (brush is null) throw new ArgumentNullException(nameof(brush));
 
@@ -191,6 +220,10 @@ public static class TileBrushHelper
         {
             return result;
         }
+
+        if (brush is ImageBrush { CssBackgroundLayout: { } cssLayout })
+            return ComputeCssBackgroundTiles(cssLayout, shapeBounds, contentWidth, contentHeight,
+                coverageBounds ?? shapeBounds);
 
         var viewport = ComputeViewport(brush, shapeBounds);
         if (viewport.Width <= 0 || viewport.Height <= 0)
@@ -213,10 +246,11 @@ public static class TileBrushHelper
             return result;
         }
 
-        var startCol = (int)Math.Floor((shapeBounds.X - viewport.X) / viewport.Width);
-        var endCol = (int)Math.Ceiling((shapeBounds.X + shapeBounds.Width - viewport.X) / viewport.Width);
-        var startRow = (int)Math.Floor((shapeBounds.Y - viewport.Y) / viewport.Height);
-        var endRow = (int)Math.Ceiling((shapeBounds.Y + shapeBounds.Height - viewport.Y) / viewport.Height);
+        var coverage = coverageBounds ?? shapeBounds;
+        var startCol = (int)Math.Floor((coverage.X - viewport.X) / viewport.Width);
+        var endCol = (int)Math.Ceiling((coverage.Right - viewport.X) / viewport.Width);
+        var startRow = (int)Math.Floor((coverage.Y - viewport.Y) / viewport.Height);
+        var endRow = (int)Math.Ceiling((coverage.Bottom - viewport.Y) / viewport.Height);
 
         // Cap absurd tile counts to keep the renderer safe against pathological
         // inputs — a 1×1 viewport on a 10000×10000 shape would otherwise spin up
@@ -249,6 +283,29 @@ public static class TileBrushHelper
                     fullImage.Height);
 
                 result.Add(new TilePlacement(tileImage, tileClip, flipX, flipY));
+            }
+        }
+        return result;
+    }
+
+    private static List<TilePlacement> ComputeCssBackgroundTiles(
+        CssBackgroundImageLayout layout, Rect area, double intrinsicWidth, double intrinsicHeight,
+        Rect coverage)
+    {
+        var result = new List<TilePlacement>();
+        var pattern = layout.TilePattern(area, intrinsicWidth, intrinsicHeight);
+        var image = pattern.ImageRect;
+        if (image.IsEmpty) return result;
+
+        const int MaxTilesPerAxis = 1024;
+        var columns = pattern.X.TileStarts(coverage.X, coverage.Right, MaxTilesPerAxis);
+        var rows = pattern.Y.TileStarts(coverage.Y, coverage.Bottom, MaxTilesPerAxis);
+        foreach (var y in rows)
+        {
+            foreach (var x in columns)
+            {
+                var tile = new Rect(x, y, image.Width, image.Height);
+                result.Add(new TilePlacement(tile, tile, false, false));
             }
         }
         return result;

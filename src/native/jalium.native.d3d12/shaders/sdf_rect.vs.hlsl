@@ -45,6 +45,9 @@ struct VsOutput
     nointerpolation float4 shapeParams : TEXCOORD8;  // x=shapeType, y=shapeN, z=shadowMode, w=paintMode
     nointerpolation float  shadowSigma : TEXCOORD9;  // gaussian sigma (screen px)
     nointerpolation float  gradientOpacity : TEXCOORD10;
+    nointerpolation float  aaScale     : TEXCOORD11; // coverage-band widening for rotated/skewed instances
+    nointerpolation float4 cornerRadiusY : TEXCOORD12; // TL,TR,BR,BL; used by elliptical shadowMode=2
+    nointerpolation float4 effectParams : TEXCOORD13;  // offsetX, offsetY, spread, reserved
 };
 
 VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
@@ -94,6 +97,10 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     o.localPos     = localPos;
     o.rectSize     = inst.size;
     o.cornerRadius = inst.cornerRadius;
+    o.cornerRadiusY = float4(
+        asfloat(inst.gradientStopRef.y), asfloat(inst.gradientStopRef.z),
+        asfloat(inst.gradientStopRef.w), inst._pad.w);
+    o.effectParams = inst.gradGeom;
     o.fillColor    = inst.fillColor * inst.opacity;
     o.borderColor  = inst.borderColor * inst.opacity;
     o.borderWidth  = inst.borderWidth;
@@ -112,6 +119,18 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     o.shapeParams = float4(inst._pad.xy, shadowMode, inst._pad.z);
     o.shadowSigma = shadowSigma;                      // gaussian sigma (screen px)
     o.gradientOpacity = inst.opacity;
+
+    // A 1-pixel box filter is the exact coverage for a straight edge, but a
+    // SHALLOW rotation lands its whole ramp inside one pixel row and leaves a
+    // 1/tan(theta)-long stair (14px at 4 deg) that reads as a jagged edge even
+    // though every covered pixel is analytically correct. Widening the band to
+    // 1.4px on rotated / skewed instances spreads that ramp over two rows and
+    // dissolves the stair. Axis-aligned instances (m12 == m21 == 0) keep
+    // aaScale == 1.0, so their output stays bit-identical to the legacy path.
+    // shear == |sin(theta)| for a pure rotation; *16 saturates by ~3.6 deg, and
+    // the ramp below that keeps a sub-degree transform from stepping visibly.
+    float shear = max(abs(m12) / max(sx, 1e-4), abs(m21) / max(sy, 1e-4));
+    o.aaScale = 1.0 + 0.4 * saturate(shear * 16.0);
 
     return o;
 }

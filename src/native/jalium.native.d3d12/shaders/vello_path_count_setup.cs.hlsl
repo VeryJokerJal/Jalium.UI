@@ -1,32 +1,26 @@
-// Vello GPU Pipeline V2 — path_count_setup
-// Reads bump.lines to set up indirect dispatch arguments for path_count.
+// Vello GPU Pipeline V3 — path_count_setup
+// Port of vello 0.10.0 shader/path_count_setup.wgsl.
+// Computes the indirect dispatch size for the path_count stage.
 //
-// Dispatch: 1, 1, 1
+// Bindings: u0 bump | u1 indirect
+// Dispatch: (1, 1, 1)
 
 #include "vello_shared.hlsli"
 
 RWByteAddressBuffer bump : register(u0);
-
-// IndirectCount: { count_x, count_y, count_z } for ExecuteIndirect
 RWByteAddressBuffer indirect : register(u1);
+
+#define WG_SIZE 256u
 
 [numthreads(1, 1, 1)]
 void main()
 {
-    uint n_lines;
-    bump.InterlockedAdd(BUMP_LINES, 0u, n_lines); // atomic load
-
-    // Check for prior failure
-    uint failed;
-    bump.InterlockedAdd(BUMP_FAILED, 0u, failed);
-    if ((failed & STAGE_FLATTEN) != 0u) {
+    if (bump.Load(BUMP_FAILED) != 0u) {
         indirect.Store(0, 0u);
-        indirect.Store(4, 1u);
-        indirect.Store(8, 1u);
-        return;
+    } else {
+        uint lines_count = bump.Load(BUMP_LINES);
+        indirect.Store(0, (lines_count + (WG_SIZE - 1u)) / WG_SIZE);
     }
-
-    indirect.Store(0, (n_lines + 255u) / 256u);
     indirect.Store(4, 1u);
     indirect.Store(8, 1u);
 }

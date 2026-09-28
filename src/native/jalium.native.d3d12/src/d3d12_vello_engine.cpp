@@ -39,7 +39,7 @@ bool VelloD3D12Engine::EncodeFillPath(
     int32_t edgeMode)
 {
     (void)edgeMode;  // Vello path currently has analytic AA only; aliased fallback not implemented yet.
-    uint32_t rule = (fillRule == FillRule::NonZero) ? kFillRuleNonZero : kFillRuleEvenOdd;
+    uint32_t rule = (fillRule == FillRule::NonZero) ? 1u : 0u;
 
     // Full brush packing (solid / linear / radial / SWEEP) — mirrors the core
     // encoder's EncodeFillPath + PackBrush, which VelloVulkanEngine consumes.
@@ -142,6 +142,7 @@ bool VelloD3D12Engine::EncodeFillEllipse(
 }
 
 bool VelloD3D12Engine::Execute(void* commandList, void* renderTarget, uint32_t width, uint32_t height) {
+    (void)renderTarget; (void)width; (void)height;
     auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(commandList);
     // renderTarget is unused for Vello — it renders to its own output texture
     // which is later composited by the DirectRenderer.

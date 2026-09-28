@@ -10,6 +10,12 @@ internal static class PlatformFactory
 {
     private static readonly bool s_isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
     private static readonly bool s_isLinux = RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
+    private static readonly bool s_isMacOS = OperatingSystem.IsMacOS();
+    private static readonly bool s_isIOS = OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst();
+    private static readonly bool s_isTvOS = OperatingSystem.IsTvOS();
+    private static readonly bool s_isVisionOS =
+        RuntimeInformation.RuntimeIdentifier?.Contains("visionos", StringComparison.OrdinalIgnoreCase) == true ||
+        RuntimeInformation.RuntimeIdentifier?.Contains("xros", StringComparison.OrdinalIgnoreCase) == true;
 
     // Android detection via runtime check
     private static readonly bool s_isAndroid = RuntimeInformation.RuntimeIdentifier?.Contains("android",
@@ -23,6 +29,24 @@ internal static class PlatformFactory
 
     /// <summary>True if running on Android.</summary>
     public static bool IsAndroid => s_isAndroid;
+
+    /// <summary>True if running as a native AppKit application.</summary>
+    public static bool IsMacOS => s_isMacOS;
+
+    /// <summary>True if running on iOS or iPadOS.</summary>
+    public static bool IsIOS => s_isIOS;
+
+    /// <summary>True if running on tvOS.</summary>
+    public static bool IsTvOS => s_isTvOS;
+
+    /// <summary>True if running on visionOS.</summary>
+    public static bool IsVisionOS => s_isVisionOS;
+
+    /// <summary>True for UIKit-family embedded Apple hosts.</summary>
+    public static bool IsEmbeddedApple => s_isIOS || s_isTvOS || s_isVisionOS;
+
+    /// <summary>True for any supported native Apple host.</summary>
+    public static bool IsApple => s_isMacOS || IsEmbeddedApple;
 
     /// <summary>
     /// Creates a platform window using the appropriate native backend.

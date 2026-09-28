@@ -7,6 +7,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
 using Jalium.UI.Interop;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls.TextEffects;
 
@@ -1094,8 +1095,8 @@ public partial class TextEffectPresenter : FrameworkElement
             return;
         }
 
-        var fontFamily = FontFamily.Source;
-        var fontSize = FontSize > 0 ? FontSize : 14.0;
+        var fontFamily = FontFamily.GetRenderingSource(this);
+        var fontSize = FontSize;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
 
@@ -1353,6 +1354,9 @@ public partial class TextEffectPresenter : FrameworkElement
     protected override void OnRender(DrawingContext drawingContext)
     {
         base.OnRender(drawingContext);
+
+        if (FontSize <= 0)
+            return;
 
         var dc = drawingContext;
 
@@ -1637,7 +1641,7 @@ public partial class TextEffectPresenter : FrameworkElement
             return 0;
         }
 
-        return TextAlignment switch
+        return CssFlowProperties.NativeTextAlignment(this, TextAlignmentProperty) switch
         {
             TextAlignment.Center => (renderWidth - contentWidth) / 2.0,
             TextAlignment.Right => renderWidth - contentWidth,
@@ -1790,7 +1794,7 @@ public partial class TextEffectPresenter : FrameworkElement
         // invalidate the cache via _formattedCacheSignature.
         if (!_formattedCache.TryGetValue(text, out var cached))
         {
-            cached = new FormattedText(text, FontFamily.Source, FontSize > 0 ? FontSize : 14.0)
+            cached = new FormattedText(text, FontFamily.GetRenderingSource(this), FontSize)
             {
                 FontWeight = FontWeight.ToOpenTypeWeight(),
                 FontStyle = FontStyle.ToOpenTypeStyle(),
@@ -1806,7 +1810,7 @@ public partial class TextEffectPresenter : FrameworkElement
     private string BuildFontSignature()
     {
         return string.Concat(
-            FontFamily.Source,
+            FontFamily.GetRenderingSource(this),
             "|",
             FontSize.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
             "|",

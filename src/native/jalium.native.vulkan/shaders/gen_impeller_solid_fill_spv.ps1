@@ -47,6 +47,18 @@ function Emit-Array([System.Text.StringBuilder]$sb, [string]$sym, [string]$comme
     [void]$sb.AppendLine("inline constexpr size_t ${sym}Size = sizeof(${sym});")
 }
 
+function Write-BytesIfChanged([string]$path, [byte[]]$bytes) {
+    if (Test-Path -LiteralPath $path) {
+        $existing = [System.IO.File]::ReadAllBytes($path)
+        if ($existing.Length -eq $bytes.Length -and
+            [Convert]::ToBase64String($existing) -ceq [Convert]::ToBase64String($bytes)) {
+            return $false
+        }
+    }
+    [System.IO.File]::WriteAllBytes($path, $bytes)
+    return $true
+}
+
 $vs = Compile-Spv (Join-Path $ShaderSrcDir 'impeller_solid_fill.vert.hlsl') 'vs_6_0'
 $fs = Compile-Spv (Join-Path $ShaderSrcDir 'impeller_solid_fill.frag.hlsl') 'ps_6_0'
 
@@ -73,11 +85,15 @@ Emit-Array $sb 'kImpellerSolidFillFragShaderSpv' 'impeller_solid_fill.frag.spv' 
 [void]$sb.AppendLine('')
 [void]$sb.AppendLine('} // namespace jalium')
 
-[System.IO.File]::WriteAllText($HeaderPath, $sb.ToString())
+$header = $sb.ToString()
+if (-not (Test-Path -LiteralPath $HeaderPath) -or
+    [System.IO.File]::ReadAllText($HeaderPath) -cne $header) {
+    [System.IO.File]::WriteAllText($HeaderPath, $header)
+}
 Write-Host ("Generated {0}  (vert={1}B frag={2}B)" -f $HeaderPath, $vs.Length, $fs.Length)
 
 # Refresh the sibling .spv artifacts too, so the standalone files next to the
 # HLSL sources never go stale relative to the embedded header.
-[System.IO.File]::WriteAllBytes((Join-Path $ShaderSrcDir 'impeller_solid_fill.vert.spv'), $vs)
-[System.IO.File]::WriteAllBytes((Join-Path $ShaderSrcDir 'impeller_solid_fill.frag.spv'), $fs)
-Write-Host "Refreshed impeller_solid_fill.{vert,frag}.spv artifacts"
+$vertChanged = Write-BytesIfChanged (Join-Path $ShaderSrcDir 'impeller_solid_fill.vert.spv') $vs
+$fragChanged = Write-BytesIfChanged (Join-Path $ShaderSrcDir 'impeller_solid_fill.frag.spv') $fs
+Write-Host ("Verified impeller_solid_fill.{{vert,frag}}.spv artifacts (updated={0})" -f ($vertChanged -or $fragChanged))

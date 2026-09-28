@@ -3,6 +3,7 @@
 
 #include <wayland-client.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
@@ -16,6 +17,8 @@
 
 namespace jalium {
 namespace {
+
+constexpr int32_t kDamageTileSize = 64;
 
 int CreateAnonymousFile(size_t size)
 {
@@ -81,6 +84,7 @@ struct WaylandShmPresenter::Impl
         int32_t stride = 0;
         bool busy = false;
         bool retired = false;
+        std::vector<uint64_t> tileVersions;
     };
 
     wl_display* display = nullptr;
@@ -89,6 +93,57 @@ struct WaylandShmPresenter::Impl
     uint32_t format = WL_SHM_FORMAT_ARGB8888;
     int bufferCount = 3;
     std::vector<std::unique_ptr<Buffer>> buffers;
+    int32_t damageWidth = 0;
+    int32_t damageHeight = 0;
+    int32_t tileColumns = 0;
+    int32_t tileRows = 0;
+    uint64_t damageVersion = 1;
+    std::vector<uint64_t> tileVersions;
+
+    bool EnsureDamageGrid(int32_t width, int32_t height)
+    {
+        if (damageWidth == width && damageHeight == height &&
+            !tileVersions.empty()) {
+            return false;
+        }
+
+        damageWidth = width;
+        damageHeight = height;
+        tileColumns = (width + kDamageTileSize - 1) / kDamageTileSize;
+        tileRows = (height + kDamageTileSize - 1) / kDamageTileSize;
+        damageVersion = 1;
+        tileVersions.assign(
+            static_cast<size_t>(tileColumns) * tileRows, damageVersion);
+        for (const auto& buffer : buffers)
+            buffer->tileVersions.assign(tileVersions.size(), 0);
+        return true;
+    }
+
+    void MarkDamage(int32_t left, int32_t top, int32_t right, int32_t bottom)
+    {
+        ++damageVersion;
+        if (damageVersion == 0)
+        {
+            damageVersion = 1;
+            std::fill(tileVersions.begin(), tileVersions.end(), 1);
+            for (const auto& buffer : buffers)
+                std::fill(buffer->tileVersions.begin(),
+                          buffer->tileVersions.end(), 0);
+        }
+
+        const int32_t firstColumn = left / kDamageTileSize;
+        const int32_t lastColumn = (right - 1) / kDamageTileSize;
+        const int32_t firstRow = top / kDamageTileSize;
+        const int32_t lastRow = (bottom - 1) / kDamageTileSize;
+        for (int32_t tileY = firstRow; tileY <= lastRow; ++tileY)
+        {
+            for (int32_t tileX = firstColumn; tileX <= lastColumn; ++tileX)
+            {
+                tileVersions[static_cast<size_t>(tileY) * tileColumns + tileX] =
+                    damageVersion;
+            }
+        }
+    }
 
     static void BufferRelease(void* data, wl_buffer*)
     {
@@ -163,6 +218,7 @@ struct WaylandShmPresenter::Impl
         buffer->width = width;
         buffer->height = height;
         buffer->stride = stride;
+        buffer->tileVersions.assign(tileVersions.size(), 0);
         buffer->proxy = wl_shm_pool_create_buffer(
             pool, 0, width, height, stride, format);
         wl_shm_pool_destroy(pool);
@@ -253,7 +309,11 @@ WaylandShmPresenter::~WaylandShmPresenter()
 bool WaylandShmPresenter::Present(const uint8_t* bgraPixels,
                                   int32_t width,
                                   int32_t height,
-                                  int32_t sourceStride)
+                                  int32_t sourceStride,
+                                  int32_t left,
+                                  int32_t top,
+                                  int32_t right,
+                                  int32_t bottom)
 {
     if (!impl_ || !bgraPixels || width <= 0 || height <= 0 ||
         sourceStride < width * 4)
@@ -266,19 +326,68 @@ bool WaylandShmPresenter::Present(const uint8_t* bgraPixels,
             reinterpret_cast<intptr_t>(impl_->surface)))
         return false;
 
+    const bool resized = impl_->EnsureDamageGrid(width, height);
+    if (resized)
+    {
+        left = 0;
+        top = 0;
+        right = width;
+        bottom = height;
+    }
+    else
+    {
+        left = std::clamp(left, 0, width);
+        top = std::clamp(top, 0, height);
+        right = std::clamp(right, left, width);
+        bottom = std::clamp(bottom, top, height);
+    }
+    if (right <= left || bottom <= top)
+        return true;
+    impl_->MarkDamage(left, top, right, bottom);
+
     Impl::Buffer* buffer = impl_->AcquireBuffer(width, height);
     if (!buffer)
         return false;
 
-    for (int32_t y = 0; y < height; ++y)
+    // A rotating buffer can be several frames behind. Compare every tile's
+    // version and copy only the union of damage accumulated since this buffer
+    // was last presented. Newly allocated buffers start at version zero and
+    // therefore receive one complete initialization.
+    for (int32_t tileY = 0; tileY < impl_->tileRows; ++tileY)
     {
-        const uint8_t* source = bgraPixels + static_cast<size_t>(y) * sourceStride;
-        uint8_t* destination = buffer->mapping + static_cast<size_t>(y) * buffer->stride;
-        std::memcpy(destination, source, static_cast<size_t>(width) * 4);
-        if (impl_->format == WL_SHM_FORMAT_XRGB8888)
+        const int32_t copyTop = tileY * kDamageTileSize;
+        const int32_t copyBottom = std::min(copyTop + kDamageTileSize, height);
+        for (int32_t tileX = 0; tileX < impl_->tileColumns; ++tileX)
         {
-            for (int32_t x = 0; x < width; ++x)
-                destination[static_cast<size_t>(x) * 4 + 3] = 0xff;
+            const size_t tileIndex =
+                static_cast<size_t>(tileY) * impl_->tileColumns + tileX;
+            if (buffer->tileVersions[tileIndex] ==
+                impl_->tileVersions[tileIndex]) {
+                continue;
+            }
+
+            const int32_t copyLeft = tileX * kDamageTileSize;
+            const int32_t copyRight = std::min(copyLeft + kDamageTileSize, width);
+            const size_t copyBytes = static_cast<size_t>(copyRight - copyLeft) * 4;
+            for (int32_t y = copyTop; y < copyBottom; ++y)
+            {
+                const uint8_t* source = bgraPixels +
+                    static_cast<size_t>(y) * sourceStride +
+                    static_cast<size_t>(copyLeft) * 4;
+                uint8_t* destination = buffer->mapping +
+                    static_cast<size_t>(y) * buffer->stride +
+                    static_cast<size_t>(copyLeft) * 4;
+                std::memcpy(destination, source, copyBytes);
+                if (impl_->format == WL_SHM_FORMAT_XRGB8888)
+                {
+                    for (int32_t x = copyLeft; x < copyRight; ++x)
+                    {
+                        buffer->mapping[static_cast<size_t>(y) * buffer->stride +
+                            static_cast<size_t>(x) * 4 + 3] = 0xff;
+                    }
+                }
+            }
+            buffer->tileVersions[tileIndex] = impl_->tileVersions[tileIndex];
         }
     }
 
@@ -287,9 +396,11 @@ bool WaylandShmPresenter::Present(const uint8_t* bgraPixels,
     const uint32_t surfaceVersion = wl_proxy_get_version(
         reinterpret_cast<wl_proxy*>(impl_->surface));
     if (surfaceVersion >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
-        wl_surface_damage_buffer(impl_->surface, 0, 0, width, height);
+        wl_surface_damage_buffer(
+            impl_->surface, left, top, right - left, bottom - top);
     else
-        wl_surface_damage(impl_->surface, 0, 0, width, height);
+        wl_surface_damage(
+            impl_->surface, left, top, right - left, bottom - top);
     wl_surface_commit(impl_->surface);
 
     const int flushResult = wl_display_flush(impl_->display);

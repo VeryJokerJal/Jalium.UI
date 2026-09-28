@@ -1,5 +1,6 @@
 #ifndef JALIUM_ROUNDED_CLIP_HLSLI
 #define JALIUM_ROUNDED_CLIP_HLSLI
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
 
 // ----------------------------------------------------------------------------
 // Rounded-rect clip cbuffer (b2)
@@ -19,7 +20,8 @@ cbuffer RoundedClipConstants : register(b2)
 {
     uint  hasRoundedClip;
     uint  inverseRoundedClip;      // 1 = mask OUT the interior (keep the outside)
-    uint2 _padRoundedClip;
+    uint  ellipticalClipCount;
+    uint  _padRoundedClip;
     float4 roundedClipRect;        // (left, top, right, bottom)
     float4 roundedClipCornerRadii; // per-corner: (TL, TR, BR, BL)
 }
@@ -63,6 +65,7 @@ float JaliumRoundedClipSdf(float2 p)
 // a sibling lane having executed discard.
 float RoundedClipCoverage(float2 fragPos)
 {
+    if (ellipticalClipCount != 0u) return JaliumEllipticalClipCoverage(ellipticalClipCount, fragPos);
     if (hasRoundedClip == 0u)
         return 1.0;
     float d = JaliumRoundedClipSdf(fragPos);

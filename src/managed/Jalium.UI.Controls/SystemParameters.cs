@@ -28,7 +28,8 @@ public enum SystemEnvironmentKind
     TvOS = 1 << 8,
     Wasi = 1 << 9,
     WatchOS = 1 << 10,
-    VirtualMachine = 1 << 11
+    VirtualMachine = 1 << 11,
+    VisionOS = 1 << 12
 }
 
 /// <summary>
@@ -135,6 +136,11 @@ public static partial class SystemParameters
     /// Gets a value indicating whether the current environment is watchOS.
     /// </summary>
     public static bool IsWatchOS => HasEnvironment(SystemEnvironmentKind.WatchOS);
+
+    /// <summary>
+    /// Gets a value indicating whether the current environment is visionOS.
+    /// </summary>
+    public static bool IsVisionOS => HasEnvironment(SystemEnvironmentKind.VisionOS);
 
     /// <summary>
     /// Gets a value indicating whether the current process is running in a virtual machine.
@@ -308,6 +314,14 @@ public static partial class SystemParameters
         if (OperatingSystem.IsWatchOS())
         {
             environment |= SystemEnvironmentKind.WatchOS;
+        }
+
+        if (RuntimeInformation.RuntimeIdentifier?.Contains(
+                "visionos", StringComparison.OrdinalIgnoreCase) == true ||
+            RuntimeInformation.RuntimeIdentifier?.Contains(
+                "xros", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            environment |= SystemEnvironmentKind.VisionOS;
         }
 
         if (DetectIsVirtualMachine())
@@ -694,7 +708,11 @@ public static partial class SystemParameters
     /// A null or empty name means that every parameter may have changed.
     /// </summary>
     internal static void NotifyStaticPropertyChanged(string? propertyName)
-        => StaticPropertyChanged?.Invoke(null, new PropertyChangedEventArgs(propertyName));
+    {
+        if (string.IsNullOrEmpty(propertyName) || propertyName == nameof(PrefersDarkColorScheme))
+            RefreshPreferredColorSchemeFromPlatform();
+        StaticPropertyChanged?.Invoke(null, new PropertyChangedEventArgs(propertyName));
+    }
 
     // Additional scalar settings and metrics present on WPF's SystemParameters surface.
     public static int Border => (int)Math.Clamp(GetSpiUInt(SPI_GETBORDER, 1), 1u, int.MaxValue);
