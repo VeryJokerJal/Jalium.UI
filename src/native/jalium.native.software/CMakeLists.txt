@@ -160,8 +160,9 @@ if(JALIUM_SOFTWARE_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
                 jalium.native.core
                 jalium.native.platform
                 jalium.native.software)
-            add_test(NAME jalium.native.software.wayland
-                COMMAND jalium.native.software.wayland.tests)
+            # This smoke requires a configured Wayland compositor, whereas
+            # ctest runs under Xvfb. Both Linux CI paths launch headless Weston
+            # and invoke the executable separately after the ctest phase.
         endif()
 
         if(X11_FOUND)

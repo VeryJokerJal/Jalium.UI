@@ -19,6 +19,7 @@
 extern "C" {
 #endif
 
+#ifdef _WIN32
 /// Copies the shaped outline of a UTF-16 text run as SVG path data. Coordinates
 /// use a top-left text layout origin; baseline is returned separately. The
 /// result includes its trailing NUL, or zero if the outline is unavailable.
@@ -29,6 +30,7 @@ JALIUM_API int32_t jalium_text_copy_outline_path(
     const uint16_t* family, uint32_t family_length,
     float font_size, int32_t font_weight, int32_t font_style,
     float* width, float* baseline, char* buffer, int32_t buffer_size);
+#endif
 
 // ============================================================================
 // Context Management

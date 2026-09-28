@@ -429,6 +429,7 @@ JALIUM_PLATFORM_API JaliumPlatform jalium_platform_get_current(void);
 // Apple host bridge
 // ============================================================================
 
+#ifdef __APPLE__
 /// Registers the AppKit/UIKit view supplied by the managed application/scene
 /// delegate as the root surface for the next Jalium window. The platform
 /// backend keeps a weak reference; pass 0 when a scene disconnects.
@@ -442,6 +443,7 @@ JALIUM_PLATFORM_API void jalium_apple_unregister_scene_root(const char* sceneId)
 /// Forwards a JaliumEventType application lifecycle event (PAUSE, RESUME,
 /// DESTROY or LOW_MEMORY) to all Apple windows.
 JALIUM_PLATFORM_API void jalium_apple_notify_lifecycle(int32_t eventType);
+#endif
 
 // ============================================================================
 // Window Management

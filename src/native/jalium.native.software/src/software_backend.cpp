@@ -33,6 +33,7 @@
 #endif
 
 #ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
+#include "jalium_platform.h"
 #include "wayland_shm_present.h"
 #include <wayland-client.h>
 #endif
@@ -4651,6 +4652,13 @@ JaliumResult SoftwareRenderTarget::EndDraw()
     if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_WAYLAND &&
         surfaceDescriptor_.handle0 != 0 && surfaceDescriptor_.handle1 != 0)
     {
+        // Hiding an xdg surface removes its current buffer. Preserve a full
+        // frame for the next configure even when this draw has no dirty rect.
+        if (!jalium_wayland_surface_is_ready(surfaceDescriptor_.handle1)) {
+            fullInvalidation_ = true;
+            hasDirtyRect_ = false;
+            return JALIUM_ERROR_PRESENT_FAILED;
+        }
         if (!fullInvalidation_ && !hasDirtyRect_) return JALIUM_OK;
         const int32_t left = fullInvalidation_ ? 0 : dirtyLeft_;
         const int32_t top = fullInvalidation_ ? 0 : dirtyTop_;

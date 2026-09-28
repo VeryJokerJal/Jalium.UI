@@ -2,6 +2,7 @@ JALIUM_TEXT_CXX_ABI_1 {
     global:
         jalium_text_get_system_font_family_count;
         jalium_text_copy_system_font_family;
+        jalium_text_copy_outline_path;
         _ZN6jalium*;
         _ZNK6jalium*;
         _ZTI*6jalium*;
