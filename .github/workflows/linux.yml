@@ -518,12 +518,28 @@ jobs:
                 WAYLAND_DISPLAY=wayland-ci \
                 JALIUM_WINDOW_SYSTEM=wayland \
                 "$payload/jalium.native.software.wayland.tests"
-              XDG_RUNTIME_DIR="$runtime" \
-                WAYLAND_DISPLAY=wayland-ci \
-                JALIUM_WINDOW_SYSTEM=wayland \
-                LD_LIBRARY_PATH="$payload" \
-                gdb --batch -q -ex run -ex "thread apply all bt" \
-                  --args "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+              set +e
+              for threads in 1 0; do
+                echo "Testing LP_NUM_THREADS=$threads"
+                XDG_RUNTIME_DIR="$runtime" \
+                  WAYLAND_DISPLAY=wayland-ci \
+                  JALIUM_WINDOW_SYSTEM=wayland \
+                  LD_LIBRARY_PATH="$payload" \
+                  LP_NUM_THREADS="$threads" \
+                  timeout 30s "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+                echo "LP_NUM_THREADS=$threads status=$?"
+              done
+              for perf in no_opt no_filter_hacks; do
+                echo "Testing GALLIVM_PERF=$perf"
+                XDG_RUNTIME_DIR="$runtime" \
+                  WAYLAND_DISPLAY=wayland-ci \
+                  JALIUM_WINDOW_SYSTEM=wayland \
+                  LD_LIBRARY_PATH="$payload" \
+                  GALLIVM_PERF="$perf" \
+                  timeout 30s "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+                echo "GALLIVM_PERF=$perf status=$?"
+              done
+              set -e
               exit 1
 
               managed_root="/artifacts/jalium-managed-${{ matrix.rid }}"
