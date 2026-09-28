@@ -164,7 +164,7 @@ jobs:
         run: |
           payload="src/native/bin/native/${{ matrix.rid }}/Release"
           results="${{ runner.temp }}/managed-test-results"
-          filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable&FullyQualifiedName!=Jalium.UI.Tests.MiniAudioDeviceTests.PlaybackEnded_FiresAfterSubmitAndSignal&FullyQualifiedName!=Jalium.UI.Tests.ComboBoxPopupInputTests.PopupWindow_MouseHoverAndClick_SelectsComboBoxItem&FullyQualifiedName!~Jalium.UI.Tests.Image&FullyQualifiedName!~Jalium.UI.Tests.Bitmap"
+          filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable&FullyQualifiedName!=Jalium.UI.Tests.MiniAudioDeviceTests.PlaybackEnded_FiresAfterSubmitAndSignal&FullyQualifiedName!=Jalium.UI.Tests.ComboBoxPopupInputTests.PopupWindow_MouseHoverAndClick_SelectsComboBoxItem&FullyQualifiedName!~Jalium.UI.Tests.ImageSourceLoaderTests&FullyQualifiedName!~Jalium.UI.Tests.ImagePipelineFailureContractTests&FullyQualifiedName!~Jalium.UI.Tests.BitmapImageReclaimRestoreTests"
           mkdir -p "$results"
           # Managed outputs already contain the validated native payload. A
           # second copy via LD_LIBRARY_PATH gives musl separate core/plugin
@@ -186,10 +186,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           results="${{ runner.temp }}/managed-test-results"
-          image_filter="FullyQualifiedName~Jalium.UI.Tests.Image|FullyQualifiedName~Jalium.UI.Tests.Bitmap"
-          # These tests use application-wide image loader and decoder state.
-          # Give them a fresh process after the long UI suite, retaining the
-          # same assertions and timeout behavior within each test.
+          image_filter="FullyQualifiedName~Jalium.UI.Tests.ImageSourceLoaderTests|FullyQualifiedName~Jalium.UI.Tests.ImagePipelineFailureContractTests|FullyQualifiedName~Jalium.UI.Tests.BitmapImageReclaimRestoreTests"
+          # These loader and reclamation tests use application-wide decoder
+          # state. Give them a fresh process after the long UI suite, retaining
+          # their assertions and deadlines.
           timeout 300s xvfb-run -a env \
             JALIUM_WINDOW_SYSTEM=x11 \
             JALIUM_RENDER_BACKEND=software \
@@ -555,7 +555,7 @@ jobs:
 
               managed_root="/artifacts/jalium-managed-${{ matrix.rid }}"
               managed_results="/artifacts/managed-test-results-${{ matrix.rid }}"
-              managed_filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable&FullyQualifiedName!=Jalium.UI.Tests.MiniAudioDeviceTests.PlaybackEnded_FiresAfterSubmitAndSignal&FullyQualifiedName!=Jalium.UI.Tests.ComboBoxPopupInputTests.PopupWindow_MouseHoverAndClick_SelectsComboBoxItem&FullyQualifiedName!~Jalium.UI.Tests.Image&FullyQualifiedName!~Jalium.UI.Tests.Bitmap"
+              managed_filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable&FullyQualifiedName!=Jalium.UI.Tests.MiniAudioDeviceTests.PlaybackEnded_FiresAfterSubmitAndSignal&FullyQualifiedName!=Jalium.UI.Tests.ComboBoxPopupInputTests.PopupWindow_MouseHoverAndClick_SelectsComboBoxItem&FullyQualifiedName!~Jalium.UI.Tests.ImageSourceLoaderTests&FullyQualifiedName!~Jalium.UI.Tests.ImagePipelineFailureContractTests&FullyQualifiedName!~Jalium.UI.Tests.BitmapImageReclaimRestoreTests"
               mkdir -p "$managed_results"
               # Managed outputs already contain the validated native payload.
               # Do not load a second core/plugin copy through LD_LIBRARY_PATH:
@@ -586,7 +586,7 @@ jobs:
                 -name vstest.console.dll -print | sort -V | tail -n 1)"
               test -f "$test_assembly"
               test -f "$vstest_console"
-              image_filter="FullyQualifiedName~Jalium.UI.Tests.Image|FullyQualifiedName~Jalium.UI.Tests.Bitmap"
+              image_filter="FullyQualifiedName~Jalium.UI.Tests.ImageSourceLoaderTests|FullyQualifiedName~Jalium.UI.Tests.ImagePipelineFailureContractTests|FullyQualifiedName~Jalium.UI.Tests.BitmapImageReclaimRestoreTests"
               timeout 300s xvfb-run -a env \
                 JALIUM_WINDOW_SYSTEM=x11 \
                 JALIUM_RENDER_BACKEND=software \
