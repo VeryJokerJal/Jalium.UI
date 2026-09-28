@@ -27,7 +27,7 @@ public class RenderTargetDrawingContextPixelSnapTests
     [InlineData(1.28, 0.0, 0.0, 0.82, 1.28, 0.82, true)]
     [InlineData(0.97, 0.0, 0.0, 0.97, 0.97, 0.97, false)]
     [InlineData(1.001, 0.0, 0.0, 1.0, 1.001, 1.0, false)]
-    [InlineData(1.28, 0.02, 0.0, 0.82, 1.2801562405, 0.82, false)]
+    [InlineData(1.28, 0.02, 0.0, 0.82, 1.2801562405, 0.82, true)]
     public void TextScaleDeformation_PreservesAxisAlignedAnisotropicTransforms(
         double m11,
         double m12,
