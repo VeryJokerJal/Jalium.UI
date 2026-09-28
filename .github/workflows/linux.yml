@@ -468,7 +468,7 @@ jobs:
                 binutils pax-utils file coreutils zlib-dev gdb \
                 libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
                 wayland-dev wayland-protocols xkeyboard-config-dev libxkbcommon-dev \
-                vulkan-loader-dev mesa-dri-gallium mesa-vulkan-swrast fontconfig-dev font-dejavu font-noto-cjk \
+                vulkan-loader-dev vulkan-validation-layers mesa-dri-gallium mesa-vulkan-swrast fontconfig-dev font-dejavu font-noto-cjk \
                 gstreamer-dev gst-plugins-base-dev gst-plugins-good \
                 gst-plugins-bad gst-libav ffmpeg \
                 xvfb-run weston weston-backend-headless weston-shell-desktop
@@ -519,26 +519,13 @@ jobs:
                 JALIUM_WINDOW_SYSTEM=wayland \
                 "$payload/jalium.native.software.wayland.tests"
               set +e
-              for threads in 1 0; do
-                echo "Testing LP_NUM_THREADS=$threads"
-                XDG_RUNTIME_DIR="$runtime" \
-                  WAYLAND_DISPLAY=wayland-ci \
-                  JALIUM_WINDOW_SYSTEM=wayland \
-                  LD_LIBRARY_PATH="$payload" \
-                  LP_NUM_THREADS="$threads" \
-                  timeout 30s "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
-                echo "LP_NUM_THREADS=$threads status=$?"
-              done
-              for perf in no_opt no_filter_hacks; do
-                echo "Testing GALLIVM_PERF=$perf"
-                XDG_RUNTIME_DIR="$runtime" \
-                  WAYLAND_DISPLAY=wayland-ci \
-                  JALIUM_WINDOW_SYSTEM=wayland \
-                  LD_LIBRARY_PATH="$payload" \
-                  GALLIVM_PERF="$perf" \
-                  timeout 30s "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
-                echo "GALLIVM_PERF=$perf status=$?"
-              done
+              XDG_RUNTIME_DIR="$runtime" \
+                WAYLAND_DISPLAY=wayland-ci \
+                JALIUM_WINDOW_SYSTEM=wayland \
+                LD_LIBRARY_PATH="$payload" \
+                VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+                timeout 30s "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+              echo "Vulkan validation status=$?"
               set -e
               exit 1
 
