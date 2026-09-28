@@ -20,6 +20,7 @@ env:
 
 jobs:
   glibc:
+    if: false
     name: glibc ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -442,10 +443,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x64
-            docker-platform: linux/amd64
-            rid: linux-musl-x64
-            runner: ubuntu-24.04
           - arch: arm64
             docker-platform: linux/arm64
             rid: linux-musl-arm64
@@ -468,7 +465,7 @@ jobs:
             sh -euxc '
               apk add --no-cache \
                 bash build-base clang lld cmake ninja pkgconf python3 git linux-headers \
-                binutils pax-utils file coreutils zlib-dev \
+                binutils pax-utils file coreutils zlib-dev gdb \
                 libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
                 wayland-dev wayland-protocols xkeyboard-config-dev libxkbcommon-dev \
                 vulkan-loader-dev mesa-dri-gallium mesa-vulkan-swrast fontconfig-dev font-dejavu font-noto-cjk \
@@ -525,8 +522,9 @@ jobs:
                 WAYLAND_DISPLAY=wayland-ci \
                 JALIUM_WINDOW_SYSTEM=wayland \
                 LD_LIBRARY_PATH="$payload" \
-                timeout --signal=TERM --kill-after=10s 120s \
-                "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+                gdb --batch -q -ex run -ex "thread apply all bt" \
+                  --args "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+              exit 1
 
               managed_root="/artifacts/jalium-managed-${{ matrix.rid }}"
               managed_results="/artifacts/managed-test-results-${{ matrix.rid }}"
