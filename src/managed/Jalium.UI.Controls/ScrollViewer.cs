@@ -1085,7 +1085,6 @@ public partial class ScrollViewer : ContentControl
 
         if (e.ChangedButton != MouseButton.Left ||
             CssScrollBarWidth == CssScrollBarWidthMode.None ||
-            (UsesClassicGutter && !_verticalScrollBarShown) ||
             !CanScrollVertically ||
             ScrollableHeight <= 0)
         {
@@ -1105,7 +1104,7 @@ public partial class ScrollViewer : ContentControl
             if (point.X < indicatorStart || point.X > indicatorEnd)
                 return;
         }
-        else if (UsesClassicGutter)
+        else if (UsesClassicGutter && _verticalScrollBarShown)
         {
             var barWidth = GetScrollBarLayoutSize();
             if (FlowDirection == FlowDirection.RightToLeft
@@ -2435,8 +2434,21 @@ public partial class ScrollViewer : ContentControl
 
     #region Scroll Methods
 
+    private double GetScrollDpiScale()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window window)
+                return window.DpiScale;
+        }
+
+        // A detached viewer has no host DPI. The process-wide layout scale may
+        // belong to another window, so use the neutral scale until attached.
+        return 1.0;
+    }
+
     /// <summary>
-    /// Quantizes a committed scroll offset to whole physical pixels. A scroll offset
+    /// Quantizes a smooth-scroll frame offset to whole physical pixels. A scroll offset
     /// translates the entire content subtree, and the renderer pixel-snaps text runs
     /// and axis-aligned strokes in DEVICE space: under a fractional translation each
     /// primitive crosses its integer pixel boundary on a different frame, so during a
@@ -2445,7 +2457,8 @@ public partial class ScrollViewer : ContentControl
     /// keep every primitive's sub-pixel phase constant, so snapped and unsnapped
     /// content translate in lockstep — the same policy browsers and WPF's pixel-based
     /// scrolling apply. Element animations are unaffected: this quantizes only the
-    /// scroll translation, not arranged element origins.
+    /// scroll translation, not arranged element origins. Explicit ScrollTo requests
+    /// retain their precise logical offsets; only animated frames use this helper.
     ///
     /// The extremes stay exact: 0 and <paramref name="maxOffset"/> are resting
     /// positions (no motion, so no jitter), and rounding the bottom stop would
@@ -2491,7 +2504,6 @@ public partial class ScrollViewer : ContentControl
         {
             ClearEndAnchor(isVertical: false);
         }
-        offset = SnapScrollOffsetToDevicePixels(offset, ScrollableWidth, FrameworkElement.LayoutDpiScale);
 
         if (!_isApplyingSmoothScrollStep)
         {
@@ -2543,10 +2555,9 @@ public partial class ScrollViewer : ContentControl
         {
             ClearEndAnchor(isVertical: true);
         }
-        offset = SnapScrollOffsetToDevicePixels(offset, ScrollableHeight, FrameworkElement.LayoutDpiScale);
         TraceVerticalState(
             "set-vertical-request",
-            $"raw={rawOffset:R} snapped={offset:R} applyingEndAnchor={_isApplyingEndAnchor} applyingSmooth={_isApplyingSmoothScrollStep}");
+            $"raw={rawOffset:R} validated={offset:R} applyingEndAnchor={_isApplyingEndAnchor} applyingSmooth={_isApplyingSmoothScrollStep}");
 
         if (!_isApplyingSmoothScrollStep)
         {
@@ -3197,7 +3208,34 @@ public partial class ScrollViewer : ContentControl
                     _horizontalGutterAdmitted = true;
                 reserveVertical = needsVerticalGutter;
                 reserveHorizontal = needsHorizontalGutter;
-                continue;
+                var nextViewport = GetClassicGutterViewportSize(innerAvailable,
+                    availableSize, reserveVertical, reserveHorizontal);
+                var nextMeasureWidth = HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled ||
+                    fillsHorizontally ? nextViewport.Width : double.PositiveInfinity;
+                var nextMeasureHeight = VerticalScrollBarVisibility == ScrollBarVisibility.Disabled ||
+                    fillsVertically ? nextViewport.Height : double.PositiveInfinity;
+
+                // A gutter changes the finite constraint, but a child whose desired
+                // size fits both constraints can keep its completed measurement.
+                // Re-measure IScrollInfo and content touching either constraint: their
+                // layout or extent can change with the newly available viewport.
+                var canKeepContentMeasure = _scrollInfo == null &&
+                    (contentMeasureAvailable.Width == nextMeasureWidth ||
+                     contentDesired.Width <= Math.Min(contentMeasureAvailable.Width, nextMeasureWidth)) &&
+                    (contentMeasureAvailable.Height == nextMeasureHeight ||
+                     contentDesired.Height <= Math.Min(contentMeasureAvailable.Height, nextMeasureHeight));
+                if (!canKeepContentMeasure)
+                    continue;
+
+                contentViewportAvailable = nextViewport;
+                if (double.IsFinite(availableSize.Width))
+                    _viewportWidth = nextViewport.Width;
+                if (double.IsFinite(availableSize.Height))
+                    _viewportHeight = nextViewport.Height;
+                showVertical = ResolveScrollBarShown(VerticalScrollBarVisibility,
+                    showVertical, _extentHeight, nextViewport.Height);
+                showHorizontal = ResolveScrollBarShown(HorizontalScrollBarVisibility,
+                    showHorizontal, _extentWidth, nextViewport.Width);
             }
 
             // Keep bars admitted on an earlier pass. Viewport-dependent content
@@ -3909,7 +3947,7 @@ public partial class ScrollViewer : ContentControl
 
         double dtSeconds = Math.Min(elapsedMs / 1000.0, SmoothScrollMaxDeltaTimeSeconds);
         double alpha = ComputeSmoothAlpha(dtSeconds);
-        var dpiScale = FrameworkElement.LayoutDpiScale;
+        var dpiScale = GetScrollDpiScale();
         var oneDevicePixel = dpiScale > 0 && double.IsFinite(dpiScale)
             ? 1.0 / dpiScale
             : 1.0;

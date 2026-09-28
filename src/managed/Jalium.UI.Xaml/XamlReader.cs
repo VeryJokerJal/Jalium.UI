@@ -4930,6 +4930,11 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
 /// </summary>
 public static class XamlTypeRegistry
 {
+    // Preserve the registration dictionary used by existing runtime XAML hosts.
+    // Keep it pointed at the explicit, lazy holder rather than initializing the
+    // built-in type catalog when this class is first touched.
+    private static readonly IDictionary<string, Type> _types = ExplicitTypesHolder.Types;
+
     // Registration made by application/source-generated code must remain cheap during module
     // initialization. In particular, registering an x:Class/StartupUri or a directly known
     // element type must not construct the full framework type catalog. Each state family gets

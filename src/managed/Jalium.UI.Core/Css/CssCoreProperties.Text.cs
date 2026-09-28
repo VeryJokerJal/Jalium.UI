@@ -1072,7 +1072,8 @@ internal static partial class CssCoreProperties
     }
 
     private static CssCompiledValue AbsoluteFontWeight(string cssName, int value)
-        => new CssNamedValue(cssName, "FontWeight", FontWeight.FromOpenTypeWeight(value));
+        // CSS accepts 1000; the public WPF-compatible factory accepts 1..999.
+        => new CssNamedValue(cssName, "FontWeight", new FontWeight(value));
 
     private static CssCompiledValue RelativeFontWeight(string cssName, bool bolder)
         => new CssDeferredValue(cssName, "FontWeight", (in CssApplyContext context, out object? value) =>
@@ -1087,7 +1088,7 @@ internal static partial class CssCoreProperties
                 < 900 => bolder ? 900 : 700,
                 _ => bolder ? inherited : 700,
             };
-            value = FontWeight.FromOpenTypeWeight(computed);
+            value = new FontWeight(computed);
             return true;
         });
 

@@ -276,8 +276,6 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.IEffectDrawingContext))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.IFocusProvider))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.IFrameworkInputElement))]
-[assembly: TypeForwardedTo(typeof(global::Jalium.UI.IImeSupport))]
-[assembly: TypeForwardedTo(typeof(global::Jalium.UI.ImeSurroundingTextSnapshot))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.IInputElement))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.ILayerCompositingDrawingContext))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.IOffsetDrawingContext))]

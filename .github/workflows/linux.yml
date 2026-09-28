@@ -446,10 +446,14 @@ jobs:
             docker-platform: linux/amd64
             rid: linux-musl-x64
             runner: ubuntu-24.04
+            sdk-image: mcr.microsoft.com/dotnet/sdk:10.0-alpine3.24
           - arch: arm64
             docker-platform: linux/arm64
             rid: linux-musl-arm64
             runner: ubuntu-24.04-arm
+            # Alpine 3.24 arm64 lavapipe/LLVM 22 crashes during Vulkan present.
+            # Alpine 3.23 arm64 passes the same smoke with validation enabled.
+            sdk-image: mcr.microsoft.com/dotnet/sdk:10.0-alpine3.23
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -464,7 +468,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/work" \
             -v "${{ runner.temp }}:/artifacts" \
             -w /work \
-            mcr.microsoft.com/dotnet/sdk:10.0-alpine3.24 \
+            "${{ matrix.sdk-image }}" \
             sh -euxc '
               apk add --no-cache \
                 bash build-base clang lld cmake ninja pkgconf python3 git linux-headers \

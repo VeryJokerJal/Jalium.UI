@@ -16,25 +16,20 @@
         <Setter Property="Height" Value="6" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ProgressBar">
-                <Border Name="PART_Track"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        Padding="{TemplateBinding Padding}"
-                        CornerRadius="{TemplateBinding CornerRadius}"
-                        Shape="RoundedRectangle">
-                    <Grid>
-                        <!-- Progress Indicator -->
-                        <Border Name="PART_Indicator"
-                                Background="{TemplateBinding ProgressBrush}"
-                                CornerRadius="{TemplateBinding CornerRadius}"
-                                Shape="RoundedRectangle"
-                                HorizontalAlignment="Left" />
-                    </Grid>
-                </Border>
+                <Grid>
+                    <Rectangle Name="PART_Track"
+                               Fill="{TemplateBinding Background}"
+                               RadiusX="999"
+                               RadiusY="999" />
+                    <Border Name="PART_Indicator"
+                            Background="{TemplateBinding ProgressBrush}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Shape="RoundedRectangle"
+                            HorizontalAlignment="Left" />
+                </Grid>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsEnabled" Value="False">
-                        <Setter TargetName="PART_Track" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                        <Setter TargetName="PART_Track" Property="Fill" Value="{ThemeResource ControlBackgroundDisabled}" />
                         <Setter TargetName="PART_Indicator" Property="Background" Value="{ThemeResource AccentBrushDisabled}" />
                     </Trigger>
                 </ControlTemplate.Triggers>
@@ -49,6 +44,7 @@
         <Setter Property="TrackBrush" Value="{ThemeResource SliderTrack}" />
         <Setter Property="Foreground" Value="{ThemeResource AccentBrush}" />
         <Setter Property="MinHeight" Value="32" />
+        <Setter Property="Height" Value="32" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Slider">
                 <Border Name="PART_Root"
@@ -161,6 +157,7 @@
         <Setter Property="Foreground" Value="{ThemeResource AccentBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource WindowBackground}" />
         <Setter Property="MinHeight" Value="32" />
+        <Setter Property="Height" Value="32" />
         <Setter Property="Template">
             <ControlTemplate TargetType="RangeSlider">
                 <Border Name="PART_Root"

@@ -129,7 +129,7 @@ internal sealed class EditorView
             if (Document == null)
                 return 0;
 
-            return GetTotalVisibleLineCount() * _lineHeight;
+            return GetTotalVisibleLineCount() * Math.Max(_lineHeight, 1);
         }
     }
 

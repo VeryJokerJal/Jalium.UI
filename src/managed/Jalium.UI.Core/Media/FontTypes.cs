@@ -14,7 +14,7 @@ public readonly struct FontWeight : IEquatable<FontWeight>, IFormattable
     /// <summary>
     /// Initializes a new instance of <see cref="FontWeight"/> with the specified weight value.
     /// </summary>
-    /// <param name="weight">The OpenType weight value (1-1000).</param>
+    /// <param name="weight">The OpenType weight value (1-999).</param>
     internal FontWeight(int weight)
     {
         _weight = weight - 400;
@@ -23,19 +23,19 @@ public readonly struct FontWeight : IEquatable<FontWeight>, IFormattable
     /// <summary>
     /// Creates a new instance of <see cref="FontWeight"/> that corresponds to the OpenType usWeightClass value.
     /// </summary>
-    /// <param name="weightValue">An integer value between 1 and 1000 that corresponds to the usWeightClass definition in the OpenType specification.</param>
+    /// <param name="weightValue">An integer value between 1 and 999 that corresponds to the usWeightClass definition in the OpenType specification.</param>
     /// <returns>A new instance of <see cref="FontWeight"/>.</returns>
     public static FontWeight FromOpenTypeWeight(int weightValue)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(weightValue, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(weightValue, 1000);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(weightValue, 999);
         return new FontWeight(weightValue);
     }
 
     /// <summary>
     /// Returns a value that represents the OpenType usWeightClass for this <see cref="FontWeight"/> object.
     /// </summary>
-    /// <returns>An integer value between 1 and 1000 that corresponds to the usWeightClass definition in the OpenType specification.</returns>
+    /// <returns>An integer value between 1 and 999 that corresponds to the usWeightClass definition in the OpenType specification.</returns>
     public int ToOpenTypeWeight() => _weight + 400;
 
     /// <summary>

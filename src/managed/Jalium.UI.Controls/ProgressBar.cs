@@ -103,7 +103,7 @@ public class ProgressBar : Primitives.RangeBase
 
     #region Template Parts
 
-    private Border? _trackBorder;
+    private FrameworkElement? _trackElement;
     private Border? _indicatorBorder;
     private Border? _cssBorderPainter;
 
@@ -138,7 +138,7 @@ public class ProgressBar : Primitives.RangeBase
     {
         base.OnApplyTemplate();
 
-        _trackBorder = GetTemplateChild("PART_Track") as Border;
+        _trackElement = GetTemplateChild("PART_Track") as FrameworkElement;
         _indicatorBorder = GetTemplateChild("PART_Indicator") as Border;
 
         UpdateIndicator();
@@ -160,7 +160,6 @@ public class ProgressBar : Primitives.RangeBase
             {
                 _indicatorBorder.Height = indicatorSize;
                 _indicatorBorder.Width = double.NaN;
-                _indicatorBorder.Margin = new Thickness(0);
                 _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Stretch;
                 _indicatorBorder.VerticalAlignment = VerticalAlignment.Top;
             }
@@ -168,7 +167,6 @@ public class ProgressBar : Primitives.RangeBase
             {
                 _indicatorBorder.Width = indicatorSize;
                 _indicatorBorder.Height = double.NaN;
-                _indicatorBorder.Margin = new Thickness(0);
                 _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Left;
                 _indicatorBorder.VerticalAlignment = VerticalAlignment.Stretch;
             }
@@ -196,15 +194,21 @@ public class ProgressBar : Primitives.RangeBase
                 _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Left;
                 _indicatorBorder.VerticalAlignment = VerticalAlignment.Stretch;
             }
-            _indicatorBorder.Margin = new Thickness(0);
             _indicatorBorder.RenderOffset = default;
         }
+
+        var border = BorderThickness;
+        var padding = Padding;
+        _indicatorBorder.Margin = UsesCssBoxGeometry()
+            ? new Thickness(border.Left + padding.Left, border.Top + padding.Top,
+                border.Right + padding.Right, border.Bottom + padding.Bottom)
+            : default;
     }
 
     private double GetTemplateContentExtent(bool isVertical)
     {
         var extent = isVertical ? RenderSize.Height : RenderSize.Width;
-        if (_trackBorder == null)
+        if (_trackElement == null)
             return extent;
 
         var border = BorderThickness;
@@ -433,7 +437,7 @@ public class ProgressBar : Primitives.RangeBase
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
-        if (_indicatorBorder == null)
+        if (_indicatorBorder == null || UsesCssBoxGeometry())
             CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
