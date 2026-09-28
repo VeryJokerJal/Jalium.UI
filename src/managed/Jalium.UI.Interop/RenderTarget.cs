@@ -2610,11 +2610,20 @@ internal interface IRenderTargetNative
     int Resize(nint renderTarget, int width, int height);
     int BeginDraw(nint renderTarget);
     int EndDraw(nint renderTarget);
-    bool TryCompactIdleFramebufferStorage(nint renderTarget, out int resultCode);
+    bool TryCompactIdleFramebufferStorage(nint renderTarget, out int resultCode)
+    {
+        resultCode = (int)JaliumResult.NotSupported;
+        return false;
+    }
     bool TryQueryMainFramebufferOwnedBytes(
         nint renderTarget,
         out int resultCode,
-        out ulong ownedBytes);
+        out ulong ownedBytes)
+    {
+        resultCode = (int)JaliumResult.NotSupported;
+        ownedBytes = 0;
+        return false;
+    }
     RenderingEngine GetEngine(nint renderTarget);
     void SetVSyncEnabled(nint renderTarget, bool enabled);
     void SetExternalPresentPacing(nint renderTarget, bool enabled);

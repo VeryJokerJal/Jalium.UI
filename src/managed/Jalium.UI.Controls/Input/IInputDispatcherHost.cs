@@ -85,7 +85,7 @@ internal interface IInputDispatcherHost
     /// does not require an explicit native registration; otherwise
     /// <see langword="false"/> so the dispatcher can retry on the next move.
     /// </returns>
-    bool RequestTrackMouseLeave();
+    bool RequestTrackMouseLeave() => true;
 
     // ── DPI ──
 
