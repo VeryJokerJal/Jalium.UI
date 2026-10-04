@@ -103,26 +103,12 @@
     <!-- ============================================== -->
     <!-- Separator Style -->
     <!-- ============================================== -->
+    <!-- The control draws its theme stroke and CSS box in one content-aware path. -->
     <Style TargetType="Separator">
-        <Setter Property="Background" Value="{ThemeResource ControlBorder}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="StrokeBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="StrokeThickness" Value="1" />
         <Setter Property="Margin" Value="0,6,0,6" />
-        <Setter Property="Template">
-            <ControlTemplate TargetType="Separator">
-                <Border Name="SeparatorBorder"
-                        Background="{TemplateBinding StrokeBrush}"
-                        Height="{TemplateBinding StrokeThickness}" />
-                <ControlTemplate.Triggers>
-                    <Trigger Property="Orientation" Value="Vertical">
-                        <Setter TargetName="SeparatorBorder" Property="Height" Value="Auto" />
-                        <Setter TargetName="SeparatorBorder" Property="Width" Value="{Binding StrokeThickness, RelativeSource={RelativeSource TemplatedParent}}" />
-                    </Trigger>
-                </ControlTemplate.Triggers>
-            </ControlTemplate>
-        </Setter>
-
         <Style.Triggers>
             <Trigger Property="Orientation" Value="Vertical">
                 <Setter Property="Margin" Value="6,0,6,0" />

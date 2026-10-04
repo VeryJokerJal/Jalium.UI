@@ -514,17 +514,17 @@ public class ToastNotificationItem : ContentControl
         var width = availableSize.Width;
         var height = MinHeight;
 
-        if (!string.IsNullOrEmpty(Title))
+        if (FontSize > 0 && !string.IsNullOrEmpty(Title))
         {
-            var titleFormatted = new FormattedText(Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2);
+            var titleFormatted = new FormattedText(Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize + 2);
             titleFormatted.FontWeight = 600;
             Interop.TextMeasurement.MeasureText(titleFormatted);
             height = Math.Max(height, titleFormatted.Height + padding.TotalHeight + 8);
         }
 
-        if (!string.IsNullOrEmpty(Message))
+        if (FontSize > 0 && !string.IsNullOrEmpty(Message))
         {
-            var messageFormatted = new FormattedText(Message, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+            var messageFormatted = new FormattedText(Message, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
             Interop.TextMeasurement.MeasureText(messageFormatted);
 
             if (!string.IsNullOrEmpty(Title))
@@ -582,9 +582,9 @@ public class ToastNotificationItem : ContentControl
         var textStartX = currentX;
         var currentY = padding.Top + 8;
 
-        if (!string.IsNullOrEmpty(Title))
+        if (FontSize > 0 && !string.IsNullOrEmpty(Title))
         {
-            var titleFormatted = new FormattedText(Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2)
+            var titleFormatted = new FormattedText(Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize + 2)
             {
                 Foreground = textBrush,
                 FontWeight = 700
@@ -594,9 +594,9 @@ public class ToastNotificationItem : ContentControl
             currentY += titleFormatted.Height + 2;
         }
 
-        if (!string.IsNullOrEmpty(Message))
+        if (FontSize > 0 && !string.IsNullOrEmpty(Message))
         {
-            var messageFormatted = new FormattedText(Message, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
+            var messageFormatted = new FormattedText(Message, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = textBrush
             };

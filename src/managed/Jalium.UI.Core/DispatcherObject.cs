@@ -13,8 +13,17 @@ public abstract class DispatcherObject
     /// Initializes a new instance of the <see cref="DispatcherObject"/> class.
     /// </summary>
     protected DispatcherObject()
+        : this(Dispatcher.CurrentDispatcher)
     {
-        _dispatcher = Dispatcher.CurrentDispatcher;
+    }
+
+    /// <summary>
+    /// Initializes an instance with an already selected dispatcher.
+    /// </summary>
+    internal DispatcherObject(Dispatcher dispatcher)
+    {
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        _dispatcher = dispatcher;
     }
 
     /// <summary>

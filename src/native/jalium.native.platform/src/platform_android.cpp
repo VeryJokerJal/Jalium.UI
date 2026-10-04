@@ -1526,14 +1526,105 @@ int16_t jalium_input_get_key_state(int32_t jaliumVirtualKey)
     return 0;
 }
 
+static JaliumResult GetInputDeviceCapabilities(int32_t* capabilities)
+{
+    *capabilities = 0;
+
+    JNIEnv* env = GetJNIEnv();
+    if (!env) return JALIUM_ERROR_NOT_SUPPORTED;
+
+    // InputDevice describes the currently attached devices, including USB and
+    // Bluetooth input. Android does not expose a maximum contact count here.
+    jclass deviceClass = env->FindClass("android/view/InputDevice");
+    ScopedJniLocalRef classRef(env, deviceClass);
+    if (!deviceClass || env->ExceptionCheck())
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JALIUM_ERROR_UNKNOWN;
+    }
+    jmethodID getDeviceIds = env->GetStaticMethodID(deviceClass, "getDeviceIds", "()[I");
+    if (!getDeviceIds || env->ExceptionCheck())
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JALIUM_ERROR_UNKNOWN;
+    }
+    jmethodID getDevice = env->GetStaticMethodID(deviceClass, "getDevice",
+        "(I)Landroid/view/InputDevice;");
+    if (!getDevice || env->ExceptionCheck())
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JALIUM_ERROR_UNKNOWN;
+    }
+    jmethodID getSources = env->GetMethodID(deviceClass, "getSources", "()I");
+    if (!getSources || env->ExceptionCheck())
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JALIUM_ERROR_UNKNOWN;
+    }
+
+    jintArray ids = static_cast<jintArray>(
+        env->CallStaticObjectMethod(deviceClass, getDeviceIds));
+    ScopedJniLocalRef idsRef(env, ids);
+    if (!ids || env->ExceptionCheck())
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JALIUM_ERROR_UNKNOWN;
+    }
+    constexpr int32_t SourceTouchscreen = 0x00001002;
+    constexpr int32_t SourceMouse = 0x00002002;
+    constexpr int32_t SourceStylus = 0x00004002;
+    const jsize count = env->GetArrayLength(ids);
+    for (jsize index = 0; index < count; ++index)
+    {
+        jint id = 0;
+        env->GetIntArrayRegion(ids, index, 1, &id);
+        if (env->ExceptionCheck())
+        {
+            env->ExceptionClear();
+            return JALIUM_ERROR_UNKNOWN;
+        }
+        jobject device = env->CallStaticObjectMethod(deviceClass, getDevice, id);
+        if (env->ExceptionCheck())
+        {
+            env->ExceptionClear();
+            return JALIUM_ERROR_UNKNOWN;
+        }
+        if (!device) continue; // Detached between enumeration and lookup.
+        ScopedJniLocalRef deviceRef(env, device);
+        const jint sources = env->CallIntMethod(device, getSources);
+        if (env->ExceptionCheck())
+        {
+            env->ExceptionClear();
+            return JALIUM_ERROR_UNKNOWN;
+        }
+        if ((sources & SourceTouchscreen) == SourceTouchscreen)
+            *capabilities |= JALIUM_POINTING_COARSE;
+        if ((sources & SourceStylus) == SourceStylus)
+            *capabilities |= JALIUM_POINTING_FINE;
+        if ((sources & SourceMouse) == SourceMouse)
+            *capabilities |= JALIUM_POINTING_FINE | JALIUM_POINTING_HOVER;
+    }
+    return JALIUM_OK;
+}
+
 JaliumResult jalium_input_get_touch_capabilities(
     int32_t* touchPresent, int32_t* maxContacts)
 {
-    if (!touchPresent || !maxContacts)
-        return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (!touchPresent || !maxContacts) return JALIUM_ERROR_INVALID_ARGUMENT;
     *touchPresent = 0;
     *maxContacts = 0;
-    return JALIUM_ERROR_NOT_SUPPORTED;
+    int32_t capabilities = 0;
+    JaliumResult result = GetInputDeviceCapabilities(&capabilities);
+    if (result == JALIUM_OK)
+        *touchPresent = (capabilities & JALIUM_POINTING_COARSE) != 0 ? 1 : 0;
+    return result;
+}
+
+JaliumResult jalium_input_get_pointing_capabilities(int32_t* capabilities)
+{
+    if (!capabilities) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *capabilities = 0;
+    return GetInputDeviceCapabilities(capabilities);
 }
 
 JaliumResult jalium_platform_set_double_click_settings(uint32_t, float)

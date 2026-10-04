@@ -551,7 +551,7 @@ public abstract class ChartBase : Control
         if (!string.IsNullOrEmpty(Title))
         {
             var titleBrush = TitleForeground ?? Foreground ?? s_defaultTitleForeground;
-            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+            var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
             var ft = new FormattedText(Title, fontFamily, TitleFontSize)
             {
                 Foreground = titleBrush,
@@ -584,7 +584,7 @@ public abstract class ChartBase : Control
         var items = CollectLegendItems();
         if (items == null || items.Count == 0) return;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var textBrush = Foreground ?? s_defaultTitleForeground;
         const double markerSize = 10;
         const double markerTextGap = 5;

@@ -245,10 +245,16 @@ public static class VisualTreeHelper
         ArgumentNullException.ThrowIfNull(reference);
 
         if (reference is UIElement referenceElement &&
-            (referenceElement.Visibility != Visibility.Visible || !referenceElement.IsHitTestVisible))
+            (referenceElement.Visibility != Visibility.Visible || !referenceElement.IsHitTestVisible ||
+             Styling.CssDisplayProperties.IsCollapsedFlexItem(referenceElement) ||
+             Styling.CssDisplayProperties.IsExitInert(referenceElement)))
         {
             return null;
         }
+        if (reference is UIElement clippedElement &&
+            Styling.CssClipPathProperties.GetGeometry(clippedElement) is { } cssClip &&
+            !cssClip.FillContains(point))
+            return null;
 
         // Walk the visual tree from top to bottom (reverse child order)
         // Use incremental coordinate transform instead of TransformToVisual per child
@@ -272,6 +278,11 @@ public static class VisualTreeHelper
             if (result != null)
                 return result;
         }
+
+        if (reference is UIElement cssElement &&
+            (Styling.CssDisplayProperties.EffectiveVisibility(cssElement) != Visibility.Visible ||
+             Styling.CssPointerEventsProperties.Effective(cssElement) == Styling.CssPointerEventsMode.None))
+            return null;
 
         HitTestResult? customResult = reference.HitTestPointCore(new PointHitTestParameters(point));
         if (customResult != null)
@@ -334,10 +345,16 @@ public static class VisualTreeHelper
         Point point)
     {
         if (visual is UIElement uiElement &&
-            (uiElement.Visibility != Visibility.Visible || !uiElement.IsHitTestVisible))
+            (uiElement.Visibility != Visibility.Visible || !uiElement.IsHitTestVisible ||
+             Styling.CssDisplayProperties.IsCollapsedFlexItem(uiElement) ||
+             Styling.CssDisplayProperties.IsExitInert(uiElement)))
         {
             return HitTestFilterBehavior.Continue;
         }
+        if (visual is UIElement clippedElement &&
+            Styling.CssClipPathProperties.GetGeometry(clippedElement) is { } cssClip &&
+            !cssClip.FillContains(point))
+            return HitTestFilterBehavior.Continue;
 
         bool skipSelf = false;
 
@@ -398,6 +415,11 @@ public static class VisualTreeHelper
 
     private static HitTestResultBehavior TestSelf(Visual visual, HitTestResultCallback resultCallback, Point point)
     {
+        if (visual is UIElement cssElement &&
+            (Styling.CssDisplayProperties.EffectiveVisibility(cssElement) != Visibility.Visible ||
+             Styling.CssPointerEventsProperties.Effective(cssElement) == Styling.CssPointerEventsMode.None))
+            return HitTestResultBehavior.Continue;
+
         HitTestResult? customResult = visual.HitTestPointCore(new PointHitTestParameters(point));
         if (customResult != null)
         {
@@ -423,6 +445,12 @@ public static class VisualTreeHelper
         HitTestResultCallback resultCallback,
         GeometryHitTestParameters parameters)
     {
+        if (visual is UIElement uiElement &&
+            (uiElement.Visibility != Visibility.Visible || !uiElement.IsHitTestVisible ||
+             Styling.CssDisplayProperties.IsCollapsedFlexItem(uiElement) ||
+             Styling.CssDisplayProperties.IsExitInert(uiElement)))
+            return HitTestResultBehavior.Continue;
+
         HitTestFilterBehavior filterResult = filterCallback?.Invoke(visual) ?? HitTestFilterBehavior.Continue;
         if (filterResult == HitTestFilterBehavior.Stop)
         {

@@ -1,118 +1,89 @@
-// Vello GPU Pipeline V2 — tile_alloc
-// Allocates tile storage for each draw object using workgroup prefix sum.
-// Zeroes allocated tiles.
+// Vello GPU Pipeline V3 — tile_alloc
+// Port of vello 0.10.0 shader/tile_alloc.wgsl.
+// Allocates (and zeroes) the tile rectangle for each draw object.
 //
-// Dispatch: ceil(n_drawobj / 256), 1, 1
+// Bindings: b0 config | t0 scene | t1 draw_bboxes | u0 bump | u1 paths | u2 tiles
+// Dispatch: (ceil(n_path / 256), 1, 1)
+//
+// NOTE: paths[] must be allocated with align_up(n_paths, 256) elements — lane
+// 255 writes paths[drawobj_ix].tiles and every lane reads
+// paths[drawobj_ix | 255].tiles, both of which can index past n_drawobj in the
+// last workgroup.
 
 #include "vello_shared.hlsli"
 
-cbuffer VelloConfig : register(b0)
-{
-    uint width_in_tiles;
-    uint height_in_tiles;
-    uint target_width;
-    uint target_height;
-    uint base_color;
-    uint n_drawobj;
-    uint n_path;
-    uint n_clip;
-    uint bin_data_start;
-    uint lines_size;
-    uint binning_size;
-    uint tiles_size;
-    uint seg_counts_size;
-    uint segments_size;
-    uint blend_size;
-    uint ptcl_size;
-    uint num_segments;
-    uint pad0, pad1, pad2, pad3, pad4, pad5, pad6;
-};
+StructuredBuffer<uint> scene : register(t0);
+StructuredBuffer<float4> draw_bboxes : register(t1);
 
-// draw_bboxes: intersected bounding boxes per draw object (float4: x0,y0,x1,y1 in pixels)
-StructuredBuffer<float4> draw_bboxes : register(t0);
-
-// DrawTag from CPU encoding — to check tag type
-StructuredBuffer<DrawTag> drawTags : register(t1);
-
-// DrawMonoid: maps draw object index -> path index. The paths[] array is
-// indexed by PATH index everywhere it is READ (path_count.hlsl:88 and
-// coarse.hlsl load `paths[ln.path_ix]` / `paths[dm.path_ix]`), so the write
-// below must use the same index space. Writing paths[drawobj_ix] (the old
-// code) desynced the two spaces from the first EndClip onward: every path
-// after it got its tile data attached to the WRONG slot, silently breaking
-// clip Begin emission and segment ownership for all later paths.
-StructuredBuffer<DrawMonoid> draw_monoids : register(t2);
-
-// BumpAllocators
 RWByteAddressBuffer bump : register(u0);
-
-// VelloPath output: bbox + tile offset per draw object
 RWStructuredBuffer<VelloPath> paths : register(u1);
-
-// VelloTile output: allocated and zeroed tiles
 RWStructuredBuffer<VelloTile> tiles : register(u2);
 
+#define WG_SIZE 256u
+#define LG_WG_SIZE 8u
+
 groupshared uint sh_tile_count[WG_SIZE];
-groupshared uint sh_tile_offset;
 groupshared uint sh_previous_failed;
 
 [numthreads(256, 1, 1)]
-void main(uint3 globalId : SV_DispatchThreadID, uint3 localId : SV_GroupThreadID)
+void main(uint3 global_id : SV_DispatchThreadID, uint3 local_id : SV_GroupThreadID)
 {
-    // Check for prior stage failure
-    if (localId.x == 0u) {
-        uint failed = 0;
-        bump.InterlockedOr(BUMP_FAILED, 0u, failed); // atomic load
-        sh_previous_failed = (failed & (STAGE_BINNING | STAGE_FLATTEN)) != 0u ? 1u : 0u;
+    // Exit early if prior stages failed, as we can't run this stage.
+    // We need to check only prior stages, as if this stage has failed in
+    // another workgroup, we still want to know this workgroup's memory
+    // requirement.
+    if (local_id.x == 0u) {
+        bool prior_failed = (bump.Load(BUMP_FAILED) & (STAGE_BINNING | STAGE_FLATTEN)) != 0u;
+        sh_previous_failed = prior_failed ? 1u : 0u;
     }
     GroupMemoryBarrierWithGroupSync();
-    if (sh_previous_failed != 0u) return;
+    uint failed = sh_previous_failed;
+    GroupMemoryBarrierWithGroupSync();
+    if (failed != 0u) {
+        return;
+    }
+    // scale factors useful for converting coordinates to tiles
+    const float SX = 1.0 / (float)TILE_WIDTH;
+    const float SY = 1.0 / (float)TILE_HEIGHT;
 
-    float SX = 1.0 / (float)TILE_WIDTH;
-    float SY = 1.0 / (float)TILE_HEIGHT;
+    uint drawobj_ix = global_id.x;
+    uint drawtag = DRAWTAG_NOP;
+    if (drawobj_ix < n_drawobj) {
+        drawtag = scene[drawtag_base + drawobj_ix];
+    }
+    int x0 = 0;
+    int y0 = 0;
+    int x1 = 0;
+    int y1 = 0;
+    if (drawtag != DRAWTAG_NOP && drawtag != DRAWTAG_END_CLIP) {
+        float4 bbox = draw_bboxes[drawobj_ix];
 
-    uint drawobj_ix = globalId.x;
-    bool valid = (drawobj_ix < n_drawobj);
-
-    // Determine tile bbox for this draw object
-    int x0i = 0, y0i = 0, x1i = 0, y1i = 0;
-    if (valid) {
-        DrawTag dt = drawTags[drawobj_ix];
-        // EndClip (tag==2) doesn't need tiles
-        if (dt.tag != 2u) {
-            float4 bbox = draw_bboxes[drawobj_ix];
-            if (bbox.x < bbox.z && bbox.y < bbox.w) {
-                x0i = (int)floor(bbox.x * SX);
-                y0i = (int)floor(bbox.y * SY);
-                x1i = (int)ceil(bbox.z * SX);
-                y1i = (int)ceil(bbox.w * SY);
-            }
+        // Don't round up the bottom-right corner of the bbox if the area is
+        // zero and leave the coordinates at 0. This will make `tile_count`
+        // zero as the shape is clipped out.
+        if (bbox.x < bbox.z && bbox.y < bbox.w) {
+            x0 = (int)floor(bbox.x * SX);
+            y0 = (int)floor(bbox.y * SY);
+            x1 = (int)ceil(bbox.z * SX);
+            y1 = (int)ceil(bbox.w * SY);
         }
     }
-
-    uint ux0 = (uint)clamp(x0i, 0, (int)width_in_tiles);
-    uint uy0 = (uint)clamp(y0i, 0, (int)height_in_tiles);
-    uint ux1 = (uint)clamp(x1i, 0, (int)width_in_tiles);
-    uint uy1 = (uint)clamp(y1i, 0, (int)height_in_tiles);
+    uint ux0 = (uint)clamp(x0, 0, (int)width_in_tiles);
+    uint uy0 = (uint)clamp(y0, 0, (int)height_in_tiles);
+    uint ux1 = (uint)clamp(x1, 0, (int)width_in_tiles);
+    uint uy1 = (uint)clamp(y1, 0, (int)height_in_tiles);
     uint tile_count = (ux1 - ux0) * (uy1 - uy0);
-
-    // Inclusive prefix sum of tile counts within workgroup
-    uint total = tile_count;
-    sh_tile_count[localId.x] = tile_count;
-
-    // log2(256) = 8 iterations
-    [unroll]
-    for (uint i = 0u; i < 8u; i++) {
+    uint total_tile_count = tile_count;
+    sh_tile_count[local_id.x] = tile_count;
+    for (uint i = 0u; i < LG_WG_SIZE; i += 1u) {
         GroupMemoryBarrierWithGroupSync();
-        if (localId.x >= (1u << i)) {
-            total += sh_tile_count[localId.x - (1u << i)];
+        if (local_id.x >= (1u << i)) {
+            total_tile_count += sh_tile_count[local_id.x - (1u << i)];
         }
         GroupMemoryBarrierWithGroupSync();
-        sh_tile_count[localId.x] = total;
+        sh_tile_count[local_id.x] = total_tile_count;
     }
-
-    // Last thread in workgroup allocates tile storage
-    if (localId.x == WG_SIZE - 1u) {
+    if (local_id.x == WG_SIZE - 1u) {
         uint count = sh_tile_count[WG_SIZE - 1u];
         uint offset;
         bump.InterlockedAdd(BUMP_TILE, count, offset);
@@ -121,32 +92,26 @@ void main(uint3 globalId : SV_DispatchThreadID, uint3 localId : SV_GroupThreadID
             uint dummy;
             bump.InterlockedOr(BUMP_FAILED, STAGE_TILE_ALLOC, dummy);
         }
-        sh_tile_offset = offset;
+        paths[drawobj_ix].tiles = offset;
     }
-    GroupMemoryBarrierWithGroupSync();
-
-    uint tile_offset = sh_tile_offset;
-
-    // Write path structure — indexed by PATH index (dm.path_ix), matching the
-    // readers in path_count/coarse. EndClip objects share their matching
-    // BeginClip's path_ix (CPU DrawMonoid fixup) and allocate no tiles, so
-    // they must NOT write here: doing so would clobber the BeginClip's slot
-    // (bbox 0, dangling tile offset) and erase the clip's tile data.
-    if (valid) {
-        DrawTag dt2 = drawTags[drawobj_ix];
-        uint path_ix = draw_monoids[drawobj_ix].path_ix;
-        if (dt2.tag != 2u && path_ix < n_path) {
-            uint tile_subix = (localId.x > 0u) ? sh_tile_count[localId.x - 1u] : 0u;
-            VelloPath path;
-            path.bbox = uint4(ux0, uy0, ux1, uy1);
-            path.tiles = tile_offset + tile_subix;
-            paths[path_ix] = path;
-        }
+    // Using storage barriers is a workaround for what appears to be a
+    // miscompilation when a normal workgroup-shared variable is used to
+    // broadcast the value.
+    DeviceMemoryBarrierWithGroupSync();
+    uint tile_offset = paths[drawobj_ix | (WG_SIZE - 1u)].tiles;
+    DeviceMemoryBarrierWithGroupSync();
+    if (drawobj_ix < n_drawobj) {
+        uint tile_subix = (local_id.x > 0u) ? sh_tile_count[local_id.x - 1u] : 0u;
+        VelloPath path;
+        path.bbox = uint4(ux0, uy0, ux1, uy1);
+        path.tiles = tile_offset + tile_subix;
+        paths[drawobj_ix] = path;
     }
 
-    // Zero allocated tiles (cooperative across workgroup)
+    // zero allocated memory
+    // Note: if the number of draw objects is small, utilization will be poor.
     uint total_count = sh_tile_count[WG_SIZE - 1u];
-    for (uint j = localId.x; j < total_count; j += WG_SIZE) {
+    for (uint j = local_id.x; j < total_count; j += WG_SIZE) {
         VelloTile t;
         t.backdrop = 0;
         t.segment_count_or_ix = 0u;

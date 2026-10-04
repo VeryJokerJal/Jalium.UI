@@ -252,7 +252,7 @@ public class PieChart : ChartBase
         var center = new Point(centerX, centerY);
         var borderPen = new Pen(new SolidColorBrush(Color.FromArgb(60, 0, 0, 0)), 1);
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var labelFgBrush = Foreground ?? new SolidColorBrush(Color.FromRgb(220, 220, 220));
 
         double currentAngle = StartAngle;

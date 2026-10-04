@@ -299,7 +299,7 @@ public static partial class Keyboard
         [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetKeyState")]
         private static extern short GetKeyStateWindows(int vKey);
 
-        [System.Runtime.InteropServices.LibraryImport("jalium.native.platform",
+        [System.Runtime.InteropServices.LibraryImport(JaliumNativeLibraryNames.Platform,
             EntryPoint = "jalium_input_get_key_state")]
         private static partial short InputGetKeyState(int virtualKey);
     }

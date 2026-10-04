@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 struct PushConstants
 {
     float4 color;
@@ -52,11 +55,19 @@ bool IsInsideRoundRect(float2 pixel, float4 rect, float2 radius)
     return true;
 }
 
-float4 main(PsInput input) : SV_Target
+float4 UnclippedMain(PsInput input) : SV_Target
 {
     if (gPushConstants.clipFlags.x > 0.5f && !IsInsideRoundRect(input.position.xy, gPushConstants.roundedClipRect, gPushConstants.roundedClipRadius)) {
         discard;
     }
 
     return gPushConstants.color;
+}
+
+float4 main(PsInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    color.a *= coverage;
+    return color;
 }

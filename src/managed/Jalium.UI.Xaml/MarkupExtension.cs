@@ -854,6 +854,8 @@ public sealed class DeferredTemplateBinding : BindingBase
 /// </summary>
 internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
 {
+    internal override void OnTemplateParentChanged() => Deactivate();
+
     private readonly DeferredTemplateBinding _binding;
     private FrameworkElement? _templatedParent;
     private DependencyProperty? _sourceProperty;
@@ -889,6 +891,10 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
 
         // Subscribe to property changes on the templated parent
         _templatedParent.PropertyChangedInternal += OnTemplatedParentPropertyChanged;
+        if (Jalium.UI.Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_sourceProperty, TargetProperty))
+            _templatedParent.CssCornerRadiusPresentationChanged += TransferCssRadius;
+        if (IsCssBorderBinding())
+            _templatedParent.CssBorderPresentationChanged += TransferCssBorder;
 
         // Initial value transfer
         TransferValue();
@@ -904,10 +910,18 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
         if (_templatedParent != null)
         {
             _templatedParent.PropertyChangedInternal -= OnTemplatedParentPropertyChanged;
+            _templatedParent.CssCornerRadiusPresentationChanged -= TransferCssRadius;
+            _templatedParent.CssBorderPresentationChanged -= TransferCssBorder;
             _templatedParent = null;
         }
 
         Target.ClearLayerValue(TargetProperty, DependencyObject.LayerValueSource.ParentTemplate);
+        if (Jalium.UI.Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_sourceProperty, TargetProperty))
+            Jalium.UI.Styling.CssBorderRadiusProperties.ClearTemplate(Target);
+        if (Jalium.UI.Styling.CssBorderPaintProperties.IsTemplateBrushBinding(_sourceProperty, TargetProperty))
+            Jalium.UI.Styling.CssBorderPaintProperties.ClearTemplate(Target);
+        if (Jalium.UI.Styling.CssBorderStyleProperties.IsTemplateThicknessBinding(_sourceProperty, TargetProperty))
+            Jalium.UI.Styling.CssBorderStyleProperties.ClearTemplate(Target);
     }
 
     public override void UpdateSource()
@@ -926,6 +940,26 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
         {
             TransferValue();
         }
+        else if (Jalium.UI.Styling.CssBorderRadiusProperties.IsTemplatePresentationInput(dp)) TransferCssRadius();
+    }
+
+    private void TransferCssRadius()
+    {
+        if (IsActive && _templatedParent is not null && Jalium.UI.Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_sourceProperty, TargetProperty))
+            Jalium.UI.Styling.CssBorderRadiusProperties.TransferTemplate(_templatedParent, Target);
+    }
+
+    private bool IsCssBorderBinding() =>
+        Jalium.UI.Styling.CssBorderPaintProperties.IsTemplateBrushBinding(_sourceProperty, TargetProperty) ||
+        Jalium.UI.Styling.CssBorderStyleProperties.IsTemplateThicknessBinding(_sourceProperty, TargetProperty);
+
+    private void TransferCssBorder()
+    {
+        if (!IsActive || _templatedParent is null) return;
+        if (Jalium.UI.Styling.CssBorderPaintProperties.IsTemplateBrushBinding(_sourceProperty, TargetProperty))
+            Jalium.UI.Styling.CssBorderPaintProperties.TransferTemplate(_templatedParent, Target);
+        if (Jalium.UI.Styling.CssBorderStyleProperties.IsTemplateThicknessBinding(_sourceProperty, TargetProperty))
+            Jalium.UI.Styling.CssBorderStyleProperties.TransferTemplate(_templatedParent, Target);
     }
 
     private void TransferValue()
@@ -957,6 +991,8 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
         }
 
         Target.SetLayerValue(TargetProperty, effectiveValue, DependencyObject.LayerValueSource.ParentTemplate);
+        TransferCssRadius();
+        TransferCssBorder();
     }
 
     private static FrameworkElement? FindTemplatedParent(DependencyObject target)

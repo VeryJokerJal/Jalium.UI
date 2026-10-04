@@ -1,8 +1,8 @@
 using System.Text;
 using Jalium.UI.Documents;
-using Jalium.UI.Interop;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -14,6 +14,7 @@ namespace Jalium.UI.Controls;
 public class AccessText : FrameworkElement, IAddChild
 {
     private readonly TextBlock _textBlock;
+    private object? _lastTextShadow;
     private int _accessKeyDisplayIndex = -1;
 
     #region Dependency Properties
@@ -377,6 +378,14 @@ public class AccessText : FrameworkElement, IAddChild
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        var textShadow = CssTextShadowProperties.Value(this);
+        if (!ReferenceEquals(_lastTextShadow, textShadow))
+        {
+            _lastTextShadow = textShadow;
+            _textBlock.InvalidateVisual();
+        }
+        var alignment = CssFlowProperties.NativeTextAlignment(this, TextAlignmentProperty);
+        if (_textBlock.TextAlignment != alignment) _textBlock.TextAlignment = alignment;
         base.OnRender(drawingContext);
 
         var foreground = Foreground ?? _textBlock.Foreground;
@@ -386,41 +395,17 @@ public class AccessText : FrameworkElement, IAddChild
             return;
         }
 
-        var family = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var prefix = new FormattedText(displayText[.._accessKeyDisplayIndex], family, FontSize)
+        var keyLength = GraphemeClusters.NextBoundary(displayText, _accessKeyDisplayIndex) -
+            _accessKeyDisplayIndex;
+        var segments = _textBlock.GetSourceRangeSegments(_accessKeyDisplayIndex, keyLength);
+        var pen = new Pen(foreground, 1);
+        foreach (var segment in segments)
         {
-            FontWeight = FontWeight.ToOpenTypeWeight(),
-            FontStyle = FontStyle.ToOpenTypeStyle(),
-            FontStretch = FontStretch.ToOpenTypeStretch(),
-        };
-        var key = new FormattedText(displayText.Substring(_accessKeyDisplayIndex, 1), family, FontSize)
-        {
-            FontWeight = FontWeight.ToOpenTypeWeight(),
-            FontStyle = FontStyle.ToOpenTypeStyle(),
-            FontStretch = FontStretch.ToOpenTypeStretch(),
-        };
-        var whole = new FormattedText(displayText, family, FontSize)
-        {
-            FontWeight = FontWeight.ToOpenTypeWeight(),
-            FontStyle = FontStyle.ToOpenTypeStyle(),
-            FontStretch = FontStretch.ToOpenTypeStretch(),
-        };
-        TextMeasurement.MeasureText(prefix);
-        TextMeasurement.MeasureText(key);
-        TextMeasurement.MeasureText(whole);
-
-        var textX = TextAlignment switch
-        {
-            TextAlignment.Center => Math.Max(0, (RenderSize.Width - whole.Width) / 2),
-            TextAlignment.Right => Math.Max(0, RenderSize.Width - whole.Width),
-            _ => 0,
-        };
-        var textY = Math.Max(0, (RenderSize.Height - whole.Height) / 2);
-        var underlineY = textY + whole.Height - 1;
-        drawingContext.DrawLine(
-            new Pen(foreground, 1),
-            new Point(textX + prefix.Width, underlineY),
-            new Point(textX + prefix.Width + Math.Max(1, key.Width), underlineY));
+            var underlineY = segment.Baseline + Math.Max(1, FontSize * 0.08);
+            drawingContext.DrawLine(pen,
+                new Point(segment.StartX, underlineY),
+                new Point(segment.EndX, underlineY));
+        }
     }
 
     void IAddChild.AddChild(object value)
@@ -531,7 +516,7 @@ public class AccessText : FrameworkElement, IAddChild
         _textBlock.BaselineOffset = BaselineOffset;
         _textBlock.LineHeight = LineHeight;
         _textBlock.LineStackingStrategy = LineStackingStrategy;
-        _textBlock.TextAlignment = TextAlignment;
+        _textBlock.TextAlignment = CssFlowProperties.NativeTextAlignment(this, TextAlignmentProperty);
 
         if (GetValue(TextDecorationsProperty) is TextDecorationCollection decorations)
         {

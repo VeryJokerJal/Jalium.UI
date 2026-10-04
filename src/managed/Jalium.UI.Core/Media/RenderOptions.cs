@@ -123,7 +123,9 @@ public enum BitmapScalingMode
     /// <summary>Use linear scaling.</summary>
     Linear = 1,
     /// <summary>Use Fant scaling.</summary>
-    Fant = 2
+    Fant = 2,
+    /// <summary>Use CSS pixelated two-stage scaling.</summary>
+    Pixelated = 6
 }
 
 /// <summary>Specifies caching behavior for TileBrush objects.</summary>

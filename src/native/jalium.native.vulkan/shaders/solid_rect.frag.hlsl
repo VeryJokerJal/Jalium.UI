@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 #include "../../jalium.native.core/shaders/continuous_corner.hlsli"
 
 // Layout must mirror the C++ SolidRectPushConstants struct AND the vertex
@@ -177,7 +180,6 @@ float DistanceRoundRect(float2 pixel, float4 rect, float2 radius)
     const float2 halfSize = max((rect.zw - rect.xy) * 0.5f, 0.0f);
     const float rx = min(max(radius.x, 0.0f), halfSize.x);
     const float ry = min(max(radius.y, 0.0f), halfSize.y);
-
     if (rx <= 0.0f || ry <= 0.0f) {
         const float2 q = abs(pixel - center) - halfSize;
         return length(max(q, 0.0f)) + min(max(q.x, q.y), 0.0f);
@@ -196,6 +198,30 @@ float DistanceRoundRect(float2 pixel, float4 rect, float2 radius)
     const float2 delta =
         float2((pixel.x - anchorX) / rx, (pixel.y - anchorY) / ry);
     return (length(delta) - 1.0f) * min(rx, ry);
+}
+
+// The inset shadow needs the FULL signed depth inside the box: the legacy distance above
+// saturates at the smallest corner radius, so a shallow 4px corner would make a 14px-deep
+// center appear only 4px from the edge and colour the entire panel. Preserve the established
+// stroke/outer-shadow field above and use this interior-correct field for the inset alone.
+float DistanceRoundRectDeep(float2 pixel, float4 rect, float2 radius)
+{
+    const float2 center = (rect.xy + rect.zw) * 0.5f;
+    const float2 halfSize = max((rect.zw - rect.xy) * 0.5f, 0.0f);
+    const float rx = min(max(radius.x, 0.0f), halfSize.x);
+    const float ry = min(max(radius.y, 0.0f), halfSize.y);
+    const float2 edgeDistance = halfSize - abs(pixel - center);
+    float distance = max(-edgeDistance.x, -edgeDistance.y);
+    if (rx > 0.0f && ry > 0.0f &&
+        edgeDistance.x < rx && edgeDistance.y < ry) {
+        const float2 normalized = (edgeDistance - float2(rx, ry)) / float2(rx, ry);
+        const float lengthFromCenter = length(normalized);
+        const float gradient = length(normalized / float2(rx, ry));
+        if (gradient > 0.0f)
+            distance = max(distance,
+                lengthFromCenter * (lengthFromCenter - 1.0f) / gradient);
+    }
+    return distance;
 }
 
 float CoveragePerCornerRoundRect(float2 pixel, float4 rect, float4 rxs, float4 rys)
@@ -249,6 +275,41 @@ float DistancePerCornerRoundRect(
     return DistanceRoundRect(pixel, rect, float2(rx, ry));
 }
 
+float DistancePerCornerRoundRectDeep(
+    float2 pixel, float4 rect, float4 rxs, float4 rys)
+{
+    const float midX = (rect.x + rect.z) * 0.5f;
+    const float midY = (rect.y + rect.w) * 0.5f;
+    float rx;
+    float ry;
+    if (pixel.y < midY) {
+        if (pixel.x < midX) { rx = rxs.x; ry = rys.x; }
+        else                { rx = rxs.y; ry = rys.y; }
+    } else {
+        if (pixel.x >= midX) { rx = rxs.z; ry = rys.z; }
+        else                  { rx = rxs.w; ry = rys.w; }
+    }
+    return DistanceRoundRectDeep(pixel, rect, float2(rx, ry));
+}
+
+float InsetSpreadRadius(float radius, float spread)
+{
+    if (spread >= 0.0f) return max(0.0f, radius - spread);
+    const float expansion = -spread;
+    const float delta = radius / expansion - 1.0f;
+    const float correction = radius < expansion
+        ? 1.0f + delta * delta * delta : 1.0f;
+    return radius + expansion * correction;
+}
+
+float4 InsetSpreadRadii(float4 radii, float spread)
+{
+    return float4(InsetSpreadRadius(radii.x, spread),
+                  InsetSpreadRadius(radii.y, spread),
+                  InsetSpreadRadius(radii.z, spread),
+                  InsetSpreadRadius(radii.w, spread));
+}
+
 // Apply the innermost ancestor rounded include/exclude clip. Keeping this in a
 // helper lets screen-space and local-space primitive geometry share one mask.
 float OuterRoundedClipCoverage(float2 pixel)
@@ -294,7 +355,7 @@ float sdRoundBoxUniform(float2 p, float2 halfSize, float radius)
     return min(max(q.x, q.y), 0.0f) + length(max(q, 0.0f)) - rr;
 }
 
-float4 main(PsInput input) : SV_Target
+float4 UnclippedMain(PsInput input) : SV_Target
 {
     // Analytic continuous-corner geometry. Mode -1 is a fill; mode -2 is a
     // centered stroke. Each local Lame corner consumes its transported radius,
@@ -356,6 +417,31 @@ float4 main(PsInput input) : SV_Target
         return float4(input.color.rgb, input.color.a * coverage);
     }
 
+    // Analytic inset shadow (mode 3). Positive spread widens the inward band; offset
+    // evaluates the same exact contour around a shifted center and the original contour clips it.
+    if (gPushConstants.shadowParams.x > 2.5f) {
+        const float4 baseRect = gPushConstants.innerRoundedClipRect;
+        const float spread = gPushConstants.padding3.x;
+        const float2 center = (baseRect.xy + baseRect.zw) * 0.5f;
+        const float2 shadowHalf = max((baseRect.zw - baseRect.xy) * 0.5f - spread,
+                                      float2(0.0f, 0.0f));
+        const float4 shadowRect = float4(center - shadowHalf, center + shadowHalf);
+        const float2 shiftedPixel = input.position.xy - gPushConstants.padding2.xy;
+        const float shiftedDist = DistancePerCornerRoundRectDeep(
+            shiftedPixel, shadowRect,
+            InsetSpreadRadii(gPushConstants.innerPerCornerRadiusX, spread),
+            InsetSpreadRadii(gPushConstants.innerPerCornerRadiusY, spread));
+        const float sigma = max(gPushConstants.shadowParams.y, 0.5f);
+        const float cov = 0.5f + 0.5f * erf_approx(
+            shiftedDist / (1.4142135f * sigma));
+        const float inside = CoveragePerCornerRoundRect(
+            input.position.xy, baseRect,
+            gPushConstants.innerPerCornerRadiusX, gPushConstants.innerPerCornerRadiusY);
+        const float outA = input.color.a * cov * inside * OuterRoundedClipCoverage(input.position.xy);
+        if (outA < 1.0f / 255.0f) discard;
+        return float4(input.color.rgb, outA);
+    }
+
     // Analytic erf drop shadow (shadowParams.x > 0.5): a single over-blend with a
     // continuous gaussian falloff of the shadow rect's SDF, replacing the N-layer
     // concentric-rect halo (D3D12 DrawDropShadowEffect parity). The shadow rect +
@@ -369,8 +455,15 @@ float4 main(PsInput input) : SV_Target
         const float2 halfSize = (rc1 - rc0) * 0.5f;
         const float2 center   = (rc0 + rc1) * 0.5f;
         const float2 p = input.position.xy - center;
+        const float perCornerSum =
+            dot(gPushConstants.perCornerRadiusX, float4(1.0f, 1.0f, 1.0f, 1.0f)) +
+            dot(gPushConstants.perCornerRadiusY, float4(1.0f, 1.0f, 1.0f, 1.0f));
         const float radius = max(gPushConstants.roundedClipRadius.x, 0.0f);
-        const float dist = sdRoundBoxUniform(p, halfSize, radius);
+        const float dist = perCornerSum > 0.001f
+            ? DistancePerCornerRoundRect(
+                input.position.xy, gPushConstants.roundedClipRect,
+                gPushConstants.perCornerRadiusX, gPushConstants.perCornerRadiusY)
+            : sdRoundBoxUniform(p, halfSize, radius);
         const float sigma = max(gPushConstants.shadowParams.y, 0.5f);
         // coverage = 0.5*(1 - erf(dist/(sqrt(2)*sigma)))  (byte-for-byte D3D12).
         const float cov = 0.5f + 0.5f * erf_approx(-dist / (1.4142135f * sigma));
@@ -402,6 +495,25 @@ float4 main(PsInput input) : SV_Target
     if (gPushConstants.geometryFlags.y > 0.5f) {
         const float2 halfOuter = gPushConstants.innerRoundedClipRect.xy * 0.5f;
         const float2 p = input.localPos - halfOuter;
+
+        // A 1-pixel box filter is the exact coverage for a straight edge, but a
+        // SHALLOW rotation lands its whole ramp inside one pixel row and leaves a
+        // 1/tan(theta)-long stair (14px at 4 degrees) that reads as a jagged edge
+        // even though every covered pixel is analytically correct. Widening the
+        // band to 1.4px on a rotated instance spreads that ramp over two rows and
+        // dissolves the stair.
+        //
+        // The rotation is read straight off the local SDF's own Jacobian, so no
+        // push constant is needed: for a pure rotation ddx(localPos) is
+        // (1/s)(cos, sin), making |ddx.y| / |ddx| exactly |sin(theta)|. The *16
+        // saturates by ~3.6 degrees, and the ramp below that keeps a sub-degree
+        // transform from stepping visibly. This mirrors the aaScale D3D12's
+        // sdf_rect vertex shader computes from its 2x3 affine.
+        const float2 dLocalX = ddx(input.localPos);
+        const float2 dLocalY = ddy(input.localPos);
+        const float localShear = max(abs(dLocalX.y) / max(length(dLocalX), 1e-6f),
+                                     abs(dLocalY.x) / max(length(dLocalY), 1e-6f));
+        const float aaScale = 1.0f + 0.4f * saturate(localShear * 16.0f);
 
         // Repack TL,TR,BR,BL -> (BR,TR,TL,BL) for sdRoundedBoxLocal, then clamp
         // each corner to the box half-extent — identical to D3D12 sdf_rect
@@ -451,6 +563,7 @@ float4 main(PsInput input) : SV_Target
                 centerDist = sdRoundedBoxLocal(p, centerHalf, rCenter);
                 aa = JaliumSdfAaWidth(centerDist);
             }
+            aa *= aaScale;
             const float strokeDist = abs(centerDist) - halfStroke;
             cov = 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, strokeDist);
         } else {
@@ -468,7 +581,8 @@ float4 main(PsInput input) : SV_Target
                     gPushConstants.innerPerCornerRadiusX,
                     gPushConstants.shadowParams.y)
                 : JaliumSdfAaWidth(distOuter);
-            cov = 1.0f - smoothstep(-aaOuter * 0.5f, aaOuter * 0.5f, distOuter);
+            const float aaOuterWide = aaOuter * aaScale;
+            cov = 1.0f - smoothstep(-aaOuterWide * 0.5f, aaOuterWide * 0.5f, distOuter);
         }
 
         cov *= OuterRoundedClipCoverage(input.position.xy);
@@ -610,4 +724,12 @@ float4 main(PsInput input) : SV_Target
     // Scaling RGB here too would double-multiply at the AA edge and turn
     // anti-aliased rounded corners visibly darker.
     return float4(input.color.rgb, input.color.a * coverage);
+}
+
+float4 main(PsInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    color.a *= coverage;
+    return color;
 }

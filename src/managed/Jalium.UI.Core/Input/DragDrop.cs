@@ -922,7 +922,27 @@ public static class DragDrop
 
     public static readonly DependencyProperty AllowDropProperty =
         DependencyProperty.RegisterAttached("AllowDrop", typeof(bool), typeof(DragDrop),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnAllowDropChanged, null, inherits: true));
+
+    /// <summary>
+    /// Platform callback installed by the desktop hosting layer. Keeping the
+    /// dependency property in Core lets detached trees use AllowDrop without
+    /// loading a platform assembly; the callback itself is just a null-checked
+    /// managed delegate until a Window is constructed.
+    /// </summary>
+    internal static Action<DependencyObject>? AllowDropChangedOverride { get; set; }
+
+    /// <summary>
+    /// Platform callback for an attached or detached visual subtree. Visual invokes
+    /// this after parent-change notifications have completed, so inherited
+    /// AllowDrop values already resolve against the new tree.
+    /// </summary>
+    internal static Action<Jalium.UI.Media.Visual>? VisualTreeChangedOverride { get; set; }
+
+    private static void OnAllowDropChanged(DependencyObject element, DependencyPropertyChangedEventArgs e)
+    {
+        AllowDropChangedOverride?.Invoke(element);
+    }
 
     public static bool GetAllowDrop(DependencyObject element) =>
         (bool)(element.GetValue(AllowDropProperty) ?? false);

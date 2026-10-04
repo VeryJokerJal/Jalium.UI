@@ -30,7 +30,8 @@ if ($env:VULKAN_SDK -and (Test-Path (Join-Path $env:VULKAN_SDK 'Bin\dxc.exe'))) 
 if (-not $dxc) { throw "dxc.exe not found (set VULKAN_SDK or put dxc on PATH)" }
 Write-Host "Using dxc: $dxc"
 
-# The 13 Vello compute stages (file base names, no extension).
+# The Vello 0.10.0 compute shader permutations (file base names, no extension).
+# Both scan variants are compiled; a record executes only one branch.
 $stages = @(
     'vello_backdrop',
     'vello_bbox_clear',
@@ -38,12 +39,19 @@ $stages = @(
     'vello_clip_leaf',
     'vello_clip_reduce',
     'vello_coarse',
+    'vello_draw_leaf',
+    'vello_draw_reduce',
     'vello_fine',
     'vello_flatten',
     'vello_path_count',
     'vello_path_count_setup',
     'vello_path_tiling',
     'vello_path_tiling_setup',
+    'vello_pathtag_reduce',
+    'vello_pathtag_reduce2',
+    'vello_pathtag_scan',
+    'vello_pathtag_scan_small',
+    'vello_pathtag_scan1',
     'vello_tile_alloc'
 )
 
@@ -75,7 +83,7 @@ foreach ($stage in $stages) {
     $spv = Join-Path $SpvOutDir "$stage.spv"
 
     Write-Host "Compiling $stage.cs.hlsl -> $stage.spv"
-    & $dxc -spirv -T cs_6_0 -E main `
+    & $dxc -spirv -T cs_6_0 -E main -D JALIUM_SPIRV `
         -fvk-t-shift 16 0 -fvk-s-shift 32 0 -fvk-u-shift 48 0 `
         -fvk-use-dx-layout -O3 `
         -I $ShaderSrcDir $src -Fo $spv

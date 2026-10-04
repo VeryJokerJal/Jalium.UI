@@ -276,9 +276,15 @@ public sealed partial class BitmapImage
         get
         {
             var snapshot = Volatile.Read(ref _pixelSnapshot);
-            return snapshot is not null
+            var rasterGeneration = snapshot is not null
                 ? snapshot.Generation
                 : Volatile.Read(ref _legacyPixelGeneration);
+            // A deferred multi-frame image preserves the application's BitmapImage identity and
+            // presents an internal AnimatedBitmap. Its frame generation must participate in this
+            // identity's cache stamp; otherwise a DrawingImage/ImageBrush raster keyed on the
+            // outer BitmapImage can retain frame zero forever.
+            var animatedGeneration = Volatile.Read(ref _animatedSubstitute)?.ContentGeneration ?? 0;
+            return Math.Max(rasterGeneration, animatedGeneration);
         }
     }
 

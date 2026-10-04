@@ -497,7 +497,7 @@ public class GaugeChart : ChartBase
         var tickBrush = s_defaultTickBrush;
         var majorPen = new Pen(tickBrush, 2);
         var minorPen = new Pen(tickBrush, 1);
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var labelBrush = Foreground ?? s_defaultLabelBrush;
 
         double outerRadius = radius + TrackThickness / 2.0;
@@ -610,7 +610,7 @@ public class GaugeChart : ChartBase
 
     private void DrawValueText(DrawingContext dc, Point center, double radius)
     {
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var valueBrush = Foreground ?? s_defaultValueBrush;
 
         var valueText = Value.ToString(ValueFormat);

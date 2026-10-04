@@ -113,7 +113,7 @@ public sealed class CalendarButton : Button
         }
 
         // Draw content
-        if (Content is string text)
+        if (Content is string text && FontSize > 0)
         {
             Brush fgBrush;
             if (!IsEnabled || IsInactive)
@@ -125,7 +125,7 @@ public sealed class CalendarButton : Button
                 fgBrush = Foreground ?? new SolidColorBrush(Color.White);
             }
 
-            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = fgBrush
             };

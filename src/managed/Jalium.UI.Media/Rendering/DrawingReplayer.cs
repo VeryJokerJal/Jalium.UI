@@ -216,13 +216,16 @@ internal static class DrawingReplayer
                 case DrawCommandKind.ApplyElementEffect:
                     if (target is IEffectDrawingContext applyEffectSink)
                     {
-                        var corners = (double[])c.C!;   // { cornerBR, cornerBL }
-                        applyEffectSink.ApplyElementEffect(
+                        var corners = (double[])c.C!;
+                        applyEffectSink.ApplyElementEffectEllipticalWithBorder(
                             (IEffect)c.A!,
                             (float)c.V0, (float)c.V1, (float)c.V2, (float)c.V3,
                             (float)c.V4, (float)c.V5,
-                            (float)c.V6, (float)c.V7,
-                            (float)corners[0], (float)corners[1]);
+                            (float)corners[0], (float)corners[1],
+                            (float)corners[2], (float)corners[3],
+                            (float)corners[4], (float)corners[5],
+                            (float)corners[6], (float)corners[7],
+                            new Thickness(corners[8], corners[9], corners[10], corners[11]));
                     }
                     break;
 
@@ -231,6 +234,27 @@ internal static class DrawingReplayer
                     // the following rounded-rect fill replays as a squircle (and
                     // in-order, not via the out-of-order geometry/Impeller path).
                     target.SetShapeType((int)c.V0, (float)c.V1);
+                    break;
+
+                case DrawCommandKind.ApplyCssTextShadowsOnly:
+                    if (target is IEffectDrawingContext textShadowSink)
+                        textShadowSink.ApplyCssTextShadowsOnly((IEffect)c.A!,
+                            (float)c.V0, (float)c.V1, (float)c.V2, (float)c.V3,
+                            (float)c.V4, (float)c.V5);
+                    break;
+
+                case DrawCommandKind.PaintCssShadowLayers:
+                    if (target is IEffectDrawingContext shadowSink)
+                    {
+                        var corners = (double[])c.C!;
+                        shadowSink.PaintCssShadowLayers((IEffect)c.A!, c.V4 > 0.5,
+                            (float)c.V0, (float)c.V1, (float)c.V2, (float)c.V3,
+                            (float)corners[0], (float)corners[1],
+                            (float)corners[2], (float)corners[3],
+                            (float)corners[4], (float)corners[5],
+                            (float)corners[6], (float)corners[7],
+                            new Thickness(corners[8], corners[9], corners[10], corners[11]));
+                    }
                     break;
 
                 case DrawCommandKind.DrawRecordedDrawing:

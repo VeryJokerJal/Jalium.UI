@@ -29,11 +29,18 @@ internal static unsafe class OleDragSource
 
     /// <summary>
     /// Runs a real OLE drag from <paramref name="data"/>. Must be called on the UI
-    /// (OLE-initialized) thread, typically from a mouse handler. Honors
+    /// thread, typically from a mouse handler. OLE is acquired lazily for the
+    /// duration of this operation. Honors
     /// <see cref="DragDrop.PendingDragImage"/> for the Shell drag image.
     /// </summary>
     internal static DragDropEffects DoDragDrop(DependencyObject dragSource, IDataObject data, DragDropEffects allowedEffects)
     {
+        using OleDropTarget.OleApartmentLease? oleLease = OleDropTarget.TryAcquireOleApartment();
+        if (oleLease is null)
+        {
+            return DragDropEffects.None;
+        }
+
         // The OS drag loop performs its own capture; drop any framework capture first
         // so the two don't fight over the mouse.
         (dragSource as UIElement)?.ReleaseMouseCapture();

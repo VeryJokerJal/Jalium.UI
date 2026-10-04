@@ -132,6 +132,8 @@ public sealed class Line : Shape
             pen.DashStyle = new DashStyle(dashArray, StrokeDashOffset);
         }
 
+        pen = ResolveStrokePen(pen)!;
+
         dc.DrawLine(pen, new Point(X1, Y1), new Point(X2, Y2));
     }
 

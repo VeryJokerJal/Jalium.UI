@@ -308,8 +308,23 @@ ImpellerD3D12Engine::~ImpellerD3D12Engine() = default;
 // Initialization
 // ============================================================================
 
-bool ImpellerD3D12Engine::Initialize() {
+bool ImpellerD3D12Engine::InitializeEncoder() {
     if (initialized_) return true;
+
+    // All encoder state is CPU-side. The geometry cache is normally created by
+    // the constructor, but retain this guard so a future low-memory reset can
+    // release it without changing the initialization contract.
+    if (!pathGeometryCache_) {
+        pathGeometryCache_ = std::make_unique<PathGeometryCache>(512);
+    }
+    initialized_ = true;
+    return true;
+}
+
+bool ImpellerD3D12Engine::Initialize() {
+    if (!InitializeEncoder()) return false;
+    if (gpuResourcesInitialized_) return true;
+    if (!device_) return false;
 
     if (!CreateRootSignature()) {
         return false;
@@ -326,7 +341,7 @@ bool ImpellerD3D12Engine::Initialize() {
         return false;
     }
 
-    initialized_ = true;
+    gpuResourcesInitialized_ = true;
     return true;
 }
 
@@ -571,6 +586,7 @@ void ImpellerD3D12Engine::BeginFrame(uint32_t viewportWidth, uint32_t viewportHe
     // the middle of a capture must not leak either parent clip into the next.
     ClearScissorRect();
     ClearRoundedClip();
+    ellipticalClips_.reset();
 }
 
 void ImpellerD3D12Engine::SetScissorRect(float left, float top, float right, float bottom) {
@@ -1288,8 +1304,11 @@ bool ImpellerD3D12Engine::EncodeFillPathScanline(
     {
         constexpr float kFracQuant = 8.0f;
         constexpr float kInvFracQuant = 1.0f / 8.0f;
-        int qDx = (int)std::lround(transformIn.dx * kFracQuant);
-        int qDy = (int)std::lround(transformIn.dy * kFracQuant);
+        // Round ties toward +infinity so subtracting an integer capture origin
+        // cannot change the fractional bucket. lround's away-from-zero ties
+        // moved paths by 1/8 px when a retained capture made dx/dy negative.
+        int qDx = (int)std::floor(transformIn.dx * kFracQuant + 0.5f);
+        int qDy = (int)std::floor(transformIn.dy * kFracQuant + 0.5f);
         int fracDxBucket = ((qDx % 8) + 8) % 8;
         int fracDyBucket = ((qDy % 8) + 8) % 8;
         intDx = (qDx - fracDxBucket) / 8;
@@ -1318,7 +1337,7 @@ bool ImpellerD3D12Engine::EncodeFillPathScanline(
                 (!hasScissor_ ||
                  (last.scissorL == scissorLeft_ && last.scissorT == scissorTop_ &&
                   last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)) &&
-                last.hasRoundedClip == hasRoundedClip_ &&
+                last.ellipticalClips == ellipticalClips_ && last.hasRoundedClip == hasRoundedClip_ &&
                 (!hasRoundedClip_ ||
                  (last.roundedClipRect[0] == roundedClipRect_[0] && last.roundedClipRect[1] == roundedClipRect_[1] &&
                   last.roundedClipRect[2] == roundedClipRect_[2] && last.roundedClipRect[3] == roundedClipRect_[3] &&
@@ -1340,6 +1359,7 @@ bool ImpellerD3D12Engine::EncodeFillPathScanline(
                 target->scissorB = scissorBottom_;
             }
             target->hasRoundedClip = hasRoundedClip_;
+            target->ellipticalClips = ellipticalClips_;
             if (hasRoundedClip_) {
                 target->roundedClipRect[0] = roundedClipRect_[0]; target->roundedClipRect[1] = roundedClipRect_[1];
                 target->roundedClipRect[2] = roundedClipRect_[2]; target->roundedClipRect[3] = roundedClipRect_[3];
@@ -2014,7 +2034,7 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
                 (!hasScissor_ ||
                  (last.scissorL == scissorLeft_ && last.scissorT == scissorTop_ &&
                   last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)) &&
-                last.hasRoundedClip == hasRoundedClip_ &&
+                last.ellipticalClips == ellipticalClips_ && last.hasRoundedClip == hasRoundedClip_ &&
                 (!hasRoundedClip_ ||
                  (last.roundedClipRect[0] == roundedClipRect_[0] && last.roundedClipRect[1] == roundedClipRect_[1] &&
                   last.roundedClipRect[2] == roundedClipRect_[2] && last.roundedClipRect[3] == roundedClipRect_[3] &&
@@ -2036,6 +2056,7 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
                 target->scissorB = scissorBottom_;
             }
             target->hasRoundedClip = hasRoundedClip_;
+            target->ellipticalClips = ellipticalClips_;
             if (hasRoundedClip_) {
                 target->roundedClipRect[0] = roundedClipRect_[0]; target->roundedClipRect[1] = roundedClipRect_[1];
                 target->roundedClipRect[2] = roundedClipRect_[2]; target->roundedClipRect[3] = roundedClipRect_[3];
@@ -2233,8 +2254,9 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
     {
         constexpr float kFracQuant = 8.0f;
         constexpr float kInvFracQuant = 1.0f / 8.0f;
-        int qDx = (int)std::lround(transformIn.dx * kFracQuant);
-        int qDy = (int)std::lround(transformIn.dy * kFracQuant);
+        // Keep fractional buckets invariant under integer capture translations.
+        int qDx = (int)std::floor(transformIn.dx * kFracQuant + 0.5f);
+        int qDy = (int)std::floor(transformIn.dy * kFracQuant + 0.5f);
         // Floor-mod into [0, 7] so negative qDx is handled too.
         int fracDxBucket = ((qDx % 8) + 8) % 8;
         int fracDyBucket = ((qDy % 8) + 8) % 8;
@@ -2270,7 +2292,7 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 (!hasScissor_ ||
                  (last.scissorL == scissorLeft_ && last.scissorT == scissorTop_ &&
                   last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)) &&
-                last.hasRoundedClip == hasRoundedClip_ &&
+                last.ellipticalClips == ellipticalClips_ && last.hasRoundedClip == hasRoundedClip_ &&
                 (!hasRoundedClip_ ||
                  (last.roundedClipRect[0] == roundedClipRect_[0] && last.roundedClipRect[1] == roundedClipRect_[1] &&
                   last.roundedClipRect[2] == roundedClipRect_[2] && last.roundedClipRect[3] == roundedClipRect_[3] &&
@@ -2292,6 +2314,7 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 target->scissorB = scissorBottom_;
             }
             target->hasRoundedClip = hasRoundedClip_;
+            target->ellipticalClips = ellipticalClips_;
             if (hasRoundedClip_) {
                 target->roundedClipRect[0] = roundedClipRect_[0]; target->roundedClipRect[1] = roundedClipRect_[1];
                 target->roundedClipRect[2] = roundedClipRect_[2]; target->roundedClipRect[3] = roundedClipRect_[3];
@@ -2383,7 +2406,7 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 (!hasScissor_ ||
                  (last.scissorL == scissorLeft_ && last.scissorT == scissorTop_ &&
                   last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)) &&
-                last.hasRoundedClip == hasRoundedClip_ &&
+                last.ellipticalClips == ellipticalClips_ && last.hasRoundedClip == hasRoundedClip_ &&
                 (!hasRoundedClip_ ||
                  (last.roundedClipRect[0] == roundedClipRect_[0] && last.roundedClipRect[1] == roundedClipRect_[1] &&
                   last.roundedClipRect[2] == roundedClipRect_[2] && last.roundedClipRect[3] == roundedClipRect_[3] &&
@@ -2405,6 +2428,7 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 target->scissorB = scissorBottom_;
             }
             target->hasRoundedClip = hasRoundedClip_;
+            target->ellipticalClips = ellipticalClips_;
             if (hasRoundedClip_) {
                 target->roundedClipRect[0] = roundedClipRect_[0]; target->roundedClipRect[1] = roundedClipRect_[1];
                 target->roundedClipRect[2] = roundedClipRect_[2]; target->roundedClipRect[3] = roundedClipRect_[3];
@@ -3331,6 +3355,7 @@ bool ImpellerD3D12Engine::StencilThenCoverFill(
 
 bool ImpellerD3D12Engine::Execute(void* commandList, void* renderTarget, uint32_t width, uint32_t height) {
     if (batches_.empty()) return true;
+    if (!Initialize()) return false;
 
     auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(commandList);
 
@@ -3496,6 +3521,7 @@ bool ImpellerD3D12Engine::ExecuteOnCommandList(
     uint32_t viewportW, uint32_t viewportH)
 {
     if (batches_.empty()) return true;
+    if (!Initialize()) return false;
 
     // Separate solid batches from stencil batches
     bool hasSolidBatches = false;

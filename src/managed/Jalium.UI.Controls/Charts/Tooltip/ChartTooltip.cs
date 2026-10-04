@@ -98,8 +98,8 @@ public class ChartTooltip : ContentControl
         var bgBrush = Background ?? s_defaultBackground;
         var borderBrush = BorderBrush ?? s_defaultBorder;
         var fgBrush = Foreground ?? s_defaultForeground;
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 12.0;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
         var borderPen = new Pen(borderBrush, 1);
@@ -116,6 +116,9 @@ public class ChartTooltip : ContentControl
             dc.DrawRectangle(SeriesBrush, null, new Rect(x, y + 2, 8, 8));
             x += 14;
         }
+
+        if (fontSize <= 0)
+            return;
 
         // Draw series title
         if (!string.IsNullOrEmpty(SeriesTitle))
@@ -157,8 +160,11 @@ public class ChartTooltip : ContentControl
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 12.0;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
+
+        if (fontSize <= 0)
+            return new Size(SeriesBrush != null ? 30 : 16, SeriesBrush != null ? 22 : 12);
 
         double maxWidth = 0;
         double totalHeight = 12; // top + bottom padding

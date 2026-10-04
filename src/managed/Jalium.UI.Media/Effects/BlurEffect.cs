@@ -105,7 +105,8 @@ public sealed class BlurEffect : Effect
         get
         {
             // Blur expands equally in all directions by the radius amount
-            var padding = Radius;
+            var padding = double.IsFinite(CssGaussianSigma)
+                ? Math.Max(Radius, 3 * CssGaussianSigma) : Radius;
             return new Thickness(padding, padding, padding, padding);
         }
     }

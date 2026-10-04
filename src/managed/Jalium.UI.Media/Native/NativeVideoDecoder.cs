@@ -141,14 +141,10 @@ public sealed class NativeVideoDecoder : INativeVideoDecoder, INativeGpuVideoDec
         if (status != NativeMediaStatus.Ok) return null;
         if (desc.Width == 0 || desc.Height == 0 || desc.Handle0 == 0) return null;
 
-        return NativeVideoSurface.TryWrapExternal(
-            renderContextHandle,
-            (NativeVideoSurfaceKind)desc.Kind,
-            (int)desc.Width,
-            (int)desc.Height,
-            desc.Handle0,
-            desc.Handle1,
-            (NativeVideoSurfaceFormat)desc.FormatHint);
+        // Preserve the synchronization/ownership contract carried by the full
+        // descriptor. Dropping its flags turned a reusable, unready D3D11
+        // allocation into an apparently valid image for the D3D12 renderer.
+        return NativeVideoSurface.TryWrapExternal(renderContextHandle, in desc);
     }
 
     /// <inheritdoc />

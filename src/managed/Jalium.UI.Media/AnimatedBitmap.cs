@@ -29,6 +29,15 @@ public enum AnimatedBitmapRepeatBehavior
 /// </summary>
 public sealed class AnimatedBitmap : ImageSource, IDisposable
 {
+    private long _contentGeneration;
+
+    /// <summary>
+    /// Changes whenever the pixels presented by this source change, including a manual or
+    /// timer-driven frame advance. Raster caches use this stamp even when they do not own an
+    /// <see cref="Jalium.UI.Controls.Image"/> that can subscribe to <see cref="FrameChanged"/>.
+    /// </summary>
+    internal override long ContentGeneration => Interlocked.Read(ref _contentGeneration);
+
     /// <inheritdoc />
     public override ImageMetadata? Metadata => CurrentFrame?.Metadata;
 
@@ -83,7 +92,7 @@ public sealed class AnimatedBitmap : ImageSource, IDisposable
             {
                 _currentIndex = clamped;
                 RescheduleTimer();
-                FrameChanged?.Invoke(this, EventArgs.Empty);
+                NotifyFrameChanged();
             }
         }
     }
@@ -197,6 +206,11 @@ public sealed class AnimatedBitmap : ImageSource, IDisposable
         _height = frames[0].Height;
         _currentIndex = 0;
 
+        // Loading the first frame changes this source from an empty image into a raster. This is
+        // also needed by DrawingImage/ImageBrush caches, which may have cached the empty result.
+        Interlocked.Exchange(ref _contentGeneration, BitmapPixelSnapshot.NextGeneration());
+        RaiseRasterChanged(this);
+
         LoadCompleted?.Invoke(this, EventArgs.Empty);
 
         if (autoPlay && _frames.Length > 1)
@@ -230,7 +244,7 @@ public sealed class AnimatedBitmap : ImageSource, IDisposable
         if (_currentIndex != 0)
         {
             _currentIndex = 0;
-            FrameChanged?.Invoke(this, EventArgs.Empty);
+            NotifyFrameChanged();
         }
     }
 
@@ -289,6 +303,15 @@ public sealed class AnimatedBitmap : ImageSource, IDisposable
 
         _currentIndex = next;
         ScheduleNextTick();
+        NotifyFrameChanged();
+    }
+
+    private void NotifyFrameChanged()
+    {
+        Interlocked.Exchange(ref _contentGeneration, BitmapPixelSnapshot.NextGeneration());
+        // Image controls use FrameChanged for their targeted visual invalidation. RasterChanged
+        // is the cache channel used by ImageBrush/DrawingImage consumers that have no Image host.
+        RaiseRasterChanged(this);
         FrameChanged?.Invoke(this, EventArgs.Empty);
     }
 

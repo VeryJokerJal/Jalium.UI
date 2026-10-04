@@ -314,6 +314,7 @@ struct WaylandTabletToolState {
     bool dirty = false;
 };
 static std::unordered_set<WaylandTabletToolState*> g_waylandTabletTools;
+static std::unordered_set<zwp_tablet_v2*> g_waylandTablets;
 #endif
 
 #ifdef JALIUM_HAS_XDG_FOREIGN_V2
@@ -552,6 +553,31 @@ struct JaliumPlatformWindow {
             callback(&evt, userData);
     }
 };
+
+static void NotifyPointingDevicesChanged()
+{
+    std::vector<JaliumPlatformWindow*> windows;
+    {
+        std::lock_guard<std::mutex> lock(g_windowMapMutex);
+        windows.reserve(g_windowMap.size());
+        for (const auto& entry : g_windowMap)
+            if (entry.second && !entry.second->destroyed)
+                windows.push_back(entry.second);
+#ifdef JALIUM_HAS_WAYLAND
+        windows.reserve(windows.size() + g_waylandWindows.size());
+        for (JaliumPlatformWindow* window : g_waylandWindows)
+            if (window && !window->destroyed)
+                windows.push_back(window);
+#endif
+    }
+    for (JaliumPlatformWindow* window : windows)
+    {
+        JaliumPlatformEvent event{};
+        event.type = JALIUM_EVENT_POINTING_DEVICES_CHANGED;
+        event.window = window;
+        window->DispatchEvent(event);
+    }
+}
 
 struct OwnedDragItem {
     std::string mimeType;
@@ -4181,6 +4207,7 @@ static void TabletToolRemoved(void* data, zwp_tablet_tool_v2*)
     g_waylandTabletTools.erase(state);
     if (state->tool) zwp_tablet_tool_v2_destroy(state->tool);
     delete state;
+    NotifyPointingDevicesChanged();
 }
 
 static void TabletToolProximityIn(
@@ -4392,7 +4419,9 @@ static void TabletPath(void*, zwp_tablet_v2*, const char*) {}
 static void TabletDone(void*, zwp_tablet_v2*) {}
 static void TabletRemoved(void*, zwp_tablet_v2* tablet)
 {
+    g_waylandTablets.erase(tablet);
     zwp_tablet_v2_destroy(tablet);
+    NotifyPointingDevicesChanged();
 }
 static const zwp_tablet_v2_listener g_tabletListener = {
     TabletName, TabletId, TabletPath, TabletDone, TabletRemoved
@@ -4400,7 +4429,9 @@ static const zwp_tablet_v2_listener g_tabletListener = {
 
 static void TabletSeatTabletAdded(void*, zwp_tablet_seat_v2*, zwp_tablet_v2* tablet)
 {
+    g_waylandTablets.insert(tablet);
     zwp_tablet_v2_add_listener(tablet, &g_tabletListener, nullptr);
+    NotifyPointingDevicesChanged();
 }
 
 static void TabletSeatToolAdded(void*, zwp_tablet_seat_v2*, zwp_tablet_tool_v2* tool)
@@ -4411,6 +4442,7 @@ static void TabletSeatToolAdded(void*, zwp_tablet_seat_v2*, zwp_tablet_tool_v2* 
         1, std::memory_order_relaxed);
     g_waylandTabletTools.insert(state);
     zwp_tablet_tool_v2_add_listener(tool, &g_tabletToolListener, state);
+    NotifyPointingDevicesChanged();
 }
 
 static void TabletSeatPadAdded(void*, zwp_tablet_seat_v2*, zwp_tablet_pad_v2* pad)
@@ -4620,6 +4652,8 @@ static void CancelWaylandTouchesForWindow(JaliumPlatformWindow* window)
 
 static void HandleSeatCapabilities(void*, wl_seat* seat, uint32_t capabilities)
 {
+    const bool hadPointer = g_waylandPointer != nullptr;
+    const bool hadTouch = g_waylandTouch != nullptr;
     if ((capabilities & WL_SEAT_CAPABILITY_POINTER) && !g_waylandPointer)
     {
         g_waylandPointer = wl_seat_get_pointer(seat);
@@ -4651,6 +4685,9 @@ static void HandleSeatCapabilities(void*, wl_seat* seat, uint32_t capabilities)
         wl_touch_destroy(g_waylandTouch);
         g_waylandTouch = nullptr;
     }
+    if (hadPointer != (g_waylandPointer != nullptr) ||
+        hadTouch != (g_waylandTouch != nullptr))
+        NotifyPointingDevicesChanged();
 }
 
 static void HandleSeatName(void*, wl_seat*, const char*) {}
@@ -5000,6 +5037,7 @@ static void ShutdownWayland()
         delete state;
     }
     g_waylandTabletTools.clear();
+    g_waylandTablets.clear();
     if (g_waylandTabletManager)
     {
         zwp_tablet_manager_v2_destroy(g_waylandTabletManager);
@@ -5115,6 +5153,7 @@ static void SelectXInput2Events(Window window)
     XISetMask(pointerMask, XI_TouchOwnership);
     unsigned char deviceMask[XIMaskLen(XI_LASTEVENT)]{};
     XISetMask(deviceMask, XI_DeviceChanged);
+    XISetMask(deviceMask, XI_HierarchyChanged);
     XIEventMask eventMasks[2]{};
     eventMasks[0].deviceid = XIAllMasterDevices;
     eventMasks[0].mask_len = sizeof(pointerMask);
@@ -6724,6 +6763,13 @@ static bool ProcessXInputEvent(XEvent& xev)
         return true;
     }
 
+    if (eventType == XI_HierarchyChanged)
+    {
+        XFreeEventData(g_display, &xev.xcookie);
+        NotifyPointingDevicesChanged();
+        return true;
+    }
+
     if (eventType == XI_DeviceChanged)
     {
         auto* changed = static_cast<XIDeviceChangedEvent*>(xev.xcookie.data);
@@ -6755,6 +6801,7 @@ static bool ProcessXInputEvent(XEvent& xev)
             removePenState(changed->sourceid);
         }
         XFreeEventData(g_display, &xev.xcookie);
+        NotifyPointingDevicesChanged();
         return true;
     }
 
@@ -7826,6 +7873,73 @@ JaliumResult jalium_input_get_touch_capabilities(
     XIFreeDeviceInfo(devices);
 #endif
     return JALIUM_OK;
+}
+
+JaliumResult jalium_input_get_pointing_capabilities(int32_t* capabilities)
+{
+    if (!capabilities) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *capabilities = 0;
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        if (g_waylandTouch) *capabilities |= JALIUM_POINTING_COARSE;
+        if (g_waylandPointer)
+            *capabilities |= JALIUM_POINTING_FINE | JALIUM_POINTING_HOVER |
+                JALIUM_POINTING_PRIMARY_FINE;
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+        if (!g_waylandTablets.empty() || !g_waylandTabletTools.empty())
+            *capabilities |= JALIUM_POINTING_FINE;
+        if (!g_waylandTabletTools.empty())
+            *capabilities |= JALIUM_POINTING_HOVER;
+#endif
+        return JALIUM_OK;
+    }
+#endif
+    if (g_windowSystem != LinuxWindowSystem::XServer)
+        return JALIUM_ERROR_INVALID_STATE;
+#ifdef JALIUM_HAS_XINPUT2
+    if (!g_xinput2Available || !g_display)
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    int deviceCount = 0;
+    XIDeviceInfo* devices = XIQueryDevice(g_display, XIAllDevices, &deviceCount);
+    if (!devices) return JALIUM_ERROR_INVALID_STATE;
+    for (int deviceIndex = 0; deviceIndex < deviceCount; ++deviceIndex)
+    {
+        const XIDeviceInfo& device = devices[deviceIndex];
+        if (!device.enabled ||
+            (device.use != XISlavePointer && device.use != XIFloatingSlave))
+            continue;
+        const std::string name = device.name ? device.name : "";
+        if (ContainsInsensitive(name, "xtest")) continue;
+        bool directTouch = ContainsInsensitive(name, "touchscreen");
+        for (int classIndex = 0; classIndex < device.num_classes; ++classIndex)
+        {
+            XIAnyClassInfo* any = device.classes[classIndex];
+            if (any && any->type == XITouchClass)
+            {
+                const auto* touch = reinterpret_cast<XITouchClassInfo*>(any);
+                directTouch |= touch->mode == XIDirectTouch;
+            }
+        }
+        if (directTouch)
+        {
+            *capabilities |= JALIUM_POINTING_COARSE;
+            continue;
+        }
+        const bool pen = ContainsInsensitive(name, "stylus") ||
+            ContainsInsensitive(name, "pen") ||
+            ContainsInsensitive(name, "eraser") ||
+            ContainsInsensitive(name, "tablet tool") ||
+            ContainsInsensitive(name, "airbrush");
+        *capabilities |= JALIUM_POINTING_FINE;
+        if (!pen)
+            *capabilities |= JALIUM_POINTING_HOVER | JALIUM_POINTING_PRIMARY_FINE;
+    }
+    XIFreeDeviceInfo(devices);
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
 }
 
 JaliumResult jalium_platform_set_double_click_settings(

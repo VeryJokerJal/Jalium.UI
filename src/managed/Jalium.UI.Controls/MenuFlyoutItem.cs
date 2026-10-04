@@ -3,6 +3,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -26,6 +27,7 @@ public class MenuFlyoutItem : Control
     private const double AcceleratorColumnWidth = 80;
     private const double TextToAcceleratorGap = 16;
     private const double ItemHeight = 32;
+    private Border? _cssBorderPainter;
 
     #region Dependency Properties
 
@@ -160,11 +162,13 @@ public class MenuFlyoutItem : Control
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var fontSize = FontSize;
         double textWidth = 0;
         if (!string.IsNullOrEmpty(Text))
         {
-            var formattedText = new FormattedText(Text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize);
+            var formattedText = new FormattedText(Text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize);
             TextMeasurement.MeasureText(formattedText);
             textWidth = formattedText.Width;
         }
@@ -177,7 +181,11 @@ public class MenuFlyoutItem : Control
             contentWidth += TextToAcceleratorGap + AcceleratorColumnWidth;
         }
 
-        return new Size(contentWidth, Math.Min(ItemHeight, availableSize.Height));
+        return new Size(
+            ControlRenderGeometry.GetAvailableLength(
+                contentWidth + insets.Left + insets.Right, availableSize.Width),
+            ControlRenderGeometry.GetAvailableLength(
+                ItemHeight + insets.Top + insets.Bottom, availableSize.Height));
     }
 
     /// <inheritdoc />
@@ -187,61 +195,105 @@ public class MenuFlyoutItem : Control
         base.OnRender(drawingContext);
         if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
 
-        // Background (hover state handled by IsMouseOver)
-        if (IsHighlighted)
+        var rect = new Rect(RenderSize);
+        var content = GetItemContentBounds();
+        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+        var hoverFallback = IsHighlighted &&
+            (backgroundLayer is null or DependencyValueStore.Layer.StyleSetter);
+        if (hoverFallback)
         {
             const double hoverInset = 2.0;
             var hoverBrush = ResolveBrush("OneSurfaceHover", "MenuFlyoutItemBackgroundHover", s_fallbackHoverBrush);
-            dc.DrawRoundedRectangle(hoverBrush, null,
-                new Rect(
+            var hoverBounds = new Rect(
                     hoverInset,
                     hoverInset,
                     Math.Max(0, RenderSize.Width - hoverInset * 2),
-                    Math.Max(0, RenderSize.Height - hoverInset * 2)),
-                4, 4);
+                    Math.Max(0, RenderSize.Height - hoverInset * 2));
+            if (CssBorderRadiusProperties.Get(this) is { } hoverRadius)
+            {
+                var radii = hoverRadius.Resolve(RenderSize)
+                    .Inset(new Thickness(hoverInset)).Normalize(hoverBounds.Size);
+                dc.DrawGeometry(hoverBrush, null, new CssRoundedRectangleGeometry(hoverBounds, radii));
+            }
+            else
+                dc.DrawRoundedRectangle(hoverBrush, null, hoverBounds, 4, 4);
+        }
+        else if (Background is { } background)
+        {
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            var cssBackground = backgroundLayer is
+                DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
+            if (!cssBackground && cssRadius is null)
+                dc.DrawRoundedRectangle(background, null, rect, CornerRadius);
+            else
+            {
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(rect, radii);
+                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
+                        rect, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
         }
 
         // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
-        var textBrush = IsEnabled
+        var textBrush = ResolveAuthoredForegroundBrush() ?? (IsEnabled
             ? ResolveForegroundBrush()
-            : ResolveBrush("OneTextDisabled", "TextDisabled", s_fallbackDisabledTextBrush);
+            : ResolveBrush("OneTextDisabled", "TextDisabled", s_fallbackDisabledTextBrush));
 
-        double x = LeftPadding;
+        double x = content.X + LeftPadding;
 
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontSize = FontSize;
 
         // Icon
-        if (Icon is string iconText && !string.IsNullOrEmpty(iconText))
+        if (Icon is string iconText && !string.IsNullOrEmpty(iconText) && FontSize > 0)
         {
             var iconFormatted = new FormattedText(
-                iconText, "Segoe MDL2 Assets", 14) { Foreground = textBrush };
+                iconText, "Segoe MDL2 Assets", fontSize) { Foreground = textBrush };
             TextMeasurement.MeasureText(iconFormatted);
-            dc.DrawText(iconFormatted, new Point(x, (RenderSize.Height - iconFormatted.Height) / 2));
+            dc.DrawText(iconFormatted, new Point(x, content.Y + (content.Height - iconFormatted.Height) / 2));
         }
         // Reserve icon/check column even when there is no icon so labels line up.
         x += IconColumnWidth;
 
         // Text
-        if (!string.IsNullOrEmpty(Text))
+        if (!string.IsNullOrEmpty(Text) && FontSize > 0)
         {
             var textFormatted = new FormattedText(
-                Text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
+                Text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
             TextMeasurement.MeasureText(textFormatted);
-            dc.DrawText(textFormatted, new Point(x, (RenderSize.Height - textFormatted.Height) / 2));
+            dc.DrawText(textFormatted, new Point(x, content.Y + (content.Height - textFormatted.Height) / 2));
         }
 
         // Keyboard accelerator text (right-aligned)
-        if (!string.IsNullOrEmpty(KeyboardAcceleratorTextOverride))
+        if (!string.IsNullOrEmpty(KeyboardAcceleratorTextOverride) && FontSize > 0)
         {
-            var accelBrush = ResolveBrush("OneTextSecondary", "TextSecondary", s_fallbackAcceleratorBrush);
+            var accelBrush = ResolveAuthoredForegroundBrush() ??
+                ResolveBrush("OneTextSecondary", "TextSecondary", s_fallbackAcceleratorBrush);
             var accelFormatted = new FormattedText(
-                KeyboardAcceleratorTextOverride, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, 12) { Foreground = accelBrush };
+                KeyboardAcceleratorTextOverride, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+                fontSize * (12.0 / 14.0)) { Foreground = accelBrush };
             TextMeasurement.MeasureText(accelFormatted);
-            var accelX = RenderSize.Width - accelFormatted.Width - RightPadding;
-            dc.DrawText(accelFormatted, new Point(accelX, (RenderSize.Height - accelFormatted.Height) / 2));
+            var accelX = content.Right - accelFormatted.Width - RightPadding;
+            dc.DrawText(accelFormatted, new Point(accelX, content.Y + (content.Height - accelFormatted.Height) / 2));
         }
     }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
+    }
+
+    /// <summary>Returns the area left for icons and labels after CSS box edges.</summary>
+    protected Rect GetItemContentBounds() => ControlRenderGeometry.GetContentRect(
+        new Rect(RenderSize), CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? RenderSize.Width));
 
     /// <summary>
     /// 本项当前是否应画成高亮（悬停底色）。基类：指针悬停或键盘焦点；
@@ -511,13 +563,19 @@ public class MenuFlyoutItem : Control
 
     private Brush ResolveForegroundBrush()
     {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
-        {
-            return Foreground;
-        }
-
-        return ResolveBrush("OnePopupText", "TextPrimary", s_fallbackTextBrush);
+        return ResolveAuthoredForegroundBrush() ??
+            ResolveBrush("OnePopupText", "TextPrimary", s_fallbackTextBrush);
     }
+
+    /// <summary>Gets a local or CSS text brush for derived menu item glyphs.</summary>
+    protected Brush? ResolveAuthoredForegroundBrush() =>
+        Foreground != null &&
+        (HasLocalOrAnimatedValue(ForegroundProperty) ||
+         GetEffectiveValueLayer(ForegroundProperty) is
+             (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState) ||
+         DependencyPropertyHelper.GetValueSource(this, ForegroundProperty).BaseValueSource ==
+             BaseValueSource.Inherited)
+            ? Foreground : null;
 
     private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)
     {

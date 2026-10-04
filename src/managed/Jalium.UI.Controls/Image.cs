@@ -2,6 +2,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
 using Jalium.UI.Markup;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -372,9 +373,21 @@ public class Image : FrameworkElement, IUriContext
         // never walk back. RequestBitmapDecode is idempotent and only enqueues work when a bigger
         // bucket is actually reachable, so calling it on every measure costs a lock acquisition.
         RequestBitmapDecode(availableSize);
-        return TryGetSourceSize(out _, out var imageSize)
-            ? CalculateStretchSize(imageSize, availableSize)
-            : default;
+        if (!TryGetSourceSize(out _, out var imageSize)) return default;
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var contentAvailable = new Size(
+            Math.Max(0, availableSize.Width - insets.Left - insets.Right),
+            Math.Max(0, availableSize.Height - insets.Top - insets.Bottom));
+        if (EffectiveCssObjectFit() is not CssObjectFit.Unspecified)
+        {
+            // object-fit sizes the content, not the replaced element's own box.
+            return new Size(imageSize.Width + insets.Left + insets.Right,
+                imageSize.Height + insets.Top + insets.Bottom);
+        }
+        var measured = CalculateStretchSize(imageSize, contentAvailable);
+        return new Size(measured.Width + insets.Left + insets.Right,
+            measured.Height + insets.Top + insets.Bottom);
     }
 
     /// <inheritdoc />
@@ -398,17 +411,29 @@ public class Image : FrameworkElement, IUriContext
             return;
         }
 
-        var stretchedSize = CalculateStretchSize(imageSize, RenderSize);
-        var x = (RenderSize.Width - stretchedSize.Width) / 2;
-        var y = (RenderSize.Height - stretchedSize.Height) / 2;
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+        var contentWidth = Math.Max(0, RenderSize.Width - insets.Left - insets.Right);
+        var contentHeight = Math.Max(0, RenderSize.Height - insets.Top - insets.Bottom);
+        if (contentWidth <= 0 || contentHeight <= 0) return;
+        var content = new Rect(insets.Left, insets.Top, contentWidth, contentHeight);
+        var fit = EffectiveCssObjectFit();
+        var stretchedSize = fit == CssObjectFit.Unspecified
+            ? CalculateStretchSize(imageSize, content.Size)
+            : CssImageObjectProperties.ConcreteSize(imageSize, content.Size, fit);
+        if (stretchedSize.Width <= 0 || stretchedSize.Height <= 0) return;
+        var drawn = CssImageObjectProperties.PositionedRect(this, content, stretchedSize);
+        if (drawn.IsEmpty) return;
         var mode = RenderOptions.GetBitmapScalingMode(this);
         if (mode == BitmapScalingMode.Unspecified)
-            mode = BitmapScalingMode.HighQuality;
+            mode = CssImageRenderingProperties.Resolve(this, BitmapScalingMode.HighQuality);
 
-        drawingContext.DrawImage(
-            source,
-            new Rect(x, y, stretchedSize.Width, stretchedSize.Height),
-            mode);
+        // Replaced content clips to its content box even when overflow:visible
+        // or a native ClipToBounds value leaves the element box unclipped.
+        var clipContent = CssImageObjectProperties.NeedsContentClip(this, fit, content, RenderSize);
+        if (clipContent) drawingContext.PushClip(new RectangleGeometry(content));
+        drawingContext.DrawImage(source, drawn, mode);
+        if (clipContent) drawingContext.Pop();
     }
 
     #region Property Changed Callbacks
@@ -776,6 +801,10 @@ public class Image : FrameworkElement, IUriContext
 
         var width = ResolveDecodeAxis(availableSize.Width, Width, RenderSize.Width);
         var height = ResolveDecodeAxis(availableSize.Height, Height, RenderSize.Height);
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        width = Math.Max(0, width - insets.Left - insets.Right);
+        height = Math.Max(0, height - insets.Top - insets.Bottom);
 
         var pixelWidth = width > 0d
             ? Math.Clamp((int)Math.Ceiling(width), 1, 16384)
@@ -800,7 +829,20 @@ public class Image : FrameworkElement, IUriContext
             return;
         }
 
-        bitmap.RequestDecode(pixelWidth, pixelHeight, Stretch == Stretch.UniformToFill);
+        var fit = EffectiveCssObjectFit();
+        if ((fit is CssObjectFit.None or CssObjectFit.ScaleDown) &&
+            TryGetSourceSize(out _, out var natural) &&
+            (fit == CssObjectFit.None || (natural.Width <= width && natural.Height <= height)))
+        {
+            // An unscaled object needs its full source pixels even when only a
+            // small part of its natural rectangle is visible in the content box.
+            pixelWidth = Math.Max(pixelWidth, Math.Clamp(bitmap.PixelWidth, 0, 16384));
+            pixelHeight = Math.Max(pixelHeight, Math.Clamp(bitmap.PixelHeight, 0, 16384));
+        }
+
+        bitmap.RequestDecode(pixelWidth, pixelHeight,
+            (fit is CssObjectFit.Cover or CssObjectFit.Fill) ||
+            (fit == CssObjectFit.Unspecified && Stretch == Stretch.UniformToFill));
     }
 
     private static double ResolveDecodeAxis(double available, double explicitSize, double rendered)
@@ -822,6 +864,10 @@ public class Image : FrameworkElement, IUriContext
             image.InvalidateVisual();
         }
     }
+
+    private CssObjectFit EffectiveCssObjectFit()
+        => HasLocalOrAnimatedValue(StretchProperty)
+            ? CssObjectFit.Unspecified : CssImageObjectProperties.Fit(this);
 
     private Size CalculateStretchSize(Size imageSize, Size availableSize)
     {

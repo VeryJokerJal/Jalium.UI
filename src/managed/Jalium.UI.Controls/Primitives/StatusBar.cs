@@ -1,4 +1,5 @@
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -8,6 +9,7 @@ namespace Jalium.UI.Controls.Primitives;
 [StyleTypedProperty(Property = nameof(ItemContainerStyle), StyleTargetType = typeof(StatusBarItem))]
 public class StatusBar : ItemsControl
 {
+    private Border? _cssBorderPainter;
     private static readonly ResourceKey s_separatorStyleKey =
         new ComponentResourceKey(typeof(StatusBar), nameof(SeparatorStyleKey));
 
@@ -110,21 +112,61 @@ public class StatusBar : ItemsControl
     }
 
     /// <inheritdoc />
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        if (Template != null)
+            return base.MeasureOverride(availableSize);
+
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var contentSize = base.MeasureOverride(CssBoxMetrics.InnerSize(availableSize, insets));
+        return new Size(
+            Math.Max(0, contentSize.Width + insets.Left + insets.Right),
+            Math.Max(0, contentSize.Height + insets.Top + insets.Bottom));
+    }
+
+    /// <inheritdoc />
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        if (Template != null)
+            return base.ArrangeOverride(finalSize);
+
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? finalSize.Width);
+        var innerSize = CssBoxMetrics.InnerSize(finalSize, insets);
+        ItemsHost?.Arrange(new Rect(insets.Left, insets.Top, innerSize.Width, innerSize.Height));
+        return finalSize;
+    }
+
+    /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
         var rect = new Rect(RenderSize);
 
-        if (Background != null)
+        if (Background is { } background)
         {
-            drawingContext.DrawRectangle(Background, null, rect);
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+            var shape = new CssRoundedRectangleGeometry(rect, radii);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, drawingContext,
+                    rect, radii, BorderThickness, Padding,
+                    brush => drawingContext.DrawGeometry(brush, null, shape)))
+                drawingContext.DrawRectangle(background, null, rect);
         }
 
-        if (BorderBrush != null && BorderThickness.Top > 0)
+        if (CssBorderPaintProperties.Get(this) is null && BorderBrush != null && BorderThickness.Top > 0)
         {
             var borderPen = new Pen(BorderBrush, BorderThickness.Top);
             var y = borderPen.Thickness * 0.5;
             drawingContext.DrawLine(borderPen, new Point(0, y), new Point(rect.Width, y));
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     private static void OnContainerTemplateChanged(

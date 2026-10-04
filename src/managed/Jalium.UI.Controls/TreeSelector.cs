@@ -4,6 +4,7 @@ using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -1117,6 +1118,9 @@ public class TreeSelector : ItemsControl
         bool hasSelection = _selectedItems.Count > 0;
         bool isMulti = SelectionMode != SelectionMode.Single;
         bool hasSearchText = !string.IsNullOrEmpty(SearchText);
+
+        if (CssEngine.IsActive)
+            CssSelectorDependencies.NativeValueChanged(this, "SelectedItems");
 
         if (_displayText != null)
         {

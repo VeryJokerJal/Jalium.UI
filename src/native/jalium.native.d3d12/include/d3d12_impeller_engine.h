@@ -1,4 +1,5 @@
 #pragma once
+#include "jalium_elliptical_clip.h"
 
 #include "jalium_rendering_engine.h"
 #include "jalium_impeller_shapes.h"   // Trig / TrigCache / shape generators
@@ -61,6 +62,7 @@ struct ImpellerDrawBatch {
     //     and so batching only splits when the clip actually differs (no flush
     //     barrier → restores path batching across Borders/cards/buttons). ---
     bool hasRoundedClip = false;
+    EllipticalClipSnapshot ellipticalClips;
     float roundedClipRect[4] = { 0, 0, 0, 0 };        // L, T, R, B (physical px)
     float roundedClipCornerRadii[4] = { 0, 0, 0, 0 }; // TL, TR, BR, BL (physical px)
 
@@ -92,6 +94,11 @@ public:
     JaliumRenderingEngine GetType() const override { return JALIUM_ENGINE_IMPELLER; }
     bool Initialize() override;
 
+    /// Initializes only the CPU path encoder used by D3D12RenderTarget's hybrid
+    /// path. The standalone GPU executor remains unallocated until Execute or
+    /// ExecuteOnCommandList is actually called.
+    bool InitializeEncoder();
+
     void BeginFrame(uint32_t viewportWidth, uint32_t viewportHeight) override;
     void SetScissorRect(float left, float top, float right, float bottom) override;
     void ClearScissorRect() override;
@@ -101,6 +108,7 @@ public:
     // emitted batch snapshots its draw-time clip. Not part of IRenderingEngine.
     void SetRoundedClip(const float rect[4], const float radii[4]);
     void ClearRoundedClip();
+    void SetEllipticalClips(EllipticalClipSnapshot clips) { ellipticalClips_ = std::move(clips); }
 
     bool EncodeFillPath(
         float startX, float startY,
@@ -154,6 +162,7 @@ public:
             batch.scissorB = scissorBottom_;
         }
         batch.hasRoundedClip = hasRoundedClip_;
+        batch.ellipticalClips = ellipticalClips_;
         if (hasRoundedClip_) {
             batch.roundedClipRect[0] = roundedClipRect_[0]; batch.roundedClipRect[1] = roundedClipRect_[1];
             batch.roundedClipRect[2] = roundedClipRect_[2]; batch.roundedClipRect[3] = roundedClipRect_[3];
@@ -184,6 +193,7 @@ public:
             batch.scissorB = scissorBottom_;
         }
         batch.hasRoundedClip = hasRoundedClip_;
+        batch.ellipticalClips = ellipticalClips_;
         if (hasRoundedClip_) {
             batch.roundedClipRect[0] = roundedClipRect_[0]; batch.roundedClipRect[1] = roundedClipRect_[1];
             batch.roundedClipRect[2] = roundedClipRect_[2]; batch.roundedClipRect[3] = roundedClipRect_[3];
@@ -215,7 +225,7 @@ public:
                   last.scissorT == batch.scissorT &&
                   last.scissorR == batch.scissorR &&
                   last.scissorB == batch.scissorB));
-            bool roundedClipEq = (last.hasRoundedClip == batch.hasRoundedClip) &&
+            bool roundedClipEq = (last.ellipticalClips == batch.ellipticalClips) && (last.hasRoundedClip == batch.hasRoundedClip) &&
                 (!batch.hasRoundedClip ||
                  (last.roundedClipRect[0] == batch.roundedClipRect[0] &&
                   last.roundedClipRect[1] == batch.roundedClipRect[1] &&
@@ -447,7 +457,8 @@ private:
 
     ID3D12Device* device_;
     DXGI_FORMAT rtvFormat_;
-    bool initialized_ = false;
+    bool initialized_ = false;             // CPU encoder is ready
+    bool gpuResourcesInitialized_ = false; // standalone GPU executor is ready
 
     uint32_t viewportW_ = 0, viewportH_ = 0;
 
@@ -456,6 +467,7 @@ private:
 
     // Rounded-clip mirror state (physical px, pre-resolved by the render target).
     bool hasRoundedClip_ = false;
+    EllipticalClipSnapshot ellipticalClips_;
     float roundedClipRect_[4] = { 0, 0, 0, 0 };
     float roundedClipCornerRadii_[4] = { 0, 0, 0, 0 };
 

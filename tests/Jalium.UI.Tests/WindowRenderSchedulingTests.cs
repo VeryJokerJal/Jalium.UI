@@ -446,7 +446,7 @@ public class WindowRenderSchedulingTests
     }
 
     [Fact]
-    public void D3D12RenderWorker_PreservesCompositionTargetPolicy()
+    public void D3D12RenderWorker_UsesWindowCompositionPolicy()
     {
         var native = new RenderTargetTestNative();
         using var renderTarget = CreateRenderTarget(
@@ -457,6 +457,8 @@ public class WindowRenderSchedulingTests
         var window = new Window { Width = 300, Height = 200 };
         SetPrivateProperty(window, "RenderTarget", renderTarget);
 
+        Assert.False(InvokePrivateMethod<bool>(window, "ShouldUseCompositionRenderTarget"));
+        window.AllowsTransparency = true;
         Assert.True(InvokePrivateMethod<bool>(window, "ShouldUseCompositionRenderTarget"));
     }
 
@@ -550,9 +552,8 @@ public class WindowRenderSchedulingTests
             InvokePrivateMethod(window, "OnSizeChanged", 320, 220);
             InvokePrivateMethod(window, "OnSizeChanged", 360, 240);
 
-            Assert.Equal(2, native.ResizeCalls);
-            Assert.Equal(new[] { (320, 220), (360, 240) }, native.ResizeSizes);
-            Assert.False(GetPrivateField<bool>(window, "_hasPendingResize"));
+            Assert.Equal(0, native.ResizeCalls);
+            Assert.True(GetPrivateField<bool>(window, "_hasPendingResize"));
             Assert.Equal(360, GetPrivateField<int>(window, "_pendingResizeWidth"));
             Assert.Equal(240, GetPrivateField<int>(window, "_pendingResizeHeight"));
             Assert.Equal(360, window.Width);
@@ -565,10 +566,12 @@ public class WindowRenderSchedulingTests
             Assert.True(HasRenderFlag(window, RenderFlag_Scheduled));
             Assert.False(HasRenderFlag(window, RenderFlag_DirtyBetween));
 
-            // The later frame boundary has no destructive resize left to perform.
+            // The latest native size is committed at a safe frame boundary.
+            SetPrivateField(window, "_isSizing", false);
             InvokePrivateMethod(window, "FlushPendingRenderTargetResize");
 
-            Assert.Equal(2, native.ResizeCalls);
+            Assert.Equal(1, native.ResizeCalls);
+            Assert.Equal(new[] { (360, 240) }, native.ResizeSizes);
             Assert.False(GetPrivateField<bool>(window, "_hasPendingResize"));
         }
         finally
@@ -852,8 +855,8 @@ public class WindowRenderSchedulingTests
         int normalDelay = Window.ComputeBackBufferConvergenceDelayMs(isSizing: false);
         int liveResizeDelay = Window.ComputeBackBufferConvergenceDelayMs(isSizing: true);
 
-        Assert.Equal(1, normalDelay);
-        Assert.Equal(normalDelay, liveResizeDelay);
+        Assert.InRange(normalDelay, 8, 50);
+        Assert.Equal(1, liveResizeDelay);
     }
 
     [Fact]

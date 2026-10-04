@@ -1,4 +1,5 @@
 #include "d3d12_brush_shader.h"
+#include "jalium_brush_shader_source.h"
 
 #include <d3dcompiler.h>
 #include <string>
@@ -72,6 +73,9 @@ PsIn main(uint vid : SV_VertexID)
 // (Jalium.UI.Controls/Ink/Shaders/BrushShaderPreamble.hlsl) so both
 // reference docs describe the same ABI.
 // -----------------------------------------------------------------------
+// Historical inline copy retained temporarily for source archaeology only.
+// All three GPU backends compile jalium_brush_shader_source.h instead.
+#if 0
 constexpr const char* kBrushPsPreamble = R"__HLSL__(
 cbuffer BrushConstants : register(b0)
 {
@@ -256,6 +260,7 @@ float4 BrushPsMain(PsIn input) : SV_Target
     return BrushMain(input.pxPos);
 }
 )__HLSL__";
+#endif
 
 bool CompileHlsl(const char* source, size_t length, const char* entry,
                  const char* target, const char* debugName,
@@ -434,12 +439,13 @@ std::unique_ptr<D3D12BrushShader> D3D12BrushShaderPipeline::CreateBrushShader(
 
     // Assemble the final PS source: preamble + user BrushMain + entry.
     std::string psSource;
-    psSource.reserve(strlen(kBrushPsPreamble) + strlen(brushMainHlsl) + strlen(kBrushPsEntry) + 4);
-    psSource.append(kBrushPsPreamble);
+    psSource.reserve(strlen(kSharedBrushPixelPreamble) + strlen(brushMainHlsl) +
+                     strlen(kSharedBrushPixelEntry) + 4);
+    psSource.append(kSharedBrushPixelPreamble);
     psSource.append("\n");
     psSource.append(brushMainHlsl);
     psSource.append("\n");
-    psSource.append(kBrushPsEntry);
+    psSource.append(kSharedBrushPixelEntry);
 
     ComPtr<ID3DBlob> psBlob;
     std::string debugName = "jalium_brush_";

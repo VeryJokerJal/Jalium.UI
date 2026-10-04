@@ -53,6 +53,7 @@ public class TemplateBindingExtension : MarkupExtension
             // BindingExpression while preserving the same source and conversion rules.
             dependencyObject.SetBinding(targetProperty, new Binding(Property.Name)
             {
+                TemplateSourceProperty = Property,
                 RelativeSource = RelativeSource.TemplatedParent,
                 Mode = BindingMode.OneWay,
                 Converter = Converter,

@@ -8,6 +8,7 @@ namespace Jalium.UI.Documents;
 /// <summary>
 /// Represents a flow document that hosts rich flow content.
 /// </summary>
+[ContentProperty(nameof(Blocks))]
 public partial class FlowDocument : FrameworkContentElement, IServiceProvider, IDocumentPaginatorSource, IAddChild
 {
     private Typography? _typography;
@@ -1039,6 +1040,9 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         _documentPaginator ??= new FlowDocumentPaginator(this);
 
     internal event EventHandler? ViewerPaginationChanged;
+
+    internal void NotifyTextPresentationChanged()
+        => ViewerPaginationChanged?.Invoke(this, EventArgs.Empty);
 
     private void InitializeViewerPagination()
     {

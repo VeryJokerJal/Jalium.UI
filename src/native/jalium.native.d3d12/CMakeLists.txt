@@ -46,6 +46,7 @@ set(SHADER_SOURCES
     shaders/sdf_rect.ps.hlsl
     shaders/sdf_rect.vs.hlsl
     ../jalium.native.core/shaders/continuous_corner.hlsli
+    ../jalium.native.core/shaders/elliptical_clip.hlsli
 )
 set_source_files_properties(${SHADER_SOURCES} PROPERTIES HEADER_FILE_ONLY TRUE)
 source_group("Shaders" FILES ${SHADER_SOURCES})

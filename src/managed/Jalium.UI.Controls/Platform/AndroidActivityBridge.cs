@@ -12,8 +12,8 @@ namespace Jalium.UI.Controls.Platform;
 // before jalium_register_backend_ex was ready in the core library.
 internal static partial class BackendPreloader
 {
-    private const string SoftwareLib = "jalium.native.software";
-    private const string VulkanLib   = "jalium.native.vulkan";
+    private const string SoftwareLib = JaliumNativeLibraryNames.Software;
+    private const string VulkanLib   = JaliumNativeLibraryNames.Vulkan;
 
     [LibraryImport(SoftwareLib, EntryPoint = "jalium_software_init")]
     internal static partial void SoftwareInit();
@@ -1376,6 +1376,14 @@ public static class AndroidActivityBridge
                 s_pendingResumeReplay = true;
             }
         }
+    }
+
+    /// <summary>Rechecks CSS pointing media features after Android input devices change.</summary>
+    public static void OnInputDevicesChanged(long activityGeneration)
+    {
+        DispatchCurrentActivity(activityGeneration,
+            static () => Jalium.UI.Styling.CssMediaQuery.RefreshPointingDevices(),
+            synchronous: false);
     }
 
     /// <summary>Called when the activity is being destroyed.</summary>

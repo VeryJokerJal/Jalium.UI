@@ -1,5 +1,6 @@
 ﻿using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -102,7 +103,9 @@ public class ProgressBar : Primitives.RangeBase
 
     #region Template Parts
 
+    private FrameworkElement? _trackElement;
     private Border? _indicatorBorder;
+    private Border? _cssBorderPainter;
 
     #endregion
 
@@ -135,6 +138,7 @@ public class ProgressBar : Primitives.RangeBase
     {
         base.OnApplyTemplate();
 
+        _trackElement = GetTemplateChild("PART_Track") as FrameworkElement;
         _indicatorBorder = GetTemplateChild("PART_Indicator") as Border;
 
         UpdateIndicator();
@@ -149,14 +153,13 @@ public class ProgressBar : Primitives.RangeBase
         if (IsIndeterminate)
         {
             // For indeterminate mode, set indicator geometry once and animate offset per frame.
-            var totalSize = isVertical ? RenderSize.Height : RenderSize.Width;
+            var totalSize = GetTemplateContentExtent(isVertical);
             var indicatorSize = totalSize * IndeterminateBlockWidth;
 
             if (isVertical)
             {
                 _indicatorBorder.Height = indicatorSize;
                 _indicatorBorder.Width = double.NaN;
-                _indicatorBorder.Margin = new Thickness(0);
                 _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Stretch;
                 _indicatorBorder.VerticalAlignment = VerticalAlignment.Top;
             }
@@ -164,7 +167,6 @@ public class ProgressBar : Primitives.RangeBase
             {
                 _indicatorBorder.Width = indicatorSize;
                 _indicatorBorder.Height = double.NaN;
-                _indicatorBorder.Margin = new Thickness(0);
                 _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Left;
                 _indicatorBorder.VerticalAlignment = VerticalAlignment.Stretch;
             }
@@ -174,7 +176,7 @@ public class ProgressBar : Primitives.RangeBase
         else
         {
             // For determinate mode, set size based on percentage
-            var totalSize = isVertical ? RenderSize.Height : RenderSize.Width;
+            var totalSize = GetTemplateContentExtent(isVertical);
             var indicatorSize = totalSize * Percentage;
 
             if (isVertical)
@@ -192,9 +194,29 @@ public class ProgressBar : Primitives.RangeBase
                 _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Left;
                 _indicatorBorder.VerticalAlignment = VerticalAlignment.Stretch;
             }
-            _indicatorBorder.Margin = new Thickness(0);
             _indicatorBorder.RenderOffset = default;
         }
+
+        var border = BorderThickness;
+        var padding = Padding;
+        _indicatorBorder.Margin = UsesCssBoxGeometry()
+            ? new Thickness(border.Left + padding.Left, border.Top + padding.Top,
+                border.Right + padding.Right, border.Bottom + padding.Bottom)
+            : default;
+    }
+
+    private double GetTemplateContentExtent(bool isVertical)
+    {
+        var extent = isVertical ? RenderSize.Height : RenderSize.Width;
+        if (_trackElement == null)
+            return extent;
+
+        var border = BorderThickness;
+        var padding = Padding;
+        var inset = isVertical
+            ? border.Top + border.Bottom + padding.Top + padding.Bottom
+            : border.Left + border.Right + padding.Left + padding.Right;
+        return Math.Max(0, extent - inset);
     }
 
     #endregion
@@ -238,7 +260,7 @@ public class ProgressBar : Primitives.RangeBase
         }
 
         var isVertical = Orientation == Orientation.Vertical;
-        var totalSize = isVertical ? RenderSize.Height : RenderSize.Width;
+        var totalSize = GetTemplateContentExtent(isVertical);
         var indicatorSize = totalSize * IndeterminateBlockWidth;
         var offset = (totalSize - indicatorSize) * _indeterminateOffset;
 
@@ -307,10 +329,10 @@ public class ProgressBar : Primitives.RangeBase
     {
         base.OnSizeChanged(sizeInfo);
 
-        // UpdateIndicator reads RenderSize.Width to compute indicator width.
+        // UpdateIndicator reads RenderSize to compute the indicator's content-box extent.
         // Property change callbacks fire BEFORE layout, so RenderSize is (0,0) at that point.
         // OnSizeChanged fires INSIDE ArrangeCore AFTER _renderSize is set (WPF pattern),
-        // so RenderSize.Width is correct here. The LayoutManager's iterative loop
+        // so RenderSize is correct here. The LayoutManager's iterative loop
         // will re-process the indicator's measure/arrange in the same layout pass.
         UpdateIndicator();
     }
@@ -325,21 +347,27 @@ public class ProgressBar : Primitives.RangeBase
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        // MUST measure template children (Grid with PART_Track + PART_Indicator)
+        // MUST measure template children (PART_Track with PART_Indicator)
         // so they get the correct PreviousAvailableSize for subsequent re-layout.
         // Without this, the indicator border never gets properly measured.
         base.MeasureOverride(availableSize);
 
-        // ProgressBar returns its own desired size (not template root's)
+        // ProgressBar returns its own desired size (not template root's).
+        var cssEdges = UsesCssBoxGeometry();
+        var horizontalEdges = cssEdges ? BorderThickness.TotalWidth + Padding.TotalWidth : 0;
+        var verticalEdges = cssEdges ? BorderThickness.TotalHeight + Padding.TotalHeight : 0;
         if (Orientation == Orientation.Horizontal)
         {
             var height = double.IsNaN(Height) || Height <= 0 ? 8 : Height;
-            return new Size(Math.Min(availableSize.Width, double.IsPositiveInfinity(availableSize.Width) ? 200 : availableSize.Width), height);
+            return new Size(Math.Min(availableSize.Width,
+                double.IsPositiveInfinity(availableSize.Width) ? 200 + horizontalEdges : availableSize.Width),
+                height + verticalEdges);
         }
         else
         {
             var width = double.IsNaN(Width) || Width <= 0 ? 8 : Width;
-            return new Size(width, Math.Min(availableSize.Height, double.IsPositiveInfinity(availableSize.Height) ? 200 : availableSize.Height));
+            return new Size(width + horizontalEdges, Math.Min(availableSize.Height,
+                double.IsPositiveInfinity(availableSize.Height) ? 200 + verticalEdges : availableSize.Height));
         }
     }
 
@@ -361,24 +389,66 @@ public class ProgressBar : Primitives.RangeBase
         var dc = drawingContext;
 
         var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
+        var border = BorderThickness;
+        var padding = Padding;
+        var cssEdges = UsesCssBoxGeometry();
+        var progressBounds = cssEdges
+            ? ControlRenderGeometry.GetContentRect(bounds, new Thickness(
+                border.Left + padding.Left, border.Top + padding.Top,
+                border.Right + padding.Right, border.Bottom + padding.Bottom))
+            : bounds;
         var cornerRadius = ResolveCornerRadius();
 
         // Draw track background
-        var trackBrush = ResolveTrackBrush();
-        dc.DrawRoundedRectangle(trackBrush, null, bounds, cornerRadius);
+        if (Background is { } background)
+        {
+            if (cssEdges)
+            {
+                var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(bounds, radii);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty,
+                        background, dc, bounds, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
+            else
+                dc.DrawRoundedRectangle(background, null, bounds, cornerRadius);
+        }
+        else if (GetEffectiveValueLayer(BackgroundProperty) is not
+                     (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+        {
+            dc.DrawRoundedRectangle(ResolveTrackBrush(), null, progressBounds, cornerRadius);
+        }
 
         // Draw progress
         var progressBrush = ResolveProgressBrush();
 
         if (IsIndeterminate)
         {
-            DrawIndeterminateProgress(dc, bounds, progressBrush, cornerRadius);
+            DrawIndeterminateProgress(dc, progressBounds, progressBrush, cornerRadius);
         }
         else
         {
-            DrawDeterminateProgress(dc, bounds, progressBrush, cornerRadius);
+            DrawDeterminateProgress(dc, progressBounds, progressBrush, cornerRadius);
         }
     }
+
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (_indicatorBorder == null || UsesCssBoxGeometry())
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+    }
+
+    private bool UsesCssBoxGeometry()
+        => GetEffectiveValueLayer(BorderThicknessProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(PaddingProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(BackgroundProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           CssBorderRadiusProperties.Get(this) is not null;
 
     private Brush ResolveTrackBrush()
     {
@@ -454,12 +524,12 @@ public class ProgressBar : Primitives.RangeBase
         if (Orientation == Orientation.Horizontal)
         {
             var progressWidth = bounds.Width * percentage;
-            progressRect = new Rect(0, 0, progressWidth, bounds.Height);
+            progressRect = new Rect(bounds.Left, bounds.Top, progressWidth, bounds.Height);
         }
         else
         {
             var progressHeight = bounds.Height * percentage;
-            progressRect = new Rect(0, bounds.Height - progressHeight, bounds.Width, progressHeight);
+            progressRect = new Rect(bounds.Left, bounds.Bottom - progressHeight, bounds.Width, progressHeight);
         }
 
         dc.DrawRoundedRectangle(progressBrush, null, progressRect, cornerRadius);
@@ -475,13 +545,13 @@ public class ProgressBar : Primitives.RangeBase
         Rect progressRect;
         if (Orientation == Orientation.Horizontal)
         {
-            var x = (bounds.Width - blockSize) * _indeterminateOffset;
-            progressRect = new Rect(x, 0, blockSize, bounds.Height);
+            var x = bounds.Left + (bounds.Width - blockSize) * _indeterminateOffset;
+            progressRect = new Rect(x, bounds.Top, blockSize, bounds.Height);
         }
         else
         {
-            var y = (bounds.Height - blockSize) * _indeterminateOffset;
-            progressRect = new Rect(0, y, bounds.Width, blockSize);
+            var y = bounds.Top + (bounds.Height - blockSize) * _indeterminateOffset;
+            progressRect = new Rect(bounds.Left, y, bounds.Width, blockSize);
         }
 
         dc.DrawRoundedRectangle(progressBrush, null, progressRect, cornerRadius);
@@ -523,6 +593,10 @@ public class ProgressBar : Primitives.RangeBase
         if (e.Property == VisibilityProperty)
         {
             UpdateIndeterminateAnimationState();
+        }
+        else if (e.Property == BorderThicknessProperty || e.Property == PaddingProperty)
+        {
+            UpdateIndicator();
         }
     }
 

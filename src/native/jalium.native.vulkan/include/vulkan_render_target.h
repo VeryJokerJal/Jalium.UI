@@ -2,6 +2,7 @@
 
 #include "jalium_backend.h"
 #include "jalium_types.h"
+#include "jalium_elliptical_clip.h"
 #include "jalium_rendering_engine.h"
 #include "jalium_path_cache.h"
 #include "vulkan_impeller_engine.h"
@@ -19,8 +20,13 @@ namespace jalium {
 class VulkanBackend;
 class VulkanInkImageGeneration;
 class VulkanImportedVideoSurface;
+class PathClip;
 
-class VulkanRenderTarget : public RenderTarget {
+class VulkanRenderTarget : public RenderTarget, public EllipticalClipProvider, public PathClipProvider,
+    public EllipticalEffectProvider, public SpreadShadowProvider,
+    public CssBoxShadowProvider, public CssShadowLayerProvider,
+    public FilterDropShadowProvider, public CssTextShadowProvider, public ColorMatrixChainProvider,
+    public InsetShadowLayerProvider {
 public:
     VulkanRenderTarget(
         VulkanBackend* backend,
@@ -30,6 +36,9 @@ public:
         bool useComposition);
 
     ~VulkanRenderTarget() override;
+    JaliumResult PushEllipticalRectClip(const JaliumEllipticalRectClip& clip) override;
+    JaliumResult PushPathClip(float startX, float startY, const float* commands,
+        uint32_t commandLength, int32_t fillRule) override;
     bool IsInitialized() const;
     JaliumResult Resize(int32_t width, int32_t height) override;
     JaliumResult BeginDraw() override;
@@ -123,6 +132,49 @@ public:
     void EndEffectCapture() override;
     void DrawBlurEffect(float x, float y, float w, float h, float radius, float uvOffsetX = 0, float uvOffsetY = 0) override;
     void DrawDropShadowEffect(float x, float y, float w, float h, float blurRadius, float offsetX, float offsetY, float r, float g, float b, float a, float uvOffsetX = 0, float uvOffsetY = 0, float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) override;
+    JaliumResult DrawDropShadowEffectElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawDropShadowEffectSpreadElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& spreadContour) override;
+    JaliumResult DrawCssBoxShadowEffectElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& originalContour,
+        const JaliumEllipticalRectClip& spreadContour) override;
+    JaliumResult PaintCssOuterShadowLayerElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        const JaliumEllipticalRectClip& originalContour,
+        const JaliumEllipticalRectClip& spreadContour) override;
+    JaliumResult PaintCssInnerShadowLayerElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawFilterDropShadowEffect(float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a) override;
+    JaliumResult DrawCssTextShadows(float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        const float* layers, uint32_t layerCount,
+        bool compositeSource) override;
+    JaliumResult DrawInnerShadowEffectElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawInnerShadowLayerElliptical(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) override;
     // Outer glow over the captured element content. D3D12 paints 7 concentric
     // expanding equal-alpha SDF rounded-rects then composites the capture; the
     // Vulkan port reaches the same soft-glow result through the proven
@@ -140,6 +192,8 @@ public:
     // through the same GPU pixel-buffer + CPU BlendBuffer path the other
     // effect-capture effects use.
     void DrawColorMatrixEffect(float x, float y, float w, float h, const float* matrix) override;
+    JaliumResult DrawColorMatrixChainEffect(float x, float y, float w, float h,
+        const float* matrices, uint32_t matrixCount) override;
     // Inner shadow: a soft dark frame hugging the INNER edge of the element
     // (the inverse of OuterGlow), drawn on top of the content and clipped to the
     // element bounds. GPU-path implementation via concentric clipped rounded-rect
@@ -237,6 +291,13 @@ public:
     bool EnsureVelloEngine();
 
 private:
+    JaliumResult DrawInnerShadowEllipticalCore(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour, bool compositeContent,
+        bool paintDirect = false);
+
     // Rendering engines (lazy-initialized)
     std::unique_ptr<ImpellerVulkanEngine> impellerEngine_;
     std::unique_ptr<VelloVulkanEngine> velloEngine_;
@@ -251,6 +312,8 @@ private:
     };
 
     struct ClipState {
+        std::shared_ptr<const EllipticalClip> elliptical;
+        std::shared_ptr<const PathClip> path;
         bool rounded = false;
         // Inverse clip (PushRoundedRectClipExclude): keep the area OUTSIDE the
         // (rounded) rect and mask its interior. Exclude entries contribute NO
@@ -311,10 +374,11 @@ private:
         float opacity = 1.0f;
         // BitmapScalingMode.NearestNeighbor (3): sample through the point
         // (VK_FILTER_NEAREST) sampler at replay so pixel art stays crisp.
-        // Every other mode keeps the shared linear/anisotropic frameSampler
-        // (Vulkan collapses D3D12's linear-vs-aniso split into that single
-        // high-quality sampler, so HighQuality semantics are unchanged).
+        // Other native modes keep the shared linear/anisotropic frameSampler.
+        // Pixelated reads texels directly in the fragment shader.
         bool useNearestSampler = false;
+        // CSS pixelated: nearest scaling to an integer multiple, then smooth.
+        bool usePixelatedSampling = false;
         // Linux self-hosted ClearType staging. Pixels carry B/G/R channel
         // coverage (A=max coverage), not ordinary image colour.
         bool lcdCoverage = false;
@@ -579,15 +643,15 @@ private:
     };
 
     // A shaped text run rendered through the dedicated text-glyph pipeline.
-    // Holds the per-glyph instances as raw floats — 12 per glyph, matching the
-    // 48-byte VkGlyphInstance layout (posX,posY, sizeX,sizeY, uvMinX,uvMinY,
-    // uvMaxX,uvMaxY, colorR,colorG,colorB,colorA; colour PREMULTIPLIED, colorR<0
+    // Holds the per-glyph instances as raw floats — 16 per glyph, matching the
+    // 64-byte VkGlyphInstance layout (position, oriented basis, UV rectangle,
+    // colorR,colorG,colorB,colorA; colour PREMULTIPLIED, colorR<0
     // = colour-emoji sentinel). Stored as raw floats (not VkGlyphInstance) so this
     // header stays free of the Windows-only DirectWrite/atlas types, matching the
     // GpuVcTrianglesCommand convention. DrawReplayFrame uploads them into the glyph
     // SSBO and issues vkCmdDraw(6, glyphCount, ...) sampling the text atlas.
     struct GpuTextRunCommand {
-        std::vector<float> glyphs;     // 12 floats per glyph instance
+        std::vector<float> glyphs;     // 16 floats per glyph instance
         uint32_t glyphCount = 0;
         bool clearType = false;        // select dual-source ClearType pipeline at replay
         bool smoothText = false;       // linear for Animated/rotated text; point for pixel-snapped display text
@@ -627,6 +691,11 @@ private:
         EngineBatchSpan, // drain the engine batches [firstBatch, firstBatch + batchCount) at THIS
                          // point of the stream — painter-order interleaving (B1). Payload in
                          // engineBatchSpan.
+        VelloSceneSpan,  // dispatch + composite ONE cut Vello-compute sub-scene at THIS point of
+                         // the stream — the compute-mode analogue of EngineBatchSpan (closes B2:
+                         // the old frame-end single-scene consume z-inverted every path over
+                         // content drawn after it). engineBatchSpan.firstBatch carries the
+                         // engine sub-scene index; batchCount is unused (0).
         TransitionCaptureBegin, // env JALIUM_VK_EFFECT_GPU_RT (C6): open an offscreen region whose
                                 // isolated content becomes transition slot [transitionCaptureSlot].
                                 // Reuses the effect offscreen RT redirect (CLEAR first draw / LOAD
@@ -652,6 +721,7 @@ private:
     };
 
     struct GpuReplayCommand {
+        EllipticalClipSnapshot ellipticalClips;
         GpuReplayCommandKind kind = GpuReplayCommandKind::SolidRect;
         // OffscreenEnd markers only (env JALIUM_VK_EFFECT_GPU_RT): skip the
         // automatic composite-back of the isolated element. Set retroactively by
@@ -686,8 +756,11 @@ private:
         // branch. Internal negative modes are analytic continuous-corner
         // geometry: -1 fill, -2 stroke; the parameter carries exponent n.
         // Mode 0 is a no-op for every other SolidRect caller.
-        float shadowMode = 0.0f;    // > 0.5 shadow, -1 continuous fill, -2 stroke
+        float shadowMode = 0.0f;    // 1/2 outer shadow, 3 inner shadow; -1/-2 continuous geometry
         float shadowSigma = 0.0f;   // shadow sigma or continuous-corner exponent
+        float effectOffsetX = 0.0f;
+        float effectOffsetY = 0.0f;
+        float effectSpread = 0.0f;
         bool hasRoundedClip = false;
         // Inverse rounded clip (an ancestor PushRoundedRectClipExclude): the
         // shader keeps 1 - coverage, masking the rect's INTERIOR. Only the
@@ -849,13 +922,38 @@ private:
     // around the effect-capture content stamps so the glow splice moves engine
     // work together with its element. Vello COMPUTE mode is exempt — its scene
     // is still consumed at frame end (sub-scene splitting is B2).
-    void MaybeEmitEngineSpan();
+    // `upcoming` (nullable) is the replay command about to record. In Vello
+    // compute mode the sub-scene cut is SKIPPED when that command's bounds are
+    // disjoint from every pending path (painter order between disjoint content
+    // is irrelevant) -- icon-dense UIs otherwise cut hundreds of sub-scenes per
+    // frame and blow through kMaxRecordsPerFrame (dropped spans = vanishing
+    // icons). Commands without extractable bounds cut unconditionally.
+    void MaybeEmitEngineSpan(const GpuReplayCommand* upcoming = nullptr);
+    static bool ReplayCommandDeviceBounds(const GpuReplayCommand& c,
+                                          float& x0, float& y0, float& x1, float& y1);
+    // Overlap reroute (compute Vello): encode a small rect/ellipse/polyline
+    // that overlaps pending path content INTO the same sub-scene instead of
+    // cutting it. Returns true when fully handled (no replay command needed).
+    bool TryEncodeRoundedRectIntoPendingVello(float x, float y, float w, float h,
+                                              float tl, float tr, float br, float bl,
+                                              Brush* brush, float strokeWidth, bool fill);
+    bool TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx, float ry,
+                                          Brush* brush, float strokeWidth, bool fill);
+    bool TryEncodePolylineIntoPendingVello(const float* points, uint32_t pointCount,
+                                           Brush* brush, float strokeWidth, bool closed,
+                                           int32_t lineJoin, float miterLimit);
+    bool VelloReroutePreflight(float bx, float by, float bw, float bh, float inflate);
+    bool VelloRerouteEncode(float sx, float sy, const float* cmds, uint32_t cmdLen,
+                            Brush* brush, float strokeWidth, bool fill, int32_t fillRule,
+                            bool closed, int32_t lineJoin, float miterLimit);
     void InvalidateGpuReplay(const char* caller = nullptr);
     void ResetGpuSolidRectReplay() { ResetGpuReplay(); }
     void InvalidateGpuSolidRectReplay(const char* caller = nullptr) { InvalidateGpuReplay(caller); }
     void EnsureCpuRasterization();
     void ReplayCommandToCpu(const GpuReplayCommand& command);
     bool TryPopulateReplayClip(GpuReplayCommand& command) const;
+    EllipticalClipSnapshot ResolveEllipticalClips() const;
+    mutable EllipticalClipSnapshot cachedEllipticalClips_;
     // Mirror the current clipStack_ AABB scissor into the active vector engine
     // (Impeller / Vello) so each engine batch snapshots the clip it was recorded
     // under — the Vulkan analogue of D3D12RenderTarget::SyncScissorToImpeller.
@@ -954,10 +1052,11 @@ private:
     bool TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush);
     bool TryRecordGpuSuperEllipseFillCommand(float x, float y, float w, float h,
         float tl, float tr, float br, float bl, Brush* brush);
-    // Analytic erf gaussian drop-shadow rounded rect (single over-blend; D3D12
-    // DrawDropShadowEffect parity). sigma = blurRadius/3; colour STRAIGHT.
+    // Analytic erf gaussian drop-shadow with independent X/Y radii per corner
+    // (single over-blend; D3D12 parity). sigma = blurRadius/3; colour STRAIGHT.
     bool TryRecordGpuShadowRectCommand(float x, float y, float w, float h,
-        float radius, float r, float g, float b, float a, float sigma);
+        const float radiusX[4], const float radiusY[4],
+        float r, float g, float b, float a, float sigma);
     bool TryRecordGpuRoundedRectStrokeCommand(float x, float y, float w, float h, float rx, float ry, float strokeWidth, Brush* brush);
     bool TryRecordGpuSuperEllipseStrokeCommand(float x, float y, float w, float h,
         float tl, float tr, float br, float bl, float strokeWidth, Brush* brush);
@@ -1235,6 +1334,13 @@ private:
     std::vector<int> effectContentStartStack_;
     int pendingGlowStart_ = -1;
     int pendingGlowEnd_ = -1;
+    int pendingShadowInsertIndex_ = -1;
+    int pendingShadowTailSize_ = -1;
+    JaliumEllipticalRectClip pendingEffectContour_ {};
+    bool hasPendingEffectContour_ = false;
+    bool pendingBoxShadowContour_ = false;
+    JaliumEllipticalRectClip pendingBoxShadowKnockoutContour_ {};
+    bool hasPendingBoxShadowKnockout_ = false;
     // Depth of open GPU-RT effect capture regions. While > 0, replay-clip
     // population skips ALIASED clip entries (the managed dirty-region scissor)
     // so the capture always holds the COMPLETE element silhouette — a partial

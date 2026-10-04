@@ -30,6 +30,7 @@ struct VsOutput
     float2 uv          : TEXCOORD0;
     float  opacity     : TEXCOORD1;
     nointerpolation float samplerIdx : TEXCOORD2;
+    nointerpolation float2 uvMax : TEXCOORD3;
 };
 
 VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
@@ -60,5 +61,6 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     o.uv = lerp(b.uvMin, b.uvMax, corner);
     o.opacity = b.opacity;
     o.samplerIdx = b.samplerIdx;
+    o.uvMax = b.uvMax;
     return o;
 }

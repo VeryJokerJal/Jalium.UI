@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
+using Jalium.UI.BuildSupport;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
 
@@ -77,7 +79,12 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
         Directory.CreateDirectory(OutputDirectory);
 
         var compiledItems = new List<ITaskItem>();
+        var pending = new List<JalxamlBatchCompilationInput>();
         var hasErrors = false;
+        var compilerTime = !string.IsNullOrEmpty(CompilerPath) && File.Exists(CompilerPath)
+            ? File.GetLastWriteTimeUtc(CompilerPath) : DateTime.MaxValue;
+        var taskTime = File.GetLastWriteTimeUtc(typeof(CompileJalxamlTask).Assembly.Location);
+        var optionsStamp = $"Optimize={EnableOptimization};Debug={GenerateDebugInfo};Compiler={CompilerPath}";
 
         foreach (var sourceFile in SourceFiles)
         {
@@ -96,14 +103,24 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
 
             try
             {
-                var outputFile = CompileFile(sourcePath);
-                if (outputFile != null)
+                var outputFile = Path.Combine(OutputDirectory, Path.GetFileNameWithoutExtension(sourcePath) + ".uic");
+                if (ContainsStructuralRazor(sourcePath))
                 {
-                    var item = new TaskItem(outputFile);
-                    item.SetMetadata("SourceFile", sourcePath);
-                    compiledItems.Add(item);
-                    Log.LogMessage(MessageImportance.Normal, "已编译: {0} -> {1}", sourcePath, outputFile);
+                    // Only CompiledFiles is embedded; an obsolete binary from an
+                    // earlier version of this page must not enter that item set.
+                    continue;
                 }
+
+                var item = new TaskItem(outputFile);
+                item.SetMetadata("SourceFile", sourcePath);
+                compiledItems.Add(item);
+                if (!File.Exists(outputFile) || !File.Exists(outputFile + ".base64") ||
+                    !File.Exists(outputFile + ".inputs") ||
+                    File.GetLastWriteTimeUtc(sourcePath) > File.GetLastWriteTimeUtc(outputFile) ||
+                    compilerTime > File.GetLastWriteTimeUtc(outputFile) ||
+                    taskTime > File.GetLastWriteTimeUtc(outputFile) ||
+                    File.ReadAllText(outputFile + ".inputs") != optionsStamp)
+                    pending.Add(new JalxamlBatchCompilationInput(sourcePath, outputFile));
             }
             catch (Exception ex)
             {
@@ -112,8 +129,60 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
             }
         }
 
+        // One portable compiler process handles all changed files. This avoids
+        // launching the .NET runtime once per page on a clean Gallery build.
+        if (pending.Count > 1 && string.Equals(Path.GetExtension(CompilerPath), ".dll", StringComparison.OrdinalIgnoreCase))
+        {
+            var manifestPath = Path.Combine(OutputDirectory, "Jalxaml.batch.json");
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(new JalxamlBatchCompilationManifest(
+                EnableOptimization, GenerateDebugInfo, pending.ToArray())), new UTF8Encoding(false));
+            var exitCode = RunCompiler(["--compile-jalxaml-batch", manifestPath], out var output, out var error);
+            if (exitCode != 0)
+            {
+                Log.LogError("JALXAML batch compilation failed: {0}", error.Length > 0 ? error : output);
+                hasErrors = true;
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(output)) Log.LogMessage(MessageImportance.Low, output);
+                foreach (var file in pending)
+                {
+                    if (!File.Exists(file.OutputPath))
+                    {
+                        Log.LogError("JALXAML compiler did not produce {0}", file.OutputPath);
+                        hasErrors = true;
+                        continue;
+                    }
+                    var binaryData = ReadAllBytesWithRetry(file.OutputPath);
+                    WriteAllTextWithRetry(file.OutputPath + ".base64", Convert.ToBase64String(binaryData));
+                    File.WriteAllText(file.OutputPath + ".inputs", optionsStamp);
+                }
+            }
+        }
+        else
+        {
+            foreach (var file in pending)
+            {
+                try
+                {
+                    if (CompileFile(file.SourcePath) == null)
+                    {
+                        hasErrors = true;
+                        continue;
+                    }
+                    File.WriteAllText(file.OutputPath + ".inputs", optionsStamp);
+                    Log.LogMessage(MessageImportance.Normal, "已编译: {0} -> {1}", file.SourcePath, file.OutputPath);
+                }
+                catch (Exception ex)
+                {
+                    Log.LogError("编译失败 [{0}]: {1}", file.SourcePath, ex.Message);
+                    hasErrors = true;
+                }
+            }
+        }
+
         CompiledFiles = compiledItems.ToArray();
-        return !hasErrors;
+        return !hasErrors && !Log.HasLoggedErrors;
     }
 
     /// <summary>
@@ -334,9 +403,11 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
             return -1;
         }
 
-        output = process.StandardOutput.ReadToEnd();
-        error = process.StandardError.ReadToEnd();
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
         process.WaitForExit();
+        output = outputTask.GetAwaiter().GetResult();
+        error = errorTask.GetAwaiter().GetResult();
 
         return process.ExitCode;
     }
@@ -884,6 +955,7 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
         { "Border", "Jalium.UI.Controls.Border" },
         { "DockPanel", "Jalium.UI.Controls.DockPanel" },
         { "WrapPanel", "Jalium.UI.Controls.WrapPanel" },
+        { "FlexPanel", "Jalium.UI.Controls.FlexPanel" },
         { "ContentControl", "Jalium.UI.Controls.ContentControl" },
         { "ItemsControl", "Jalium.UI.Controls.ItemsControl" },
         { "UserControl", "Jalium.UI.Controls.UserControl" },

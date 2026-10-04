@@ -2,6 +2,7 @@ using System.Collections;
 using System.ComponentModel;
 using Jalium.UI.Controls;
 using Jalium.UI.Data;
+using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Markup;
 using Jalium.UI.Media.Animation;
@@ -15,6 +16,16 @@ namespace Jalium.UI;
 /// </summary>
 public class FrameworkContentElement : ContentElement, IFrameworkInputElement, ISupportInitialize, IQueryAmbient
 {
+    internal override void OnEffectiveValueSourceChanged(DependencyProperty property)
+    {
+        base.OnEffectiveValueSourceChanged(property);
+        if ((property == TextElement.FontStretchProperty || property == TextElement.FontStyleProperty ||
+             property == TextElement.FontFamilyProperty) &&
+            Jalium.UI.Styling.CssEngine.IsActive &&
+            Jalium.UI.Styling.CssNode.Existing(this) is { } node)
+            Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(node);
+    }
+
     public static readonly DependencyProperty BindingGroupProperty =
         FrameworkElement.BindingGroupProperty.AddOwner(
             typeof(FrameworkContentElement),
@@ -56,7 +67,12 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
             typeof(FrameworkContentElement),
             new FrameworkPropertyMetadata(
                 XmlLanguage.GetLanguage("en-US"),
-                FrameworkPropertyMetadataOptions.Inherits));
+                FrameworkPropertyMetadataOptions.Inherits,
+                static (target, _) =>
+                {
+                    if (target is TextElement textElement)
+                        textElement.NotifyTextContentChanged();
+                }));
 
     public static readonly DependencyProperty NameProperty =
         FrameworkElement.NameProperty.AddOwner(typeof(FrameworkContentElement));
@@ -233,6 +249,32 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
 
     public DependencyObject? Parent => _logicalParent ?? base.GetUIParentCore();
 
+    internal override ValueSource GetValueSourceInternal(DependencyProperty property)
+    {
+        var local = base.GetValueSourceInternal(property);
+        if (local.BaseValueSource != BaseValueSource.Default || local.IsAnimated ||
+            !property.GetMetadata(GetType()).Inherits || Parent is null)
+            return local;
+
+        return new ValueSource(BaseValueSource.Inherited,
+            local.IsExpression, local.IsAnimated, local.IsCoerced);
+    }
+
+    internal override (object? value, BaseValueSource source) GetUncoercedBaseValueInternal(DependencyProperty property)
+    {
+        var local = base.GetUncoercedBaseValueInternal(property);
+        if (local.source != BaseValueSource.Default ||
+            !property.GetMetadata(GetType()).Inherits || Parent is not DependencyObject parent)
+            return local;
+
+        if (parent.HasAnimatedValue(property) || parent.HasCssAnimatedValue(property))
+            return (parent.GetValue(property), BaseValueSource.Inherited);
+
+        var inherited = parent.GetUncoercedBaseValueInternal(property);
+        return inherited.source == BaseValueSource.Default
+            ? local : (inherited.value, BaseValueSource.Inherited);
+    }
+
     public ResourceDictionary Resources
     {
         get
@@ -391,6 +433,11 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
 
         _logicalChildren.Add(child);
         ResourceLookup.InvalidateResourceCache();
+        if (Jalium.UI.Styling.CssEngine.IsActive)
+        {
+            Jalium.UI.Styling.CssEngine.InvalidateSelectorDependents(this);
+            Jalium.UI.Styling.CssRegisteredProperties.Invalidate(this);
+        }
     }
 
     public virtual void BeginInit()
@@ -553,6 +600,14 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
         if (child is null || !_logicalChildren.Remove(child))
         {
             return;
+        }
+
+        if (Jalium.UI.Styling.CssEngine.IsActive)
+        {
+            Jalium.UI.Styling.CssEngine.InvalidateSelectorDependents(this);
+            Jalium.UI.Styling.CssRegisteredProperties.Invalidate(this);
+            if (child is FrameworkElement or FrameworkContentElement)
+                Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(Jalium.UI.Styling.CssNode.Get((DependencyObject)child));
         }
 
         if (child is FrameworkContentElement contentChild && ReferenceEquals(contentChild.Parent, this))

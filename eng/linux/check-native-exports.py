@@ -33,10 +33,26 @@ FIXED_SYMBOLS = {
     "vulkan": {"jalium_vulkan_init"},
 }
 
+# These declarations are shared with the other platform builds, but their
+# implementations intentionally live outside the Linux shared libraries.
+NON_LINUX_SYMBOLS = {
+    "core": {"jalium_text_copy_outline_path"},  # Windows core; Linux uses text.
+    "platform": {
+        "jalium_apple_notify_lifecycle",
+        "jalium_apple_register_scene_root",
+        "jalium_apple_set_root_view",
+        "jalium_apple_unregister_scene_root",
+    },
+}
+
 API_RE_TEMPLATE = r"\b(?:%s)\b(?:(?![;{}]).)*?\b(jalium_[A-Za-z0-9_]+)\s*\("
 COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\r\n]*", re.DOTALL)
 CONST_STRING_RE = re.compile(
     r"\b(?:const|static\s+readonly)\s+string\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\"([^\"]+)\""
+)
+CONST_ALIAS_RE = re.compile(
+    r"\b(?:const|static\s+readonly)\s+string\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*;"
 )
 PINVOKE_RE = re.compile(
     r"\[(?:LibraryImport|DllImport)\(\s*([^,\)]+)(.*?)\)\]"
@@ -105,12 +121,27 @@ def extract_pinvokes(repo: Path) -> dict[str, set[str]]:
             )
         files.sort()
     constants: dict[str, str] = {}
+    aliases: list[tuple[str, str]] = []
     texts: list[tuple[Path, str]] = []
     for path in files:
         text = COMMENT_RE.sub(" ", path.read_text(encoding="utf-8", errors="replace"))
         texts.append((path, text))
         for name, value in CONST_STRING_RE.findall(text):
             constants[name] = value
+        aliases.extend(CONST_ALIAS_RE.findall(text))
+
+    # NativeMethods' CoreLib/TextLib/etc. alias JaliumNativeLibraryNames.
+    # Resolve after collecting literals because the defining file may sort
+    # after the file containing an alias.
+    for _ in range(len(aliases)):
+        changed = False
+        for name, expression in aliases:
+            value = constants.get(expression) or constants.get(expression.rsplit(".", 1)[-1])
+            if value is not None and constants.get(name) != value:
+                constants[name] = value
+                changed = True
+        if not changed:
+            break
 
     result = {name: set() for name in set(LIBRARIES.values())}
     for _, text in texts:
@@ -215,11 +246,17 @@ def main() -> int:
         "core": extract_api_symbols(core_headers, ("JALIUM_API",)),
         "platform": extract_api_symbols(platform_headers, ("JALIUM_PLATFORM_API",)),
         "media": extract_api_symbols(media_headers, ("JALIUM_MEDIA_API",)),
+        "text": extract_api_symbols(
+            sorted((native / "jalium.native.text" / "include").glob("*.h")),
+            ("JALIUM_TEXT_API",)),
     }
     header_symbols["media_core"] = set(MEDIA_CORE_SYMBOLS)
     header_symbols["media"] -= MEDIA_CORE_SYMBOLS
 
     pinvokes = extract_pinvokes(repo)
+    for library, symbols in NON_LINUX_SYMBOLS.items():
+        header_symbols[library].difference_update(symbols)
+        pinvokes[library].difference_update(symbols)
     # Managed media opens jalium.native.media; ELF symbol lookup is allowed to
     # resolve through its DT_NEEDED media.core dependency. Attribute the four
     # shared helpers to the DSO that actually owns and versions them.
@@ -227,7 +264,7 @@ def main() -> int:
     pinvokes["media"] -= MEDIA_CORE_SYMBOLS
     allowed = {name: set() for name in set(LIBRARIES.values())}
     required = {name: set() for name in set(LIBRARIES.values())}
-    for library in ("core", "platform", "media_core", "media"):
+    for library in ("core", "platform", "media_core", "media", "text"):
         allowed[library].update(header_symbols[library])
         required[library].update(
             symbol for symbol in header_symbols[library] if not symbol.startswith("jalium_test_")

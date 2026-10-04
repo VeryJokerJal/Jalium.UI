@@ -44,6 +44,15 @@ public sealed class DropShadowEffect : Effect
         DependencyProperty.Register(nameof(ShadowDepth), typeof(double), typeof(DropShadowEffect),
             new PropertyMetadata(5.0, OnPropertyChanged));
 
+    /// <summary>Identifies the SpreadRadius dependency property.</summary>
+    public static readonly DependencyProperty SpreadRadiusProperty =
+        DependencyProperty.Register(nameof(SpreadRadius), typeof(double), typeof(DropShadowEffect),
+            new PropertyMetadata(0.0, OnPropertyChanged));
+
+    internal static readonly DependencyProperty CssUsesAlphaMaskProperty =
+        DependencyProperty.Register(nameof(CssUsesAlphaMask), typeof(bool), typeof(DropShadowEffect),
+            new PropertyMetadata(false, OnPropertyChanged));
+
     /// <summary>
     /// Identifies the RenderingBias dependency property.
     /// </summary>
@@ -108,6 +117,19 @@ public sealed class DropShadowEffect : Effect
         set => SetValue(ShadowDepthProperty, value);
     }
 
+    /// <summary>Gets or sets the distance by which the shadow perimeter expands.</summary>
+    public double SpreadRadius
+    {
+        get => (double)GetValue(SpreadRadiusProperty)!;
+        set => SetValue(SpreadRadiusProperty, value);
+    }
+
+    internal bool CssUsesAlphaMask
+    {
+        get => (bool)GetValue(CssUsesAlphaMaskProperty)!;
+        set => SetValue(CssUsesAlphaMaskProperty, value);
+    }
+
     /// <summary>
     /// Gets or sets the rendering bias for quality vs performance tradeoff.
     /// Default value is Performance.
@@ -123,7 +145,8 @@ public sealed class DropShadowEffect : Effect
     #region Computed Properties
 
     /// <inheritdoc />
-    public override bool HasEffect => Opacity > 0 && (BlurRadius > 0 || ShadowDepth > 0);
+    public override bool HasEffect => Opacity > 0 &&
+        (CssUsesAlphaMask || BlurRadius > 0 || ShadowDepth > 0 || SpreadRadius != 0);
 
     /// <inheritdoc />
     public override EffectType EffectType => EffectType.DropShadow;
@@ -134,7 +157,9 @@ public sealed class DropShadowEffect : Effect
         get
         {
             // Calculate the padding needed to accommodate the shadow
-            var padding = BlurRadius + ShadowDepth;
+            var blurExtent = double.IsFinite(CssGaussianSigma)
+                ? Math.Max(BlurRadius, 3 * CssGaussianSigma) : BlurRadius;
+            var padding = blurExtent + ShadowDepth + Math.Max(0, SpreadRadius);
             var radians = Direction * Math.PI / 180.0;
             var offsetX = Math.Cos(radians) * ShadowDepth;
             var offsetY = -Math.Sin(radians) * ShadowDepth; // Negative because Y is inverted

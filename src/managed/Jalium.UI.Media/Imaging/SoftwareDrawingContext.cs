@@ -33,10 +33,11 @@ namespace Jalium.UI.Media.Imaging;
 /// <c>Transparent</c> into opaque white.
 /// </para>
 /// <para>
-/// Known limitations, all deliberate: text and glyph runs need the native glyph rasterizer and are
-/// skipped; <see cref="DrawImage"/> and backdrop effects are skipped; tile brushes (image / drawing
-/// / visual) paint nothing; a square clip degrades to its device-space bounding box under a
-/// rotation, which is what the GPU scissor path does too.
+/// Text and glyph runs need the native glyph rasterizer and are skipped; backdrop effects and
+/// DrawingBrush/VisualBrush remain unsupported. ImageBrush samples bitmap or vector image pixels,
+/// including tiling and transforms. A square clip degrades to its device-space bounding box under a
+/// rotation, which is what the GPU scissor path does too; arbitrary geometry clips retain their
+/// filled silhouette in the software renderer.
 /// </para>
 /// </remarks>
 internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
@@ -61,12 +62,24 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     {
         RoundedRect,
         Ellipse,
-        Segment,
+        StrokeSegment,
     }
 
     /// <summary>A signed-distance shape expressed in offset space (local + <see cref="Offset"/>).</summary>
     private readonly struct ShapeDesc
     {
+        private readonly Jalium.UI.Styling.CssRoundedRectangleGeometry? _cssShape;
+        private readonly double _strokeHalfWidth;
+        private readonly PenLineCap _startCap;
+        private readonly PenLineCap _endCap;
+
+        public ShapeDesc(Jalium.UI.Styling.CssRoundedRectangleGeometry geometry, Point offset)
+        {
+            _cssShape = geometry;
+            Rect = new Rect(geometry.Rect.X + offset.X, geometry.Rect.Y + offset.Y, geometry.Rect.Width, geometry.Rect.Height);
+            P0 = offset;
+        }
+
         public ShapeDesc(Rect rect, double topLeft, double topRight, double bottomRight, double bottomLeft)
         {
             Kind = ShapeKind.RoundedRect;
@@ -89,6 +102,19 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
             P1 = p1;
         }
 
+        private ShapeDesc(Point p0, Point p1, double halfWidth,
+            PenLineCap startCap, PenLineCap endCap)
+            : this(ShapeKind.StrokeSegment,
+                new Rect(Math.Min(p0.X, p1.X) - halfWidth,
+                    Math.Min(p0.Y, p1.Y) - halfWidth,
+                    Math.Abs(p1.X - p0.X) + 2 * halfWidth,
+                    Math.Abs(p1.Y - p0.Y) + 2 * halfWidth), p0, p1)
+        {
+            _strokeHalfWidth = halfWidth;
+            _startCap = startCap;
+            _endCap = endCap;
+        }
+
         public ShapeKind Kind { get; }
         public Rect Rect { get; }
         public double TopLeft { get; }
@@ -104,19 +130,14 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
                 center,
                 default);
 
-        public static ShapeDesc FromSegment(Point p0, Point p1) =>
-            new(ShapeKind.Segment,
-                new Rect(
-                    Math.Min(p0.X, p1.X),
-                    Math.Min(p0.Y, p1.Y),
-                    Math.Abs(p1.X - p0.X),
-                    Math.Abs(p1.Y - p0.Y)),
-                p0,
-                p1);
+        public static ShapeDesc FromStrokeSegment(Point p0, Point p1, double halfWidth,
+            PenLineCap startCap, PenLineCap endCap)
+            => new(p0, p1, halfWidth, startCap, endCap);
 
         /// <summary>Signed distance from the shape boundary; negative inside.</summary>
         public double SignedDistance(double x, double y)
         {
+            if (_cssShape is not null) return _cssShape.SignedDistance(new Point(x - P0.X, y - P0.Y));
             switch (Kind)
             {
                 case ShapeKind.Ellipse:
@@ -136,19 +157,54 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
                         : -Math.Min(radiusX, radiusY);
                 }
 
-                case ShapeKind.Segment:
+                case ShapeKind.StrokeSegment:
                 {
                     var dx = P1.X - P0.X;
                     var dy = P1.Y - P0.Y;
-                    var lengthSquared = (dx * dx) + (dy * dy);
+                    var length = Math.Sqrt(dx * dx + dy * dy);
                     var px = x - P0.X;
                     var py = y - P0.Y;
-                    var t = lengthSquared > 1e-12
-                        ? Math.Clamp(((px * dx) + (py * dy)) / lengthSquared, 0.0, 1.0)
-                        : 0.0;
-                    var ox = px - (t * dx);
-                    var oy = py - (t * dy);
-                    return Math.Sqrt((ox * ox) + (oy * oy));
+                    var half = _strokeHalfWidth;
+                    if (length <= 1e-12)
+                    {
+                        if (_startCap == PenLineCap.Round || _endCap == PenLineCap.Round)
+                            return Math.Sqrt(px * px + py * py) - half;
+                        return _startCap == PenLineCap.Square || _endCap == PenLineCap.Square
+                            ? Math.Max(Math.Abs(px), Math.Abs(py)) - half
+                            : double.MaxValue;
+                    }
+
+                    var ux = dx / length;
+                    var uy = dy / length;
+                    var along = px * ux + py * uy;
+                    var across = px * -uy + py * ux;
+                    var startExtent = _startCap == PenLineCap.Square ? half : 0;
+                    var endExtent = _endCap == PenLineCap.Square ? half : 0;
+                    var axial = Math.Max(-along - startExtent, along - length - endExtent);
+                    var radial = Math.Abs(across) - half;
+                    var outsideAxial = Math.Max(axial, 0);
+                    var outsideRadial = Math.Max(radial, 0);
+                    var distance = Math.Sqrt(outsideAxial * outsideAxial +
+                        outsideRadial * outsideRadial) + Math.Min(Math.Max(axial, radial), 0);
+                    if (_startCap == PenLineCap.Round)
+                        distance = Math.Min(distance, Math.Sqrt(along * along + across * across) - half);
+                    if (_endCap == PenLineCap.Round)
+                    {
+                        var fromEnd = along - length;
+                        distance = Math.Min(distance,
+                            Math.Sqrt(fromEnd * fromEnd + across * across) - half);
+                    }
+                    if (_startCap == PenLineCap.Triangle)
+                        distance = Math.Min(distance,
+                            Math.Max(Math.Max(-along - half, along), Math.Abs(across) - half - along));
+                    if (_endCap == PenLineCap.Triangle)
+                    {
+                        var fromEnd = along - length;
+                        distance = Math.Min(distance,
+                            Math.Max(Math.Max(-fromEnd, fromEnd - half),
+                                Math.Abs(across) - half + fromEnd));
+                    }
+                    return distance;
                 }
 
                 default:
@@ -176,7 +232,8 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     }
 
     /// <summary>A rounded clip kept in the offset space it was pushed in.</summary>
-    private readonly record struct ClipEntry(ShapeDesc Shape, Matrix Inverse, double DeviceScale);
+    private readonly record struct ClipEntry(ShapeDesc Shape, Matrix Inverse, double DeviceScale,
+        Geometry? Geometry = null, Point GeometryOffset = default);
 
     private readonly RenderTargetBitmap _target;
     private readonly Stack<StateEntry> _stateStack = new();
@@ -211,7 +268,10 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
         var radius = ResolveCornerRadius(radiusX, radiusY);
         var shape = new ShapeDesc(Translate(rect), radius, radius, radius, radius);
         FillShape(shape, brush, 0);
-        StrokeShape(shape, pen);
+        if (TryGetDashPattern(pen, out _, out _))
+            DrawGeometry(null, pen, new RectangleGeometry(rect, radiusX, radiusY));
+        else
+            StrokeShape(shape, pen);
     }
 
     /// <inheritdoc />
@@ -224,7 +284,10 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
             radiusX,
             radiusY);
         FillShape(shape, brush, 0);
-        StrokeShape(shape, pen);
+        if (TryGetDashPattern(pen, out _, out _))
+            DrawGeometry(null, pen, new EllipseGeometry(center, radiusX, radiusY));
+        else
+            StrokeShape(shape, pen);
     }
 
     /// <inheritdoc />
@@ -232,10 +295,28 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     {
         if (_closed || pen?.Brush == null || pen.Thickness <= 0) return;
 
-        var shape = ShapeDesc.FromSegment(
-            new Point(point0.X + Offset.X, point0.Y + Offset.Y),
-            new Point(point1.X + Offset.X, point1.Y + Offset.Y));
-        FillShape(shape, pen.Brush, pen.Thickness / 2.0);
+        var start = new Point(point0.X + Offset.X, point0.Y + Offset.Y);
+        var end = new Point(point1.X + Offset.X, point1.Y + Offset.Y);
+        if (TryGetDashPattern(pen, out var pattern, out var dashOffset))
+        {
+            var half = pen.Thickness / 2;
+            var bounds = new Rect(Math.Min(start.X, end.X) - half,
+                Math.Min(start.Y, end.Y) - half,
+                Math.Abs(end.X - start.X) + pen.Thickness,
+                Math.Abs(end.Y - start.Y) + pen.Thickness);
+            var sampler = BrushSampler.Create(pen.Brush, bounds, Offset, _opacity, DeviceScale);
+            var mask = CreateDashMask(bounds);
+            if (sampler is not null && mask is not null)
+            {
+                StrokeFigure(new FigurePolyline([start, end], [true], false),
+                    pen, pattern, dashOffset, mask);
+                CompositeDashMask(mask, sampler);
+            }
+            return;
+        }
+
+        FillShape(ShapeDesc.FromStrokeSegment(start, end, pen.Thickness / 2,
+            pen.StartLineCap, pen.EndLineCap), pen.Brush, 0);
     }
 
     /// <inheritdoc />
@@ -247,10 +328,18 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
         // polygon and covers the overwhelmingly common case (layout clips, Border
         // decoration, Shape parts).
         var geometryTransform = geometry.Transform;
-        if (geometryTransform == null || geometryTransform.Value.IsIdentity)
+        var dashed = TryGetDashPattern(pen, out var dashPattern, out var dashOffset);
+        if (!dashed && (geometryTransform == null || geometryTransform.Value.IsIdentity))
         {
             switch (geometry)
             {
+                case Jalium.UI.Styling.CssRoundedRectangleGeometry cssRounded:
+                {
+                    var rounded = new ShapeDesc(cssRounded, Offset);
+                    FillShape(rounded, brush, 0);
+                    StrokeShape(rounded, pen);
+                    return;
+                }
                 case RectangleGeometry { HasPerCornerRadii: true } perCorner:
                 {
                     var corners = perCorner.CornerRadius;
@@ -306,26 +395,31 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
 
         if (pen?.Brush != null && pen.Thickness > 0)
         {
-            // No joins or caps: every flattened edge is stroked as its own capsule. At the
-            // hairline widths icons actually use, the difference is invisible. Unlike the
-            // fill above, the stroke must respect the figure's own topology: a two-point
-            // line segment is a legitimate stroke (lucide icons are full of them), and an
-            // OPEN figure must not grow a phantom closing edge back to its start point.
+            // Keep the whole visible stroke in one coverage mask. This avoids
+            // doubling translucent joins and preserves one brush coordinate
+            // system across path segments and dash runs.
+            var left = double.PositiveInfinity;
+            var top = double.PositiveInfinity;
+            var right = double.NegativeInfinity;
+            var bottom = double.NegativeInfinity;
             foreach (var figure in figures)
+            foreach (var point in figure.Points)
             {
-                var points = figure.Points;
-                if (points.Count < 2) continue;
-
-                for (var i = 0; i + 1 < points.Count; i++)
-                {
-                    FillShape(ShapeDesc.FromSegment(points[i], points[i + 1]), pen.Brush, pen.Thickness / 2.0);
-                }
-
-                if (figure.IsClosed && points.Count >= 3 && points[0] != points[^1])
-                {
-                    FillShape(ShapeDesc.FromSegment(points[^1], points[0]), pen.Brush, pen.Thickness / 2.0);
-                }
+                left = Math.Min(left, point.X);
+                top = Math.Min(top, point.Y);
+                right = Math.Max(right, point.X);
+                bottom = Math.Max(bottom, point.Y);
             }
+            var half = pen.Thickness / 2;
+            var strokeBrushBounds = new Rect(left - half, top - half,
+                right - left + pen.Thickness, bottom - top + pen.Thickness);
+            var mask = CreateDashMask(strokeBrushBounds, pen);
+            if (mask is null) return;
+            foreach (var figure in figures)
+                StrokeFigure(figure, pen, dashed ? dashPattern : null, dashOffset, mask);
+            var sampler = BrushSampler.Create(pen.Brush, mask.BrushBounds,
+                Offset, _opacity, DeviceScale);
+            if (sampler is not null) CompositeDashMask(mask, sampler);
         }
     }
 
@@ -364,9 +458,61 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     }
 
     /// <inheritdoc />
-    /// <remarks>Bitmap compositing is not implemented; image content is skipped.</remarks>
+    /// <remarks>Raster and vector image snapshots follow the requested bitmap sampling mode.</remarks>
     public override void DrawImage(ImageSource imageSource, Rect rect)
+        => DrawImage(imageSource, rect, BitmapScalingMode.Unspecified);
+
+    /// <inheritdoc />
+    public override void DrawImage(ImageSource imageSource, Rect rect, BitmapScalingMode scalingMode)
     {
+        if (_closed || _opacity <= 0 || rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+        {
+            return;
+        }
+        if (!_matrix.TryInvert(out var inverse)) return;
+
+        var localRect = Translate(rect);
+        var fullDeviceBounds = TransformBounds(localRect);
+        var deviceBounds = Rect.Intersect(fullDeviceBounds, _clipBounds);
+        if (deviceBounds.IsEmpty) return;
+        var snapshot = ImageBrushSampler.GetPixels(imageSource,
+            Math.Clamp((int)Math.Ceiling(deviceBounds.Width), 1, 16384),
+            Math.Clamp((int)Math.Ceiling(deviceBounds.Height), 1, 16384),
+            cover: false);
+        if (snapshot is null || snapshot.Width <= 0 || snapshot.Height <= 0) return;
+        var x0 = Math.Max(0, (int)Math.Floor(deviceBounds.X));
+        var y0 = Math.Max(0, (int)Math.Floor(deviceBounds.Y));
+        var x1 = Math.Min(_target.PixelWidth, (int)Math.Ceiling(deviceBounds.Right));
+        var y1 = Math.Min(_target.PixelHeight, (int)Math.Ceiling(deviceBounds.Bottom));
+
+        var sourceWidth = snapshot.Width;
+        var sourceHeight = snapshot.Height;
+
+        for (var y = y0; y < y1; y++)
+        {
+            for (var x = x0; x < x1; x++)
+            {
+                var local = inverse.Transform(new Point(x + 0.5, y + 0.5));
+                if (local.X < localRect.X || local.X >= localRect.Right ||
+                    local.Y < localRect.Y || local.Y >= localRect.Bottom)
+                {
+                    continue;
+                }
+
+                var u = ((local.X - localRect.X) / localRect.Width * sourceWidth) - 0.5;
+                var v = ((local.Y - localRect.Y) / localRect.Height * sourceHeight) - 0.5;
+                var sampled = ImageBrushSampler.SamplePixels(snapshot, u, v,
+                    scalingMode, fullDeviceBounds.Width, fullDeviceBounds.Height);
+                var clip = ClipCoverage(x, y);
+                if (clip <= 0) continue;
+
+                BlendPixel(
+                    x,
+                    y,
+                    sampled.R, sampled.G, sampled.B,
+                    sampled.A * _opacity * clip);
+            }
+        }
     }
 
     /// <inheritdoc />
@@ -383,6 +529,30 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     public override void PushClip(Geometry clipGeometry)
     {
         if (_closed || clipGeometry == null) return;
+
+        if (clipGeometry is Jalium.UI.Styling.CssRoundedRectangleGeometry cssRounded)
+        {
+            _stateStack.Push(new StateEntry(StateKind.Clip, Offset, _opacity, _clipBounds, _clips.Count));
+            var shape = new ShapeDesc(cssRounded, Offset);
+            _clipBounds = Rect.Intersect(_clipBounds, TransformBounds(shape.Rect));
+            if (_matrix.TryInvert(out var inverse)) _clips.Add(new ClipEntry(shape, inverse, DeviceScale));
+            return;
+        }
+
+        if (clipGeometry is not RectangleGeometry)
+        {
+            _stateStack.Push(new StateEntry(StateKind.Clip, Offset, _opacity, _clipBounds, _clips.Count));
+            var geometryBounds = clipGeometry.Bounds;
+            if (geometryBounds.IsEmpty)
+            {
+                _clipBounds = Rect.Empty;
+                return;
+            }
+            _clipBounds = Rect.Intersect(_clipBounds, TransformBounds(Translate(geometryBounds)));
+            if (_matrix.TryInvert(out var inverse))
+                _clips.Add(new ClipEntry(default, inverse, DeviceScale, clipGeometry, Offset));
+            return;
+        }
 
         var bounds = clipGeometry.Bounds;
         var topLeft = 0.0;
@@ -424,7 +594,11 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     {
         _stateStack.Push(new StateEntry(StateKind.Clip, Offset, _opacity, _clipBounds, _clips.Count));
 
-        if (bounds.IsEmpty) return;
+        if (bounds.IsEmpty)
+        {
+            _clipBounds = Rect.Empty;
+            return;
+        }
 
         var offsetBounds = Translate(bounds);
         _clipBounds = Rect.Intersect(_clipBounds, TransformBounds(offsetBounds));
@@ -573,16 +747,428 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
         FillShape(shape, pen.Brush, pen.Thickness / 2.0);
     }
 
+    private bool TryGetDashPattern(Pen? pen, out double[] pattern, out double offset)
+    {
+        pattern = [];
+        offset = 0;
+        if (pen?.Brush is null || !double.IsFinite(pen.Thickness) || pen.Thickness <= 0)
+            return false;
+
+        var dashes = pen.DashStyle.Dashes;
+        if (dashes.Count == 0 || dashes.Count > int.MaxValue / 2) return false;
+        double originalTotal = 0;
+        foreach (var dash in dashes)
+        {
+            if (!double.IsFinite(dash) || dash < 0) return false;
+            originalTotal += dash;
+        }
+        if (!double.IsFinite(originalTotal) || originalTotal <= 0) return false;
+
+        var dashOffset = pen.DashStyle.Offset * pen.Thickness;
+        if (!double.IsFinite(dashOffset)) return false;
+        offset = dashOffset;
+        var minPositive = 0.05 / Math.Max(DeviceScale, 1);
+        pattern = new double[dashes.Count % 2 == 0 ? dashes.Count : dashes.Count * 2];
+        double effectiveTotal = 0;
+        for (var i = 0; i < pattern.Length; i++)
+        {
+            var length = dashes[i % dashes.Count] * pen.Thickness;
+            if (!double.IsFinite(length)) return false;
+            // A zero-length dash with round or square caps is a dot. Give it
+            // a subpixel centerline while keeping it visually at one point.
+            pattern[i] = length == 0 ? 1e-6 : Math.Max(length, minPositive);
+            effectiveTotal += pattern[i];
+        }
+        return double.IsFinite(effectiveTotal);
+    }
+
+    private void StrokeFigure(FigurePolyline figure, Pen pen,
+        double[]? pattern, double dashOffset, DashMask mask)
+    {
+        var points = figure.Points;
+        if (points.Count < 2) return;
+        var visibleRuns = new List<List<Point>>();
+        List<Point>? visible = null;
+
+        void FinishVisible()
+        {
+            if (visible is { Count: > 1 }) visibleRuns.Add(visible);
+            visible = null;
+        }
+
+        void AddEdge(Point start, Point end, bool stroked)
+        {
+            if (!stroked)
+            {
+                FinishVisible();
+                return;
+            }
+            if (start == end) return;
+            visible ??= [start];
+            visible.Add(end);
+        }
+
+        for (var i = 0; i < figure.StrokedEdges.Count; i++)
+            AddEdge(points[i], points[i + 1], figure.StrokedEdges[i]);
+        if (figure.IsClosed && points.Count >= 3 && points[^1] != points[0])
+            AddEdge(points[^1], points[0], stroked: true);
+        FinishVisible();
+
+        if (figure.IsClosed && visibleRuns.Count > 1 &&
+            visibleRuns[0][0] == points[0] && visibleRuns[^1][^1] == points[0])
+        {
+            visibleRuns[^1].AddRange(visibleRuns[0].Skip(1));
+            visibleRuns.RemoveAt(0);
+        }
+
+        var contourIsClosed = figure.IsClosed && visibleRuns.Count == 1 &&
+            figure.StrokedEdges.All(static stroked => stroked) &&
+            visibleRuns[0][0] == visibleRuns[0][^1];
+        foreach (var visibleRun in visibleRuns)
+        {
+            if (pattern is null)
+            {
+                PaintStrokeRun(visibleRun, pen, mask, contourIsClosed,
+                    pen.StartLineCap, pen.EndLineCap);
+                continue;
+            }
+            var dashedRuns = SplitDashRuns(visibleRun, pattern, dashOffset);
+            if (contourIsClosed &&
+                dashedRuns.Count > 1 && dashedRuns[0][0] == visibleRun[0] &&
+                dashedRuns[^1][^1] == visibleRun[0])
+            {
+                dashedRuns[^1].AddRange(dashedRuns[0].Skip(1));
+                dashedRuns.RemoveAt(0);
+            }
+            foreach (var dashedRun in dashedRuns)
+                PaintStrokeRun(dashedRun, pen, mask,
+                    contourIsClosed && dashedRuns.Count == 1 &&
+                    dashedRun[0] == dashedRun[^1],
+                    pen.DashCap, pen.DashCap);
+        }
+    }
+
+    private static List<List<Point>> SplitDashRuns(List<Point> points,
+        double[] pattern, double dashOffset)
+    {
+        var result = new List<List<Point>>();
+        var total = pattern.Sum();
+        var phase = dashOffset % total;
+        if (phase < 0) phase += total;
+        var dashIndex = 0;
+        var remaining = pattern[0];
+        while (phase > 0)
+        {
+            if (phase < remaining)
+            {
+                remaining -= phase;
+                break;
+            }
+            phase -= remaining;
+            dashIndex = (dashIndex + 1) % pattern.Length;
+            remaining = pattern[dashIndex];
+        }
+
+        List<Point>? current = null;
+        void FinishRun()
+        {
+            if (current is { Count: > 1 }) result.Add(current);
+            current = null;
+        }
+
+        for (var edge = 0; edge + 1 < points.Count; edge++)
+        {
+            var start = points[edge];
+            var end = points[edge + 1];
+            var dx = end.X - start.X;
+            var dy = end.Y - start.Y;
+            var length = Math.Sqrt(dx * dx + dy * dy);
+            if (length <= 1e-9) continue;
+
+            double consumed = 0;
+            while (consumed < length - 1e-9)
+            {
+                if (remaining <= 1e-9)
+                {
+                    FinishRun();
+                    dashIndex = (dashIndex + 1) % pattern.Length;
+                    remaining = pattern[dashIndex];
+                }
+                var step = Math.Min(length - consumed, remaining);
+                var from = new Point(start.X + dx * (consumed / length),
+                    start.Y + dy * (consumed / length));
+                consumed += step;
+                var to = new Point(start.X + dx * (consumed / length),
+                    start.Y + dy * (consumed / length));
+                if (dashIndex % 2 == 0)
+                {
+                    current ??= [from];
+                    current.Add(to);
+                }
+                remaining -= step;
+                if (remaining <= 1e-9)
+                {
+                    FinishRun();
+                    dashIndex = (dashIndex + 1) % pattern.Length;
+                    remaining = pattern[dashIndex];
+                }
+            }
+        }
+        FinishRun();
+        return result;
+    }
+
+    private void PaintStrokeRun(List<Point> points, Pen pen, DashMask mask,
+        bool closed, PenLineCap startCap, PenLineCap endCap)
+    {
+        var half = pen.Thickness / 2;
+        var totalLength = 0.0;
+        for (var i = 0; i + 1 < points.Count; i++)
+        {
+            var dx = points[i + 1].X - points[i].X;
+            var dy = points[i + 1].Y - points[i].Y;
+            totalLength += Math.Sqrt(dx * dx + dy * dy);
+        }
+        if (totalLength < 1e-4 &&
+            startCap == PenLineCap.Flat && endCap == PenLineCap.Flat) return;
+
+        for (var i = 0; i + 1 < points.Count; i++)
+        {
+            if (points[i] == points[i + 1]) continue;
+            var edgeStartCap = !closed && i == 0 ? startCap : PenLineCap.Flat;
+            var edgeEndCap = !closed && i + 2 == points.Count ? endCap : PenLineCap.Flat;
+            var segment = ShapeDesc.FromStrokeSegment(points[i], points[i + 1],
+                half, edgeStartCap, edgeEndCap);
+            AddDashCoverage(segment, mask);
+        }
+
+        // A single visible dash can turn at several path vertices. Join its
+        // flat-sided pieces without adding a cap at each interior vertex.
+        for (var i = 1; i + 1 < points.Count; i++)
+            AddDashJoin(points[i - 1], points[i], points[i + 1], pen, mask);
+        if (closed)
+            AddDashJoin(points[^2], points[0], points[1], pen, mask);
+    }
+
+    private void AddDashJoin(Point previous, Point vertex, Point next,
+        Pen pen, DashMask mask)
+    {
+        var dx0 = vertex.X - previous.X;
+        var dy0 = vertex.Y - previous.Y;
+        var dx1 = next.X - vertex.X;
+        var dy1 = next.Y - vertex.Y;
+        var len0 = Math.Sqrt(dx0 * dx0 + dy0 * dy0);
+        var len1 = Math.Sqrt(dx1 * dx1 + dy1 * dy1);
+        if (len0 <= 1e-9 || len1 <= 1e-9) return;
+        dx0 /= len0;
+        dy0 /= len0;
+        dx1 /= len1;
+        dy1 /= len1;
+        var cross = dx0 * dy1 - dy0 * dx1;
+        if (Math.Abs(cross) <= 1e-9) return;
+
+        var half = pen.Thickness / 2;
+        if (pen.LineJoin == PenLineJoin.Round)
+        {
+            AddDashCoverage(ShapeDesc.FromStrokeSegment(vertex, vertex,
+                half, PenLineCap.Round, PenLineCap.Round), mask);
+            return;
+        }
+
+        var side = cross > 0 ? -half : half;
+        var outer0 = new Point(vertex.X - dy0 * side, vertex.Y + dx0 * side);
+        var outer1 = new Point(vertex.X - dy1 * side, vertex.Y + dx1 * side);
+        if (pen.LineJoin == PenLineJoin.Miter &&
+            double.IsFinite(pen.MiterLimit) && pen.MiterLimit >= 1)
+        {
+            var betweenX = outer1.X - outer0.X;
+            var betweenY = outer1.Y - outer0.Y;
+            var t = (betweenX * dy1 - betweenY * dx1) / cross;
+            var tip = new Point(outer0.X + t * dx0, outer0.Y + t * dy0);
+            var tipX = tip.X - vertex.X;
+            var tipY = tip.Y - vertex.Y;
+            if (double.IsFinite(tip.X) && double.IsFinite(tip.Y) &&
+                tipX * tipX + tipY * tipY <= half * half * pen.MiterLimit * pen.MiterLimit)
+            {
+                mask.IncludePoint(tip);
+                AddDashPolygonCoverage([vertex, outer0, tip, outer1], mask);
+                return;
+            }
+        }
+
+        AddDashPolygonCoverage([vertex, outer0, outer1], mask);
+    }
+
+    private sealed class DashMask(int left, int top, int right, int bottom,
+        Rect brushBounds)
+    {
+        public int Left { get; } = left;
+        public int Top { get; } = top;
+        public int Right { get; } = right;
+        public int Bottom { get; } = bottom;
+        public int Width { get; } = right - left;
+        public byte[] Coverage { get; } = new byte[(right - left) * (bottom - top)];
+        public Rect BrushBounds { get; private set; } = brushBounds;
+
+        public void IncludePoint(Point point)
+        {
+            var bounds = BrushBounds;
+            var left = Math.Min(bounds.X, point.X);
+            var top = Math.Min(bounds.Y, point.Y);
+            var right = Math.Max(bounds.Right, point.X);
+            var bottom = Math.Max(bounds.Bottom, point.Y);
+            BrushBounds = new Rect(left, top, right - left, bottom - top);
+        }
+    }
+
+    private DashMask? CreateDashMask(Rect strokeBounds, Pen? pen = null)
+    {
+        var brushBounds = strokeBounds;
+        if (pen?.LineJoin == PenLineJoin.Miter &&
+            double.IsFinite(pen.MiterLimit) && pen.MiterLimit > 1)
+        {
+            var margin = (pen.MiterLimit - 1) * pen.Thickness / 2;
+            if (double.IsFinite(margin))
+                strokeBounds = new Rect(strokeBounds.X - margin,
+                    strokeBounds.Y - margin, strokeBounds.Width + 2 * margin,
+                    strokeBounds.Height + 2 * margin);
+        }
+        var device = Rect.Intersect(TransformBounds(strokeBounds), _clipBounds);
+        if (device.IsEmpty) return null;
+        var left = Math.Max(0, (int)Math.Floor(device.X) - 1);
+        var top = Math.Max(0, (int)Math.Floor(device.Y) - 1);
+        var right = Math.Min(_target.PixelWidth, (int)Math.Ceiling(device.Right) + 1);
+        var bottom = Math.Min(_target.PixelHeight, (int)Math.Ceiling(device.Bottom) + 1);
+        return left < right && top < bottom
+            ? new DashMask(left, top, right, bottom, brushBounds) : null;
+    }
+
+    private void AddDashCoverage(in ShapeDesc shape, DashMask mask)
+    {
+        if (!_matrix.TryInvert(out var inverse)) return;
+        var scale = DeviceScale;
+        var margin = 0.5 / Math.Max(scale, 1e-6);
+        var rect = shape.Rect;
+        var bounds = new Rect(rect.X - margin, rect.Y - margin,
+            rect.Width + margin * 2, rect.Height + margin * 2);
+        var device = Rect.Intersect(TransformBounds(bounds), _clipBounds);
+        if (device.IsEmpty) return;
+
+        var x0 = Math.Max(mask.Left, (int)Math.Floor(device.X));
+        var y0 = Math.Max(mask.Top, (int)Math.Floor(device.Y));
+        var x1 = Math.Min(mask.Right, (int)Math.Ceiling(device.Right));
+        var y1 = Math.Min(mask.Bottom, (int)Math.Ceiling(device.Bottom));
+        for (var y = y0; y < y1; y++)
+        for (var x = x0; x < x1; x++)
+        {
+            var local = inverse.Transform(new Point(x + 0.5, y + 0.5));
+            var coverage = Math.Clamp(0.5 - shape.SignedDistance(local.X, local.Y) * scale,
+                0.0, 1.0);
+            if (coverage <= 0) continue;
+            coverage *= ClipCoverage(x, y);
+            var value = (byte)Math.Round(coverage * 255);
+            var index = (y - mask.Top) * mask.Width + x - mask.Left;
+            if (value > mask.Coverage[index]) mask.Coverage[index] = value;
+        }
+    }
+
+    private void AddDashPolygonCoverage(Point[] polygon, DashMask mask)
+    {
+        if (!_matrix.TryInvert(out var inverse)) return;
+        var left = polygon.Min(static p => p.X);
+        var top = polygon.Min(static p => p.Y);
+        var right = polygon.Max(static p => p.X);
+        var bottom = polygon.Max(static p => p.Y);
+        var scale = DeviceScale;
+        var margin = 0.5 / Math.Max(scale, 1e-6);
+        var bounds = new Rect(left - margin, top - margin,
+            right - left + 2 * margin, bottom - top + 2 * margin);
+        var device = Rect.Intersect(TransformBounds(bounds), _clipBounds);
+        if (device.IsEmpty) return;
+
+        var x0 = Math.Max(mask.Left, (int)Math.Floor(device.X));
+        var y0 = Math.Max(mask.Top, (int)Math.Floor(device.Y));
+        var x1 = Math.Min(mask.Right, (int)Math.Ceiling(device.Right));
+        var y1 = Math.Min(mask.Bottom, (int)Math.Ceiling(device.Bottom));
+        for (var y = y0; y < y1; y++)
+        for (var x = x0; x < x1; x++)
+        {
+            var local = inverse.Transform(new Point(x + 0.5, y + 0.5));
+            var coverage = Math.Clamp(0.5 - PolygonSignedDistance(polygon, local) * scale,
+                0.0, 1.0);
+            if (coverage <= 0) continue;
+            coverage *= ClipCoverage(x, y);
+            var value = (byte)Math.Round(coverage * 255);
+            var index = (y - mask.Top) * mask.Width + x - mask.Left;
+            if (value > mask.Coverage[index]) mask.Coverage[index] = value;
+        }
+    }
+
+    private static double PolygonSignedDistance(Point[] polygon, Point point)
+    {
+        var minDistanceSquared = double.PositiveInfinity;
+        var positive = false;
+        var negative = false;
+        for (var i = 0; i < polygon.Length; i++)
+        {
+            var start = polygon[i];
+            var end = polygon[(i + 1) % polygon.Length];
+            var dx = end.X - start.X;
+            var dy = end.Y - start.Y;
+            var px = point.X - start.X;
+            var py = point.Y - start.Y;
+            var cross = dx * py - dy * px;
+            if (cross > 1e-9) positive = true;
+            if (cross < -1e-9) negative = true;
+            var lengthSquared = dx * dx + dy * dy;
+            var t = lengthSquared > 1e-12
+                ? Math.Clamp((px * dx + py * dy) / lengthSquared, 0, 1) : 0;
+            var closestX = px - t * dx;
+            var closestY = py - t * dy;
+            minDistanceSquared = Math.Min(minDistanceSquared,
+                closestX * closestX + closestY * closestY);
+        }
+        var distance = Math.Sqrt(minDistanceSquared);
+        return positive && negative ? distance : -distance;
+    }
+
+    private void CompositeDashMask(DashMask mask, BrushSampler sampler)
+    {
+        if (!_matrix.TryInvert(out var inverse)) return;
+        for (var y = mask.Top; y < mask.Bottom; y++)
+        for (var x = mask.Left; x < mask.Right; x++)
+        {
+            var coverage = mask.Coverage[(y - mask.Top) * mask.Width + x - mask.Left];
+            if (coverage == 0) continue;
+            var local = inverse.Transform(new Point(x + 0.5, y + 0.5));
+            var sample = sampler.Sample(local.X, local.Y);
+            BlendPixel(x, y, sample.R, sample.G, sample.B,
+                sample.A * coverage / 255.0);
+        }
+    }
+
     /// <summary>
     /// Rasterizes <paramref name="shape"/>. A positive <paramref name="strokeHalfWidth"/> turns the
     /// fill into a stroke centred on the shape boundary (WPF pen semantics).
     /// </summary>
-    private void FillShape(in ShapeDesc shape, Brush? brush, double strokeHalfWidth)
+    private void FillShape(in ShapeDesc shape, Brush? brush, double strokeHalfWidth,
+        Rect? strokeBrushBounds = null)
     {
         if (brush == null || _opacity <= 0) return;
 
-        var sampler = BrushSampler.Create(brush, shape.Rect, Offset, _opacity);
+        var brushBounds = strokeBrushBounds ?? (strokeHalfWidth > 0
+            ? new Rect(shape.Rect.X - strokeHalfWidth, shape.Rect.Y - strokeHalfWidth,
+                shape.Rect.Width + strokeHalfWidth * 2,
+                shape.Rect.Height + strokeHalfWidth * 2)
+            : shape.Rect);
+        var sampler = BrushSampler.Create(brush, brushBounds, Offset, _opacity, DeviceScale);
         if (sampler == null) return;
+        FillShapeWithSampler(shape, sampler, strokeHalfWidth);
+    }
+
+    private void FillShapeWithSampler(in ShapeDesc shape, BrushSampler sampler,
+        double strokeHalfWidth)
+    {
         if (!_matrix.TryInvert(out var inverse)) return;
 
         var scale = DeviceScale;
@@ -631,7 +1217,7 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     {
         if (_opacity <= 0) return;
 
-        var sampler = BrushSampler.Create(brush, Translate(brushBounds), Offset, _opacity);
+        var sampler = BrushSampler.Create(brush, Translate(brushBounds), Offset, _opacity, DeviceScale);
         if (sampler == null) return;
         if (!_matrix.TryInvert(out var inverse)) return;
 
@@ -745,7 +1331,8 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     }
 
     /// <summary>Flattens a path geometry into closed offset-space polylines.</summary>
-    private readonly record struct FigurePolyline(List<Point> Points, bool IsClosed);
+    private readonly record struct FigurePolyline(List<Point> Points,
+        List<bool> StrokedEdges, bool IsClosed);
 
     /// <summary>
     /// Flattens each figure into its raw open polyline plus its closed flag. Callers apply
@@ -762,16 +1349,18 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
             if (figure.Segments.Count == 0) continue;
 
             var polyline = new List<Point> { MapToOffsetSpace(figure.StartPoint, extra) };
+            var strokedEdges = new List<bool>();
             foreach (var segment in figure.Segments)
             {
                 foreach (var point in segment.GetPoints())
                 {
                     polyline.Add(MapToOffsetSpace(point, extra));
+                    strokedEdges.Add(segment.IsStroked);
                 }
             }
 
             if (polyline.Count < 2) continue;
-            result.Add(new FigurePolyline(polyline, figure.IsClosed));
+            result.Add(new FigurePolyline(polyline, strokedEdges, figure.IsClosed));
         }
 
         return result;
@@ -792,7 +1381,23 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
         foreach (var clip in _clips)
         {
             var local = clip.Inverse.Transform(device);
-            coverage *= Math.Clamp(0.5 - (clip.Shape.SignedDistance(local.X, local.Y) * clip.DeviceScale), 0.0, 1.0);
+            if (clip.Geometry is { } geometry)
+            {
+                var point = new Point(local.X - clip.GeometryOffset.X, local.Y - clip.GeometryOffset.Y);
+                // Supersample the filled silhouette so a path or ellipse clip does not turn
+                // into its bounding rectangle, including when a clip is nested in another.
+                var halfPixel = 0.25 / Math.Max(clip.DeviceScale, 1e-6);
+                var hits = 0;
+                if (geometry.FillContains(new Point(point.X - halfPixel, point.Y - halfPixel))) hits++;
+                if (geometry.FillContains(new Point(point.X + halfPixel, point.Y - halfPixel))) hits++;
+                if (geometry.FillContains(new Point(point.X - halfPixel, point.Y + halfPixel))) hits++;
+                if (geometry.FillContains(new Point(point.X + halfPixel, point.Y + halfPixel))) hits++;
+                coverage *= hits / 4.0;
+            }
+            else
+            {
+                coverage *= Math.Clamp(0.5 - (clip.Shape.SignedDistance(local.X, local.Y) * clip.DeviceScale), 0.0, 1.0);
+            }
             if (coverage <= 0) return 0.0;
         }
 
@@ -833,8 +1438,8 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     #region Brushes
 
     /// <summary>
-    /// Evaluates a brush in offset space. Solid colours, linear gradients and radial gradients
-    /// are supported; tile brushes (image / drawing / visual) return <see langword="null"/> and
+    /// Evaluates a brush in offset space. Solid colours, gradients and image brushes
+    /// are supported; drawing/visual brushes return <see langword="null"/> and
     /// paint nothing rather than degenerating into a flat colour.
     /// </summary>
     private abstract class BrushSampler
@@ -845,13 +1450,30 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
 
         public abstract (double R, double G, double B, double A) Sample(double x, double y);
 
-        public static BrushSampler? Create(Brush brush, Rect bounds, Point offset, double ambientOpacity)
+        public static BrushSampler? Create(Brush brush, Rect bounds, Point offset, double ambientOpacity, double deviceScale = 1)
         {
+            if (brush.CssGradientLayout is { } cssLayout &&
+                bounds.Width > 0 && bounds.Height > 0)
+            {
+                if (cssLayout.Resolve(bounds.Width, bounds.Height) is not { } resolved) return null;
+                brush = resolved;
+            }
             var opacity = ambientOpacity * Math.Clamp(brush.Opacity, 0.0, 1.0);
             if (opacity <= 0) return null;
 
             switch (brush)
             {
+                case CssLayeredBackgroundBrush layers:
+                {
+                    var bottom = layers.Bottom is { } under
+                        ? Create(under, bounds, offset, 1, deviceScale) : null;
+                    var top = layers.Top is { } over
+                        ? Create(over, bounds, offset, 1, deviceScale) : null;
+                    return bottom is null && top is null
+                        ? null : new CompositeSampler(bottom, top, opacity);
+                }
+                case ImageBrush image:
+                    return ImageBrushSampler.Create(image, bounds, offset, opacity, deviceScale) is { } sampler ? new ImageSampler(sampler) : null;
                 case SolidColorBrush solid:
                 {
                     var color = solid.Color;
@@ -897,6 +1519,28 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
             mode == BrushMappingMode.RelativeToBoundingBox
                 ? new Point(bounds.X + (point.X * bounds.Width), bounds.Y + (point.Y * bounds.Height))
                 : new Point(point.X + offset.X, point.Y + offset.Y);
+
+        private sealed class ImageSampler(ImageBrushSampler sampler) : BrushSampler(1)
+        {
+            public override (double R, double G, double B, double A) Sample(double x, double y) => sampler.Sample(x, y);
+        }
+
+        private sealed class CompositeSampler(
+            BrushSampler? bottom, BrushSampler? top, double opacity) : BrushSampler(opacity)
+        {
+            public override (double R, double G, double B, double A) Sample(double x, double y)
+            {
+                var under = bottom?.Sample(x, y) ?? default;
+                var over = top?.Sample(x, y) ?? default;
+                var alpha = over.A + under.A * (1.0 - over.A);
+                if (alpha <= 0) return default;
+                var underWeight = under.A * (1.0 - over.A);
+                return ((over.R * over.A + under.R * underWeight) / alpha,
+                    (over.G * over.A + under.G * underWeight) / alpha,
+                    (over.B * over.A + under.B * underWeight) / alpha,
+                    alpha * Opacity);
+            }
+        }
 
         private sealed class SolidSampler : BrushSampler
         {

@@ -3,6 +3,7 @@ using Jalium.UI.Input;
 using System.Windows.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -11,6 +12,8 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Menu : MenuBase
 {
+    private Border? _cssBorderPainter;
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -88,6 +91,34 @@ public class Menu : MenuBase
     #region Rendering
 
     /// <inheritdoc />
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        if (Template is not null)
+            return base.MeasureOverride(availableSize);
+
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var contentSize = base.MeasureOverride(CssBoxMetrics.InnerSize(availableSize, insets));
+        return new Size(
+            ControlRenderGeometry.GetAvailableLength(
+                contentSize.Width + insets.Left + insets.Right, availableSize.Width),
+            ControlRenderGeometry.GetAvailableLength(
+                contentSize.Height + insets.Top + insets.Bottom, availableSize.Height));
+    }
+
+    /// <inheritdoc />
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        if (Template is not null)
+            return base.ArrangeOverride(finalSize);
+
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? finalSize.Width);
+        ItemsHost?.Arrange(ControlRenderGeometry.GetContentRect(new Rect(finalSize), insets));
+        return finalSize;
+    }
+
+    /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
         var dc = drawingContext;
@@ -96,18 +127,41 @@ public class Menu : MenuBase
 
         var rect = new Rect(RenderSize);
 
-        // Draw background
-        if (Background != null)
+        if (Background is { } background)
         {
-            dc.DrawRectangle(Background, null, rect);
+            var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            if (cssRadius is null && backgroundLayer is not
+                    (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                dc.DrawRectangle(background, null, rect);
+            else
+            {
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(rect, radii);
+                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
+                        rect, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
         }
 
-        // Draw bottom border
-        if (BorderBrush != null)
+        // The default bottom line is menu chrome; an authored border replaces it.
+        if (BorderBrush != null && GetEffectiveValueLayer(BorderThicknessProperty) is
+                null or DependencyValueStore.Layer.StyleSetter)
         {
             var borderPen = new Pen(BorderBrush, 1);
             dc.DrawLine(borderPen, new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     #endregion
@@ -555,6 +609,7 @@ public class MenuItem : HeaderedItemsControl
     private bool _isUpdatingCommandEnabled;
     private Popup? _submenuPopup;
     private Border? _submenuBorder;
+    private Border? _cssBorderPainter;
     private MenuPopupScrollHost? _submenuScrollHost;
     // 装着本项的那一级弹出框外框（由展开它的父项在搬运时登记；顶层项为 null，走 OwnerMenu）。
     private Border? _hostPopupBorder;
@@ -1079,33 +1134,36 @@ public class MenuItem : HeaderedItemsControl
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var padding = Padding;
-        var width = padding.TotalWidth;
-        var height = ItemHeight;
-
         // Determine if we're a top-level menu item or a submenu item
         var isTopLevel = VisualParent is Panel p && p.VisualParent is Menu;
+        var insets = GetContentInsets(isTopLevel,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var width = insets.Left + insets.Right;
+        var height = isTopLevel ? ItemHeight : ItemHeight + insets.Top + insets.Bottom;
+        double headerHeight = 0;
 
         if (isTopLevel)
         {
             // Top-level: just header
             if (Header is string headerText)
             {
-                var formattedText = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+                var formattedText = new FormattedText(headerText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
                 TextMeasurement.MeasureText(formattedText);
                 width += formattedText.Width;
+                headerHeight = formattedText.Height;
             }
         }
         else
         {
             // Submenu item: icon + header + gesture + arrow
-            width = IconColumnWidth;
+            width += IconColumnWidth;
 
             if (Header is string headerText)
             {
-                var formattedText = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+                var formattedText = new FormattedText(headerText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
                 TextMeasurement.MeasureText(formattedText);
                 width += formattedText.Width + MenuItemPadding * 2;
+                headerHeight = formattedText.Height;
             }
 
             if (!string.IsNullOrEmpty(InputGestureText))
@@ -1119,8 +1177,32 @@ public class MenuItem : HeaderedItemsControl
             }
         }
 
-        return new Size(Math.Max(width, 50), height);
+        if (isTopLevel && HasAuthoredContentEdges())
+            height = Math.Max(ItemHeight, headerHeight + insets.Top + insets.Bottom);
+
+        return new Size(
+            ControlRenderGeometry.GetAvailableLength(Math.Max(width, 50), availableSize.Width),
+            ControlRenderGeometry.GetAvailableLength(height, availableSize.Height));
     }
+
+    private Thickness GetContentInsets(bool isTopLevel, double containingWidth)
+    {
+        var (border, padding) = CssBoxMetrics.BackgroundInsets(this, containingWidth);
+        // The legacy submenu layout has its own icon/text columns and did not use
+        // the implicit theme padding. Explicit native or CSS padding is a box edge.
+        if (!isTopLevel && GetEffectiveValueLayer(PaddingProperty) is DependencyValueStore.Layer.StyleSetter)
+            padding = default;
+        return new Thickness(border.Left + padding.Left, border.Top + padding.Top,
+            border.Right + padding.Right, border.Bottom + padding.Bottom);
+    }
+
+    private bool HasAuthoredContentEdges() =>
+        HasLocalOrAnimatedValue(PaddingProperty) ||
+        HasLocalOrAnimatedValue(BorderThicknessProperty) ||
+        GetEffectiveValueLayer(PaddingProperty) is
+            (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState) ||
+        GetEffectiveValueLayer(BorderThicknessProperty) is
+            (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState);
 
     #endregion
 
@@ -1134,118 +1216,145 @@ public class MenuItem : HeaderedItemsControl
             return;
 
         var rect = new Rect(RenderSize);
-        var padding = Padding;
         var isTopLevel = VisualParent is Panel p && p.VisualParent is Menu;
+        var content = ControlRenderGeometry.GetContentRect(rect,
+            GetContentInsets(isTopLevel, CssLayout?.ContainingWidthCache ?? RenderSize.Width));
         var background = ResolveBackgroundBrush(isTopLevel);
 
         if (background != null)
         {
-            if (IsSelected)
+            var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
+            var cssBackground = backgroundLayer is
+                DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            if (cssBackground)
             {
-                if (isTopLevel)
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(rect, radii);
+                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
+                        rect, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
+            else if (IsSelected)
+            {
+                const double hoverInset = 2.0;
+                var hoverBounds = isTopLevel ? rect : new Rect(
+                    hoverInset, hoverInset,
+                    Math.Max(0, rect.Width - hoverInset * 2),
+                    Math.Max(0, rect.Height - hoverInset * 2));
+                if (cssRadius is { } radius)
                 {
-                    dc.DrawRoundedRectangle(background, null, rect, 4, 4);
+                    var radii = radius.Resolve(RenderSize);
+                    if (!isTopLevel)
+                        radii = radii.Inset(new Thickness(hoverInset)).Normalize(hoverBounds.Size);
+                    dc.DrawGeometry(background, null,
+                        new CssRoundedRectangleGeometry(hoverBounds, radii));
                 }
                 else
-                {
-                    const double hoverInset = 2.0;
-                    dc.DrawRoundedRectangle(
-                        background,
-                        null,
-                        new Rect(
-                            hoverInset,
-                            hoverInset,
-                            Math.Max(0, rect.Width - hoverInset * 2),
-                            Math.Max(0, rect.Height - hoverInset * 2)),
-                        4,
-                        4);
-                }
+                    dc.DrawRoundedRectangle(background, null, hoverBounds, 4, 4);
             }
+            else if (cssRadius is { } radius)
+                dc.DrawGeometry(background, null,
+                    new CssRoundedRectangleGeometry(rect, radius.Resolve(RenderSize)));
             else
-            {
                 dc.DrawRectangle(background, null, rect);
-            }
         }
 
-        var fgBrush = IsEnabled
+        var authoredForeground = ResolveAuthoredForegroundBrush();
+        var fgBrush = authoredForeground ?? (IsEnabled
             ? ResolvePrimaryTextBrush()
-            : ResolveMenuBrush("TextDisabled", s_disabledBrush);
+            : ResolveMenuBrush("TextDisabled", s_disabledBrush));
 
         if (isTopLevel)
         {
             // Top-level menu item
-            if (Header is string headerText)
+            if (Header is string headerText && FontSize > 0)
             {
-                var formattedText = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+                var formattedText = new FormattedText(headerText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = fgBrush
                 };
                 TextMeasurement.MeasureText(formattedText);
 
-                var textX = padding.Left;
-                var textY = (rect.Height - formattedText.Height) / 2;
+                var textX = content.X;
+                var textY = content.Y + (content.Height - formattedText.Height) / 2;
                 dc.DrawText(formattedText, new Point(textX, textY));
             }
         }
         else
         {
             // Submenu item
-            var currentX = 0.0;
+            var currentX = content.X;
 
             // Draw check mark or icon
             if (IsCheckable && IsChecked)
             {
-                DrawCheckMark(dc, currentX, rect.Height, fgBrush);
+                DrawCheckMark(dc, currentX, content.Y, content.Height, fgBrush);
             }
-            else if (Icon is string iconText)
+            else if (Icon is string iconText && FontSize > 0)
             {
-                var iconFormatted = new FormattedText(iconText, "Segoe UI Symbol", 12)
+                var iconFormatted = new FormattedText(iconText, "Segoe UI Symbol", FontSize * (12.0 / 14.0))
                 {
                     Foreground = fgBrush
                 };
                 TextMeasurement.MeasureText(iconFormatted);
-                dc.DrawText(iconFormatted, new Point(currentX + (IconColumnWidth - iconFormatted.Width) / 2, (rect.Height - iconFormatted.Height) / 2));
+                dc.DrawText(iconFormatted, new Point(currentX + (IconColumnWidth - iconFormatted.Width) / 2,
+                    content.Y + (content.Height - iconFormatted.Height) / 2));
             }
             currentX += IconColumnWidth;
 
             // Draw header
-            if (Header is string headerText)
+            if (Header is string headerText && FontSize > 0)
             {
-                var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+                var headerFormatted = new FormattedText(headerText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = fgBrush
                 };
                 TextMeasurement.MeasureText(headerFormatted);
-                dc.DrawText(headerFormatted, new Point(currentX, (rect.Height - headerFormatted.Height) / 2));
+                dc.DrawText(headerFormatted, new Point(currentX,
+                    content.Y + (content.Height - headerFormatted.Height) / 2));
             }
 
             // Draw input gesture text
-            if (!string.IsNullOrEmpty(InputGestureText))
+            if (!string.IsNullOrEmpty(InputGestureText) && FontSize > 0)
             {
-                var gestureFormatted = new FormattedText(InputGestureText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
+                var gestureFormatted = new FormattedText(InputGestureText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
-                    Foreground = ResolveMenuBrush("TextSecondary", s_gestureBrush)
+                    Foreground = authoredForeground ?? ResolveMenuBrush("TextSecondary", s_gestureBrush)
                 };
                 TextMeasurement.MeasureText(gestureFormatted);
                 var arrowReserve = HasItems ? ArrowColumnWidth : 0;
-                var gestureColumnLeft = rect.Width - arrowReserve - GestureColumnWidth;
+                var gestureColumnLeft = content.Right - arrowReserve - GestureColumnWidth;
                 var gestureX = gestureColumnLeft + GestureColumnWidth - gestureFormatted.Width - MenuItemPadding;
                 if (gestureX < gestureColumnLeft)
                 {
                     gestureX = gestureColumnLeft;
                 }
-                dc.DrawText(gestureFormatted, new Point(gestureX, (rect.Height - gestureFormatted.Height) / 2));
+                dc.DrawText(gestureFormatted, new Point(gestureX,
+                    content.Y + (content.Height - gestureFormatted.Height) / 2));
             }
 
             // Draw submenu arrow
             if (HasItems)
             {
-                DrawSubmenuArrow(dc, rect.Width - ArrowColumnWidth, rect.Height, fgBrush);
+                DrawSubmenuArrow(dc, content.Right - ArrowColumnWidth,
+                    content.Y, content.Height, fgBrush);
             }
         }
     }
 
-    private void DrawCheckMark(DrawingContext dc, double x, double height, Brush brush)
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
+    }
+
+    private void DrawCheckMark(DrawingContext dc, double x, double y, double height, Brush brush)
     {
         if (_arrowPen == null || _arrowPenBrush != brush)
         {
@@ -1254,18 +1363,18 @@ public class MenuItem : HeaderedItemsControl
         }
         var checkPen = _arrowPen;
         var centerX = x + IconColumnWidth / 2;
-        var centerY = height / 2;
+        var centerY = y + height / 2;
 
         dc.DrawLine(checkPen, new Point(centerX - 4, centerY), new Point(centerX - 1, centerY + 3));
         dc.DrawLine(checkPen, new Point(centerX - 1, centerY + 3), new Point(centerX + 4, centerY - 3));
     }
 
-    private void DrawSubmenuArrow(DrawingContext dc, double x, double height, Brush brush)
+    private void DrawSubmenuArrow(DrawingContext dc, double x, double y, double height, Brush brush)
     {
         const double arrowSize = 8.0;
         var arrowBounds = new Rect(
             x + (ArrowColumnWidth - arrowSize) / 2,
-            (height - arrowSize) / 2,
+            y + (height - arrowSize) / 2,
             arrowSize,
             arrowSize);
         ArrowIcons.DrawArrow(dc, brush, arrowBounds, ArrowIcons.Direction.Right);
@@ -1273,6 +1382,9 @@ public class MenuItem : HeaderedItemsControl
 
     private Brush ResolvePrimaryTextBrush()
     {
+        if (ResolveAuthoredForegroundBrush() is { } authored)
+            return authored;
+
         var valueSource = DependencyPropertyHelper.GetValueSource(this, Control.ForegroundProperty).BaseValueSource;
         if (Foreground != null && valueSource != BaseValueSource.Default)
         {
@@ -1282,8 +1394,21 @@ public class MenuItem : HeaderedItemsControl
         return ResolveMenuBrush("TextPrimary", s_whiteBrush);
     }
 
+    private Brush? ResolveAuthoredForegroundBrush() =>
+        Foreground != null &&
+        (HasLocalOrAnimatedValue(ForegroundProperty) ||
+         GetEffectiveValueLayer(ForegroundProperty) is
+             (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState) ||
+         DependencyPropertyHelper.GetValueSource(this, ForegroundProperty).BaseValueSource ==
+             BaseValueSource.Inherited)
+            ? Foreground : null;
+
     private Brush? ResolveBackgroundBrush(bool isTopLevel)
     {
+        if (GetEffectiveValueLayer(BackgroundProperty) is
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+            return Background;
+
         if (Background != null)
         {
             return Background;

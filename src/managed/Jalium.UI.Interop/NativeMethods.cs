@@ -62,6 +62,48 @@ public struct TextMetrics
     public float WidthIncludingTrailingWhitespace;
 }
 
+/// <summary>Font and single-glyph rulers in device-independent pixels.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct FontUnitMetrics
+{
+    internal uint StructSize;
+    public float XHeight;
+    public float CapHeight;
+    public float ZeroAdvance;
+    public float IdeographicAdvance;
+    public float Ascent;
+    public float LineHeight;
+    public uint Available;
+    public float UnderlinePosition;
+    public float UnderlineThickness;
+
+    internal static FontUnitMetrics Fallback(double size, double ascent = double.NaN, double lineHeight = double.NaN) => new()
+    {
+        StructSize = 40, XHeight = (float)(size * .5), CapHeight = (float)(double.IsFinite(ascent) ? ascent : size),
+        ZeroAdvance = (float)(size * .5), IdeographicAdvance = (float)size,
+        Ascent = (float)(double.IsFinite(ascent) ? ascent : size), LineHeight = (float)(double.IsFinite(lineHeight) ? lineHeight : size * 1.2),
+    };
+}
+
+/// <summary>Script-size percentages from a font's OpenType MATH table.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct FontMathConstants
+{
+    internal uint StructSize;
+    private uint _hasMathTable;
+    public float ScriptPercentScaleDown;
+    public float ScriptScriptPercentScaleDown;
+
+    public readonly bool HasMathTable => _hasMathTable != 0;
+
+    internal static FontMathConstants Fallback => new()
+    {
+        StructSize = 16,
+        ScriptPercentScaleDown = .71f,
+        ScriptScriptPercentScaleDown = .5041f,
+    };
+}
+
 /// <summary>
 /// Text hit-test result returned by native hit-testing APIs.
 /// </summary>
@@ -92,13 +134,13 @@ public struct TextHitTestResult
 /// </summary>
 internal static partial class NativeMethods
 {
-    private const string CoreLib = "jalium.native.core";
-    private const string D3D12Lib = "jalium.native.d3d12";
-    private const string VulkanLib = "jalium.native.vulkan";
-    private const string MetalLib = "jalium.native.metal";
-    private const string SoftwareLib = "jalium.native.software";
-    private const string PlatformLib = "jalium.native.platform";
-    private const string TextLib = "jalium.native.text";
+    private const string CoreLib = JaliumNativeLibraryNames.Core;
+    private const string D3D12Lib = JaliumNativeLibraryNames.D3D12;
+    private const string VulkanLib = JaliumNativeLibraryNames.Vulkan;
+    private const string MetalLib = JaliumNativeLibraryNames.Metal;
+    private const string SoftwareLib = JaliumNativeLibraryNames.Software;
+    private const string PlatformLib = JaliumNativeLibraryNames.Platform;
+    private const string TextLib = JaliumNativeLibraryNames.Text;
 
     [LibraryImport(TextLib, EntryPoint = "jalium_text_get_system_font_family_count")]
     internal static partial int TextGetSystemFontFamilyCount();
@@ -296,10 +338,23 @@ internal static partial class NativeMethods
         public long TextureBytes;
         public long FrameGpuWaitNs;
         public int SwapBufferCount;
-        public int Reserved0;
+        public int Reserved0; // D3D12 Vello dispatch count; historical ABI slot.
         public long LastFramePresentToReadyNs;
         public long FrameWaitableWaitNs;
         public long PresentBlockNs;
+        public long SoftwareRasterNs;
+        public long SoftwarePixelsVisited;
+        public long SoftwarePixelsBlended;
+        public long SoftwareAaSamples;
+        public long SoftwareClipRejectedPixels;
+        public long SoftwareParallelNs;
+        public long SoftwareCacheBytes;
+        public long SoftwareEffectCacheHits;
+        public long SoftwareEffectCacheMisses;
+        public int SoftwareWorkerCount;
+        public int SoftwareWorkerUtilizationPermille;
+        public int SoftwareEffectCacheEntries;
+        public int SoftwareGradientCacheEntries;
     }
 
     /// <summary>
@@ -355,6 +410,14 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_reclaim_idle_resources")]
     internal static partial int RenderTargetReclaimIdleResources(nint renderTarget);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_compact_idle_framebuffer_storage")]
+    internal static partial int RenderTargetCompactIdleFramebufferStorage(nint renderTarget);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_query_main_framebuffer_owned_bytes")]
+    internal static partial int RenderTargetQueryMainFramebufferOwnedBytes(
+        nint renderTarget,
+        out ulong ownedBytes);
 
     /// <summary>
     /// Arms a one-shot back-buffer readback: the render target's NEXT EndDraw
@@ -1090,6 +1153,68 @@ internal static partial class NativeMethods
         float uvOffsetX, float uvOffsetY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_drop_shadow_effect_elliptical")]
+    internal static partial JaliumResult DrawDropShadowEffectElliptical(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        in NativeEllipticalClip contour);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_drop_shadow_effect_spread_elliptical")]
+    internal static partial JaliumResult DrawDropShadowEffectSpreadElliptical(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        in NativeEllipticalClip spreadContour);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_css_box_shadow_effect_elliptical")]
+    internal static partial JaliumResult DrawCssBoxShadowEffectElliptical(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        in NativeEllipticalClip originalContour,
+        in NativeEllipticalClip spreadContour);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_paint_css_outer_shadow_layer_elliptical")]
+    internal static partial JaliumResult PaintCssOuterShadowLayerElliptical(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        in NativeEllipticalClip originalContour,
+        in NativeEllipticalClip spreadContour);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_paint_css_inner_shadow_layer_elliptical")]
+    internal static partial JaliumResult PaintCssInnerShadowLayerElliptical(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        in NativeEllipticalClip contour);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_supports_css_shadow_layers")]
+    internal static partial int SupportsCssShadowLayers(nint renderTarget);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_filter_drop_shadow_effect")]
+    internal static partial JaliumResult DrawFilterDropShadowEffect(nint renderTarget,
+        float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_css_text_shadows")]
+    internal static partial JaliumResult DrawCssTextShadows(nint renderTarget,
+        float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        ReadOnlySpan<float> layers, uint layerCount);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_css_text_shadows_only")]
+    internal static partial JaliumResult DrawCssTextShadowsOnly(nint renderTarget,
+        float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        ReadOnlySpan<float> layers, uint layerCount);
+
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_outer_glow_effect")]
     internal static partial void DrawOuterGlowEffect(nint renderTarget,
         float x, float y, float w, float h,
@@ -1105,10 +1230,31 @@ internal static partial class NativeMethods
         float uvOffsetX, float uvOffsetY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_inner_shadow_effect_elliptical")]
+    internal static partial JaliumResult DrawInnerShadowEffectElliptical(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        in NativeEllipticalClip contour);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_inner_shadow_layer_elliptical")]
+    internal static partial JaliumResult DrawInnerShadowLayerElliptical(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        in NativeEllipticalClip contour);
+
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_color_matrix_effect")]
     internal static partial void DrawColorMatrixEffect(nint renderTarget,
         float x, float y, float w, float h,
         ReadOnlySpan<float> matrix);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_color_matrix_chain_effect")]
+    internal static partial JaliumResult DrawColorMatrixChainEffect(nint renderTarget,
+        float x, float y, float w, float h,
+        ReadOnlySpan<float> matrices, uint matrixCount);
 
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_emboss_effect")]
     internal static partial void DrawEmbossEffect(nint renderTarget,
@@ -1185,6 +1331,13 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_push_rounded_rect_clip")]
     internal static partial void PushRoundedRectClip(nint renderTarget, float x, float y, float width, float height, float rx, float ry);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_push_elliptical_rect_clip")]
+    internal static partial JaliumResult PushEllipticalRectClip(nint renderTarget, in NativeEllipticalClip clip);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_push_path_clip")]
+    internal static unsafe partial JaliumResult PushPathClip(nint renderTarget,
+        float startX, float startY, float* commands, uint commandLength, int fillRule);
 
     /// <summary>
     /// Pushes a per-corner rounded-rect clip with independent radii for each corner.
@@ -1384,6 +1537,18 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_font_metrics")]
     internal static partial int TextFormatGetFontMetrics(nint textFormat, out TextMetrics metrics);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_font_unit_metrics")]
+    internal static partial int TextFormatGetFontUnitMetrics(nint textFormat, ref FontUnitMetrics metrics);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_font_math_constants")]
+    internal static partial int TextFormatGetFontMathConstants(nint textFormat, ref FontMathConstants constants);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_font_resource_register", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial nint FontResourceRegister(string family, nint data, uint size);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_font_resource_release")]
+    internal static partial void FontResourceRelease(nint resource);
 
     #endregion
 
@@ -1718,6 +1883,9 @@ internal static partial class NativeMethods
     internal static partial int InputGetTouchCapabilities(
         out int touchPresent,
         out int maxContacts);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_input_get_pointing_capabilities")]
+    internal static partial JaliumResult InputGetPointingCapabilities(out int capabilities);
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_input_get_cursor_pos")]
     internal static partial JaliumResult InputGetCursorPos(out float x, out float y);

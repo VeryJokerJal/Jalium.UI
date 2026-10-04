@@ -1,4 +1,5 @@
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -8,6 +9,26 @@ namespace Jalium.UI.Controls;
 [Jalium.UI.Markup.ContentProperty("Children")]
 public abstract class Panel : FrameworkElement
 {
+    private Border? _cssBorderPainter;
+
+    internal override bool LayoutClipIncludesSelf =>
+        !CanCompositeCssBoxShadowBeforeChildren ||
+        !CssOverflowProperties.TryGetActiveClipMargin(this, out _);
+    // These built-in panels use Panel.OnRender solely for their background.
+    // Panels that override OnRender (including user subclasses) retain the
+    // whole-subtree effect path until their paint phases are explicitly split.
+    protected override bool CanCompositeCssBoxShadowBeforeChildren
+    {
+        get
+        {
+            var type = GetType();
+            return type == typeof(Canvas) || type == typeof(DockPanel) ||
+                   type == typeof(FlexPanel) || type == typeof(Grid) ||
+                   type == typeof(StackPanel) || type == typeof(WrapPanel) ||
+                   type == typeof(Primitives.UniformGrid);
+        }
+    }
+
     #region Background Property
 
     /// <summary>
@@ -127,7 +148,10 @@ public abstract class Panel : FrameworkElement
         InvalidateVisual();
     }
 
+    internal void InvalidateCssFlowOrder() => InvalidateZOrder();
+
     private int[]? _zIndexValues;
+    private int[]? _cssPaintRanks;
 
     private void EnsureZOrderMap()
     {
@@ -143,17 +167,20 @@ public abstract class Panel : FrameworkElement
             // nondecreasing. This is by far the most common case (all values are zero),
             // so avoid allocating sorting buffers for every panel in the visual tree.
             var previousZIndex = int.MinValue;
+            var previousRank = 0;
             var requiresSort = false;
             for (int i = 0; i < count; i++)
             {
                 var zIndex = GetZIndex(children[i]);
-                if (zIndex < previousZIndex)
+                var rank = Jalium.UI.Styling.CssFloatProperties.PaintRank(this, children[i]);
+                if (zIndex < previousZIndex || zIndex == previousZIndex && rank < previousRank)
                 {
                     requiresSort = true;
                     break;
                 }
 
                 previousZIndex = zIndex;
+                previousRank = rank;
             }
 
             if (!requiresSort)
@@ -173,17 +200,20 @@ public abstract class Panel : FrameworkElement
                 _zIndexValues = new int[count];
 
             var zValues = _zIndexValues;
+            if (_cssPaintRanks is null || _cssPaintRanks.Length < count) _cssPaintRanks = new int[count];
+            var ranks = _cssPaintRanks;
             for (int i = 0; i < count; i++)
             {
                 map[i] = i;
                 zValues[i] = GetZIndex(children[i]);
+                ranks[i] = Jalium.UI.Styling.CssFloatProperties.PaintRank(this, children[i]);
             }
 
             Array.Sort(map, (a, b) =>
             {
                 var za = zValues[a];
                 var zb = zValues[b];
-                return za != zb ? za.CompareTo(zb) : a.CompareTo(b);
+                return za != zb ? za.CompareTo(zb) : ranks[a] != ranks[b] ? ranks[a].CompareTo(ranks[b]) : a.CompareTo(b);
             });
 
             _zOrderDirty = false;
@@ -294,6 +324,70 @@ public abstract class Panel : FrameworkElement
             ? Enumerable.Empty<object>().GetEnumerator()
             : base.LogicalChildren;
 
+    /// <summary>
+    /// Whether the child is taken out of flow by CSS <c>position: absolute</c>. Panel
+    /// Measure/Arrange loops skip such children (they contribute nothing to the flow or
+    /// the panel's desired size) and place them via
+    /// <see cref="ArrangeCssAbsoluteChildren"/>. A custom panel opts into the protocol
+    /// with three lines: `if (IsCssAbsolute(child)) continue;` inside both loops, plus
+    /// the two helper calls at the end of MeasureOverride/ArrangeOverride.
+    /// </summary>
+    protected static bool IsCssAbsolute(UIElement? child)
+        => child is FrameworkElement fe &&
+           fe.CssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Absolute };
+
+    /// <summary>
+    /// Measures every absolutely positioned child (constraint pre-narrowed by opposing
+    /// insets). Their desired sizes must not join the panel's desired size.
+    /// </summary>
+    protected void MeasureCssAbsoluteChildren(Size availableSize)
+    {
+        foreach (var child in InternalChildren.EnumerateStruct())
+        {
+            if (child is not FrameworkElement fe ||
+                fe.CssLayout is not { Position: Jalium.UI.Styling.CssPositionMode.Absolute } layout ||
+                child.Visibility == Visibility.Collapsed)
+            {
+                continue;
+            }
+
+            child.Measure(Jalium.UI.Styling.CssAbsoluteLayout.ComputeMeasureConstraint(layout, availableSize, fe));
+        }
+    }
+
+    internal void MeasureCssLayoutAbsoluteChildren(Size availableSize) => MeasureCssAbsoluteChildren(availableSize);
+    internal void ArrangeCssLayoutAbsoluteChildren(Size finalSize) => ArrangeCssAbsoluteChildren(finalSize);
+
+    /// <summary>Places every absolutely positioned child per the CSS inset rules.</summary>
+    protected void ArrangeCssAbsoluteChildren(Size finalSize)
+    {
+        foreach (var child in InternalChildren.EnumerateStruct())
+        {
+            if (child is not FrameworkElement fe ||
+                fe.CssLayout is not { Position: Jalium.UI.Styling.CssPositionMode.Absolute } layout ||
+                child.Visibility == Visibility.Collapsed)
+            {
+                continue;
+            }
+
+            var effectiveWidth = fe.Width;
+            if (double.IsNaN(effectiveWidth) && layout.Width.IsSet)
+            {
+                effectiveWidth = layout.Width.Resolve(finalSize.Width, double.NaN);
+            }
+
+            var effectiveHeight = fe.Height;
+            if (double.IsNaN(effectiveHeight) && layout.Height.IsSet)
+            {
+                effectiveHeight = layout.Height.Resolve(finalSize.Height, double.NaN);
+            }
+
+            var slot = Jalium.UI.Styling.CssAbsoluteLayout.ComputeSlot(
+                layout, finalSize, child.DesiredSize, effectiveWidth, effectiveHeight, fe);
+            child.Arrange(slot);
+        }
+    }
+
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
@@ -311,14 +405,37 @@ public abstract class Panel : FrameworkElement
             return;
         }
 
-        dc.DrawRectangle(Background, null, new Rect(renderSize));
+        var bounds = new Rect(renderSize);
+        var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+            CssLayout?.ContainingWidthCache ?? renderSize.Width);
+        var cssRadius = CssBorderRadiusProperties.Get(this);
+        var radii = cssRadius?.Resolve(renderSize) ?? default;
+        var rounded = cssRadius is null ? null : new CssRoundedRectangleGeometry(bounds, radii);
+        void DrawShape(Brush brush)
+        {
+            if (rounded is null) dc.DrawRectangle(brush, null, bounds);
+            else dc.DrawGeometry(brush, null, rounded);
+        }
+        if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                bounds, radii, border, padding, DrawShape))
+            DrawShape(Background);
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     /// <inheritdoc />
     protected override HitTestResult? HitTestCore(Point point)
     {
         var result = base.HitTestCore(point);
-        if (result?.VisualHit == this && Background == null)
+        if (result?.VisualHit == this && Background == null &&
+            (CssBorderPaintProperties.Get(this) is null ||
+             CssBoxMetrics.BackgroundInsets(this,
+                 CssLayout?.ContainingWidthCache ?? RenderSize.Width).Border == new Thickness(0)))
         {
             return null;
         }

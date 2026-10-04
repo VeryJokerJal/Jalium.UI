@@ -89,7 +89,7 @@ public static class JaliumAppExtensions
     /// <para>
     /// Tunables live on the singleton <see cref="ResourceReclamationOptions"/>
     /// resolved from the application's service provider. Defaults: idle window
-    /// 2 s, scan once every 60 frames (~once per second at 60 Hz), both the
+    /// 2 s, scan once every 60 frames with a one-second idle timer fallback, both the
     /// drawing-cache eviction and the <see cref="IReclaimableResource"/>
     /// callback are on. Mutate the options at any time to retune at runtime.
     /// </para>

@@ -33,12 +33,22 @@ public static class PathMarkupParser
     /// </summary>
     /// <exception cref="FormatException">The string is not valid path markup.</exception>
     public static PathGeometry Parse(string pathData)
+        => ParseCore(pathData, svgOnly: false);
+
+    /// <summary>Parses SVG path data without the XAML fill-rule extension.</summary>
+    internal static PathGeometry ParseSvgPathData(string pathData)
+        => ParseCore(pathData, svgOnly: true);
+
+    private static PathGeometry ParseCore(string pathData, bool svgOnly)
     {
         ArgumentNullException.ThrowIfNull(pathData);
 
         var geometry = new PathGeometry();
         if (string.IsNullOrWhiteSpace(pathData))
+        {
+            if (svgOnly) throw new FormatException("SVG path data must not be empty.");
             return geometry;
+        }
 
         var ctx = new ParseContext(pathData);
         PathFigure? currentFigure = null;
@@ -58,6 +68,8 @@ public static class PathMarkupParser
             // so it does not affect implicit-repeat tracking.
             if (c == 'F' || c == 'f')
             {
+                if (svgOnly)
+                    throw new FormatException($"The XAML fill-rule command is not SVG path data at position {ctx.Position}.");
                 ctx.Advance();
                 ctx.SkipSeparators();
                 if (ctx.HasMore && ctx.Peek() == '0')
@@ -106,6 +118,8 @@ public static class PathMarkupParser
 
             bool isRelative = char.IsLower(command);
             char upperCmd = char.ToUpperInvariant(command);
+            if (svgOnly && lastCommand == '\0' && upperCmd != 'M')
+                throw new FormatException("SVG path data must start with a moveto command.");
 
             switch (upperCmd)
             {
@@ -255,6 +269,8 @@ public static class PathMarkupParser
             lastCommand = command;
         }
 
+        if (svgOnly && !geometry.Figures.Any(figure => figure.Segments.Count > 0))
+            throw new FormatException("SVG path data must contain a drawable segment.");
         return geometry;
     }
 
@@ -345,7 +361,8 @@ public static class PathMarkupParser
                 throw new FormatException($"Expected a number at position {_pos}.");
 
             var slice = _data[start.._pos];
-            if (!double.TryParse(slice, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+            if (!double.TryParse(slice, NumberStyles.Float, CultureInfo.InvariantCulture, out double value) ||
+                !double.IsFinite(value))
                 throw new FormatException($"'{slice.ToString()}' is not a valid number at position {start}.");
 
             return value;

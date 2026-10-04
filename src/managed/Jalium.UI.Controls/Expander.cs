@@ -160,21 +160,11 @@ public class Expander : HeaderedContentControl
         // Sync initial state without animation
         if (_contentBorder != null)
         {
-            if (IsExpanded)
-            {
-                _contentBorder.Visibility = Visibility.Visible;
-                if (_chevron != null)
-                {
-                    var rt = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
-                    rt.Angle = 90;
-                    _chevron.RenderTransformOrigin = new Point(0.5, 0.5);
-                    _chevron.RenderTransform = rt;
-                }
-            }
-            else
-            {
-                _contentBorder.Visibility = Visibility.Collapsed;
-            }
+            _contentBorder.Visibility = IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+        }
+        if (_chevron != null)
+        {
+            ExpandCollapseAnimator.EnsureRotateTransform(_chevron).Angle = IsExpanded ? 90.0 : 0.0;
         }
     }
 
@@ -273,10 +263,7 @@ public class Expander : HeaderedContentControl
                 _contentBorder.Visibility = newValue ? Visibility.Visible : Visibility.Collapsed;
                 if (_chevron != null)
                 {
-                    var transform = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
-                    transform.Angle = newValue ? 90.0 : 0.0;
-                    _chevron.RenderTransformOrigin = new Point(0.5, 0.5);
-                    _chevron.RenderTransform = transform;
+                    ExpandCollapseAnimator.EnsureRotateTransform(_chevron).Angle = newValue ? 90.0 : 0.0;
                 }
             }
             else if (newValue)

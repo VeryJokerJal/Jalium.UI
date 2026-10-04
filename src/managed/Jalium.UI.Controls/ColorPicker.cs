@@ -3,6 +3,8 @@ using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -22,6 +24,8 @@ public class ColorPicker : Control
     private static readonly SolidColorBrush s_grayBorderBrush = new(ThemeColors.ControlBorder);
     private static readonly SolidColorBrush s_checkerLightBrush = new(Color.FromRgb(200, 200, 200));
     private static readonly SolidColorBrush s_checkerDarkBrush = new(Color.FromRgb(150, 150, 150));
+    private static readonly object s_checkerBitmapLock = new();
+    private static readonly Dictionary<(int Width, int Height), BitmapImage> s_checkerBitmaps = new();
 
     #region Dependency Properties
 
@@ -215,6 +219,7 @@ public class ColorPicker : Control
     private Rect _hueSliderRect;
     private Rect _alphaSliderRect;
     private Rect _previewRect;
+    private Border? _cssBorderPainter;
 
     private bool _isDraggingSpectrum;
     private bool _isDraggingHue;
@@ -455,11 +460,13 @@ public class ColorPicker : Control
     {
         var padding = Padding;
         var compact = IsCompact;
+        var cssEdges = UsesCssBoxGeometry();
         var specSize = compact ? CompactSpectrumSize : SpectrumSize;
         var sliderH = compact ? CompactSliderHeight : SliderHeight;
         var spacing = compact ? CompactSpacing : Spacing;
 
-        var width = specSize + padding.TotalWidth;
+        var width = specSize + padding.TotalWidth +
+            (cssEdges ? BorderThickness.TotalWidth : 0);
         var height = padding.Top;
 
         if (IsColorSpectrumVisible)
@@ -482,7 +489,7 @@ public class ColorPicker : Control
             height += PreviewSize;
         }
 
-        height += padding.Bottom;
+        height += padding.Bottom + (cssEdges ? BorderThickness.TotalHeight : 0);
 
         return new Size(width, height);
     }
@@ -498,23 +505,37 @@ public class ColorPicker : Control
 
         var rect = new Rect(RenderSize);
         var padding = Padding;
+        var border = BorderThickness;
+        var cssEdges = UsesCssBoxGeometry();
         var compact = IsCompact;
         var specSize = compact ? CompactSpectrumSize : SpectrumSize;
         var sliderH = compact ? CompactSliderHeight : SliderHeight;
         var spacing = compact ? CompactSpacing : Spacing;
 
         // Draw background
-        if (Background != null)
+        if (Background is { } background)
         {
-            dc.DrawRectangle(Background, null, rect);
+            if (cssEdges)
+            {
+                var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(rect, radii);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty,
+                        background, dc, rect, radii, border, padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
+            else
+                dc.DrawRectangle(background, null, rect);
         }
 
-        var currentY = padding.Top;
+        var contentLeft = padding.Left + (cssEdges ? border.Left : 0);
+        var currentY = padding.Top + (cssEdges ? border.Top : 0);
 
         // Draw color spectrum
         if (IsColorSpectrumVisible)
         {
-            _spectrumRect = new Rect(padding.Left, currentY, specSize, specSize);
+            _spectrumRect = new Rect(contentLeft, currentY, specSize, specSize);
             DrawColorSpectrum(dc, _spectrumRect);
             currentY += specSize + spacing;
         }
@@ -522,7 +543,7 @@ public class ColorPicker : Control
         // Draw hue slider
         if (IsColorSliderVisible)
         {
-            _hueSliderRect = new Rect(padding.Left, currentY, specSize, sliderH);
+            _hueSliderRect = new Rect(contentLeft, currentY, specSize, sliderH);
             DrawHueSlider(dc, _hueSliderRect);
             currentY += sliderH + spacing;
         }
@@ -530,7 +551,7 @@ public class ColorPicker : Control
         // Draw alpha slider
         if (IsAlphaEnabled && IsColorSliderVisible)
         {
-            _alphaSliderRect = new Rect(padding.Left, currentY, specSize, sliderH);
+            _alphaSliderRect = new Rect(contentLeft, currentY, specSize, sliderH);
             DrawAlphaSlider(dc, _alphaSliderRect);
             currentY += sliderH + spacing;
         }
@@ -538,14 +559,14 @@ public class ColorPicker : Control
         // Draw preview (hidden in compact mode)
         if (!compact && IsColorPreviewVisible)
         {
-            _previewRect = new Rect(padding.Left, currentY, PreviewSize, PreviewSize);
+            _previewRect = new Rect(contentLeft, currentY, PreviewSize, PreviewSize);
             DrawPreview(dc, _previewRect);
 
             // Draw hex value
-            if (IsHexInputVisible)
+            if (IsHexInputVisible && FontSize > 0)
             {
                 var hexText = $"#{_alpha:X2}{Color.R:X2}{Color.G:X2}{Color.B:X2}";
-                var formattedText = new FormattedText(hexText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+                var formattedText = new FormattedText(hexText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = ResolveForegroundBrush()
                 };
@@ -555,6 +576,21 @@ public class ColorPicker : Control
             }
         }
     }
+
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+    }
+
+    private bool UsesCssBoxGeometry()
+        => GetEffectiveValueLayer(BorderThicknessProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(PaddingProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(BackgroundProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           CssBorderRadiusProperties.Get(this) is not null;
 
     private void DrawColorSpectrum(DrawingContext dc, Rect rect)
     {
@@ -660,6 +696,19 @@ public class ColorPicker : Control
     {
         const double CellSize = 4;
 
+        int pixelWidth = (int)Math.Round(rect.Width);
+        int pixelHeight = (int)Math.Round(rect.Height);
+        bool pixelAligned = pixelWidth > 0 && pixelHeight > 0 &&
+            Math.Abs(rect.X - Math.Round(rect.X)) < 0.0001 &&
+            Math.Abs(rect.Y - Math.Round(rect.Y)) < 0.0001 &&
+            Math.Abs(rect.Width - pixelWidth) < 0.0001 &&
+            Math.Abs(rect.Height - pixelHeight) < 0.0001;
+        if (pixelAligned)
+        {
+            dc.DrawImage(GetCheckerboardBitmap(pixelWidth, pixelHeight), rect);
+            return;
+        }
+
         dc.DrawRectangle(s_checkerLightBrush, null, rect);
 
         var row = 0;
@@ -675,6 +724,38 @@ public class ColorPicker : Control
                     null,
                     new Rect(x, y, Math.Min(CellSize, rect.Right - x), height));
             }
+        }
+    }
+
+    private static BitmapImage GetCheckerboardBitmap(int width, int height)
+    {
+        lock (s_checkerBitmapLock)
+        {
+            if (s_checkerBitmaps.TryGetValue((width, height), out var cached))
+            {
+                return cached;
+            }
+
+            const int cellSize = 4;
+            var pixels = new byte[checked(width * height * 4)];
+            for (int y = 0; y < height; y++)
+            {
+                int cellY = y / cellSize;
+                for (int x = 0; x < width; x++)
+                {
+                    int cellX = x / cellSize;
+                    byte value = ((cellX + cellY) & 1) != 0 ? (byte)150 : (byte)200;
+                    int offset = (y * width + x) * 4;
+                    pixels[offset] = value;
+                    pixels[offset + 1] = value;
+                    pixels[offset + 2] = value;
+                    pixels[offset + 3] = 255;
+                }
+            }
+
+            var bitmap = BitmapImage.FromPixels(pixels, width, height, width * 4);
+            s_checkerBitmaps[(width, height)] = bitmap;
+            return bitmap;
         }
     }
 

@@ -1061,12 +1061,53 @@ JaliumResult jalium_input_get_touch_capabilities(
     if (!touchPresent || !maxContacts)
         return JALIUM_ERROR_INVALID_ARGUMENT;
     const int digitizer = GetSystemMetrics(SM_DIGITIZER);
-    const int touchMask =
-        NID_READY | NID_INTEGRATED_TOUCH | NID_EXTERNAL_TOUCH;
-    *touchPresent = (digitizer & touchMask) != 0 ? 1 : 0;
+    const int touchMask = NID_INTEGRATED_TOUCH | NID_EXTERNAL_TOUCH;
+    *touchPresent = (digitizer & NID_READY) != 0 &&
+        (digitizer & touchMask) != 0 ? 1 : 0;
     *maxContacts = *touchPresent != 0
         ? std::max(GetSystemMetrics(SM_MAXIMUMTOUCHES), 0)
         : 0;
+    return JALIUM_OK;
+}
+
+JaliumResult jalium_input_get_pointing_capabilities(int32_t* capabilities)
+{
+    if (!capabilities) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *capabilities = 0;
+    const int digitizer = GetSystemMetrics(SM_DIGITIZER);
+    if ((digitizer & NID_READY) != 0)
+    {
+        if ((digitizer & (NID_INTEGRATED_TOUCH | NID_EXTERNAL_TOUCH)) != 0)
+            *capabilities |= JALIUM_POINTING_COARSE;
+        if ((digitizer & (NID_INTEGRATED_PEN | NID_EXTERNAL_PEN)) != 0)
+            *capabilities |= JALIUM_POINTING_FINE;
+    }
+
+    UINT count = 0;
+    bool hasMouse = false;
+    bool enumerated = false;
+    const UINT listed = GetRawInputDeviceList(nullptr, &count, sizeof(RAWINPUTDEVICELIST));
+    if (listed != static_cast<UINT>(-1))
+    {
+        enumerated = count == 0;
+        if (count != 0)
+        {
+            std::vector<RAWINPUTDEVICELIST> devices(count);
+            if (GetRawInputDeviceList(devices.data(), &count, sizeof(RAWINPUTDEVICELIST))
+                != static_cast<UINT>(-1))
+            {
+                enumerated = true;
+                for (UINT index = 0; index < count; ++index)
+                    hasMouse |= devices[index].dwType == RIM_TYPEMOUSE;
+            }
+        }
+    }
+    // RDP input is virtual and omitted by the raw device list.
+    if (!enumerated || (!hasMouse && GetSystemMetrics(SM_REMOTESESSION) != 0))
+        hasMouse = GetSystemMetrics(SM_MOUSEPRESENT) != 0;
+    if (hasMouse)
+        *capabilities |= JALIUM_POINTING_FINE | JALIUM_POINTING_HOVER |
+            JALIUM_POINTING_PRIMARY_FINE;
     return JALIUM_OK;
 }
 

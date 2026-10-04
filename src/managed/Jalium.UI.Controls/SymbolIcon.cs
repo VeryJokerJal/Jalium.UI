@@ -73,7 +73,7 @@ public class SymbolIcon : IconElement
             Foreground = foreground,
             MaxTextWidth = RenderSize.Width,
             MaxTextHeight = RenderSize.Height
-        };
+        }.ApplyTextOptionsFrom(this);
 
         // Measure with DirectWrite to get accurate glyph dimensions
         TextMeasurement.MeasureText(ft);

@@ -1,0 +1,16 @@
+{
+  "dotnetSdk": "10.0.300",
+  "workloadSet": "10.0.300.2",
+  "xcode": "26.6",
+  "cmakeMinimum": "3.28",
+  "deploymentTargets": {
+    "macOS": "15.0",
+    "iOS": "18.0",
+    "tvOS": "18.0",
+    "visionOS": "2.0"
+  },
+  "shaderToolchain": {
+    "dxc": "pinned-by-eng/apple/dependencies.lock.json",
+    "spirvCross": "pinned-by-eng/apple/dependencies.lock.json"
+  }
+}

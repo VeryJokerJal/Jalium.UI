@@ -165,6 +165,23 @@ public interface IEffectDrawingContext
     /// </summary>
     bool IsElementEffectCaptureEnabled => true;
 
+    /// <summary>Whether CSS shadows can be painted directly into a filter capture.</summary>
+    bool SupportsCssShadowLayers => false;
+
+    /// <summary>Whether a captured inline fragment can paint shadows without its text.</summary>
+    bool SupportsCssTextShadowsOnly => false;
+
+    /// <summary>Paints the captured fragment's CSS text shadows below a later text pass.</summary>
+    void ApplyCssTextShadowsOnly(IEffect shadows, float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY) { }
+
+    /// <summary>Paints only one CSS shadow layer, without compositing captured content.</summary>
+    void PaintCssShadowLayers(IEffect shadows, bool inset,
+        float x, float y, float w, float h,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY,
+        Thickness borderThickness) { }
+
     /// <summary>
     /// Begins capturing element content into an offscreen bitmap for effect processing.
     /// </summary>
@@ -183,4 +200,29 @@ public interface IEffectDrawingContext
     void ApplyElementEffect(IEffect effect, float x, float y, float w, float h,
         float captureOriginX = 0, float captureOriginY = 0,
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0);
+
+    /// <summary>
+    /// Applies an element effect with independent horizontal and vertical radii at every corner.
+    /// Existing drawing contexts remain source/binary compatible through this default projection.
+    /// </summary>
+    void ApplyElementEffectElliptical(IEffect effect, float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY)
+        => ApplyElementEffect(effect, x, y, w, h, captureOriginX, captureOriginY,
+            topLeftX, topRightX, bottomRightX, bottomLeftX);
+
+    /// <summary>
+    /// Supplies border widths so inset shadows can use the padding edge while outer shadows
+    /// continue using the border edge. Implementations that do not support this extension use
+    /// the two-axis border-box contour through the default method.
+    /// </summary>
+    void ApplyElementEffectEllipticalWithBorder(IEffect effect, float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float topLeftX, float topLeftY, float topRightX, float topRightY,
+        float bottomRightX, float bottomRightY, float bottomLeftX, float bottomLeftY,
+        Thickness borderThickness)
+        => ApplyElementEffectElliptical(effect, x, y, w, h, captureOriginX, captureOriginY,
+            topLeftX, topLeftY, topRightX, topRightY,
+            bottomRightX, bottomRightY, bottomLeftX, bottomLeftY);
 }

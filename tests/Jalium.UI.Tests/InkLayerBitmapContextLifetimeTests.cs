@@ -187,7 +187,7 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
     }
 
     [Fact]
-    public void FinalizedNonCurrentContext_LeavesBackendAliveForLegacyWrapper()
+    public void NativeTextFormat_PinsNonCurrentContextUntilDisposed()
     {
         // Keep a different context current so the temporary context below is
         // not rooted by RenderContext.Current and can genuinely be finalized.
@@ -197,18 +197,16 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
 
         ForceFinalizers();
 
-        Assert.False(weakContext.TryGetTarget(out _));
+        Assert.True(IsContextAlive(weakContext));
 
-        // NativeTextFormat intentionally does not retain/pin RenderContext. Its
-        // native DWrite/backend state must remain usable after the context's
-        // leak-safe finalizer; explicit context disposal is the deterministic
-        // teardown path until every legacy wrapper participates in pinning.
+        // The format's backend lease keeps its context alive while the native
+        // font factory is still in use.
         _ = format.GetFontMetrics();
         format.Dispose();
+        ForceFinalizers();
+        Assert.False(IsContextAlive(weakContext));
 
-        // The finalizer deliberately detached (rather than destroyed) this
-        // native context. Reclaim it explicitly so the regression itself does
-        // not leak process resources in the test host.
+        // The finalizer detaches this native context. Reclaim it explicitly.
         NativeMethods.ContextDestroy(nativeContextHandle);
     }
 
@@ -444,6 +442,10 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
         GC.WaitForPendingFinalizers();
         GC.Collect();
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool IsContextAlive(WeakReference<RenderContext> weakContext)
+        => weakContext.TryGetTarget(out _);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static (NativeTextFormat Format, WeakReference<RenderContext> Context, nint NativeHandle)

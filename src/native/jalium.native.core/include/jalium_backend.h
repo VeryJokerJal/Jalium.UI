@@ -1014,6 +1014,11 @@ public:
         return JALIUM_ERROR_NOT_SUPPORTED;
     }
 
+    /// Diagnostic/benchmark synchronization point. CPU backends are complete
+    /// when EndDraw returns, so the default is an immediate success; queued GPU
+    /// backends override and wait for their most recently submitted frame.
+    virtual JaliumResult WaitForCompletion() { return JALIUM_OK; }
+
     /// Returns the OS HANDLE (cast to intptr_t for portability) that the
     /// backend uses as its frame-latency waitable, or 0 when no such
     /// object exists (older platforms, non-D3D12 backends). Callers use
@@ -1221,6 +1226,162 @@ protected:
     JaliumRenderingEngine pendingEngine_ = JALIUM_ENGINE_AUTO;
 };
 
+/// Optional clip extension. The existing RenderTarget vtable remains stable;
+/// backends compiled before this extension safely report NOT_SUPPORTED.
+class EllipticalClipProvider {
+public:
+    virtual JaliumResult PushEllipticalRectClip(const JaliumEllipticalRectClip& clip) = 0;
+protected:
+    ~EllipticalClipProvider() = default;
+};
+
+/// Optional path clip extension. Command encoding matches RenderTarget::FillPath.
+/// A successful push is balanced by the ordinary RenderTarget::PopClip call.
+class PathClipProvider {
+public:
+    virtual JaliumResult PushPathClip(float startX, float startY,
+        const float* commands, uint32_t commandLength, int32_t fillRule) = 0;
+protected:
+    ~PathClipProvider() = default;
+};
+
+/// Optional effect-contour extension. Keeping it outside RenderTarget preserves the
+/// established backend vtable for native payloads compiled before two-axis shadows.
+class EllipticalEffectProvider {
+public:
+    virtual JaliumResult DrawDropShadowEffectElliptical(
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) = 0;
+    virtual JaliumResult DrawInnerShadowEffectElliptical(
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) = 0;
+protected:
+    ~EllipticalEffectProvider() = default;
+};
+
+/// Optional outer-shadow extension. The supplied contour already includes CSS spread;
+/// x/y/w/h still describe the original content that must be composited above it.
+/// A separate interface preserves the established effect-provider vtable.
+class SpreadShadowProvider {
+public:
+    virtual JaliumResult DrawDropShadowEffectSpreadElliptical(
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& spreadContour) = 0;
+protected:
+    ~SpreadShadowProvider() = default;
+};
+
+/// CSS outer box-shadow uses the spread contour for Gaussian coverage and
+/// excludes the original border-box contour, even when the box is transparent.
+class CssBoxShadowProvider {
+public:
+    virtual JaliumResult DrawCssBoxShadowEffectElliptical(
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& originalContour,
+        const JaliumEllipticalRectClip& spreadContour) = 0;
+protected:
+    ~CssBoxShadowProvider() = default;
+};
+
+/// Paint CSS shadow geometry directly into the active filter capture.
+/// No previous effect capture is sampled or composited.
+class CssShadowLayerProvider {
+public:
+    virtual JaliumResult PaintCssOuterShadowLayerElliptical(
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        const JaliumEllipticalRectClip& originalContour,
+        const JaliumEllipticalRectClip& spreadContour) = 0;
+    virtual JaliumResult PaintCssInnerShadowLayerElliptical(
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        const JaliumEllipticalRectClip& contour) = 0;
+protected:
+    ~CssShadowLayerProvider() = default;
+};
+
+/// Optional CSS filter shadow path. It blurs the captured input alpha mask;
+/// the content and padded capture rectangles remain separate so the original
+/// image can be composited over its shifted shadow.
+class FilterDropShadowProvider {
+public:
+    virtual JaliumResult DrawFilterDropShadowEffect(
+        float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a) = 0;
+protected:
+    ~FilterDropShadowProvider() = default;
+};
+
+/// Paints a CSS text-shadow list from one isolated text-and-decoration alpha
+/// capture. Each authored layer is seven floats: blur radius, X/Y offsets,
+/// straight RGB and opacity. The provider paints layers back-to-front and
+/// optionally composites the captured text once.
+class CssTextShadowProvider {
+public:
+    virtual JaliumResult DrawCssTextShadows(
+        float x, float y, float w, float h,
+        float captureX, float captureY, float captureW, float captureH,
+        const float* layers, uint32_t layerCount,
+        bool compositeSource) = 0;
+protected:
+    ~CssTextShadowProvider() = default;
+};
+
+/// Optional ordered color-matrix filter chain. Each stage receives the prior
+/// stage's clamped straight RGBA result. Matrices use four coefficient rows
+/// followed by one offset row, twenty floats per stage.
+class ColorMatrixChainProvider {
+public:
+    virtual JaliumResult DrawColorMatrixChainEffect(
+        float x, float y, float w, float h,
+        const float* matrices, uint32_t matrixCount) = 0;
+protected:
+    ~ColorMatrixChainProvider() = default;
+};
+
+/// Optional CSS inset-shadow layer. The captured original content has already
+/// been composited by an earlier layer; this draws only the next inset shadow.
+class InsetShadowLayerProvider {
+public:
+    virtual JaliumResult DrawInnerShadowLayerElliptical(
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY, float spreadRadius,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        const JaliumEllipticalRectClip& contour) = 0;
+protected:
+    ~InsetShadowLayerProvider() = default;
+};
+
+/// Optional side interface for CPU render targets that own a persistent main
+/// framebuffer. Keeping this outside RenderTarget avoids shifting the shared
+/// backend vtable when the storage-management ABI is added. GPU backends do not
+/// implement it, so compact is a no-op and the owned-byte query reports
+/// NOT_SUPPORTED through the C ABI.
+class CpuFramebufferStorageProvider {
+public:
+    virtual JaliumResult CompactIdleFramebufferStorage() = 0;
+    virtual JaliumResult QueryMainFramebufferOwnedBytes(uint64_t* outBytes) const = 0;
+protected:
+    ~CpuFramebufferStorageProvider() = default;
+};
+
 /// Abstract base class for brushes.
 class Brush {
 public:
@@ -1229,6 +1390,22 @@ public:
 };
 
 /// Abstract base class for text formats.
+// Optional side interface: the existing TextFormat vtable stays unchanged, so
+// an older backend can be queried safely and reports NOT_SUPPORTED.
+class FontUnitMetricsProvider {
+public:
+    virtual JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) = 0;
+protected:
+    ~FontUnitMetricsProvider() = default;
+};
+
+class FontMathConstantsProvider {
+public:
+    virtual JaliumResult GetFontMathConstants(JaliumFontMathConstants* constants) = 0;
+protected:
+    ~FontMathConstantsProvider() = default;
+};
+
 class TextFormat {
 public:
     virtual ~TextFormat() = default;

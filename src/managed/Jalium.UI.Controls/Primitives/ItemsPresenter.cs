@@ -389,6 +389,17 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     {
         if (CurrentScrollInfo != null)
         {
+            if (Jalium.UI.Diagnostics.ScrollDiagnostics.Enabled)
+            {
+                Jalium.UI.Diagnostics.ScrollDiagnostics.RecordEvent(
+                    Name,
+                    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this),
+                    "items-presenter-set-vertical",
+                    $"raw={offset:R} target={CurrentScrollInfo.GetType().FullName} " +
+                    $"targetOffset={CurrentScrollInfo.VerticalOffset:R} " +
+                    $"targetExtent={CurrentScrollInfo.ExtentHeight:R} " +
+                    $"targetViewport={CurrentScrollInfo.ViewportHeight:R}");
+            }
             CurrentScrollInfo.SetVerticalOffset(offset);
             return;
         }

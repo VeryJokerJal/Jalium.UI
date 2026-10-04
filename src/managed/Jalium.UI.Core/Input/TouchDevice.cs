@@ -61,7 +61,8 @@ public abstract class TouchDevice : InputDevice, IManipulator
             element = null;
             captureMode = CaptureMode.None;
         }
-        else if (!element.IsEnabled || element is UIElement uiElement && uiElement.Visibility != Visibility.Visible)
+        else if (!element.IsEnabled || element is UIElement uiElement &&
+                 (!uiElement.IsVisible || Styling.CssDisplayProperties.IsExitInert(uiElement)))
         {
             return false;
         }

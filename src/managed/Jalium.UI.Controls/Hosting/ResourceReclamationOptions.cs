@@ -40,7 +40,9 @@ public sealed class ResourceReclamationOptions
     /// How often the reclaimer walks its tracked-visuals table looking for idle
     /// entries, expressed as a number of <see cref="CompositionTarget.Rendering"/>
     /// frames. Default: <c>60</c> — once per second at 60 Hz, low enough that
-    /// the scan never shows up on a flame graph. Minimum: <c>1</c>.
+    /// the scan never shows up on a flame graph. Minimum: <c>1</c>. A one-second
+    /// UI timer also checks when rendering has stopped, so idle windows can
+    /// release resources without producing new frames.
     /// </summary>
     public int ScanFrameInterval { get; set; } = 60;
 

@@ -1,6 +1,8 @@
 #include "jalium_internal.h"
 #include "jalium_abi_guard.h"
 #include "jalium_string_util.h"
+#include "jalium_elliptical_clip.h"
+#include <cmath>
 #include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
@@ -1364,6 +1366,204 @@ JALIUM_API void jalium_draw_drop_shadow_effect(
     }
 }
 
+JALIUM_API JaliumResult jalium_draw_drop_shadow_effect_elliptical(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* contour)
+{
+    if (!rt || !contour || w <= 0 || h <= 0 ||
+        !jalium::IsValidEllipticalClip(*contour))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::EllipticalEffectProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->DrawDropShadowEffectElliptical(
+                x, y, w, h, blurRadius, offsetX, offsetY,
+                r, g, b, a, uvOffsetX, uvOffsetY, *contour)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_draw_drop_shadow_effect_spread_elliptical(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* spreadContour)
+{
+    if (!rt || !spreadContour || w <= 0 || h <= 0 ||
+        !jalium::IsValidEllipticalClip(*spreadContour))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::SpreadShadowProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->DrawDropShadowEffectSpreadElliptical(
+                x, y, w, h, blurRadius, offsetX, offsetY,
+                r, g, b, a, uvOffsetX, uvOffsetY, *spreadContour)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_draw_css_box_shadow_effect_elliptical(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* originalContour,
+    const JaliumEllipticalRectClip* spreadContour)
+{
+    if (!rt || !originalContour || !spreadContour || w <= 0 || h <= 0 ||
+        !jalium::IsValidEllipticalClip(*originalContour) ||
+        !jalium::IsValidEllipticalClip(*spreadContour))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::CssBoxShadowProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->DrawCssBoxShadowEffectElliptical(
+                x, y, w, h, blurRadius, offsetX, offsetY,
+                r, g, b, a, uvOffsetX, uvOffsetY,
+                *originalContour, *spreadContour)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_paint_css_outer_shadow_layer_elliptical(
+    JaliumRenderTarget* rt, float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    const JaliumEllipticalRectClip* originalContour,
+    const JaliumEllipticalRectClip* spreadContour)
+{
+    if (!rt || !originalContour || !spreadContour || w <= 0 || h <= 0 ||
+        !jalium::IsValidEllipticalClip(*originalContour) ||
+        !jalium::IsValidEllipticalClip(*spreadContour))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::CssShadowLayerProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->PaintCssOuterShadowLayerElliptical(x, y, w, h,
+                blurRadius, offsetX, offsetY, r, g, b, a,
+                *originalContour, *spreadContour)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_paint_css_inner_shadow_layer_elliptical(
+    JaliumRenderTarget* rt, float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    const JaliumEllipticalRectClip* contour)
+{
+    if (!rt || !contour || w <= 0 || h <= 0 ||
+        !jalium::IsValidEllipticalClip(*contour))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::CssShadowLayerProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->PaintCssInnerShadowLayerElliptical(x, y, w, h,
+                blurRadius, offsetX, offsetY, spreadRadius,
+                r, g, b, a, *contour)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API int32_t jalium_supports_css_shadow_layers(JaliumRenderTarget* rt)
+{
+    if (!rt) return 0;
+    try {
+        return dynamic_cast<jalium::CssShadowLayerProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt)) ? 1 : 0;
+    } catch (...) { return 0; }
+}
+
+JALIUM_API JaliumResult jalium_draw_filter_drop_shadow_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a)
+{
+    if (!rt || w <= 0 || h <= 0 || captureW <= 0 || captureH <= 0 ||
+        !std::isfinite(x) || !std::isfinite(y) ||
+        !std::isfinite(captureX) || !std::isfinite(captureY) ||
+        !std::isfinite(blurRadius) || blurRadius < 0 ||
+        !std::isfinite(offsetX) || !std::isfinite(offsetY))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::FilterDropShadowProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->DrawFilterDropShadowEffect(
+                x, y, w, h, captureX, captureY, captureW, captureH,
+                blurRadius, offsetX, offsetY, r, g, b, a)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+static JaliumResult DrawCssTextShadowsImpl(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    const float* layers, uint32_t layer_count, bool composite_source)
+{
+    if (!rt || !layers || layer_count == 0 || layer_count > UINT32_MAX / 7 ||
+        w <= 0 || h <= 0 || captureW <= 0 || captureH <= 0 ||
+        !std::isfinite(x) || !std::isfinite(y) ||
+        !std::isfinite(captureX) || !std::isfinite(captureY) ||
+        !std::isfinite(captureW) || !std::isfinite(captureH))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (uint32_t i = 0; i < layer_count * 7; ++i)
+        if (!std::isfinite(layers[i])) return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (uint32_t i = 0; i < layer_count; ++i)
+        if (layers[i * 7] < 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::CssTextShadowProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->DrawCssTextShadows(x, y, w, h,
+                captureX, captureY, captureW, captureH, layers, layer_count,
+                composite_source)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_draw_css_text_shadows(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    const float* layers, uint32_t layer_count)
+{
+    return DrawCssTextShadowsImpl(rt, x, y, w, h,
+        captureX, captureY, captureW, captureH, layers, layer_count, true);
+}
+
+JALIUM_API JaliumResult jalium_draw_css_text_shadows_only(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float captureX, float captureY, float captureW, float captureH,
+    const float* layers, uint32_t layer_count)
+{
+    return DrawCssTextShadowsImpl(rt, x, y, w, h,
+        captureX, captureY, captureW, captureH, layers, layer_count, false);
+}
+
 JALIUM_API void jalium_draw_outer_glow_effect(
     JaliumRenderTarget* rt,
     float x, float y, float w, float h,
@@ -1398,6 +1598,52 @@ JALIUM_API void jalium_draw_inner_shadow_effect(
             uvOffsetX, uvOffsetY,
             cornerTL, cornerTR, cornerBR, cornerBL);
     }
+}
+
+JALIUM_API JaliumResult jalium_draw_inner_shadow_effect_elliptical(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* contour)
+{
+    if (!rt || !contour || w <= 0 || h <= 0 ||
+        !jalium::IsValidEllipticalClip(*contour))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::EllipticalEffectProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->DrawInnerShadowEffectElliptical(
+                x, y, w, h, blurRadius, offsetX, offsetY, spreadRadius,
+                r, g, b, a, uvOffsetX, uvOffsetY, *contour)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_draw_inner_shadow_layer_elliptical(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY, float spreadRadius,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    const JaliumEllipticalRectClip* contour)
+{
+    if (!rt || !contour || w <= 0 || h <= 0 ||
+        !jalium::IsValidEllipticalClip(*contour))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::InsetShadowLayerProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->DrawInnerShadowLayerElliptical(
+                x, y, w, h, blurRadius, offsetX, offsetY, spreadRadius,
+                r, g, b, a, uvOffsetX, uvOffsetY, *contour)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
 }
 
 JALIUM_API void jalium_draw_color_matrix_effect(
@@ -1509,6 +1755,68 @@ JALIUM_API void jalium_draw_liquid_glass(
             shapeType, shapeExponent,
             neighborCount, fusionRadius, neighborData);
     });
+}
+
+JALIUM_API JaliumResult jalium_draw_color_matrix_chain_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    const float* matrices, uint32_t matrixCount)
+{
+    if (!rt || !matrices || w <= 0 || h <= 0 ||
+        matrixCount == 0 || matrixCount > 4096)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::ColorMatrixChainProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->DrawColorMatrixChainEffect(x, y, w, h, matrices, matrixCount)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_push_elliptical_rect_clip(
+    JaliumRenderTarget* rt, const JaliumEllipticalRectClip* clip)
+{
+    if (!rt || !clip || !jalium::IsValidEllipticalClip(*clip)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::EllipticalClipProvider*>(reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider ? provider->PushEllipticalRectClip(*clip) : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_push_path_clip(
+    JaliumRenderTarget* rt, float startX, float startY,
+    const float* commands, uint32_t commandLength, int32_t fillRule)
+{
+    if (!rt || !commands || commandLength == 0 || commandLength > 1000000 ||
+        !std::isfinite(startX) || !std::isfinite(startY) ||
+        (fillRule != 0 && fillRule != 1))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (uint32_t index = 0; index < commandLength;) {
+        const float tag = commands[index];
+        uint32_t length = 0;
+        if (tag == 0.0f || tag == 2.0f) length = 3;
+        else if (tag == 1.0f) length = 7;
+        else if (tag == 3.0f) length = 5;
+        else if (tag == 4.0f) length = 8;
+        else if (tag == 5.0f) length = 1;
+        if (length == 0 || length > commandLength - index)
+            return JALIUM_ERROR_INVALID_ARGUMENT;
+        for (uint32_t component = 1; component < length; ++component)
+            if (!std::isfinite(commands[index + component]))
+                return JALIUM_ERROR_INVALID_ARGUMENT;
+        index += length;
+    }
+    try {
+        auto* provider = dynamic_cast<jalium::PathClipProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider
+            ? provider->PushPathClip(startX, startY, commands, commandLength, fillRule)
+            : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
 }
 
 } // extern "C"

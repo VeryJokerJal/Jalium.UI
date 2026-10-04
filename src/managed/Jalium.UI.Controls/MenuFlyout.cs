@@ -28,7 +28,7 @@ public sealed class MenuFlyout : FlyoutBase
     /// <inheritdoc />
     protected override Control CreatePresenter()
     {
-        return new MenuFlyoutPresenter(this);
+        return new MenuFlyoutPresenter(this) { Style = MenuFlyoutPresenterStyle };
     }
 }
 
@@ -49,6 +49,7 @@ internal sealed class MenuFlyoutPresenter : Control
     public MenuFlyoutPresenter(MenuFlyout flyout)
     {
         _flyout = flyout;
+        UseLayoutRounding = true;
         BorderThickness = s_defaultBorderThickness;
         Padding = s_defaultPadding;
         CornerRadius = s_defaultCornerRadius;
@@ -113,8 +114,20 @@ internal sealed class MenuFlyoutPresenter : Control
         var penThickness = Math.Max(Math.Max(borderThickness.Left, borderThickness.Top), Math.Max(borderThickness.Right, borderThickness.Bottom));
         var cornerRadius = GetEffectiveCornerRadius();
 
+        // DrawingContext strokes are centered on their rectangle. Keep the whole
+        // outline inside the popup surface; a stroke on (0,0,width,height) loses
+        // half of each straight edge to the window clip while its corners survive.
+        var halfBorder = penThickness * 0.5;
+        var borderRect = new Rect(
+            halfBorder, halfBorder,
+            Math.Max(0, RenderSize.Width - penThickness),
+            Math.Max(0, RenderSize.Height - penThickness));
+        var strokeRadius = Math.Max(0, cornerRadius - halfBorder);
         var pen = penThickness > 0 ? new Pen(border, penThickness) : null;
-        dc.DrawRoundedRectangle(background, pen, new Rect(RenderSize), cornerRadius, cornerRadius);
+        if (borderRect.Width > 0 && borderRect.Height > 0)
+        {
+            dc.DrawRoundedRectangle(background, pen, borderRect, strokeRadius, strokeRadius);
+        }
     }
 
     /// <summary>
@@ -157,7 +170,12 @@ internal sealed class MenuFlyoutPresenter : Control
 
     private Thickness GetEffectiveBorderThickness()
     {
-        return IsZero(BorderThickness) ? s_defaultBorderThickness : BorderThickness;
+        var thickness = IsZero(BorderThickness) ? s_defaultBorderThickness : BorderThickness;
+        return new Thickness(
+            RoundLayoutValue(thickness.Left),
+            RoundLayoutValue(thickness.Top),
+            RoundLayoutValue(thickness.Right),
+            RoundLayoutValue(thickness.Bottom));
     }
 
     private Thickness GetEffectivePadding()

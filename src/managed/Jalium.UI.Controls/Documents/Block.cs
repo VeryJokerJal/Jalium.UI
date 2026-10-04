@@ -284,29 +284,20 @@ public class BlockCollection : TextElementCollection<Block>
     /// <summary>
     /// Adds a block element to the collection.
     /// </summary>
-    public new void Add(Block item)
-    {
-        PrepareForInsert(item);
-        item.Parent = _parent as TextElement;
-        if (Count > 0)
-        {
-            var last = this[Count - 1];
-            last.NextBlock = item;
-            item.PreviousBlock = last;
-        }
-        base.Add(item);
-        Attach(item);
-        RaiseChanged();
-    }
+    public new void Add(Block item) => base.Add(item);
 
     /// <summary>
     /// Inserts a block element at the specified index.
     /// </summary>
-    public new void Insert(int index, Block item)
+    public new void Insert(int index, Block item) => base.Insert(index, item);
+
+    // XAML populates collections through IList. All entry points must pass through
+    // these hooks so inheritance and selector ancestry see the same document tree.
+    protected override void InsertItem(int index, Block item)
     {
         PrepareForInsert(item);
         item.Parent = _parent as TextElement;
-        base.Insert(index, item);
+        base.InsertItem(index, item);
         Attach(item);
 
         // Rebuild sibling links
@@ -337,28 +328,27 @@ public class BlockCollection : TextElementCollection<Block>
     /// <summary>
     /// Removes a block element from the collection.
     /// </summary>
-    public new bool Remove(Block item)
+    public new bool Remove(Block item) => base.Remove(item);
+
+    protected override void RemoveItem(int index)
     {
-        var result = base.Remove(item);
-        if (result)
-        {
-            Detach(item);
-            item.Parent = null;
-            if (item.PreviousBlock != null)
-                item.PreviousBlock.NextBlock = item.NextBlock;
-            if (item.NextBlock != null)
-                item.NextBlock.PreviousBlock = item.PreviousBlock;
-            item.NextBlock = null;
-            item.PreviousBlock = null;
-            RaiseChanged();
-        }
-        return result;
+        var item = this[index];
+        Detach(item);
+        item.Parent = null;
+        if (item.PreviousBlock != null) item.PreviousBlock.NextBlock = item.NextBlock;
+        if (item.NextBlock != null) item.NextBlock.PreviousBlock = item.PreviousBlock;
+        item.NextBlock = null;
+        item.PreviousBlock = null;
+        base.RemoveItem(index);
+        RaiseChanged();
     }
 
     /// <summary>
     /// Clears all block elements from the collection.
     /// </summary>
-    public new void Clear()
+    public new void Clear() => base.Clear();
+
+    protected override void ClearItems()
     {
         foreach (var item in this)
         {
@@ -367,7 +357,25 @@ public class BlockCollection : TextElementCollection<Block>
             item.NextBlock = null;
             item.PreviousBlock = null;
         }
-        base.Clear();
+        base.ClearItems();
+        RaiseChanged();
+    }
+
+    protected override void SetItem(int index, Block item)
+    {
+        var old = this[index];
+        if (ReferenceEquals(old, item)) return;
+        PrepareForInsert(item);
+        Detach(old);
+        old.Parent = null;
+        item.Parent = _parent as TextElement;
+        item.PreviousBlock = old.PreviousBlock;
+        item.NextBlock = old.NextBlock;
+        if (item.PreviousBlock is { } previous) previous.NextBlock = item;
+        if (item.NextBlock is { } next) next.PreviousBlock = item;
+        old.PreviousBlock = old.NextBlock = null;
+        base.SetItem(index, item);
+        Attach(item);
         RaiseChanged();
     }
 
@@ -426,6 +434,7 @@ public class BlockCollection : TextElementCollection<Block>
 /// <summary>
 /// A block element that contains inline content.
 /// </summary>
+[ContentProperty(nameof(Inlines))]
 public sealed class Paragraph : Block
 {
     /// <summary>

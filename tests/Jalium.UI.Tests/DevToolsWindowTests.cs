@@ -521,6 +521,16 @@ public class DevToolsWindowTests
             return false;
         }
 
-        return handlers.GetInvocationList().Any(d => ReferenceEquals(d.Target, target));
+        return handlers.GetInvocationList().Any(d =>
+        {
+            if (ReferenceEquals(d.Target, target))
+                return true;
+
+            // Frame-rate timers bind the handler to their active generation so
+            // a callback already snapshotted by Rendering cannot tick a restart.
+            var owner = d.Target?.GetType().GetProperty("Owner",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return ReferenceEquals(owner?.GetValue(d.Target), target);
+        });
     }
 }

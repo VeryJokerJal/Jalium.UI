@@ -57,11 +57,13 @@
   </ItemGroup>
 
   <!-- Load custom build tasks. -->
-  <UsingTask TaskName="Jalium.UI.Build.CompileJalxamlTask" AssemblyFile="$(_JalxamlTasksPath)" />
-  <UsingTask TaskName="Jalium.UI.Build.GenerateJalxamlCodeBehindTask" AssemblyFile="$(_JalxamlTasksPath)" />
-  <UsingTask TaskName="Jalium.UI.Build.TransformJalxamlRazorTask" AssemblyFile="$(_JalxamlTasksPath)" />
-  <UsingTask TaskName="Jalium.UI.Build.CompileHlslShadersTask" AssemblyFile="$(_JalxamlTasksPath)" />
-  <UsingTask TaskName="Jalium.UI.Build.ExtractHlslShadersTask" AssemblyFile="$(_JalxamlTasksPath)" />
+  <!-- Visual Studio's full MSBuild runs on CLR4. Select its .NET task host
+       directly for this net10.0 assembly instead of probing and falling back. -->
+  <UsingTask TaskName="Jalium.UI.Build.CompileJalxamlTask" AssemblyFile="$(_JalxamlTasksPath)" Runtime="NET" Architecture="CurrentArchitecture" />
+  <UsingTask TaskName="Jalium.UI.Build.GenerateJalxamlCodeBehindTask" AssemblyFile="$(_JalxamlTasksPath)" Runtime="NET" Architecture="CurrentArchitecture" />
+  <UsingTask TaskName="Jalium.UI.Build.TransformJalxamlRazorTask" AssemblyFile="$(_JalxamlTasksPath)" Runtime="NET" Architecture="CurrentArchitecture" />
+  <UsingTask TaskName="Jalium.UI.Build.CompileHlslShadersTask" AssemblyFile="$(_JalxamlTasksPath)" Runtime="NET" Architecture="CurrentArchitecture" />
+  <UsingTask TaskName="Jalium.UI.Build.ExtractHlslShadersTask" AssemblyFile="$(_JalxamlTasksPath)" Runtime="NET" Architecture="CurrentArchitecture" />
 
   <!--
     A package already carries tasks/net10.0 and tools/net10.0. When this targets
@@ -75,11 +77,13 @@
           Condition="Exists('$(_JalxamlSourceBuildProjectPath)')">
     <MSBuild Projects="$(_JalxamlSourceBuildProjectPath)"
              Targets="Restore;Build"
-             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false;GeneratePackageOnBuild=false;BuildJaliumNativeProjects=false;BuildJaliumNativeStaticProjects=false"
+             RemoveProperties="BuildingInsideVisualStudio;BuildProjectReferences;BuildingSolutionFile;CurrentSolutionConfigurationContents;OutputPath;OutDir"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false;GeneratePackageOnBuild=false;BuildJaliumNativeProjects=false;BuildJaliumNativeStaticProjects=false;BuildingInsideVisualStudio=false;BuildProjectReferences=true"
              Condition="'$(_JalxamlTasksPath)' == '$(_JalxamlSourceTasksPath)' and !Exists('$(_JalxamlSourceTasksPath)')" />
     <MSBuild Projects="$(_JalxamlSourceCompilerProjectPath)"
              Targets="Restore;Build"
-             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false"
+             RemoveProperties="BuildingInsideVisualStudio;BuildProjectReferences;BuildingSolutionFile;CurrentSolutionConfigurationContents;OutputPath;OutDir"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false;BuildingInsideVisualStudio=false;BuildProjectReferences=true"
              Condition="'$(JalxamlCompilerPath)' == '$(_JalxamlSourceCompilerPath)' and !Exists('$(_JalxamlSourceCompilerPath)')" />
     <Error Condition="'$(_JalxamlTasksPath)' == '$(_JalxamlSourceTasksPath)' and !Exists('$(_JalxamlSourceTasksPath)')"
            Text="Failed to build the portable Jalium.UI.Build task assembly from '$(_JalxamlSourceBuildProjectPath)'." />
@@ -181,8 +185,6 @@
   <Target Name="TransformJalxamlRazor"
           BeforeTargets="CompileJalxaml;EmbedJalxamlSources"
           DependsOnTargets="PrepareForBuild;ResolveAssemblyReferences"
-          Inputs="@(JalxamlPage);@(JalxamlApplicationDefinition)"
-          Outputs="@(JalxamlPage->'$(JalxamlRazorIntermediateOutputPath)%(RecursiveDir)%(Filename)%(Extension)');@(JalxamlApplicationDefinition->'$(JalxamlRazorIntermediateOutputPath)%(RecursiveDir)%(Filename)%(Extension)');$(JalxamlRazorIntermediateOutputPath)Jalxaml.RazorMetadata.g.cs"
           Condition="'$(EnableJalxamlRazorTransform)' == 'true' and ('@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '')">
 
     <MakeDir Directories="$(JalxamlRazorIntermediateOutputPath)" />
@@ -303,8 +305,6 @@
   <Target Name="CompileJalxaml"
           BeforeTargets="PrepareResources;BeforeBuild;CoreCompile"
           DependsOnTargets="PrepareForBuild;ResolveEffectiveJalxamlSources"
-          Inputs="@(_EffectiveJalxamlSources)"
-          Outputs="$(JalxamlIntermediateOutputPath)%(Filename).uic"
           Condition="'@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != ''">
 
     <CompileJalxamlTask
@@ -321,6 +321,7 @@
     <ItemGroup>
       <FileWrites Include="@(_CompiledJalxamlFiles)" />
       <FileWrites Include="@(_CompiledJalxamlFiles->'%(Identity).base64')" />
+      <FileWrites Include="@(_CompiledJalxamlFiles->'%(Identity).inputs')" />
     </ItemGroup>
 
     <ItemGroup Condition="'$(EnableJalxamlCodeGeneration)' == 'false'">
@@ -339,7 +340,7 @@
           Condition="'@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != ''">
 
     <ItemGroup>
-      <_UicFilesToEmbed Include="$(JalxamlIntermediateOutputPath)*.uic" />
+      <_UicFilesToEmbed Include="@(_CompiledJalxamlFiles)" />
     </ItemGroup>
 
     <ItemGroup>
@@ -731,4 +732,5 @@
              Text="Jalium NativeAOT: stripped @(_JaliumDllsStripped->'%(Filename)%(Extension)', ', ') (linked statically)." />
   </Target>
 
+  <Import Project="Jalium.UI.Css.targets" />
 </Project>

@@ -275,7 +275,7 @@ public class TreeMap : ChartBase
             _ => LayoutSquarified(validItems, bounds, totalValue)
         };
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var labelBrush = s_defaultLabelBrush;
         double padding = CellPadding;
         double cornerRadius = 2;

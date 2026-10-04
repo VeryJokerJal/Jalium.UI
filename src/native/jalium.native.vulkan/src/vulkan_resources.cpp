@@ -1,5 +1,7 @@
 #include "vulkan_resources.h"
 #include "jalium_bitmap_stats.h"
+#include "jalium_dwrite_font_units.h"
+#include "jalium_dwrite_font_math.h"
 
 #ifndef _WIN32
 #include "text_engine.h"
@@ -190,19 +192,22 @@ VulkanTextFormat::VulkanTextFormat(
     , fontStyle_(fontStyle)
 {
     // Create the DirectWrite format object (mirrors D3D12TextFormat ctor).
-    // Font weight maps directly (JaliumFontWeight values are the DWRITE_FONT_WEIGHT
-    // numeric values); font style maps directly (0=normal/1=italic/2=oblique are
-    // the DWRITE_FONT_STYLE values). Same empty locale as D3D12. If the shared
+    // Font weight uses the OpenType scale, clamped below for legacy DirectWrite;
+    // font style maps directly (0=normal/1=italic/2=oblique are the
+    // DWRITE_FONT_STYLE values). Same empty locale as D3D12. If the shared
     // factory or CreateTextFormat fails, dwFormat_ stays null and the
     // measurement methods fall back to approximate metrics.
     IDWriteFactory5* factory = GetSharedDWriteFactory();
     if (factory) {
-        DWRITE_FONT_WEIGHT weight = static_cast<DWRITE_FONT_WEIGHT>(fontWeight);
+        // Keep the CSS weight in fontWeight_ while satisfying the legacy DirectWrite range.
+        DWRITE_FONT_WEIGHT weight = static_cast<DWRITE_FONT_WEIGHT>(std::clamp(fontWeight, 1, 999));
         DWRITE_FONT_STYLE style = static_cast<DWRITE_FONT_STYLE>(fontStyle);
+        registeredFont_ = AcquireFontResource(fontFamily);
+        auto* collection = static_cast<IDWriteFontCollection*>(jalium_font_resource_get_collection(registeredFont_.get()));
 
         factory->CreateTextFormat(
             fontFamily_.c_str(),
-            nullptr,  // Font collection (nullptr = system collection)
+            collection,
             weight,
             style,
             DWRITE_FONT_STRETCH_NORMAL,
@@ -771,6 +776,26 @@ JaliumResult VulkanTextFormat::MeasureText(
         metrics->height = std::max(metrics->height, metrics->lineHeight);
     }
     return JALIUM_OK;
+}
+
+JaliumResult VulkanTextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)
+{
+#ifdef _WIN32
+    return font_units::Read(GetSharedDWriteFactory(), dwFormat_.Get(), fontSize_, metrics);
+#else
+    if (ftTextFormat_) return ftTextFormat_->GetFontUnitMetrics(metrics);
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+JaliumResult VulkanTextFormat::GetFontMathConstants(JaliumFontMathConstants* constants)
+{
+#ifdef _WIN32
+    return font_math::Read(dwFormat_.Get(), constants);
+#else
+    if (ftTextFormat_) return ftTextFormat_->GetFontMathConstants(constants);
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
 }
 
 JaliumResult VulkanTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)

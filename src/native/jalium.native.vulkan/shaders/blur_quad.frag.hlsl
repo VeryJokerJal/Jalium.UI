@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 Texture2D blurTexture : register(t0);
 SamplerState blurSampler : register(s1);
 
@@ -123,7 +126,9 @@ float3 LinearToSrgb(float3 l)
 float4 SampleLinear(float2 uv, float2 uvLo, float2 uvHi)
 {
     float4 sampleColor = blurTexture.Sample(blurSampler, clamp(uv, uvLo, uvHi));
-    sampleColor.rgb = SrgbToLinear(sampleColor.rgb);
+    sampleColor.rgb = sampleColor.a > 0.000001f
+        ? SrgbToLinear(saturate(sampleColor.rgb / sampleColor.a)) * sampleColor.a
+        : float3(0, 0, 0);
     return sampleColor;
 }
 
@@ -183,7 +188,7 @@ float4 BoundedGaussian2D(float2 uv, float2 texelStep, float2 uvLo, float2 uvHi,
     return sum / weightSum;
 }
 
-float4 main(PsInput input) : SV_Target
+float4 UnclippedMain(PsInput input) : SV_Target
 {
     if (gPushConstants.clipFlags.x > 0.5f && !IsInsideRoundRect(input.position.xy, gPushConstants.roundedClipRect, gPushConstants.roundedClipRadius)) {
         discard;
@@ -232,7 +237,9 @@ float4 main(PsInput input) : SV_Target
     } else {
         color = BoundedGaussian2D(sampleUv, texelStep, uvLo, uvHi, radius);
     }
-    color.rgb = LinearToSrgb(color.rgb);
+    color.rgb = color.a > 0.000001f
+        ? LinearToSrgb(saturate(color.rgb / color.a)) * color.a
+        : float3(0, 0, 0);
 
     // The blurred source is PREMULTIPLIED (the offscreen/upload content is premul),
     // so `color` is premultiplied here. The blur pipeline now blends with
@@ -249,5 +256,15 @@ float4 main(PsInput input) : SV_Target
     }
     // Opacity scales the whole PREMULTIPLIED color (rgb and a together).
     color *= saturate(gPushConstants.blurInfo2.y);
+    return color;
+}
+
+float4 main(PsInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    // The blur pipeline blends premultiplied color with ONE. Mask every
+    // channel, otherwise RGB escapes the clip even when alpha reaches zero.
+    color *= coverage;
     return color;
 }

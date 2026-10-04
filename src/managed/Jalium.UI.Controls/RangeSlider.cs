@@ -2,6 +2,7 @@
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -327,11 +328,13 @@ public class RangeSlider : Control
     private ActiveThumb _activeDrag = ActiveThumb.None;
     private ActiveThumb _focusedThumb = ActiveThumb.Start;
 
+    private Border? _rootBorder;
     private FrameworkElement? _trackBorder;
     private FrameworkElement? _selectionRangeBorder;
     private FrameworkElement? _startThumbBorder;
     private FrameworkElement? _endThumbBorder;
     private SegmentedTrackBar? _segmentBar;
+    private Border? _cssBorderPainter;
 
     #endregion
 
@@ -367,6 +370,7 @@ public class RangeSlider : Control
     {
         base.OnApplyTemplate();
 
+        _rootBorder = GetTemplateChild("PART_Root") as Border;
         _trackBorder = GetTemplateChild("PART_Track") as FrameworkElement;
         _selectionRangeBorder = GetTemplateChild("PART_SelectionRange") as FrameworkElement;
         _startThumbBorder = GetTemplateChild("PART_StartThumb") as FrameworkElement;
@@ -385,13 +389,14 @@ public class RangeSlider : Control
             return;
         }
 
+        var content = GetContentBounds();
         var range = Maximum - Minimum;
         var startPercent = range > 0 ? Math.Clamp((RangeStart - Minimum) / range, 0, 1) : 0;
         var endPercent = range > 0 ? Math.Clamp((RangeEnd - Minimum) / range, 0, 1) : 0;
 
         if (Orientation == Orientation.Horizontal)
         {
-            var trackWidth = Math.Max(0, RenderSize.Width - ThumbSize);
+            var trackWidth = ControlRenderGeometry.GetTrackLength(content.Width, ThumbSize);
             var startX = startPercent * trackWidth;
             var endX = endPercent * trackWidth;
 
@@ -409,7 +414,7 @@ public class RangeSlider : Control
         }
         else
         {
-            var trackHeight = Math.Max(0, RenderSize.Height - ThumbSize);
+            var trackHeight = ControlRenderGeometry.GetTrackLength(content.Height, ThumbSize);
             // Higher value at the top (matches Slider conventions).
             var startY = (1 - startPercent) * trackHeight;
             var endY = (1 - endPercent) * trackHeight;
@@ -427,6 +432,18 @@ public class RangeSlider : Control
                 _selectionRangeBorder.VerticalAlignment = VerticalAlignment.Top;
             }
         }
+    }
+
+    private Rect GetContentBounds()
+    {
+        if ((_startThumbBorder != null || _endThumbBorder != null) && _rootBorder == null)
+            return new Rect(RenderSize);
+
+        var border = BorderThickness;
+        var padding = Padding;
+        return ControlRenderGeometry.GetContentRect(new Rect(RenderSize), new Thickness(
+            border.Left + padding.Left, border.Top + padding.Top,
+            border.Right + padding.Right, border.Bottom + padding.Bottom));
     }
 
     /// <summary>
@@ -463,19 +480,23 @@ public class RangeSlider : Control
     protected override Size MeasureOverride(Size availableSize)
     {
         base.MeasureOverride(availableSize);
+        var horizontalChrome = Math.Max(0, BorderThickness.TotalWidth + Padding.TotalWidth);
+        var verticalChrome = Math.Max(0, BorderThickness.TotalHeight + Padding.TotalHeight);
 
         if (Orientation == Orientation.Horizontal)
         {
             var height = double.IsNaN(Height) || Height <= 0 ? 24 : Height;
             return new Size(
-                Math.Min(availableSize.Width, double.IsPositiveInfinity(availableSize.Width) ? 200 : availableSize.Width),
-                height);
+                Math.Min(availableSize.Width,
+                    double.IsPositiveInfinity(availableSize.Width) ? 200 + horizontalChrome : availableSize.Width),
+                height + verticalChrome);
         }
 
         var width = double.IsNaN(Width) || Width <= 0 ? 24 : Width;
         return new Size(
-            width,
-            Math.Min(availableSize.Height, double.IsPositiveInfinity(availableSize.Height) ? 200 : availableSize.Height));
+            width + horizontalChrome,
+            Math.Min(availableSize.Height,
+                double.IsPositiveInfinity(availableSize.Height) ? 200 + verticalChrome : availableSize.Height));
     }
 
     #endregion
@@ -638,18 +659,19 @@ public class RangeSlider : Control
             return Minimum;
         }
 
+        var content = GetContentBounds();
         double percentage;
         if (Orientation == Orientation.Horizontal)
         {
-            var trackWidth = RenderSize.Width - ThumbSize;
+            var trackWidth = content.Width - ThumbSize;
             if (trackWidth <= 0) return Minimum;
-            percentage = (position.X - ThumbSize / 2) / trackWidth;
+            percentage = (position.X - content.Left - ThumbSize / 2) / trackWidth;
         }
         else
         {
-            var trackHeight = RenderSize.Height - ThumbSize;
+            var trackHeight = content.Height - ThumbSize;
             if (trackHeight <= 0) return Minimum;
-            percentage = 1 - (position.Y - ThumbSize / 2) / trackHeight;
+            percentage = 1 - (position.Y - content.Top - ThumbSize / 2) / trackHeight;
         }
 
         percentage = Math.Clamp(percentage, 0, 1);
@@ -685,19 +707,20 @@ public class RangeSlider : Control
 
         var raw = thumb == ActiveThumb.Start ? RangeStart : RangeEnd;
         var percentage = Math.Clamp((raw - Minimum) / range, 0, 1);
+        var content = GetContentBounds();
 
         if (Orientation == Orientation.Horizontal)
         {
-            var trackWidth = ControlRenderGeometry.GetTrackLength(RenderSize.Width, ThumbSize);
-            var thumbX = percentage * trackWidth;
-            var thumbY = (RenderSize.Height - ThumbSize) / 2;
+            var trackWidth = ControlRenderGeometry.GetTrackLength(content.Width, ThumbSize);
+            var thumbX = content.Left + percentage * trackWidth;
+            var thumbY = content.Top + (content.Height - ThumbSize) / 2;
             return new Rect(thumbX, thumbY, ThumbSize, ThumbSize);
         }
         else
         {
-            var trackHeight = ControlRenderGeometry.GetTrackLength(RenderSize.Height, ThumbSize);
-            var thumbY = (1 - percentage) * trackHeight;
-            var thumbX = (RenderSize.Width - ThumbSize) / 2;
+            var trackHeight = ControlRenderGeometry.GetTrackLength(content.Height, ThumbSize);
+            var thumbY = content.Top + (1 - percentage) * trackHeight;
+            var thumbX = content.Left + (content.Width - ThumbSize) / 2;
             return new Rect(thumbX, thumbY, ThumbSize, ThumbSize);
         }
     }
@@ -726,7 +749,26 @@ public class RangeSlider : Control
 
         var dc = drawingContext;
 
-        var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
+        var bounds = GetContentBounds();
+
+        if (Background is { } background)
+        {
+            var outer = new Rect(RenderSize);
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            if (cssRadius is null && GetEffectiveValueLayer(BackgroundProperty) is not
+                    (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                dc.DrawRoundedRectangle(background, null, outer, CornerRadius);
+            else
+            {
+                var radii = cssRadius?.Resolve(RenderSize) ??
+                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+                var shape = new CssRoundedRectangleGeometry(outer, radii);
+                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background,
+                        dc, outer, radii, BorderThickness, Padding,
+                        brush => dc.DrawGeometry(brush, null, shape)))
+                    dc.DrawGeometry(background, null, shape);
+            }
+        }
 
         if (TrackMode == SliderTrackMode.Segmented)
         {
@@ -747,6 +789,13 @@ public class RangeSlider : Control
 
         DrawThumb(dc, ActiveThumb.Start);
         DrawThumb(dc, ActiveThumb.End);
+    }
+
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (_startThumbBorder == null && _endThumbBorder == null)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     private void DrawTrack(DrawingContext dc, Rect bounds)
@@ -860,6 +909,13 @@ public class RangeSlider : Control
     #endregion
 
     #region Property Changed Callbacks
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == BorderThicknessProperty || e.Property == PaddingProperty)
+            UpdateLayoutGeometry();
+    }
 
     private static void OnRangeBoundsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {

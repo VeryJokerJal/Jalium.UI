@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <EnableCssCodeGeneration Condition="'$(EnableCssCodeGeneration)' == ''">true</EnableCssCodeGeneration>
+    <EnableDefaultCssItems Condition="'$(EnableDefaultCssItems)' == ''">true</EnableDefaultCssItems>
+    <CssGeneratedOutputPath Condition="'$(CssGeneratedOutputPath)' == ''">$(JalxamlIntermediateOutputPath)Css/Jalium.Css.g.cs</CssGeneratedOutputPath>
+    <!-- The portable compiler references Managed. Its restore must not replace
+         the consuming application's RID/AOT assets.json during publication. -->
+    <CssCompilerBuildRoot Condition="'$(CssCompilerBuildRoot)' == '' and '$(JaliumBuildRoot)' != ''">$(JaliumBuildRoot)/css-tools</CssCompilerBuildRoot>
+    <CssCompilerBuildRoot Condition="'$(CssCompilerBuildRoot)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../../../artifacts/css-tools'))</CssCompilerBuildRoot>
+    <_CssSourceCompilerPath>$(CssCompilerBuildRoot)/bin/Jalium.UI.Compiler/$(Configuration)/net10.0/jalxamlc.dll</_CssSourceCompilerPath>
+    <JalxamlCompilerPath Condition="'$(EnableCssCodeGeneration)' == 'true' and '$(JalxamlCompilerPath)' == '$(_JalxamlSourceCompilerPath)'">$(_CssSourceCompilerPath)</JalxamlCompilerPath>
+    <CssCompilerPath Condition="'$(CssCompilerPath)' == ''">$(JalxamlCompilerPath)</CssCompilerPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <AvailableItemName Include="JaliumCss" />
+    <JaliumCss Include="**/*.css" Exclude="$(DefaultItemExcludes);$(DefaultExcludesInProjectFolder);**/node_modules/**"
+               Condition="'$(EnableDefaultCssItems)' == 'true'" />
+  </ItemGroup>
+  <UsingTask TaskName="Jalium.UI.Build.CompileCssTask" AssemblyFile="$(_JalxamlTasksPath)" Runtime="NET" Architecture="CurrentArchitecture" />
+
+  <!-- The source compiler depends on the unified managed library, GPU layer,
+       source generator and shared parser files. Track that source closure once
+       so ordinary VS builds do not restore and traverse it again for every
+       JALXAML consumer. Exclude generated output and the MSBuild task project. -->
+  <ItemGroup Condition="Exists('$(_JalxamlSourceCompilerProjectPath)')">
+    <_CssCompilerSourceInput Include="$(MSBuildThisFileDirectory)..\..\**\*.cs"
+                             Exclude="$(MSBuildThisFileDirectory)..\..\**\obj\**\*;$(MSBuildThisFileDirectory)..\..\**\bin\**\*;$(MSBuildThisFileDirectory)..\..\**\artifacts\**\*;$(MSBuildThisFileDirectory)..\..\**\.tmp-build\**\*;$(MSBuildThisFileDirectory)..\..\Jalium.UI.Build\**\*;$(MSBuildThisFileDirectory)..\..\Jalium.UI.Xaml\**\*" />
+    <_CssCompilerSourceInput Include="$(MSBuildThisFileDirectory)..\..\**\*.csproj;$(MSBuildThisFileDirectory)..\..\**\*.props;$(MSBuildThisFileDirectory)..\..\**\*.targets"
+                             Exclude="$(MSBuildThisFileDirectory)..\..\**\obj\**\*;$(MSBuildThisFileDirectory)..\..\**\bin\**\*;$(MSBuildThisFileDirectory)..\..\**\artifacts\**\*;$(MSBuildThisFileDirectory)..\..\**\.tmp-build\**\*" />
+    <_CssCompilerSourceInput Include="$(MSBuildThisFileDirectory)..\..\..\..\Directory.Build.props;$(MSBuildThisFileDirectory)..\..\..\..\Directory.Build.targets;$(MSBuildThisFileDirectory)..\..\..\..\global.json" />
+    <_CssCompilerSourceInput Include="$(MSBuildThisFileDirectory)..\..\..\..\Directory.Packages.props" Condition="Exists('$(MSBuildThisFileDirectory)..\..\..\..\Directory.Packages.props')" />
+  </ItemGroup>
+  <PropertyGroup>
+    <_CssCompilerInputManifest>$(CssCompilerBuildRoot)/obj/Jalium.UI.Compiler/$(Configuration)/jalium.compiler.inputs</_CssCompilerInputManifest>
+    <_CssCompilerBuildStamp>$(CssCompilerBuildRoot)/obj/Jalium.UI.Compiler/$(Configuration)/jalium.compiler.build.stamp</_CssCompilerBuildStamp>
+  </PropertyGroup>
+
+  <!-- The packaged toolchain is already built. Source consumers bootstrap the
+       MSBuild task assembly when missing and rebuild the isolated compiler
+       incrementally. Never rebuild an existing task assembly here: Visual
+       Studio may already have loaded and locked it earlier in the same
+       Build+Publish operation. -->
+  <Target Name="EnsureCssBuildToolchain"
+          BeforeTargets="TransformJalxamlRazor"
+          DependsOnTargets="EnsureCssCompilerWhenSourcesChange"
+          Condition="'$(EnableCssCodeGeneration)' == 'true' and '$(DesignTimeBuild)' != 'true' and Exists('$(_JalxamlSourceBuildProjectPath)') and ('@(JaliumCss)' != '' or '@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '' or Exists('$(CssGeneratedOutputPath)'))">
+    <MSBuild Projects="$(_JalxamlSourceBuildProjectPath)"
+             Targets="Restore;Build"
+             RemoveProperties="JaliumPlatform;RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;IsTrimmable;IsAotCompatible;BuildingInsideVisualStudio;BuildProjectReferences;BuildingSolutionFile;CurrentSolutionConfigurationContents;OutputPath;OutDir"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false;GeneratePackageOnBuild=false;BuildJaliumNativeProjects=false;BuildJaliumNativeStaticProjects=false;BuildingInsideVisualStudio=false;BuildProjectReferences=true"
+             Condition="'$(_JalxamlTasksPath)' == '$(_JalxamlSourceTasksPath)' and !Exists('$(_JalxamlSourceTasksPath)')" />
+  </Target>
+
+  <Target Name="PrepareCssCompilerInputManifest"
+          Condition="'$(EnableCssCodeGeneration)' == 'true' and '$(DesignTimeBuild)' != 'true' and ('@(JaliumCss)' != '' or '@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '' or Exists('$(CssGeneratedOutputPath)')) and '$(CssCompilerPath)' == '$(_CssSourceCompilerPath)' and Exists('$(_JalxamlSourceCompilerProjectPath)')">
+    <MakeDir Directories="$(CssCompilerBuildRoot)/obj/Jalium.UI.Compiler/$(Configuration)" />
+    <WriteLinesToFile File="$(_CssCompilerInputManifest)" Lines="@(_CssCompilerSourceInput)"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" />
+  </Target>
+
+  <Target Name="EnsureCssCompilerWhenMissing"
+          DependsOnTargets="PrepareCssCompilerInputManifest"
+          Condition="'$(EnableCssCodeGeneration)' == 'true' and '$(DesignTimeBuild)' != 'true' and ('@(JaliumCss)' != '' or '@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '' or Exists('$(CssGeneratedOutputPath)')) and '$(CssCompilerPath)' == '$(_CssSourceCompilerPath)' and Exists('$(_JalxamlSourceCompilerProjectPath)') and !Exists('$(_CssSourceCompilerPath)')">
+    <MSBuild Projects="$(_JalxamlSourceCompilerProjectPath)" Targets="Restore;Build"
+             RemoveProperties="JaliumPlatform;RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;IsTrimmable;IsAotCompatible;BuildingInsideVisualStudio;BuildProjectReferences;BuildingSolutionFile;CurrentSolutionConfigurationContents;OutputPath;OutDir"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false;JaliumBuildRoot=$(CssCompilerBuildRoot);BuildingInsideVisualStudio=false;BuildProjectReferences=true" />
+    <Error Condition="!Exists('$(_CssSourceCompilerPath)')" Text="Failed to build the portable CSS compiler at '$(_CssSourceCompilerPath)'." />
+    <Touch Files="$(_CssCompilerBuildStamp)" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="EnsureCssCompilerWhenSourcesChange"
+          DependsOnTargets="PrepareCssCompilerInputManifest;EnsureCssCompilerWhenMissing"
+          Inputs="@(_CssCompilerSourceInput);$(_CssCompilerInputManifest)"
+          Outputs="$(_CssCompilerBuildStamp)"
+          Condition="'$(EnableCssCodeGeneration)' == 'true' and '$(DesignTimeBuild)' != 'true' and ('@(JaliumCss)' != '' or '@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '' or Exists('$(CssGeneratedOutputPath)')) and '$(CssCompilerPath)' == '$(_CssSourceCompilerPath)' and Exists('$(_JalxamlSourceCompilerProjectPath)')">
+    <MSBuild Projects="$(_JalxamlSourceCompilerProjectPath)" Targets="Restore;Build"
+             RemoveProperties="JaliumPlatform;RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;IsTrimmable;IsAotCompatible;BuildingInsideVisualStudio;BuildProjectReferences;BuildingSolutionFile;CurrentSolutionConfigurationContents;OutputPath;OutDir"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false;JaliumBuildRoot=$(CssCompilerBuildRoot);BuildingInsideVisualStudio=false;BuildProjectReferences=true" />
+    <Error Condition="!Exists('$(_CssSourceCompilerPath)')" Text="Failed to build the portable CSS compiler at '$(_CssSourceCompilerPath)'." />
+    <Touch Files="$(_CssCompilerBuildStamp)" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="GenerateCompiledCss"
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="EnsureCssBuildToolchain;ResolveEffectiveJalxamlSources"
+          Condition="'$(EnableCssCodeGeneration)' == 'true' and '$(DesignTimeBuild)' != 'true' and ('@(JaliumCss)' != '' or '@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '' or Exists('$(CssGeneratedOutputPath)'))">
+    <CompileCssTask StyleSheets="@(JaliumCss)" XamlFiles="@(_EffectiveJalxamlSources)"
+                    ProjectDirectory="$(MSBuildProjectDirectory)" AssemblyName="$(AssemblyName)"
+                    CompilerPath="$(CssCompilerPath)" OutputFile="$(CssGeneratedOutputPath)">
+      <Output TaskParameter="GeneratedFiles" ItemName="_CompiledCssSources" />
+      <Output TaskParameter="WrittenFiles" ItemName="FileWrites" />
+    </CompileCssTask>
+    <ItemGroup>
+      <Compile Include="@(_CompiledCssSources)" Exclude="@(Compile)" />
+    </ItemGroup>
+  </Target>
+</Project>

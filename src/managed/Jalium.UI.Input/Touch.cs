@@ -52,18 +52,20 @@ public static class Touch
 
     /// <summary>
     /// Returns current touch capabilities. Windows keeps the process-lifetime
-    /// system-metric snapshot; Linux re-queries the active Wayland seat or XI2
-    /// devices so hot-plug changes become visible. Unchanged Linux snapshots
-    /// reuse the previous object.
+    /// system-metric snapshot; other native platforms re-query their device
+    /// inventory so hot-plug changes become visible. Unchanged snapshots reuse
+    /// the previous object.
     /// </summary>
     public static TouchCapabilities GetTouchCapabilities()
     {
         if (_overrideCapabilities is not null)
             return _overrideCapabilities;
 
-        if (OperatingSystem.IsLinux() || _linuxCapabilitiesQueryForTesting is not null)
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsAndroid() ||
+            OperatingSystem.IsIOS() || OperatingSystem.IsMacOS() ||
+            OperatingSystem.IsMacCatalyst() || _linuxCapabilitiesQueryForTesting is not null)
         {
-            var current = QueryLinuxPlatformCapabilities();
+            var current = QueryNativePlatformCapabilities();
             if (_cachedCapabilities is not null &&
                 _cachedCapabilities.TouchPresent == current.TouchPresent &&
                 _cachedCapabilities.Contacts == current.Contacts)
@@ -86,10 +88,7 @@ public static class Touch
         try
         {
             int digitizer = NativeTouchInterop.GetSystemMetrics(NativeTouchInterop.SM_DIGITIZER);
-            const int TouchMask = NativeTouchInterop.NID_READY
-                                   | NativeTouchInterop.NID_INTEGRATED_TOUCH
-                                   | NativeTouchInterop.NID_EXTERNAL_TOUCH;
-            bool touchPresent = (digitizer & TouchMask) != 0;
+            bool touchPresent = IsReadyTouchDigitizer(digitizer);
             int contacts = touchPresent
                 ? Math.Max(0, NativeTouchInterop.GetSystemMetrics(NativeTouchInterop.SM_MAXIMUMTOUCHES))
                 : 0;
@@ -105,7 +104,16 @@ public static class Touch
         }
     }
 
-    private static TouchCapabilities QueryLinuxPlatformCapabilities()
+    [SupportedOSPlatform("windows")]
+    internal static bool IsReadyTouchDigitizer(int digitizer)
+    {
+        const int TouchMask = NativeTouchInterop.NID_INTEGRATED_TOUCH |
+                              NativeTouchInterop.NID_EXTERNAL_TOUCH;
+        return (digitizer & NativeTouchInterop.NID_READY) != 0 &&
+               (digitizer & TouchMask) != 0;
+    }
+
+    private static TouchCapabilities QueryNativePlatformCapabilities()
     {
         try
         {

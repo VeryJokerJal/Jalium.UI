@@ -1,8 +1,9 @@
-﻿using Jalium.UI.Data;
+using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Input.Internal.Gestures;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -12,6 +13,11 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class ScrollBar : RangeBase
 {
+    private bool HasCssBackdropEffect => GetEffectiveValueLayer(BackdropEffectProperty) is
+        DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
+
+    internal override bool RendersBackdropEffectInOnRender => !HasCssBackdropEffect;
+
     /// <summary>
     /// Set by a host that creates this bar and lays it out at a rectangle it derives
     /// itself, without consulting this bar's DesiredSize (see
@@ -57,6 +63,7 @@ public class ScrollBar : RangeBase
     private static readonly BackdropBlurEffect s_defaultTrackBackdropEffect = new(0f, BackdropBlurType.Gaussian);
     private static readonly Style s_internalRepeatButtonStyle = new(typeof(RepeatButton));
     private static readonly Style s_internalThumbStyle = CreateInternalThumbStyle();
+    private static readonly ControlTemplate s_cssColorThumbTemplate = CreatePlainThumbTemplate();
 
     #endregion
 
@@ -64,6 +71,9 @@ public class ScrollBar : RangeBase
     private Pen? _borderPen;
     private Brush? _borderPenBrush;
     private double _borderPenThickness;
+    private Border? _cssBorderPainter;
+    private CssScrollBarColors? _ownerCssColors;
+    private Brush? _fallbackThumbLocalBrush;
 
     #region Dependency Properties
 
@@ -269,9 +279,9 @@ public class ScrollBar : RangeBase
         Maximum = 100;
         SmallChange = 1;
         LargeChange = 10;
-        BorderBrush = s_transparentBrush;
-        BorderThickness = new Thickness(0);
-        Padding = new Thickness(2);
+        SetCurrentValue(BorderBrushProperty, s_transparentBrush);
+        SetCurrentValue(BorderThicknessProperty, new Thickness(0));
+        SetCurrentValue(PaddingProperty, new Thickness(2));
 
         // Create visual children
         CreateVisualChildren();
@@ -287,6 +297,7 @@ public class ScrollBar : RangeBase
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
         ResourcesChanged += OnResourcesChangedHandler;
+        Unloaded += static (sender, _) => (sender as ScrollBar)?.CompleteInteractionForDetach();
         RegisterScrollCommandBindings();
 
         _autoHideCollapseProgress = IsThumbSlim ? 1.0 : 0.0;
@@ -520,6 +531,25 @@ public class ScrollBar : RangeBase
         ApplyPartStyles();
         ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
         ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
+        if (VisualParent == null) CompleteInteractionForDetach();
+    }
+
+    internal void CompleteInteractionForDetach()
+    {
+        bool transitioning = _autoHideVisualTimer?.IsEnabled == true;
+        StopAutoHideVisualTimer();
+        CompleteOverlayThumbGesture();
+        if (transitioning)
+        {
+            _autoHideCollapseProgress = _autoHideVisualAnimTo;
+            _autoHideVisibilityProgress = _autoHideVisibilityAnimTo;
+            ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
+            ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
+        }
+        _lineUpButton?.CompleteInteractionForDetach();
+        _lineDownButton?.CompleteInteractionForDetach();
+        _track?.DecreaseRepeatButton?.CompleteInteractionForDetach();
+        _track?.IncreaseRepeatButton?.CompleteInteractionForDetach();
     }
 
     private void OnResourcesChangedHandler(object? sender, EventArgs e)
@@ -717,11 +747,50 @@ public class ScrollBar : RangeBase
         return ResolveBrushResource(ArrowBrushKey) ?? s_defaultArrowBrush;
     }
 
+    internal void SetOwnerCssColors(CssScrollBarColors? colors)
+    {
+        if (ReferenceEquals(_ownerCssColors, colors))
+            return;
+
+        var thumb = _track?.Thumb;
+        var wasStyled = _ownerCssColors is not null;
+        _ownerCssColors = colors;
+        if (colors is not null)
+        {
+            if (!wasStyled && thumb is not null && _fallbackThumbLocalBrush is not null &&
+                ReferenceEquals(thumb.ReadLocalValue(BackgroundProperty), _fallbackThumbLocalBrush))
+                thumb.ClearValue(BackgroundProperty);
+            SetLayerValue(BackgroundProperty, colors.TrackBrush,
+                DependencyObject.LayerValueSource.ParentTemplate);
+            thumb?.SetLayerValue(BackgroundProperty, colors.ThumbBrush,
+                DependencyObject.LayerValueSource.ParentTemplate);
+            if (!wasStyled)
+            {
+                // The theme template supplies unrelated fixed hover and drag colors.
+                // Use a plain background-bound template while CSS colors apply.
+                // An explicit native local template still has higher priority.
+                thumb?.SetLayerValue(TemplateProperty, s_cssColorThumbTemplate,
+                    DependencyObject.LayerValueSource.ParentTemplate);
+            }
+        }
+        else if (wasStyled)
+        {
+            ClearLayerValue(BackgroundProperty, DependencyObject.LayerValueSource.ParentTemplate);
+            thumb?.ClearLayerValue(BackgroundProperty, DependencyObject.LayerValueSource.ParentTemplate);
+            thumb?.ClearLayerValue(TemplateProperty, DependencyObject.LayerValueSource.ParentTemplate);
+            if (thumb is not null)
+                EnsureThumbVisibilityFallback(thumb);
+        }
+
+        InvalidateVisual();
+    }
+
     private void EnsureThumbVisibilityFallback(Thumb thumb)
     {
         if (thumb.Background == null)
         {
-            thumb.Background = ResolveThumbBrush();
+            _fallbackThumbLocalBrush = ResolveThumbBrush();
+            thumb.Background = _fallbackThumbLocalBrush;
         }
     }
 
@@ -771,13 +840,26 @@ public class ScrollBar : RangeBase
 
     private static Style CreateInternalThumbStyle()
     {
-        var fallbackTemplate = new ControlTemplate(typeof(Thumb));
-        fallbackTemplate.SetVisualTree(() =>
+        var style = new Style(typeof(Thumb));
+        style.Setters.Add(new Setter(BorderBrushProperty, s_transparentBrush));
+        style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(0)));
+        style.Setters.Add(new Setter(CornerRadiusProperty, new CornerRadius(999)));
+        style.Setters.Add(new Setter(Thumb.ShowGripProperty, false));
+        style.Setters.Add(new Setter(Control.TemplateProperty, CreatePlainThumbTemplate()));
+        return style;
+    }
+
+    private static ControlTemplate CreatePlainThumbTemplate()
+    {
+        var template = new ControlTemplate(typeof(Thumb));
+        template.SetVisualTree(() =>
         {
             var border = new Border
             {
                 Name = "ThumbBorder"
             };
+            border.SetCurrentValue(UIElement.TransitionPropertyProperty,
+                TransitionPropertyCollection.None());
             border.SetTemplateBinding(Border.BackgroundProperty, BackgroundProperty);
             border.SetTemplateBinding(Border.BorderBrushProperty, BorderBrushProperty);
             border.SetTemplateBinding(Border.BorderThicknessProperty, BorderThicknessProperty);
@@ -785,14 +867,7 @@ public class ScrollBar : RangeBase
             border.SetTemplateBinding(FrameworkElement.MarginProperty, PaddingProperty);
             return border;
         });
-
-        var style = new Style(typeof(Thumb));
-        style.Setters.Add(new Setter(BorderBrushProperty, s_transparentBrush));
-        style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(0)));
-        style.Setters.Add(new Setter(CornerRadiusProperty, new CornerRadius(999)));
-        style.Setters.Add(new Setter(Thumb.ShowGripProperty, false));
-        style.Setters.Add(new Setter(Control.TemplateProperty, fallbackTemplate));
-        return style;
+        return template;
     }
 
     private static void ClearLocalIfReferenceEquals(DependencyObject target, DependencyProperty property, object expectedValue)
@@ -859,42 +934,81 @@ public class ScrollBar : RangeBase
 
     #region Layout
 
+    internal override void OnEffectiveValueSourceChanged(DependencyProperty property)
+    {
+        base.OnEffectiveValueSourceChanged(property);
+        if (property == PaddingProperty || property == BorderThicknessProperty)
+            InvalidateMeasure();
+    }
+
+    private Thickness GetPartsInsets(double fallbackWidth)
+    {
+        // The built-in 2-DIP padding has historically inset track paint only.
+        // Keep that default chrome geometry until an authored box edge asks the
+        // buttons and track to occupy the actual content box.
+        if (Padding == new Thickness(2) && BorderThickness == new Thickness(0) &&
+            !HasLocalOrAnimatedValue(PaddingProperty) &&
+            !HasLocalOrAnimatedValue(BorderThicknessProperty) &&
+            GetEffectiveValueLayer(PaddingProperty) is not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState) &&
+            GetEffectiveValueLayer(BorderThicknessProperty) is not
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+            return default;
+
+        return CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? fallbackWidth);
+    }
+
+    private Rect GetPartsRect(Size outerSize)
+    {
+        var insets = GetPartsInsets(outerSize.Width);
+        var innerSize = CssBoxMetrics.InnerSize(outerSize, insets);
+        return new Rect(insets.Left, insets.Top, innerSize.Width, innerSize.Height);
+    }
+
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        var insets = GetPartsInsets(availableSize.Width);
+        var innerAvailable = CssBoxMetrics.InnerSize(availableSize, insets);
         if (Orientation == Orientation.Vertical)
         {
-            var width = double.IsNaN(Width) || Width <= 0 ? DefaultThickness : Width;
+            var explicitWidth = !double.IsNaN(Width) && Width > 0;
+            var width = explicitWidth
+                ? Math.Max(0, Width - insets.Left - insets.Right)
+                : DefaultThickness;
             var buttonHeight = IsOverlayStyle ? 0.0 : width; // Square desktop buttons
 
             _lineUpButton?.Measure(new Size(width, buttonHeight));
             _lineDownButton?.Measure(new Size(width, buttonHeight));
 
-            var trackHeight = Math.Max(0, availableSize.Height - buttonHeight * 2);
+            var trackHeight = Math.Max(0, innerAvailable.Height - buttonHeight * 2);
             _track?.Measure(new Size(width, trackHeight));
 
             var height = double.IsPositiveInfinity(availableSize.Height)
-                ? buttonHeight * 2 + MinThumbLength * 2
+                ? buttonHeight * 2 + MinThumbLength * 2 + insets.Top + insets.Bottom
                 : availableSize.Height;
 
-            return new Size(width, height);
+            return new Size(explicitWidth ? Width : Math.Max(0, width + insets.Left + insets.Right), height);
         }
         else
         {
-            var height = double.IsNaN(Height) || Height <= 0 ? DefaultThickness : Height;
+            var explicitHeight = !double.IsNaN(Height) && Height > 0;
+            var height = explicitHeight
+                ? Math.Max(0, Height - insets.Top - insets.Bottom)
+                : DefaultThickness;
             var buttonWidth = IsOverlayStyle ? 0.0 : height; // Square desktop buttons
 
             _lineUpButton?.Measure(new Size(buttonWidth, height));
             _lineDownButton?.Measure(new Size(buttonWidth, height));
 
-            var trackWidth = Math.Max(0, availableSize.Width - buttonWidth * 2);
+            var trackWidth = Math.Max(0, innerAvailable.Width - buttonWidth * 2);
             _track?.Measure(new Size(trackWidth, height));
 
             var width = double.IsPositiveInfinity(availableSize.Width)
-                ? buttonWidth * 2 + MinThumbLength * 2
+                ? buttonWidth * 2 + MinThumbLength * 2 + insets.Left + insets.Right
                 : availableSize.Width;
 
-            return new Size(width, height);
+            return new Size(width, explicitHeight ? Height : Math.Max(0, height + insets.Top + insets.Bottom));
         }
     }
 
@@ -904,7 +1018,8 @@ public class ScrollBar : RangeBase
         ApplySelfStyle();
         ApplyPartStyles();
         UpdateTrackBindings();
-        var crossAxisSize = Orientation == Orientation.Vertical ? finalSize.Width : finalSize.Height;
+        var inner = GetPartsRect(finalSize);
+        var crossAxisSize = Orientation == Orientation.Vertical ? inner.Width : inner.Height;
         ApplyAutoHideVisualState(_autoHideCollapseProgress, crossAxisSize, suppressArrangeInvalidation: true);
 
         if (IsOverlayStyle)
@@ -917,21 +1032,21 @@ public class ScrollBar : RangeBase
 
             if (Orientation == Orientation.Vertical)
             {
-                var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, finalSize.Height / 2));
-                _track?.Arrange(new Rect(
-                    0,
-                    endInset,
-                    Math.Max(0, finalSize.Width),
-                    Math.Max(0, finalSize.Height - endInset * 2)));
+                var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, inner.Height / 2));
+            _track?.Arrange(new Rect(
+                    inner.Left,
+                    inner.Top + endInset,
+                    inner.Width,
+                    Math.Max(0, inner.Height - endInset * 2)));
             }
             else
             {
-                var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, finalSize.Width / 2));
+                var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, inner.Width / 2));
                 _track?.Arrange(new Rect(
-                    endInset,
-                    0,
-                    Math.Max(0, finalSize.Width - endInset * 2),
-                    Math.Max(0, finalSize.Height)));
+                    inner.Left + endInset,
+                    inner.Top,
+                    Math.Max(0, inner.Width - endInset * 2),
+                    inner.Height));
             }
 
             return finalSize;
@@ -939,21 +1054,21 @@ public class ScrollBar : RangeBase
 
         if (Orientation == Orientation.Vertical)
         {
-            var buttonSize = ControlRenderGeometry.GetAvailableLength(finalSize.Width, finalSize.Height / 2.0);
-            var trackHeight = Math.Max(0, finalSize.Height - buttonSize * 2);
+            var buttonSize = ControlRenderGeometry.GetAvailableLength(inner.Width, inner.Height / 2.0);
+            var trackHeight = Math.Max(0, inner.Height - buttonSize * 2);
 
-            _lineUpButton?.Arrange(new Rect(0, 0, finalSize.Width, buttonSize));
-            _track?.Arrange(new Rect(0, buttonSize, finalSize.Width, trackHeight));
-            _lineDownButton?.Arrange(new Rect(0, finalSize.Height - buttonSize, finalSize.Width, buttonSize));
+            _lineUpButton?.Arrange(new Rect(inner.Left, inner.Top, inner.Width, buttonSize));
+            _track?.Arrange(new Rect(inner.Left, inner.Top + buttonSize, inner.Width, trackHeight));
+            _lineDownButton?.Arrange(new Rect(inner.Left, inner.Bottom - buttonSize, inner.Width, buttonSize));
         }
         else
         {
-            var buttonSize = ControlRenderGeometry.GetAvailableLength(finalSize.Height, finalSize.Width / 2.0);
-            var trackWidth = Math.Max(0, finalSize.Width - buttonSize * 2);
+            var buttonSize = ControlRenderGeometry.GetAvailableLength(inner.Height, inner.Width / 2.0);
+            var trackWidth = Math.Max(0, inner.Width - buttonSize * 2);
 
-            _lineUpButton?.Arrange(new Rect(0, 0, buttonSize, finalSize.Height));
-            _track?.Arrange(new Rect(buttonSize, 0, trackWidth, finalSize.Height));
-            _lineDownButton?.Arrange(new Rect(finalSize.Width - buttonSize, 0, buttonSize, finalSize.Height));
+            _lineUpButton?.Arrange(new Rect(inner.Left, inner.Top, buttonSize, inner.Height));
+            _track?.Arrange(new Rect(inner.Left + buttonSize, inner.Top, trackWidth, inner.Height));
+            _lineDownButton?.Arrange(new Rect(inner.Right - buttonSize, inner.Top, buttonSize, inner.Height));
         }
 
         return finalSize;
@@ -1453,8 +1568,10 @@ public class ScrollBar : RangeBase
         {
             _autoHideCollapseProgress = targetCollapseProgress;
             _autoHideVisibilityProgress = targetVisibilityProgress;
-            ApplyAutoHideVisualState(_autoHideCollapseProgress);
-            ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
+            // The target values are already painted. Reapplying them is not a
+            // harmless no-op because ApplyAutoHideVisualState invalidates the
+            // ScrollBar unconditionally. Nested ScrollViewer MouseEnter routes
+            // otherwise multiply one pointer sample into redundant dirty work.
             StopAutoHideVisualTimer();
             return;
         }
@@ -1642,7 +1759,8 @@ public class ScrollBar : RangeBase
         }
         else
         {
-            crossAxisSize = Orientation == Orientation.Vertical ? RenderSize.Width : RenderSize.Height;
+            var parts = GetPartsRect(RenderSize);
+            crossAxisSize = Orientation == Orientation.Vertical ? parts.Width : parts.Height;
             if (!double.IsFinite(crossAxisSize) || crossAxisSize <= 0)
             {
                 crossAxisSize = Orientation == Orientation.Vertical
@@ -1939,9 +2057,8 @@ public class ScrollBar : RangeBase
 
     private bool IsPointWithinOverlayIndicator(Point point)
     {
-        var crossAxisSize = Orientation == Orientation.Vertical
-            ? RenderSize.Width
-            : RenderSize.Height;
+        var parts = GetPartsRect(RenderSize);
+        var crossAxisSize = Orientation == Orientation.Vertical ? parts.Width : parts.Height;
         if (!double.IsFinite(crossAxisSize) || crossAxisSize <= 0)
             return false;
 
@@ -1952,12 +2069,14 @@ public class ScrollBar : RangeBase
         var indicatorStart = Math.Max(0, crossAxisSize - edgeInset - indicatorThickness);
         var indicatorEnd = indicatorStart + indicatorThickness;
         // FrameworkElement.HitTestCore receives points in the parent coordinate
-        // space; normalize to this ScrollBar before comparing with RenderSize.
+        // space; normalize to this ScrollBar before comparing with the parts rect.
         var crossAxisPoint = Orientation == Orientation.Vertical
             ? point.X - VisualBounds.X
             : point.Y - VisualBounds.Y;
+        var crossAxisStart = Orientation == Orientation.Vertical ? parts.Left : parts.Top;
 
-        return crossAxisPoint >= indicatorStart && crossAxisPoint <= indicatorEnd;
+        return crossAxisPoint >= crossAxisStart + indicatorStart &&
+               crossAxisPoint <= crossAxisStart + indicatorEnd;
     }
 
     /// <inheritdoc />
@@ -1970,11 +2089,6 @@ public class ScrollBar : RangeBase
             Padding.Top,
             Math.Max(0, RenderSize.Width - Padding.Left - Padding.Right),
             Math.Max(0, RenderSize.Height - Padding.Top - Padding.Bottom));
-        if (innerRect.Width <= 0 || innerRect.Height <= 0)
-        {
-            return;
-        }
-
         var chromeOpacity = Math.Clamp(_chromeOpacity, 0.0, 1.0);
         if (chromeOpacity <= 0.001)
             return;
@@ -1982,15 +2096,34 @@ public class ScrollBar : RangeBase
         dc.PushOpacity(chromeOpacity);
 
         var backdropEffect = BackdropEffect;
-        if ((backdropEffect ?? s_defaultTrackBackdropEffect).HasEffect && backdropEffect != null)
+        if (!HasCssBackdropEffect && innerRect.Width > 0 && innerRect.Height > 0 &&
+            (backdropEffect ?? s_defaultTrackBackdropEffect).HasEffect && backdropEffect != null)
         {
             dc.DrawBackdropEffect(innerRect, backdropEffect, CornerRadius);
         }
 
-        var bgBrush = Background ?? ResolveTrackBrush();
-        dc.DrawRoundedRectangle(bgBrush, null, innerRect, CornerRadius);
+        var background = Background;
+        var cssBackgroundDrawn = false;
+        if (background != null)
+        {
+            var outer = new Rect(RenderSize);
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
+            var shape = new CssRoundedRectangleGeometry(outer, radii);
+            cssBackgroundDrawn = CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
+                outer, radii, BorderThickness, Padding,
+                brush => dc.DrawGeometry(brush, null, shape));
+        }
 
-        if (BorderBrush != null && BorderThickness.TotalWidth > 0)
+        var cssBackgroundNone = background is null &&
+            GetEffectiveValueLayer(BackgroundProperty) is
+                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState);
+        if (!cssBackgroundDrawn && !cssBackgroundNone &&
+            innerRect.Width > 0 && innerRect.Height > 0)
+            dc.DrawRoundedRectangle(background ?? ResolveTrackBrush(), null, innerRect, CornerRadius);
+
+        if (innerRect.Width > 0 && innerRect.Height > 0 &&
+            CssBorderPaintProperties.Get(this) is null && BorderBrush != null && BorderThickness.TotalWidth > 0)
         {
             if (_borderPen == null || _borderPenBrush != BorderBrush || _borderPenThickness != BorderThickness.Left)
             {
@@ -2010,9 +2143,22 @@ public class ScrollBar : RangeBase
         dc.Pop();
     }
 
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (CssBorderPaintProperties.Get(this) is null) return;
+        var opacity = Math.Clamp(_chromeOpacity, 0.0, 1.0);
+        if (opacity <= 0.001) return;
+        drawingContext.PushOpacity(opacity);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+        drawingContext.Pop();
+    }
+
     private void DrawFallbackArrows(DrawingContext dc)
     {
         const double baseArrowSize = 8.0;
+        var parts = GetPartsRect(RenderSize);
         var fallbackArrowBrush = ResolveArrowBrush();
         var upBrush = (_lineUpButton?.Foreground as Brush) ?? fallbackArrowBrush;
         var downBrush = (_lineDownButton?.Foreground as Brush) ?? fallbackArrowBrush;
@@ -2023,12 +2169,12 @@ public class ScrollBar : RangeBase
 
         if (Orientation == Orientation.Vertical)
         {
-            var buttonSize = RenderSize.Width;
-            if (buttonSize <= 0 || RenderSize.Height < buttonSize * 2)
+            var buttonSize = parts.Width;
+            if (buttonSize <= 0 || parts.Height < buttonSize * 2)
                 return;
 
-            var topCenter = new Point(RenderSize.Width / 2, buttonSize / 2);
-            var bottomCenter = new Point(RenderSize.Width / 2, RenderSize.Height - buttonSize / 2);
+            var topCenter = new Point(parts.Left + parts.Width / 2, parts.Top + buttonSize / 2);
+            var bottomCenter = new Point(parts.Left + parts.Width / 2, parts.Bottom - buttonSize / 2);
 
             Jalium.UI.Controls.ArrowIcons.DrawArrow(
                 dc,
@@ -2044,12 +2190,12 @@ public class ScrollBar : RangeBase
         }
         else
         {
-            var buttonSize = RenderSize.Height;
-            if (buttonSize <= 0 || RenderSize.Width < buttonSize * 2)
+            var buttonSize = parts.Height;
+            if (buttonSize <= 0 || parts.Width < buttonSize * 2)
                 return;
 
-            var leftCenter = new Point(buttonSize / 2, RenderSize.Height / 2);
-            var rightCenter = new Point(RenderSize.Width - buttonSize / 2, RenderSize.Height / 2);
+            var leftCenter = new Point(parts.Left + buttonSize / 2, parts.Top + parts.Height / 2);
+            var rightCenter = new Point(parts.Right - buttonSize / 2, parts.Top + parts.Height / 2);
 
             Jalium.UI.Controls.ArrowIcons.DrawArrow(
                 dc,

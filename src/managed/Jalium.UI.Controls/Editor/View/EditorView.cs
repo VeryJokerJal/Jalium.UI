@@ -1,6 +1,7 @@
 using Jalium.UI;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls.Editor;
 
@@ -139,7 +140,7 @@ internal sealed class EditorView
     /// </summary>
     public double GetLineTextWidth(int lineNumber)
     {
-        if (Document == null)
+        if (Document == null || _lineHeight <= 0)
             return 0;
 
         int clampedLine = Math.Clamp(lineNumber, 1, Document.LineCount);
@@ -157,7 +158,8 @@ internal sealed class EditorView
     /// </summary>
     public void UpdateLayout(string fontFamily, double fontSize)
     {
-        if (_cachedFontFamily == fontFamily && _cachedFontSize == fontSize && _lineHeight > 0)
+        if (_cachedFontFamily == fontFamily && _cachedFontSize == fontSize &&
+            (fontSize <= 0 || _lineHeight > 0))
             return;
 
         _cachedFontFamily = fontFamily;
@@ -167,6 +169,14 @@ internal sealed class EditorView
         {
             foreach (var cachedLine in _lineCache.Values)
                 cachedLine.InvalidateGeometry();
+        }
+
+        if (fontSize <= 0)
+        {
+            _lineHeight = 0;
+            _charWidth = 0;
+            UpdateGutterWidth();
+            return;
         }
 
         // Get font metrics from native measurement
@@ -259,7 +269,7 @@ internal sealed class EditorView
 
     private void UpdateGutterWidth()
     {
-        if (Document == null)
+        if (Document == null || _cachedFontSize <= 0)
         {
             _gutterWidth = 0;
             return;
@@ -479,7 +489,8 @@ internal sealed class EditorView
         Brush lineNumberForeground, Brush currentLineBackground, Brush gutterBackground,
         string fontFamily, double fontSize, FontWeight fontWeight, FontStyle fontStyle,
         bool renderLineNumbers = true,
-        bool suppressCaret = false)
+        bool suppressCaret = false,
+        CssCaretShape caretShape = CssCaretShape.Auto)
     {
         if (Document == null || _lineHeight <= 0) return;
 
@@ -587,10 +598,21 @@ internal sealed class EditorView
 
                 if (caretX >= textAreaLeft && caretY >= 0 && caretY < renderSize.Height)
                 {
-                    var caretPen = new Pen(caretBrush, 2);
-                    dc.DrawLine(caretPen,
-                        new Point(caretX, caretY),
-                        new Point(caretX, caretY + _lineHeight));
+                    if (caretShape == CssCaretShape.Auto)
+                    {
+                        var caretPen = new Pen(caretBrush, 2);
+                        dc.DrawLine(caretPen,
+                            new Point(caretX, caretY),
+                            new Point(caretX, caretY + _lineHeight));
+                    }
+                    else
+                    {
+                        var advance = CssCaretPainter.NextAdvance(caretLineText, clampedCaretColumn,
+                            column => GetColumnX(caretCachedLine, caretLineText, column, textAreaLeft),
+                            _charWidth);
+                        CssCaretPainter.Draw(dc, caretBrush, caretShape,
+                            caretX, caretY, _lineHeight, advance, 2);
+                    }
                 }
             }
         }
@@ -1179,7 +1201,7 @@ internal sealed class EditorView
 
     private static double MeasurePrefixWidth(string lineText, int column, string fontFamily, double fontSize)
     {
-        if (string.IsNullOrEmpty(lineText) || column <= 0)
+        if (string.IsNullOrEmpty(lineText) || column <= 0 || fontSize <= 0)
             return 0;
 
         int clampedColumn = Math.Clamp(column, 0, lineText.Length);
@@ -1223,7 +1245,7 @@ internal sealed class EditorView
 
     private double GetMeasurementFontSize()
     {
-        return _cachedFontSize > 0 ? _cachedFontSize : 14;
+        return _cachedFontSize;
     }
 
     /// <summary>

@@ -1,52 +1,39 @@
-// Vello GPU Pipeline V2 — clip_reduce
-// Hierarchical reduction of clip begin/end pairs using BIC (Binary Inclusive Count).
-// Matches Vello's clip_reduce.wgsl: performs stack-based matching within each workgroup
-// and outputs per-workgroup BIC aggregates + matched ClipEl parent links.
+// Vello GPU Pipeline V3 — clip_reduce
+// Port of vello 0.10.0 shader/clip_reduce.wgsl.
+// Reverse scan of the bicyclic semigroup for clip stack matching; emits per-
+// workgroup Bic reductions and in-workgroup-matched clip elements.
 //
-// Dispatch: max((n_clip - 1) / 256, 0), 1, 1
-// (only dispatched if n_clip > 256; otherwise clip_leaf handles everything)
+// Bindings: t0 clip_inp | t1 path_bboxes | u0 reduced (Bic) | u1 clip_out (ClipEl)
+// Dispatch: ((n_clip - 1) / 256, 1, 1) — skipped when zero
+//
+// NOTE: no config cbuffer, matching upstream.
 
 #include "vello_shared.hlsli"
 
-// SRV inputs
 StructuredBuffer<ClipInp> clip_inp : register(t0);
-ByteAddressBuffer path_bboxes : register(t1);  // PathBbox (24 bytes each)
-
-// UAV outputs
+StructuredBuffer<PathBbox> path_bboxes : register(t1);
 RWStructuredBuffer<Bic> reduced : register(u0);
 RWStructuredBuffer<ClipEl> clip_out : register(u1);
 
-groupshared Bic sh_bic[WG_SIZE];
-groupshared uint sh_stack[WG_SIZE];
-groupshared float4 sh_stack_bbox[WG_SIZE];
+#define WG_SIZE 256u
+#define LG_WG_SIZE 8u
 
-Bic bic_combine(Bic a, Bic b)
-{
-    uint m = min(a.b, b.a);
-    Bic c;
-    c.a = a.a + b.a - m;
-    c.b = a.b + b.b - m;
-    return c;
-}
+groupshared Bic sh_bic[WG_SIZE];
+groupshared uint sh_parent[WG_SIZE];
+groupshared uint sh_path_ix[WG_SIZE];
 
 [numthreads(256, 1, 1)]
-void main(uint3 global_id : SV_DispatchThreadID,
-          uint3 local_id : SV_GroupThreadID,
+void main(uint3 global_id : SV_DispatchThreadID, uint3 local_id : SV_GroupThreadID,
           uint3 wg_id : SV_GroupID)
 {
-    uint ix = global_id.x;
-
-    // Read clip input
-    ClipInp inp = clip_inp[ix];
-    bool is_push = inp.ix >= 0;
+    int inp = clip_inp[global_id.x].path_ix;
+    bool is_push = inp >= 0;
     Bic bic;
     bic.a = is_push ? 0u : 1u;
     bic.b = is_push ? 1u : 0u;
+    // reverse scan of bicyclic semigroup
     sh_bic[local_id.x] = bic;
-
-    // Forward reduction (right-to-left scan for BIC)
-    [unroll]
-    for (uint i = 0u; i < 8u; i++) {  // log2(256) = 8
+    for (uint i = 0u; i < LG_WG_SIZE; i += 1u) {
         GroupMemoryBarrierWithGroupSync();
         if (local_id.x + (1u << i) < WG_SIZE) {
             Bic other = sh_bic[local_id.x + (1u << i)];
@@ -55,42 +42,29 @@ void main(uint3 global_id : SV_DispatchThreadID,
         GroupMemoryBarrierWithGroupSync();
         sh_bic[local_id.x] = bic;
     }
-
-    // Output per-workgroup BIC aggregate
     if (local_id.x == 0u) {
         reduced[wg_id.x] = bic;
     }
-
     GroupMemoryBarrierWithGroupSync();
-
-    // Stack-based matching within workgroup (sequential, single thread)
-    if (local_id.x == 0u) {
-        uint stack_ptr = 0u;
-        for (uint j = 0u; j < WG_SIZE; j++) {
-            uint cur_ix = wg_id.x * WG_SIZE + j;
-            ClipInp cur_inp = clip_inp[cur_ix];
-            if (cur_inp.ix >= 0) {
-                // Push: BeginClip
-                sh_stack[stack_ptr] = j;
-                int path_ix = cur_inp.path_ix;
-                uint addr = (uint)path_ix * 24u;
-                int pbx0 = asint(path_bboxes.Load(addr + 0u));
-                int pby0 = asint(path_bboxes.Load(addr + 4u));
-                int pbx1 = asint(path_bboxes.Load(addr + 8u));
-                int pby1 = asint(path_bboxes.Load(addr + 12u));
-                sh_stack_bbox[stack_ptr] = float4((float)pbx0, (float)pby0, (float)pbx1, (float)pby1);
-                stack_ptr++;
-            } else {
-                // Pop: EndClip
-                if (stack_ptr > 0u) {
-                    stack_ptr--;
-                    uint parent_local = sh_stack[stack_ptr];
-                    ClipEl el;
-                    el.parent_ix = (int)(wg_id.x * WG_SIZE + parent_local);
-                    el.bbox = sh_stack_bbox[stack_ptr];
-                    clip_out[cur_ix] = el;
-                }
-            }
-        }
+    uint size = sh_bic[0].b;
+    bic = (Bic)0;
+    if (local_id.x + 1u < WG_SIZE) {
+        bic = sh_bic[local_id.x + 1u];
+    }
+    if (is_push && bic.a == 0u) {
+        uint local_ix = size - bic.b - 1u;
+        sh_parent[local_ix] = local_id.x;
+        sh_path_ix[local_ix] = uint(inp);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    // TODO: possibly do forward scan here if depth can exceed wg size
+    if (local_id.x < size) {
+        uint path_ix = sh_path_ix[local_id.x];
+        PathBbox pb = path_bboxes[path_ix];
+        uint parent_ix = sh_parent[local_id.x] + wg_id.x * WG_SIZE;
+        ClipEl el;
+        el.parent_ix = parent_ix;
+        el.bbox = float4(float(pb.x0), float(pb.y0), float(pb.x1), float(pb.y1));
+        clip_out[global_id.x] = el;
     }
 }

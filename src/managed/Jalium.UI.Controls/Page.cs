@@ -1,6 +1,7 @@
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
 using Jalium.UI.Navigation;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -64,6 +65,7 @@ public class Page : FrameworkElement, IAddChild, IWindowService
 
     private UIElement? _contentVisual;
     private FrameworkElement? _templateRoot;
+    private Border? _cssBorderPainter;
     private IList<TriggerBase>? _appliedTemplateTriggers;
     private bool _templateApplied;
     private bool _showsNavigationUI = true;
@@ -230,14 +232,22 @@ public class Page : FrameworkElement, IAddChild, IWindowService
     {
         ApplyTemplate();
         UIElement? child = _templateRoot ?? _contentVisual;
-        child?.Measure(availableSize);
-        return child?.DesiredSize ?? default;
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        child?.Measure(CssBoxMetrics.InnerSize(availableSize, insets));
+        var desired = child?.DesiredSize ?? default;
+        return new Size(
+            Math.Max(0, desired.Width + insets.Left + insets.Right),
+            Math.Max(0, desired.Height + insets.Top + insets.Bottom));
     }
 
     protected override Size ArrangeOverride(Size finalSize)
     {
         UIElement? child = _templateRoot ?? _contentVisual;
-        child?.Arrange(new Rect(finalSize));
+        var insets = CssBoxMetrics.ContentInsets(this,
+            CssLayout?.ContainingWidthCache ?? finalSize.Width);
+        var innerSize = CssBoxMetrics.InnerSize(finalSize, insets);
+        child?.Arrange(new Rect(insets.Left, insets.Top, innerSize.Width, innerSize.Height));
         return finalSize;
     }
 
@@ -245,7 +255,29 @@ public class Page : FrameworkElement, IAddChild, IWindowService
     {
         base.OnRender(drawingContext);
         if (Background is { } background && RenderSize.Width > 0 && RenderSize.Height > 0)
-            drawingContext.DrawRectangle(background, null, new Rect(RenderSize));
+        {
+            var outer = new Rect(RenderSize);
+            var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
+                CssLayout?.ContainingWidthCache ?? RenderSize.Width);
+            var cssRadius = CssBorderRadiusProperties.Get(this);
+            var radii = cssRadius?.Resolve(RenderSize) ?? default;
+            var shape = new CssRoundedRectangleGeometry(outer, radii);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background,
+                    drawingContext, outer, radii, border, padding,
+                    brush => drawingContext.DrawGeometry(brush, null, shape)))
+            {
+                if (cssRadius is null)
+                    drawingContext.DrawRectangle(background, null, outer);
+                else
+                    drawingContext.DrawGeometry(background, null, shape);
+            }
+        }
+    }
+
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     void IAddChild.AddChild(object value)

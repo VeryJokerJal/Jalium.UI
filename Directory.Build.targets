@@ -1,0 +1,133 @@
+<Project>
+  <!--
+    Generate the Windows file/product metadata explicitly. GenerateAssemblyInfo
+    stays disabled because several projects intentionally own their other
+    assembly-level attributes, but every managed binary should still expose a
+    useful Details page in Explorer.
+  -->
+  <ItemGroup Condition="'$(MSBuildProjectExtension)' == '.csproj'">
+    <_JaliumProductAssemblyAttribute Include="System.Reflection.AssemblyTitleAttribute">
+      <_Parameter1>$(AssemblyName)</_Parameter1>
+    </_JaliumProductAssemblyAttribute>
+    <_JaliumProductAssemblyAttribute Include="System.Reflection.AssemblyDescriptionAttribute" Condition="'$(Description)' != ''">
+      <_Parameter1>$(Description)</_Parameter1>
+    </_JaliumProductAssemblyAttribute>
+    <_JaliumProductAssemblyAttribute Include="System.Reflection.AssemblyCompanyAttribute">
+      <_Parameter1>$(Company)</_Parameter1>
+    </_JaliumProductAssemblyAttribute>
+    <_JaliumProductAssemblyAttribute Include="System.Reflection.AssemblyProductAttribute">
+      <_Parameter1>$(Product)</_Parameter1>
+    </_JaliumProductAssemblyAttribute>
+    <_JaliumProductAssemblyAttribute Include="System.Reflection.AssemblyCopyrightAttribute">
+      <_Parameter1>$(Copyright)</_Parameter1>
+    </_JaliumProductAssemblyAttribute>
+    <_JaliumProductAssemblyAttribute Include="System.Reflection.AssemblyFileVersionAttribute">
+      <_Parameter1>$(FileVersion)</_Parameter1>
+    </_JaliumProductAssemblyAttribute>
+    <_JaliumProductAssemblyAttribute Include="System.Reflection.AssemblyInformationalVersionAttribute">
+      <_Parameter1>$(Version)</_Parameter1>
+    </_JaliumProductAssemblyAttribute>
+  </ItemGroup>
+
+  <Target Name="JaliumGenerateProductAssemblyInfo"
+          BeforeTargets="CoreCompile"
+          Condition="'$(MSBuildProjectExtension)' == '.csproj'">
+    <WriteCodeFragment Language="C#"
+                       AssemblyAttributes="@(_JaliumProductAssemblyAttribute)"
+                       OutputFile="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs.tmp" />
+    <!-- WriteCodeFragment always updates its output. Keep the compiled file's
+         timestamp stable when its contents are unchanged so a no-op build does
+         not invoke Csc for every managed project. -->
+    <ReadLinesFromFile File="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs.tmp">
+      <Output TaskParameter="Lines" ItemName="_JaliumProductAssemblyInfoLine" />
+    </ReadLinesFromFile>
+    <WriteLinesToFile File="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs"
+                      Lines="@(_JaliumProductAssemblyInfoLine)"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs" Exclude="@(Compile)" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Build-tool projects referenced by packaging projects must satisfy two
+    different requirements:
+      * NuGet restore/pack must see them as project dependencies so a local
+        source build never tries to restore the not-yet-published package.
+      * Build/publish must not treat their assemblies as compiler references;
+        Jalium.UI.Build.dll is an in-process MSBuild task and is locked once
+        loaded, so rebuilding it during Publish fails at CopyFilesToOutputDirectory.
+
+    Keep ReferenceOutputAssembly=false in the project file, temporarily expose
+    only marked references while NuGet creates its restore graph, then restore
+    the build-safe metadata immediately afterwards.
+  -->
+  <Target Name="JaliumExposePackOnlyDependenciesToRestore"
+          BeforeTargets="_GenerateProjectRestoreGraphPerFramework">
+    <ItemGroup>
+      <ProjectReference Update="@(ProjectReference)"
+                        Condition="'%(ProjectReference.JaliumPackOnlyDependency)' == 'true'"
+                        ReferenceOutputAssembly="true" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="JaliumHidePackOnlyDependenciesAfterRestore"
+          AfterTargets="_GenerateProjectRestoreGraphPerFramework">
+    <ItemGroup>
+      <ProjectReference Update="@(ProjectReference)"
+                        Condition="'%(ProjectReference.JaliumPackOnlyDependency)' == 'true'"
+                        ReferenceOutputAssembly="false"
+                        BuildReference="false" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="JaliumHidePackOnlyDependenciesFromBuild"
+          BeforeTargets="PrepareForBuild;AssignProjectConfiguration;ResolveProjectReferences">
+    <ItemGroup>
+      <ProjectReference Update="@(ProjectReference)"
+                        Condition="'%(ProjectReference.JaliumPackOnlyDependency)' == 'true'"
+                        ReferenceOutputAssembly="false"
+                        BuildReference="false" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    VC++ projects (including CMake-generated Visual Studio projects under this
+    repo) import Directory.Build.targets. Attach one shared VERSIONINFO resource
+    to every DLL and feed it the same version/product properties as .NET.
+  -->
+  <Target Name="JaliumAttachNativeVersionResource"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(MSBuildProjectExtension)' == '.vcxproj' and '$(ConfigurationType)' == 'DynamicLibrary' and '$(JaliumProductInfoProvided)' != 'true'">
+    <PropertyGroup>
+      <_JaliumNativeFileVersionComma>$([System.String]::Copy('$(FileVersion)').Replace('.', ','))</_JaliumNativeFileVersionComma>
+      <_JaliumNativeDescription Condition="'$(TargetName)' != ''">$(TargetName)</_JaliumNativeDescription>
+      <_JaliumNativeDescription Condition="'$(_JaliumNativeDescription)' == ''">$(MSBuildProjectName)</_JaliumNativeDescription>
+      <_JaliumNativeOriginalFilename Condition="'$(TargetFileName)' != ''">$(TargetFileName)</_JaliumNativeOriginalFilename>
+      <_JaliumNativeOriginalFilename Condition="'$(_JaliumNativeOriginalFilename)' == ''">$(_JaliumNativeDescription).dll</_JaliumNativeOriginalFilename>
+    </PropertyGroup>
+    <ItemGroup>
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_FILE_VERSION $(_JaliumNativeFileVersionComma)" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_PRODUCT_VERSION $(_JaliumNativeFileVersionComma)" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_FILE_VERSION_STRING &quot;$(FileVersion)&quot;" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_PRODUCT_VERSION_STRING &quot;$(Version)&quot;" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_FILE_DESCRIPTION &quot;$(_JaliumNativeDescription)&quot;" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_INTERNAL_NAME &quot;$(_JaliumNativeDescription)&quot;" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_ORIGINAL_FILENAME &quot;$(_JaliumNativeOriginalFilename)&quot;" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_PRODUCT_NAME &quot;$(Product)&quot;" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_COMPANY_NAME &quot;$(Company)&quot;" />
+      <_JaliumNativeVersionHeaderLine Include="#define JALIUM_COPYRIGHT &quot;$(Copyright)&quot;" />
+    </ItemGroup>
+    <MakeDir Directories="$(IntDir)" />
+    <WriteLinesToFile File="$(IntDir)jalium.native.version.generated.h"
+                      Lines="@(_JaliumNativeVersionHeaderLine)"
+                      Overwrite="true"
+                      Encoding="UTF-8" />
+    <ItemGroup>
+      <ResourceCompile Include="$(MSBuildThisFileDirectory)eng\native\jalium.native.version.rc">
+        <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      </ResourceCompile>
+    </ItemGroup>
+  </Target>
+</Project>

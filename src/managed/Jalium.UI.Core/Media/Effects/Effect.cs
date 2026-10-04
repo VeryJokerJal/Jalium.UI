@@ -10,6 +10,45 @@ public abstract class Effect : Animatable, IEffect
     private static readonly Brush s_implicitInput = new ImplicitEffectInputBrush();
     private static readonly GeneralTransform s_identityMapping = new IdentityEffectTransform();
 
+    // CSS shadow values specify either a blur radius (box-shadow) or a Gaussian
+    // standard deviation (filter drop-shadow). Retain the latter through clones
+    // so the drawing context can adapt to each native backend's blur parameter.
+    internal static readonly DependencyProperty CssGaussianSigmaProperty =
+        DependencyProperty.Register(nameof(CssGaussianSigma), typeof(double), typeof(Effect),
+            new PropertyMetadata(double.NaN, static (d, _) => ((Effect)d).OnEffectChanged()));
+
+    internal double CssGaussianSigma
+    {
+        get => (double)GetValue(CssGaussianSigmaProperty)!;
+        set => SetValue(CssGaussianSigmaProperty, value);
+    }
+
+    // A standalone CSS box-shadow paints between an element's background and
+    // descendants. Keep the source marker through Freezable clones so the
+    // visual can complete its background capture before rendering children.
+    internal static readonly DependencyProperty CssBoxShadowLayerProperty =
+        DependencyProperty.Register(nameof(CssBoxShadowLayer), typeof(bool), typeof(Effect),
+            new PropertyMetadata(false, static (d, _) => ((Effect)d).OnEffectChanged()));
+
+    internal bool CssBoxShadowLayer
+    {
+        get => (bool)GetValue(CssBoxShadowLayerProperty)!;
+        set => SetValue(CssBoxShadowLayerProperty, value);
+    }
+
+    // CSS filter covers the complete painted group, including its outline.
+    // Keep this source marker through clones without changing native Effect
+    // behavior for XAML callers.
+    internal static readonly DependencyProperty CssFilterLayerProperty =
+        DependencyProperty.Register(nameof(CssFilterLayer), typeof(bool), typeof(Effect),
+            new PropertyMetadata(false, static (d, _) => ((Effect)d).OnEffectChanged()));
+
+    internal bool CssFilterLayer
+    {
+        get => (bool)GetValue(CssFilterLayerProperty)!;
+        set => SetValue(CssFilterLayerProperty, value);
+    }
+
     /// <summary>
     /// Gets the special brush that samples the element to which the effect is applied.
     /// </summary>

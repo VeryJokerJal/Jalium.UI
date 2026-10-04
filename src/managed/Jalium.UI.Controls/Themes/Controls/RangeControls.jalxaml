@@ -17,13 +17,10 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="ProgressBar">
                 <Grid>
-                    <!-- Track Background -->
                     <Rectangle Name="PART_Track"
                                Fill="{TemplateBinding Background}"
                                RadiusX="999"
                                RadiusY="999" />
-
-                    <!-- Progress Indicator -->
                     <Border Name="PART_Indicator"
                             Background="{TemplateBinding ProgressBrush}"
                             CornerRadius="{TemplateBinding CornerRadius}"
@@ -44,16 +41,23 @@
     <!-- Slider Style -->
     <!-- ============================================== -->
     <Style TargetType="Slider">
-        <Setter Property="Background" Value="{ThemeResource SliderTrack}" />
+        <Setter Property="TrackBrush" Value="{ThemeResource SliderTrack}" />
         <Setter Property="Foreground" Value="{ThemeResource AccentBrush}" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="Height" Value="32" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Slider">
-                <Grid>
+                <Border Name="PART_Root"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        Padding="{TemplateBinding Padding}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Shape="RoundedRectangle">
+                  <Grid>
                     <!-- Track Background -->
                     <Rectangle Name="PART_Track"
-                               Fill="{TemplateBinding Background}"
+                               Fill="{TemplateBinding TrackBrush}"
                                Height="4"
                                RadiusX="2"
                                RadiusY="2"
@@ -75,7 +79,7 @@
                                        Visibility="Collapsed"
                                        TrackThickness="4"
                                        ReservedSpace="16"
-                                       TrackBrush="{TemplateBinding Background}"
+                                       TrackBrush="{TemplateBinding TrackBrush}"
                                        Fill="{TemplateBinding Foreground}" />
 
                     <!-- Thumb -->
@@ -96,8 +100,20 @@
                                  HorizontalAlignment="Center"
                                  VerticalAlignment="Center" />
                     </Grid>
-                </Grid>
+                  </Grid>
+                </Border>
                 <ControlTemplate.Triggers>
+                    <Trigger Property="Orientation" Value="Vertical">
+                        <Setter TargetName="PART_Track" Property="Width" Value="4" />
+                        <Setter TargetName="PART_Track" Property="Height" Value="Auto" />
+                        <Setter TargetName="PART_Track" Property="HorizontalAlignment" Value="Center" />
+                        <Setter TargetName="PART_Track" Property="VerticalAlignment" Value="Stretch" />
+                        <Setter TargetName="PART_Track" Property="Margin" Value="0,8,0,8" />
+                        <Setter TargetName="PART_SelectionRange" Property="Width" Value="4" />
+                        <Setter TargetName="PART_SelectionRange" Property="HorizontalAlignment" Value="Center" />
+                        <Setter TargetName="PART_Thumb" Property="HorizontalAlignment" Value="Center" />
+                        <Setter TargetName="PART_Thumb" Property="VerticalAlignment" Value="Top" />
+                    </Trigger>
                     <Trigger Property="TrackMode" Value="Segmented">
                         <Setter TargetName="PART_Track" Property="Visibility" Value="Collapsed" />
                         <Setter TargetName="PART_SelectionRange" Property="Visibility" Value="Collapsed" />
@@ -137,16 +153,23 @@
     <!-- RangeSlider Style -->
     <!-- ============================================== -->
     <Style TargetType="RangeSlider">
-        <Setter Property="Background" Value="{ThemeResource SliderTrack}" />
+        <Setter Property="TrackBrush" Value="{ThemeResource SliderTrack}" />
         <Setter Property="Foreground" Value="{ThemeResource AccentBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource WindowBackground}" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="Height" Value="32" />
         <Setter Property="Template">
             <ControlTemplate TargetType="RangeSlider">
-                <Grid>
+                <Border Name="PART_Root"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        Padding="{TemplateBinding Padding}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Shape="RoundedRectangle">
+                  <Grid>
                     <Rectangle Name="PART_Track"
-                               Fill="{TemplateBinding Background}"
+                               Fill="{TemplateBinding TrackBrush}"
                                Height="4"
                                RadiusX="2"
                                RadiusY="2"
@@ -163,7 +186,7 @@
                                        Visibility="Collapsed"
                                        TrackThickness="4"
                                        ReservedSpace="16"
-                                       TrackBrush="{TemplateBinding Background}"
+                                       TrackBrush="{TemplateBinding TrackBrush}"
                                        Fill="{TemplateBinding Foreground}" />
                     <Ellipse Name="PART_StartThumb"
                              TransitionProperty="Stroke"
@@ -187,8 +210,22 @@
                              StrokeThickness="2"
                              HorizontalAlignment="Left"
                              VerticalAlignment="Center" />
-                </Grid>
+                  </Grid>
+                </Border>
                 <ControlTemplate.Triggers>
+                    <Trigger Property="Orientation" Value="Vertical">
+                        <Setter TargetName="PART_Track" Property="Width" Value="4" />
+                        <Setter TargetName="PART_Track" Property="Height" Value="Auto" />
+                        <Setter TargetName="PART_Track" Property="HorizontalAlignment" Value="Center" />
+                        <Setter TargetName="PART_Track" Property="VerticalAlignment" Value="Stretch" />
+                        <Setter TargetName="PART_Track" Property="Margin" Value="0,8,0,8" />
+                        <Setter TargetName="PART_SelectionRange" Property="Width" Value="4" />
+                        <Setter TargetName="PART_SelectionRange" Property="HorizontalAlignment" Value="Center" />
+                        <Setter TargetName="PART_StartThumb" Property="HorizontalAlignment" Value="Center" />
+                        <Setter TargetName="PART_StartThumb" Property="VerticalAlignment" Value="Top" />
+                        <Setter TargetName="PART_EndThumb" Property="HorizontalAlignment" Value="Center" />
+                        <Setter TargetName="PART_EndThumb" Property="VerticalAlignment" Value="Top" />
+                    </Trigger>
                     <Trigger Property="TrackMode" Value="Segmented">
                         <Setter TargetName="PART_Track" Property="Visibility" Value="Collapsed" />
                         <Setter TargetName="PART_SelectionRange" Property="Visibility" Value="Collapsed" />
@@ -254,6 +291,7 @@
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}"
                             CornerRadius="{TemplateBinding CornerRadius}">
                         <!-- Grip Lines -->
                         <Grid HorizontalAlignment="Center" VerticalAlignment="Center">

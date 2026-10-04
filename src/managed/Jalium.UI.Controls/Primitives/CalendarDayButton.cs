@@ -261,7 +261,7 @@ public sealed class CalendarDayButton : Button
         }
 
         // Draw day number
-        if (Content is string text)
+        if (Content is string text && FontSize > 0)
         {
             Brush fgBrush;
             if (IsBlackedOut)
@@ -281,7 +281,7 @@ public sealed class CalendarDayButton : Button
                 fgBrush = ResolveDefaultForegroundBrush();
             }
 
-            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = fgBrush
             };
@@ -293,7 +293,7 @@ public sealed class CalendarDayButton : Button
         }
 
         // Draw blacked out strikethrough
-        if (IsBlackedOut)
+        if (IsBlackedOut && FontSize > 0)
         {
             dc.DrawLine(ResolveStrikePen(), new Point(4, rect.Height / 2), new Point(rect.Width - 4, rect.Height / 2));
         }

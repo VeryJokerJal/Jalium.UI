@@ -42,8 +42,16 @@ public sealed class AudioPlayer : IDisposable
     private const int PUMP_BLOCK_FRAMES = 2048;        // ~46 ms @ 44.1kHz
 
     // ── 默认工厂(可被 DI 替换的 hook 留到 Step 7 telemetry/cutover 配套)──
-    private static readonly INativeAudioDecoderFactory s_decoderFactory = new NativeAudioDecoderFactory();
-    private static readonly INativeAudioDeviceFactory  s_deviceFactory  = new MiniAudioDeviceFactory();
+    private readonly INativeAudioDecoderFactory _decoderFactory;
+    private readonly INativeAudioDeviceFactory _deviceFactory;
+
+    public AudioPlayer() : this(new NativeAudioDecoderFactory(), new MiniAudioDeviceFactory()) { }
+
+    internal AudioPlayer(INativeAudioDecoderFactory decoderFactory, INativeAudioDeviceFactory deviceFactory)
+    {
+        _decoderFactory = decoderFactory ?? throw new ArgumentNullException(nameof(decoderFactory));
+        _deviceFactory = deviceFactory ?? throw new ArgumentNullException(nameof(deviceFactory));
+    }
 
     /// <summary>
     /// 兼容旧版 API:历史上用来主动释放 SoundFlow 进程共享引擎。新原生栈无此概念
@@ -58,13 +66,36 @@ public sealed class AudioPlayer : IDisposable
 
     // ── 实例状态 ──
     private readonly object _lock = new();
-    private readonly ManualResetEventSlim _resumeGate = new(false);
 
     private INativeAudioDecoder?  _decoder;
     private INativeAudioDevice?   _device;
     private WsolaSpeedProcessor?  _speedProcessor;
-    private Thread?               _pumpThread;
-    private CancellationTokenSource? _pumpCts;
+    private AudioPumpState? _pump;
+    private Task _cleanupTail = Task.CompletedTask;
+
+    // A pump never reads replaceable player fields. Native decoder reads, seeks,
+    // processor resets, flushes and submissions are serialized per source. A
+    // seek increments Revision so a PCM block decoded before it cannot be
+    // submitted after the flush. Retirement waits outside the player's lock.
+    private sealed class AudioPumpState(
+        INativeAudioDecoder decoder, INativeAudioDevice device,
+        WsolaSpeedProcessor processor, int channels, double balance)
+    {
+        internal readonly object Sync = new();
+        internal readonly INativeAudioDecoder Decoder = decoder;
+        internal readonly INativeAudioDevice Device = device;
+        internal readonly WsolaSpeedProcessor Processor = processor;
+        internal readonly int Channels = channels;
+        internal readonly ManualResetEventSlim Resume = new(false);
+        internal readonly CancellationTokenSource Cancellation = new();
+        internal readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal double Balance = balance;
+        internal int Revision;
+        internal bool Playing;
+        internal bool AtEnd;
+    }
+
+    internal Task PendingCleanup { get { lock (_lock) return _cleanupTail; } }
 
     private bool _disposed;
     private NativePlaybackState _state = NativePlaybackState.Stopped;
@@ -135,7 +166,12 @@ public sealed class AudioPlayer : IDisposable
         set
         {
             var clamped = Math.Clamp(value, -1.0, 1.0);
-            lock (_lock) _balance = clamped;
+            lock (_lock)
+            {
+                _balance = clamped;
+                if (_pump is { } pump)
+                    lock (pump.Sync) pump.Balance = clamped;
+            }
         }
     }
 
@@ -156,7 +192,8 @@ public sealed class AudioPlayer : IDisposable
                     _devicePosAtAnchor = _device.Position;
                 }
                 _speedRatio = clamped;
-                if (_speedProcessor != null) _speedProcessor.SpeedRatio = clamped;
+                if (_pump is { } pump)
+                    lock (pump.Sync) pump.Processor.SpeedRatio = clamped;
             }
         }
     }
@@ -274,12 +311,18 @@ public sealed class AudioPlayer : IDisposable
         lock (_lock)
         {
             ThrowIfDisposed();
-            if (_device == null || _decoder == null) return;
+            if (_pump is not { } pump) return;
             try
             {
-                _device.Start();
-                _state = NativePlaybackState.Playing;
-                _resumeGate.Set();
+                lock (pump.Sync)
+                {
+                    if (_state == NativePlaybackState.Ended)
+                        SeekPumpLocked(pump, TimeSpan.Zero);
+                    pump.Device.Start();
+                    pump.Playing = true;
+                    _state = NativePlaybackState.Playing;
+                    pump.Resume.Set();
+                }
             }
             catch (Exception ex)
             {
@@ -294,12 +337,16 @@ public sealed class AudioPlayer : IDisposable
     {
         lock (_lock)
         {
-            if (_device == null || _state != NativePlaybackState.Playing) return;
+            if (_pump is not { } pump || _state != NativePlaybackState.Playing) return;
             try
             {
-                _resumeGate.Reset();
-                _device.Stop();
-                _state = NativePlaybackState.Paused;
+                lock (pump.Sync)
+                {
+                    pump.Playing = false;
+                    pump.Resume.Reset();
+                    pump.Device.Stop();
+                    _state = NativePlaybackState.Paused;
+                }
             }
             catch (Exception ex)
             {
@@ -313,17 +360,17 @@ public sealed class AudioPlayer : IDisposable
     {
         lock (_lock)
         {
-            if (_device == null) return;
+            if (_pump is not { } pump) return;
             try
             {
-                _resumeGate.Reset();
-                _device.Stop();
-                _device.Flush();
-                _decoder?.Seek(TimeSpan.Zero);
-                _speedProcessor?.Reset();
-                _streamPosAtAnchor = TimeSpan.Zero;
-                _devicePosAtAnchor = _device.Position;
-                _state = NativePlaybackState.Stopped;
+                lock (pump.Sync)
+                {
+                    pump.Playing = false;
+                    pump.Resume.Reset();
+                    pump.Device.Stop();
+                    SeekPumpLocked(pump, TimeSpan.Zero);
+                    _state = NativePlaybackState.Stopped;
+                }
             }
             catch (Exception ex)
             {
@@ -355,14 +402,16 @@ public sealed class AudioPlayer : IDisposable
 
             try
             {
-                bool wasPlaying = _state == NativePlaybackState.Playing;
-                _resumeGate.Reset();
-                _device?.Flush();
-                _decoder.Seek(position);
-                _speedProcessor?.Reset();
-                _streamPosAtAnchor = position;
-                _devicePosAtAnchor = _device?.Position ?? TimeSpan.Zero;
-                if (wasPlaying) _resumeGate.Set();
+                if (_pump is { } pump)
+                {
+                    lock (pump.Sync)
+                    {
+                        SeekPumpLocked(pump, position);
+                        if (_state == NativePlaybackState.Ended)
+                            _state = NativePlaybackState.Paused;
+                        if (pump.Playing) pump.Resume.Set();
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -398,7 +447,6 @@ public sealed class AudioPlayer : IDisposable
             _disposed = true;
             CleanupLocked();
         }
-        _resumeGate.Dispose();
     }
 
     // ── 内部实现 ──
@@ -417,7 +465,7 @@ public sealed class AudioPlayer : IDisposable
             INativeAudioDevice?  device  = null;
             try
             {
-                decoder = s_decoderFactory.Create();
+                decoder = _decoderFactory.Create();
                 if (decoder is INativeAudioTrackSelector selector)
                 {
                     selector.AudioTrackIndex = _audioTrackIndex;
@@ -432,7 +480,7 @@ public sealed class AudioPlayer : IDisposable
                 _outputSampleRate = rate;
                 _outputChannels = channels;
 
-                device = s_deviceFactory.Create(rate, channels);
+                device = _deviceFactory.Create(rate, channels);
                 device.PlaybackEnded += OnDevicePlaybackEnded;
 
                 _decoder = decoder;
@@ -463,14 +511,14 @@ public sealed class AudioPlayer : IDisposable
                     _hasSeekTarget = false;
                 }
 
-                // 启 pump 线程,等 Play() 通过 _resumeGate 放行。
-                _pumpCts = new CancellationTokenSource();
-                _pumpThread = new Thread(PumpLoop)
+                var pump = new AudioPumpState(decoder, device, _speedProcessor, channels, _balance);
+                _pump = pump;
+                var thread = new Thread(() => PumpLoop(pump))
                 {
                     IsBackground = true,
                     Name = "Jalium.AudioPump",
                 };
-                _pumpThread.Start(_pumpCts.Token);
+                thread.Start();
             }
             catch
             {
@@ -484,6 +532,7 @@ public sealed class AudioPlayer : IDisposable
                 _decoder = null;
                 _device = null;
                 _speedProcessor = null;
+                _pump = null;
                 _hasMedia = false;
                 _naturalDuration = TimeSpan.Zero;
                 throw;
@@ -492,10 +541,10 @@ public sealed class AudioPlayer : IDisposable
         return true;
     }
 
-    private void PumpLoop(object? boxedToken)
+    private void PumpLoop(AudioPumpState pump)
     {
-        var ct = (CancellationToken)boxedToken!;
-        int outChannels = _outputChannels > 0 ? _outputChannels : FALLBACK_CHANNELS;
+        var ct = pump.Cancellation.Token;
+        int outChannels = pump.Channels;
         // WSOLA 在 0.1x 下输出可能膨胀 10x;给 dst 留充足空间。
         var src = ArrayPool<float>.Shared.Rent(PUMP_BLOCK_FRAMES * outChannels);
         var dst = ArrayPool<float>.Shared.Rent(PUMP_BLOCK_FRAMES * outChannels * 10);
@@ -503,58 +552,61 @@ public sealed class AudioPlayer : IDisposable
         {
             while (!ct.IsCancellationRequested)
             {
-                try { _resumeGate.Wait(ct); }
+                try { pump.Resume.Wait(ct); }
                 catch (OperationCanceledException) { break; }
-
-                INativeAudioDecoder? decoder;
-                INativeAudioDevice?  device;
-                WsolaSpeedProcessor? speed;
-                lock (_lock)
-                {
-                    decoder = _decoder;
-                    device  = _device;
-                    speed   = _speedProcessor;
-                }
-                if (decoder == null || device == null) break;
-
-                int frames = decoder.ReadFrames(src.AsSpan(0, PUMP_BLOCK_FRAMES * outChannels));
-                if (frames == 0)
-                {
-                    // EOS — drain WSOLA tail, signal device, exit loop.
-                    int drained = speed?.Drain(dst.AsSpan()) ?? 0;
-                    if (drained > 0) SubmitAll(device, dst.AsSpan(0, drained), outChannels, ct);
-                    try { device.SignalEndOfStream(); } catch { }
-                    break;
-                }
-
-                var inputSpan = src.AsSpan(0, frames * outChannels);
-                double balance;
-                lock (_lock) balance = _balance;
-                ApplyBalanceInPlace(inputSpan, outChannels, balance);
                 int produced;
-                if (speed != null)
+                int revision;
+                bool endOfStream;
+                lock (pump.Sync)
                 {
-                    produced = speed.Process(inputSpan, dst.AsSpan());
+                    if (ct.IsCancellationRequested) break;
+                    if (!pump.Playing || pump.AtEnd) continue;
+                    revision = pump.Revision;
+                    int frames = pump.Decoder.ReadFrames(src.AsSpan(0, PUMP_BLOCK_FRAMES * outChannels));
+                    if ((uint)frames > PUMP_BLOCK_FRAMES)
+                        throw new InvalidDataException("The audio decoder returned an invalid frame count.");
+                    endOfStream = frames == 0;
+                    if (endOfStream)
+                        produced = pump.Processor.Drain(dst.AsSpan());
+                    else
+                    {
+                        var inputSpan = src.AsSpan(0, frames * outChannels);
+                        ApplyBalanceInPlace(inputSpan, outChannels, pump.Balance);
+                        produced = pump.Processor.Process(inputSpan, dst.AsSpan());
+                    }
                 }
-                else
+                if (!SubmitAll(pump, dst.AsSpan(0, produced), revision, ct)) continue;
+                if (endOfStream)
                 {
-                    int n = Math.Min(inputSpan.Length, dst.Length);
-                    inputSpan[..n].CopyTo(dst);
-                    produced = n;
+                    lock (pump.Sync)
+                    {
+                        if (ct.IsCancellationRequested || revision != pump.Revision) continue;
+                        pump.AtEnd = true;
+                        // Keep the worker alive at EOF. Seek/Stop followed by Play
+                        // must decode again rather than restart an empty device.
+                        pump.Resume.Reset();
+                        pump.Device.SignalEndOfStream();
+                    }
                 }
-
-                if (produced > 0) SubmitAll(device, dst.AsSpan(0, produced), outChannels, ct);
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            try { MediaFailed?.Invoke(this, new AudioPlayerErrorEventArgs(ex)); }
+            bool current;
+            lock (_lock)
+            {
+                current = !_disposed && ReferenceEquals(_pump, pump);
+                if (current) _state = NativePlaybackState.Stopped;
+            }
+            try { if (current) MediaFailed?.Invoke(this, new AudioPlayerErrorEventArgs(ex)); }
             catch { /* event-subscriber-induced exception swallowed */ }
         }
         finally
         {
             ArrayPool<float>.Shared.Return(src);
             ArrayPool<float>.Shared.Return(dst);
+            pump.Completion.TrySetResult();
         }
     }
 
@@ -581,26 +633,54 @@ public sealed class AudioPlayer : IDisposable
         }
     }
 
-    private static void SubmitAll(INativeAudioDevice device, ReadOnlySpan<float> samples, int channels, CancellationToken ct)
+    private static bool SubmitAll(AudioPumpState pump, ReadOnlySpan<float> samples, int revision, CancellationToken ct)
     {
         int writtenSamples = 0;
         while (writtenSamples < samples.Length && !ct.IsCancellationRequested)
         {
-            int wFrames = device.Submit(samples[writtenSamples..]);
+            pump.Resume.Wait(ct);
+            int wFrames;
+            lock (pump.Sync)
+            {
+                if (ct.IsCancellationRequested || revision != pump.Revision) return false;
+                if (!pump.Playing) continue;
+                wFrames = pump.Device.Submit(samples[writtenSamples..]);
+                if (wFrames < 0 || wFrames > (samples.Length - writtenSamples) / pump.Channels)
+                    throw new InvalidDataException("The audio device returned an invalid submitted frame count.");
+            }
             if (wFrames == 0)
             {
                 // Ring 满,等 callback 消费几毫秒再重试。
-                Thread.Sleep(2);
+                if (ct.WaitHandle.WaitOne(2)) return false;
                 continue;
             }
-            writtenSamples += wFrames * channels;
+            writtenSamples += wFrames * pump.Channels;
         }
+        return !ct.IsCancellationRequested;
     }
 
     private void OnDevicePlaybackEnded(object? sender, EventArgs e)
     {
-        // PlaybackEnded 已在 MiniAudioDevice 内部 hop 到专用事件线程,这里直接 fire。
-        lock (_lock) _state = NativePlaybackState.Ended;
+        // Custom devices may report EOF synchronously from SignalEndOfStream.
+        // Never acquire the player lock while the pump holds its source lock.
+        var pump = Volatile.Read(ref _pump);
+        if (pump is null || !ReferenceEquals(sender, pump.Device)) return;
+        int revision = Volatile.Read(ref pump.Revision);
+        ThreadPool.QueueUserWorkItem(_ => CompleteAudioPlayback(pump, revision));
+    }
+
+    private void CompleteAudioPlayback(AudioPumpState pump, int revision)
+    {
+        lock (_lock)
+        {
+            if (_disposed || !ReferenceEquals(_pump, pump)) return;
+            lock (pump.Sync)
+            {
+                if (!pump.AtEnd || pump.Revision != revision) return;
+                _state = NativePlaybackState.Ended;
+                pump.Playing = false;
+            }
+        }
         try { MediaEnded?.Invoke(this, EventArgs.Empty); }
         catch { /* subscriber exception isolated */ }
     }
@@ -625,37 +705,38 @@ public sealed class AudioPlayer : IDisposable
         catch { /* ignore — Volume getter/setter must not throw */ }
     }
 
+    private void SeekPumpLocked(AudioPumpState pump, TimeSpan position)
+    {
+        pump.Revision++;
+        pump.AtEnd = false;
+        pump.Device.Flush();
+        pump.Decoder.Seek(position);
+        pump.Processor.Reset();
+        _streamPosAtAnchor = position;
+        _devicePosAtAnchor = pump.Device.Position;
+    }
+
     private void CleanupLocked()
     {
-        // 收割 pump:cancel + 释放 gate 让 Wait 跳出 + Join。
-        var cts    = _pumpCts;
-        var thread = _pumpThread;
-        var decoder = _decoder;
-        var device  = _device;
-
-        _pumpCts = null;
-        _pumpThread = null;
+        var pump = _pump;
+        _pump = null;
         _decoder = null;
         _device = null;
         _speedProcessor = null;
-
-        try { cts?.Cancel(); } catch { }
-        _resumeGate.Set();
-        if (thread != null && thread.IsAlive)
+        if (pump is null) return;
+        pump.Device.PlaybackEnded -= OnDevicePlaybackEnded;
+        pump.Cancellation.Cancel();
+        pump.Resume.Set();
+        var retirement = Task.Run(async () =>
         {
-            try { thread.Join(TimeSpan.FromSeconds(2)); } catch { }
-        }
-        try { cts?.Dispose(); } catch { }
-
-        if (device != null)
-        {
-            try { device.PlaybackEnded -= OnDevicePlaybackEnded; } catch { }
-            try { device.Stop(); } catch { }
-            try { device.Dispose(); } catch { }
-        }
-        try { decoder?.Dispose(); } catch { }
-
-        _resumeGate.Reset();
+            await pump.Completion.Task.ConfigureAwait(false);
+            try { pump.Device.Stop(); } catch { }
+            try { pump.Device.Dispose(); } catch { }
+            try { pump.Decoder.Dispose(); } catch { }
+            pump.Cancellation.Dispose();
+            pump.Resume.Dispose();
+        });
+        _cleanupTail = _cleanupTail.IsCompleted ? retirement : Task.WhenAll(_cleanupTail, retirement);
     }
 
     private void ThrowIfDisposed()

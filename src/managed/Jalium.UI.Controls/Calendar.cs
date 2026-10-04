@@ -4,6 +4,7 @@ using System.Globalization;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -12,6 +13,8 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Calendar : Control
 {
+    private Border? _cssBorderPainter;
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -775,15 +778,22 @@ public class Calendar : Control
 
         // CalendarItemStyle is normally consumed by PART_CalendarItem. This control uses
         // direct rendering, so consume the equivalent visual setters here.
-        Brush? calendarBackground = GetStyleSetterValue(CalendarItemStyle, Control.BackgroundProperty) as Brush
-            ?? Background;
+        var itemBackground = GetStyleSetterValue(CalendarItemStyle, Control.BackgroundProperty) as Brush;
+        Brush? calendarBackground = itemBackground ?? Background;
         if (calendarBackground != null)
         {
-            dc.DrawRoundedRectangle(calendarBackground, null, rect, cornerRadius);
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize);
+            var shape = new CssRoundedRectangleGeometry(rect, radii);
+            if (itemBackground != null ||
+                !CssBackgroundPainter.TryDraw(this, BackgroundProperty, calendarBackground, dc,
+                    rect, radii, BorderThickness, padding,
+                    brush => dc.DrawGeometry(brush, null, shape)))
+                dc.DrawRoundedRectangle(calendarBackground, null, rect, cornerRadius);
         }
 
         // Draw border
-        if (BorderBrush != null && BorderThickness.TotalWidth > 0)
+        if (CssBorderPaintProperties.Get(this) is null && BorderBrush != null && BorderThickness.TotalWidth > 0)
         {
             var pen = new Pen(BorderBrush, BorderThickness.Left);
             dc.DrawRoundedRectangle(null, pen, rect, cornerRadius);
@@ -804,6 +814,13 @@ public class Calendar : Control
         {
             DrawPeriodGrid(dc, startX, startY + HeaderHeight);
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     private void DrawHeader(DrawingContext dc, double x, double y)
@@ -831,7 +848,7 @@ public class Calendar : Control
             CalendarMode.Year => DisplayDate.ToString("yyyy"),
             _ => GetDecadeHeader(DisplayDate.Year)
         };
-        var formattedText = new FormattedText(monthYearText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+        var formattedText = new FormattedText(monthYearText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = ResolveCalendarButtonForeground(),
             FontWeight = 600
@@ -840,7 +857,8 @@ public class Calendar : Control
 
         var textX = x + (width - formattedText.Width) / 2;
         var textY = y + (HeaderHeight - formattedText.Height) / 2;
-        dc.DrawText(formattedText, new Point(textX, textY));
+        if (FontSize > 0)
+            dc.DrawText(formattedText, new Point(textX, textY));
 
         _monthYearRect = new Rect(x + 32, y, Math.Max(0, width - 64), HeaderHeight);
     }
@@ -899,6 +917,8 @@ public class Calendar : Control
 
     private void DrawDayHeaders(DrawingContext dc, double x, double y)
     {
+        if (FontSize <= 0) return;
+
         var dayNames = new[] { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
         var firstDayIndex = (int)FirstDayOfWeek;
 
@@ -907,7 +927,9 @@ public class Calendar : Control
             var dayIndex = (firstDayIndex + col) % 7;
             var dayName = dayNames[dayIndex];
 
-            var formattedText = new FormattedText(dayName, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, 11)
+            // Keep the native 11px weekday label at Control's 14px default while scaling with CSS font-size.
+            var formattedText = new FormattedText(dayName, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+                FontSize * (11.0 / 14.0))
             {
                 Foreground = ResolveCalendarBrush("TextSecondary", s_dayHeaderBrush)
             };
@@ -1009,7 +1031,7 @@ public class Calendar : Control
                 ?? ResolvePrimaryTextBrush();
         }
 
-        var formattedText = new FormattedText(dayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
+        var formattedText = new FormattedText(dayText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = textBrush
         };
@@ -1017,7 +1039,8 @@ public class Calendar : Control
 
         var textX = rect.X + (rect.Width - formattedText.Width) / 2;
         var textY = rect.Y + (rect.Height - formattedText.Height) / 2;
-        dc.DrawText(formattedText, new Point(textX, textY));
+        if (FontSize > 0)
+            dc.DrawText(formattedText, new Point(textX, textY));
     }
 
     private void DrawPeriodGrid(DrawingContext dc, double x, double y)
@@ -1091,15 +1114,16 @@ public class Calendar : Control
             : isInactive
                 ? ResolveCalendarBrush("TextSecondary", s_otherMonthBrush)
                 : ResolvePrimaryTextBrush();
-        var text = new FormattedText(label, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName,
-            FontSize > 0 ? FontSize : 13)
+        var text = new FormattedText(label, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+            FontSize)
         {
             Foreground = foreground
         };
         TextMeasurement.MeasureText(text);
-        dc.DrawText(text, new Point(
-            rect.X + (rect.Width - text.Width) / 2,
-            rect.Y + (rect.Height - text.Height) / 2));
+        if (FontSize > 0)
+            dc.DrawText(text, new Point(
+                rect.X + (rect.Width - text.Width) / 2,
+                rect.Y + (rect.Height - text.Height) / 2));
     }
 
     private static string GetDecadeHeader(int year)

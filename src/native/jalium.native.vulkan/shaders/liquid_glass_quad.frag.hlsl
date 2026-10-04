@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 #include "../../jalium.native.core/shaders/continuous_corner.hlsli"
 
 // Liquid glass — pixel shader.
@@ -254,7 +257,7 @@ float3 applyVibrancy(float3 color, float amount)
     return lerp(float3(luminance, luminance, luminance), color, amount);
 }
 
-float4 main(PsInput input) : SV_Target
+float4 UnclippedMain(PsInput input) : SV_Target
 {
     float2 pixelCoord = input.screenPos;
 
@@ -479,4 +482,12 @@ float4 main(PsInput input) : SV_Target
     outA = max(outA, (0.15f + tintOpacity * 0.35f) * fallbackFloor * glassMask);
 
     return float4(outRgb, outA);
+}
+
+float4 main(PsInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    color.a *= coverage;
+    return color;
 }

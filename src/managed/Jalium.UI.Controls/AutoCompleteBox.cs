@@ -5,6 +5,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
@@ -16,6 +17,7 @@ namespace Jalium.UI.Controls;
 public class AutoCompleteBox : TextBoxBase, IImeSupport
 {
     private InputMethodWeakSubscription<AutoCompleteBox>? _imeSubscription;
+    private Border? _cssBorderPainter;
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -555,8 +557,8 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
     }
@@ -567,8 +569,8 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         if (_cachedFontFamily != fontFamily || _cachedFontSize != fontSize)
         {
@@ -1024,9 +1026,10 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     protected override int GetCaretIndexFromPosition(Point position)
     {
         // In non-popup rendering mode, the dropdown is drawn below the input box.
-        if (_popup == null && IsDropDownOpen && position.Y > DefaultHeight)
+        var dropDownTop = HasContentHost ? DefaultHeight : GetDirectInputRect().Bottom;
+        if (_popup == null && IsDropDownOpen && position.Y > dropDownTop)
         {
-            var dropdownY = position.Y - DefaultHeight;
+            var dropdownY = position.Y - dropDownTop;
             var suggestionIndex = (int)(dropdownY / ItemHeight);
             if (suggestionIndex >= 0 && suggestionIndex < FilteredItems.Count)
             {
@@ -1052,15 +1055,15 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         }
 
         // Direct rendering mode
-        var width = double.IsPositiveInfinity(availableSize.Width) ? 200 : availableSize.Width;
-        var height = DefaultHeight;
+        var cssEdges = UsesCssBoxGeometry();
+        var width = double.IsPositiveInfinity(availableSize.Width)
+            ? 200 + (cssEdges ? BorderThickness.TotalWidth + Padding.TotalWidth : 0)
+            : availableSize.Width;
+        var height = DefaultHeight +
+            (cssEdges ? BorderThickness.TotalHeight + Padding.TotalHeight : 0);
 
         // Account for drop-down height when open
-        if (IsDropDownOpen && FilteredItems.Count > 0)
-        {
-            var dropDownHeight = Math.Min(FilteredItems.Count * ItemHeight, MaxDropDownHeight);
-            height += dropDownHeight;
-        }
+        height += GetDropDownHeight();
 
         return new Size(width, height);
     }
@@ -1094,22 +1097,35 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         // Direct rendering mode
         var directDc = drawingContext;
 
-        var inputRect = new Rect(0, 0, RenderSize.Width, DefaultHeight);
+        var inputRect = GetDirectInputRect();
         var cornerRadius = CornerRadius;
         var lineHeight = Math.Round(GetLineHeight());
         var padding = Padding;
-        var strokeThickness = BorderThickness.Left;
+        var border = BorderThickness;
+        var cssEdges = UsesCssBoxGeometry();
+        var strokeThickness = border.Left;
         var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
         var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background and border
-        if (Background != null)
+        var cssBackgroundDrawn = false;
+        if (Background is { } cssBackground)
         {
-            directDc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
+            var inputSize = new Size(inputRect.Width, inputRect.Height);
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(inputSize) ??
+                CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(inputSize);
+            var shape = new CssRoundedRectangleGeometry(inputRect, radii);
+            cssBackgroundDrawn = CssBackgroundPainter.TryDraw(this, BackgroundProperty,
+                cssBackground, directDc, inputRect, radii, border, padding,
+                brush => directDc.DrawGeometry(brush, null, shape));
+        }
+        if (!cssBackgroundDrawn && Background is { } background)
+        {
+            directDc.DrawRoundedRectangle(background, null, borderRect, borderRadius);
         }
 
         var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
-        if (borderBrush != null && BorderThickness.TotalWidth > 0)
+        if (CssBorderPaintProperties.Get(this) is null && borderBrush != null && border.TotalWidth > 0)
         {
             var pen = new Pen(borderBrush, strokeThickness);
             directDc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
@@ -1118,11 +1134,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Content area
-        var contentRect = new Rect(
-            padding.Left,
-            padding.Top,
-            Math.Max(0, inputRect.Width - padding.Left - padding.Right),
-            Math.Max(0, inputRect.Height - padding.Top - padding.Bottom));
+        var contentRect = GetDirectContentRect(inputRect, cssEdges);
 
         // Render text content
         RenderTextContentCore(directDc, contentRect, lineHeight);
@@ -1132,6 +1144,57 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         {
             DrawDropDown(directDc);
         }
+    }
+
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (!HasContentHost)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter,
+                GetDirectInputRect());
+    }
+
+    private bool UsesCssBoxGeometry()
+        => GetEffectiveValueLayer(BorderThicknessProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(PaddingProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(BackgroundProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           CssBorderRadiusProperties.Get(this) is not null;
+
+    private double GetDropDownHeight()
+        => IsDropDownOpen && FilteredItems.Count > 0
+            ? Math.Min(FilteredItems.Count * ItemHeight, MaxDropDownHeight)
+            : 0;
+
+    private Rect GetDirectInputRect()
+    {
+        if (!UsesCssBoxGeometry())
+            return new Rect(0, 0, RenderSize.Width, DefaultHeight);
+
+        var height = RenderSize.Height;
+        var dropDownHeight = GetDropDownHeight();
+        if (dropDownHeight > 0)
+        {
+            // Keep the measured input height when the parent cannot fit the list.
+            // Extra arranged height can still stretch the input above the list.
+            var measuredInputHeight = DefaultHeight +
+                BorderThickness.TotalHeight + Padding.TotalHeight;
+            height = Math.Max(Math.Min(measuredInputHeight, height),
+                height - dropDownHeight);
+        }
+        return new Rect(0, 0, RenderSize.Width, height);
+    }
+
+    private Rect GetDirectContentRect(Rect inputRect, bool cssEdges)
+    {
+        var border = BorderThickness;
+        var padding = Padding;
+        return ControlRenderGeometry.GetContentRect(inputRect, cssEdges
+            ? new Thickness(border.Left + padding.Left, border.Top + padding.Top,
+                border.Right + padding.Right, border.Bottom + padding.Bottom)
+            : padding);
     }
 
     /// <inheritdoc />
@@ -1160,9 +1223,9 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         }
 
         // Draw text or placeholder
-        if (string.IsNullOrEmpty(_text) && !string.IsNullOrEmpty(PlaceholderText))
+        if (FontSize > 0 && string.IsNullOrEmpty(_text) && !string.IsNullOrEmpty(PlaceholderText))
         {
-            var watermarkText = new FormattedText(PlaceholderText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var watermarkText = new FormattedText(PlaceholderText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = ResolvePlaceholderBrush(),
                 MaxTextWidth = contentRect.Width,
@@ -1173,9 +1236,9 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
             var textY = (contentRect.Height - watermarkText.Height) / 2;
             dc.DrawText(watermarkText, new Point(contentRect.X - Math.Round(_horizontalOffset), contentRect.Y + textY));
         }
-        else if (!string.IsNullOrEmpty(_text))
+        else if (FontSize > 0 && !string.IsNullOrEmpty(_text))
         {
-            var formattedText = new FormattedText(_text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(_text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = ResolveTextForegroundBrush(),
                 MaxTextWidth = contentRect.Width,
@@ -1188,7 +1251,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         }
 
         // Draw IME composition
-        if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
+        if (FontSize > 0 && _isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
         {
             DrawImeComposition(dc, contentRect, lineHeight);
         }
@@ -1233,7 +1296,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         var compositionWidth = MeasureTextWidth(_imeCompositionString);
         dc.DrawRectangle(s_compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
 
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -1271,6 +1334,16 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
             caretBrushWithOpacity = caretBrush;
         }
 
+        var caretShape = Styling.CssCaretShapeProperties.Get(this);
+        if (caretShape != Styling.CssCaretShape.Auto)
+        {
+            var advance = CssCaretPainter.NextAdvance(_text, columnIndex,
+                index => MeasureTextWidth(_text.Substring(0, index)), MeasureTextWidth("0"));
+            _lastRenderedCaretRect = CssCaretPainter.Draw(dc, caretBrushWithOpacity,
+                caretShape, x, textY, lineHeight, advance, 1.5);
+            return;
+        }
+
         var caretPen = new Pen(caretBrushWithOpacity, 1.5);
         dc.DrawLine(caretPen, new Point(x, textY), new Point(x, textY + lineHeight));
 
@@ -1280,8 +1353,8 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
     private void DrawDropDown(DrawingContext dc)
     {
-        var dropDownTop = DefaultHeight;
-        var dropDownHeight = Math.Min(FilteredItems.Count * ItemHeight, MaxDropDownHeight);
+        var dropDownTop = HasContentHost ? DefaultHeight : GetDirectInputRect().Bottom;
+        var dropDownHeight = GetDropDownHeight();
         var dropDownRect = new Rect(0, dropDownTop, RenderSize.Width, dropDownHeight);
 
         // Draw drop-down background with shadow effect (simplified)
@@ -1308,14 +1381,17 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
             }
 
             // Draw item text
-            var itemText = GetItemText(FilteredItems[i]);
-            var formattedText = new FormattedText(itemText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
+            if (FontSize > 0)
             {
-                Foreground = Foreground ?? s_whiteBrush
-            };
-            TextMeasurement.MeasureText(formattedText);
-            var itemTextY = y + (ItemHeight - formattedText.Height) / 2;
-            dc.DrawText(formattedText, new Point(Padding.Left, itemTextY));
+                var itemText = GetItemText(FilteredItems[i]);
+                var formattedText = new FormattedText(itemText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+                {
+                    Foreground = Foreground ?? s_whiteBrush
+                };
+                TextMeasurement.MeasureText(formattedText);
+                var itemTextY = y + (ItemHeight - formattedText.Height) / 2;
+                dc.DrawText(formattedText, new Point(Padding.Left, itemTextY));
+            }
 
             y += ItemHeight;
         }
@@ -1466,8 +1542,17 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         var columnIndex = Math.Min(_caretIndex, _text.Length);
         var textBeforeCaret = _text.Substring(0, columnIndex);
 
-        double x = Padding.Left - _horizontalOffset + MeasureTextWidth(textBeforeCaret);
-        double y = Padding.Top;
+        var lineOffset = Padding.Top;
+        var textLeft = Padding.Left;
+        if (!HasContentHost && UsesCssBoxGeometry())
+        {
+            var contentRect = GetDirectContentRect(GetDirectInputRect(), cssEdges: true);
+            textLeft = contentRect.Left;
+            lineOffset = contentRect.Top + (contentRect.Height - lineHeight) / 2;
+        }
+
+        double x = textLeft - _horizontalOffset + MeasureTextWidth(textBeforeCaret);
+        double y = lineOffset;
 
         return new Point(x, y + lineHeight);
     }

@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 // Dedicated INK-LAYER composite fragment shader (premultiplied source).
 //
 // This is a near-exact mirror of bitmap_quad.frag.hlsl. The ONLY semantic
@@ -86,7 +89,7 @@ bool IsInsideRoundRect(float2 pixel, float4 rect, float2 radius)
     return true;
 }
 
-float4 main(PsInput input) : SV_Target
+float4 UnclippedMain(PsInput input) : SV_Target
 {
     if (gPushConstants.clipFlags.x > 0.5f && !IsInsideRoundRect(input.position.xy, gPushConstants.roundedClipRect, gPushConstants.roundedClipRadius)) {
         discard;
@@ -100,5 +103,13 @@ float4 main(PsInput input) : SV_Target
     // blend (srcColorBlendFactor = ONE). This is the one line that differs from
     // bitmap_quad.frag.hlsl.
     color *= saturate(gPushConstants.uvOpacity.z);
+    return color;
+}
+
+float4 main(PsInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    color *= coverage;
     return color;
 }

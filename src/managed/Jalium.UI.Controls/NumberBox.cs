@@ -4,6 +4,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -14,6 +15,7 @@ namespace Jalium.UI.Controls;
 public class NumberBox : TextBoxBase, IImeSupport
 {
     private InputMethodWeakSubscription<NumberBox>? _imeSubscription;
+    private Border? _cssBorderPainter;
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -24,6 +26,17 @@ public class NumberBox : TextBoxBase, IImeSupport
 
     // Internal text storage
     private string _text = "0";
+
+    private string DisplayText
+    {
+        set
+        {
+            if (_text == value) return;
+            _text = value;
+            if (CssEngine.IsActive)
+                CssSelectorDependencies.NativeValueChanged(this, nameof(Text));
+        }
+    }
 
     // Text width measurement cache
     private Dictionary<string, double> _textWidthCache = new();
@@ -329,7 +342,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         {
             if (_text != value)
             {
-                _text = value ?? "0";
+                DisplayText = value ?? "0";
 
                 // Clamp caret
                 if (_caretIndex > _text.Length)
@@ -412,7 +425,7 @@ public class NumberBox : TextBoxBase, IImeSupport
                 }
 
                 // Update text display even if in editing mode
-                _text = FormatValue(Value);
+                DisplayText = FormatValue(Value);
                 _caretIndex = _text.Length;
                 _selectionLength = 0;
 
@@ -646,8 +659,8 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
     }
@@ -658,8 +671,8 @@ public class NumberBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
 
         if (_cachedFontFamily != fontFamily || _cachedFontSize != fontSize)
         {
@@ -794,7 +807,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
             case Key.Escape:
                 // Revert to current value
-                _text = FormatValue(Value);
+                DisplayText = FormatValue(Value);
                 _caretIndex = _text.Length;
                 _selectionLength = 0;
                 InvalidateVisual();
@@ -833,7 +846,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         if (_caretIndex > _text.Length) _caretIndex = _text.Length;
 
         // Insert text
-        _text = _text.Substring(0, _caretIndex) + filteredText + _text.Substring(_caretIndex);
+        DisplayText = _text.Substring(0, _caretIndex) + filteredText + _text.Substring(_caretIndex);
         _caretIndex += filteredText.Length;
 
         ResetCaretBlink();
@@ -902,7 +915,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         }
 
         // Update text to formatted value
-        _text = FormatValue(Value);
+        DisplayText = FormatValue(Value);
         _caretIndex = _text.Length;
         _selectionLength = 0;
         InvalidateVisual();
@@ -1061,6 +1074,19 @@ public class NumberBox : TextBoxBase, IImeSupport
             }
         }
 
+        if (!HasContentHost)
+        {
+            var cssEdges = UsesCssBoxGeometry();
+            var inputRect = GetDirectInputRect(new Rect(RenderSize), GetHeaderHeight(), cssEdges);
+            var spinButtonWidth = SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Hidden ? 0 : SpinButtonWidth;
+            var textRect = GetDirectTextRect(inputRect, cssEdges, spinButtonWidth);
+            // TextBoxBase resolves its own border and padding. Translate this point
+            // so its content origin matches the direct renderer's actual text box.
+            position = new Point(
+                position.X + BorderThickness.Left + Padding.Left - textRect.X,
+                position.Y + BorderThickness.Top + Padding.Top - textRect.Y);
+        }
+
         return base.GetCaretIndexFromPosition(position);
     }
 
@@ -1080,17 +1106,14 @@ public class NumberBox : TextBoxBase, IImeSupport
         // Direct rendering mode
         var padding = Padding;
         var border = BorderThickness;
-        var headerHeight = 0.0;
+        var headerHeight = GetHeaderHeight();
 
-        if (Header is string headerText)
-        {
-            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
-            TextMeasurement.MeasureText(headerFormatted);
-            headerHeight = headerFormatted.Height + 4;
-        }
-
-        var width = double.IsPositiveInfinity(availableSize.Width) ? 120 : availableSize.Width;
-        var height = DefaultHeight + headerHeight;
+        var cssEdges = UsesCssBoxGeometry();
+        var width = double.IsPositiveInfinity(availableSize.Width)
+            ? 120 + (cssEdges ? border.TotalWidth + padding.TotalWidth : 0)
+            : availableSize.Width;
+        var height = DefaultHeight + headerHeight +
+            (cssEdges ? border.TotalHeight + padding.TotalHeight : 0);
 
         return new Size(width, height);
     }
@@ -1115,38 +1138,59 @@ public class NumberBox : TextBoxBase, IImeSupport
         var padding = Padding;
         var border = BorderThickness;
         var cornerRadius = CornerRadius;
-        var hasCornerRadius = cornerRadius.TopLeft > 0;
-        var headerHeight = 0.0;
+        var cssEdges = UsesCssBoxGeometry();
+        FormattedText? headerFormatted = null;
+        if (Header is string headerText)
+        {
+            headerFormatted = new FormattedText(headerText,
+                FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+                FontSize);
+            TextMeasurement.MeasureText(headerFormatted);
+        }
+        var headerHeight = headerFormatted?.Height + 4 ?? 0;
         var lineHeight = Math.Round(GetLineHeight());
 
-        // Draw header (always draw, regardless of template mode)
-        if (Header is string headerText && Foreground != null)
+        // CSS background layers belong to the whole control box, including its header.
+        // The native fallback keeps the historical input-only fill below the header.
+        var cssBackgroundDrawn = false;
+        if (!HasContentHost && Background is { } cssBackground)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
-            {
-                Foreground = Foreground
-            };
-            TextMeasurement.MeasureText(headerFormatted);
-            dc.DrawText(headerFormatted, new Point(0, 0));
-            headerHeight = headerFormatted.Height + 4;
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
+                CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize);
+            var shape = new CssRoundedRectangleGeometry(bounds, radii);
+            cssBackgroundDrawn = CssBackgroundPainter.TryDraw(this, BackgroundProperty,
+                cssBackground, dc, bounds, radii, border, padding,
+                brush => dc.DrawGeometry(brush, null, shape));
+        }
+
+        // Draw header (always draw, regardless of template mode)
+        if (headerFormatted != null && Foreground != null)
+        {
+            headerFormatted.Foreground = Foreground;
+            dc.DrawText(headerFormatted, cssEdges
+                ? new Point(border.Left + padding.Left, border.Top + padding.Top)
+                : new Point(0, 0));
         }
 
         // Input area rect
-        var inputRect = ControlRenderGeometry.GetContentRect(bounds, new Thickness(0, headerHeight, 0, 0));
+        var inputRect = GetDirectInputRect(bounds, headerHeight, cssEdges);
         var strokeThickness = border.Left;
-        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(
+            cssEdges ? bounds : inputRect, strokeThickness);
         var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background and border only in direct rendering mode (template provides these)
         if (!HasContentHost)
         {
-            if (Background != null)
+            if (!cssBackgroundDrawn && Background is { } background)
             {
-                dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
+                var backgroundRect = cssEdges ? bounds : inputRect;
+                var fillRect = ControlRenderGeometry.GetStrokeAlignedRect(backgroundRect, strokeThickness);
+                dc.DrawRoundedRectangle(background, null, fillRect, borderRadius);
             }
 
             var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
-            if (borderBrush != null && border.TotalWidth > 0)
+            if (CssBorderPaintProperties.Get(this) is null && borderBrush != null && border.TotalWidth > 0)
             {
                 var pen = new Pen(borderBrush, strokeThickness);
                 dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
@@ -1157,13 +1201,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
         // Calculate regions for spin buttons
         var spinButtonWidth = SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Hidden ? 0 : SpinButtonWidth;
-        _textRect = ControlRenderGeometry.GetContentRect(
-            inputRect,
-            new Thickness(
-                padding.Left,
-                padding.Top,
-                padding.Right + spinButtonWidth,
-                padding.Bottom));
+        _textRect = GetDirectTextRect(inputRect, cssEdges, spinButtonWidth);
 
         // Draw spin buttons only in direct rendering mode (template provides buttons via PART_*)
         if (SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Inline && !HasContentHost)
@@ -1186,6 +1224,52 @@ public class NumberBox : TextBoxBase, IImeSupport
             RenderTextContentCore(dc, _textRect, lineHeight);
         }
     }
+
+    /// <inheritdoc />
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (!HasContentHost)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+    }
+
+    private bool UsesCssBoxGeometry()
+        => GetEffectiveValueLayer(BorderThicknessProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(PaddingProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           GetEffectiveValueLayer(BackgroundProperty) is
+               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+           CssBorderRadiusProperties.Get(this) is not null;
+
+    private double GetHeaderHeight()
+    {
+        if (Header is not string headerText)
+            return 0;
+        var formatted = new FormattedText(headerText,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+            FontSize);
+        TextMeasurement.MeasureText(formatted);
+        return formatted.Height + 4;
+    }
+
+    private Rect GetDirectInputRect(Rect bounds, double headerHeight, bool cssEdges)
+    {
+        var contentBounds = cssEdges
+            ? ControlRenderGeometry.GetContentRect(bounds, new Thickness(
+                BorderThickness.Left + Padding.Left, BorderThickness.Top + Padding.Top,
+                BorderThickness.Right + Padding.Right, BorderThickness.Bottom + Padding.Bottom))
+            : bounds;
+        return ControlRenderGeometry.GetContentRect(contentBounds,
+            new Thickness(0, headerHeight, 0, 0));
+    }
+
+    private Rect GetDirectTextRect(Rect inputRect, bool cssEdges, double spinButtonWidth)
+        => ControlRenderGeometry.GetContentRect(inputRect,
+            cssEdges
+                ? new Thickness(0, 0, spinButtonWidth, 0)
+                : new Thickness(Padding.Left, Padding.Top,
+                    Padding.Right + spinButtonWidth, Padding.Bottom));
 
     /// <inheritdoc />
     internal override void RenderTextContent(DrawingContext drawingContext)
@@ -1214,9 +1298,9 @@ public class NumberBox : TextBoxBase, IImeSupport
 
         // Draw text or placeholder
         var displayText = _text;
-        if (string.IsNullOrEmpty(displayText) && !string.IsNullOrEmpty(PlaceholderText))
+        if (FontSize > 0 && string.IsNullOrEmpty(displayText) && !string.IsNullOrEmpty(PlaceholderText))
         {
-            var placeholderFormatted = new FormattedText(PlaceholderText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var placeholderFormatted = new FormattedText(PlaceholderText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = ResolvePlaceholderBrush(),
                 MaxTextWidth = Math.Max(0, contentRect.Width),
@@ -1227,9 +1311,9 @@ public class NumberBox : TextBoxBase, IImeSupport
             var textY = contentRect.Top + (contentRect.Height - placeholderFormatted.Height) / 2;
             dc.DrawText(placeholderFormatted, new Point(contentRect.Left - Math.Round(_horizontalOffset), textY));
         }
-        else if (!string.IsNullOrEmpty(displayText))
+        else if (FontSize > 0 && !string.IsNullOrEmpty(displayText))
         {
-            var valueFormatted = new FormattedText(displayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var valueFormatted = new FormattedText(displayText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = ResolveTextForegroundBrush(),
                 MaxTextWidth = Math.Max(0, contentRect.Width),
@@ -1242,7 +1326,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         }
 
         // Draw IME composition
-        if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
+        if (FontSize > 0 && _isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
         {
             DrawImeComposition(dc, contentRect, lineHeight);
         }
@@ -1288,7 +1372,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         var compositionBgBrush = s_compositionBgBrush;
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
 
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -1325,6 +1409,16 @@ public class NumberBox : TextBoxBase, IImeSupport
         else
         {
             caretBrushWithOpacity = caretBrush;
+        }
+
+        var caretShape = Styling.CssCaretShapeProperties.Get(this);
+        if (caretShape != Styling.CssCaretShape.Auto)
+        {
+            var advance = CssCaretPainter.NextAdvance(_text, columnIndex,
+                index => MeasureTextWidth(_text.Substring(0, index)), MeasureTextWidth("0"));
+            _lastRenderedCaretRect = CssCaretPainter.Draw(dc, caretBrushWithOpacity,
+                caretShape, x, textY, lineHeight, advance, 1.5);
+            return;
         }
 
         var caretPen = new Pen(caretBrushWithOpacity, 1.5);
@@ -1384,7 +1478,7 @@ public class NumberBox : TextBoxBase, IImeSupport
             if (!numberBox._isEditing)
             {
                 numberBox._isUpdatingValue = true;
-                numberBox._text = numberBox.FormatValue((double)e.NewValue!);
+                numberBox.DisplayText = numberBox.FormatValue((double)e.NewValue!);
                 numberBox._caretIndex = numberBox._text.Length;
                 numberBox._isUpdatingValue = false;
             }
@@ -1404,7 +1498,7 @@ public class NumberBox : TextBoxBase, IImeSupport
             {
                 numberBox.Value = coerced;
                 // Sync displayed text with the coerced value
-                numberBox._text = numberBox.FormatValue(coerced);
+                numberBox.DisplayText = numberBox.FormatValue(coerced);
                 numberBox._caretIndex = numberBox._text.Length;
                 numberBox.InvalidateVisual();
             }
@@ -1440,7 +1534,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     {
         if (d is NumberBox numberBox)
         {
-            numberBox._text = numberBox.FormatValue(numberBox.Value);
+            numberBox.DisplayText = numberBox.FormatValue(numberBox.Value);
             numberBox._caretIndex = numberBox._text.Length;
             numberBox.InvalidateVisual();
         }
@@ -1484,10 +1578,20 @@ public class NumberBox : TextBoxBase, IImeSupport
         var columnIndex = Math.Min(_caretIndex, _text.Length);
         var textBeforeCaret = _text.Substring(0, columnIndex);
 
-        double x = Padding.Left - _horizontalOffset + MeasureTextWidth(textBeforeCaret);
-        double y = Padding.Top;
+        var textX = Padding.Left;
+        var textY = Padding.Top;
+        if (!HasContentHost)
+        {
+            var cssEdges = UsesCssBoxGeometry();
+            var inputRect = GetDirectInputRect(new Rect(RenderSize), GetHeaderHeight(), cssEdges);
+            var spinButtonWidth = SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Hidden ? 0 : SpinButtonWidth;
+            var textRect = GetDirectTextRect(inputRect, cssEdges, spinButtonWidth);
+            textX = textRect.X;
+            textY = textRect.Y + (textRect.Height - lineHeight) / 2;
+        }
 
-        return new Point(x, y + lineHeight);
+        var x = textX - _horizontalOffset + MeasureTextWidth(textBeforeCaret);
+        return new Point(x, textY + lineHeight);
     }
 
     /// <inheritdoc />

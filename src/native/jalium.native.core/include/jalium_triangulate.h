@@ -16,6 +16,7 @@ namespace jalium {
 /// A single contour (sub-path) as a flat array of (x, y) pairs.
 struct Contour {
     std::vector<float> points; // x0,y0, x1,y1, ...
+    bool closed = false;
     uint32_t VertexCount() const { return static_cast<uint32_t>(points.size() / 2); }
     float X(uint32_t i) const { return points[i * 2]; }
     float Y(uint32_t i) const { return points[i * 2 + 1]; }
@@ -1221,7 +1222,6 @@ inline std::vector<Contour> FlattenPathToContours(float startX, float startY,
     Contour current;
     current.points.push_back(startX);
     current.points.push_back(startY);
-    bool contourClosed = false;
 
     float curX = startX, curY = startY;
     float subpathStartX = startX, subpathStartY = startY;
@@ -1239,7 +1239,6 @@ inline std::vector<Contour> FlattenPathToContours(float startX, float startY,
             current.points.push_back(y);
             curX = x; curY = y;
             subpathStartX = x; subpathStartY = y;
-            contourClosed = false;
             i += 3;
         } else if (tag == kTagClosePath) {
             // Close: add line back to subpath start
@@ -1248,12 +1247,14 @@ inline std::vector<Contour> FlattenPathToContours(float startX, float startY,
                 current.points.push_back(subpathStartY);
             }
             curX = subpathStartX; curY = subpathStartY;
-            contourClosed = true;
+            current.closed = true;
             // Flush closed contour immediately
             if (current.VertexCount() >= 3) {
                 contours.push_back(std::move(current));
             }
             current = Contour();
+            current.points.push_back(subpathStartX);
+            current.points.push_back(subpathStartY);
             i += 1;
         } else {
             uint32_t consumed = DispatchPathCommand(commands, i, commandLength, curX, curY, current.points, tolerance);
@@ -1287,15 +1288,21 @@ inline GradientColor SampleGradientStops(float t,
                                          const float* stops,
                                          uint32_t stopCount) {
     if (!stops || stopCount == 0) return { 0, 0, 0, 0 };
-    if (stopCount == 1 || t <= stops[0]) {
+    if (stopCount == 1 || t < stops[0]) {
         return { stops[1], stops[2], stops[3], stops[4] };
+    }
+    // A hard transition has several stops at one position. At that position
+    // and beyond the final stop, CSS uses the last color in source order.
+    if (t >= stops[(stopCount - 1) * 5]) {
+        const uint32_t at = (stopCount - 1) * 5;
+        return { stops[at + 1], stops[at + 2], stops[at + 3], stops[at + 4] };
     }
 
     uint32_t lower = 1;
     uint32_t upper = stopCount - 1;
     while (lower < upper) {
         const uint32_t middle = lower + (upper - lower) / 2;
-        if (t <= stops[middle * 5]) {
+        if (t < stops[middle * 5]) {
             upper = middle;
         } else {
             lower = middle + 1;

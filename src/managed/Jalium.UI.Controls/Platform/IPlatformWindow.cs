@@ -263,6 +263,7 @@ internal enum PlatformEventType
     Deactivate = 8,
     StateChanged = 9,
     MonitorsChanged = 10,
+    PointingDevicesChanged = 11,
 
     FocusGained = 20,
     FocusLost = 21,

@@ -162,6 +162,9 @@ public class WrapPanel : Panel
         {
             if (child is not FrameworkElement fe) continue;
 
+            // position:absolute children are out of flow (measured separately below).
+            if (IsCssAbsolute(fe)) continue;
+
             // Determine child constraint
             // A WrapPanel determines wrapping from each child's natural DesiredSize; the
             // panel's own changing viewport is not a child-size constraint. Keeping the
@@ -233,6 +236,8 @@ public class WrapPanel : Panel
             else totalWidth += secondaryTotal;
         }
 
+        MeasureCssAbsoluteChildren(availableSize);
+
         // Measure 阶段必须报告"真实所需"尺寸，否则放在 ScrollViewer 内时
         // ScrollViewer 永远看不到溢出 → 滚动条触发不了。
         //
@@ -282,6 +287,7 @@ public class WrapPanel : Panel
         for (int childIndex = 0; childIndex < Children.Count; childIndex++)
         {
             if (Children[childIndex] is not FrameworkElement fe) continue;
+            if (IsCssAbsolute(fe)) continue;
 
             var childWidth = hasFixedWidth ? itemWidth : fe.DesiredSize.Width;
             var childHeight = hasFixedHeight ? itemHeight : fe.DesiredSize.Height;
@@ -341,6 +347,8 @@ public class WrapPanel : Panel
                 primaryGap);
         }
 
+        ArrangeCssAbsoluteChildren(finalSize);
+
         return finalSize;
     }
 
@@ -362,6 +370,7 @@ public class WrapPanel : Panel
         for (int childIndex = startIndex; childIndex < endIndex; childIndex++)
         {
             if (Children[childIndex] is not FrameworkElement element) continue;
+            if (IsCssAbsolute(element)) continue;
 
             var width = hasFixedWidth ? itemWidth : element.DesiredSize.Width;
             var height = hasFixedHeight ? itemHeight : element.DesiredSize.Height;

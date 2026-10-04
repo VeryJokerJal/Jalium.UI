@@ -1,3 +1,6 @@
+#define JALIUM_VULKAN_CLIP
+#include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
+
 Texture2D sourceTexture : register(t0);
 SamplerState sourceSampler : register(s1);
 
@@ -49,8 +52,8 @@ float Hash01(uint2 p, uint salt)
 }
 
 // Colour pipeline: the SAME order on every backend (D3D12 snapshot-backdrop
-// PS, the software backend). CSS backdrop-filter semantics: the filters act on
-// the backdrop, the tint composites on top:
+// PS, the software backend). A single CSS backdrop-filter function maps to one
+// stage; ordered CSS lists need a separate pipeline:
 //   blur -> brightness -> contrast -> saturation -> hueRotation -> grayscale
 //        -> sepia -> invert -> tint -> luminosity -> noise
 float3 ApplyColorPipeline(float3 color)
@@ -59,24 +62,26 @@ float3 ApplyColorPipeline(float3 color)
     color = (color - 0.5f) * max(gPushConstants.materialInfo0.y, 0.0f) + 0.5f;
 
     const float saturation = max(0.0f, gPushConstants.extraInfo.x);
-    float luma = dot(color, float3(0.299f, 0.587f, 0.114f));
+    float luma = dot(color, float3(0.213f, 0.715f, 0.072f));
     color = lerp(float3(luma, luma, luma), color, saturation);
 
     const float hue = gPushConstants.materialInfo0.z;
     if (abs(hue) > 0.0001f) {
-        const float yv = dot(color, float3(0.299f, 0.587f, 0.114f));
-        const float iv = dot(color, float3(0.596f, -0.274f, -0.322f));
-        const float qv = dot(color, float3(0.211f, -0.523f, 0.312f));
         const float c = cos(hue);
         const float s = sin(hue);
-        const float i2 = iv * c - qv * s;
-        const float q2 = iv * s + qv * c;
-        color = float3(yv + 0.956f * i2 + 0.621f * q2,
-                       yv - 0.272f * i2 - 0.647f * q2,
-                       yv - 1.106f * i2 + 1.703f * q2);
+        color = float3(
+            dot(color, float3(0.213f + 0.787f * c - 0.213f * s,
+                              0.715f - 0.715f * c - 0.715f * s,
+                              0.072f - 0.072f * c + 0.928f * s)),
+            dot(color, float3(0.213f - 0.213f * c + 0.143f * s,
+                              0.715f + 0.285f * c + 0.140f * s,
+                              0.072f - 0.072f * c - 0.283f * s)),
+            dot(color, float3(0.213f - 0.213f * c - 0.787f * s,
+                              0.715f - 0.715f * c + 0.715f * s,
+                              0.072f + 0.928f * c + 0.072f * s)));
     }
 
-    luma = dot(color, float3(0.299f, 0.587f, 0.114f));
+    luma = dot(color, float3(0.2126f, 0.7152f, 0.0722f));
     color = lerp(color, float3(luma, luma, luma), saturate(gPushConstants.materialInfo1.x));
 
     const float3 sepia = float3(
@@ -195,7 +200,7 @@ float4 BoundedGaussian2D(float2 uv, float2 texelStep, float2 uvLo, float2 uvHi,
     return sum / weightSum;
 }
 
-float4 main(PsInput input) : SV_Target
+float4 UnclippedMain(PsInput input) : SV_Target
 {
     // Panel uv [0,1] -> source-texel uv. The sampled image holds either a
     // cropped live capture (plus blur apron) or a compatibility snapshot, so
@@ -287,8 +292,17 @@ float4 main(PsInput input) : SV_Target
     // floor the whole backdrop vanished). extraInfo.z == 1 arms it on exactly
     // that branch; the live-capture path passes 0 so the real blurred alpha
     // flows through unmodified instead of being clamped up.
-    const float fallbackFloor = saturate(gPushConstants.extraInfo.z);
+    const float fallbackFloor = gPushConstants.tintColor.a > 0.0f
+        ? saturate(gPushConstants.extraInfo.z) : 0.0f;
     const float floorAlpha = (0.08 + gPushConstants.tintColor.a * 0.25) * fallbackFloor;
     const float opacity = saturate(gPushConstants.materialInfo0.w);
     return float4(color, max(blurred.a, floorAlpha) * cornerCov * opacity);
+}
+
+float4 main(PsInput input) : SV_Target
+{
+    float coverage = JaliumVulkanClipCoverage(input.position.xy);
+    float4 color = UnclippedMain(input);
+    color.a *= coverage;
+    return color;
 }

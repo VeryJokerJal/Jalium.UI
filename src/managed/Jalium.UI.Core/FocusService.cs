@@ -29,6 +29,9 @@ public static class FocusService
     /// </summary>
     public static IInputElement? Focus(IInputElement? element)
     {
+        if (element is UIElement uiElement &&
+            Styling.CssDisplayProperties.IsExitInert(uiElement))
+            return _provider?.FocusedElement;
         var focused = _provider?.Focus(element);
         Input.FocusManager.OnKeyboardFocusChanged(focused);
         return focused;

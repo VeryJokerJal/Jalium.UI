@@ -120,6 +120,7 @@ public static class JalxamlParser
         { "Border", "Jalium.UI.Controls.Border" },
         { "DockPanel", "Jalium.UI.Controls.DockPanel" },
         { "WrapPanel", "Jalium.UI.Controls.WrapPanel" },
+        { "FlexPanel", "Jalium.UI.Controls.FlexPanel" },
         { "UniformGrid", "Jalium.UI.Controls.Primitives.UniformGrid" },
         { "Panel", "Jalium.UI.Controls.Panel" },
         { "VirtualizingStackPanel", "Jalium.UI.Controls.VirtualizingStackPanel" },

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using Jalium.UI.Media.Animation;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Media;
 
@@ -10,9 +11,23 @@ namespace Jalium.UI.Media;
 public abstract partial class Brush : Animatable, IFormattable
 {
     private static readonly Transform s_identityTransform = CreateIdentityTransform();
+    // A paint-only copy shares mutable children with its authored brush. The
+    // authored brush owns invalidation; child events must not retain each copy.
+    internal bool IsTransientPaintCopy { get; set; }
     private WeakReference<UIElement>? _singleRenderOwner;
     private int _singleRenderOwnerReferenceCount;
     private ConditionalWeakTable<UIElement, RenderOwnerRegistration>? _renderOwners;
+
+    /// <summary>Initializes a brush on the current dispatcher.</summary>
+    protected Brush()
+    {
+    }
+
+    /// <summary>Initializes a brush on an already selected dispatcher.</summary>
+    internal Brush(Dispatcher dispatcher)
+        : base(dispatcher)
+    {
+    }
 
     private sealed class RenderOwnerRegistration
     {
@@ -25,6 +40,16 @@ public abstract partial class Brush : Animatable, IFormattable
         DependencyProperty.Register(nameof(Transform), typeof(Transform), typeof(Brush), new PropertyMetadata(s_identityTransform));
     public static readonly DependencyProperty RelativeTransformProperty =
         DependencyProperty.Register(nameof(RelativeTransform), typeof(Transform), typeof(Brush), new PropertyMetadata(s_identityTransform));
+
+    internal static readonly DependencyProperty CssGradientLayoutProperty =
+        DependencyProperty.RegisterAttached("CssGradientLayout", typeof(Jalium.UI.Styling.CssGradientLayout),
+            typeof(Brush), new PropertyMetadata(null));
+
+    internal Jalium.UI.Styling.CssGradientLayout? CssGradientLayout
+    {
+        get => (Jalium.UI.Styling.CssGradientLayout?)GetValue(CssGradientLayoutProperty);
+        set => SetValue(CssGradientLayoutProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the opacity of the brush (0.0 - 1.0).
@@ -163,7 +188,8 @@ public abstract partial class Brush : Animatable, IFormattable
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
-        if (ReferenceEquals(e.Property, TransformProperty) || ReferenceEquals(e.Property, RelativeTransformProperty))
+        if (!IsTransientPaintCopy &&
+            (ReferenceEquals(e.Property, TransformProperty) || ReferenceEquals(e.Property, RelativeTransformProperty)))
         {
             OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, e.Property);
         }
@@ -214,6 +240,16 @@ public sealed class SolidColorBrush : Brush
     /// </summary>
     /// <param name="color">The brush color.</param>
     public SolidColorBrush(Color color)
+    {
+        Color = color;
+    }
+
+    /// <summary>
+    /// Initializes a literal resource brush while retaining the dispatcher that eager XAML
+    /// construction would have selected.
+    /// </summary>
+    internal SolidColorBrush(Dispatcher dispatcher, Color color)
+        : base(dispatcher)
     {
         Color = color;
     }
@@ -364,7 +400,8 @@ public abstract class GradientBrush : Brush
             || ReferenceEquals(e.Property, GradientStopsProperty)
             || ReferenceEquals(e.Property, SpreadMethodProperty)
             || ReferenceEquals(e.Property, MappingModeProperty)
-            || ReferenceEquals(e.Property, ColorInterpolationModeProperty))
+            || ReferenceEquals(e.Property, ColorInterpolationModeProperty)
+            || ReferenceEquals(e.Property, CssGradientLayoutProperty))
         {
             InvalidateContentHash();
             WritePostscript();
@@ -907,6 +944,20 @@ public sealed class ImageBrush : TileBrush
     public static readonly DependencyProperty ImageSourceProperty =
         DependencyProperty.Register(nameof(ImageSource), typeof(ImageSource), typeof(ImageBrush), new PropertyMetadata(null));
 
+    public static readonly DependencyProperty ScalingModeProperty =
+        DependencyProperty.Register(nameof(ScalingMode), typeof(BitmapScalingMode), typeof(ImageBrush),
+            new PropertyMetadata(BitmapScalingMode.Unspecified));
+
+    internal static readonly DependencyProperty CssBackgroundLayoutProperty =
+        DependencyProperty.Register("CssBackgroundLayout", typeof(CssBackgroundImageLayout),
+            typeof(ImageBrush), new PropertyMetadata(null));
+
+    internal CssBackgroundImageLayout? CssBackgroundLayout
+    {
+        get => (CssBackgroundImageLayout?)GetValue(CssBackgroundLayoutProperty);
+        set => SetValue(CssBackgroundLayoutProperty, value);
+    }
+
     /// <summary>
     /// Gets or sets the image source.
     /// </summary>
@@ -914,6 +965,13 @@ public sealed class ImageBrush : TileBrush
     {
         get => (ImageSource?)GetValue(ImageSourceProperty);
         set => SetValue(ImageSourceProperty, value);
+    }
+
+    /// <summary>Gets or sets the bitmap sampler used for this brush.</summary>
+    public BitmapScalingMode ScalingMode
+    {
+        get => (BitmapScalingMode)GetValue(ScalingModeProperty)!;
+        set => SetValue(ScalingModeProperty, value);
     }
 
     /// <summary>
@@ -947,7 +1005,14 @@ public sealed class ImageBrush : TileBrush
         base.OnPropertyChanged(e);
         if (ReferenceEquals(e.Property, ImageSourceProperty))
         {
-            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, ImageSourceProperty);
+            if (!IsTransientPaintCopy)
+                OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, ImageSourceProperty);
+            WritePostscript();
+        }
+        else if (ReferenceEquals(e.Property, ScalingModeProperty) ||
+                 ReferenceEquals(e.Property, CssGradientLayoutProperty) ||
+                 ReferenceEquals(e.Property, CssBackgroundLayoutProperty))
+        {
             WritePostscript();
         }
     }
