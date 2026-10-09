@@ -4654,8 +4654,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _isSyncingPosition = true;
         try
         {
-            SetCurrentValue(LeftProperty, nativeX / _dpiScale);
-            SetCurrentValue(TopProperty, nativeY / _dpiScale);
+            SetCurrentWindowGeometryValue(LeftProperty, nativeX / _dpiScale);
+            SetCurrentWindowGeometryValue(TopProperty, nativeY / _dpiScale);
         }
         finally { _isSyncingPosition = false; }
 
@@ -4890,6 +4890,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ToPhysical(MaxHeight, scale));
     }
 
+    // Native and automatic geometry must preserve its value source while still
+    // publishing effective changes through the binding's normal mode/trigger.
+    private void SetCurrentWindowGeometryValue(DependencyProperty property, object value)
+    {
+        var previous = GetValue(property);
+        SetCurrentValue(property, value);
+        if (!Equals(previous, GetValue(property)))
+            Jalium.UI.Data.BindingOperations.GetBindingExpressionBase(this, property)?.UpdateSource();
+    }
+
     private bool _isSyncingPlatformSize;
     private bool _isUpdatingSizeToContent;
 
@@ -4918,9 +4928,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             try
             {
                 if (autoWidth && double.IsFinite(desired.Width))
-                    SetCurrentValue(WidthProperty, Math.Clamp(desired.Width, Math.Max(1, MinWidth), Math.Max(Math.Max(1, MinWidth), MaxWidth)));
+                    SetCurrentWindowGeometryValue(WidthProperty, Math.Clamp(desired.Width, Math.Max(1, MinWidth), Math.Max(Math.Max(1, MinWidth), MaxWidth)));
                 if (autoHeight && double.IsFinite(desired.Height))
-                    SetCurrentValue(HeightProperty, Math.Clamp(desired.Height + titleHeight, Math.Max(1, MinHeight), Math.Max(Math.Max(1, MinHeight), MaxHeight)));
+                    SetCurrentWindowGeometryValue(HeightProperty, Math.Clamp(desired.Height + titleHeight, Math.Max(1, MinHeight), Math.Max(Math.Max(1, MinHeight), MaxHeight)));
             }
             finally { _isSyncingPlatformSize = false; }
             UpdatePlatformWindowSize();
@@ -5166,7 +5176,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.Resize:
                 if (OperatingSystem.IsMacOS() && evt.IsUserInitiatedResize)
-                    SetCurrentValue(SizeToContentProperty, SizeToContent.Manual);
+                    SetCurrentWindowGeometryValue(SizeToContentProperty, SizeToContent.Manual);
                 OnSizeChanged(evt.Width, evt.Height);
                 break;
 
@@ -5410,8 +5420,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     _isSyncingPosition = true;
                     try
                     {
-                        SetCurrentValue(LeftProperty, x / _dpiScale);
-                        SetCurrentValue(TopProperty, y / _dpiScale);
+                        SetCurrentWindowGeometryValue(LeftProperty, x / _dpiScale);
+                        SetCurrentWindowGeometryValue(TopProperty, y / _dpiScale);
                     }
                     finally { _isSyncingPosition = false; }
                 }
@@ -8679,8 +8689,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _isSyncingPlatformSize = true;
         try
         {
-            SetCurrentValue(WidthProperty, physicalWidth / _dpiScale);
-            SetCurrentValue(HeightProperty, physicalHeight / _dpiScale);
+            SetCurrentWindowGeometryValue(WidthProperty, physicalWidth / _dpiScale);
+            SetCurrentWindowGeometryValue(HeightProperty, physicalHeight / _dpiScale);
         }
         finally { _isSyncingPlatformSize = false; }
 

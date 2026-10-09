@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.ComponentModel;
+using Jalium.UI.Data;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
@@ -1425,6 +1427,190 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         fixture.Window.SizeToContent = SizeToContent.WidthAndHeight;
         fixture.Platform.Raise(new() { Type = PlatformEventType.Resize, Width = 900, Height = 700, IsUserInitiatedResize = true });
         Assert.Equal(SizeToContent.Manual, fixture.Window.SizeToContent);
+    }
+
+    [Theory]
+    [InlineData(BindingMode.TwoWay, UpdateSourceTrigger.Default, true)]
+    [InlineData(BindingMode.TwoWay, UpdateSourceTrigger.PropertyChanged, true)]
+    [InlineData(BindingMode.OneWayToSource, UpdateSourceTrigger.PropertyChanged, true)]
+    [InlineData(BindingMode.OneWay, UpdateSourceTrigger.Default, false)]
+    [InlineData(BindingMode.TwoWay, UpdateSourceTrigger.Explicit, false)]
+    [InlineData(BindingMode.TwoWay, UpdateSourceTrigger.LostFocus, false)]
+    public void NativeSizeBinding_UpdatesSourceAndKeepsExpression(BindingMode mode, UpdateSourceTrigger trigger, bool publishes)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var fixture = new PlatformFixture();
+        var source = new WindowGeometrySource();
+        var width = fixture.Window.SetBinding(Window.WidthProperty, new Binding(nameof(source.Width))
+            { Source = source, Mode = mode, UpdateSourceTrigger = trigger });
+        var height = fixture.Window.SetBinding(Window.HeightProperty, new Binding(nameof(source.Height))
+            { Source = source, Mode = mode, UpdateSourceTrigger = trigger });
+        int resizeCalls = fixture.Platform.ResizeCalls;
+        fixture.Platform.Raise(new() { Type = PlatformEventType.Resize, Width = 900, Height = 700, IsUserInitiatedResize = true });
+        Assert.Equal(450, fixture.Window.Width); Assert.Equal(350, fixture.Window.Height);
+        Assert.Equal(publishes ? 450 : 320, source.Width); Assert.Equal(publishes ? 350 : 240, source.Height);
+        Assert.Same(width, BindingOperations.GetBindingExpressionBase(fixture.Window, Window.WidthProperty));
+        Assert.Same(height, BindingOperations.GetBindingExpressionBase(fixture.Window, Window.HeightProperty));
+        Assert.Equal(resizeCalls, fixture.Platform.ResizeCalls);
+        if (mode != BindingMode.OneWayToSource)
+        {
+            source.Width = 480; source.Height = 360;
+            Assert.Equal(480, fixture.Window.Width); Assert.Equal(360, fixture.Window.Height);
+            Assert.Equal(960, fixture.Platform.Width); Assert.Equal(720, fixture.Platform.Height);
+        }
+    }
+
+    [Theory]
+    [InlineData(1.25)]
+    [InlineData(1.5)]
+    [InlineData(2d)]
+    public void NativeSizeBinding_PublishesLogicalDips(double scale)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var fixture = new PlatformFixture();
+        SetField(fixture.Window, "_dpiScale", scale);
+        var source = new WindowGeometrySource();
+        fixture.Window.SetBinding(Window.WidthProperty, new Binding(nameof(source.Width)) { Source = source, Mode = BindingMode.TwoWay });
+        fixture.Window.SetBinding(Window.HeightProperty, new Binding(nameof(source.Height)) { Source = source, Mode = BindingMode.TwoWay });
+        fixture.Platform.Raise(new() { Type = PlatformEventType.Resize, Width = 913, Height = 707 });
+        Assert.Equal(913 / scale, source.Width, 12); Assert.Equal(707 / scale, source.Height, 12);
+    }
+
+    [Fact]
+    public void NativeSizeBinding_RepeatedAndEmptyPacketsDoNotRepublish()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var fixture = new PlatformFixture();
+        var source = new WindowGeometrySource();
+        fixture.Window.SetBinding(Window.WidthProperty, new Binding(nameof(source.Width)) { Source = source, Mode = BindingMode.TwoWay });
+        fixture.Window.SetBinding(Window.HeightProperty, new Binding(nameof(source.Height)) { Source = source, Mode = BindingMode.TwoWay });
+        int widthWrites = source.WidthWrites, heightWrites = source.HeightWrites;
+        fixture.Platform.Raise(new() { Type = PlatformEventType.Resize, Width = 900, Height = 700 });
+        fixture.Platform.Raise(new() { Type = PlatformEventType.Resize, Width = 900, Height = 700 });
+        fixture.Platform.Raise(new() { Type = PlatformEventType.Resize, Width = 0, Height = 700 });
+        Assert.Equal(widthWrites + 1, source.WidthWrites); Assert.Equal(heightWrites + 1, source.HeightWrites);
+        Assert.Equal(450, source.Width); Assert.Equal(350, source.Height);
+    }
+
+    [Fact]
+    public void NativeSizeBinding_IsPublishedBeforeSizeChanged()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var fixture = new PlatformFixture();
+        var source = new WindowGeometrySource();
+        fixture.Window.SetBinding(Window.WidthProperty, new Binding(nameof(source.Width)) { Source = source, Mode = BindingMode.TwoWay });
+        fixture.Window.SetBinding(Window.HeightProperty, new Binding(nameof(source.Height)) { Source = source, Mode = BindingMode.TwoWay });
+        int observed = 0;
+        fixture.Window.SizeChanged += (_, _) =>
+        {
+            Assert.Equal(fixture.Window.Width, source.Width); Assert.Equal(fixture.Window.Height, source.Height); observed++;
+        };
+        fixture.Platform.Raise(new() { Type = PlatformEventType.Resize, Width = 900, Height = 700 });
+        Assert.Equal(1, observed);
+    }
+
+    [Theory]
+    [InlineData(UpdateSourceTrigger.Default, true)]
+    [InlineData(UpdateSourceTrigger.Explicit, false)]
+    public void NativeSizeBinding_UserResizePublishesManualSizingMode(UpdateSourceTrigger trigger, bool publishes)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var fixture = new PlatformFixture();
+        var source = new WindowGeometrySource { AutoSize = SizeToContent.WidthAndHeight };
+        var expression = fixture.Window.SetBinding(Window.SizeToContentProperty, new Binding(nameof(source.AutoSize))
+            { Source = source, Mode = BindingMode.TwoWay, UpdateSourceTrigger = trigger });
+        fixture.Platform.Raise(new() { Type = PlatformEventType.Resize, Width = 900, Height = 700, IsUserInitiatedResize = true });
+        Assert.Equal(SizeToContent.Manual, fixture.Window.SizeToContent);
+        Assert.Equal(publishes ? SizeToContent.Manual : SizeToContent.WidthAndHeight, source.AutoSize);
+        Assert.Same(expression, BindingOperations.GetBindingExpressionBase(fixture.Window, Window.SizeToContentProperty));
+    }
+
+    [Theory]
+    [InlineData(SizeToContent.Width)]
+    [InlineData(SizeToContent.Height)]
+    [InlineData(SizeToContent.WidthAndHeight)]
+    public void NativeSizeBinding_AutomaticDimensionsPublishComputedValues(SizeToContent mode)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var fixture = new PlatformFixture();
+        var source = new WindowGeometrySource();
+        fixture.Window.Content = new Border { Width = 180, Height = 90 };
+        fixture.Window.SetBinding(Window.WidthProperty, new Binding(nameof(source.Width)) { Source = source, Mode = BindingMode.TwoWay });
+        fixture.Window.SetBinding(Window.HeightProperty, new Binding(nameof(source.Height)) { Source = source, Mode = BindingMode.TwoWay });
+        fixture.Window.SizeToContent = mode;
+        typeof(Window).GetMethod("UpdateMacOSSizeToContent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(fixture.Window, null);
+        Assert.Equal(mode == SizeToContent.Height ? 320 : 180, source.Width);
+        Assert.Equal(mode == SizeToContent.Width ? 240 : 90, source.Height);
+        Assert.Equal(source.Width, fixture.Window.Width); Assert.Equal(source.Height, fixture.Window.Height);
+        Assert.True(fixture.Platform.ResizeCalls <= 1);
+    }
+
+    [Theory]
+    [InlineData(UpdateSourceTrigger.Default, true)]
+    [InlineData(UpdateSourceTrigger.Explicit, false)]
+    public void NativeSizeBinding_DpiOriginKeepsSourceAndTrigger(UpdateSourceTrigger trigger, bool publishes)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var fixture = new PlatformFixture();
+        var source = new WindowGeometrySource();
+        var left = fixture.Window.SetBinding(Window.LeftProperty, new Binding(nameof(source.Left))
+            { Source = source, Mode = BindingMode.TwoWay, UpdateSourceTrigger = trigger });
+        var top = fixture.Window.SetBinding(Window.TopProperty, new Binding(nameof(source.Top))
+            { Source = source, Mode = BindingMode.TwoWay, UpdateSourceTrigger = trigger });
+        fixture.Platform.Raise(new() { Type = PlatformEventType.DpiChanged, DpiX = 96, DpiY = 96 });
+        Assert.Equal(120, fixture.Window.Left); Assert.Equal(160, fixture.Window.Top);
+        Assert.Equal(publishes ? 120 : 60, source.Left); Assert.Equal(publishes ? 160 : 80, source.Top);
+        Assert.Same(left, BindingOperations.GetBindingExpressionBase(fixture.Window, Window.LeftProperty));
+        Assert.Same(top, BindingOperations.GetBindingExpressionBase(fixture.Window, Window.TopProperty));
+    }
+
+    [Fact]
+    public void NativeSizeBinding_AutomaticConstraintsPublishEffectiveDimensions()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var fixture = new PlatformFixture();
+        var source = new WindowGeometrySource();
+        fixture.Window.Content = new Border { Width = 180, Height = 90 };
+        fixture.Window.MinWidth = 200; fixture.Window.MaxHeight = 80;
+        fixture.Window.SetBinding(Window.WidthProperty, new Binding(nameof(source.Width)) { Source = source, Mode = BindingMode.TwoWay });
+        fixture.Window.SetBinding(Window.HeightProperty, new Binding(nameof(source.Height)) { Source = source, Mode = BindingMode.TwoWay });
+        fixture.Window.SizeToContent = SizeToContent.WidthAndHeight;
+        typeof(Window).GetMethod("UpdateMacOSSizeToContent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(fixture.Window, null);
+        Assert.Equal(200, source.Width); Assert.Equal(80, source.Height);
+        Assert.Equal(400, fixture.Platform.Width); Assert.Equal(160, fixture.Platform.Height);
+    }
+
+    private sealed class WindowGeometrySource : INotifyPropertyChanged
+    {
+        private double _width = 320, _height = 240, _left = 60, _top = 80;
+        private SizeToContent _autoSize;
+        public int WidthWrites, HeightWrites;
+        public event PropertyChangedEventHandler? PropertyChanged;
+        public double Width
+        {
+            get => _width;
+            set { _width = value; WidthWrites++; PropertyChanged?.Invoke(this, new(nameof(Width))); }
+        }
+        public double Height
+        {
+            get => _height;
+            set { _height = value; HeightWrites++; PropertyChanged?.Invoke(this, new(nameof(Height))); }
+        }
+        public double Left
+        {
+            get => _left;
+            set { _left = value; PropertyChanged?.Invoke(this, new(nameof(Left))); }
+        }
+        public double Top
+        {
+            get => _top;
+            set { _top = value; PropertyChanged?.Invoke(this, new(nameof(Top))); }
+        }
+        public SizeToContent AutoSize
+        {
+            get => _autoSize;
+            set { _autoSize = value; PropertyChanged?.Invoke(this, new(nameof(AutoSize))); }
+        }
     }
 
     [Fact]

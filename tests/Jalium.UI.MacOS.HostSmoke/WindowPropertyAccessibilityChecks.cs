@@ -1,4 +1,6 @@
 using AppKit;
+using System.ComponentModel;
+using Jalium.UI.Data;
 using CoreGraphics;
 using Foundation;
 using ObjCRuntime;
@@ -75,6 +77,7 @@ internal static class WindowPropertyAccessibilityChecks
         {
             window.Show(); Pump(window);
             var native = Runtime.GetNSObject<NSView>(window.Handle)!.Window!;
+            WindowGeometryBindings? geometry = index / 2 <= 1 ? new(window) : null;
             switch (index / 2)
             {
                 case 0:
@@ -89,6 +92,16 @@ internal static class WindowPropertyAccessibilityChecks
                     Require(window.SizeToContent == SizeToContent.Manual, "AX resizing retained SizeToContent");
                     Near(window.Width, width + 80, "managed width"); Near(window.Height, height + 60, "managed height");
                     Near(window.Left, left + 36, "managed left"); Near(window.Top, top - 18 - 60, "managed final top");
+                    geometry!.Verify(window);
+                    Require(geometry.AutoSize == SizeToContent.Manual, "native resize did not publish manual sizing to the source");
+                    int widthWrites = geometry.WidthWrites, heightWrites = geometry.HeightWrites;
+                    native.AccessibilityFrame = requested; Pump(window);
+                    Require(geometry.WidthWrites == widthWrites && geometry.HeightWrites == heightWrites,
+                        "unchanged native geometry duplicated source updates");
+                    geometry.Width += 70; geometry.Height += 50; Pump(window);
+                    geometry.Verify(window);
+                    Near(native.ContentView!.Frame.Width, geometry.Width, "bound source updated native width");
+                    Near(native.ContentView.Frame.Height, geometry.Height, "bound source updated native height");
                     break;
                 }
                 case 1:
@@ -101,6 +114,8 @@ internal static class WindowPropertyAccessibilityChecks
                     Require(window.SizeToContent == SizeToContent.WidthAndHeight, "AX move disabled automatic sizing");
                     Near(window.Width, width, "move preserved width"); Near(window.Height, height, "move preserved height");
                     Near(window.Left, left + 30, "move left"); Near(window.Top, top + 20, "move top");
+                    geometry!.Verify(window);
+                    Require(geometry.AutoSize == SizeToContent.WidthAndHeight, "native move changed the bound sizing mode");
                     break;
                 }
                 case 2:
@@ -235,10 +250,47 @@ internal static class WindowPropertyAccessibilityChecks
             }
             Require(editor.Text == "AX 属性修改后保留中文🙂", "AX Window edits lost content");
             Console.WriteLine($"PASS {window.TitleBarStyle}: {s_names[index / 2]}");
+            if (index == 0 && int.TryParse(Environment.GetEnvironmentVariable("JALIUM_MACOS_PROPERTY_OBSERVE_SECONDS"),
+                out int observationSeconds) && observationSeconds is >= 1 and <= 60)
+            {
+                Console.WriteLine($"OBSERVE: PID {Environment.ProcessId}, bound geometry {geometry!.Width} x {geometry.Height}, sizing {geometry.AutoSize}");
+                var observation = Stopwatch.StartNew();
+                while (observation.Elapsed < TimeSpan.FromSeconds(observationSeconds)) Pump(window);
+            }
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine($"FAIL AX property case {index}: {error}"); return 1; }
         finally { dialog?.Close(); other?.Close(); window.Close(); application.Shutdown(); }
+    }
+
+    private sealed class WindowGeometryBindings : INotifyPropertyChanged
+    {
+        private double _width, _height, _left, _top;
+        private SizeToContent _autoSize;
+        private readonly Dictionary<DependencyProperty, BindingExpressionBase> _expressions = [];
+        public int WidthWrites, HeightWrites;
+        public event PropertyChangedEventHandler? PropertyChanged;
+        public WindowGeometryBindings(Window window)
+        {
+            _width = window.Width; _height = window.Height; _left = window.Left; _top = window.Top; _autoSize = window.SizeToContent;
+            foreach (var (property, path) in new[] { (Window.WidthProperty, nameof(Width)), (Window.HeightProperty, nameof(Height)),
+                (Window.LeftProperty, nameof(Left)), (Window.TopProperty, nameof(Top)), (Window.SizeToContentProperty, nameof(AutoSize)) })
+                _expressions[property] = window.SetBinding(property, new Binding(path) { Source = this, Mode = BindingMode.TwoWay });
+        }
+        public double Width { get => _width; set { _width = value; WidthWrites++; Notify(nameof(Width)); } }
+        public double Height { get => _height; set { _height = value; HeightWrites++; Notify(nameof(Height)); } }
+        public double Left { get => _left; set { _left = value; Notify(nameof(Left)); } }
+        public double Top { get => _top; set { _top = value; Notify(nameof(Top)); } }
+        public SizeToContent AutoSize { get => _autoSize; set { _autoSize = value; Notify(nameof(AutoSize)); } }
+        private void Notify(string property) => PropertyChanged?.Invoke(this, new(property));
+        public void Verify(Window window)
+        {
+            Near(Width, window.Width, "bound width"); Near(Height, window.Height, "bound height");
+            Near(Left, window.Left, "bound left"); Near(Top, window.Top, "bound top");
+            Require(AutoSize == window.SizeToContent, "bound sizing mode is stale");
+            foreach (var (property, expression) in _expressions)
+                Require(ReferenceEquals(expression, BindingOperations.GetBindingExpressionBase(window, property)), "geometry binding was replaced");
+        }
     }
 
     private static void Pump(Window window)
