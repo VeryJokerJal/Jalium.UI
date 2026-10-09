@@ -178,15 +178,17 @@ internal abstract class FileDialog
     {
         if (CancellationToken.IsCancellationRequested || PlatformFileDialogs.Show is not { } show)
             return false;
-        var paths = show(new PlatformFileDialogOptions(
+        var options = new PlatformFileDialogOptions(
             save, directory, multiple, Title, InitialDirectory, FileName,
-            DefaultExt, AddExtension, DereferenceLinks, true, ParseFilter(), FilterIndex));
+            DefaultExt, AddExtension, DereferenceLinks, true, ParseFilter(), FilterIndex);
+        var paths = show(options);
         var selected = paths?.Where(path => directory
                 ? !CheckPathExists || Directory.Exists(path)
                 : (!CheckFileExists || File.Exists(path)) &&
                   (!CheckPathExists || Directory.Exists(Path.GetDirectoryName(path))))
             .Take(multiple ? int.MaxValue : 1).ToArray();
         if (selected is not { Length: > 0 }) return false;
+        FilterIndex = options.SelectedFilterIndex;
         FileName = selected[0];
         FileNames = selected;
         OnFileOk();

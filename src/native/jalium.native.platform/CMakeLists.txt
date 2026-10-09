@@ -465,3 +465,10 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.platform.macos.window.drag-lifetime COMMAND jalium.native.platform.window.drag.tests)
     set_tests_properties(jalium.native.platform.macos.window.drag-lifetime PROPERTIES TIMEOUT 60)
 endif()
+
+# Pure coordinate regression: also runnable without an Apple SDK.
+if(JALIUM_PLATFORM_BUILD_TESTS)
+    enable_testing()
+    add_executable(jalium.native.platform.screen-coordinate.tests tests/platform_apple_screen_coordinates_tests.cpp)
+    add_test(NAME jalium.native.platform.screen-coordinate COMMAND jalium.native.platform.screen-coordinate.tests)
+endif()

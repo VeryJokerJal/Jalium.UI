@@ -31,18 +31,42 @@ internal static class MacOSFileDialogs
             open.ResolvesAliases = options.DereferenceLinks;
         }
 
-        var extensions = GetExtensions(options);
-        if (!options.Directory && extensions.Length > 0)
+        var filters = new FileDialogFilterSelection(options.Filters, options.FilterIndex, options.DefaultExtension);
+        using var selector = new NSPopUpButton(new CoreGraphics.CGRect(0, 0, 280, 26), false);
+        void ApplyFilter()
         {
-            var types = extensions.Select(extension => UTType.CreateFromExtension(extension))
+            var types = filters.Extensions.Select(extension => UTType.CreateFromExtension(extension))
                 .Where(type => type != null).Cast<UTType>().ToArray();
-            if (types.Length > 0)
+            panel.AllowedContentTypes = types;
+            panel.AllowsOtherFileTypes = types.Length == 0;
+        }
+        EventHandler changed = (_, _) =>
+        {
+            filters.Select((int)selector.IndexOfSelectedItem + 1);
+            ApplyFilter();
+        };
+        if (!options.Directory)
+        {
+            ApplyFilter();
+            if (options.Filters.Length > 1)
             {
-                panel.AllowedContentTypes = types;
-                panel.AllowsOtherFileTypes = false;
+                selector.AddItems(options.Filters.Select(filter => filter.Name).ToArray());
+                selector.SelectItem(filters.Index - 1);
+                selector.Activated += changed;
+                panel.AccessoryView = selector;
             }
         }
-        if ((long)panel.RunModal() != (long)NSModalResponse.OK) return null;
+        try
+        {
+            if ((long)panel.RunModal() != (long)NSModalResponse.OK) return null;
+            options.SelectedFilterIndex = filters.Index;
+        }
+        finally
+        {
+            selector.Activated -= changed;
+            panel.AccessoryView = null;
+        }
+        var extensions = filters.Extensions;
         var paths = panel is NSOpenPanel selectedOpen
             ? selectedOpen.Urls.Select(url => url.Path).OfType<string>().ToArray()
             : panel.Url?.Path is { } path ? new[] { path } : Array.Empty<string>();
@@ -54,16 +78,4 @@ internal static class MacOSFileDialogs
         return paths;
     }
 
-    private static string[] GetExtensions(PlatformFileDialogOptions options)
-    {
-        if (options.Filters.Length == 0)
-            return string.IsNullOrWhiteSpace(options.DefaultExtension)
-                ? [] : [options.DefaultExtension.TrimStart('.')];
-        var pattern = options.Filters[Math.Clamp(options.FilterIndex - 1, 0, options.Filters.Length - 1)].Pattern;
-        var patterns = pattern.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        // Native panels show all files for a wildcard filter; folder panels ignore file types.
-        if (patterns.Any(value => value is "*" or "*.*")) return [];
-        return patterns.Where(value => value.StartsWith("*.") && !value[2..].Contains('*') && !value.Contains('?'))
-            .Select(value => value[2..]).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-    }
 }

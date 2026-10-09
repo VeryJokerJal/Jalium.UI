@@ -21,6 +21,7 @@
 #import <AppKit/AppKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "platform_apple_window_startup_geometry.h"
+#include "platform_apple_screen_coordinates.h"
 #include <IOKit/hidsystem/IOLLEvent.h>
 #else
 #import <UIKit/UIKit.h>
@@ -251,6 +252,17 @@ CGFloat DesktopTop()
     return NSMaxY(NSScreen.screens.firstObject.frame);
 }
 
+NSPoint FrameworkScreenPoint(NSPoint point, NSScreen* screen)
+{
+    screen = screen ?: NSScreen.screens.firstObject;
+    NSRect frame = screen.frame;
+    double primaryScale = NSScreen.screens.firstObject.backingScaleFactor ?: 1.0;
+    double scale = screen.backingScaleFactor ?: 1.0;
+    using jalium::platform::apple::ScreenCoordinate;
+    return NSMakePoint(ScreenCoordinate(point.x, NSMinX(frame), primaryScale, scale),
+        ScreenCoordinate(DesktopTop() - point.y, DesktopTop() - NSMaxY(frame), primaryScale, scale));
+}
+
 void PublishWindowState(JaliumPlatformWindow* window, JaliumWindowState state)
 {
     if (!window || window->state == state) return;
@@ -267,8 +279,9 @@ void UpdateWindowGeometry(JaliumPlatformWindow* window)
     NSSize size = ((NSView*)window->view).bounds.size;
     window->width = lround(size.width * window->scale);
     window->height = lround(size.height * window->scale);
-    window->x = lround(frame.origin.x * window->scale);
-    window->y = lround((DesktopTop() - NSMaxY(frame)) * window->scale);
+    NSPoint origin = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), window->window.screen);
+    window->x = lround(origin.x);
+    window->y = lround(origin.y);
 }
 
 NSUInteger AppleStyleMask(uint32_t style)
@@ -2844,8 +2857,9 @@ int32_t jalium_apple_window_get_restore_bounds(JaliumPlatformWindow* w,
     if (!currentFrame && !w->hasRestoreFrame) return JALIUM_ERROR_INVALID_STATE;
     NSRect frame = currentFrame ? w->window.frame : w->restoreFrame;
     NSSize content = currentFrame ? ((NSView*)w->view).bounds.size : w->restoreContentSize;
-    *x = lround(NSMinX(frame) * w->scale);
-    *y = lround((DesktopTop() - NSMaxY(frame)) * w->scale);
+    NSPoint origin = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), w->window.screen);
+    *x = lround(origin.x);
+    *y = lround(origin.y);
     *width = lround(content.width * w->scale);
     *height = lround(content.height * w->scale);
     return JALIUM_OK;
@@ -2859,8 +2873,9 @@ int32_t jalium_apple_window_get_client_origin(JaliumPlatformWindow* w, int32_t* 
 #if TARGET_OS_OSX
     if (!NSThread.isMainThread || !IsLiveWindow(w)) return JALIUM_ERROR_INVALID_STATE;
     NSPoint point = [w->window convertPointToScreen:[w->view convertPoint:NSZeroPoint toView:nil]];
-    *x = lround(point.x * w->scale);
-    *y = lround((DesktopTop() - point.y) * w->scale);
+    NSPoint converted = FrameworkScreenPoint(point, w->window.screen);
+    *x = lround(converted.x);
+    *y = lround(converted.y);
     return JALIUM_OK;
 #else
     return JALIUM_ERROR_NOT_SUPPORTED;
@@ -3032,7 +3047,18 @@ void jalium_window_move(JaliumPlatformWindow* w,int32_t x,int32_t y){if(!w)retur
     CGFloat desktopTop=NSMaxY(NSScreen.screens.firstObject.frame);
     bool wasApplyingState = w->applyingState;
     w->applyingState = true;
-    [nativeWindow setFrameTopLeftPoint:NSMakePoint(x/w->scale,desktopTop-y/w->scale)];
+    NSScreen* destination = nativeWindow.screen ?: NSScreen.screens.firstObject;
+    for (NSScreen* screen in NSScreen.screens) {
+        NSPoint origin = FrameworkScreenPoint(NSMakePoint(NSMinX(screen.frame), NSMaxY(screen.frame)), screen);
+        NSRect bounds = NSMakeRect(origin.x, origin.y,
+            screen.frame.size.width * screen.backingScaleFactor, screen.frame.size.height * screen.backingScaleFactor);
+        if (NSPointInRect(NSMakePoint(x, y), bounds)) { destination = screen; break; }
+    }
+    double primaryScale = NSScreen.screens.firstObject.backingScaleFactor ?: 1.0;
+    using jalium::platform::apple::ScreenPoint;
+    [nativeWindow setFrameTopLeftPoint:NSMakePoint(
+        ScreenPoint(x, NSMinX(destination.frame), primaryScale, destination.backingScaleFactor),
+        desktopTop - ScreenPoint(y, desktopTop - NSMaxY(destination.frame), primaryScale, destination.backingScaleFactor))];
     if (IsLiveWindow(w, nativeWindow)) w->applyingState = wasApplyingState;
 #endif
 }
@@ -3157,7 +3183,7 @@ int32_t jalium_platform_get_monitor_count(void){
 }
 int32_t jalium_platform_get_monitor_info(int32_t index,JaliumMonitorInfo* info){if(!info||index<0||index>=jalium_platform_get_monitor_count())return JALIUM_ERROR_INVALID_ARGUMENT;*info={};
 #if TARGET_OS_OSX
-    NSScreen* s=NSScreen.screens[index];NSRect f=s.frame,v=s.visibleFrame;CGFloat scale=s.backingScaleFactor;info->x=lround(f.origin.x*scale);info->y=lround((DesktopTop()-NSMaxY(f))*scale);info->width=lround(f.size.width*scale);info->height=lround(f.size.height*scale);info->workX=lround(v.origin.x*scale);info->workY=lround((DesktopTop()-NSMaxY(v))*scale);info->workWidth=lround(v.size.width*scale);info->workHeight=lround(v.size.height*scale);info->scale=scale;NSNumber* number=s.deviceDescription[@"NSScreenNumber"];CGDisplayModeRef mode=number?CGDisplayCopyDisplayMode(number.unsignedIntValue):nullptr;double hz=mode?CGDisplayModeGetRefreshRate(mode):0;if(mode)CGDisplayModeRelease(mode);info->refreshRate=hz>1?(int32_t)llround(hz):60;info->isPrimary=index==0;
+    NSScreen* s=NSScreen.screens[index];NSRect f=s.frame,v=s.visibleFrame;CGFloat scale=s.backingScaleFactor;NSPoint origin=FrameworkScreenPoint(NSMakePoint(NSMinX(f),NSMaxY(f)),s);info->x=lround(origin.x);info->y=lround(origin.y);info->width=lround(f.size.width*scale);info->height=lround(f.size.height*scale);NSPoint work=FrameworkScreenPoint(NSMakePoint(NSMinX(v),NSMaxY(v)),s);info->workX=lround(work.x);info->workY=lround(work.y);info->workWidth=lround(v.size.width*scale);info->workHeight=lround(v.size.height*scale);info->scale=scale;NSNumber* number=s.deviceDescription[@"NSScreenNumber"];CGDisplayModeRef mode=number?CGDisplayCopyDisplayMode(number.unsignedIntValue):nullptr;double hz=mode?CGDisplayModeGetRefreshRate(mode):0;if(mode)CGDisplayModeRelease(mode);info->refreshRate=hz>1?(int32_t)llround(hz):60;info->isPrimary=index==0;
 #else
     UIScreen* s=UIScreen.mainScreen;CGFloat scale=s.scale;CGRect f=s.bounds;info->width=lround(f.size.width*scale);info->height=lround(f.size.height*scale);info->workWidth=info->width;info->workHeight=info->height;info->scale=scale;info->refreshRate=(int32_t)s.maximumFramesPerSecond;info->isPrimary=1;
 #endif
