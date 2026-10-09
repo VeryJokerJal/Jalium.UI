@@ -23,20 +23,17 @@ internal static class WindowApplicationMenuChecks
             Console.Error.WriteLine("Application visibility checks require JALIUM_MACOS_APPLICATION_MENU_GATE_ROOT and foreground activation before each case.");
             return 77;
         }
-        int passed = 0;
-        for (int index = 0; index < 4; index++)
-        {
-            // Keep the application identity stable while native menus and
-            // ordinary/modal windows are exercised in its real run loop.
-            if (RunCase($"--window-application-menu-case={index}") == 0) passed++;
-        }
-        Console.WriteLine($"macOS application visibility menu host checks: {passed}/4 passed");
-        return passed == 4 ? 0 : 1;
+        return RunCases([0, 1, 2, 3]);
     }
 
     internal static int RunCase(string argument)
     {
         if (!int.TryParse(argument.AsSpan("--window-application-menu-case=".Length), out int index) || (uint)index >= 4) return 2;
+        return RunCases([index]);
+    }
+
+    private static int RunCases(int[] indices)
+    {
         string? gateRoot = Environment.GetEnvironmentVariable("JALIUM_MACOS_APPLICATION_MENU_GATE_ROOT");
         if (string.IsNullOrEmpty(gateRoot)) return 77;
         JaliumMacApplication.Initialize();
@@ -45,6 +42,36 @@ internal static class WindowApplicationMenuChecks
         using var host = new MenuTestDelegate();
         host.Configure(app);
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
+        int passed = 0;
+        bool launchCompleted = false;
+        using var launching = NSNotificationCenter.DefaultCenter.AddObserver(NSApplication.DidFinishLaunchingNotification, _ =>
+        {
+            launchCompleted = true;
+            // Keep a single NSApp run loop and application identity. Stopping
+            // and restarting Run between cases is not an application restore.
+            app.BeginInvokeOnMainThread(() =>
+            {
+                try
+                {
+                    foreach (int index in indices)
+                        if (RunScenario(index, app, gateRoot) == 0) passed++;
+                }
+                finally
+                {
+                    typeof(NativeMethods).GetMethod("PlatformQuit", BindingFlags.Static | BindingFlags.NonPublic)!
+                        .Invoke(null, [0]);
+                }
+            });
+        }, app);
+        int exit = (int)typeof(NativeMethods).GetMethod("PlatformRunMessageLoop", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, null)!;
+        Require(exit == 0 && launchCompleted, "AppKit run loop stopped before a successful application launch");
+        Console.WriteLine($"macOS application visibility menu host checks: {passed}/{indices.Length} passed");
+        return passed == indices.Length ? 0 : 1;
+    }
+
+    private static int RunScenario(int index, NSApplication app, string gateRoot)
+    {
         var editor = new TextBox { Text = "隐藏前 · 中文 Miii 🙂 é", Height = 48 };
         var owner = CreateWindow("Application hide owner", index, new TextBlock { Text = "模态 owner" });
         var window = index < 2 ? owner : CreateWindow("Application hide modal", index, editor);
@@ -56,41 +83,23 @@ internal static class WindowApplicationMenuChecks
         using var hide = NSNotificationCenter.DefaultCenter.AddObserver(NSApplication.DidHideNotification, _ => hidden++, app);
         using var unhide = NSNotificationCenter.DefaultCenter.AddObserver(NSApplication.DidUnhideNotification, _ => restored++, app);
         Exception? failure = null;
-        bool verified = false;
         try
         {
             owner.Show(); Pump();
-            app.BeginInvokeOnMainThread(() =>
+            if (index >= 2)
             {
-                try
+                window.Owner = owner;
+                window.Shown += (_, _) => app.BeginInvokeOnMainThread(() =>
                 {
-                    if (index >= 2)
-                    {
-                        window.Owner = owner;
-                        window.Shown += (_, _) =>
-                        {
-                            try { Verify(); }
-                            catch (Exception error) { failure = error; }
-                            finally { window.DialogResult = true; }
-                        };
-                        Require(window.ShowDialog() == true, "modal completion failed");
-                        Require(owner.IsEnabled, "modal completion left its owner disabled");
-                    }
-                    else Verify();
-                    verified = failure == null;
-                }
-                catch (Exception error) { failure = error; }
-                finally
-                {
-                    typeof(NativeMethods).GetMethod("PlatformQuit", BindingFlags.Static | BindingFlags.NonPublic)!
-                        .Invoke(null, [0]);
-                }
-            });
-            int exit = (int)typeof(NativeMethods).GetMethod("PlatformRunMessageLoop", BindingFlags.Static | BindingFlags.NonPublic)!
-                .Invoke(null, null)!;
-            Require(exit == 0, "native AppKit run loop returned a failure");
+                    try { Verify(); }
+                    catch (Exception error) { failure = error; }
+                    finally { window.DialogResult = true; }
+                });
+                Require(window.ShowDialog() == true, "modal completion failed");
+                Require(owner.IsEnabled, "modal completion left its owner disabled");
+            }
+            else Verify();
             if (failure != null) throw failure;
-            Require(verified, "AppKit stopped before verification completed");
             Console.WriteLine($"PASS: {(index % 2 == 0 ? "Native" : "Custom")} {(index < 2 ? "ordinary" : "modal")} Command-H preserves window, text, selection and undo history");
             return 0;
         }

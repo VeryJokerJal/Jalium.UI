@@ -3053,23 +3053,15 @@ public partial class ScrollViewer : ContentControl
         {
             if (current == ContentElement)
             {
-                // When the content implements IScrollInfo (e.g. StackPanel doing its own
-                // physical scrolling), its ArrangeOverride already bakes the negative
-                // scroll offset into each child's _visualBounds. The accumulated y here
-                // therefore represents the child's CURRENT viewport-applied position,
-                // not its logical position in the content's full extent. MakeVisible
-                // expects logical content coordinates so it can compare against the
-                // viewport rect and compute the correct delta — add the scroll offset
-                // back to undo the bake-in. Without this, BringIntoView under-scrolls
-                // by exactly _scrollInfo.VerticalOffset on every call, leaving the
-                // focused element below the viewport while the focus-visual adorner
-                // (which uses raw _visualBounds) ends up drawn down in the footer
-                // region of the window.
-                if (_scrollInfo != null)
-                {
-                    x += _scrollInfo.HorizontalOffset;
-                    y += _scrollInfo.VerticalOffset;
-                }
+                // Include the content root's margin/alignment, then undo the viewport
+                // origin, scrolling and elasticity to recover extent coordinates.
+                // Physical content moves the root; IScrollInfo moves its children.
+                var viewport = GetContentViewportRect(RenderSize);
+                var rootBounds = ContentElement.VisualBounds;
+                x += rootBounds.X - viewport.Left - _overscrollX
+                    + (_scrollInfo?.HorizontalOffset ?? _horizontalOffset);
+                y += rootBounds.Y - viewport.Top - _overscrollY
+                    + (_scrollInfo?.VerticalOffset ?? _verticalOffset);
                 return new Point(x, y);
             }
 

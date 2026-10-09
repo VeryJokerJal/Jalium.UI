@@ -140,7 +140,7 @@ internal sealed class WindowLabDelegate(string[] args) : JaliumMacApplicationDel
                 : args.Contains("--window-participation-lab") ? WindowLab.CreateParticipationWindow()
                 : args.Contains("--window-startup-lab") ? WindowStartupLab.Create(args.Contains("--native-titlebar"), args.Contains("--maximize-initialized"))
                 : args.Contains("--window-minimize-lab") ? WindowMinimizeLab.Create(args.Contains("--native-titlebar"))
-                : args.Contains("--window-menu-lab") ? WindowMenuLab.Create() : new WindowLab
+                : args.Contains("--window-menu-lab") ? WindowMenuLab.Create() : new WindowLab(args.Contains("--small-window"))
                 {
                     TitleBarStyle = args.Contains("--native-titlebar") ? WindowTitleBarStyle.Native : WindowTitleBarStyle.Custom,
                     MinimumModalSize = args.Contains("--small-modal")
@@ -179,14 +179,14 @@ internal sealed class WindowLab : Window
     private int _sequence;
     internal bool MinimumModalSize { get; init; }
 
-    internal WindowLab()
+    internal WindowLab(bool small = false)
     {
         Loaded += (_, _) => WindowInputTrace.Attach(this);
         Directory.CreateDirectory(Path.GetDirectoryName(_log)!);
         Title="Window 行为验证";
-        Width=760; Height=860; MinWidth=540; MinHeight=430;
+        Width=small ? 540 : 760; Height=small ? 430 : 860; MinWidth=540; MinHeight=430;
         Background = new SolidColorBrush(Color.FromRgb(0xf5,0xfa,0xfc));
-        _body = new StackPanel { Width=680, Spacing=18, Margin=new Thickness(32) };
+        _body = new StackPanel { MaxWidth=680, Spacing=18, Margin=new Thickness(32) };
         _body.Children.Add(new TextBlock { Text="macOS Window", FontSize=30, Foreground=Ink });
         _body.Children.Add(new TextBlock
         {
@@ -204,7 +204,7 @@ internal sealed class WindowLab : Window
             Padding=new Thickness(16), CornerRadius=new CornerRadius(8), Child=_status
         });
         AddButtons(("启用内容自适应", () => { WindowState=WindowState.Normal; SizeToContent=SizeToContent.WidthAndHeight; Record("自动尺寸"); }),
-            ("程序设为 840×700", () => { Width=840; Height=700; Record("程序尺寸"); }),
+            ("程序设为 840×700", () => { SizeToContent=SizeToContent.Manual; Width=840; Height=700; Record("程序尺寸"); }),
             ("窗口参与验证", ShowParticipationWindow));
         AddButtons(("托管最大化", () => WindowState=WindowState.Maximized),
             ("托管还原", () => WindowState=WindowState.Normal),
@@ -222,7 +222,12 @@ internal sealed class WindowLab : Window
             ("显示与隐藏验证", () => WindowVisibilityLab.Show(this)));
         _body.Children.Add(new TextBlock { Text="最近窗口事件", FontSize=16, Foreground=Ink });
         _body.Children.Add(_history);
-        Content=_body;
+        Content = new ScrollViewer
+        {
+            Content = _body,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
         Loaded += (_,_) => Record("显示");
         SizeChanged += (_,_) => Record("尺寸");
         StateChanged += (_,_) => Record("状态");
