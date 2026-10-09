@@ -80,6 +80,10 @@ if (args.Length == 1 && args[0].StartsWith("--window-text-navigation-case=", Str
     return WindowTextNavigationChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-tab-focus")
     return WindowTabFocusChecks.RunAll();
+if (args.Length == 1 && args[0] == "--window-input-boundaries")
+    return WindowInputBoundaryChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-input-boundary-case=", StringComparison.Ordinal))
+    return WindowInputBoundaryChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0].StartsWith("--window-tab-focus-case=", StringComparison.Ordinal))
     return WindowTabFocusChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-word-navigation")

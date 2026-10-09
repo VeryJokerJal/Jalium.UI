@@ -2,6 +2,7 @@
 
 #import <AppKit/AppKit.h>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -39,6 +40,12 @@ static void Check(bool condition, const char* message)
 
 static void CaptureEvent(const JaliumPlatformEvent* event, void* data)
 {
+    if (event->type == JALIUM_EVENT_MOUSE_WHEEL) {
+        Check((event->wheel.buttonStates & 0x80000000) != 0, "wheel publishes an available button snapshot");
+        Check((event->wheel.buttonStates & 0x1f) == (NSEvent.pressedMouseButtons & 0x1f),
+            "wheel button snapshot agrees with the current AppKit system state");
+        Check((event->wheel.buttonStates & 0x7fffffe0) == 0, "wheel masks unsupported button bits");
+    }
     static_cast<std::vector<JaliumPlatformEvent>*>(data)->push_back(*event);
 }
 
@@ -132,6 +139,8 @@ int main()
         [NSApplication.sharedApplication setActivationPolicy:NSApplicationActivationPolicyProhibited];
         TestSystemWordNavigation();
         static_assert(sizeof(JaliumPlatformEvent) == 72, "Wheel metadata must fit the existing event union");
+        static_assert(offsetof(JaliumPlatformEvent, wheel.buttonStates) == 48,
+            "Wheel button metadata must remain inside the existing 56-byte union");
         static_assert(NSEventPhaseBegan == 1 && NSEventPhaseStationary == 2 && NSEventPhaseChanged == 4 &&
             NSEventPhaseEnded == 8 && NSEventPhaseCancelled == 16 && NSEventPhaseMayBegin == 32,
             "Managed wheel phase flags must match AppKit");

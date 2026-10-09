@@ -96,13 +96,16 @@ public sealed class FocusVisualAdorner : Adorner
         Rect? visible = null;
         // The layer is outside the adorned element's subtree. Reapply its ancestor
         // clips without clipping the focus style's intentional outward border.
+        Visual child = AdornedElement;
         for (Visual? current = AdornedElement.VisualParent; current != null; current = current.VisualParent)
         {
             if (current is UIElement ancestor)
             {
                 IntersectClip(ancestor, ancestor.GetLayoutClip(), ref visible);
                 IntersectClip(ancestor, ancestor.GetChildLayoutClip(), ref visible);
+                IntersectClip(ancestor, ancestor.GetAdditionalChildLayoutClip(child), ref visible);
             }
+            child = current;
         }
         return visible is Rect bounds ? new RectangleGeometry(bounds.IsEmpty ? new Rect(0, 0, 0, 0) : bounds) : base.GetLayoutClip();
     }

@@ -450,8 +450,8 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         unsafe
         {
             // Read union data based on event type using raw pointer arithmetic.
-            // The union starts at offset 8 (after type + window pointer on 64-bit) or
-            // at the position of Data0 in NativePlatformEvent.
+            // Use Data0 rather than a hard-coded offset; on 64-bit platforms
+            // the union starts at byte 16, after type padding and the pointer.
             float* data = &nativeEvt.Data0;
             int* idata = (int*)data;
 
@@ -502,6 +502,8 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     evt.WheelHasPreciseScrollingDeltas = idata[5] != 0;
                     evt.WheelPhase = (Input.MouseWheelPhase)idata[6];
                     evt.WheelMomentumPhase = (Input.MouseWheelPhase)idata[7];
+                    evt.MouseButtons = (uint)idata[8] & 0x1f;
+                    evt.HasMouseButtonStates = ((uint)idata[8] & 0x80000000) != 0;
                     break;
 
                 case PlatformEventType.KeyDown:

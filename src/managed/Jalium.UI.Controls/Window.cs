@@ -5275,7 +5275,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
                 _inputDispatcher.HandleMouseWheel(position, evt.WheelDeltaX * 120.0, evt.WheelDeltaY * 120.0,
-                    evt.WheelHasPreciseScrollingDeltas, MouseButtonStates.AllReleased, modifiers, Environment.TickCount,
+                    evt.WheelHasPreciseScrollingDeltas, GetPlatformMouseButtons(evt), modifiers, Environment.TickCount,
                     evt.WheelPhase, evt.WheelMomentumPhase);
                 break;
             }

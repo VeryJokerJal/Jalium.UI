@@ -1678,6 +1678,9 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     event.wheel.isPrecise=native.hasPreciseScrollingDeltas;
     event.wheel.phase=static_cast<int32_t>(native.phase);
     event.wheel.momentumPhase=static_cast<int32_t>(native.momentumPhase);
+    // Wheel and momentum packets can arrive while a button is held, or after
+    // its release outside this view. Publish the current system snapshot.
+    event.wheel.buttonStates=0x80000000 | (static_cast<uint32_t>(NSEvent.pressedMouseButtons) & 0x1f);
     DispatchWindowEvent(_jaliumOwner,event);
 }
 - (void)keyDown:(NSEvent*)native {

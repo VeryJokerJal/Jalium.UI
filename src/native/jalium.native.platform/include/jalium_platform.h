@@ -312,6 +312,7 @@ typedef struct JaliumPlatformEvent {
             int32_t isPrecise;  ///< Non-zero: one notch is 48 logical pixels, with native momentum
             int32_t phase;      ///< Gesture phase flags: began=1, stationary=2, changed=4, ended=8, cancelled=16, may-begin=32
             int32_t momentumPhase; ///< Native momentum phase flags, using the same values
+            uint32_t buttonStates; ///< Bit 31 marks availability; bits 0..4 are left, right, middle, X1, X2.
         } wheel;
 
         // JALIUM_EVENT_KEY_DOWN / KEY_UP
