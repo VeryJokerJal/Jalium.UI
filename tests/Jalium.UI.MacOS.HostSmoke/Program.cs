@@ -108,6 +108,10 @@ if (args.Length == 1 && args[0] == "--window-application-menu")
     return WindowApplicationMenuChecks.RunAll();
 if (args.Length == 1 && args[0].StartsWith("--window-application-menu-case=", StringComparison.Ordinal))
     return WindowApplicationMenuChecks.RunCase(args[0]);
+if (args.Length == 1 && args[0] == "--window-application-activation")
+    return WindowApplicationActivationChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-application-activation-case=", StringComparison.Ordinal))
+    return WindowApplicationActivationChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-reopen")
     return WindowReopenChecks.RunAll();
 if (args.Length == 1 && args[0] == "--window-reopen-foreground")

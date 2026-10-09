@@ -15,25 +15,25 @@ public partial class Window
         if (backend != RenderBackend.Metal)
             return false;
 
-        return HasBackdrop(root, 0);
-
-        static bool HasBackdrop(Visual visual, int depth)
+        // A deep visible subtree still participates in retained rendering.
+        // Walk it without a recursion cutoff that could miss its backdrop.
+        var pending = new Stack<Visual>();
+        pending.Push(root);
+        while (pending.TryPop(out var visual))
         {
-            if (depth > 256)
-                return false;
             if (visual is UIElement element)
             {
                 if (element.Visibility != Visibility.Visible || element.Opacity <= 0)
-                    return false;
+                    continue;
                 if (element.BackdropEffect is { HasEffect: true })
                     return true;
                 if (element is Border { LiquidGlass: true })
                     return true;
             }
-            for (var i = 0; i < visual.InternalVisualChildrenCount; i++)
-                if (visual.InternalGetVisualChild(i) is { } child && HasBackdrop(child, depth + 1))
-                    return true;
-            return false;
+            for (var i = visual.InternalVisualChildrenCount - 1; i >= 0; i--)
+                if (visual.InternalGetVisualChild(i) is { } child)
+                    pending.Push(child);
         }
+        return false;
     }
 }
