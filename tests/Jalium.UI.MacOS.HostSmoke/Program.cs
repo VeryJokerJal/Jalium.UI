@@ -11,6 +11,11 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-file-dialogs")
+    return WindowFileDialogChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-file-dialog-case=", StringComparison.Ordinal))
+    return WindowFileDialogChecks.RunCase(args[0]);
+
 if (args.Length == 1 && args[0] == "--text-font-transforms")
     return TextAccessibilityStyleChecks.RunFontTransforms();
 if (args.Length == 1 && args[0].StartsWith("--text-font-transform-case=", StringComparison.Ordinal))

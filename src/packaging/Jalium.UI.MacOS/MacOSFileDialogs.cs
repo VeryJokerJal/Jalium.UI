@@ -32,13 +32,18 @@ internal static class MacOSFileDialogs
         }
 
         var filters = new FileDialogFilterSelection(options.Filters, options.FilterIndex, options.DefaultExtension);
+        using var panelDelegate = new FilePanelDelegate(filters, options.AddExtension);
+        panel.Delegate = panelDelegate;
         using var selector = new NSPopUpButton(new CoreGraphics.CGRect(0, 0, 280, 26), false);
         void ApplyFilter()
         {
-            var types = filters.Extensions.Select(extension => UTType.CreateFromExtension(extension))
+            // A save panel appends its first content type even with AllowsOtherFileTypes.
+            // The delegate owns AddExtension and runs before AppKit's overwrite prompt.
+            UTType[] types = options.Save ? [] : filters.Extensions.Select(extension => UTType.CreateFromExtension(extension))
                 .Where(type => type != null).Cast<UTType>().ToArray();
             panel.AllowedContentTypes = types;
-            panel.AllowsOtherFileTypes = types.Length == 0;
+            panel.AllowsOtherFileTypes = options.Save || types.Length == 0;
+            panel.ValidateVisibleColumns();
         }
         EventHandler changed = (_, _) =>
         {
@@ -65,17 +70,21 @@ internal static class MacOSFileDialogs
         {
             selector.Activated -= changed;
             panel.AccessoryView = null;
+            panel.Delegate = null;
         }
-        var extensions = filters.Extensions;
         var paths = panel is NSOpenPanel selectedOpen
             ? selectedOpen.Urls.Select(url => url.Path).OfType<string>().ToArray()
             : panel.Url?.Path is { } path ? new[] { path } : Array.Empty<string>();
-        if (options.Save && options.AddExtension && paths.Length == 1 && string.IsNullOrEmpty(Path.GetExtension(paths[0])))
-        {
-            var extension = options.DefaultExtension?.TrimStart('.') ?? extensions.FirstOrDefault();
-            if (!string.IsNullOrEmpty(extension)) paths[0] += "." + extension;
-        }
         return paths;
     }
 
+    private sealed class FilePanelDelegate(FileDialogFilterSelection filters, bool addExtension) : NSOpenSavePanelDelegate
+    {
+        public override string UserEnteredFilename(NSSavePanel panel, string filename, bool confirmed)
+            => confirmed ? filters.AppendExtension(filename, addExtension) : filename;
+
+        public override bool ShouldEnableUrl(NSSavePanel panel, NSUrl url)
+            => !url.IsFileUrl || url.Path is not { } path || Directory.Exists(path)
+                || filters.MatchesFileName(Path.GetFileName(path));
+    }
 }

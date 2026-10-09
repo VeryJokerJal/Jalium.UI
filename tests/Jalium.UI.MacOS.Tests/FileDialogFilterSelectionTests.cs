@@ -2,8 +2,83 @@ using Jalium.UI.MacOS;
 
 namespace Jalium.UI.Tests;
 
+[Collection("macOS Window globals")]
 public class FileDialogFilterSelectionTests
 {
+    [Theory]
+    [InlineData("txt")]
+    [InlineData(".png")]
+    public void DefaultExtensionWithoutAFilterDoesNotRestrictSelectableFiles(string extension)
+    {
+        var selection = new FileDialogFilterSelection([], 1, extension);
+        Assert.Empty(selection.Extensions);
+    }
+
+    [Theory]
+    [InlineData("*.txt", "png", "note", true, "note.txt")]
+    [InlineData("*.png;*.jpeg", "txt", "note", true, "note.png")]
+    [InlineData("*.tar.gz", "zip", "note", true, "note.tar.gz")]
+    [InlineData("*.*", ".txt", "note", true, "note.txt")]
+    [InlineData("*", " .txt ", "note", true, "note.txt")]
+    [InlineData("*.*", "", "note", true, "note")]
+    [InlineData("*.*", ".", "note", true, "note")]
+    [InlineData("*.*", "txt/other", "note", true, "note")]
+    [InlineData("*.txt", "png", "note", false, "note")]
+    [InlineData("*.txt", "png", "note.custom", true, "note.custom")]
+    [InlineData("*.txt", "png", ".profile", true, ".profile")]
+    [InlineData("*.txt", "png", "note.", true, "note.txt")]
+    [InlineData("*.txt", "png", "", true, "")]
+    [InlineData("report-*.txt", "json", "note", true, "note.json")]
+    public void SavingUsesSelectedFilterThenFallbackAndPreservesExplicitExtensions(
+        string pattern, string? fallback, string name, bool addExtension, string expected)
+    {
+        var selection = new FileDialogFilterSelection([("Files", pattern)], 1, fallback);
+        Assert.Equal(expected, selection.AppendExtension(name, addExtension));
+    }
+
+    [Theory]
+    [InlineData("txt", "note.txt")]
+    [InlineData(null, "note")]
+    [InlineData("", "note")]
+    public void SavingWithoutAFilterUsesOnlyTheDefaultExtension(string? extension, string expected)
+        => Assert.Equal(expected, new FileDialogFilterSelection([], 1, extension).AppendExtension("note", true));
+
+    [Theory]
+    [InlineData("*.tar.gz", "archive.tar.gz", true)]
+    [InlineData("*.tar.gz", "archive.gz", false)]
+    [InlineData("*.txt;*.md", "NOTE.TXT", true)]
+    [InlineData("*.txt;*.md", "note.png", false)]
+    [InlineData("report-?.txt", "report-1.txt", true)]
+    [InlineData("report-?.txt", "report-12.txt", false)]
+    [InlineData("README", "README", true)]
+    [InlineData("README", "README.txt", false)]
+    [InlineData("*.*", "README", true)]
+    [InlineData("*;*.png", "README", true)]
+    public void OpenFileMatchingRetainsCompoundExtensionsAndFileNamePatterns(string pattern, string name, bool expected)
+        => Assert.Equal(expected, new FileDialogFilterSelection([("Files", pattern)], 1, null).MatchesFileName(name));
+
+    [Fact]
+    public void ChangingFiltersUpdatesTheExtensionAndMatchingTogether()
+    {
+        var selection = new FileDialogFilterSelection([("Images", "*.png"), ("Text", "*.txt"), ("All", "*.*")], 1, "json");
+        Assert.Equal("note.png", selection.AppendExtension("note", true));
+        selection.Select(3);
+        Assert.True(selection.MatchesFileName("note.custom"));
+        Assert.Equal("note.json", selection.AppendExtension("note", true));
+        selection.Select(2);
+        Assert.False(selection.MatchesFileName("note.png"));
+        Assert.Equal("note.txt", selection.AppendExtension("note", true));
+        selection.Select(1);
+        Assert.Equal("note.png", selection.AppendExtension("note", true));
+    }
+
+    [Fact]
+    public void WildcardAndInvalidExtensionsAreNotPublishedAsNativeTypeRestrictions()
+    {
+        var selection = new FileDialogFilterSelection([("Files", "*. ;*.?;*.;*.txt;*.txt/other;*.tar.gz")], 1, null);
+        Assert.Equal(new[] { "txt", "tar.gz" }, selection.Extensions);
+    }
+
     [Fact]
     public void SwitchingFiltersUpdatesExtensionsAndOneBasedIndex()
     {
