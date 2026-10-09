@@ -285,6 +285,11 @@ static int RunNotificationLifecycleCases(int onlyCase)
                 "a subsequently attached provider node cannot resurrect a destroyed peer");
             Check(fixture.calls == after && [newChild.accessibilityLabel isEqual:@"中文🙂"],
                 "newly attached peer alone reaches the provider");
+            const int beforeRetiredSelectors = fixture.calls;
+            Check([oldChild isAccessibilitySelectorAllowed:@selector(accessibilityNotifiesWhenDestroyed)]
+                && ![oldChild isAccessibilitySelectorAllowed:@selector(accessibilityPerformPress)]
+                && fixture.calls == beforeRetiredSelectors,
+                "retired peer retains lifetime metadata and rejects actions without querying its provider");
             jalium_window_destroy(fixture.window);
             completed++;
         }
@@ -335,6 +340,10 @@ int main(int argc, const char** argv)
         Check([child.accessibilityLabel isEqual:@"中文🙂"], "UTF-16 name and surrogate pair survive ABI");
         Check(child.accessibilityParent == root && root.accessibilityParent == view.window, "accessible ancestry reaches native Window");
         Check(root.accessibilityChildren.firstObject == child, "repeated queries retain native AX identity");
+        Check([root respondsToSelector:@selector(accessibilityNotifiesWhenDestroyed)]
+            && [child respondsToSelector:@selector(accessibilityNotifiesWhenDestroyed)]
+            && [root accessibilityNotifiesWhenDestroyed] && [child accessibilityNotifiesWhenDestroyed],
+            "custom peers advertise destruction notification support to external AX clients");
         for (NSAccessibilityElement* element in @[root, child]) {
             for (NSString* name in @[@"isAccessibilitySelected", @"isAccessibilityExpanded", @"isAccessibilityDisclosed",
                 @"accessibilitySelectedChildren", @"accessibilityRows", @"accessibilitySelectedRows", @"accessibilityDisclosedRows",

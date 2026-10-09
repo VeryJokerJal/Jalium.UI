@@ -800,6 +800,7 @@ internal sealed class WindowLab : Window
     private void ShowNestedModalWindow(Window owner)
     {
         var editor = new TextBox { Text="内层模态窗口", MinHeight=42 };
+        Jalium.UI.Automation.AutomationProperties.SetName(editor, "内层模态窗口编辑器");
         var body = new StackPanel { Spacing=16, Margin=new Thickness(24) };
         body.Children.Add(new TextBlock { Text="嵌套模态与恢复", FontSize=24, Foreground=Ink });
         body.Children.Add(new TextBlock

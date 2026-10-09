@@ -173,8 +173,11 @@ static id QueryWindowAccessibilityButton(JaliumPlatformWindow* window, int32_t k
 @interface JaliumAppleAccessibilityElement : NSAccessibilityElement
 @property(nonatomic, weak) JaliumAppleAccessibilityBridge* bridge;
 @property(nonatomic) uint64_t nodeId;
+@property(nonatomic) BOOL retired;
+@property(nonatomic) BOOL postingDestruction;
 - (BOOL)info:(JaliumAccessibilityRequest*)request;
 - (BOOL)action:(int32_t)action;
+- (void)retire;
 @end
 
 static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
@@ -327,14 +330,33 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
 }
 - (void)detach {
     _callback = nullptr; _userData = nullptr;
-    for (id element in _elements.allValues)
-        NSAccessibilityPostNotification(element, NSAccessibilityUIElementDestroyedNotification);
+    NSArray* elements = _elements.allValues;
     [_elements removeAllObjects];
+    for (JaliumAppleAccessibilityElement* element in elements) [element retire];
     _view = nil;
 }
 @end
 
 @implementation JaliumAppleAccessibilityElement
+- (void)retire {
+    if (_retired) return;
+    _retired = YES;
+    _bridge = nil;
+    // AppKit resolves the unignored notification target before sending it.
+    // Keep only this proxy identifiable during that call; all provider-backed
+    // attributes/actions already reject the detached bridge.
+    _postingDestruction = YES;
+    @try {
+        NSAccessibilityPostNotification(self, NSAccessibilityUIElementDestroyedNotification);
+    } @finally {
+        _postingDestruction = NO;
+    }
+}
+- (BOOL)accessibilityNotifiesWhenDestroyed {
+    // The bridge owns each proxy until its UI node is removed and explicitly
+    // posts AXUIElementDestroyed. AppKit requires this opt-in for custom peers.
+    return YES;
+}
 - (BOOL)respondsToSelector:(SEL)selector {
     if (![super respondsToSelector:selector]) return NO;
     NSString* name = NSStringFromSelector(selector);
@@ -363,6 +385,7 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     return [_bridge query:&request];
 }
 - (BOOL)isAccessibilityElement {
+    if (_postingDestruction) return YES;
     JaliumAccessibilityRequest request{};
     return [self info:&request];
 }
@@ -653,6 +676,10 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     return [_bridge query:&request] ? [_bridge screenFrame:NSMakeRect(request.x, request.y, request.width, request.height)] : NSZeroRect;
 }
 - (BOOL)isAccessibilitySelectorAllowed:(SEL)selector {
+    // AppKit asks permission before resolving the destruction notification's
+    // target. These lifetime queries must not depend on the retired provider.
+    if (selector == @selector(accessibilityNotifiesWhenDestroyed)
+        || (_postingDestruction && selector == @selector(isAccessibilityElement))) return YES;
     JaliumAccessibilityRequest request{};
     if (![self info:&request]) return NO;
     bool enabled = (request.flags & JALIUM_AX_ENABLED) != 0;
@@ -741,8 +768,7 @@ void jalium_apple_window_notify_accessibility(JaliumPlatformWindow* window, uint
             if (!hasOriginalContent()) return;
             if (!attached && bridge.elements[key] == peer) {
                 [bridge.elements removeObjectForKey:key];
-                peer.bridge = nil;
-                NSAccessibilityPostNotification(peer, NSAccessibilityUIElementDestroyedNotification);
+                [peer retire];
                 if (!hasOriginalContent()) return;
             }
         }
