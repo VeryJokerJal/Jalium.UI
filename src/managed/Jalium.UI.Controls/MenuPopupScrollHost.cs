@@ -11,7 +11,6 @@ internal sealed class MenuPopupScrollHost : Control
 {
     private const double DefaultScrollButtonHeight = 18.0;
     private const double ScrollStepPerClick = ScrollViewer.LineScrollAmount * 2.0;
-    private const double WheelNotch = 120.0;
     private const string LineButtonStyleKey = "ScrollBarLineButtonStyle";
     private static readonly SolidColorBrush s_buttonForegroundFallback = new(Color.FromRgb(220, 220, 220));
     private static readonly SolidColorBrush s_buttonBackgroundFallback = new(Color.FromRgb(45, 45, 48));
@@ -153,20 +152,16 @@ internal sealed class MenuPopupScrollHost : Control
 
     private void OnMouseWheelHandler(object sender, Input.MouseWheelEventArgs e)
     {
-        if (!_isOverflowing || e.Delta == 0)
+        var input = new MouseWheelScrollInput(e, 0, ScrollStepPerClick, remapShift: false);
+        if (!_isOverflowing || input.Vertical == 0)
         {
             return;
         }
 
-        var notches = e.Delta / WheelNotch;
-        if (Math.Abs(notches) < double.Epsilon)
-        {
-            return;
-        }
-
-        var delta = -notches * ScrollStepPerClick;
-        _scrollViewer.ScrollToVerticalOffset(_scrollViewer.VerticalOffset + delta);
-        e.Handled = true;
+        _scrollViewer.ScrollToVerticalOffset(_scrollViewer.VerticalOffset + input.Vertical);
+        // An overflowing popup owns vertical input at either edge so it cannot move
+        // the page behind the menu. The marker also avoids its preview/bubble double scroll.
+        input.MarkHandled(e, horizontal: false, vertical: true);
     }
 
     private void ScrollBy(double delta)

@@ -41,7 +41,7 @@ public class TitleBarButton : ButtonBase
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty KindProperty =
         DependencyProperty.Register(nameof(Kind), typeof(TitleBarButtonKind), typeof(TitleBarButton),
-            new PropertyMetadata(TitleBarButtonKind.Close));
+            new PropertyMetadata(TitleBarButtonKind.Close, OnKindChanged));
 
     /// <summary>
     /// Identifies the GlyphSize dependency property.
@@ -83,6 +83,12 @@ public class TitleBarButton : ButtonBase
     public TitleBarButton()
     {
         Focusable = false;
+    }
+
+    private static void OnKindChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is TitleBarButton button && button.GetAutomationPeer() is Jalium.UI.Automation.Peers.TitleBarButtonAutomationPeer peer)
+            peer.OnKindChanged((TitleBarButtonKind)e.OldValue!);
     }
 
     private Brush ResolveHoverBackgroundBrush() =>

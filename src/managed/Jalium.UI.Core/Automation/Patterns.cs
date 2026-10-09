@@ -40,3 +40,18 @@ internal interface IAutomationTextProviderSource
 
     void ScrollIntoView(int start, int length);
 }
+
+// Optional layout capabilities: existing third-party text sources keep their
+// offset contract, while rendered editors can expose their actual visual rows.
+internal interface IAutomationTextViewSource
+{
+    int CaretIndex { get; }
+    bool CaretHasBackwardAffinity => false;
+    Rect TextViewport { get; }
+    IReadOnlyList<AutomationTextLine> GetTextLines();
+    bool TryGetInsertionIndex(Point localPoint, out int index);
+    bool ReplaceSelection(string text);
+}
+
+internal readonly record struct AutomationTextSpan(int Start, int Length);
+internal readonly record struct AutomationTextLine(int Start, int Length, Rect Bounds);

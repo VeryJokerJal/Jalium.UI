@@ -854,11 +854,15 @@ public class NumberBox : TextBoxBase, IImeSupport
         InvalidateVisual();
     }
 
-    private string FilterNumericInput(string input)
+    private string FilterNumericInput(string input, string? retainedText = null, int? insertionIndex = null)
     {
         var result = new System.Text.StringBuilder();
         var decimalSeparator = CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator[0];
         var negativeSeparator = CultureInfo.CurrentCulture.NumberFormat.NegativeSign[0];
+        retainedText ??= _text;
+        int index = insertionIndex ?? _caretIndex;
+        bool hasDecimal = retainedText.Contains(decimalSeparator) || retainedText.Contains('.');
+        bool hasSign = retainedText.StartsWith(negativeSeparator.ToString()) || retainedText.StartsWith("-", StringComparison.Ordinal);
 
         foreach (var c in input)
         {
@@ -869,17 +873,19 @@ public class NumberBox : TextBoxBase, IImeSupport
             else if (c == decimalSeparator || c == '.')
             {
                 // Only allow one decimal point
-                if (!_text.Contains(decimalSeparator) && !_text.Contains('.'))
+                if (!hasDecimal)
                 {
                     result.Append(decimalSeparator);
+                    hasDecimal = true;
                 }
             }
             else if (c == negativeSeparator || c == '-')
             {
                 // Only allow negative sign at the beginning
-                if (_caretIndex == 0 && !_text.StartsWith(negativeSeparator.ToString()) && !_text.StartsWith("-", StringComparison.Ordinal))
+                if (index == 0 && result.Length == 0 && !hasSign)
                 {
                     result.Append(negativeSeparator);
+                    hasSign = true;
                 }
             }
             else if (AcceptsExpression && (c == '+' || c == '*' || c == '/' || c == '(' || c == ')' || c == ' '))
@@ -1364,7 +1370,7 @@ public class NumberBox : TextBoxBase, IImeSupport
             return;
 
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
-        var textBeforeCaret = _text.Substring(0, Math.Min(_caretIndex, _text.Length));
+        var textBeforeCaret = _text[..Math.Clamp(_imeCompositionStart, 0, _text.Length)];
         var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - roundedHorizontalOffset);
         var textY = contentRect.Top + (contentRect.Height - lineHeight) / 2;
 
@@ -1558,6 +1564,18 @@ public class NumberBox : TextBoxBase, IImeSupport
     bool IImeSupport.DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
         => DeleteImeSurroundingTextCore(beforeUtf8ByteCount, afterUtf8ByteCount);
 
+    bool IImeSupport.TrySetImeSelection(int start, int length) => TrySetImeSelectionCore(start, length);
+
+    bool IImeSupport.TryReplaceImeText(int start, int length, string text)
+    {
+        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(_text, start, length, out start, out length))
+            return false;
+        if (text.Length == 0) return TryReplaceImeTextCore(start, length, text);
+        string filtered = FilterNumericInput(text, _text.Remove(start, length), start);
+        // Rejected input leaves both the selected text and the selection intact.
+        return filtered.Length == 0 || TryReplaceImeTextCore(start, length, filtered);
+    }
+
     /// <inheritdoc />
     public Point GetImeCaretPosition()
     {
@@ -1567,31 +1585,63 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     public Rect GetImeCaretRectangle()
     {
-        Point bottom = GetCaretScreenPosition();
+        Rect caret = _isImeComposing ? GetImeCompositionCaret(Math.Clamp(_imeCompositionCursor, 0, _imeCompositionString.Length), false) :
+            GetImeTextCaret(Math.Clamp(_caretIndex, 0, _text.Length), false);
+        return new Rect(caret.X, caret.Y, 1, caret.Height);
+    }
+
+    private Rect GetImeTextViewport()
+    {
+        if (HasContentHost)
+        {
+            Point origin = GetTextContentOrigin();
+            return new Rect(origin.X, origin.Y, _textContentSize.Width, _textContentSize.Height);
+        }
+        var input = GetDirectInputRect(new Rect(RenderSize), GetHeaderHeight(), UsesCssBoxGeometry());
+        double buttons = SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Hidden ? 0 : SpinButtonWidth;
+        return GetDirectTextRect(input, UsesCssBoxGeometry(), buttons);
+    }
+
+    private Rect GetImeTextCaret(int index, bool trailing)
+    {
+        Rect viewport = GetImeTextViewport();
         double height = Math.Max(1, Math.Round(GetLineHeight()));
-        return new Rect(bottom.X, bottom.Y - height, 1, height);
+        int end = trailing ? GraphemeClusters.NextBoundary(_text, index) : index;
+        return new Rect(Math.Round(viewport.X + MeasureTextWidth(_text[..end]) - Math.Round(_horizontalOffset)),
+            viewport.Y + (viewport.Height - height) / 2, 0, height);
+    }
+
+    private Rect GetImeCompositionCaret(int index, bool trailing)
+    {
+        Rect anchor = GetImeTextCaret(Math.Clamp(_imeCompositionStart, 0, _text.Length), false);
+        return ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, new Point(anchor.X, anchor.Y),
+            anchor.Height, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+            FontSize, 400, 0, (float)Math.Max(1, GetImeTextViewport().Width), MeasureTextWidth);
+    }
+
+    bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
+    {
+        geometry = default;
+        if (composition && !_isImeComposing) return false;
+        return ImeTextGeometry.TryGetFirstLineRange(composition ? _imeCompositionString : _text, start, length,
+            composition ? GetImeCompositionCaret : GetImeTextCaret, out geometry);
+    }
+
+    bool IImeSupport.TryGetImeCharacterIndex(Point point, bool composition, out int index)
+    {
+        index = -1;
+        if (!GetImeTextViewport().Contains(point) || (composition && !_isImeComposing)) return false;
+        Rect anchor = GetImeTextCaret(composition ? Math.Clamp(_imeCompositionStart, 0, _text.Length) : 0, false);
+        return ImeTextGeometry.TryHitTest(composition ? _imeCompositionString : _text, point,
+            new Point(anchor.X, anchor.Y), anchor.Height,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize, 400, 0,
+            (float)Math.Max(1, GetImeTextViewport().Width), MeasureTextWidth, composition, out index);
     }
 
     private Point GetCaretScreenPosition()
     {
-        var lineHeight = Math.Round(GetLineHeight());
-        var columnIndex = Math.Min(_caretIndex, _text.Length);
-        var textBeforeCaret = _text.Substring(0, columnIndex);
-
-        var textX = Padding.Left;
-        var textY = Padding.Top;
-        if (!HasContentHost)
-        {
-            var cssEdges = UsesCssBoxGeometry();
-            var inputRect = GetDirectInputRect(new Rect(RenderSize), GetHeaderHeight(), cssEdges);
-            var spinButtonWidth = SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Hidden ? 0 : SpinButtonWidth;
-            var textRect = GetDirectTextRect(inputRect, cssEdges, spinButtonWidth);
-            textX = textRect.X;
-            textY = textRect.Y + (textRect.Height - lineHeight) / 2;
-        }
-
-        var x = textX - _horizontalOffset + MeasureTextWidth(textBeforeCaret);
-        return new Point(x, textY + lineHeight);
+        Rect caret = GetImeCaretRectangle();
+        return new Point(caret.X, caret.Bottom);
     }
 
     /// <inheritdoc />
@@ -1602,9 +1652,12 @@ public class NumberBox : TextBoxBase, IImeSupport
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
 
-        if (_selectionLength > 0)
+        if (OperatingSystem.IsMacOS())
+            _imeCompositionStart = _selectionLength > 0 ? _selectionStart : _caretIndex;
+        else if (_selectionLength > 0)
         {
             DeleteSelection();
+            _imeCompositionStart = _caretIndex;
         }
 
         InvalidateVisual();

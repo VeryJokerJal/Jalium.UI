@@ -5185,12 +5185,12 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
         if (clearAnimatedValue)
         {
-            if (animation.Kind == ElementAnimationKind.Storyboard)
+            if (animation.Kind is ElementAnimationKind.Storyboard or ElementAnimationKind.Explicit)
             {
-                // Explicit Storyboard Stop/Remove and replacement restore the DP's
-                // base layer even when the running animation uses HoldEnd. HoldEnd
-                // promotes only after natural completion; it must not overwrite the
-                // base value during a controllable-clock teardown.
+                // Removing or replacing an explicit clock restores the base
+                // layer, including BeginAnimation(dp, null). HoldEnd keeps its
+                // value while the clock is attached; teardown must not rewrite
+                // a local, styled or bound base value.
                 DiscardAnimatedValue(dp);
             }
             else
@@ -5542,7 +5542,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// Creates the automation peer for this element.
     /// </summary>
     /// <returns>The automation peer, or null if no peer should be created.</returns>
-    protected virtual Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => null;
+    protected virtual Automation.Peers.AutomationPeer? OnCreateAutomationPeer() =>
+        OperatingSystem.IsMacOS() ? new Automation.Peers.MacOSFallbackAutomationPeer(this) : null;
 
     /// <summary>
     /// Gets or creates the automation peer for this element.
@@ -6918,6 +6919,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
             if (!(bool)(e.NewValue ?? false))
                 Input.KeyboardFocusRevalidation.OnSelfFocusabilityChanged(element);
+
+            if (element.GetExistingAutomationPeer() is Automation.Peers.MacOSFallbackAutomationPeer peer)
+                peer.RaiseAutomationEvent(Automation.Peers.AutomationEvents.StructureChanged);
         }
     }
 
@@ -7247,6 +7251,13 @@ public interface IWindowHost
     /// Default implementation returns 1.0 so existing hosts that don't override remain valid.
     /// </summary>
     double DpiScale => 1.0;
+
+    /// <summary>Gets the client origin in physical screen pixels, excluding native decorations.</summary>
+    bool TryGetClientOriginOnScreen(out Point screenOrigin)
+    {
+        screenOrigin = default;
+        return false;
+    }
 }
 
 /// <summary>

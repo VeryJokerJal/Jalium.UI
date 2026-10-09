@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
@@ -45,6 +46,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         MinHeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
         MaxWidthProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
         MaxHeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+        var pushSize = new PropertyChangedCallback(
+            static (d, _) => (d as Window)?.UpdatePlatformWindowSize());
+        WidthProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushSize));
+        HeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushSize));
+        // Binding, style and animation updates bypass the CLR setter. Preserve
+        // UIElement's composition metadata and forward the effective value.
+        OpacityProperty.OverrideMetadata(typeof(Window), new FrameworkPropertyMetadata(OnWindowOpacityChanged));
+        if (PlatformFactory.IsMacOS)
+            VisibilityProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(
+                Visibility.Collapsed, OnMacOSWindowVisibilityChanged, CoerceMacOSWindowVisibility));
     }
 
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
@@ -708,7 +719,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty SizeToContentProperty =
         DependencyProperty.Register(nameof(SizeToContent), typeof(SizeToContent), typeof(Window),
-            new PropertyMetadata(SizeToContent.Manual));
+            new PropertyMetadata(SizeToContent.Manual, static (d, _) => ((Window)d).InvalidateMeasure()));
 
     /// <summary>
     /// Identifies the ResizeMode dependency property.
@@ -947,8 +958,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// the existing Win32 code path directly).
     /// </summary>
     private IPlatformWindow? _platformWindow;
+    private Controls.Automation.MacOS.MacOSAccessibilityBridge? _macOSAccessibility;
     private PlatformImeContext _lastPlatformImeContext;
     private bool _hasLastPlatformImeContext;
+    private UIElement? _lastMacOSImeTarget;
+    private bool _pendingMacOSTitleBarDoubleClick;
     private ContextMenu? _fallbackSystemMenu;
 
     internal uint BeginPlatformDrag(ReadOnlySpan<NativeDragDataItem> items, uint allowedEffects) =>
@@ -977,6 +991,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (_platformWindow is NativePlatformWindow native)
             native.SetDragEffect(sessionId, effect);
+    }
+
+    internal byte[]? GetPlatformDragData(ulong sessionId, string mimeType) =>
+        _platformWindow is NativePlatformWindow native ? native.GetMacOSDragData(sessionId, mimeType) : null;
+
+    internal nint GetPlatformDragSource(ulong sessionId) =>
+        _platformWindow is NativePlatformWindow native ? native.GetMacOSDragSource(sessionId) : 0;
+
+    internal void CompletePlatformDragInput()
+    {
+        // AppKit consumes the terminating release/Escape while tracking a drag.
+        // End the owned press/capture without synthesizing a Button.Click.
+        try
+        {
+            if (Mouse.Captured is not Visual captured || ReferenceEquals(GetWindow(captured), this))
+                _inputDispatcher.HandleNativeCaptureChanged(0, Handle);
+        }
+        finally
+        {
+            // LostMouseCapture handlers may throw or move capture to another
+            // window. Always clear this source's press, preserving a new owner.
+            try { _inputDispatcher.ClearMousePressedChain(); }
+            finally
+            {
+                if (Mouse.Captured is not Visual captured || ReferenceEquals(GetWindow(captured), this))
+                    Mouse.UpdateState(Mouse.Position, UIElement.MouseDirectlyOverElement, MouseButtonStates.AllReleased);
+            }
+        }
     }
 
     /// <summary>
@@ -1264,7 +1306,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     /// <summary>
     /// Gets or sets the opacity of the window (0.0 to 1.0).
-    /// When <see cref="AllowsTransparency"/> is <c>true</c>, this controls the native window opacity.
+    /// Controls native window opacity on macOS, and on other platforms when
+    /// <see cref="AllowsTransparency"/> is <c>true</c>.
     /// </summary>
     public override double Opacity
     {
@@ -1272,14 +1315,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         set
         {
             base.Opacity = value;
-            ApplyLayeredWindowOpacity(value);
+            if (!PlatformFactory.IsMacOS)
+                ApplyLayeredWindowOpacity(value);
         }
     }
 
     /// <summary>
     /// Gets the size and location of a window before being either minimized or maximized.
     /// </summary>
-    public Rect RestoreBounds => _restoreBounds;
+    public Rect RestoreBounds
+    {
+        get
+        {
+            if (OperatingSystem.IsMacOS())
+            {
+                if (Handle == nint.Zero || _platformWindow == null) return Rect.Empty;
+                // Normal windows can be moved or tiled without ever maximizing.
+                // Query AppKit's current normal frame or saved restore frame.
+                CaptureRestoreBounds();
+            }
+            return _restoreBounds;
+        }
+    }
 
     /// <summary>
     /// Gets a collection of windows that are owned by this window.
@@ -1288,7 +1345,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     /// <summary>
     /// Gets or sets a value that indicates whether the window allows transparency.
-    /// Must be set before the window is shown.
+    /// Must be set before the window is shown on Windows. On macOS it can also
+    /// be changed while the window is open.
     /// </summary>
     /// <remarks>
     /// 设为 <c>true</c> 时窗口走 DirectComposition 渲染路径（<c>WS_EX_NOREDIRECTIONBITMAP</c>），
@@ -1316,6 +1374,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         set
         {
             if (_owner == value) return;
+            for (var ancestor = value; ancestor != null; ancestor = ancestor.Owner)
+                if (ReferenceEquals(ancestor, this))
+                    throw new ArgumentException("A window cannot own itself or one of its owners.", nameof(value));
+            if (OperatingSystem.IsMacOS() && _isModal && Handle != nint.Zero && !_nativeWindowHidden)
+                throw new InvalidOperationException("The owner of a visible dialog cannot be changed.");
             _owner?.RemoveOwnedWindow(this);
             _owner = value;
             _owner?.AddOwnedWindow(this);
@@ -1328,7 +1391,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <summary>
     /// Gets or sets the dialog result value, which is the return value of the ShowDialog method.
     /// </summary>
-    public bool? DialogResult { get; set; }
+    public bool? DialogResult
+    {
+        get => _dialogResult;
+        set
+        {
+            _dialogResult = value;
+            if (_isModal && value.HasValue) Close();
+        }
+    }
+    private bool? _dialogResult;
 
 
 
@@ -1448,6 +1520,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
         base.OnIsEnabledChanged(oldValue, newValue);
+        if (!newValue && !PlatformFactory.IsWindows) NativeDropTarget.RevokeWindow(this);
+        if (IsEnabled != newValue) return;
         if (Handle == nint.Zero)
             return;
 
@@ -1462,6 +1536,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         base.OnDataContextChanged(oldValue, newValue);
         if (TitleBar != null)
             TitleBar.DataContext = newValue;
+        if (_macOSWindowCommands != null)
+            _macOSWindowCommands.DataContext = newValue;
     }
 
     protected override void OnResourcesChanged()
@@ -1497,11 +1573,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         set
         {
             base.Visibility = value;
-            if (Handle == nint.Zero) return;
-            if (_platformWindow != null)
+            // Effective property updates, including binding and style changes,
+            // use the metadata callback on macOS.
+            if (PlatformFactory.IsMacOS) return;
+            if (Handle == nint.Zero)
             {
-                if (value == Visibility.Visible) _platformWindow.Show();
-                else _platformWindow.Hide();
+                if (value != Visibility.Visible) EndMacOSDialogOnHide();
+                return;
+            }
+            if (_platformWindow is { } platformWindow)
+            {
+                if (value == Visibility.Visible)
+                {
+                    ApplyMacOSWindowOwner(platformWindow);
+                    if (OperatingSystem.IsMacOS() &&
+                        !CanContinueMacOSDisplay(platformWindow, Visibility.Visible)) return;
+                    platformWindow.Show(ShowActivated);
+                }
+                else platformWindow.Hide();
+                if (OperatingSystem.IsMacOS() && !CanContinueMacOSDisplay(platformWindow, value)) return;
             }
             else
             {
@@ -1514,7 +1604,89 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // visibility — see UpdateRenderableRegistration.
             _nativeWindowHidden = value != Visibility.Visible;
             UpdateRenderableRegistration();
+            if (_nativeWindowHidden) EndMacOSDialogOnHide();
         }
+    }
+
+    private Visibility? _macOSVisibilityBeingUpdated;
+    private DispatcherOperation? _pendingMacOSVisibilityShow;
+
+    private static object? CoerceMacOSWindowVisibility(DependencyObject d, object? value)
+    {
+        if (value is Visibility.Visible && d is Window window &&
+            window._managedTeardownCompleted)
+            throw new InvalidOperationException("A closing or closed window cannot be shown again.");
+        return value;
+    }
+
+    private static void OnMacOSWindowVisibilityChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var window = (Window)d;
+        var visibility = (Visibility)e.NewValue!;
+        if (window._macOSVisibilityBeingUpdated == visibility) return;
+        window.ApplyMacOSWindowVisibility(visibility);
+    }
+
+    private void SetMacOSVisibilityForDisplay(Visibility visibility)
+    {
+        var previous = _macOSVisibilityBeingUpdated;
+        _macOSVisibilityBeingUpdated = visibility;
+        try { SetCurrentValue(VisibilityProperty, visibility); }
+        finally { _macOSVisibilityBeingUpdated = previous; }
+    }
+
+    private void CancelPendingMacOSVisibilityShow()
+    {
+        var pending = _pendingMacOSVisibilityShow;
+        _pendingMacOSVisibilityShow = null;
+        _ = pending?.Abort();
+    }
+
+    private void ApplyMacOSWindowVisibility(Visibility visibility)
+    {
+        CancelPendingMacOSVisibilityShow();
+        if (visibility != Visibility.Visible) NativeDropTarget.RevokeWindow(this);
+        if (base.Visibility != visibility) return;
+        if (_managedTeardownStarted || _managedTeardownCompleted) return;
+        if (visibility == Visibility.Visible)
+        {
+            if (_isClosing) return;
+            if (Handle != nint.Zero)
+            {
+                // An existing handle can belong to a startup hidden by
+                // SourceInitialized. Resume the complete display lifecycle.
+                if (!IsLoaded || _platformWindow == null) Show();
+                else
+                {
+                    var shownPlatform = _platformWindow;
+                    ApplyMacOSWindowOwner(shownPlatform);
+                    if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
+                    shownPlatform.Show(ShowActivated);
+                    if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
+                    _nativeWindowHidden = false;
+                    UpdateRenderableRegistration();
+                }
+                return;
+            }
+            var dispatcher = _dispatcher ?? Dispatcher.CurrentDispatcher;
+            _pendingMacOSVisibilityShow = dispatcher.BeginInvoke(() =>
+            {
+                _pendingMacOSVisibilityShow = null;
+                if (!_isClosing && !_managedTeardownStarted && !_managedTeardownCompleted &&
+                    base.Visibility == Visibility.Visible)
+                    Show();
+            });
+            return;
+        }
+
+        if (_platformWindow is { } platformWindow && Handle != nint.Zero)
+        {
+            platformWindow.Hide();
+            if (!CanContinueMacOSDisplay(platformWindow, visibility)) return;
+        }
+        _nativeWindowHidden = true;
+        UpdateRenderableRegistration();
+        EndMacOSDialogOnHide();
     }
 
     protected override void OnVisualChildrenChanged(Visual? visualAdded, Visual? visualRemoved)
@@ -1603,11 +1775,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _inputDispatcher = new WindowInputDispatcher(this);
         _ownedWindowCollection = new Jalium.UI.WindowCollection(() => _ownedWindows);
 
-        if (PlatformFactory.IsWindows || PlatformFactory.IsLinux)
+        if (PlatformFactory.IsWindows || PlatformFactory.IsLinux || PlatformFactory.IsMacOS)
             DragDropPlatform.EnsureInitialized();
 
         Width = 800;
         Height = 600;
+
+        if (OperatingSystem.IsMacOS())
+        {
+            FocusManager.SetIsFocusScope(this, true);
+            KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Cycle);
+        }
 
         // Create adorner layer first so it sits below the popup layer in the visual order.
         // Adorners (including focus visuals) paint above content but must remain below
@@ -1634,6 +1812,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         EnsureImageContentInvalidationHook();
         EnsureOrphanedFocusImeHook();
+        if (OperatingSystem.IsMacOS()) UpdateIsVisibleFromTree();
     }
 
     /// <summary>
@@ -1786,12 +1965,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // VisualChildrenCount compatibility field from this Window's virtual count.
         // Clear the state first so that synchronization no longer counts the title bar
         // that is being removed; otherwise callers see one phantom child afterwards.
+        titleBar.LeftWindowCommands = null;
+        titleBar.RightWindowCommands = null;
         TitleBar = null;
         RemoveVisualChild(titleBar);
     }
 
     private void ApplyTitleBarPresentation()
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            _platformWindow?.SetExtendedTitleBar(UsesExtendedMacOSTitleBar);
+            // The toolbar's bottom divider is outside the controls' content box.
+            _platformWindow?.SetTitleBarContentHeight(Math.Max(1, GetEffectiveTitleBarHeightDip() - 1));
+        }
+        UpdateMacOSWindowCommands();
         if (TitleBar == null)
         {
             return;
@@ -2137,7 +2325,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (!IsTitleBarVisible())
         {
-            return HTCLIENT;
+            return IsExtendedMacOSTitleBarCaption(new Point(x, y)) ? HTCAPTION : HTCLIENT;
         }
 
         var button = GetTitleBarButtonAtPoint(new Point(x, y), windowWidth);
@@ -2730,6 +2918,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             int count = base.VisualChildrenCount;
             if (TitleBar != null) count++;
+            if (_macOSWindowCommands != null) count++;
             count++; // AdornerLayer is always present
             count++; // OverlayLayer is always present
             return count;
@@ -2739,7 +2928,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <inheritdoc />
     protected override Visual? GetVisualChild(int index)
     {
-        // Order: ContentElement(s) → TitleBar → AdornerLayer → OverlayLayer
+        // Order: ContentElement(s) → TitleBar/commands → AdornerLayer → OverlayLayer
         // (last = rendered on top, hit-tested first). Adorners paint above content but
         // below popups so that dropdowns and context menus naturally cover focus rects.
         int baseCount = base.VisualChildrenCount;
@@ -2754,14 +2943,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (TitleBar != null)
         {
             if (extra == 0) return TitleBar;
-            if (extra == 1) return AdornerLayer;
-            if (extra == 2) return OverlayLayer;
+            extra--;
         }
-        else
+        if (_macOSWindowCommands != null)
         {
-            if (extra == 0) return AdornerLayer;
-            if (extra == 1) return OverlayLayer;
+            if (extra == 0) return _macOSWindowCommands;
+            extra--;
         }
+        if (extra == 0) return AdornerLayer;
+        if (extra == 1) return OverlayLayer;
 
         throw new ArgumentOutOfRangeException(nameof(index));
     }
@@ -2790,6 +2980,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             double effectiveTitleBarHeight = GetEffectiveTitleBarHeightDip();
             TitleBar.Measure(new Size(contentWidth, effectiveTitleBarHeight));
             titleBarHeight = GetElementHeightDip(TitleBar, effectiveTitleBarHeight);
+        }
+        if (_macOSWindowCommands != null)
+        {
+            double commandsHeight = GetEffectiveTitleBarHeightDip();
+            _macOSWindowCommands.Measure(new Size(contentWidth, commandsHeight));
+            titleBarHeight += GetElementHeightDip(_macOSWindowCommands, commandsHeight);
         }
 
         // Measure content with remaining space
@@ -2832,6 +3028,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             Rect titleBarRect = new(safeLeft, safeTop, contentWidth, titleBarHeight);
             TitleBar.Arrange(titleBarRect);
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
+        }
+
+        if (_macOSWindowCommands != null)
+        {
+            double commandsHeight = GetElementHeightDip(_macOSWindowCommands, GetEffectiveTitleBarHeightDip());
+            _macOSWindowCommands.Arrange(new Rect(safeLeft, safeTop + titleBarHeight, contentWidth, commandsHeight));
+            titleBarHeight += commandsHeight;
         }
 
         // Arrange content below title bar (offset by safe area)
@@ -2884,6 +3087,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
             throw new InvalidOperationException("A closing or closed window cannot be shown again.");
 
+        if (OperatingSystem.IsMacOS())
+        {
+            CancelPendingMacOSVisibilityShow();
+            SetMacOSVisibilityForDisplay(Visibility.Visible);
+            if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted) return;
+        }
+
+        int showGeneration = Volatile.Read(ref _renderLifecycleGeneration);
+
         using var show = StartupDiagnostics.Begin("Window.Show", blocksUiThread: true);
         bool isMainWindow = ReferenceEquals(Application.Current?.MainWindow, this);
 
@@ -2896,6 +3108,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             EnsureImplicitStyles();
         }
+        if (!CanContinueShow(showGeneration)) return;
 
         // Heal a theme switch that landed while this window was unshown. EnsureImplicitStyles
         // above only styles still-unstyled elements (ApplyImplicitStyleIfNeeded early-returns
@@ -2910,6 +3123,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             NotifyResourcesChangedFromRoot();
             _lastThemeSyncVersion = themeVersion;
         }
+        if (!CanContinueShow(showGeneration)) return;
+
+        Application.Current?.NotifyWindowShowing(this);
+        if (!CanContinueShow(showGeneration)) return;
 
         _dispatcher = Dispatcher.CurrentDispatcher;
 
@@ -2917,21 +3134,30 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // EnsureHandle (SetWindowPos for DPI / frame-change) can trigger WM_SIZE
         // which resets WindowState back to Normal.
         var desiredState = WindowState;
+        int desiredStateRequestVersion = _macOSWindowStateRequestVersion;
 
         using (StartupDiagnostics.Begin("Window.EnsureHandle", blocksUiThread: true))
         {
+            UpdateMacOSSizeToContent();
+            if (!CanContinueShow(showGeneration)) return;
             EnsureHandle();
         }
+        // SourceInitialized may close or hide the newly created window.
+        if (!CanContinueShow(showGeneration) || Handle == nint.Zero) return;
+        RefreshMacOSShowStateRequest(ref desiredState, ref desiredStateRequestVersion);
 
         SetFrameStartingSubscription(true);
 
         ApplyTitleBarPresentation();
+        if (!CanContinueShow(showGeneration)) return;
 
         // Detect monitor refresh rate and update CompositionTarget for adaptive frame rate
         UpdateRefreshRateForCurrentMonitor(force: true);
 
         // Apply startup location before showing
         ApplyWindowStartupLocation();
+        if (!CanContinueShow(showGeneration)) return;
+        RefreshMacOSShowStateRequest(ref desiredState, ref desiredStateRequestVersion);
 
         var showCmd = desiredState switch
         {
@@ -2948,6 +3174,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             try { WindowState = desiredState; }
             finally { _isSyncingWindowState = false; }
         }
+        if (!CanContinueShow(showGeneration)) return;
+        RefreshMacOSShowStateRequest(ref desiredState, ref desiredStateRequestVersion);
         // First-frame-atomic startup:
         //   1) Pre-size the swap chain to the target monitor for
         //      Maximized/FullScreen.
@@ -2987,18 +3215,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 PaintInitialBackgroundFrame();
             }
         }
+        if (!CanContinueShow(showGeneration)) return;
 
         using (StartupDiagnostics.Begin("Window.NativeShow", blocksUiThread: true))
         {
-            if (_platformWindow != null)
+            if (_platformWindow is { } platformWindow)
             {
-                _platformWindow.Show();
+                ApplyMacOSWindowOwner(platformWindow);
+                if (!CanContinueShow(showGeneration)) return;
+                if (OperatingSystem.IsMacOS()) _hasShownMacOSWindow = true;
+                platformWindow.Show(ShowActivated);
+                if (!CanContinueShow(showGeneration)) return;
+                RefreshMacOSShowStateRequest(ref desiredState, ref desiredStateRequestVersion);
                 if (desiredState != WindowState.Normal)
-                    _platformWindow.SetState(desiredState);
+                    platformWindow.SetState(desiredState);
             }
             else
             {
                 _ = ShowWindow(Handle, showCmd);
+                if (!CanContinueShow(showGeneration)) return;
                 // Fullscreen needs a second step on Win32: strip the frame + resize
                 // to cover the monitor. Done AFTER ShowWindow so the HWND has valid
                 // window rect / monitor assignment.  The pre-show background frame
@@ -3010,6 +3245,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
             }
         }
+        if (!CanContinueShow(showGeneration)) return;
         if (isMainWindow)
             StartupDiagnostics.Mark("MainWindowNativeShowReturned", blocksUiThread: true);
 
@@ -3033,6 +3269,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 initialFramePresented = TryRenderInitialFrame();
             }
         }
+        if (!CanContinueShow(showGeneration)) return;
         if (isMainWindow)
             StartupDiagnostics.Mark("MainWindowInitialRenderReturned", blocksUiThread: true);
 
@@ -3049,6 +3286,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 SetLoadedState(true);
             }
         }
+        if (!CanContinueShow(showGeneration)) return;
 
         if (!_contentRendered)
         {
@@ -3058,14 +3296,43 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 OnContentRendered(EventArgs.Empty);
             }
         }
+        if (!CanContinueShow(showGeneration)) return;
 
         using (StartupDiagnostics.Begin("Window.ShownHandlers", blocksUiThread: true))
         {
             OnShown(EventArgs.Empty);
         }
+        if (!CanContinueShow(showGeneration)) return;
 
         if (OperatingSystem.IsLinux())
             Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowCreated(this);
+    }
+
+    private bool CanContinueShow(int generation) =>
+        IsRenderLifecycleCurrent(generation) &&
+        (!OperatingSystem.IsMacOS() || base.Visibility == Visibility.Visible);
+
+    private void ApplyMacOSWindowOwner(IPlatformWindow platformWindow)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        // AppKit removes a hidden child from its parent's list. Every display
+        // entry point must bind the current modal/explicit owner again; an
+        // ordinary display clears the previous implicit dialog owner.
+        _ = platformWindow.SetOwner(OwnerForPlatformTermination?.Handle ?? nint.Zero);
+    }
+
+    private bool CanContinueMacOSDisplay(IPlatformWindow platformWindow, Visibility visibility) =>
+        Handle != nint.Zero && !IsCloseRequestedForPlatformTermination &&
+        ReferenceEquals(_platformWindow, platformWindow) && base.Visibility == visibility;
+
+    private void RefreshMacOSShowStateRequest(ref WindowState desired, ref int requestVersion)
+    {
+        if (!OperatingSystem.IsMacOS() || requestVersion == _macOSWindowStateRequestVersion) return;
+        // Native state notifications can change the property during Show.
+        // Only a new application request supersedes the captured state, so
+        // deminiaturization feedback cannot discard an initial Minimized state.
+        desired = _macOSRequestedWindowState;
+        requestVersion = _macOSWindowStateRequestVersion;
     }
 
     /// <summary>
@@ -3229,6 +3496,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     public virtual void Hide()
     {
         OnHiding(EventArgs.Empty);
+        if (OperatingSystem.IsMacOS())
+        {
+            CancelPendingMacOSVisibilityShow();
+            SetMacOSVisibilityForDisplay(Visibility.Hidden);
+            if (base.Visibility != Visibility.Hidden || _managedTeardownStarted || _managedTeardownCompleted) return;
+        }
 
         if (Handle != nint.Zero)
         {
@@ -3238,35 +3511,63 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 _ = ShowWindow(Handle, SW_HIDE);
         }
 
-        // WPF-style Hide() does not mutate Visibility, so flag the native
-        // hidden state directly and let UpdateRenderableRegistration pick it
-        // up. Otherwise the timer would keep ticking against an HWND that
-        // DWM is no longer painting.
+        // Track the native hidden state as well as the Visibility property.
+        // Other backends retain their existing Hide() property semantics.
         _nativeWindowHidden = true;
         UpdateRenderableRegistration();
+        EndMacOSDialogOnHide();
+    }
+
+    private void EndMacOSDialogOnHide()
+    {
+        if (!OperatingSystem.IsMacOS() || !_isModal) return;
+        // Hiding preserves the window for another Show/ShowDialog, but ends
+        // this modal pump so its finally block can re-enable the owner.
+        _dialogResult ??= false;
+        _isModal = false;
+        Styling.CssPresentationState.NotifyModalChange(this);
     }
 
     /// <summary>
     /// Attempts to bring the window to the foreground and activates it.
     /// </summary>
-    /// <returns><c>true</c> if the window was successfully activated.</returns>
+    /// <returns><c>true</c> if activation succeeds, or its request is accepted on macOS.</returns>
+    /// <remarks>
+    /// On macOS, a true result means the platform accepted the activation request.
+    /// The system decides whether to grant application focus. IsActive and the
+    /// Activated event report actual window activation after any transition.
+    /// </remarks>
     public virtual bool Activate()
     {
-        if (Handle == nint.Zero)
+        if (Handle == nint.Zero || _isClosing || _managedTeardownStarted || _managedTeardownCompleted)
         {
             return false;
         }
+        if (OperatingSystem.IsMacOS() && !IsEnabled) return false;
 
-        if (_platformWindow != null)
+        if (_platformWindow is { } platformWindow)
         {
-            if (WindowState == WindowState.Minimized)
-                _platformWindow.SetState(WindowState.Normal);
-            _platformWindow.Show();
+            if (OperatingSystem.IsMacOS())
+            {
+                CancelPendingMacOSVisibilityShow();
+                SetMacOSVisibilityForDisplay(Visibility.Visible);
+            }
+            if (Handle == nint.Zero || _isClosing || !ReferenceEquals(_platformWindow, platformWindow)) return false;
+            ApplyMacOSWindowOwner(platformWindow);
+            if (OperatingSystem.IsMacOS() && !CanContinueMacOSDisplay(platformWindow, Visibility.Visible)) return false;
+            if (WindowState == WindowState.Minimized && !OperatingSystem.IsMacOS())
+                platformWindow.SetState(WindowState.Normal);
+            platformWindow.Show();
+            // Key-window and focus callbacks may close the window during Show.
+            if (Handle == nint.Zero || _isClosing || !ReferenceEquals(_platformWindow, platformWindow)) return false;
+            if (OperatingSystem.IsMacOS() && !CanContinueMacOSDisplay(platformWindow, Visibility.Visible)) return false;
             // Activate() unhides the surface on the cross-platform path —
             // mirror that for the renderable-count check.
             _nativeWindowHidden = false;
             UpdateRenderableRegistration();
-            return _platformWindow.Activate();
+            bool activated = platformWindow.Activate();
+            return activated && Handle != nint.Zero && !_isClosing && ReferenceEquals(_platformWindow, platformWindow) &&
+                (!OperatingSystem.IsMacOS() || CanContinueMacOSDisplay(platformWindow, Visibility.Visible));
         }
 
         // Win32 path
@@ -3364,6 +3665,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     private bool _isModal;
+    internal bool IsModal => _isModal;
     internal bool IsModalForCss => _isModal;
     private Window? _modalOwner;
 
@@ -3372,6 +3674,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual bool? ShowDialog()
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
+                throw new InvalidOperationException("A closing or closed window cannot be shown as a dialog.");
+            if (_isModal)
+                throw new InvalidOperationException("The window is already shown as a dialog.");
+            if (Handle != nint.Zero && !_nativeWindowHidden)
+                throw new InvalidOperationException("A visible window cannot be shown as a dialog.");
+        }
         DialogResult = null;
 
         bool platformDialog = !PlatformFactory.IsWindows;
@@ -3388,12 +3699,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ownerHandle = nint.Zero;
 
         bool restorePlatformOwnerEnabled = false;
+        List<Window> macOSWindowsToEnable = [];
+        Window? previouslyActiveWindow = OperatingSystem.IsMacOS()
+            ? _windows.Values.FirstOrDefault(window => !ReferenceEquals(window, this) && window.IsActive)
+            : null;
         _modalOwner = ownerWindow;
         _isModal = true;
         Styling.CssPresentationState.NotifyModalChange(this);
         try
         {
-            if (platformDialog && ownerWindow != null)
+            if (OperatingSystem.IsMacOS())
+            {
+                DisableMacOSDialogWindows(ownerWindow, macOSWindowsToEnable);
+            }
+            else if (platformDialog && ownerWindow != null)
             {
                 restorePlatformOwnerEnabled = ownerWindow.IsEnabled;
                 if (restorePlatformOwnerEnabled)
@@ -3419,24 +3738,70 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             _isModal = false;
             Styling.CssPresentationState.NotifyModalChange(this);
 
-            if (platformDialog && ownerWindow != null)
+            try
             {
-                if (restorePlatformOwnerEnabled)
+                if (OperatingSystem.IsMacOS())
                 {
-                    ownerWindow.IsEnabled = true;
-                    _ = ownerWindow.Activate();
+                    RestoreMacOSDialogWindows(macOSWindowsToEnable, previouslyActiveWindow, ownerWindow);
+                }
+                else if (platformDialog && ownerWindow != null)
+                {
+                    if (restorePlatformOwnerEnabled)
+                    {
+                        ownerWindow.IsEnabled = true;
+                        _ = ownerWindow.Activate();
+                    }
+                }
+                else if (ownerHandle != nint.Zero)
+                {
+                    _ = EnableWindow(ownerHandle, true);
+                    _ = SetForegroundWindow(ownerHandle);
                 }
             }
-            else if (ownerHandle != nint.Zero)
+            finally
             {
-                _ = EnableWindow(ownerHandle, true);
-                _ = SetForegroundWindow(ownerHandle);
+                _modalOwner = null;
             }
-
-            _modalOwner = null;
         }
 
         return DialogResult;
+    }
+
+    private void DisableMacOSDialogWindows(Window? owner, List<Window> windowsToEnable)
+    {
+        var candidates = _windows.Values.ToList();
+        if (owner != null && !candidates.Contains(owner)) candidates.Add(owner);
+        foreach (var window in candidates)
+        {
+            if (ReferenceEquals(window, this) || !window.IsEnabled || window.IsCloseRequestedForPlatformTermination)
+                continue;
+            // Record before invoking callbacks so a failed disable still gets
+            // restored. Nested dialogs only record windows still enabled by
+            // the outer session, preserving all earlier disabled states.
+            windowsToEnable.Add(window);
+            window.IsEnabled = false;
+        }
+    }
+
+    private static void RestoreMacOSDialogWindows(List<Window> windowsToEnable, Window? previouslyActive, Window? owner)
+    {
+        Exception? failure = null;
+        foreach (var window in windowsToEnable)
+        {
+            if (window.IsCloseRequestedForPlatformTermination) continue;
+            try { window.IsEnabled = true; }
+            catch (Exception ex) { failure ??= ex; }
+        }
+        // Re-enable every surviving window even if an application's property
+        // callback fails. Restore the original active window, with the owner
+        // as a fallback when that window has gone away.
+        var activate = previouslyActive is { IsEnabled: true, IsCloseRequestedForPlatformTermination: false }
+            ? previouslyActive
+            : owner != null && windowsToEnable.Contains(owner) && owner.IsEnabled && !owner.IsCloseRequestedForPlatformTermination
+                ? owner : null;
+        try { _ = activate?.Activate(); }
+        catch (Exception ex) { failure ??= ex; }
+        if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     /// <summary>
@@ -3451,6 +3816,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _pendingTeardownNativeDestroyed;
     private bool _managedTeardownCompleted;
     private bool _isSyncingWindowState;
+    private int _macOSWindowStateRequestVersion;
+    private bool _hasShownMacOSWindow;
+    private WindowState _macOSRequestedWindowState;
     private bool _registeredAsRenderable;
     private bool _frameStartingSubscribed;
 
@@ -3464,10 +3832,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             CompositionTarget.FrameStarting -= OnFrameStarting;
     }
 
-    // Tracks whether the native HWND has been driven to a hidden state
-    // (SW_HIDE) outside the Visibility DP path. WPF-style Hide() does not
-    // mutate Visibility, so we cannot rely on the DP alone to know whether
-    // the surface is presentable.
+    // Tracks whether the native surface has been driven to a hidden state
+    // outside the Visibility DP path. The DP alone does not describe every
+    // backend's Hide() path or a native surface's presentation readiness.
     // Native windows are created hidden. Keeping this true until ShowWindow
     // prevents the global frame clock and asynchronous present owners from
     // racing the synchronous hidden first-frame render.
@@ -3522,29 +3889,61 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         bool closingCallbackCompleted = false;
         try
         {
-            OnClosing(closingArgs);
-            closingCallbackCompleted = true;
+            try
+            {
+                OnClosing(closingArgs);
+                closingCallbackCompleted = true;
+            }
+            finally
+            {
+                // Cancellation and a user callback exception both leave the original
+                // window alive. Restore its previous subscription, including the
+                // unshown case where no frame subscription ever existed.
+                if ((!closingCallbackCompleted || closingArgs.Cancel) && !_managedTeardownStarted)
+                {
+                    _isClosing = false;
+                    if (_isModal) _dialogResult = null;
+                    SetFrameStartingSubscription(wasFrameStartingSubscribed);
+                    UpdateRenderableRegistration();
+                    if (wasFrameStartingSubscribed) InvalidateWindow();
+                }
+            }
+            if (closingArgs.Cancel) return;
+
+            // Exit ShowDialog only after Closing accepted the close. A cancelled
+            // modal close must leave its nested dispatcher frame running.
+            if (OperatingSystem.IsMacOS() && _isModal) _dialogResult ??= false;
+            _isModal = false;
+            Styling.CssPresentationState.NotifyModalChange(this);
+
+            CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: false);
         }
         finally
         {
-            // Cancellation and a user callback exception both leave the original
-            // window alive. Restore its previous subscription, including the
-            // unshown case where no frame subscription ever existed.
-            if ((!closingCallbackCompleted || closingArgs.Cancel) && !_managedTeardownStarted)
-            {
-                _isClosing = false;
-                SetFrameStartingSubscription(wasFrameStartingSubscribed);
-                UpdateRenderableRegistration();
-                if (wasFrameStartingSubscribed) InvalidateWindow();
-            }
+            // A quit requested inside Closing must observe the callback's final
+            // decision, including cancellation or failure, before closing others.
+            PlatformCloseRequestCompleted?.Invoke(this, EventArgs.Empty);
         }
-        if (closingArgs.Cancel) return;
+    }
 
-        // Exit ShowDialog only after Closing accepted the close. A cancelled
-        // modal close must leave its nested dispatcher frame running.
+    internal bool IsCloseRequestedForPlatformTermination => _isClosing || _managedTeardownCompleted;
+    internal bool IsCloseDecisionPendingForPlatformTermination => _isClosing && !_managedTeardownStarted;
+    internal bool IsClosedForPlatformTermination => _managedTeardownCompleted && Handle == nint.Zero;
+    internal Window? OwnerForPlatformTermination => _owner ?? _modalOwner;
+    internal event EventHandler? PlatformTeardownCompleted;
+    internal event EventHandler? PlatformCloseRequestCompleted;
+
+    private void CloseOwnedMacOSWindow()
+    {
+        if (_managedTeardownCompleted) return;
+        // Owned windows follow their accepted owner close without another
+        // cancellable Closing event, matching the Window ownership contract.
+        _isClosing = true;
+        if (OperatingSystem.IsMacOS() && _isModal) _dialogResult ??= false;
         _isModal = false;
         Styling.CssPresentationState.NotifyModalChange(this);
-
+        SetFrameStartingSubscription(false);
+        UpdateRenderableRegistration();
         CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: false);
     }
 
@@ -3577,6 +3976,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void CompleteManagedTeardown(nint nativeHandle, bool nativeDestroyed)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            CancelPendingMacOSVisibilityShow();
+            if (!_managedTeardownStarted && !_managedTeardownCompleted)
+                SetMacOSVisibilityForDisplay(Visibility.Collapsed);
+        }
         nint effectiveNativeHandle;
         bool effectiveNativeDestroyed;
         lock (_renderLifecycleGate)
@@ -3593,6 +3998,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             _isClosing = true;
+            if (OperatingSystem.IsMacOS() && _isModal) _dialogResult ??= false;
             _isModal = false;
             if (nativeHandle != nint.Zero)
             {
@@ -3673,7 +4079,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         // Close all owned windows
         foreach (var owned in _ownedWindows.ToList())
-            owned.Close();
+        {
+            if (OperatingSystem.IsMacOS())
+            {
+                try { owned.CloseOwnedMacOSWindow(); }
+                catch (Exception ex) { Debug.WriteLine($"Owned macOS Window closing handler failed: {ex.Message}"); }
+            }
+            else owned.Close();
+        }
         _ownedWindows.Clear();
 
         // Detach from owner
@@ -3696,6 +4109,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ScheduleDeferredRenderResourceRelease(stalledRenderThread);
         }
 
+        _macOSAccessibility?.Dispose();
+        _macOSAccessibility = null;
         var managedHandle = Handle;
         Handle = nint.Zero;
 
@@ -3709,12 +4124,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         var handleToRelease = nativeHandle != nint.Zero ? nativeHandle : managedHandle;
+        if (nativeDestroyed && _platformWindow != null)
+        {
+            _platformWindow.SetEventHandler(null);
+            _platformWindow.Dispose();
+            _platformWindow = null;
+        }
         if (handleToRelease != nint.Zero)
         {
             if (PlatformFactory.IsWindows)
                 CloseNativeDropTarget(handleToRelease, nativeWindowAlive: !nativeDestroyed);
-            else if (PlatformFactory.IsLinux)
-                LinuxDropTarget.RevokeWindow(this);
+            else if (PlatformFactory.IsLinux || PlatformFactory.IsMacOS)
+                NativeDropTarget.RevokeWindow(this);
         }
 
         if (handleToRelease != nint.Zero && !nativeDestroyed)
@@ -3736,6 +4157,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // IPlatformWindow wrapper to release. Its Handle is not an HWND and
             // must never be passed to user32; managed teardown remains valid.
 
+        }
+
+        if (handleToRelease != nint.Zero)
+        {
             // Let Application decide whether to shut down based on ShutdownMode
             if (Jalium.UI.Application.Current is { } app)
             {
@@ -3751,12 +4176,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
         }
 
-        OnClosed(EventArgs.Empty);
-        SetLoadedState(false);
-
-        // Tear down the RTS background thread so it doesn't outlive the window.
-        try { _realTimeStylus?.Dispose(); }
-        catch { /* never let teardown failures escape Close */ }
+        try
+        {
+            OnClosed(EventArgs.Empty);
+            SetLoadedState(false);
+        }
+        finally
+        {
+            // A user Closed handler cannot strand AppKit's pending quit reply
+            // or leave the RTS worker running after native teardown completed.
+            try { _realTimeStylus?.Dispose(); }
+            catch { /* never let teardown failures escape Close */ }
+            PlatformTeardownCompleted?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void CompletePendingManagedTeardown()
@@ -3817,9 +4249,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         CompleteManagedTeardown(nativeHandle, nativeDestroyed: true);
     }
 
+    private static void OnWindowOpacityChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (PlatformFactory.IsMacOS && d is Window window)
+            window.ApplyLayeredWindowOpacity((double)e.NewValue!);
+    }
+
     private void ApplyLayeredWindowOpacity(double opacity)
     {
-        if (!AllowsTransparency || Handle == nint.Zero)
+        if ((!AllowsTransparency && !PlatformFactory.IsMacOS) || Handle == nint.Zero)
             return;
 
         if (_platformWindow != null)
@@ -3836,8 +4274,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (_platformWindow != null)
         {
-            // Cross-platform: capture current size as restore bounds
-            _restoreBounds = new Rect(Left, Top, Width, Height);
+            if (!_platformWindow.TryGetRestoreBounds(out int x, out int y, out int width, out int height))
+            {
+                _platformWindow.GetPosition(out x, out y);
+                width = _platformWindow.GetWidth();
+                height = _platformWindow.GetHeight();
+            }
+            _restoreBounds = new Rect(x / _dpiScale, y / _dpiScale, width / _dpiScale, height / _dpiScale);
             return;
         }
         if (Handle != nint.Zero && GetWindowRect(Handle, out RECT rect))
@@ -3932,6 +4375,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // compositor places windows); X11 honors it.
         if (_platformWindow != null)
         {
+            if (OperatingSystem.IsMacOS() && _platformWindow is NativePlatformWindow)
+            {
+                if (!_hasShownMacOSWindow)
+                    _ = _platformWindow.ApplyStartupLocation(WindowStartupLocation, (Owner ?? _modalOwner)?.Handle ?? nint.Zero);
+                return;
+            }
             switch (WindowStartupLocation)
             {
                 case WindowStartupLocation.CenterScreen:
@@ -4176,12 +4625,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _dpiScale = NativeMethods.PlatformGetSystemDpiScale();
         FrameworkElement.LayoutDpiScale = _dpiScale;
 
-        int physicalWidth = (int)(Width * _dpiScale);
-        int physicalHeight = (int)(Height * _dpiScale);
+        int physicalWidth = Math.Max(1, (int)Math.Round((double.IsFinite(Width) ? Width : 800) * _dpiScale));
+        int physicalHeight = Math.Max(1, (int)Math.Round((double.IsFinite(Height) ? Height : 600) * _dpiScale));
         int x = double.IsNaN(Left) ? -1 : (int)(Left * _dpiScale);
         int y = double.IsNaN(Top) ? -1 : (int)(Top * _dpiScale);
 
-        nint platformOwnerHandle = (_modalOwner ?? Owner)?.Handle ?? nint.Zero;
+        nint platformOwnerHandle = (PlatformFactory.IsMacOS
+            ? OwnerForPlatformTermination : _modalOwner ?? Owner)?.Handle ?? nint.Zero;
         _platformWindow = PlatformFactory.CreateWindow(
             Title ?? string.Empty, x, y, physicalWidth, physicalHeight,
             style, platformOwnerHandle);
@@ -4198,13 +4648,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _windows[Handle] = this;
 
         // Connect platform event handler for input/resize/paint routing
+        _dpiScale = Math.Max(1.0, _platformWindow.GetDpiScale());
+        FrameworkElement.LayoutDpiScale = _dpiScale;
+        _platformWindow.GetPosition(out int nativeX, out int nativeY);
+        _isSyncingPosition = true;
+        try
+        {
+            SetCurrentValue(LeftProperty, nativeX / _dpiScale);
+            SetCurrentValue(TopProperty, nativeY / _dpiScale);
+        }
+        finally { _isSyncingPosition = false; }
+
         _platformWindow.SetEventHandler(OnPlatformEvent);
+        if (PlatformFactory.IsMacOS && _platformWindow is NativePlatformWindow nativeEditingWindow)
+            nativeEditingWindow.SetMacOSEditingCommandQuery(CanExecuteMacOSEditingCommand);
         _ = _platformWindow.SetEnabled(IsEnabled);
         _ = _platformWindow.SetShowInTaskbar(ShowInTaskbar);
         if (platformOwnerHandle != nint.Zero)
             _ = _platformWindow.SetOwner(platformOwnerHandle);
-        if (AllowsTransparency)
+        if (AllowsTransparency || PlatformFactory.IsMacOS)
             _ = _platformWindow.SetOpacity(Opacity);
+        if (PlatformFactory.IsMacOS)
+            _ = _platformWindow.SetSystemBackdrop((int)SystemBackdrop);
 
         if (PlatformFactory.IsAndroid)
         {
@@ -4258,6 +4723,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         UpdatePlatformSizeConstraints();
         UpdatePlatformWindowIcon();
+
+        if (PlatformFactory.IsMacOS && _platformWindow is NativePlatformWindow native)
+            _macOSAccessibility = new Controls.Automation.MacOS.MacOSAccessibilityBridge(this, native);
 
         OnSourceInitialized(EventArgs.Empty);
     }
@@ -4422,6 +4890,107 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ToPhysical(MaxHeight, scale));
     }
 
+    private bool _isSyncingPlatformSize;
+    private bool _isUpdatingSizeToContent;
+
+    private void UpdateMacOSSizeToContent()
+    {
+        if (!OperatingSystem.IsMacOS() || SizeToContent == SizeToContent.Manual ||
+            WindowState != WindowState.Normal || _isUpdatingSizeToContent || ContentElement == null) return;
+        _isUpdatingSizeToContent = true;
+        try
+        {
+            bool autoWidth = SizeToContent is SizeToContent.Width or SizeToContent.WidthAndHeight;
+            bool autoHeight = SizeToContent is SizeToContent.Height or SizeToContent.WidthAndHeight;
+            double currentWidth = double.IsFinite(Width) ? Width : 800;
+            double currentHeight = double.IsFinite(Height) ? Height : 600;
+            double titleHeight = IsTitleBarVisible() || _macOSWindowCommands != null
+                ? GetEffectiveTitleBarHeightDip() : 0;
+            ContentElement.Measure(new Size(autoWidth ? double.PositiveInfinity : currentWidth,
+                autoHeight ? double.PositiveInfinity : Math.Max(0, currentHeight - titleHeight)));
+            Size desired = ContentElement.DesiredSize;
+            if (_macOSWindowCommands != null)
+            {
+                _macOSWindowCommands.Measure(new Size(autoWidth ? double.PositiveInfinity : currentWidth, titleHeight));
+                desired = new Size(Math.Max(desired.Width, _macOSWindowCommands.DesiredSize.Width), desired.Height);
+            }
+            _isSyncingPlatformSize = true;
+            try
+            {
+                if (autoWidth && double.IsFinite(desired.Width))
+                    SetCurrentValue(WidthProperty, Math.Clamp(desired.Width, Math.Max(1, MinWidth), Math.Max(Math.Max(1, MinWidth), MaxWidth)));
+                if (autoHeight && double.IsFinite(desired.Height))
+                    SetCurrentValue(HeightProperty, Math.Clamp(desired.Height + titleHeight, Math.Max(1, MinHeight), Math.Max(Math.Max(1, MinHeight), MaxHeight)));
+            }
+            finally { _isSyncingPlatformSize = false; }
+            UpdatePlatformWindowSize();
+        }
+        finally { _isUpdatingSizeToContent = false; }
+    }
+
+    private void UpdatePlatformWindowSize()
+    {
+        if (!OperatingSystem.IsMacOS() || _platformWindow == null ||
+            _isSyncingPlatformSize || WindowState != WindowState.Normal ||
+            !double.IsFinite(Width) || !double.IsFinite(Height)) return;
+        int width = Math.Max(1, (int)Math.Round(Math.Clamp(Width, MinWidth, Math.Max(MinWidth, MaxWidth)) * _dpiScale));
+        int height = Math.Max(1, (int)Math.Round(Math.Clamp(Height, MinHeight, Math.Max(MinHeight, MaxHeight)) * _dpiScale));
+        if (width != _platformWindow.GetWidth() || height != _platformWindow.GetHeight())
+            _platformWindow.Resize(width, height);
+    }
+
+    internal static int GetMacOSResizeEdge(Point point, Size size)
+    {
+        const double border = 6;
+        if (point.X < 0 || point.Y < 0 || point.X >= size.Width || point.Y >= size.Height) return 0;
+        int horizontal = point.X < border ? 4 : point.X >= size.Width - border ? 8 : 0;
+        int vertical = point.Y < border ? 1 : point.Y >= size.Height - border ? 2 : 0;
+        return horizontal | vertical;
+    }
+
+    private bool TryHandleMacOSWindowChrome(MouseButton button, Point point, int clickCount)
+    {
+        _pendingMacOSTitleBarDoubleClick = false;
+        if (!OperatingSystem.IsMacOS() || _platformWindow == null || button != MouseButton.Left ||
+            !IsEnabled || (TitleBarStyle != WindowTitleBarStyle.Custom && WindowStyle != WindowStyle.None && !UsesExtendedMacOSTitleBar) ||
+            OverlayLayer.HasLightDismissPopups || ActiveExternalPopups.Count > 0) return false;
+
+        if (WindowState == WindowState.Normal && ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip)
+        {
+            int edge = GetMacOSResizeEdge(point, new Size(Width, Height));
+            if (edge != 0)
+            {
+                UIElement.ForceReleaseMouseCapture();
+                if (_platformWindow.BeginResizeDrag(edge)) return true;
+            }
+        }
+        if (WindowState == WindowState.FullScreen ||
+            ComputeNcHitTestFromClientDip(point.X, point.Y, WindowState == WindowState.Maximized) != HTCAPTION)
+            return false;
+        if (clickCount == 2)
+        {
+            // Match AppKit's release-time gesture. The native side reads the
+            // user's live preference and publishes any resulting window state.
+            _pendingMacOSTitleBarDoubleClick = true;
+            return true;
+        }
+        DragMove();
+        return true;
+    }
+
+    private bool TryCompleteMacOSTitleBarDoubleClick(MouseButton button, Point point)
+    {
+        if (button != MouseButton.Left || !_pendingMacOSTitleBarDoubleClick) return false;
+        _pendingMacOSTitleBarDoubleClick = false;
+        if (IsEnabled && _platformWindow != null && WindowState != WindowState.FullScreen &&
+            point.X >= 0 && point.X < Width && point.Y >= 0 && point.Y < Height &&
+            (TitleBarStyle == WindowTitleBarStyle.Custom || WindowStyle == WindowStyle.None || UsesExtendedMacOSTitleBar) &&
+            !OverlayLayer.HasLightDismissPopups && ActiveExternalPopups.Count == 0 &&
+            ComputeNcHitTestFromClientDip(point.X, point.Y, WindowState == WindowState.Maximized) == HTCAPTION)
+            _platformWindow.PerformTitleBarDoubleClick();
+        return true;
+    }
+
     /// <summary>
     /// Handles platform events from the native platform library (Linux/Android).
     /// Maps cross-platform events to the same internal handlers used by WndProc on Windows.
@@ -4441,6 +5010,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.CompositionUpdate:
             case PlatformEventType.CompositionEnd:
             case PlatformEventType.DeleteSurroundingText:
+            case PlatformEventType.ImeTextRequest:
+            case PlatformEventType.ImeGeometryRequest:
                 OnPlatformEvent(evt);
                 break;
         }
@@ -4460,13 +5031,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     /// <summary>
-    /// Shows the Linux system menu from an input event. Keeping this in the
+    /// Shows the platform window menu from an input event. Keeping this in the
     /// mouse-up dispatch preserves the Wayland input serial required by
     /// xdg_toplevel.show_window_menu.
     /// </summary>
     private bool TryShowSystemMenuAtClient(Point clientPosition)
     {
-        if (!OperatingSystem.IsLinux() || _platformWindow == null ||
+        if ((!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) || _platformWindow == null ||
             Handle == nint.Zero || !IsSystemMenuCaptionPoint(clientPosition))
         {
             return false;
@@ -4476,18 +5047,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     /// <summary>
-    /// Shows the Linux system menu for the WPF-compatible public API, whose
+    /// Shows the platform window menu for the WPF-compatible public API, whose
     /// position is expressed in physical screen coordinates.
     /// </summary>
     internal bool TryShowSystemMenuAtScreen(Point screenLocation)
     {
-        if (!OperatingSystem.IsLinux() || _platformWindow == null ||
+        if ((!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) || _platformWindow == null ||
             Handle == nint.Zero || !HasSystemMenu)
         {
             return false;
         }
 
-        _platformWindow.GetPosition(out int originX, out int originY);
+        if (!_platformWindow.TryGetClientOrigin(out int originX, out int originY)) return false;
         double scale = _dpiScale > 0 && double.IsFinite(_dpiScale) ? _dpiScale : 1.0;
         var clientPosition = new Point(
             (screenLocation.X - originX) / scale,
@@ -4505,6 +5076,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         int physicalY = ToSystemMenuPhysicalPixel(clientPosition.Y, scale);
         if (_platformWindow.ShowSystemMenu(physicalX, physicalY))
             return true;
+        if (OperatingSystem.IsMacOS()) return false;
 
         ShowFallbackSystemMenu(clientPosition);
         return true;
@@ -4584,18 +5156,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
 
             case PlatformEventType.Destroyed:
+                _pendingMacOSTitleBarDoubleClick = false;
                 DisableLinuxImeContext(force: true);
                 if (OperatingSystem.IsLinux())
                     Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowDestroyed(this);
-                _ = _windows.Remove(Handle);
-                // External destruction (system shutdown / native teardown) may
-                // skip Close() — make sure we still pull out of the renderable
-                // count so the frame timer can wind down.
                 _isClosing = true;
-                UpdateRenderableRegistration();
+                CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: true);
                 break;
 
             case PlatformEventType.Resize:
+                if (OperatingSystem.IsMacOS() && evt.IsUserInitiatedResize)
+                    SetCurrentValue(SizeToContentProperty, SizeToContent.Manual);
                 OnSizeChanged(evt.Width, evt.Height);
                 break;
 
@@ -4603,11 +5174,27 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 Jalium.UI.Styling.CssMediaQuery.RefreshPointingDevices();
                 break;
 
+            case PlatformEventType.ScrollBarSettingsChanged:
+                MacOSScrollBarSettings.Refresh(this);
+                break;
+
             case PlatformEventType.Paint:
                 RenderFrame();
                 break;
 
+            case PlatformEventType.Activate:
             case PlatformEventType.FocusGained:
+                if (OperatingSystem.IsMacOS() && evt.Type == PlatformEventType.FocusGained)
+                {
+                    if (IsActive)
+                    {
+                        RestoreMacOSKeyboardFocus();
+                        _inputDispatcher.HandleSetFocus();
+                    }
+                    UpdateInputMethodAssociation();
+                    break;
+                }
+                if (OperatingSystem.IsMacOS()) RestoreMacOSKeyboardFocus();
                 Jalium.UI.Styling.CssMediaQuery.RefreshPointingDevices();
                 if (!IsActive)
                 {
@@ -4615,6 +5202,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     OnActivated(EventArgs.Empty);
                 }
                 Application.Current?.SetPlatformActivationState(true);
+                if (OperatingSystem.IsMacOS()) UpdateInputMethodAssociation();
                 if (OperatingSystem.IsLinux())
                 {
                     Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: true);
@@ -4622,7 +5210,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 break;
 
+            case PlatformEventType.Deactivate:
             case PlatformEventType.FocusLost:
+                _pendingMacOSTitleBarDoubleClick = false;
+                if (OperatingSystem.IsMacOS() && evt.Type == PlatformEventType.FocusLost)
+                {
+                    _inputDispatcher.ClearMousePressedChain();
+                    break;
+                }
                 DisableLinuxImeContext(force: true);
                 if (IsActive)
                 {
@@ -4632,14 +5227,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 Application.Current?.SetPlatformActivationState(false);
                 if (OperatingSystem.IsLinux())
                     Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: false);
-                _inputDispatcher.ClearMousePressedChain();
+                _inputDispatcher.HandleWindowDeactivated(nint.Zero, clearKeyboardFocus: false);
                 break;
 
             case PlatformEventType.MouseMove:
             {
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
-                _inputDispatcher.HandleMouseMove(position, MouseButtonStates.AllReleased, modifiers, Environment.TickCount);
+                _inputDispatcher.HandleMouseMove(position, GetPlatformMouseButtons(evt), modifiers, Environment.TickCount);
                 break;
             }
 
@@ -4648,7 +5243,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
                 var button = MapPlatformMouseButton(evt.Button);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
-                var buttons = MouseButtonStates.AllReleased.WithButton(button, MouseButtonState.Pressed);
+                var buttons = GetPlatformMouseButtons(evt).WithButton(button, MouseButtonState.Pressed);
+                if (TryHandleMacOSWindowChrome(button, position, evt.ClickCount))
+                    break;
                 _inputDispatcher.HandleMouseDown(button, position, buttons, modifiers, evt.ClickCount, Environment.TickCount);
                 break;
             }
@@ -4658,7 +5255,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
                 var button = MapPlatformMouseButton(evt.Button);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
-                _inputDispatcher.HandleMouseUp(button, position, MouseButtonStates.AllReleased, modifiers, Environment.TickCount);
+                if (TryCompleteMacOSTitleBarDoubleClick(button, position)) break;
+                _inputDispatcher.HandleMouseUp(button, position, GetPlatformMouseButtons(evt).WithButton(button, MouseButtonState.Released), modifiers, Environment.TickCount);
                 break;
             }
 
@@ -4666,8 +5264,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
-                int delta = (int)(evt.WheelDeltaY * 120); // Match Win32 WHEEL_DELTA
-                _inputDispatcher.HandleMouseWheel(position, delta, MouseButtonStates.AllReleased, modifiers, Environment.TickCount);
+                _inputDispatcher.HandleMouseWheel(position, evt.WheelDeltaX * 120.0, evt.WheelDeltaY * 120.0,
+                    evt.WheelHasPreciseScrollingDeltas, MouseButtonStates.AllReleased, modifiers, Environment.TickCount,
+                    evt.WheelPhase, evt.WheelMomentumPhase);
                 break;
             }
 
@@ -4676,7 +5275,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 Key key = KeyInterop.KeyFromVirtualKey(evt.KeyCode);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
                 bool isRepeat = evt.IsRepeat != 0;
-                _inputDispatcher.HandleKeyDown(key, modifiers, isRepeat, Environment.TickCount);
+                var physicalModifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
+                int timestamp = Environment.TickCount;
+                var commandTarget = OperatingSystem.IsMacOS() ? GetTextInputTarget() : null;
+                bool handled = _inputDispatcher.HandlePlatformKeyDown(key, modifiers, isRepeat, timestamp,
+                    physicalModifiers);
+                // AppKit edit actions also arrive as key events. Let custom
+                // routed commands handle them after the control's own handlers.
+                if (!handled && commandTarget != null && !_isClosing && !_managedTeardownStarted &&
+                    IsEnabled && Visibility == Visibility.Visible &&
+                    ReferenceEquals(commandTarget, GetTextInputTarget()))
+                    CommandManager.ProcessInput(commandTarget,
+                        new KeyEventArgs(UIElement.KeyDownEvent, key, modifiers, true, isRepeat, timestamp)
+                        { PhysicalModifiers = physicalModifiers });
                 break;
             }
 
@@ -4684,7 +5295,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 Key key = KeyInterop.KeyFromVirtualKey(evt.KeyCode);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
-                _inputDispatcher.HandleKeyUp(key, modifiers, Environment.TickCount);
+                _inputDispatcher.HandlePlatformKeyUp(key, modifiers, Environment.TickCount,
+                    MapPhysicalPlatformModifiers(evt.Modifiers));
                 break;
             }
 
@@ -4697,11 +5309,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             case PlatformEventType.CompositionStart:
+                if (OperatingSystem.IsMacOS() && !TryGetImeTarget(out _, out _)) break;
                 if (!InputMethod.IsComposing)
                     InputMethod.StartComposition();
                 break;
 
             case PlatformEventType.CompositionUpdate:
+                if (OperatingSystem.IsMacOS() && !TryGetImeTarget(out _, out _)) break;
                 if (!InputMethod.IsComposing)
                     InputMethod.StartComposition();
                 InputMethod.UpdateComposition(
@@ -4711,9 +5325,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.CompositionEnd:
             {
+                if (OperatingSystem.IsMacOS() && InputMethod.CurrentTarget is UIElement composingTarget &&
+                    !IsDescendantOf(composingTarget, this)) break;
                 string result = evt.CompositionText ?? string.Empty;
+                UIElement? commitTarget = null;
+                if (OperatingSystem.IsMacOS() && result.Length != 0 &&
+                    (!TryGetImeTarget(out commitTarget, out _) ||
+                     (InputMethod.IsComposing && !ReferenceEquals(InputMethod.CurrentTarget, commitTarget)))) break;
                 InputMethod.EndComposition(result.Length == 0 ? null : result);
-                if (result.Length != 0)
+                // Composition-ended callbacks may move focus. Never send the
+                // old editor's commit into the editor they just focused.
+                if (result.Length != 0 && (!OperatingSystem.IsMacOS() ||
+                    (TryGetImeTarget(out UIElement? currentTarget, out _) && ReferenceEquals(currentTarget, commitTarget))))
                     _inputDispatcher.HandleCharInput(result, Environment.TickCount);
                 break;
             }
@@ -4728,16 +5351,73 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 break;
 
+            case PlatformEventType.ImeTextRequest:
+                if (evt.ImeTextRequest is { } request &&
+                    TryGetImeTarget(out UIElement? requestTarget, out IImeSupport? textSupport))
+                {
+                    if (!textSupport!.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot requestSnapshot) ||
+                        !ImeTextEncoding.TryNormalizeUtf16Range(requestSnapshot.Text,
+                            request.Start, request.Length, out int rangeStart, out int rangeLength)) break;
+                    if (request.Replace && InputMethod.IsComposing)
+                    {
+                        InputMethod.EndComposition();
+                        // A composition callback can change focus or disable the
+                        // editor. Recheck before applying text to the old target.
+                        if (!TryGetImeTarget(out UIElement? currentTarget, out _) ||
+                            !ReferenceEquals(currentTarget, requestTarget)) break;
+                    }
+                    if (request.Replace)
+                    {
+                        var preview = new TextCompositionEventArgs(UIElement.PreviewTextInputEvent,
+                            request.Text, Environment.TickCount)
+                        { ImeReplacementRange = (rangeStart, rangeLength) };
+                        requestTarget!.RaiseEvent(preview);
+                        if (preview.Handled) request.Applied = true;
+                        else if (TryGetImeTarget(out UIElement? currentTarget, out _) &&
+                            ReferenceEquals(currentTarget, requestTarget))
+                        {
+                            var input = new TextCompositionEventArgs(UIElement.TextInputEvent,
+                                request.Text, Environment.TickCount)
+                            { ImeReplacementRange = (rangeStart, rangeLength) };
+                            requestTarget.RaiseEvent(input);
+                            request.Applied = input.Handled;
+                        }
+                    }
+                    else request.Applied = textSupport!.TrySetImeSelection(rangeStart, rangeLength);
+                    _hasLastPlatformImeContext = false;
+                    RefreshLinuxImeContext();
+                }
+                break;
+
+            case PlatformEventType.ImeGeometryRequest:
+                if (evt.ImeGeometryRequest is { } geometryRequest)
+                    HandleMacOSImeGeometryRequest(geometryRequest);
+                break;
+
             case PlatformEventType.DpiChanged:
             {
+                var oldDpi = new DpiScale(_dpiScale, _dpiScale);
                 _dpiScale = evt.DpiX / 96.0;
                 FrameworkElement.LayoutDpiScale = _dpiScale;
                 int physicalWidth = (int)(Width * _dpiScale);
                 int physicalHeight = (int)(Height * _dpiScale);
                 RenderTarget?.SetDpi((float)evt.DpiX, (float)evt.DpiY);
                 TryResizeRenderTarget(physicalWidth, physicalHeight, "DpiChanged");
+                UpdatePlatformSizeConstraints();
+                if (OperatingSystem.IsMacOS() && _platformWindow != null)
+                {
+                    _platformWindow.GetPosition(out int x, out int y);
+                    _isSyncingPosition = true;
+                    try
+                    {
+                        SetCurrentValue(LeftProperty, x / _dpiScale);
+                        SetCurrentValue(TopProperty, y / _dpiScale);
+                    }
+                    finally { _isSyncingPosition = false; }
+                }
                 RequestFullInvalidation();
                 InvalidateMeasure();
+                OnDpiChanged(new DpiChangedEventArgs(oldDpi, new DpiScale(_dpiScale, _dpiScale)));
                 break;
             }
 
@@ -4879,7 +5559,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.DragLeave:
             case PlatformEventType.Drop:
             case PlatformEventType.DragFinished:
-                LinuxDropTarget.ProcessEvent(this, evt);
+                NativeDropTarget.ProcessEvent(this, evt);
                 break;
 
             case PlatformEventType.Quit:
@@ -5066,7 +5746,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _ => MouseButton.Left,
     };
 
+    private static MouseButtonStates GetPlatformMouseButtons(PlatformEvent evt) => evt.HasMouseButtonStates
+        ? new MouseButtonStates
+        {
+            Left = (evt.MouseButtons & 1) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+            Right = (evt.MouseButtons & 2) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+            Middle = (evt.MouseButtons & 4) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+            XButton1 = (evt.MouseButtons & 8) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+            XButton2 = (evt.MouseButtons & 16) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+        }
+        : new MouseButtonStates { Left = Mouse.LeftButton, Right = Mouse.RightButton,
+            Middle = Mouse.MiddleButton, XButton1 = Mouse.XButton1, XButton2 = Mouse.XButton2 };
+
     private static ModifierKeys MapPlatformModifiers(int modifiers)
+    {
+        var result = ModifierKeys.None;
+        if ((modifiers & 0x01) != 0) result |= ModifierKeys.Shift;
+        if ((modifiers & 0x02) != 0) result |= ModifierKeys.Control;
+        if ((modifiers & 0x04) != 0) result |= ModifierKeys.Alt;
+        // Jalium's cross-platform command gestures use Control. AppKit's
+        // Command key must drive the same copy/paste/select-all gestures. When
+        // physical Control is also held, retain Meta as an additional modifier
+        // so a plain primary-command gesture cannot swallow that combination.
+        if ((modifiers & 0x08) != 0)
+            result |= OperatingSystem.IsMacOS() && (modifiers & 0x02) == 0
+                ? ModifierKeys.Control : ModifierKeys.Windows;
+        return result;
+    }
+
+    private static ModifierKeys MapPhysicalPlatformModifiers(int modifiers)
     {
         var result = ModifierKeys.None;
         if ((modifiers & 0x01) != 0) result |= ModifierKeys.Shift;
@@ -5527,6 +6235,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void ApplySystemBackdrop(WindowBackdropType backdropType)
     {
+        if (PlatformFactory.IsMacOS && _platformWindow != null)
+        {
+            if (_platformWindow.SetSystemBackdrop((int)backdropType))
+            {
+                RequestFullInvalidation();
+                InvalidateWindow();
+            }
+            return;
+        }
+
         if (Handle == nint.Zero || !PlatformFactory.IsWindows)
         {
             return; // System backdrops (Mica/Acrylic) only available on Windows
@@ -5629,6 +6347,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (_platformWindow != null)
         {
+            uint platformStyle = ComputePlatformWindowStyle(
+                WindowStyle, ResizeMode, TitleBarStyle, Topmost, AllowsTransparency);
+            if (_platformWindow.SetStyle(platformStyle))
+            {
+                UpdatePlatformSizeConstraints();
+                return;
+            }
             bool resizable = ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip;
             _ = _platformWindow.SetResizable(resizable);
 
@@ -6306,6 +7031,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (d is Window window && e.NewValue is WindowState newState)
         {
+            bool macOS = OperatingSystem.IsMacOS();
+            bool nativeStateUpdate = window._isSyncingWindowState;
+            // Consume the native-update marker for this property change only.
+            // Keep it consumed for subsequent property listeners and derived
+            // overrides too; their requests must reach the native queue.
+            if (macOS) window._isSyncingWindowState = false;
+            if (macOS && !nativeStateUpdate)
+            {
+                unchecked { window._macOSWindowStateRequestVersion++; }
+                window._macOSRequestedWindowState = newState;
+            }
             var oldState = e.OldValue is WindowState os ? os : WindowState.Normal;
 
             // Capture restore bounds when leaving Normal state
@@ -6319,7 +7055,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             // Sync the native window state when set programmatically.
             // Skip if we're already syncing from WM_SIZE to avoid infinite loop.
-            if (!window._isSyncingWindowState && window.Handle != nint.Zero)
+            if (!nativeStateUpdate && window.Handle != nint.Zero)
             {
                 if (window._platformWindow != null)
                 {
@@ -6375,9 +7111,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private static void OnWindowStyleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is Window window && window.Handle != nint.Zero)
+        if (d is Window window)
         {
-            window.UpdateWindowStyle();
+            if (window.Handle != nint.Zero) window.UpdateWindowStyle();
             window.ApplyTitleBarPresentation();
             window.InvalidateMeasure();
         }
@@ -6404,6 +7140,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (d is Window window)
         {
+            window.RemoveMacOSWindowCommands();
             window.RemoveTitleBar();
 
             if (e.NewValue is WindowTitleBarStyle windowTitleBarStyle)
@@ -6601,6 +7338,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ? window
             : null;
     }
+
+    internal static Window? TryGetActiveWindowForDialog() => _windows.Values.FirstOrDefault(window =>
+        window.IsActive && window.IsEnabled && !window._nativeWindowHidden &&
+        window.Handle != nint.Zero && !window.IsCloseRequestedForPlatformTermination);
 
     /// <summary>
     /// Snapshots the set of currently-open <see cref="Window"/> instances.
@@ -7935,8 +8676,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         var previousHeight = Height;
 
         // Convert physical pixels to DIPs for layout
-        Width = physicalWidth / _dpiScale;
-        Height = physicalHeight / _dpiScale;
+        _isSyncingPlatformSize = true;
+        try
+        {
+            SetCurrentValue(WidthProperty, physicalWidth / _dpiScale);
+            SetCurrentValue(HeightProperty, physicalHeight / _dpiScale);
+        }
+        finally { _isSyncingPlatformSize = false; }
 
         // Always use WM_SIZE client dimensions as the single source of truth.
         // This keeps layout and swapchain size stable during drag resize.
@@ -10798,7 +11544,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 supportsPartialPresentation);
             bool requiresFullReplay = !supportsPartialPresentation ||
                 (frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12) ||
-                (frameRenderTarget.Backend == RenderBackend.Vulkan && ForceFullReplayForVulkan);
+                (frameRenderTarget.Backend == RenderBackend.Vulkan && ForceFullReplayForVulkan) ||
+                RequiresFullReplayForBackdrop(frameRenderTarget.Backend, this);
             if (!requiresBackBufferConvergence)
             {
                 // Vulkan seeds every acquired image from its canonical retained
@@ -11839,7 +12586,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // 在这里预乘后：(255, 255, 255, 0) → (0, 0, 0, 0)，PREMULTIPLIED 合法值，真透明。
                 // 半透明色如 (255, 0, 0, 128) → (128, 0, 0, 128)，与 swap chain 期望一致。
                 var a = c.A / 255f;
-                renderTarget.Clear(c.R / 255f * a, c.G / 255f * a, c.B / 255f * a, a);
+                // Metal converts straight RGBA to premultiplied pixels itself.
+                // Multiplying here as well would darken translucent backgrounds.
+                var rgbScale = renderTarget.Backend == RenderBackend.Metal ? 1f : a;
+                renderTarget.Clear(c.R / 255f * rgbScale, c.G / 255f * rgbScale, c.B / 255f * rgbScale, a);
             }
             else if (SystemBackdrop != WindowBackdropType.None || AllowsTransparency)
             {
@@ -11886,11 +12636,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // 否则 Colors.Transparent = (255,255,255,0) 这种 WPF 历史"透明白"被 DWM
                     // 渲染成不透明白色。同 ClearBackground 全屏路径，跟着预乘。
                     var a = solidPartial.Color.A / 255f;
+                    var rgbScale = renderTarget.Backend == RenderBackend.Metal ? 1f : a;
                     var context = ResolveRenderTargetContext(renderTarget);
                     using var brush = context.CreateSolidBrush(
-                        solidPartial.Color.R / 255f * a,
-                        solidPartial.Color.G / 255f * a,
-                        solidPartial.Color.B / 255f * a,
+                        solidPartial.Color.R / 255f * rgbScale,
+                        solidPartial.Color.G / 255f * rgbScale,
+                        solidPartial.Color.B / 255f * rgbScale,
                         a);
                     renderTarget.FillRectangle(
                         (float)r.X, (float)r.Y,
@@ -11948,6 +12699,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private new void UpdateLayout()
     {
+        UpdateMacOSSizeToContent();
         Size availableSize = new(Width, Height);
 
         if (_isFirstLayout)
@@ -12438,12 +13190,39 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private UIElement GetKeyboardEventTarget()
     {
         var focusedElement = Keyboard.FocusedElement as UIElement;
+        if (OperatingSystem.IsMacOS() && focusedElement != null && !IsMacOSInputTargetValid(focusedElement))
+            focusedElement = null;
         var dialogRoot = ActiveContentDialog;
 
         // Keep keyboard routing inside the active modal dialog whenever focus escaped it.
         return dialogRoot != null && (focusedElement == null || !IsDescendantOf(focusedElement, dialogRoot))
             ? dialogRoot
             : focusedElement ?? this;
+    }
+
+    private void RestoreMacOSKeyboardFocus()
+    {
+        if (_isClosing || _managedTeardownStarted) return;
+        if (Keyboard.FocusedElement is UIElement current && current.Focusable && current.IsEnabled
+            && current.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(current)
+            && IsDescendantOf(current, this)) return;
+        if (FocusManager.GetFocusedElement(this) is UIElement previous && previous.Focusable
+            && previous.IsEnabled && previous.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(previous))
+        {
+            for (Visual? ancestor = previous; ancestor != null; ancestor = ancestor.VisualParent)
+            {
+                if (ancestor is UIElement element && (!element.IsEnabled || element.Visibility != Visibility.Visible))
+                    break;
+                if (ReferenceEquals(ancestor, this))
+                {
+                    // A canceled or rejected focus request must not leave the
+                    // newly activated Window routing to another window's focus.
+                    if (previous.Focus()) return;
+                    break;
+                }
+            }
+        }
+        Keyboard.ClearFocus();
     }
 
     private ContentDialog? FindContainingInPlaceDialog()
@@ -12463,6 +13242,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private UIElement? GetTextInputTarget()
     {
         var focusedElement = Keyboard.FocusedElement as UIElement;
+        if (OperatingSystem.IsMacOS() && focusedElement != null && !IsMacOSInputTargetValid(focusedElement))
+            focusedElement = null;
         var dialogRoot = ActiveContentDialog;
 
         if (dialogRoot != null)
@@ -12474,6 +13255,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         return focusedElement;
     }
+
+    private bool IsMacOSInputTargetValid(UIElement element) =>
+        element.IsEnabled && element.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element)
+        && IsDescendantOf(element, this);
 
     private static bool IsDescendantOf(UIElement descendant, UIElement ancestor)
     {
@@ -12491,7 +13276,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private static Button? FindButton(UIElement root, Func<Button, bool> predicate)
     {
-        if (root is Button btn && predicate(btn))
+        if (root.Visibility != Visibility.Visible || Jalium.UI.Styling.CssDisplayProperties.IsExitInert(root)) return null;
+        // CSS hidden applies to the box, while a descendant can explicitly
+        // opt back into visibility. Traverse the hidden box but select only
+        // effectively visible buttons; native hidden/display:none branches
+        // remain excluded above.
+        if (root is Button btn && btn.IsVisible && predicate(btn))
             return btn;
 
         for (int i = 0; i < root.InternalVisualChildrenCount; i++)
@@ -12870,6 +13660,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void OnWindowKeyboardFocusChanged(object? sender, KeyboardFocusChangedEventArgs e)
     {
+        if (OperatingSystem.IsMacOS() && e.NewFocus is UIElement macFocus && IsDescendantOf(macFocus, this))
+            FocusManager.SetFocusedElement(this, macFocus);
         UpdateInputMethodAssociation();
 
         // Forward focus through the active platform accessibility sink. On Windows the
@@ -12893,7 +13685,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool TryGetImeTarget(out UIElement? target, out IImeSupport? imeSupport)
     {
-        target = Keyboard.FocusedElement as UIElement;
+        target = OperatingSystem.IsMacOS() ? GetTextInputTarget() : Keyboard.FocusedElement as UIElement;
         if (target is not IImeSupport support)
         {
             imeSupport = null;
@@ -12941,7 +13733,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             UpdateLinuxImeContext();
             return;
@@ -12995,7 +13787,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void UpdateImeCompositionWindow()
     {
-        if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             UpdateLinuxImeContext();
             return;
@@ -13061,13 +13853,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
 
     /// <summary>
-    /// Refreshes the native Linux text-input state after a focused editor's
+    /// Refreshes the native text-input state after a focused editor's
     /// text, selection, caret, or caret geometry changes. It is intentionally a
     /// no-op on Windows so the existing IMM32 behavior remains unchanged.
     /// </summary>
     internal void RefreshLinuxImeContext()
     {
-        if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             UpdateLinuxImeContext();
         else if (PlatformFactory.IsAndroid)
             UpdateAndroidImeContext();
@@ -13078,7 +13870,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_platformWindow == null)
             return;
 
+        if (OperatingSystem.IsMacOS())
+        {
+            UIElement? currentTarget = TryGetImeTarget(out UIElement? target, out _) ? target : null;
+            if (!ReferenceEquals(currentTarget, _lastMacOSImeTarget))
+            {
+                bool hadTarget = _lastMacOSImeTarget != null;
+                _lastMacOSImeTarget = currentTarget;
+                _hasLastPlatformImeContext = false;
+                // All editors share this NSView. Discard the old editor's native
+                // marked text before exposing a new editor's document snapshot.
+                if (hadTarget) _platformWindow.UpdateImeContext(PlatformImeContext.Disabled);
+                if (_platformWindow == null) return;
+            }
+        }
         PlatformImeContext context = CreatePlatformImeContext();
+        if (OperatingSystem.IsMacOS() && !context.Enabled && InputMethod.IsComposing &&
+            InputMethod.CurrentTarget is UIElement composingTarget && IsDescendantOf(composingTarget, this))
+            InputMethod.CancelComposition();
         if (_hasLastPlatformImeContext && context == _lastPlatformImeContext)
             return;
 
@@ -13095,9 +13904,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        if (!OperatingSystem.IsLinux() || _platformWindow == null)
+        if ((!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) || _platformWindow == null)
             return;
 
+        _lastMacOSImeTarget = null;
         PlatformImeContext context = PlatformImeContext.Disabled;
         if (!force && _hasLastPlatformImeContext && context == _lastPlatformImeContext)
             return;
@@ -13122,7 +13932,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         Rect caretRectangle = support.GetImeCaretRectangle();
         Point targetOrigin = default;
-        if (target is FrameworkElement frameworkElement)
+        if (OperatingSystem.IsMacOS())
+            caretRectangle = TransformImeRectangle(caretRectangle, target.GetRenderMatrix());
+        else if (target is FrameworkElement frameworkElement)
             targetOrigin = frameworkElement.TransformToAncestor(null);
 
         return PlatformImeContext.Create(
@@ -13130,7 +13942,56 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             surroundingText,
             caretRectangle,
             targetOrigin,
-            _dpiScale);
+            _dpiScale,
+            preserveDocumentOffsets: OperatingSystem.IsMacOS());
+    }
+
+    private void HandleMacOSImeGeometryRequest(PlatformImeGeometryRequest request)
+    {
+        if (!OperatingSystem.IsMacOS() || !IsActive || _isClosing || request.Kind is < 0 or > 3 ||
+            !TryGetImeTarget(out UIElement? target, out IImeSupport? support) || target == null || support == null)
+            return;
+        Matrix transform = target.GetRenderMatrix();
+        bool composition = request.Kind >= 2;
+        if (request.Kind is 1 or 3)
+        {
+            if (!double.IsFinite(request.Point.X) || !double.IsFinite(request.Point.Y) ||
+                !transform.TryInvert(out Matrix inverse)) return;
+            Point point = inverse.Transform(new Point(request.Point.X / _dpiScale, request.Point.Y / _dpiScale));
+            if (!support.TryGetImeCharacterIndex(point, composition, out int index) || index < 0) return;
+            request.CharacterIndex = index;
+        }
+        else
+        {
+            if (!support.TryGetImeTextRangeGeometry(request.Start, request.Length, composition, out var geometry) ||
+                geometry.Start < 0 || geometry.Length < 0 || !IsFiniteImeRectangle(geometry.Rectangle)) return;
+            Rect rectangle = TransformImeRectangle(geometry.Rectangle, transform);
+            rectangle = new Rect(rectangle.X * _dpiScale, rectangle.Y * _dpiScale,
+                rectangle.Width * _dpiScale, rectangle.Height * _dpiScale);
+            if (!IsFiniteImeRectangle(rectangle)) return;
+            request.Geometry = geometry with { Rectangle = rectangle };
+        }
+        // A custom layout query can run callbacks. Never return another editor's
+        // geometry after focus changed or the window was closed during the query.
+        request.Handled = IsActive && !_isClosing && TryGetImeTarget(out UIElement? current, out _) &&
+            ReferenceEquals(current, target);
+    }
+
+    private static bool IsFiniteImeRectangle(Rect rectangle) =>
+        double.IsFinite(rectangle.X) && double.IsFinite(rectangle.Y) &&
+        double.IsFinite(rectangle.Width) && double.IsFinite(rectangle.Height) &&
+        rectangle.Width >= 0 && rectangle.Height > 0;
+
+    private static Rect TransformImeRectangle(Rect rectangle, Matrix matrix)
+    {
+        Point a = matrix.Transform(new Point(rectangle.Left, rectangle.Top));
+        Point b = matrix.Transform(new Point(rectangle.Right, rectangle.Top));
+        Point c = matrix.Transform(new Point(rectangle.Left, rectangle.Bottom));
+        Point d = matrix.Transform(new Point(rectangle.Right, rectangle.Bottom));
+        double left = Math.Min(Math.Min(a.X, b.X), Math.Min(c.X, d.X));
+        double top = Math.Min(Math.Min(a.Y, b.Y), Math.Min(c.Y, d.Y));
+        return new Rect(left, top, Math.Max(Math.Max(a.X, b.X), Math.Max(c.X, d.X)) - left,
+            Math.Max(Math.Max(a.Y, b.Y), Math.Max(c.Y, d.Y)) - top);
     }
 
     // ========================================================================
@@ -14918,7 +15779,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         else if (_platformWindow != null)
         {
-            _platformWindow.GetPosition(out var x, out var y);
+            if (!_platformWindow.TryGetClientOrigin(out var x, out var y))
+            {
+                screenOrigin = default;
+                return false;
+            }
             screenOrigin = new Point(x, y);
             return true;
         }
@@ -14926,6 +15791,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         screenOrigin = default;
         return false;
     }
+
+    bool IWindowHost.TryGetClientOriginOnScreen(out Point screenOrigin) => TryGetClientOriginOnScreen(out screenOrigin);
 
     /// <summary>
     /// Moves this window so its origin lands on the given screen point
@@ -14974,9 +15841,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         DependencyObject d,
         DependencyPropertyChangedEventArgs e)
     {
-        if (d is Window window && e.NewValue is true)
+        if (d is not Window window) return;
+        if (e.NewValue is true)
         {
             window.RequestFullRendering(EmptyRenderingDemand.Transparency);
+        }
+        if (OperatingSystem.IsMacOS())
+        {
+            window.UpdateWindowStyle();
+            window.InvalidateVisual();
         }
     }
 

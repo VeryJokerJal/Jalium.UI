@@ -49,6 +49,7 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Automation.Provider.ISelectionProvider))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Automation.Provider.ITableProvider))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Automation.Provider.ITextProvider))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Automation.AutomationTextAttributeValues))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Automation.Provider.ITextRangeProvider))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Automation.Provider.IToggleProvider))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Automation.Provider.ITransformProvider))]

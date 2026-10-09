@@ -178,7 +178,14 @@ public sealed class Path : Shape
         // Applying it again here would double-transform the path (the symptom
         // was TreeView chevrons appearing at 45° / off-center after a 90°
         // RotateTransform).
-        dc.DrawGeometry(ResolveFillBrush(), pen, _renderedGeometry);
+        var edgeMode = EdgeMode.Unspecified;
+        for (DependencyObject? current = this; current != null; current = VisualTreeHelper.GetParent(current))
+        {
+            edgeMode = RenderOptions.GetEdgeMode(current);
+            if (edgeMode != EdgeMode.Unspecified) break;
+        }
+        if (edgeMode == EdgeMode.Unspecified) edgeMode = RenderOptions.DefaultEdgeMode;
+        dc.DrawGeometry(ResolveFillBrush(), pen, _renderedGeometry, edgeMode);
     }
 
     private Pen? GetOrCreatePen()
@@ -397,6 +404,7 @@ public sealed class Path : Shape
 
             foreach (var segment in figure.Segments)
             {
+                var countBefore = newFigure.Segments.Count;
                 switch (segment)
                 {
                     case LineSegment line:
@@ -433,19 +441,42 @@ public sealed class Path : Shape
                     }
                     case ArcSegment arc:
                     {
-                        // Path's stretch matrix is always pure scale+translate
-                        // (no rotation/skew component — see ArrangeOverride),
-                        // so the arc's radii just need the same scale factors
-                        // applied componentwise; rotation/flags stay valid.
-                        var arcSize = identity
-                            ? arc.Size
-                            : new Size(arc.Size.Width * bake.M11, arc.Size.Height * bake.M22);
+                        // Transform the ellipse's two axes, then diagonalize its
+                        // covariance. Scaling radii alone is incorrect for a
+                        // rotated ellipse under nonuniform stretch or skew.
+                        var arcSize = arc.Size;
+                        var rotation = arc.RotationAngle;
+                        var sweep = arc.SweepDirection;
+                        if (!identity)
+                        {
+                            var angle = rotation * Math.PI / 180;
+                            var ux = arcSize.Width * Math.Cos(angle);
+                            var uy = arcSize.Width * Math.Sin(angle);
+                            var vx = -arcSize.Height * Math.Sin(angle);
+                            var vy = arcSize.Height * Math.Cos(angle);
+                            var ax = ux * bake.M11 + uy * bake.M21;
+                            var ay = ux * bake.M12 + uy * bake.M22;
+                            var bx = vx * bake.M11 + vy * bake.M21;
+                            var by = vx * bake.M12 + vy * bake.M22;
+                            var xx = ax * ax + bx * bx;
+                            var yy = ay * ay + by * by;
+                            var xy = ax * ay + bx * by;
+                            var delta = Math.Sqrt((xx - yy) * (xx - yy) + 4 * xy * xy);
+                            arcSize = new Size(Math.Sqrt(Math.Max(0, (xx + yy + delta) / 2)),
+                                Math.Sqrt(Math.Max(0, (xx + yy - delta) / 2)));
+                            rotation = Math.Atan2(2 * xy, xx - yy) * 90 / Math.PI;
+                            if (bake.M11 * bake.M22 - bake.M12 * bake.M21 < 0)
+                                sweep = sweep == SweepDirection.Clockwise
+                                    ? SweepDirection.Counterclockwise : SweepDirection.Clockwise;
+                        }
                         newFigure.Segments.Add(new ArcSegment(
-                            T(arc.Point), arcSize, arc.RotationAngle,
-                            arc.IsLargeArc, arc.SweepDirection, arc.IsStroked));
+                            T(arc.Point), arcSize, rotation,
+                            arc.IsLargeArc, sweep, arc.IsStroked));
                         break;
                     }
                 }
+                if (newFigure.Segments.Count > countBefore)
+                    newFigure.Segments[^1].IsSmoothJoin = segment.IsSmoothJoin;
             }
 
             clone.Figures.Add(newFigure);
@@ -490,8 +521,12 @@ public sealed class Path : Shape
             {
                 PathGeometry pg => pg,
                 StreamGeometry sg => sg.GetPathGeometry(),
+                RectangleGeometry rectangle => rectangle.GetPathGeometry(),
+                EllipseGeometry ellipse => ellipse.GetPathGeometry(),
                 _ => geometry.GetFlattenedPathGeometry()
             };
+            if (geometry is LineGeometry && path._definingGeometry is { } linePath)
+                linePath.Transform = geometry.Transform;
         }
 
         path._renderedGeometry = null;

@@ -34,9 +34,13 @@ namespace jalium {
 //  2) PathGeometryCache scaleBucket — see ScaleBucketFromMaxScale below.
 inline float MaxScaleFromMatrix(float m11, float m12,
                                 float m21, float m22) noexcept {
-    float r0 = std::sqrt(m11 * m11 + m12 * m12);
-    float r1 = std::sqrt(m21 * m21 + m22 * m22);
-    return (std::max)(r0, r1);
+    // Largest singular value, rather than the largest column norm. The latter
+    // underestimates shear and leaves a rotated/skewed curve under-tessellated.
+    const double a = double(m11) * m11 + double(m12) * m12;
+    const double b = double(m21) * m21 + double(m22) * m22;
+    const double c = double(m11) * m21 + double(m12) * m22;
+    return static_cast<float>(std::sqrt(0.5 *
+        (a + b + std::hypot(a - b, 2.0 * c))));
 }
 
 inline float MaxScaleFromTransform(const EngineTransform& t) noexcept {

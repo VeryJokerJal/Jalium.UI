@@ -36,6 +36,11 @@ internal static class DialogOwnerResolver
             return explicitOwner;
         }
 
+        if (OperatingSystem.IsMacOS() && Window.TryGetActiveWindowForDialog() is { } activeWindow)
+        {
+            return activeWindow;
+        }
+
         var ownerHandle = Resolve();
         if (ownerHandle != nint.Zero && Window.TryGetOpenWindow(ownerHandle) is { } openWindow)
         {

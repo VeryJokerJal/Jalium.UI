@@ -6,6 +6,36 @@ namespace Jalium.UI.Tests;
 public class ShaderEffectTests
 {
     [Fact]
+    public void InvalidShaderRender_ReportsOnceAndResetsWhenShaderChangesOrRecovers()
+    {
+        var shader = new PixelShader { SourceHlsl = "invalid HLSL" };
+        var report = typeof(PixelShader).GetMethod("ReportRenderResult", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(report);
+        var reports = 0;
+        EventHandler handler = (_, _) => reports++;
+        PixelShader.InvalidPixelShaderEncountered += handler;
+        try
+        {
+            report.Invoke(shader, [false]);
+            report.Invoke(shader, [false]);
+            Assert.Equal(1, reports);
+            shader.SourceHlsl = "another invalid shader";
+            report.Invoke(shader, [false]);
+            Assert.Equal(2, reports);
+            report.Invoke(shader, [true]);
+            report.Invoke(shader, [false]);
+            Assert.Equal(3, reports);
+            shader.SetStreamSource(new MemoryStream([0, 3, 0, 0]));
+            report.Invoke(shader, [false]);
+            Assert.Equal(4, reports);
+        }
+        finally
+        {
+            PixelShader.InvalidPixelShaderEncountered -= handler;
+        }
+    }
+
+    [Fact]
     public void BuildConstantBuffer_WithSparseRegisters_FillsMissingSlotsWithZero()
     {
         var effect = new TestShaderEffect

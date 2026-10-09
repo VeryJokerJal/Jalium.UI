@@ -42,6 +42,14 @@ if(UNIX AND NOT APPLE)
     set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
 endif()
 
+# macOS dylibs are copied into app bundles and NuGet outputs. Resolve sibling
+# dependencies there instead of retaining the build checkout's absolute RPATH.
+if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
+    set(CMAKE_INSTALL_RPATH "@loader_path")
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH OFF)
+endif()
+
 # MSVC reads source files using the host ANSI code page (e.g. 936/GBK on a
 # Chinese Windows install) unless told otherwise. Every source/header here is
 # stored as UTF-8 (Chinese comments included), so without this flag any file

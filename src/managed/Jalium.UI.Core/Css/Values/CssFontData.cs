@@ -12,21 +12,32 @@ internal static partial class CssFontData
     private const uint NameTag = 0x6e616d65, HeadTag = 0x68656164;
     private sealed record Table(uint Tag, byte[] Bytes);
 
-    internal static bool TryPrepare(byte[] source, string family, out byte[] prepared, string? postScriptName = null)
+    internal static bool TryPrepare(byte[] source, string family, out byte[] prepared, string? postScriptName = null,
+        bool preserveNames = false)
     {
         prepared = [];
         try
         {
             if (source.Length is < 12 or > MaximumBytes) return false;
             var flavor = U32(source, 0);
+            var collection = flavor == 0x74746366;
             List<Table>? tables;
             if (flavor == 0x774f4646) tables = postScriptName is null ? Woff(source, out flavor) : null;
             else if (flavor == 0x774f4632) tables = Woff2(source, out flavor, postScriptName);
             else tables = Sfnt(source, ref flavor, postScriptName);
             if (tables is null || flavor is not (0x00010000 or 0x4f54544f or 0x74727565)) return false;
+            if (preserveNames && collection && postScriptName is null)
+            {
+                prepared = (byte[])source.Clone();
+                return true;
+            }
             var names = tables.FindIndex(t => t.Tag == NameTag);
-            if (names < 0 || !Rename(tables[names].Bytes, family, out var renamed)) return false;
-            tables[names] = new(NameTag, renamed);
+            if (names < 0) return false;
+            if (!preserveNames)
+            {
+                if (!Rename(tables[names].Bytes, family, out var renamed)) return false;
+                tables[names] = new(NameTag, renamed);
+            }
             prepared = Assemble(flavor, tables);
             return true;
         }

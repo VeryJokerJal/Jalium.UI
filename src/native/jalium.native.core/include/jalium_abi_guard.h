@@ -12,6 +12,9 @@ namespace jalium {
 // per-element offset in a backend.
 inline constexpr uint32_t kMaxEncodedBitmapBytes = 512u * 1024u * 1024u;
 inline constexpr uint32_t kMaxGradientStopCount = 64u * 1024u;
+inline constexpr uint32_t kMaxFontFallbackCount = 4096u;
+inline constexpr uint32_t kMaxFontUnicodeRangeCount = 65536u;
+inline constexpr uint32_t kMaxFontCharacterCount = 65536u;
 inline constexpr uint32_t kMaxEllipseBatchCount = 1024u * 1024u;
 inline constexpr uint32_t kMaxPathFloatCount = 16u * 1024u * 1024u;
 inline constexpr uint32_t kMaxDashFloatCount = 1024u * 1024u;

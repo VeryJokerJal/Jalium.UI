@@ -1245,6 +1245,26 @@ protected:
     ~PathClipProvider() = default;
 };
 
+class StrokePathClipProvider {
+public:
+    virtual JaliumResult PushStrokePathClip(float startX, float startY,
+        const float* commands, uint32_t commandLength, float width, bool closed,
+        int32_t join, float miter, int32_t cap, const float* dash, uint32_t dashCount,
+        float phase, int32_t edgeMode) = 0;
+protected:
+    ~StrokePathClipProvider() = default;
+};
+
+/// Optional element blur kernel extension. 0 is Gaussian, 1 is Box.
+/// Keeping it outside RenderTarget preserves the established backend vtable.
+class BlurKernelProvider {
+public:
+    virtual JaliumResult DrawBlurEffectWithKernel(float x, float y, float w, float h,
+        float radius, int32_t kernelType, float uvOffsetX, float uvOffsetY) = 0;
+protected:
+    ~BlurKernelProvider() = default;
+};
+
 /// Optional effect-contour extension. Keeping it outside RenderTarget preserves the
 /// established backend vtable for native payloads compiled before two-axis shadows.
 class EllipticalEffectProvider {
@@ -1343,6 +1363,14 @@ protected:
     ~CssTextShadowProvider() = default;
 };
 
+/// Optional diagnostic for the most recent custom pixel-shader draw.
+class ShaderEffectStatusProvider {
+public:
+    virtual JaliumResult GetLastShaderEffectResult() const = 0;
+protected:
+    ~ShaderEffectStatusProvider() = default;
+};
+
 /// Optional ordered color-matrix filter chain. Each stage receives the prior
 /// stage's clamped straight RGBA result. Matrices use four coefficient rows
 /// followed by one offset row, twenty floats per stage.
@@ -1404,6 +1432,104 @@ public:
     virtual JaliumResult GetFontMathConstants(JaliumFontMathConstants* constants) = 0;
 protected:
     ~FontMathConstantsProvider() = default;
+};
+
+// Optional capability: existing TextFormat implementations keep their ABI.
+class TextRangeMetricsProvider {
+public:
+    virtual JaliumResult HitTestTextRange(const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight, uint32_t textPosition, uint32_t length,
+        JaliumTextRangeMetrics* result) = 0;
+protected:
+    ~TextRangeMetricsProvider() = default;
+};
+
+class TextLineMetricsProvider {
+public:
+    virtual JaliumResult GetLineMetrics(const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight, uint32_t textPosition, int32_t backwardAffinity,
+        JaliumTextLineMetrics* result) = 0;
+protected:
+    ~TextLineMetricsProvider() = default;
+};
+
+// Ordered font fallback is an optional capability, independent of TextFormat's ABI.
+class TextFontFallbackProvider {
+public:
+    virtual JaliumResult SetFontFallbacks(TextFormat* const* formats, uint32_t count) = 0;
+protected:
+    ~TextFontFallbackProvider() = default;
+};
+
+class TextFontCharacterProvider {
+public:
+    virtual JaliumResult SetUnicodeRanges(const JaliumUnicodeRange* ranges, uint32_t count, bool restricted) = 0;
+    virtual JaliumResult GetCharacterCoverage(const uint32_t* characters, uint32_t count, uint8_t* supported) const = 0;
+    virtual JaliumResult SetFontDisplay(const JaliumFontDisplayEntry* entries, uint32_t count) = 0;
+protected:
+    ~TextFontCharacterProvider() = default;
+};
+
+// Width-aware creation is additive; legacy backend and text-format vtables stay intact.
+class TextFormatWidthFactory {
+public:
+    virtual TextFormat* CreateTextFormatWithWidth(const wchar_t* family, float size,
+        int32_t weight, int32_t style, float widthPercentage) = 0;
+protected:
+    ~TextFormatWidthFactory() = default;
+};
+
+// Separate capabilities keep legacy TextFormat and RenderTarget vtables intact.
+class TextParagraph {
+public:
+    virtual ~TextParagraph() = default;
+    virtual uint32_t LineCount() const = 0;
+    virtual JaliumResult GetLine(uint32_t index, JaliumParagraphLineMetrics* result) const = 0;
+    virtual JaliumResult GetFragments(uint32_t line, JaliumTextFragmentMetrics* results,
+        uint32_t capacity, uint32_t* count) const = 0;
+    virtual JaliumResult GetCaret(uint32_t line, uint32_t position, bool backward,
+        JaliumParagraphCaret* result) const = 0;
+    virtual JaliumResult HitTest(uint32_t line, float x, JaliumParagraphCaret* result) const = 0;
+    virtual JaliumResult GetSelection(uint32_t line, uint32_t start, uint32_t length,
+        JaliumTextRangeMetrics* results, uint32_t capacity, uint32_t* count) const = 0;
+};
+
+class TextParagraphProvider {
+public:
+    virtual TextParagraph* CreateParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount, float width, float minLineHeight,
+        int32_t alignment, int32_t direction) = 0;
+protected:
+    ~TextParagraphProvider() = default;
+};
+
+// Optional creation capability: leave the original provider vtable unchanged.
+class TextParagraphWrappingProvider {
+public:
+    virtual TextParagraph* CreateParagraphWithWrapping(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount, float width, float minLineHeight,
+        int32_t alignment, int32_t direction, int32_t wrapping) = 0;
+protected:
+    ~TextParagraphWrappingProvider() = default;
+};
+
+// Optional capability: keep the existing paragraph vtable ABI unchanged.
+class TextParagraphNavigationProvider {
+public:
+    virtual JaliumResult NavigateWord(TextParagraph* const* paragraphs, const uint32_t* offsets,
+        uint32_t count, const uint16_t* text, uint32_t length, uint32_t position,
+        uint32_t selectionStart, uint32_t selectionLength, int32_t direction,
+        bool backwardAffinity, JaliumParagraphCaret* result) const = 0;
+protected:
+    ~TextParagraphNavigationProvider() = default;
+};
+
+class TextParagraphRenderProvider {
+public:
+    virtual void RenderParagraphLine(TextParagraph* paragraph, uint32_t line,
+        float x, float y, float opacity) = 0;
+protected:
+    ~TextParagraphRenderProvider() = default;
 };
 
 class TextFormat {

@@ -1196,6 +1196,13 @@ public sealed class RenderContext : IDisposable
         return new NativeTextFormat(this, fontFamily, fontSize, fontWeight, fontStyle);
     }
 
+    /// <summary>Creates a format with a design width percentage (100 = normal).</summary>
+    public NativeTextFormat CreateTextFormat(string fontFamily, float fontSize, int fontWeight, int fontStyle, float widthPercentage)
+    {
+        ThrowIfDisposed();
+        return new NativeTextFormat(this, fontFamily, fontSize, fontWeight, fontStyle, widthPercentage);
+    }
+
     /// <summary>
     /// Creates a bitmap from encoded image data (PNG, JPEG, etc.).
     /// </summary>

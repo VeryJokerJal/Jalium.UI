@@ -91,6 +91,43 @@ public sealed class FocusVisualAdorner : Adorner
         return finalSize;
     }
 
+    internal override Geometry? GetLayoutClip()
+    {
+        Rect? visible = null;
+        // The layer is outside the adorned element's subtree. Reapply its ancestor
+        // clips without clipping the focus style's intentional outward border.
+        for (Visual? current = AdornedElement.VisualParent; current != null; current = current.VisualParent)
+        {
+            if (current is UIElement ancestor)
+            {
+                IntersectClip(ancestor, ancestor.GetLayoutClip(), ref visible);
+                IntersectClip(ancestor, ancestor.GetChildLayoutClip(), ref visible);
+            }
+        }
+        return visible is Rect bounds ? new RectangleGeometry(bounds.IsEmpty ? new Rect(0, 0, 0, 0) : bounds) : base.GetLayoutClip();
+    }
+
+    private void IntersectClip(UIElement ancestor, Geometry? geometry, ref Rect? visible)
+    {
+        if (geometry == null) return;
+        var bounds = geometry.Bounds;
+        if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            visible = new Rect(0, 0, 0, 0);
+            return;
+        }
+        var topLeft = ancestor.TranslatePoint(new Point(bounds.Left, bounds.Top), this);
+        var topRight = ancestor.TranslatePoint(new Point(bounds.Right, bounds.Top), this);
+        var bottomLeft = ancestor.TranslatePoint(new Point(bounds.Left, bounds.Bottom), this);
+        var bottomRight = ancestor.TranslatePoint(new Point(bounds.Right, bounds.Bottom), this);
+        double left = Math.Min(Math.Min(topLeft.X, topRight.X), Math.Min(bottomLeft.X, bottomRight.X));
+        double top = Math.Min(Math.Min(topLeft.Y, topRight.Y), Math.Min(bottomLeft.Y, bottomRight.Y));
+        double right = Math.Max(Math.Max(topLeft.X, topRight.X), Math.Max(bottomLeft.X, bottomRight.X));
+        double bottom = Math.Max(Math.Max(topLeft.Y, topRight.Y), Math.Max(bottomLeft.Y, bottomRight.Y));
+        var clip = new Rect(left, top, right - left, bottom - top);
+        visible = visible is Rect previous ? Rect.Intersect(previous, clip) : clip;
+    }
+
     /// <summary>
     /// Minimal <see cref="Control"/> subclass used to host the focus visual's template.
     /// Declaring a dedicated type means per-control-type focus visual styles are unnecessary:

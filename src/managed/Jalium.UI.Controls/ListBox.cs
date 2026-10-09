@@ -282,7 +282,7 @@ public class ListBox : Selector
             else
             {
                 var first = resolvedItems[0];
-                UpdateSelectionPropertiesFromBatch(first.Index, first.Item);
+                UpdateSelectionPropertiesFromBatch(first.Index, first.SelectionValue);
             }
 
             if (removedItems.Count > 0 || addedItems.Count > 0)
@@ -332,6 +332,27 @@ public class ListBox : Selector
                 SelectExtended(item, content, clickedIndex, isCtrlPressed, isShiftPressed);
                 break;
         }
+    }
+
+    // Automation Select replaces the selection even in a multiple-selection
+    // list. Use the existing atomic batch so collections, scalar properties,
+    // realized containers and SelectionChanged stay synchronized.
+    internal void SetAutomationSelection(ListBoxItem item, bool selected, bool exclusive)
+    {
+        int index = GetItemIndex(item);
+        if (index < 0 || GetSelectionValueAtIndex(index) is not { } value) return;
+        IEnumerable<object> requested = exclusive ? [value]
+            : selected ? _selectedItems.Append(value)
+            : _selectedItems.Where(candidate => !Equals(candidate, value));
+        if (!SetSelectedItems(requested.ToArray()))
+            throw new InvalidOperationException("The list cannot apply the requested automation selection.");
+        // SetCurrentValue preserves the expressions during the atomic batch,
+        // but deliberately suppresses source transfer. This user action must
+        // publish the final scalar values; each expression still enforces its
+        // own mode and UpdateSourceTrigger.
+        GetBindingExpression(SelectedItemProperty)?.UpdateSource();
+        GetBindingExpression(SelectedIndexProperty)?.UpdateSource();
+        GetBindingExpression(SelectedValueProperty)?.UpdateSource();
     }
 
     /// <summary>

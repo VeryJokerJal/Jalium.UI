@@ -42,6 +42,32 @@ JaliumPlatform jalium_platform_get_current(void)
     return jalium_platform_get_current_impl();
 }
 
+#if !defined(__APPLE__)
+int32_t jalium_platform_prefers_overlay_scrollbars(void)
+{
+    return 0;
+}
+int32_t jalium_platform_prefers_reduced_motion(void)
+{
+    return 0;
+}
+int32_t jalium_platform_text_word_boundary(const JaliumUtf16Char*, uint32_t, int32_t, int32_t)
+{
+    return -1;
+}
+int32_t jalium_platform_text_word_selection_boundary(const JaliumUtf16Char*, uint32_t, int32_t, int32_t, int32_t)
+{
+    return -1;
+}
+JaliumResult jalium_platform_text_word_range(
+    const JaliumUtf16Char*, uint32_t, int32_t, int32_t* start, int32_t* length)
+{
+    if (start) *start = 0;
+    if (length) *length = 0;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+#endif
+
 void jalium_platform_free(void* ptr)
 {
     free(ptr);

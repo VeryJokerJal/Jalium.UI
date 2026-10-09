@@ -8,7 +8,15 @@ internal readonly record struct CssFontFamilyItem(string Name, bool IsGeneric);
 internal sealed class CssComputedFontFamily(CssFontFamilyItem[] items)
 {
     private readonly string[] _renderingNames = items.Select(static item =>
-        item.IsGeneric ? item.Name switch
+        item.IsGeneric ? OperatingSystem.IsMacOS() ? item.Name switch
+        {
+            "sans-serif" or "system-ui" or "ui-sans-serif" => ".AppleSystemUIFont",
+            "serif" or "ui-serif" => "Times New Roman",
+            "monospace" or "ui-monospace" => "Menlo",
+            "cursive" => "Apple Chancery",
+            "fantasy" => "Papyrus",
+            _ => item.Name,
+        } : item.Name switch
         {
             "sans-serif" or "system-ui" or "ui-sans-serif" => "Segoe UI",
             "serif" or "ui-serif" => "Times New Roman",

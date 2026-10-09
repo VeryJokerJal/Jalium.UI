@@ -43,6 +43,10 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// </summary>
     protected bool HasContentHost => _textBoxContentHost != null;
 
+    /// <summary>Origin of the actual template text renderer in control coordinates.</summary>
+    protected Point GetTextContentOrigin() => _textBoxContentHost?.TranslatePoint(Point.Zero, this) ??
+        new Point(BorderThickness.Left + Padding.Left, BorderThickness.Top + Padding.Top);
+
     /// <summary>
     /// Invalidates the measure of the inner text-rendering element (the
     /// <c>TextBoxContentHost</c> inserted into <c>PART_ContentHost</c>).
@@ -115,6 +119,9 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// The caret index (character position).
     /// </summary>
     protected int _caretIndex;
+    // A shared soft-wrap insertion offset can appear on either adjacent row.
+    // Keep its glyph edge independently from the text/selection indices.
+    protected bool _caretHasBackwardAffinity;
 
     /// <summary>
     /// The selection start index.
@@ -226,6 +233,16 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     private int _changeBlockLevel;
     private UndoEntry? _changeBlockStart;
     private bool _changeBlockUndoCaptured;
+    private bool _changeBlockSelectionChanged;
+    private TextChangedEventArgs? _changeBlockTextChanged;
+    private bool _endingChangeNotifications;
+    private long _selectionNotificationVersion;
+    private UndoAction? _undoNotificationAction;
+    protected UndoAction CurrentUndoAction => _undoNotificationAction ??
+        (IsUndoEnabled && UndoLimit != 0 ? UndoAction.Create : UndoAction.None);
+
+    /// <summary>Whether an outer or nested edit change block is open.</summary>
+    protected bool IsChangeBlockOpen => _changeBlockLevel != 0;
 
     /// <summary>
     /// Whether an undo/redo operation is in progress.
@@ -400,7 +417,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsUndoEnabledProperty =
         DependencyProperty.Register(nameof(IsUndoEnabled), typeof(bool), typeof(TextBoxBase),
-            new PropertyMetadata(true));
+            new PropertyMetadata(true, OnUndoSettingsChanged));
 
     /// <summary>
     /// Identifies the UndoLimit dependency property.
@@ -408,7 +425,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UndoLimitProperty =
         DependencyProperty.Register(nameof(UndoLimit), typeof(int), typeof(TextBoxBase),
-            new PropertyMetadata(100));
+            new PropertyMetadata(100, OnUndoSettingsChanged), static value => (int)value! >= -1);
 
     /// <summary>
     /// Identifies the HorizontalScrollBarVisibility dependency property.
@@ -570,7 +587,12 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     public bool IsUndoEnabled
     {
         get => (bool)GetValue(IsUndoEnabledProperty)!;
-        set => SetValue(IsUndoEnabledProperty, value);
+        set
+        {
+            if (IsChangeBlockOpen && value != IsUndoEnabled)
+                throw new InvalidOperationException("Undo support cannot change while a change block is open.");
+            SetValue(IsUndoEnabledProperty, value);
+        }
     }
 
     /// <summary>
@@ -580,7 +602,12 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     public int UndoLimit
     {
         get => (int)GetValue(UndoLimitProperty)!;
-        set => SetValue(UndoLimitProperty, value);
+        set
+        {
+            if (IsChangeBlockOpen && IsUndoEnabled && value != UndoLimit)
+                throw new InvalidOperationException("UndoLimit cannot change while an undo change block is open.");
+            SetValue(UndoLimitProperty, value);
+        }
     }
 
     /// <summary>
@@ -618,14 +645,14 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// </summary>
     public bool CanUndo => CanUndoCore;
 
-    internal virtual bool CanUndoCore => _undoStack.Count > 0;
+    internal virtual bool CanUndoCore => IsUndoEnabled && UndoLimit != 0 && !IsChangeBlockOpen && _undoStack.Count > 0;
 
     /// <summary>
     /// Gets whether redo can be performed.
     /// </summary>
     public bool CanRedo => CanRedoCore;
 
-    internal virtual bool CanRedoCore => _redoStack.Count > 0;
+    internal virtual bool CanRedoCore => IsUndoEnabled && UndoLimit != 0 && !IsChangeBlockOpen && _redoStack.Count > 0;
 
     /// <summary>
     /// Gets or sets the horizontal scroll offset.
@@ -720,6 +747,8 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// </summary>
     protected abstract string GetText();
 
+    internal bool HasTextForNativeEditing => GetText().Length > 0;
+
     /// <summary>
     /// Sets the text content.
     /// </summary>
@@ -739,7 +768,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     /// <summary>
     /// Gets the X position of a character at a given column within a line of text.
-    /// Uses DirectWrite's native hit testing to ensure the position matches
+    /// Uses native hit testing with the rendered font to ensure the position matches
     /// the actual character layout used during text rendering.
     /// Falls back to prefix substring measurement if native context is unavailable.
     /// </summary>
@@ -757,16 +786,20 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
         var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize;
+        var fontWeight = FontWeight.ToOpenTypeWeight();
+        var fontStyle = FontStyle.ToOpenTypeStyle();
 
         if (clampedColumn < lineText.Length)
         {
-            if (TextMeasurement.HitTestTextPosition(lineText, fontFamily, fontSize, (uint)clampedColumn, false, out var hitResult)
+            if (TextMeasurement.HitTestTextPositionWrapped(lineText, fontFamily, fontSize, fontWeight, fontStyle,
+                    float.PositiveInfinity, (uint)clampedColumn, false, out var hitResult)
                 && hitResult.CaretX > 0)
                 return hitResult.CaretX;
         }
         else
         {
-            if (TextMeasurement.HitTestTextPosition(lineText, fontFamily, fontSize, (uint)(clampedColumn - 1), true, out var hitResult)
+            if (TextMeasurement.HitTestTextPositionWrapped(lineText, fontFamily, fontSize, fontWeight, fontStyle,
+                    float.PositiveInfinity, (uint)(clampedColumn - 1), true, out var hitResult)
                 && hitResult.CaretX > 0)
                 return hitResult.CaretX;
         }
@@ -948,6 +981,16 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         return RenderSize.Height;
     }
 
+    protected virtual double GetHorizontalScrollExtentWidth()
+    {
+        double width = 0;
+        for (int index = 0; index < GetLineCount(); index++)
+            width = Math.Max(width, MeasureTextWidth(GetLineTextInternal(index)));
+        return width;
+    }
+
+    protected virtual double GetHorizontalScrollViewportWidth() => RenderSize.Width;
+
     /// <summary>
     /// Arranges the text content. Called by TextBoxContentHost.
     /// </summary>
@@ -978,12 +1021,14 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             // Snap forward so a caret placed inside a surrogate pair lands on
             // the next whole code-point boundary instead of splitting an emoji.
             var newValue = SnapToCharacterBoundary(text, Math.Clamp(value, 0, text.Length), snapForward: true);
-            if (_caretIndex != newValue)
+            if (_caretIndex != newValue || _caretHasBackwardAffinity)
             {
+                _caretHasBackwardAffinity = false;
                 _caretIndex = newValue;
                 ResetCaretBlink();
                 EnsureCaretVisible();
                 InvalidateVisual();
+                NotifyImeContextChanged();
             }
         }
     }
@@ -1002,6 +1047,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             var newValue = SnapToCharacterBoundary(text, Math.Clamp(value, 0, text.Length), snapForward: false);
             if (_selectionStart != newValue)
             {
+                _caretHasBackwardAffinity = false;
                 _selectionStart = newValue;
                 InvalidateVisual();
                 NotifyImeContextChanged();
@@ -1026,6 +1072,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             var newValue = snappedEnd - _selectionStart;
             if (_selectionLength != newValue)
             {
+                _caretHasBackwardAffinity = false;
                 _selectionLength = newValue;
                 InvalidateVisual();
                 NotifyImeContextChanged();
@@ -1141,6 +1188,41 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         return true;
     }
 
+    internal bool TrySetImeSelectionCore(int start, int length)
+    {
+        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(GetText(), start, length,
+                out start, out length))
+            return false;
+        SelectCore(start, length);
+        ResetCaretBlink();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    internal bool TryReplaceImeTextCore(int start, int length, string replacement)
+    {
+        string text = GetText();
+        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(text, start, length,
+                out start, out length))
+            return false;
+        using var change = DeclareChangeBlock();
+        string updated = text[..start] + replacement + text[(start + length)..];
+        if (updated != text)
+        {
+            PushUndo();
+            SetText(updated);
+        }
+        _caretIndex = start + replacement.Length;
+        _selectionAnchor = _caretIndex;
+        _selectionStart = _caretIndex;
+        _selectionLength = 0;
+        OnSelectionChanged();
+        ResetCaretBlink();
+        EnsureCaretVisible();
+        InvalidateVisual();
+        return true;
+    }
+
     #endregion
 
     #region Public Methods
@@ -1176,6 +1258,18 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
                 _selectionStart,
                 _selectionLength);
             _changeBlockUndoCaptured = false;
+            _changeBlockSelectionChanged = false;
+            _changeBlockTextChanged = null;
+            try
+            {
+                OnChangeBlockStarted();
+            }
+            catch
+            {
+                _changeBlockLevel = 0;
+                _changeBlockStart = null;
+                throw;
+            }
         }
     }
 
@@ -1193,6 +1287,25 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         {
             _changeBlockStart = null;
             _changeBlockUndoCaptured = false;
+            _endingChangeNotifications = true;
+            try { OnChangeBlockEnded(); }
+            finally { _endingChangeNotifications = false; }
+            var textChanged = _changeBlockTextChanged;
+            bool selectionChanged = _changeBlockSelectionChanged;
+            _changeBlockTextChanged = null;
+            _changeBlockSelectionChanged = false;
+            // Close all state before calling application code. A listener may
+            // edit again, and that edit owns its own history and notifications.
+            long selectionVersion = _selectionNotificationVersion;
+            Exception? failure = null;
+            try { if (textChanged is not null) OnTextChanged(textChanged); }
+            catch (Exception error) { failure = error; }
+            try
+            {
+                if (selectionChanged && selectionVersion == _selectionNotificationVersion) OnSelectionChanged();
+            }
+            catch (Exception error) { failure ??= error; }
+            if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
 
@@ -1212,6 +1325,25 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     public void LockCurrentUndoUnit()
     {
     }
+
+    /// <summary>Captures subclass document state at the outer change boundary.</summary>
+    protected virtual void OnChangeBlockStarted() { }
+
+    /// <summary>Closes subclass document state before deferred notifications.</summary>
+    protected virtual void OnChangeBlockEnded() { }
+
+    /// <summary>Clears both undo queues when support or the history limit changes.</summary>
+    protected virtual void ClearUndoHistory()
+    {
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _changeBlockUndoCaptured = false;
+        _changeBlockStart = IsChangeBlockOpen && IsUndoEnabled && UndoLimit != 0
+            ? new UndoEntry(GetText(), _caretIndex, _selectionStart, _selectionLength) : null;
+    }
+
+    private static void OnUndoSettingsChanged(DependencyObject owner, DependencyPropertyChangedEventArgs _)
+        => ((TextBoxBase)owner).ClearUndoHistory();
 
     /// <summary>Scrolls one line to the left.</summary>
     public void LineLeft() => ScrollByHorizontalLine(-1);
@@ -1403,6 +1535,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     internal virtual void SelectAllCore()
     {
+        _caretHasBackwardAffinity = false;
         var text = GetText();
         _selectionStart = 0;
         _selectionLength = text.Length;
@@ -1416,6 +1549,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// </summary>
     internal void SelectCore(int start, int length)
     {
+        _caretHasBackwardAffinity = false;
         var text = GetText();
         // Snap both endpoints so a programmatic Select() that lands inside a
         // surrogate pair (emoji) widens to include the full code point.
@@ -1513,10 +1647,13 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     internal virtual bool UndoCore()
     {
-        if (!IsUndoEnabled || _undoStack.Count == 0)
+        if (!IsUndoEnabled || UndoLimit == 0 || IsChangeBlockOpen || _undoStack.Count == 0)
             return false;
 
         _isUndoRedoing = true;
+        var previousAction = _undoNotificationAction;
+        _undoNotificationAction = UndoAction.Undo;
+        BeginChange();
         try
         {
             var entry = _undoStack.Pop();
@@ -1526,10 +1663,15 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             _caretIndex = entry.CaretIndex;
             _selectionStart = entry.SelectionStart;
             _selectionLength = entry.SelectionLength;
+            _selectionAnchor = _selectionLength == 0 || _caretIndex == _selectionStart
+                ? _selectionStart + _selectionLength : _selectionStart;
+            OnSelectionChanged();
         }
         finally
         {
             _isUndoRedoing = false;
+            _undoNotificationAction = previousAction;
+            EndChange();
         }
 
         InvalidateVisual();
@@ -1543,10 +1685,13 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     internal virtual bool RedoCore()
     {
-        if (!IsUndoEnabled || _redoStack.Count == 0)
+        if (!IsUndoEnabled || UndoLimit == 0 || IsChangeBlockOpen || _redoStack.Count == 0)
             return false;
 
         _isUndoRedoing = true;
+        var previousAction = _undoNotificationAction;
+        _undoNotificationAction = UndoAction.Redo;
+        BeginChange();
         try
         {
             var entry = _redoStack.Pop();
@@ -1556,10 +1701,15 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             _caretIndex = entry.CaretIndex;
             _selectionStart = entry.SelectionStart;
             _selectionLength = entry.SelectionLength;
+            _selectionAnchor = _selectionLength == 0 || _caretIndex == _selectionStart
+                ? _selectionStart + _selectionLength : _selectionStart;
+            OnSelectionChanged();
         }
         finally
         {
             _isUndoRedoing = false;
+            _undoNotificationAction = previousAction;
+            EndChange();
         }
 
         InvalidateVisual();
@@ -1586,6 +1736,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         if (IsReadOnly || string.IsNullOrEmpty(textToInsert))
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
 
         // Delete selection if any
@@ -1599,6 +1750,10 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         // Insert text
         SetText(text.Substring(0, _caretIndex) + textToInsert + text.Substring(_caretIndex));
         _caretIndex += textToInsert.Length;
+        _selectionAnchor = _caretIndex;
+        _selectionStart = _caretIndex;
+        _selectionLength = 0;
+        OnSelectionChanged();
 
         ResetCaretBlink();
         EnsureCaretVisible();
@@ -1612,6 +1767,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         if (_selectionLength == 0)
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
         DeleteSelectionInternal();
         EnsureCaretVisible();
@@ -1670,7 +1826,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// </summary>
     protected void PushUndo()
     {
-        if (!IsUndoEnabled || _isUndoRedoing)
+        if (!IsUndoEnabled || UndoLimit == 0 || _isUndoRedoing)
             return;
 
         if (_changeBlockLevel > 0)
@@ -1703,7 +1859,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         _redoStack.Clear();
 
         // Limit stack size
-        while (_undoStack.Count > UndoLimit)
+        while (UndoLimit >= 0 && _undoStack.Count > UndoLimit)
         {
             var temp = new Stack<UndoEntry>();
             while (_undoStack.Count > 1)
@@ -1946,6 +2102,12 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// </summary>
     protected virtual void OnSelectionChanged()
     {
+        if (IsChangeBlockOpen || _endingChangeNotifications)
+        {
+            _changeBlockSelectionChanged = true;
+            return;
+        }
+        _selectionNotificationVersion++;
         // Notify UI Automation so external clients (screen readers, dictation, translation/look-up
         // tools) can detect the new selection. Only do the work when a client has attached and the
         // element's peer actually exposes the Text pattern — otherwise this is a cheap null check.
@@ -1975,8 +2137,25 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     protected virtual void OnTextChanged(TextChangedEventArgs e)
     {
         ArgumentNullException.ThrowIfNull(e);
-        RaiseEvent(e);
-        NotifyImeContextChanged();
+        if (IsChangeBlockOpen || _endingChangeNotifications)
+        {
+            _changeBlockTextChanged = _changeBlockTextChanged is { } pending
+                ? new TextChangedEventArgs(TextChangedEvent, e.UndoAction, pending.Changes.Concat(e.Changes).ToArray())
+                    { Source = e.Source ?? this }
+                : e;
+            return;
+        }
+        try
+        {
+            if (Jalium.UI.Automation.Peers.AutomationPeer.ListenerExists())
+            {
+                var peer = GetAutomationPeer();
+                if (peer?.GetPattern(Jalium.UI.Automation.Peers.PatternInterface.Text) != null)
+                    peer.RaiseAutomationEvent(Jalium.UI.Automation.Peers.AutomationEvents.TextPatternOnTextChanged);
+            }
+            RaiseEvent(e);
+        }
+        finally { NotifyImeContextChanged(); }
     }
 
     private void NotifyImeContextChanged()
@@ -1985,8 +2164,11 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     }
 
     /// <summary>
-    /// Gets the caret index from a mouse position.
+    /// Chooses the preceding glyph edge when a mouse hit shares a soft-wrap offset.
     /// </summary>
+    protected virtual bool GetCaretBackwardAffinityFromPosition(Point position, int index) => false;
+
+    /// <summary>Gets the caret index from a mouse position.</summary>
     protected virtual int GetCaretIndexFromPosition(Point position)
     {
         var border = BorderThickness;
@@ -2008,12 +2190,14 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         if (string.IsNullOrEmpty(lineText))
             return lineStart;
 
-        // Use DirectWrite's native hit testing for accurate character mapping.
-        // This ensures the hit position matches exactly how DirectWrite lays out
+        // Use native hit testing with the rendered font for accurate character mapping.
+        // This ensures the hit position matches exactly how the renderer lays out
         // characters within the rendered text, avoiding prefix-measurement drift.
         var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize;
-        if (TextMeasurement.HitTestPoint(lineText, fontFamily, fontSize, (float)contentX, out var hitResult))
+        if (TextMeasurement.HitTestPointWrapped(lineText, fontFamily, fontSize,
+            FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), float.PositiveInfinity,
+            (float)contentX, 0, out var hitResult))
         {
             int column = (int)hitResult.TextPosition;
             if (hitResult.IsTrailingHit != 0)
@@ -2065,27 +2249,34 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     protected override void OnKeyDown(KeyEventArgs e)
     {
         var shift = e.IsShiftDown;
-        var ctrl = e.IsControlDown;
+        var editingKey = MacOSTextKeyBehavior.ResolveEditingKey(e);
+        var ctrl = e.IsControlDown && editingKey == e.Key;
+        var commandNavigation = MacOSTextKeyBehavior.IsCommandNavigation(e);
+        var optionWord = MacOSTextKeyBehavior.IsOptionWord(e);
 
-        switch (e.Key)
+        switch (editingKey)
         {
             case Key.Left:
-                HandleLeftKey(shift, ctrl);
+                if (commandNavigation) HandleMacOSLineBoundary(shift, right: false);
+                else HandleLeftKey(shift, ctrl, optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Right:
-                HandleRightKey(shift, ctrl);
+                if (commandNavigation) HandleMacOSLineBoundary(shift, right: true);
+                else HandleRightKey(shift, ctrl, optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Up:
-                HandleUpKey(shift);
+                if (commandNavigation) HandleHomeKey(shift, ctrl: true);
+                else HandleUpKey(shift);
                 e.Handled = true;
                 break;
 
             case Key.Down:
-                HandleDownKey(shift);
+                if (commandNavigation) HandleEndKey(shift, ctrl: true);
+                else HandleDownKey(shift);
                 e.Handled = true;
                 break;
 
@@ -2100,12 +2291,12 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
                 break;
 
             case Key.Back:
-                HandleBackspace(ctrl);
+                HandleBackspace(ctrl, optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Delete:
-                HandleDelete(ctrl);
+                HandleDelete(ctrl, optionWord);
                 e.Handled = true;
                 break;
 
@@ -2183,11 +2374,17 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         if (e.Handled || IsReadOnly)
             return;
 
+        if (e.ImeReplacementRange is { } range && this is IImeSupport support)
+        {
+            e.Handled = support.TryReplaceImeText(range.Start, range.Length, e.Text);
+            return;
+        }
+
         if (!string.IsNullOrEmpty(e.Text))
         {
-            // Filter control characters
+            // Editing keys (including AcceptsTab) are handled by KeyDown.
             var text = e.Text;
-            if (text.Length == 1 && char.IsControl(text[0]) && text[0] != '\t')
+            if (text.Length == 1 && char.IsControl(text[0]))
                 return;
 
             InsertText(text);
@@ -2205,6 +2402,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
         if (e.ChangedButton == MouseButton.Left)
         {
+            _caretHasBackwardAffinity = false;
             // Close context menu if open
             _contextMenuAnimTimer?.Stop();
             _isContextMenuCloseAnimating = false;
@@ -2255,6 +2453,9 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             else if (_clickCount == 2)
             {
                 // Double-click: select word
+                if (this is IImeSupport editor)
+                    _caretIndex = MacOSTextKeyBehavior.GetWordIndexFromPoint(editor, GetText(), position,
+                        GetCaretIndexFromPosition(position));
                 SelectCurrentWord();
                 _wordSelectionAnchorStart = _selectionStart;
                 _wordSelectionAnchorEnd = _selectionStart + _selectionLength;
@@ -2272,6 +2473,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
                 // mid-emoji.
                 var text = GetText();
                 newCaretIndex = SnapToCharacterBoundary(text, newCaretIndex, snapForward: true);
+                _caretHasBackwardAffinity = GetCaretBackwardAffinityFromPosition(position, newCaretIndex);
 
                 if ((e.KeyboardModifiers & ModifierKeys.Shift) != 0)
                 {
@@ -2354,11 +2556,15 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     {
         if (!IsEnabled || !_isSelecting) return;
 
+        _caretHasBackwardAffinity = false;
+
         var position = e.GetPosition(this);
         var newCaretIndex = GetCaretIndexFromPosition(position);
 
         if (_isWordSelecting)
         {
+            if (this is IImeSupport editor)
+                newCaretIndex = MacOSTextKeyBehavior.GetWordIndexFromPoint(editor, GetText(), position, newCaretIndex);
             ExtendWordSelection(newCaretIndex);
         }
         else
@@ -2369,6 +2575,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             bool draggingRight = newCaretIndex >= _selectionAnchor;
             int anchor = SnapToCharacterBoundary(text, _selectionAnchor, snapForward: !draggingRight);
             int snappedCaret = SnapToCharacterBoundary(text, newCaretIndex, snapForward: draggingRight);
+            _caretHasBackwardAffinity = GetCaretBackwardAffinityFromPosition(position, snappedCaret);
             _selectionStart = Math.Min(anchor, snappedCaret);
             _selectionLength = Math.Abs(snappedCaret - anchor);
             _caretIndex = snappedCaret;
@@ -2381,21 +2588,21 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        // Round line height for consistent scrolling
         var lineHeight = Math.Round(GetLineHeight());
-        var delta = e.Delta > 0 ? -3 : 3;
-
+        var input = new MouseWheelScrollInput(e, 3 * Math.Max(1, MeasureTextWidth("M")), 3 * lineHeight);
+        bool horizontalMoved = false;
+        if (input.Horizontal != 0)
+        {
+            double oldHorizontal = HorizontalOffset;
+            double maximum = Math.Max(0, GetHorizontalScrollExtentWidth() - GetHorizontalScrollViewportWidth());
+            HorizontalOffsetCore = Math.Clamp(oldHorizontal + input.Horizontal, 0, maximum);
+            horizontalMoved = HorizontalOffset != oldHorizontal;
+        }
         var maxOffset = Math.Max(0, GetVerticalScrollExtentHeight(lineHeight) - GetVerticalScrollViewportHeight());
-        if (maxOffset <= 0)
-            return;
-
         var oldOffset = VerticalOffset;
-        var newOffset = Math.Clamp(oldOffset + delta * lineHeight, 0, maxOffset);
-        if (Math.Abs(newOffset - oldOffset) <= 0.001)
-            return;
-
-        VerticalOffsetCore = newOffset;
-        e.Handled = true;
+        if (input.Vertical != 0)
+            VerticalOffsetCore = Math.Clamp(oldOffset + input.Vertical, 0, maxOffset);
+        input.MarkHandled(e, horizontalMoved, vertical: VerticalOffset != oldOffset);
     }
 
     /// <inheritdoc />
@@ -2500,12 +2707,47 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     #region Key Handlers
 
-    private void HandleLeftKey(bool shift, bool ctrl)
+    protected virtual int GetMacOSLineBoundary(bool right, out bool backwardAffinity)
     {
+        backwardAffinity = false;
+        var (line, _) = GetLineColumnFromCharIndex(_caretIndex);
+        return GetLineStartIndex(line) + (right ? GetLineLengthInternal(line) : 0);
+    }
+
+    private void HandleMacOSLineBoundary(bool shift, bool right)
+    {
+        int destination = GetMacOSLineBoundary(right, out bool backward);
+        _caretHasBackwardAffinity = backward;
+        if (shift) ExtendSelection(destination);
+        else
+        {
+            _caretIndex = _selectionStart = _selectionAnchor = destination;
+            _selectionLength = 0;
+            OnSelectionChanged();
+        }
+        ResetCaretBlink();
+        EnsureCaretVisible();
+        InvalidateVisual();
+    }
+
+    protected virtual int GetMacOSWordBoundary(bool right, bool shift, out bool backwardAffinity)
+    {
+        backwardAffinity = false;
+        return MacOSTextKeyBehavior.FindWordBoundary(GetText(), _caretIndex, right, physical: true,
+            selectionStart: _selectionStart, selectionLength: shift ? 0 : _selectionLength);
+    }
+
+    private void HandleLeftKey(bool shift, bool ctrl, bool optionWord = false)
+    {
+        bool backward = false;
         var text = GetText();
         int newIndex;
 
-        if (ctrl)
+        if (optionWord)
+        {
+            newIndex = GetMacOSWordBoundary(false, shift, out backward);
+        }
+        else if (ctrl)
         {
             newIndex = FindPreviousWordBoundary(_caretIndex);
         }
@@ -2516,6 +2758,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             newIndex = StepBackwardGrapheme(text, _caretIndex);
         }
 
+        _caretHasBackwardAffinity = backward;
         if (shift)
         {
             ExtendSelection(newIndex);
@@ -2524,7 +2767,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         {
             if (_selectionLength > 0)
             {
-                newIndex = _selectionStart;
+                if (!optionWord) newIndex = _selectionStart;
                 ClearSelection();
             }
             _caretIndex = newIndex;
@@ -2535,12 +2778,17 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         InvalidateVisual();
     }
 
-    private void HandleRightKey(bool shift, bool ctrl)
+    private void HandleRightKey(bool shift, bool ctrl, bool optionWord = false)
     {
+        bool backward = false;
         var text = GetText();
         int newIndex;
 
-        if (ctrl)
+        if (optionWord)
+        {
+            newIndex = GetMacOSWordBoundary(true, shift, out backward);
+        }
+        else if (ctrl)
         {
             newIndex = FindNextWordBoundary(_caretIndex);
         }
@@ -2550,6 +2798,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             newIndex = StepForwardGrapheme(text, _caretIndex);
         }
 
+        _caretHasBackwardAffinity = backward;
         if (shift)
         {
             ExtendSelection(newIndex);
@@ -2558,7 +2807,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         {
             if (_selectionLength > 0)
             {
-                newIndex = _selectionStart + _selectionLength;
+                if (!optionWord) newIndex = _selectionStart + _selectionLength;
                 ClearSelection();
             }
             _caretIndex = newIndex;
@@ -2571,6 +2820,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     private void HandleUpKey(bool shift)
     {
+        _caretHasBackwardAffinity = false;
         if (!AcceptsReturn)
             return;
 
@@ -2609,6 +2859,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     private void HandleDownKey(bool shift)
     {
+        _caretHasBackwardAffinity = false;
         if (!AcceptsReturn)
             return;
 
@@ -2649,6 +2900,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     private void HandleHomeKey(bool shift, bool ctrl)
     {
+        _caretHasBackwardAffinity = false;
         int newIndex;
 
         if (ctrl)
@@ -2680,6 +2932,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     private void HandleEndKey(bool shift, bool ctrl)
     {
+        _caretHasBackwardAffinity = false;
         int newIndex;
 
         if (ctrl)
@@ -2709,10 +2962,11 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         InvalidateVisual();
     }
 
-    private void HandleBackspace(bool ctrl)
+    private void HandleBackspace(bool ctrl, bool optionWord = false)
     {
         if (IsReadOnly)
             return;
+        using var change = DeclareChangeBlock();
 
         if (_selectionLength > 0)
         {
@@ -2724,7 +2978,11 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
             var text = GetText();
             int startIndex;
-            if (ctrl)
+            if (optionWord)
+            {
+                startIndex = MacOSTextKeyBehavior.FindWordBoundary(text, _caretIndex, forward: false);
+            }
+            else if (ctrl)
             {
                 // Delete previous word
                 startIndex = FindPreviousWordBoundary(_caretIndex);
@@ -2743,13 +3001,18 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             if (_caretIndex < 0) _caretIndex = 0;
         }
 
+        _selectionAnchor = _caretIndex;
+        _selectionStart = _caretIndex;
+        _selectionLength = 0;
+        OnSelectionChanged();
         EnsureCaretVisible();
     }
 
-    private void HandleDelete(bool ctrl)
+    private void HandleDelete(bool ctrl, bool optionWord = false)
     {
         if (IsReadOnly)
             return;
+        using var change = DeclareChangeBlock();
 
         if (_selectionLength > 0)
         {
@@ -2763,7 +3026,11 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
                 PushUndo();
 
                 int endIndex;
-                if (ctrl)
+                if (optionWord)
+                {
+                    endIndex = MacOSTextKeyBehavior.FindWordBoundary(text, _caretIndex, forward: true);
+                }
+                else if (ctrl)
                 {
                     endIndex = FindNextWordBoundary(_caretIndex);
                 }
@@ -2777,6 +3044,10 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             }
         }
 
+        _selectionAnchor = _caretIndex;
+        _selectionStart = _caretIndex;
+        _selectionLength = 0;
+        OnSelectionChanged();
         EnsureCaretVisible();
     }
 
@@ -2882,6 +3153,8 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     private (int start, int end) GetWordRangeAtIndex(int index)
     {
         var text = GetText();
+        if (MacOSTextKeyBehavior.TryGetWordRange(text, index, out int nativeStart, out int nativeLength))
+            return (nativeStart, nativeStart + nativeLength);
         if (string.IsNullOrEmpty(text))
         {
             return (0, 0);
@@ -2947,6 +3220,16 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         var text = GetText();
         if (string.IsNullOrEmpty(text))
             return;
+
+        if (MacOSTextKeyBehavior.TryGetWordRange(text, _caretIndex, out int nativeStart, out int nativeLength))
+        {
+            _selectionStart = _selectionAnchor = nativeStart;
+            _selectionLength = nativeLength;
+            _caretIndex = nativeStart + nativeLength;
+            _caretHasBackwardAffinity = false;
+            OnSelectionChanged();
+            return;
+        }
 
         // Walk word boundaries in grapheme-cluster space so the selection edges
         // land on whole user-perceived characters.

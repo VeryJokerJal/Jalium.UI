@@ -1,6 +1,7 @@
 #pragma once
 
 #include "jalium_types.h"
+#include "jalium_accessibility.h"
 
 // Platform-specific export macros.
 // JALIUM_STATIC (set globally for the NativeAOT static-link flavor) takes
@@ -81,6 +82,7 @@ typedef enum JaliumEventType {
     JALIUM_EVENT_STATE_CHANGED    = 9,
     JALIUM_EVENT_MONITORS_CHANGED = 10,
     JALIUM_EVENT_POINTING_DEVICES_CHANGED = 11,
+    JALIUM_EVENT_SCROLLBAR_SETTINGS_CHANGED = 12,
 
     // Focus
     JALIUM_EVENT_FOCUS_GAINED     = 20,
@@ -102,6 +104,8 @@ typedef enum JaliumEventType {
     JALIUM_EVENT_COMPOSITION_UPDATE = 44,
     JALIUM_EVENT_COMPOSITION_END   = 45,
     JALIUM_EVENT_DELETE_SURROUNDING_TEXT = 46,
+    JALIUM_EVENT_IME_TEXT_REQUEST = 47,
+    JALIUM_EVENT_IME_GEOMETRY_REQUEST = 48,
 
     // Pointer (touch/pen)
     JALIUM_EVENT_POINTER_DOWN     = 50,
@@ -230,6 +234,17 @@ typedef enum JaliumCursorShape {
 // Structures
 // ============================================================================
 
+/// Synchronous IME geometry response. Rectangle coordinates are client physical
+/// pixels, ranges and character indices are UTF-16. handled: 1 accepted,
+/// -1 rejected, 0 unrecognized. Querying never changes the document or selection.
+typedef struct JaliumImeGeometryResult {
+    int32_t handled;
+    int32_t start;
+    int32_t length;
+    int32_t characterIndex;
+    float x, y, width, height;
+} JaliumImeGeometryResult;
+
 /// Window creation parameters.
 typedef struct JaliumWindowParams {
     const JaliumUtf16Char* title;    ///< Null-terminated UTF-16 title.
@@ -253,6 +268,7 @@ typedef struct JaliumPlatformEvent {
         struct {
             int32_t width;
             int32_t height;
+            int32_t isUserInitiated;
         } resize;
 
         // JALIUM_EVENT_MOVE
@@ -283,15 +299,19 @@ typedef struct JaliumPlatformEvent {
             int32_t button;     ///< JaliumMouseButton value (for DOWN/UP)
             int32_t modifiers;  ///< JaliumModifiers flags
             int32_t clickCount; ///< 1 = single, 2 = double, etc.
+            uint32_t buttonStates; ///< Bit 31 marks availability; bits 0..4 are left, right, middle, X1, X2.
         } mouse;
 
         // JALIUM_EVENT_MOUSE_WHEEL
         struct {
             float   x;
             float   y;
-            float   deltaX;     ///< Horizontal scroll delta
-            float   deltaY;     ///< Vertical scroll delta
+            float   deltaX;     ///< Wheel notches; positive scrolls right
+            float   deltaY;     ///< Wheel notches; positive scrolls up
             int32_t modifiers;
+            int32_t isPrecise;  ///< Non-zero: one notch is 48 logical pixels, with native momentum
+            int32_t phase;      ///< Gesture phase flags: began=1, stationary=2, changed=4, ended=8, cancelled=16, may-begin=32
+            int32_t momentumPhase; ///< Native momentum phase flags, using the same values
         } wheel;
 
         // JALIUM_EVENT_KEY_DOWN / KEY_UP
@@ -320,6 +340,29 @@ typedef struct JaliumPlatformEvent {
             int32_t beforeUtf8Bytes;
             int32_t afterUtf8Bytes;
         } deleteSurrounding;
+
+        // Synchronous AppKit request. Ranges are document-relative UTF-16.
+        // The callback writes *applied before returning: 1 accepted, -1 rejected,
+        // 0 unrecognized (legacy input remains available). Text is callback-owned.
+        struct {
+            const char* utf8Text;
+            int32_t start;
+            int32_t length;
+            int32_t replace;
+            int32_t* applied;
+        } imeTextRequest;
+
+        // kind 0/1 queries committed range/point; 2/3 queries marked range/point.
+        // Marked offsets are relative to the provisional string. The result
+        // pointer is valid only during the callback. This fits the existing union.
+        struct {
+            int32_t kind;
+            int32_t start;
+            int32_t length;
+            float x;
+            float y;
+            JaliumImeGeometryResult* result;
+        } imeGeometryRequest;
 
         // JALIUM_EVENT_POINTER_DOWN / UP / MOVE / CANCEL
         struct {
@@ -425,11 +468,50 @@ JALIUM_PLATFORM_API void jalium_platform_shutdown(void);
 /// Returns the current host platform identifier.
 JALIUM_PLATFORM_API JaliumPlatform jalium_platform_get_current(void);
 
+/// Returns non-zero when the platform prefers overlay scrollbars (macOS).
+JALIUM_PLATFORM_API int32_t jalium_platform_prefers_overlay_scrollbars(void);
+
+/// Returns non-zero when accessibility preferences request reduced motion (macOS).
+JALIUM_PLATFORM_API int32_t jalium_platform_prefers_reduced_motion(void);
+
+/// AppKit word navigation on explicitly sized UTF-16 text. Direction is
+/// 0=logical forward, 1=logical backward, 2=physical right, 3=physical left.
+/// Returns a composed-character boundary, or -1 for invalid/unsupported input.
+/// No platform initialization, window, responder, clipboard or focus is needed.
+JALIUM_PLATFORM_API int32_t jalium_platform_text_word_boundary(
+    const JaliumUtf16Char* text, uint32_t length, int32_t index, int32_t direction);
+
+/// Unmodified word movement from a non-empty ordered selection. AppKit chooses
+/// the appropriate selection edge before moving to the word boundary.
+JALIUM_PLATFORM_API int32_t jalium_platform_text_word_selection_boundary(
+    const JaliumUtf16Char* text, uint32_t length, int32_t start, int32_t rangeLength, int32_t direction);
+
+/// AppKit double-click word range (which differs from keyboard word navigation
+/// for some scripts and non-word symbols). End-of-text selects the last cluster;
+/// empty text returns (0, 0). Outputs use UTF-16 offsets and whole clusters.
+JALIUM_PLATFORM_API JaliumResult jalium_platform_text_word_range(
+    const JaliumUtf16Char* text, uint32_t length, int32_t index,
+    int32_t* start, int32_t* rangeLength);
+
 // ============================================================================
 // Apple host bridge
 // ============================================================================
 
 #ifdef __APPLE__
+typedef enum JaliumEditingCommand {
+    JALIUM_EDIT_COPY = 0,
+    JALIUM_EDIT_CUT = 1,
+    JALIUM_EDIT_PASTE = 2,
+    JALIUM_EDIT_SELECT_ALL = 3,
+    JALIUM_EDIT_UNDO = 4,
+    JALIUM_EDIT_REDO = 5
+} JaliumEditingCommand;
+typedef int32_t (*JaliumEditingCommandQuery)(int32_t command, void* userData);
+/// Queries the current managed editing target for AppKit automatic menu/toolbar validation.
+/// The query runs on the main thread and must not execute the editing command.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_editing_command_query(
+    JaliumPlatformWindow* window, JaliumEditingCommandQuery query, void* userData);
+
 /// Registers the AppKit/UIKit view supplied by the managed application/scene
 /// delegate as the root surface for the next Jalium window. The platform
 /// backend keeps a weak reference; pass 0 when a scene disconnects.
@@ -443,6 +525,51 @@ JALIUM_PLATFORM_API void jalium_apple_unregister_scene_root(const char* sceneId)
 /// Forwards a JaliumEventType application lifecycle event (PAUSE, RESUME,
 /// DESTROY or LOW_MEMORY) to all Apple windows.
 JALIUM_PLATFORM_API void jalium_apple_notify_lifecycle(int32_t eventType);
+
+/// Shows an AppKit window, optionally preserving the current key window.
+JALIUM_PLATFORM_API void jalium_apple_window_show(
+    JaliumPlatformWindow* window, int32_t activate);
+/// Applies the complete window style, including caption button capabilities.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_style(
+    JaliumPlatformWindow* window, uint32_t style);
+/// Extends client content behind a native AppKit title bar, retaining system buttons.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_titlebar_extended(
+    JaliumPlatformWindow* window, int32_t extended);
+/// Centers native traffic lights within the extended toolbar's content height in AppKit points.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_titlebar_content_height(
+    JaliumPlatformWindow* window, double height);
+/// Returns the saved normal origin and client size in physical pixels.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_get_restore_bounds(
+    JaliumPlatformWindow* window, int32_t* x, int32_t* y, int32_t* width, int32_t* height);
+/// Returns the top-left origin of the AppKit client view in physical screen pixels.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_get_client_origin(
+    JaliumPlatformWindow* window, int32_t* x, int32_t* y);
+/// Applies initial placement in AppKit points: 0 manual, 1 center screen, 2 center owner.
+/// Owner is an NSView or NSWindow handle; zero leaves CenterOwner at its manual position.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_apply_startup_location(
+    JaliumPlatformWindow* window, int32_t location, intptr_t owner);
+/// Sets the AppKit material corresponding to WindowBackdropType (0 through 4).
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_system_backdrop(
+    JaliumPlatformWindow* window, int32_t backdrop);
+/// Performs the user's AppKit title-bar double-click action for custom chrome.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_titlebar_double_click(
+    JaliumPlatformWindow* window);
+/// Reads one representation of the current target visit. The caller owns the
+/// returned buffer (including empty data) and releases it with jalium_platform_free.
+/// A retired visit, a hidden/disabled window, or an unavailable type is rejected.
+JALIUM_PLATFORM_API JaliumResult jalium_apple_drag_get_data(
+    JaliumPlatformWindow* window, uint64_t sessionId, const char* mimeType,
+    uint8_t** data, uint32_t* dataSize);
+/// Returns the live Jalium source view handle for the current target visit,
+/// or zero for external sources and retired visits.
+JALIUM_PLATFORM_API intptr_t jalium_apple_drag_get_source(
+    JaliumPlatformWindow* window, uint64_t sessionId);
+/// Attaches an AutomationPeer tree to the AppKit content view. Root ID is 1.
+/// Passing a null callback invalidates all previously returned AX objects.
+JALIUM_PLATFORM_API void jalium_apple_window_set_accessibility(
+    JaliumPlatformWindow* window, JaliumAccessibilityCallback callback, void* userData);
+JALIUM_PLATFORM_API void jalium_apple_window_notify_accessibility(
+    JaliumPlatformWindow* window, uint64_t nodeId, int32_t notification);
 #endif
 
 // ============================================================================

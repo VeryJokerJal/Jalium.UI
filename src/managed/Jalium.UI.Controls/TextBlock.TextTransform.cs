@@ -12,8 +12,7 @@ public partial class TextBlock
     private bool HasAuthoredWordSpaceTransformOnInlines()
     {
         foreach (var range in GetInlineTextRanges())
-            if (range.Run.GetValueSourceInternal(CssFlowProperties.WordSpaceTransformProperty)
-                    .BaseValueSource != BaseValueSource.Default)
+            if (HasAuthoredFlowValue(range.Run, CssFlowProperties.WordSpaceTransformProperty))
                 return true;
         return false;
     }

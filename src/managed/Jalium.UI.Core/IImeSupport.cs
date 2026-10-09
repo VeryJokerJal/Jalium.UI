@@ -23,6 +23,9 @@ internal readonly record struct ImeSurroundingTextSnapshot(
     int CursorIndex,
     int AnchorIndex);
 
+/// <summary>The first visual line of a UTF-16 range, in element-local DIPs.</summary>
+internal readonly record struct ImeTextRangeGeometry(Rect Rectangle, int Start, int Length);
+
 /// <summary>
 /// Interface for elements that support IME (Input Method Editor) input.
 /// </summary>
@@ -72,6 +75,30 @@ internal interface IImeSupport
     /// </remarks>
     bool DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount) => false;
 
+    /// <summary>Sets a document-relative UTF-16 selection requested by AppKit.</summary>
+    bool TrySetImeSelection(int start, int length) => false;
+
+    /// <summary>Replaces a document-relative UTF-16 range as one undoable edit.</summary>
+    bool TryReplaceImeText(int start, int length, string text) => false;
+
+    /// <summary>
+    /// Queries actual text layout without changing the selection. Composition
+    /// ranges are relative to the provisional string; other ranges are relative
+    /// to the committed document. Returns only the first visual line fragment.
+    /// </summary>
+    bool TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
+    {
+        geometry = default;
+        return false;
+    }
+
+    /// <summary>Finds the nearest UTF-16 character boundary inside the text viewport.</summary>
+    bool TryGetImeCharacterIndex(Point point, bool composition, out int index)
+    {
+        index = -1;
+        return false;
+    }
+
     /// <summary>
     /// Gets the caret position for IME composition window positioning.
     /// </summary>
@@ -117,6 +144,19 @@ internal interface IImeSupport
 internal static class ImeTextEncoding
 {
     internal const int MaximumSurroundingTextUtf8Bytes = 4000;
+
+    internal static bool TryNormalizeUtf16Range(string text, int start, int length,
+        out int normalizedStart, out int normalizedLength)
+    {
+        normalizedStart = normalizedLength = 0;
+        if (start < 0 || length < 0 || start > text.Length || length > text.Length - start)
+            return false;
+        normalizedStart = SnapToGraphemeBoundary(text, start, forward: false);
+        int end = length == 0 ? normalizedStart :
+            SnapToGraphemeBoundary(text, start + length, forward: true);
+        normalizedLength = end - normalizedStart;
+        return true;
+    }
 
     internal static int GetUtf8ByteOffset(string? text, int utf16Offset)
     {

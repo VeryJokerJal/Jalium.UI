@@ -1,0 +1,84 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- These tests exercise managed contracts without opening AppKit windows.
+         The native Window suite owns main-thread AppKit integration checks. -->
+    <AssemblyName>Jalium.UI.Tests</AssemblyName>
+    <RootNamespace>Jalium.UI.Tests</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <DefineConstants Condition="'$(JaliumMacNativeGeometryTests)' == 'true'">$(DefineConstants);JALIUM_MAC_NATIVE_GEOMETRY_TESTS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/TextBlockNoWrapInheritanceTests.cs" Link="TextBlockNoWrapInheritanceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TextBlockParityTests.cs" Link="TextBlockParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TextBlockRenderCacheTests.cs" Link="TextBlockRenderCacheTests.cs" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <Using Include="Xunit" />
+    <Using Include="Jalium.UI.Threading" />
+    <Using Include="Jalium.UI.Automation.Peers" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="MacOSTextGeometryIntegrationTests.cs" />
+    <Compile Include="MacOSTextGeometryIntegrationTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSWindowVisualLineTests.cs" />
+    <Compile Include="MacOSWindowVisualLineTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSRichParagraphTests.cs" />
+    <Compile Include="MacOSRichParagraphTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSRichUndoTests.cs" />
+    <Compile Include="MacOSRichUndoTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSRichTextChangedTests.cs" />
+    <Compile Include="MacOSRichTextChangedTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSRichRangeEditingTests.cs" />
+    <Compile Include="MacOSRichRangeEditingTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSRichChangeBlockTests.cs" />
+    <Compile Include="MacOSRichChangeBlockTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSNoWrapAndInheritedDirectionTests.cs" />
+    <Compile Include="MacOSNoWrapAndInheritedDirectionTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSFontResolutionTests.cs" />
+    <Compile Include="MacOSFontResolutionTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSFontWeightTests.cs" />
+    <Compile Include="MacOSFontWeightTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSFontCascadeTests.cs" />
+    <Compile Include="MacOSFontCascadeTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSCssFontCascadeTests.cs" />
+    <Compile Include="MacOSCssFontCascadeTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSFontWidthTests.cs" />
+    <Compile Include="MacOSFontWidthTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSFontMatchingTests.cs" />
+    <Compile Include="MacOSFontMatchingTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSShapedWordNavigationTests.cs" />
+    <Compile Include="MacOSShapedWordNavigationTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Include="../Jalium.UI.Tests/PathMarkupParserTests.cs" Link="PathRendering/PathMarkupParserTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PathShapeTests.cs" Link="PathRendering/PathShapeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PathIconTests.cs" Link="PathRendering/PathIconTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/GeometryPathParityTests.cs" Link="PathRendering/GeometryPathParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ShapeStrokeDashArrayParityTests.cs" Link="PathRendering/ShapeStrokeDashArrayParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/SoftwareVectorRasterizerTests.cs" Link="PathRendering/SoftwareVectorRasterizerTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PathStrokeOpacityEndToEndTests.cs" Link="PathRendering/PathStrokeOpacityEndToEndTests.cs" />
+    <ProjectReference Include="../../src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj" />
+    <Compile Include="../Jalium.UI.Tests/MacOSWindowBehaviorTests.cs" Link="MacOSWindowBehaviorTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MacOSWindowVisibilityTests.cs" Link="MacOSWindowVisibilityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyClearingTests.cs" Link="DependencyPropertyClearingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyCoercionFailureTests.cs" Link="DependencyPropertyCoercionFailureTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/LinuxWindowBehaviorTests.cs" Link="LinuxWindowBehaviorTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/WindowTrackSizeTests.cs" Link="WindowTrackSizeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/WindowTopmostExStyleTests.cs" Link="WindowTopmostExStyleTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CursorResolutionTests.cs" Link="CursorResolutionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ImeSurroundingTextTests.cs" Link="ImeSurroundingTextTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TabFocusInputTests.cs" Link="TabFocusInputTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TitleBarButtonAutomationTests.cs" Link="TitleBarButtonAutomationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/AutomationPeerTests.cs" Link="AutomationPeerTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/AutomationPeerBaseChainParityTests.cs" Link="AutomationPeerBaseChainParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/AutomationPropertiesParityTests.cs" Link="AutomationPropertiesParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/LinuxDragSourceRoutingTests.cs" Link="NativeDragSourceRoutingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DragDropPreviewSourceParityTests.cs" Link="DragDropPreviewSourceParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataObjectParityTests.cs" Link="DataObjectParityTests.cs" />
+  </ItemGroup>
+</Project>

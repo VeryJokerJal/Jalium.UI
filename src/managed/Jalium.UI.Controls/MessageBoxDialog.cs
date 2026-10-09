@@ -25,12 +25,19 @@ internal sealed class MessageBoxDialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ResizeMode = ResizeMode.NoResize;
 
-        _result = defaultResult != MessageBoxResult.None ? defaultResult : MessageBoxResult.OK;
+        // Closing the window is dismissal, never an implicit click on the
+        // default button. Native traffic lights and Command+W use this result.
+        _result = button switch
+        {
+            MessageBoxButton.OKCancel or MessageBoxButton.YesNoCancel => MessageBoxResult.Cancel,
+            MessageBoxButton.YesNo => MessageBoxResult.No,
+            _ => MessageBoxResult.OK,
+        };
 
-        Content = BuildContent(messageText, button, icon);
+        Content = BuildContent(messageText, button, icon, defaultResult);
     }
 
-    private UIElement BuildContent(string messageText, MessageBoxButton button, MessageBoxImage icon)
+    private UIElement BuildContent(string messageText, MessageBoxButton button, MessageBoxImage icon, MessageBoxResult defaultResult)
     {
         var rootPanel = new StackPanel { Margin = new Thickness(20) };
 
@@ -74,11 +81,16 @@ internal sealed class MessageBoxDialog : Window
             HorizontalAlignment = HorizontalAlignment.Right
         };
 
-        foreach (var (label, result) in GetButtons(button))
+        var buttons = GetButtons(button);
+        var defaultButton = buttons.Any(candidate => candidate.Result == defaultResult)
+            ? defaultResult : buttons[0].Result;
+        foreach (var (label, result) in buttons)
         {
             var btn = new Button
             {
                 Content = label,
+                IsDefault = result == defaultButton,
+                IsCancel = result == MessageBoxResult.Cancel,
                 MinWidth = 80,
                 Margin = new Thickness(4, 0, 0, 0),
                 Padding = new Thickness(16, 6, 16, 6)

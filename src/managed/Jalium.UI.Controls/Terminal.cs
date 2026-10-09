@@ -1528,10 +1528,11 @@ public class Terminal : Control, IImeSupport
     {
         if (_view == null) return;
 
-        // 3 lines per wheel notch
-        double delta = (e.Delta > 0 ? -3.0 : 3.0) * _cellHeight;
-        _view.SetVerticalOffset(_view.VerticalOffset + delta);
-        e.Handled = true;
+        var input = new MouseWheelScrollInput(e, 0, 3 * _cellHeight);
+        double oldOffset = _view.VerticalOffset;
+        if (input.Vertical != 0)
+            _view.SetVerticalOffset(oldOffset + input.Vertical);
+        input.MarkHandled(e, horizontal: false, vertical: _view.VerticalOffset != oldOffset);
     }
 
     /// <summary>

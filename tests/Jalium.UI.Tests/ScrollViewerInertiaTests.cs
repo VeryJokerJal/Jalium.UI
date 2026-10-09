@@ -296,7 +296,9 @@ public class ScrollViewerInertiaTests
         double width = 240,
         double height = 140)
     {
-        var viewer = new ScrollViewer();
+        var viewer = new ScrollViewer { IsOverlayScrollBarEnabled = false };
+        GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar").UseMacOSScrollBarBehavior = false;
+        GetPrivateField<ScrollBar>(viewer, "_horizontalScrollBar").UseMacOSScrollBarBehavior = false;
         viewer.Arrange(new Rect(0, 0, width, height));
 
         SetPrivateField(viewer, "_extentHeight", extentHeight);

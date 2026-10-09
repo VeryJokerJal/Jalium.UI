@@ -43,12 +43,17 @@ public:
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_RADIAL_GRADIENT; }
 };
 
-class MetalTextFormat final : public TextFormat, public FontMathConstantsProvider {
+class MetalTextFormat final : public TextFormat, public FontMathConstantsProvider, public TextRangeMetricsProvider, public TextLineMetricsProvider, public TextParagraphProvider, public TextParagraphWrappingProvider, public TextFontFallbackProvider, public TextFontCharacterProvider, public FontUnitMetricsProvider {
 public:
     MetalTextFormat(const wchar_t* family, float size, int32_t weight, int32_t style);
+    MetalTextFormat(const wchar_t* family, float size, int32_t weight, int32_t style, float widthPercentage);
     ~MetalTextFormat() override;
 
     bool IsValid() const;
+    JaliumResult SetFontFallbacks(TextFormat* const* formats, uint32_t count) override;
+    JaliumResult SetUnicodeRanges(const JaliumUnicodeRange* ranges, uint32_t count, bool restricted) override;
+    JaliumResult GetCharacterCoverage(const uint32_t* characters, uint32_t count, uint8_t* supported) const override;
+    JaliumResult SetFontDisplay(const JaliumFontDisplayEntry* entries, uint32_t count) override;
     void SetAlignment(int32_t alignment) override;
     void SetParagraphAlignment(int32_t alignment) override;
     void SetTrimming(int32_t trimming) override;
@@ -58,6 +63,7 @@ public:
     JaliumResult MeasureText(const wchar_t* text, uint32_t textLength,
         float maxWidth, float maxHeight, JaliumTextMetrics* metrics) override;
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+    JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) override;
     JaliumResult GetFontMathConstants(JaliumFontMathConstants* constants) override;
     JaliumResult HitTestPoint(const wchar_t* text, uint32_t textLength,
         float maxWidth, float maxHeight, float pointX, float pointY,
@@ -65,8 +71,22 @@ public:
     JaliumResult HitTestTextPosition(const wchar_t* text, uint32_t textLength,
         float maxWidth, float maxHeight, uint32_t textPosition,
         int32_t isTrailingHit, JaliumTextHitTestResult* result) override;
+    JaliumResult HitTestTextRange(const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight, uint32_t textPosition, uint32_t length,
+        JaliumTextRangeMetrics* result) override;
+    JaliumResult GetLineMetrics(const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight, uint32_t textPosition, int32_t backwardAffinity,
+        JaliumTextLineMetrics* result) override;
+    TextParagraph* CreateParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount, float width, float minLineHeight,
+        int32_t alignment, int32_t direction) override;
+    TextParagraph* CreateParagraphWithWrapping(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount, float width, float minLineHeight,
+        int32_t alignment, int32_t direction, int32_t wrapping) override;
 
 private:
+    MetalTextFormat(const wchar_t* family, float size, int32_t weight, int32_t style,
+        float widthPercentage, bool matchWidth);
     bool Rasterize(const wchar_t* text, uint32_t textLength,
         float x, float y, float width, float height,
         const float* deviceTransform,
@@ -119,7 +139,13 @@ private:
 
 class MetalBackend;
 
-class MetalRenderTarget final : public RenderTarget {
+class MetalRenderTarget final : public RenderTarget, public TextParagraphRenderProvider,
+    public EllipticalClipProvider, public EllipticalEffectProvider,
+    public SpreadShadowProvider, public CssBoxShadowProvider,
+    public CssShadowLayerProvider, public FilterDropShadowProvider,
+    public CssTextShadowProvider, public ColorMatrixChainProvider,
+    public InsetShadowLayerProvider, public ShaderEffectStatusProvider,
+    public BlurKernelProvider, public PathClipProvider, public StrokePathClipProvider {
 public:
     MetalRenderTarget(MetalBackend* backend, int32_t width, int32_t height,
         bool composition);
@@ -176,6 +202,8 @@ public:
     void DrawContentBorder(float x, float y, float w, float h, float blRadius,
         float brRadius, Brush* fillBrush, Brush* strokeBrush,
         float strokeWidth) override;
+    void RenderParagraphLine(TextParagraph* paragraph, uint32_t line,
+        float x, float y, float opacity) override;
     void RenderText(const wchar_t* text, uint32_t textLength, TextFormat* format,
         float x, float y, float w, float h, Brush* brush) override;
 
@@ -190,6 +218,13 @@ public:
     void PushRoundedRectClipExclude(float x, float y, float w, float h,
         float rx, float ry) override;
     void PopClip() override;
+    JaliumResult PushPathClip(float startX, float startY, const float* commands,
+        uint32_t commandLength, int32_t fillRule) override;
+    JaliumResult PushStrokePathClip(float startX, float startY,
+        const float* commands, uint32_t length, float width, bool closed,
+        int32_t join, float miter, int32_t cap, const float* dash, uint32_t dashCount,
+        float phase, int32_t edgeMode) override;
+    JaliumResult PushEllipticalRectClip(const JaliumEllipticalRectClip& clip) override;
     void PunchTransparentRect(float x, float y, float w, float h) override;
     void PushOpacity(float opacity) override;
     void PopOpacity() override;
@@ -260,6 +295,8 @@ public:
     void EndEffectCapture() override;
     void DrawBlurEffect(float x, float y, float w, float h, float radius,
         float uvOffsetX = 0, float uvOffsetY = 0) override;
+    JaliumResult DrawBlurEffectWithKernel(float x, float y, float w, float h,
+        float radius, int32_t kernelType, float uvOffsetX, float uvOffsetY) override;
     void DrawDropShadowEffect(float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY, float r, float g,
         float b, float a, float uvOffsetX = 0, float uvOffsetY = 0,
@@ -290,8 +327,41 @@ public:
         int shapeType, float shapeExponent, int neighborCount,
         float fusionRadius, const float* neighborData) override;
 
+    JaliumResult DrawDropShadowEffectElliptical(float x,float y,float w,float h,
+        float blur,float ox,float oy,float r,float g,float b,float a,
+        float uvX,float uvY,const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawDropShadowEffectSpreadElliptical(float x,float y,float w,float h,
+        float blur,float ox,float oy,float r,float g,float b,float a,
+        float uvX,float uvY,const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawCssBoxShadowEffectElliptical(float x,float y,float w,float h,
+        float blur,float ox,float oy,float r,float g,float b,float a,
+        float uvX,float uvY,const JaliumEllipticalRectClip& original,
+        const JaliumEllipticalRectClip& spread) override;
+    JaliumResult PaintCssOuterShadowLayerElliptical(float x,float y,float w,float h,
+        float blur,float ox,float oy,float r,float g,float b,float a,
+        const JaliumEllipticalRectClip& original,const JaliumEllipticalRectClip& spread) override;
+    JaliumResult PaintCssInnerShadowLayerElliptical(float x,float y,float w,float h,
+        float blur,float ox,float oy,float spread,float r,float g,float b,float a,
+        const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawInnerShadowEffectElliptical(float x,float y,float w,float h,
+        float blur,float ox,float oy,float spread,float r,float g,float b,float a,
+        float uvX,float uvY,const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawInnerShadowLayerElliptical(float x,float y,float w,float h,
+        float blur,float ox,float oy,float spread,float r,float g,float b,float a,
+        float uvX,float uvY,const JaliumEllipticalRectClip& contour) override;
+    JaliumResult DrawFilterDropShadowEffect(float x,float y,float w,float h,
+        float captureX,float captureY,float captureW,float captureH,
+        float blur,float ox,float oy,float r,float g,float b,float a) override;
+    JaliumResult DrawCssTextShadows(float x,float y,float w,float h,
+        float captureX,float captureY,float captureW,float captureH,
+        const float* layers,uint32_t layerCount,bool compositeSource) override;
+    JaliumResult DrawColorMatrixChainEffect(float x,float y,float w,float h,
+        const float* matrices,uint32_t matrixCount) override;
+
     JaliumResult QueryGpuStats(JaliumGpuStats* out) const override;
+    JaliumResult GetLastShaderEffectResult() const override;
     JaliumResult QueryGpuTiming(JaliumGpuTimingStats* out) const override;
+    JaliumResult WaitForCompletion() override;
     JaliumResult GetPresentInfo(JaliumPresentInfo* out) const override;
     JaliumResult SetRenderingEngine(JaliumRenderingEngine engine) override;
     JaliumResult ReclaimIdleResources() override;
@@ -309,7 +379,7 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-class MetalBackend final : public IRenderBackend {
+class MetalBackend final : public IRenderBackend, public TextFormatWidthFactory {
 public:
     MetalBackend();
     ~MetalBackend() override;
@@ -339,6 +409,8 @@ public:
         uint32_t spreadMethod = 0) override;
     TextFormat* CreateTextFormat(const wchar_t* fontFamily, float fontSize,
         int32_t fontWeight, int32_t fontStyle) override;
+    TextFormat* CreateTextFormatWithWidth(const wchar_t* fontFamily, float fontSize,
+        int32_t fontWeight, int32_t fontStyle, float widthPercentage) override;
     Bitmap* CreateBitmapFromMemory(const uint8_t* data,
         uint32_t dataSize) override;
     Bitmap* CreateBitmapFromPixels(const uint8_t* pixels, uint32_t width,

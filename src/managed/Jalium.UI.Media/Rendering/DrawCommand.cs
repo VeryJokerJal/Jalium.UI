@@ -104,9 +104,10 @@ internal readonly struct DrawCommand
         new(DrawCommandKind.DrawText, ft, null, null,
             origin.X, origin.Y, 0, 0, 0, 0, 0, 0);
 
-    public static DrawCommand GeometryCmd(Brush? brush, Pen? pen, Geometry geometry) =>
+    public static DrawCommand GeometryCmd(Brush? brush, Pen? pen, Geometry geometry,
+        EdgeMode edgeMode = EdgeMode.Unspecified) =>
         new(DrawCommandKind.DrawGeometry, brush, pen, geometry,
-            0, 0, 0, 0, 0, 0, 0, 0);
+            (double)edgeMode, 0, 0, 0, 0, 0, 0, 0);
 
     public static DrawCommand Image(ImageSource image, Rect rect, BitmapScalingMode scalingMode) =>
         new(DrawCommandKind.DrawImage, image, null, null,

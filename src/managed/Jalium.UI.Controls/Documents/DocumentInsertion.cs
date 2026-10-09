@@ -6,6 +6,41 @@ namespace Jalium.UI.Documents;
 /// </summary>
 internal static class DocumentInsertion
 {
+    internal static bool CanSplitSpan(Span span) => span is Bold or Italic or Underline || span.GetType() == typeof(Span);
+
+    internal static TextPointer SplitParagraph(TextPointer position)
+    {
+        var paragraph = GetValidatedParagraph(position);
+        var siblings = paragraph.OwnerCollection
+            ?? throw new InvalidOperationException("The Paragraph is not attached to a BlockCollection.");
+        // Validate before splitting a Run so an unsupported inline cannot leave
+        // a partially edited tree behind when the operation is rejected.
+        if (DocumentTextEditing.HasNonMergeableAncestor(position))
+            throw new InvalidOperationException("A paragraph break cannot split a non-mergeable inline.");
+        var formatting = DocumentTextEditing.CaptureCharacterFormatting(position.Parent as TextElement ?? paragraph);
+        var boundary = CreateBoundary(position, paragraph);
+        while (!ReferenceEquals(boundary.Collection, paragraph.Inlines))
+            boundary = LiftBoundary(boundary);
+        int index = boundary.Index;
+        var next = new Paragraph();
+        CopyLocalValues(paragraph, next);
+        while (paragraph.Inlines.Count > index)
+        {
+            var inline = paragraph.Inlines[index];
+            paragraph.Inlines.RemoveAt(index);
+            next.Inlines.Add(inline);
+        }
+        if (next.Inlines.Count == 0)
+        {
+            var run = new Run();
+            DocumentTextEditing.ApplyCharacterFormatting(run, formatting);
+            next.Inlines.Add(run);
+        }
+        siblings.Insert(siblings.IndexOf(paragraph) + 1, next);
+        return position.Document.GetPositionAtOffset(next.ContentStart.DocumentOffset, LogicalDirection.Forward)
+            ?? next.ContentStart;
+    }
+
     internal static void InsertInline(Inline inline, TextPointer? insertionPosition)
     {
         ArgumentNullException.ThrowIfNull(inline);
@@ -394,7 +429,7 @@ internal static class DocumentInsertion
         while (values.MoveNext())
         {
             var entry = values.Current;
-            destination.SetValue(entry.Property, entry.Value);
+            if (!entry.Property.ReadOnly) destination.SetValue(entry.Property, entry.Value);
         }
     }
 

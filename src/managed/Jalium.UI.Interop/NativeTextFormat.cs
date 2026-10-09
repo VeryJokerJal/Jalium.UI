@@ -1,4 +1,6 @@
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
+using System.Runtime.InteropServices;
 
 namespace Jalium.UI.Interop;
 
@@ -44,6 +46,86 @@ public sealed class NativeTextFormat : IDisposable
     private int _activeNativeUses;
     private RenderContext.BackendResourceLease? _contextLease;
     private TextTrimmingMode? _currentTrimming;
+    internal bool NoWrap { get; private set; }
+
+    internal void SetNoWrap(bool noWrap)
+    {
+        using var nativeUse = AcquireNativeUse();
+        NativeMethods.TextFormatSetWordWrapping(nativeUse.Handle, noWrap ? 1 : 0);
+        NoWrap = noWrap;
+    }
+
+    internal unsafe JaliumResult SetFontFallbacks(IReadOnlyList<NativeTextFormat> fallbacks)
+    {
+        using var nativeUse = AcquireNativeUse();
+        var handles = new nint[fallbacks.Count];
+        int pinned = 0;
+        try
+        {
+            for (int i = 0; i < fallbacks.Count; i++)
+            {
+                if (!fallbacks[i].TryPinNativeHandle(out handles[i]))
+                    throw new ObjectDisposedException(nameof(NativeTextFormat));
+                pinned++;
+            }
+            fixed (nint* values = handles)
+                return (JaliumResult)NativeMethods.TextFormatSetFontFallbacks(nativeUse.Handle, values, (uint)handles.Length);
+        }
+        finally
+        {
+            for (int i = 0; i < pinned; i++) fallbacks[i].ReleaseNativeUse();
+        }
+    }
+
+    internal unsafe JaliumResult SetUnicodeRanges(CssUnicodeRange[] ranges, bool enabled = true)
+    {
+        using var nativeUse = AcquireNativeUse();
+        var values = ranges.Select(range => new NativeMethods.UnicodeRange { First = (uint)range.Start, Last = (uint)range.End }).ToArray();
+        fixed (NativeMethods.UnicodeRange* pointer = values)
+            return (JaliumResult)NativeMethods.TextFormatSetUnicodeRanges(nativeUse.Handle, pointer, (uint)values.Length, enabled ? 1 : 0);
+    }
+
+    internal unsafe bool TryGetCharacterCoverage(uint[] characters, out byte[] supported)
+    {
+        using var nativeUse = AcquireNativeUse(); supported = new byte[characters.Length];
+        try
+        {
+            fixed (uint* values = characters)
+            fixed (byte* result = supported)
+                return NativeMethods.TextFormatGetCharacterCoverage(nativeUse.Handle, values, (uint)characters.Length, result) == 0;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal unsafe JaliumResult SetFontDisplay(CssRenderingFace[] faces, NativeTextFormat?[] formats)
+    {
+        using var nativeUse = AcquireNativeUse();
+        var entries = new NativeMethods.FontDisplayEntry[faces.Length];
+        var ranges = new GCHandle[faces.Length]; var pinned = new List<NativeTextFormat>();
+        try
+        {
+            for (int i = 0; i < faces.Length; i++)
+            {
+                var values = faces[i].Ranges.Select(range => new NativeMethods.UnicodeRange { First = (uint)range.Start, Last = (uint)range.End }).ToArray();
+                ranges[i] = GCHandle.Alloc(values, GCHandleType.Pinned);
+                nint handle = 0;
+                if (formats[i] is { } format)
+                {
+                    if (!format.TryPinNativeHandle(out handle)) throw new ObjectDisposedException(nameof(NativeTextFormat));
+                    pinned.Add(format);
+                }
+                entries[i] = new() { Format = handle, Ranges = (NativeMethods.UnicodeRange*)ranges[i].AddrOfPinnedObject(),
+                    RangeCount = (uint)values.Length, Flags = faces[i].Waiting ? faces[i].Blocked ? 3u : 1u : 0u };
+            }
+            fixed (NativeMethods.FontDisplayEntry* values = entries)
+                return (JaliumResult)NativeMethods.TextFormatSetFontDisplay(nativeUse.Handle, values, (uint)entries.Length);
+        }
+        finally
+        {
+            foreach (var format in pinned) format.ReleaseNativeUse();
+            foreach (var range in ranges) if (range.IsAllocated) range.Free();
+        }
+    }
 
     /// <summary>
     /// Gets the native handle.
@@ -77,22 +159,36 @@ public sealed class NativeTextFormat : IDisposable
     /// </summary>
     public int FontStyle { get; }
 
+    /// <summary>Gets the requested design width as a percentage of normal.</summary>
+    public float FontWidthPercentage { get; }
+
     /// <summary>
     /// Gets or sets the access sequence for LRU eviction.
     /// </summary>
     internal long LastAccessSequence { get; set; }
 
     internal NativeTextFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle)
+        : this(context, fontFamily, fontSize, fontWeight, fontStyle, 100, false) { }
+
+    internal NativeTextFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle, float widthPercentage)
+        : this(context, fontFamily, fontSize, fontWeight, fontStyle, widthPercentage, true) { }
+
+    private NativeTextFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle,
+        float widthPercentage, bool matchWidth)
     {
         FontFamily = fontFamily;
         FontSize = fontSize;
         FontWeight = fontWeight;
         FontStyle = fontStyle;
+        if (!float.IsFinite(widthPercentage) || widthPercentage < 0) throw new ArgumentOutOfRangeException(nameof(widthPercentage));
+        FontWidthPercentage = widthPercentage;
 
         RenderContext.BackendResourceLease? lease = context.AcquireBackendResourceLease();
         try
         {
-            _handle = NativeMethods.TextFormatCreate(context.Handle, fontFamily, fontSize, fontWeight, fontStyle);
+            _handle = matchWidth && (context.Backend == RenderBackend.Metal || widthPercentage != 100)
+                ? NativeMethods.TextFormatCreateWithWidth(context.Handle, fontFamily, fontSize, fontWeight, fontStyle, widthPercentage)
+                : NativeMethods.TextFormatCreate(context.Handle, fontFamily, fontSize, fontWeight, fontStyle);
             if (_handle == nint.Zero)
             {
                 throw new InvalidOperationException("Failed to create text format");
@@ -304,6 +400,41 @@ public sealed class NativeTextFormat : IDisposable
     }
 
     /// <summary>
+    /// Gets the first visual line fragment of a range. Older libraries and
+    /// backends without this capability return false so callers can fall back.
+    /// </summary>
+    public bool HitTestTextRange(string text, float maxWidth, float maxHeight, uint textPosition, uint length,
+        out TextRangeMetrics result)
+    {
+        using var nativeUse = AcquireNativeUse();
+        result = default;
+        if (textPosition > text.Length || length > text.Length - textPosition) return false;
+        try
+        {
+            return NativeMethods.TextFormatHitTestTextRange(nativeUse.Handle, text, text.Length,
+                maxWidth, maxHeight, textPosition, length, out result) == 0;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    /// <summary>
+    /// Gets the shaped visual row and its physical left/right insertion carets.
+    /// </summary>
+    public bool GetLineMetrics(string text, float maxWidth, float maxHeight, uint textPosition,
+        bool backwardAffinity, out TextLineMetrics result)
+    {
+        using var nativeUse = AcquireNativeUse();
+        result = default;
+        if (textPosition > text.Length) return false;
+        try
+        {
+            return NativeMethods.TextFormatGetLineMetrics(nativeUse.Handle, text, text.Length,
+                maxWidth, maxHeight, textPosition, backwardAffinity ? 1 : 0, out result) == 0;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    /// <summary>
     /// Gets font metrics without measuring text.
     /// This is useful for determining line height before text content is known.
     /// </summary>
@@ -443,16 +574,27 @@ public sealed class NativeTextFormat : IDisposable
     /// </summary>
     internal bool TryAcquireNativeUse(out NativeUse nativeUse)
     {
+        if (!TryPinNativeHandle(out var handle))
+        {
+            nativeUse = default;
+            return false;
+        }
+        nativeUse = new NativeUse(this, handle);
+        return true;
+    }
+
+    private bool TryPinNativeHandle(out nint handle)
+    {
         lock (_lifetimeGate)
         {
             if (Volatile.Read(ref _disposed) != 0 || _handle == nint.Zero)
             {
-                nativeUse = default;
+                handle = nint.Zero;
                 return false;
             }
 
             _activeNativeUses++;
-            nativeUse = new NativeUse(this, _handle);
+            handle = _handle;
             return true;
         }
     }

@@ -31,7 +31,7 @@ public partial class TextBlock
     }
 
     private string GetRunFontFamily(Run run)
-        => run.FontFamily?.GetRenderingSource(this) ?? FontFamily.GetRenderingSource(this);
+        => run.FontFamily?.GetRenderingSource(run) ?? FontFamily.GetRenderingSource(this);
 
     private double GetRunFontSize(Run run)
         => run.FontSize;

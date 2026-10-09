@@ -2029,12 +2029,15 @@ public abstract class Visual : DependencyObject
     {
         Point rootPoint = GetTransformToRoot()?.Transform(point) ?? point;
         IWindowHost? host = FindWindowHost();
-        if (host is null || host.Handle == nint.Zero || !OperatingSystem.IsWindows())
+        if (host is null || host.Handle == nint.Zero)
         {
             return rootPoint;
         }
 
         double scale = host.DpiScale > 0.0 ? host.DpiScale : 1.0;
+        if (OperatingSystem.IsMacOS() && host.TryGetClientOriginOnScreen(out Point origin))
+            return new Point(origin.X + rootPoint.X * scale, origin.Y + rootPoint.Y * scale);
+        if (!OperatingSystem.IsWindows()) return rootPoint;
         var nativePoint = new Interop.Win32.POINT
         {
             X = checked((int)Math.Round(rootPoint.X * scale)),
@@ -2049,6 +2052,12 @@ public abstract class Visual : DependencyObject
     {
         Point rootPoint = point;
         IWindowHost? host = FindWindowHost();
+        if (host is not null && host.Handle != nint.Zero && OperatingSystem.IsMacOS() &&
+            host.TryGetClientOriginOnScreen(out Point origin))
+        {
+            double scale = host.DpiScale > 0.0 ? host.DpiScale : 1.0;
+            rootPoint = new Point((point.X - origin.X) / scale, (point.Y - origin.Y) / scale);
+        }
         if (host is not null && host.Handle != nint.Zero && OperatingSystem.IsWindows())
         {
             var nativePoint = new Interop.Win32.POINT

@@ -28,7 +28,12 @@ static_assert(sizeof(MetalVertex) == 16);
 // The shader consumes this as a flat float array. Keeping the ABI scalar avoids
 // C++/MSL alignment drift and makes generated/reflected HLSL bindings easy to
 // validate. See kMetalParam* in metal_render_target.cpp.
-using MetalShaderParams = std::array<float, 512>;
+struct MetalShaderParams : std::array<float, 1024> {
+#ifdef __APPLE__
+    // CPU-side binding metadata; only the scalar array is uploaded to shaders.
+    id<MTLBuffer> gradientStops = nil;
+#endif
+};
 
 #ifdef __APPLE__
 struct MetalInkLayer {

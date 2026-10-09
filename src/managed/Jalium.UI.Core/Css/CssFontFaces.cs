@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;
 using System.Text;
+using System.Globalization;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
@@ -15,6 +16,35 @@ internal static class CssFontFaces
     private static readonly List<WeakReference<Document>> s_known = [];
     private static readonly object s_gate = new();
     private static readonly ConditionalWeakTable<Dispatcher, ConcurrentQueue<Action>> s_notifications = new();
+    private static readonly ConditionalWeakTable<CssNode, Dictionary<RequestKey, FontRequest>> s_requests = new();
+    private static readonly ConcurrentDictionary<long, WeakReference<FontRequest>> s_requestIds = new();
+    private static long s_nextRequest;
+    private readonly record struct RequestKey(string Families, int Weight, int Style, double Width);
+    private sealed record FontRequest(long Id, CssNode Node, string[] Families, int Weight, int Style, double Width);
+
+    internal static string MaterializeSource(string source, string? text)
+    {
+        if (!CssFontRenderingPlan.TryDecode(source, out var plan) || plan.RequestId == 0 ||
+            !s_requestIds.TryGetValue(plan.RequestId, out var weak) || !weak.TryGetTarget(out var request) ||
+            !request.Node.Dispatcher.CheckAccess()) return source;
+        return For(request.Node).Resolve(request.Node, request.Families, request.Weight, request.Style, text, request.Width);
+    }
+
+    private static long RequestId(CssNode node, IReadOnlyList<string> families, int weight, int style, double width)
+    {
+        var requests = s_requests.GetValue(node, static _ => new());
+        var key = new RequestKey(JoinFamilies(families), weight, style, width);
+        if (requests.TryGetValue(key, out var request)) return request.Id;
+        long id = Interlocked.Increment(ref s_nextRequest);
+        request = new(id, node, families.ToArray(), weight, style, width); requests[key] = request;
+        s_requestIds[id] = new(request);
+        if ((id & 127) == 0)
+            foreach (var entry in s_requestIds) if (!entry.Value.TryGetTarget(out _)) s_requestIds.TryRemove(entry.Key, out _);
+        return id;
+    }
+
+    private static string JoinFamilies(IEnumerable<string> families) => string.Join(", ", families.Select(name =>
+        name.IndexOfAny([',', '\'', '"', '\\']) >= 0 ? "\"" + name.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"" : name));
 
     internal static void FlushNotifications(Dispatcher dispatcher)
     {
@@ -81,11 +111,11 @@ internal static class CssFontFaces
             : Resolve(node, family.Source, weight, style, text);
     }
 
-    internal static string Resolve(CssNode node, string family, int weight, int style, string? text = null)
-        => IsActive ? For(node).Resolve(node, family, weight, style, text) : family;
+    internal static string Resolve(CssNode node, string family, int weight, int style, string? text = null, double? width = null)
+        => IsActive ? For(node).Resolve(node, TextMeasurement.EnumerateFontFamilyNames(family).ToArray(), weight, style, text, width) : family;
 
-    internal static string Resolve(CssNode node, IReadOnlyList<string> families, int weight, int style, string? text = null)
-        => IsActive ? For(node).Resolve(node, families, weight, style, text) : string.Join(", ", families);
+    internal static string Resolve(CssNode node, IReadOnlyList<string> families, int weight, int style, string? text = null, double? width = null)
+        => IsActive ? For(node).Resolve(node, families, weight, style, text, width) : string.Join(", ", families);
 
     internal static Task Ready(DependencyObject root, CancellationToken token) =>
         For(CssNode.Get(root)).Ready(token);
@@ -147,9 +177,116 @@ internal static class CssFontFaces
         }
 
         internal string Resolve(CssNode node, string family, int weight, int style, string? text)
-            => Resolve(node, family.Split(','), weight, style, text);
+            => Resolve(node, TextMeasurement.EnumerateFontFamilyNames(family).ToArray(), weight, style, text);
 
-        internal string Resolve(CssNode node, IReadOnlyList<string> families, int weight, int style, string? text)
+        internal string Resolve(CssNode node, IReadOnlyList<string> families, int weight, int style, string? text, double? width = null)
+        {
+            if (OperatingSystem.IsMacOS() && TextMeasurement.TryGetFontCharacterCoverage(
+                FrameworkElement.DefaultFontFamilyName, 400, 0, [32], out _))
+                return ResolveMac(node, families, weight, style, text, width ?? CssFontStretchValue.Computed(node));
+            return ResolveLegacy(node, families, weight, style, text);
+        }
+
+        private sealed record Candidate(CssFontFaceRule? Rule, Entry? Entry, string? Local, int Weight, double Width)
+        {
+            internal string? Family => Local ?? Entry?.RenderFamily;
+            internal CssUnicodeRange[] Ranges => Rule?.Ranges ?? [new(0, 0x10ffff)];
+            internal bool Contains(int scalar) => Rule?.Contains(scalar) ?? true;
+        }
+
+        private string ResolveMac(CssNode node, IReadOnlyList<string> families, int weight, int style, string? text, double width)
+        {
+            var candidates = new List<Candidate>(); bool hasRules = false;
+            foreach (var name in families)
+            {
+                var matches = _rules.Where(rule => rule.Family.Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (matches.Length == 0)
+                {
+                    if (NativeMethods.FontFamilyIsAvailable(name) != 0) candidates.Add(new(null, null, name, weight, width));
+                    continue;
+                }
+                hasRules = true;
+                // Select face descriptors before matching its composite unicode subsets.
+                var best = matches.OrderBy(rule => WidthDistance(rule, width)).ThenBy(rule => StyleDistance(rule.Style, style))
+                    .ThenBy(rule => WeightDistance(rule, weight)).First();
+                foreach (var rule in matches.Where(rule => rule.MinimumWidth == best.MinimumWidth && rule.MaximumWidth == best.MaximumWidth &&
+                    rule.Style == best.Style && rule.MinimumWeight == best.MinimumWeight && rule.MaximumWeight == best.MaximumWeight))
+                {
+                    if (!_entries.TryGetValue(rule, out var entry)) _entries[rule] = entry = new(rule);
+                    entry.Observe(node);
+                    candidates.Add(new(rule, entry, null, (int)Math.Clamp(weight, rule.MinimumWeight, rule.MaximumWeight),
+                        Math.Clamp(width, rule.MinimumWidth, rule.MaximumWidth)));
+                }
+            }
+            if (!hasRules) return FontWidthRenderingSource.Wrap(JoinFamilies(families), width);
+            // Font timers start on the first attempt to use a face. Already loaded
+            // fallbacks can paint while it waits, without starting more downloads.
+            var clusters = new List<(int[] Original, int[] Normalized)>();
+            var enumerator = StringInfo.GetTextElementEnumerator(text ?? " ");
+            while (enumerator.MoveNext())
+            {
+                string cluster = enumerator.GetTextElement();
+                int[] Required(string value) => value.EnumerateRunes().Where(rune => !IsIgnorable(rune.Value)).Select(rune => rune.Value).ToArray();
+                var original = Required(cluster);
+                string normalized;
+                try { normalized = cluster.Normalize(NormalizationForm.FormC); }
+                catch (ArgumentException) { normalized = cluster; } // Unpaired UTF-16 still uses the replacement rune.
+                if (original.Length > 0) clusters.Add((original, Required(normalized)));
+            }
+            var scalars = clusters.SelectMany(cluster => cluster.Original.Concat(cluster.Normalized)).Distinct().Select(value => (uint)value).ToArray();
+            var coverage = new Dictionary<Candidate, HashSet<int>>();
+            foreach (var candidate in candidates)
+                if (candidate.Family is { } family && TextMeasurement.TryGetFontCharacterCoverage(
+                    FontWidthRenderingSource.Wrap(family, candidate.Width), candidate.Weight, style, scalars, out var supported))
+                    coverage[candidate] = scalars.Where((_, index) => supported[index] != 0).Select(value => (int)value).ToHashSet();
+            bool Demand(int[] original, int[] normalized)
+            {
+                foreach (var candidate in candidates)
+                {
+                    bool Declared(int[] values) => values.Length > 0 && values.All(candidate.Contains);
+                    bool Covers(int[] values) => Declared(values) && coverage.TryGetValue(candidate, out var available) && values.All(available.Contains);
+                    if (candidate.Family is not null)
+                    {
+                        if (Covers(original) || Covers(normalized)) return true;
+                    }
+                    else if (candidate.Entry is { Finished: false } entry && (Declared(original) || Declared(normalized)))
+                    { entry.Start(); return true; }
+                }
+                return false;
+            }
+            foreach (var cluster in clusters)
+                if (!Demand(cluster.Original, cluster.Normalized))
+                    foreach (int scalar in cluster.Original) Demand([scalar], [scalar]);
+            var faces = candidates.Where(candidate => candidate.Family is not null || candidate.Entry is { Started: true, Finished: false })
+                .Select(candidate => new CssRenderingFace(candidate.Family, candidate.Weight, candidate.Ranges,
+                    candidate.Family is null, candidate.Entry?.Blocked ?? false, candidate.Width)).ToArray();
+            if (faces.Length > 4096 || faces.Sum(face => (long)face.Ranges.Length) > 65536)
+                throw new InvalidOperationException("CSS font cascade exceeds the supported size");
+            int metrics = Array.FindIndex(faces, face => !face.Waiting && face.Contains(32));
+            bool unresolved = candidates.Any(candidate => candidate.Entry is { Finished: false });
+            if (!unresolved && faces.All(face => face.Unrestricted && face.Weight == weight && face.Width == width) && metrics == 0)
+                return FontWidthRenderingSource.Wrap(JoinFamilies(faces.Select(face => face.Family!)), width);
+            var result = FontWidthRenderingSource.Wrap(new CssFontRenderingPlan(RequestId(node, families, weight, style, width), metrics, faces).Encode(), width);
+            // Preserve the existing whole-text block contract when its complete
+            // range is waiting first. Partial masks are handled by the native runs.
+            return faces.FirstOrDefault() is { Waiting: true, Blocked: true, Unrestricted: true } ? BlockPrefix + result : result;
+        }
+
+        private static bool IsIgnorable(int scalar) => scalar is 0x9 or 0xa or 0xd or 0x200b or 0x200c or 0x200d or 0x2060 or 0xfeff ||
+            scalar is >= 0xfe00 and <= 0xfe0f or >= 0xe0100 and <= 0xe01ef || Rune.GetUnicodeCategory(new Rune(scalar)) == UnicodeCategory.Format;
+
+        private static (int Order, double Distance) WidthDistance(CssFontFaceRule rule, double requested)
+        {
+            if (rule.MinimumWidth <= requested && rule.MaximumWidth >= requested) return (0, 0);
+            bool below = rule.MaximumWidth < requested;
+            return (below == (requested <= 100) ? 1 : 2,
+                below ? requested - rule.MaximumWidth : rule.MinimumWidth - requested);
+        }
+
+        private static int StyleDistance(int candidate, int requested) => candidate == requested ? 0 :
+            requested == 0 ? candidate == 2 ? 1 : 2 : candidate == 0 ? 2 : 1;
+
+        private string ResolveLegacy(CssNode node, IReadOnlyList<string> families, int weight, int style, string? text)
         {
             var resolved = new List<string>(); var blocked = false;
             foreach (var raw in families)
@@ -205,7 +342,9 @@ internal static class CssFontFaces
         internal Task Task => _task ?? System.Threading.Tasks.Task.CompletedTask;
         private int BlockPeriod => rule.Display is "swap" ? 0 : rule.Display is "optional" or "fallback" ? 100 : 3000;
         private long SwapDeadline => rule.Display == "optional" ? 100 : rule.Display == "fallback" ? 3100 : long.MaxValue;
-        internal bool Blocked { get { lock (_gate) return !_finished && !_disposed && Environment.TickCount64 - _start < BlockPeriod; } }
+        internal bool Started { get { lock (_gate) return _task is not null; } }
+        internal bool Finished { get { lock (_gate) return _finished || _disposed; } }
+        internal bool Blocked { get { lock (_gate) return _task is not null && !_finished && !_disposed && Environment.TickCount64 - _start < BlockPeriod; } }
         internal string? RenderFamily { get { lock (_gate) return _family; } }
         internal string[] Errors { get { lock (_gate) return _errors.ToArray(); } }
 

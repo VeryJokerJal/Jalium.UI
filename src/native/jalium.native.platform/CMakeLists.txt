@@ -2,6 +2,7 @@ project(jalium.native.platform)
 
 set(HEADERS
     include/jalium_platform.h
+    include/jalium_accessibility.h
 )
 
 # Platform-specific sources
@@ -216,6 +217,11 @@ elseif(APPLE)
     set(PLATFORM_SOURCES
         src/platform_apple.mm
     )
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        # Keep the shared Apple static ABI linkable on UIKit targets. This
+        # bridge is AppKit-only and the managed attachment is macOS-gated.
+        list(APPEND PLATFORM_SOURCES src/platform_accessibility_stubs_apple.cpp)
+    endif()
 endif()
 
 set(SOURCES
@@ -331,7 +337,8 @@ elseif(APPLE)
     )
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
-        target_link_libraries(${PROJECT_NAME} PRIVATE ${APPKIT_FRAMEWORK})
+        find_library(UTTYPE_FRAMEWORK UniformTypeIdentifiers REQUIRED)
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${APPKIT_FRAMEWORK} ${UTTYPE_FRAMEWORK})
     else()
         find_library(UIKIT_FRAMEWORK UIKit REQUIRED)
         target_link_libraries(${PROJECT_NAME} PRIVATE ${UIKIT_FRAMEWORK})
@@ -344,7 +351,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     DEBUG_POSTFIX ""
 )
 
-option(JALIUM_PLATFORM_BUILD_TESTS "Build jalium.native.platform Linux tests" OFF)
+option(JALIUM_PLATFORM_BUILD_TESTS "Build jalium.native.platform tests" OFF)
 if(JALIUM_PLATFORM_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
     enable_testing()
     target_compile_definitions(${PROJECT_NAME} PRIVATE JALIUM_PLATFORM_TEST_HOOKS=1)
@@ -371,4 +378,90 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
              COMMAND jalium.native.platform.tests)
     set_tests_properties(jalium.native.platform.linux PROPERTIES
         ENVIRONMENT "JALIUM_WINDOW_SYSTEM=x11")
+endif()
+
+if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    enable_testing()
+    add_executable(jalium.native.platform.tests tests/platform_apple_tests.mm)
+    target_include_directories(jalium.native.platform.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.tests PRIVATE
+        ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos COMMAND jalium.native.platform.tests)
+    add_executable(jalium.native.platform.window.tests tests/platform_apple_window_tests.mm)
+    target_include_directories(jalium.native.platform.window.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos.window COMMAND jalium.native.platform.window.tests)
+    add_test(NAME jalium.native.platform.macos.window.properties
+        COMMAND jalium.native.platform.window.tests --properties-only)
+    add_test(NAME jalium.native.platform.macos.window.menu-tracking
+        COMMAND jalium.native.platform.window.tests --menu-tracking-only)
+    add_test(NAME jalium.native.platform.macos.window.document-menu
+        COMMAND jalium.native.platform.window.tests --document-menu-only)
+    set_tests_properties(jalium.native.platform.macos.window PROPERTIES TIMEOUT 60)
+    add_executable(jalium.native.platform.accessibility.tests tests/platform_apple_accessibility_tests.mm)
+    target_include_directories(jalium.native.platform.accessibility.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.accessibility.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.accessibility.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos.accessibility COMMAND jalium.native.platform.accessibility.tests)
+    set_tests_properties(jalium.native.platform.macos.accessibility PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.platform.text-font.tests tests/platform_apple_text_font_tests.mm)
+    target_include_directories(jalium.native.platform.text-font.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.text-font.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.text-font.tests PRIVATE
+        ${PROJECT_NAME} jalium.native.core "-framework AppKit" "-framework CoreText")
+    add_test(NAME jalium.native.platform.macos.text-font COMMAND jalium.native.platform.text-font.tests)
+    set_tests_properties(jalium.native.platform.macos.text-font PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.platform.window.accessibility.tests
+        tests/platform_apple_window_accessibility_tests.mm)
+    target_include_directories(jalium.native.platform.window.accessibility.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.accessibility.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.accessibility.tests PRIVATE
+        ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos.window.accessibility
+        COMMAND jalium.native.platform.window.accessibility.tests)
+    set_tests_properties(jalium.native.platform.macos.window.accessibility PROPERTIES TIMEOUT 240)
+    add_executable(jalium.native.platform.window.resize.tests tests/platform_apple_resize_drag_tests.mm)
+    target_include_directories(jalium.native.platform.window.resize.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.resize.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.resize.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos.window.resize-drag
+        COMMAND jalium.native.platform.window.resize.tests)
+    set_tests_properties(jalium.native.platform.macos.window.resize-drag PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.platform.window.menu.tests tests/platform_apple_window_menu_tests.mm)
+    target_include_directories(jalium.native.platform.window.menu.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.menu.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.menu.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos.window.system-menu COMMAND jalium.native.platform.window.menu.tests)
+    set_tests_properties(jalium.native.platform.macos.window.system-menu PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.platform.window.startup.tests tests/platform_apple_window_startup_tests.mm)
+    target_include_directories(jalium.native.platform.window.startup.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.startup.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.startup.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos.window.startup COMMAND jalium.native.platform.window.startup.tests)
+    set_tests_properties(jalium.native.platform.macos.window.startup PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.platform.window.drag.tests tests/platform_apple_window_drag_tests.mm)
+    target_include_directories(jalium.native.platform.window.drag.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.drag.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.drag.tests PRIVATE ${PROJECT_NAME} "-framework AppKit" "-framework UniformTypeIdentifiers")
+    add_test(NAME jalium.native.platform.macos.window.drag-lifetime COMMAND jalium.native.platform.window.drag.tests)
+    set_tests_properties(jalium.native.platform.macos.window.drag-lifetime PROPERTIES TIMEOUT 60)
 endif()

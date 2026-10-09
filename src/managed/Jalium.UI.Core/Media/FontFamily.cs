@@ -54,8 +54,8 @@ public sealed class FontFamily
     public string Source => _source;
     internal bool IsCssFamily { get; init; }
     internal Jalium.UI.Styling.CssComputedFontFamily? CssComputedFamily { get; init; }
-    internal string GetRenderingSource(DependencyObject owner) => IsCssFamily
-        ? Jalium.UI.Styling.CssFontFaces.RenderingFamily(owner, this) : _source;
+    internal string GetRenderingSource(DependencyObject owner) => FontWidthRenderingSource.ForOwner(IsCssFamily
+        ? Jalium.UI.Styling.CssFontFaces.RenderingFamily(owner, this) : _source, owner);
 
     /// <summary>Gets the base URI used to resolve relative font references.</summary>
     public Uri? BaseUri => _baseUri;

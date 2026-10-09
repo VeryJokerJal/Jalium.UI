@@ -12,7 +12,7 @@ using RenderTargetBitmap = Jalium.UI.Media.Imaging.RenderTargetBitmap;
 namespace Jalium.UI;
 
 /// <summary>
-/// Platform-specific (Windows) drag-and-drop implementation.
+/// Platform-specific drag-and-drop implementation.
 /// Registers a managed DoDragDrop handler that runs a nested Win32 message loop,
 /// performing hit testing and firing DragEnter/DragOver/DragLeave/Drop events.
 /// </summary>
@@ -63,10 +63,10 @@ internal static partial class DragDropPlatform
                 DragDrop.AllowDropChangedOverride = OnAllowDropChanged;
                 DragDrop.VisualTreeChangedOverride = ReconcileDropTargetsInSubtree;
             }
-            else if (OperatingSystem.IsLinux())
+            else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             {
-                DragDrop.DoDragDropOverride = DoLinuxDragDrop;
-                DragDrop.DoShellDragDropOverride = DoLinuxDragDrop;
+                DragDrop.DoDragDropOverride = DoNativeDragDrop;
+                DragDrop.DoShellDragDropOverride = DoNativeDragDrop;
             }
 
             Volatile.Write(ref _initialized, 1);
@@ -468,6 +468,8 @@ internal static partial class DragDropPlatform
         {
             if (current is UIElement uiElement)
             {
+                if (!uiElement.IsEnabled || !uiElement.IsVisible ||
+                    Jalium.UI.Styling.CssDisplayProperties.IsExitInert(uiElement)) return null;
                 bool allowDrop = (bool)(uiElement.GetValue(DragDrop.AllowDropProperty) ?? false);
                 if (allowDrop)
                     return uiElement;
@@ -659,33 +661,41 @@ internal static partial class DragDropPlatform
 
     #region Part
 
-    private static DragDropEffects DoLinuxDragDrop(
+    private static DragDropEffects DoNativeDragDrop(
         DependencyObject dragSource,
         IDataObject data,
         DragDropEffects allowedEffects)
     {
         Window? window = FindOwningWindow(dragSource);
-        if (window == null)
+        if (window == null || (OperatingSystem.IsMacOS() && window.Handle == 0))
             return DragDropEffects.None;
 
-        using var payload = LinuxDragPayload.Create(data);
+        using var payload = NativeDragPayload.Create(data);
         if (payload.Items.Length == 0)
             return DragDropEffects.None;
 
-        using LinuxDragImagePayload? dragImage = LinuxDragImagePayload.TryCreate(dragSource);
+        using NativeDragImagePayload? dragImage = NativeDragImagePayload.TryCreate(dragSource);
 
-        uint effect = window.BeginPlatformDrag(
-            payload.Items,
-            (uint)allowedEffects & 0x07,
-            nativeEffect => RaiseLinuxGiveFeedback(
-                dragSource, (DragDropEffects)(nativeEffect & 0x07)),
-            (nativeKeyStates, escapePressed) => RaiseLinuxQueryContinueDrag(
-                dragSource, (DragDropKeyStates)nativeKeyStates, escapePressed),
-            dragImage?.Image);
-        return (DragDropEffects)(effect & 0x07);
+        using var sourceScope = OperatingSystem.IsMacOS()
+            ? MacOSDragDataObject.BeginSource(window, data) : null;
+        if (OperatingSystem.IsMacOS() && sourceScope == null) return DragDropEffects.None;
+
+        try
+        {
+            uint effect = window.BeginPlatformDrag(
+                payload.Items,
+                (uint)allowedEffects & 0x07,
+                nativeEffect => RaiseNativeGiveFeedback(
+                    dragSource, (DragDropEffects)(nativeEffect & 0x07)),
+                (nativeKeyStates, escapePressed) => RaiseNativeQueryContinueDrag(
+                    dragSource, (DragDropKeyStates)nativeKeyStates, escapePressed),
+                dragImage?.Image);
+            return (DragDropEffects)(effect & 0x07);
+        }
+        finally { if (OperatingSystem.IsMacOS()) window.CompletePlatformDragInput(); }
     }
 
-    internal static void RaiseLinuxGiveFeedback(
+    internal static void RaiseNativeGiveFeedback(
         DependencyObject dragSource,
         DragDropEffects effects)
     {
@@ -702,7 +712,7 @@ internal static partial class DragDropPlatform
             });
     }
 
-    internal static PlatformDragContinueAction RaiseLinuxQueryContinueDrag(
+    internal static PlatformDragContinueAction RaiseNativeQueryContinueDrag(
         DependencyObject dragSource,
         DragDropKeyStates keyStates,
         bool escapePressed)
@@ -766,6 +776,11 @@ internal static partial class DragDropPlatform
     {
         if (source is Window sourceWindow)
             return sourceWindow;
+        while (source is ContentElement content)
+        {
+            if (ContentOperations.GetParent(content) is not { } parent) return null;
+            source = parent;
+        }
         if (source is not Visual visual)
             return null;
 
@@ -779,43 +794,15 @@ internal static partial class DragDropPlatform
         return null;
     }
 
-    private sealed class LinuxDragPayload : IDisposable
+    private sealed class NativeDragPayload : IDisposable
     {
         private readonly List<nint> _allocations = [];
         public NativeDragDataItem[] Items { get; private set; } = [];
 
-        public static LinuxDragPayload Create(IDataObject data)
+        public static NativeDragPayload Create(IDataObject data)
         {
-            var payload = new LinuxDragPayload();
-            var representations = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
-
-            if (data.GetDataPresent(DataFormats.FileDrop) &&
-                data.GetData(DataFormats.FileDrop) is string[] files && files.Length != 0)
-            {
-                representations["text/uri-list"] = Encoding.UTF8.GetBytes(BuildUriList(files));
-            }
-
-            string? text = data.GetData(DataFormats.UnicodeText) as string ??
-                           data.GetData(DataFormats.Text) as string ??
-                           data.GetData(DataFormats.StringFormat) as string;
-            if (text != null)
-            {
-                byte[] utf8 = Encoding.UTF8.GetBytes(text);
-                representations["text/plain;charset=utf-8"] = utf8;
-                representations["text/plain"] = utf8;
-                representations["UTF8_STRING"] = utf8;
-            }
-
-            foreach (string format in data.GetFormats(false))
-            {
-                if (!format.Contains('/', StringComparison.Ordinal) || representations.ContainsKey(format))
-                    continue;
-                object? value = data.GetData(format, false);
-                if (value is byte[] raw)
-                    representations[format] = raw;
-                else if (value is string stringValue)
-                    representations[format] = Encoding.UTF8.GetBytes(stringValue);
-            }
+            var payload = new NativeDragPayload();
+            var representations = ClipboardPlatform.BuildCrossPlatformRepresentations(data);
 
             var items = new List<NativeDragDataItem>(representations.Count);
             foreach ((string mime, byte[] representation) in representations)
@@ -842,22 +829,6 @@ internal static partial class DragDropPlatform
             return payload;
         }
 
-        private static string BuildUriList(IEnumerable<string> files)
-        {
-            var builder = new StringBuilder();
-            foreach (string file in files)
-            {
-                if (string.IsNullOrWhiteSpace(file))
-                    continue;
-                if (Uri.TryCreate(file, UriKind.Absolute, out Uri? existing) && existing.IsFile)
-                    builder.Append(existing.AbsoluteUri);
-                else
-                    builder.Append(new Uri(Path.GetFullPath(file)).AbsoluteUri);
-                builder.Append("\r\n");
-            }
-            return builder.ToString();
-        }
-
         public void Dispose()
         {
             foreach (nint allocation in _allocations)
@@ -867,11 +838,11 @@ internal static partial class DragDropPlatform
         }
     }
 
-    private sealed class LinuxDragImagePayload : IDisposable
+    private sealed class NativeDragImagePayload : IDisposable
     {
         private nint _pixels;
 
-        private LinuxDragImagePayload(
+        private NativeDragImagePayload(
             byte[] pixels, int width, int height, int stride, Point hotspot)
         {
             _pixels = Marshal.AllocHGlobal(pixels.Length);
@@ -889,7 +860,7 @@ internal static partial class DragDropPlatform
 
         internal NativeDragImage Image { get; }
 
-        internal static LinuxDragImagePayload? TryCreate(DependencyObject dragSource)
+        internal static NativeDragImagePayload? TryCreate(DependencyObject dragSource)
         {
             if (!DragDrop.GetShowDragVisual(dragSource))
                 return null;
@@ -954,7 +925,7 @@ internal static partial class DragDropPlatform
                 {
                     hotspot = new Point(width / 2.0, height / 2.0);
                 }
-                return new LinuxDragImagePayload(
+                return new NativeDragImagePayload(
                     pixels, width, height, stride, hotspot);
             }
             catch (Exception exception) when (
@@ -983,200 +954,165 @@ internal static partial class DragDropPlatform
 /// data-device implementations both produce the same native event stream, so
 /// hit testing and routed-event semantics stay identical across compositors.
 /// </summary>
-internal static class LinuxDropTarget
+internal static class NativeDropTarget
 {
     private sealed class DropState
     {
         public ulong SessionId;
+        public nint SourceHandle;
         public UIElement? CurrentTarget;
-        public DataObject CurrentData = new();
+        public IDataObject CurrentData = new DataObject();
         public DragDropEffects AllowedEffects;
         public Point Position;
+        public uint KeyStates;
     }
 
     private static readonly Dictionary<Window, DropState> s_states = [];
 
+    private static bool Available(Window window) => window.IsEnabled && window.IsVisible &&
+        !window.IsCloseRequestedForPlatformTermination && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(window);
+    private static bool Current(Window window, DropState state) => Available(window) &&
+        s_states.TryGetValue(window, out var active) && ReferenceEquals(active, state);
+
     internal static void RevokeWindow(Window window)
     {
-        if (s_states.Remove(window, out DropState? state))
-            RaiseLeave(state);
+        if (!s_states.Remove(window, out var state)) return;
+        try { RaiseLeave(window, state); }
+        finally { (state.CurrentData as MacOSDragDataObject)?.Detach(); }
+    }
+
+    internal static void RevokeSource(nint sourceHandle)
+    {
+        List<Exception>? errors = null;
+        foreach (var pair in s_states.Where(p => p.Value.SourceHandle == sourceHandle).ToArray())
+            if (s_states.TryGetValue(pair.Key, out var active) && ReferenceEquals(active, pair.Value))
+            {
+                try { RevokeWindow(pair.Key); }
+                catch (Exception error) { (errors ??= []).Add(error); }
+            }
+        if (errors is { Count: 1 })
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(errors[0]).Throw();
+        else if (errors is { Count: > 1 })
+            throw new AggregateException(errors);
     }
 
     internal static void ProcessEvent(Window window, PlatformEvent evt)
     {
-        if (!OperatingSystem.IsLinux())
-            return;
-
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
+        if (!Available(window)) { RevokeWindow(window); return; }
         switch (evt.Type)
         {
-            case PlatformEventType.DragEnter:
-                BeginOrReplace(window, evt);
-                break;
-
-            case PlatformEventType.DragOver:
-                ProcessOver(window, evt);
-                break;
-
-            case PlatformEventType.Drop:
-                ProcessDrop(window, evt);
-                break;
-
-            case PlatformEventType.DragLeave:
-                End(window, evt, notifyNative: true);
-                break;
-
+            case PlatformEventType.DragEnter: BeginOrReplace(window, evt); break;
+            case PlatformEventType.DragOver: ProcessOver(window, evt); break;
+            case PlatformEventType.Drop: ProcessDrop(window, evt); break;
+            case PlatformEventType.DragLeave: End(window, evt, true); break;
             case PlatformEventType.DragFinished:
-                // Source completion is reported to the synchronous
-                // jalium_drag_begin call. It is intentionally not routed as a
-                // target event, but it must tear down a possible self-drag.
-                End(window, evt, notifyNative: false);
+                // macOS source completion has no target visit token. Its scoped
+                // source identity cleans only destinations belonging to that source.
+                if (!OperatingSystem.IsMacOS() || evt.DragSessionId != 0) End(window, evt, false);
                 break;
         }
     }
 
     private static void BeginOrReplace(Window window, PlatformEvent evt)
     {
-        if (s_states.Remove(window, out DropState? previous))
-            RaiseLeave(previous);
-
         var state = new DropState
         {
             SessionId = evt.DragSessionId,
-            CurrentData = CreateDataObject(evt.DragMimeTypes, evt.DragDataMimeType, evt.DragData),
             AllowedEffects = MaskEffects(evt.DragAllowedEffects),
-            Position = ToDip(window, evt),
+            Position = ToDip(window, evt), KeyStates = evt.DragKeyStates,
         };
-        s_states[window] = state;
-
-        state.CurrentTarget = HitDropTarget(window, state.Position);
-        DragDropEffects selected = DragDropEffects.None;
-        if (state.CurrentTarget != null)
+        if (OperatingSystem.IsMacOS())
         {
-            selected = RaiseDragEvent(
-                state.CurrentTarget,
-                DragDrop.PreviewDragEnterEvent,
-                DragDrop.DragEnterEvent,
-                state.CurrentData,
-                MapKeyStates(evt.DragKeyStates),
-                state.AllowedEffects,
-                state.Position);
+            state.SourceHandle = window.GetPlatformDragSource(state.SessionId);
+            state.CurrentData = MacOSDragDataObject.GetSourceData(state.SourceHandle) ??
+                new MacOSDragDataObject(evt.DragMimeTypes ?? [], mime => window.GetPlatformDragData(state.SessionId, mime));
         }
+        else state.CurrentData = CreateDataObject(evt.DragMimeTypes, evt.DragDataMimeType, evt.DragData);
 
-        window.SetPlatformDragEffect(state.SessionId,
-            (uint)SelectSingleEffect(selected, state.AllowedEffects, evt.DragKeyStates));
+        s_states.TryGetValue(window, out var previous);
+        s_states[window] = state;
+        if (previous != null)
+        {
+            try { RaiseLeave(window, previous); }
+            finally { (previous.CurrentData as MacOSDragDataObject)?.Detach(); }
+        }
+        if (!Current(window, state)) return;
+        UIElement? target = HitDropTarget(window, state.Position);
+        state.CurrentTarget = target;
+        var selected = target == null ? DragDropEffects.None : RaiseTracked(window, state, target,
+            DragDrop.PreviewDragEnterEvent, DragDrop.DragEnterEvent);
+        SelectEffect(window, state, selected);
+    }
+
+    private static bool UpdateTarget(Window window, DropState state)
+    {
+        UIElement? target = HitDropTarget(window, state.Position);
+        if (ReferenceEquals(target, state.CurrentTarget)) return Current(window, state);
+        RaiseLeave(window, state);
+        if (!Current(window, state)) return false;
+        // Leave handlers may change the visual tree without replacing the visit.
+        target = HitDropTarget(window, state.Position);
+        state.CurrentTarget = target;
+        if (target != null) _ = RaiseTracked(window, state, target,
+            DragDrop.PreviewDragEnterEvent, DragDrop.DragEnterEvent);
+        return Current(window, state);
+    }
+
+    private static bool TryUpdate(Window window, PlatformEvent evt, out DropState state)
+    {
+        if (!s_states.TryGetValue(window, out state!) || state.SessionId != evt.DragSessionId) return false;
+        state.Position = ToDip(window, evt);
+        state.AllowedEffects = MaskEffects(evt.DragAllowedEffects);
+        state.KeyStates = evt.DragKeyStates;
+        return Current(window, state) && UpdateTarget(window, state);
     }
 
     private static void ProcessOver(Window window, PlatformEvent evt)
     {
-        if (!s_states.TryGetValue(window, out DropState? state) || state.SessionId != evt.DragSessionId)
-        {
-            BeginOrReplace(window, evt);
-            if (!s_states.TryGetValue(window, out state))
-                return;
-        }
-
-        state.Position = ToDip(window, evt);
-        state.AllowedEffects = MaskEffects(evt.DragAllowedEffects);
-        UIElement? target = HitDropTarget(window, state.Position);
-
-        if (target != state.CurrentTarget)
-        {
-            if (state.CurrentTarget != null)
-            {
-                _ = RaiseDragEvent(
-                    state.CurrentTarget,
-                    DragDrop.PreviewDragLeaveEvent,
-                    DragDrop.DragLeaveEvent,
-                    state.CurrentData,
-                    MapKeyStates(evt.DragKeyStates),
-                    state.AllowedEffects,
-                    state.Position);
-            }
-
-            state.CurrentTarget = target;
-            if (target != null)
-            {
-                _ = RaiseDragEvent(
-                    target,
-                    DragDrop.PreviewDragEnterEvent,
-                    DragDrop.DragEnterEvent,
-                    state.CurrentData,
-                    MapKeyStates(evt.DragKeyStates),
-                    state.AllowedEffects,
-                    state.Position);
-            }
-        }
-
-        DragDropEffects selected = DragDropEffects.None;
-        if (state.CurrentTarget != null)
-        {
-            selected = RaiseDragEvent(
-                state.CurrentTarget,
-                DragDrop.PreviewDragOverEvent,
-                DragDrop.DragOverEvent,
-                state.CurrentData,
-                MapKeyStates(evt.DragKeyStates),
-                state.AllowedEffects,
-                state.Position);
-        }
-
-        window.SetPlatformDragEffect(state.SessionId,
-            (uint)SelectSingleEffect(selected, state.AllowedEffects, evt.DragKeyStates));
+        if (!TryUpdate(window, evt, out var state)) return;
+        var selected = state.CurrentTarget is { } target ? RaiseTracked(window, state, target,
+            DragDrop.PreviewDragOverEvent, DragDrop.DragOverEvent) : DragDropEffects.None;
+        SelectEffect(window, state, selected);
     }
 
     private static void ProcessDrop(Window window, PlatformEvent evt)
     {
-        if (!s_states.TryGetValue(window, out DropState? state) || state.SessionId != evt.DragSessionId)
-        {
-            BeginOrReplace(window, evt);
-            if (!s_states.TryGetValue(window, out state))
-                return;
-        }
-
-        state.Position = ToDip(window, evt);
-        state.AllowedEffects = MaskEffects(evt.DragAllowedEffects);
-        state.CurrentData = CreateDataObject(evt.DragMimeTypes, evt.DragDataMimeType, evt.DragData);
-        UIElement? target = HitDropTarget(window, state.Position) ?? state.CurrentTarget;
-        DragDropEffects selected = DragDropEffects.None;
-        if (target != null)
-        {
-            selected = RaiseDragEvent(
-                target,
-                DragDrop.PreviewDropEvent,
-                DragDrop.DropEvent,
-                state.CurrentData,
-                MapKeyStates(evt.DragKeyStates),
-                state.AllowedEffects,
-                state.Position);
-        }
-
-        window.SetPlatformDragEffect(state.SessionId,
-            (uint)SelectSingleEffect(selected, state.AllowedEffects, evt.DragKeyStates));
+        if (!TryUpdate(window, evt, out var state)) return;
+        if (state.CurrentData is MacOSDragDataObject external) external.Snapshot();
+        else if (!OperatingSystem.IsMacOS())
+            state.CurrentData = CreateDataObject(evt.DragMimeTypes, evt.DragDataMimeType, evt.DragData);
+        if (!Current(window, state)) return;
+        var selected = state.CurrentTarget is { } target ? RaiseTracked(window, state, target,
+            DragDrop.PreviewDropEvent, DragDrop.DropEvent) : DragDropEffects.None;
+        SelectEffect(window, state, selected);
+        if (!Current(window, state)) return;
         state.CurrentTarget = null;
         s_states.Remove(window);
     }
 
-    private static void End(Window window, PlatformEvent evt, bool notifyNative)
+    private static void SelectEffect(Window window, DropState state, DragDropEffects selected)
     {
-        if (s_states.Remove(window, out DropState? state))
-            RaiseLeave(state);
-        if (notifyNative)
-            window.SetPlatformDragEffect(evt.DragSessionId, 0);
+        if (Current(window, state)) window.SetPlatformDragEffect(state.SessionId,
+            (uint)SelectSingleEffect(selected, state.AllowedEffects, state.KeyStates, OperatingSystem.IsMacOS()));
     }
 
-    private static void RaiseLeave(DropState state)
+    private static void End(Window window, PlatformEvent evt, bool notifyNative)
     {
-        if (state.CurrentTarget == null)
-            return;
-        _ = RaiseDragEvent(
-            state.CurrentTarget,
-            DragDrop.PreviewDragLeaveEvent,
-            DragDrop.DragLeaveEvent,
-            state.CurrentData,
-            DragDropKeyStates.None,
-            state.AllowedEffects,
-            state.Position);
-        state.CurrentTarget = null;
+        if (!s_states.TryGetValue(window, out var state) ||
+            (state.SessionId != evt.DragSessionId && !(evt.Type == PlatformEventType.DragFinished && evt.DragSessionId == 0))) return;
+        RevokeWindow(window);
+        if (notifyNative) window.SetPlatformDragEffect(evt.DragSessionId, 0);
+    }
+
+    private static void RaiseLeave(Window window, DropState state)
+    {
+        if (state.CurrentTarget is not { } target) return;
+        state.CurrentTarget = null; // A reentrant revocation must never deliver Leave twice.
+        s_states.TryGetValue(window, out var activeBefore);
+        _ = RaiseDragEvent(target, DragDrop.PreviewDragLeaveEvent, DragDrop.DragLeaveEvent,
+            state.CurrentData, MapKeyStates(state.KeyStates), state.AllowedEffects, state.Position,
+            () => ReferenceEquals(s_states.GetValueOrDefault(window), activeBefore));
     }
 
     private static Point ToDip(Window window, PlatformEvent evt)
@@ -1191,23 +1127,24 @@ internal static class LinuxDropTarget
         return DragDropPlatform.FindDropTargetElement(hit);
     }
 
-    private static DragDropEffects RaiseDragEvent(
-        UIElement target,
-        RoutedEvent previewEvent,
-        RoutedEvent bubbleEvent,
-        DataObject data,
-        DragDropKeyStates keys,
-        DragDropEffects allowed,
-        Point position)
+    private static DragDropEffects RaiseTracked(Window window, DropState state, UIElement target,
+        RoutedEvent previewEvent, RoutedEvent bubbleEvent) => RaiseDragEvent(target, previewEvent, bubbleEvent,
+            state.CurrentData, MapKeyStates(state.KeyStates), state.AllowedEffects, state.Position,
+            () => Current(window, state) && ReferenceEquals(state.CurrentTarget, target) &&
+                ReferenceEquals(Window.GetWindow(target), window) &&
+                ReferenceEquals(DragDropPlatform.FindDropTargetElement(target), target));
+
+    private static DragDropEffects RaiseDragEvent(UIElement target, RoutedEvent previewEvent,
+        RoutedEvent bubbleEvent, IDataObject data, DragDropKeyStates keys, DragDropEffects allowed,
+        Point position, Func<bool> current)
     {
         var preview = new DragEventArgs(previewEvent, data, keys, allowed, position);
         target.RaiseEvent(preview);
-        if (preview.Handled)
-            return preview.Effects;
-
-        var bubble = new DragEventArgs(bubbleEvent, data, keys, allowed, position);
+        if (!current()) return DragDropEffects.None;
+        if (preview.Handled) return preview.Effects;
+        var bubble = new DragEventArgs(bubbleEvent, data, keys, allowed, position) { Effects = preview.Effects };
         target.RaiseEvent(bubble);
-        return bubble.Effects;
+        return current() ? bubble.Effects : DragDropEffects.None;
     }
 
     internal static DataObject CreateDataObject(
@@ -1278,10 +1215,21 @@ internal static class LinuxDropTarget
     internal static DragDropEffects SelectSingleEffect(
         DragDropEffects requested,
         DragDropEffects allowed,
-        uint keyStates)
+        uint keyStates, bool macOS = false)
     {
         DragDropEffects available = requested & allowed &
             (DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link);
+        if (macOS)
+        {
+            if ((keyStates & ((uint)DragDropKeyStates.AltKey | 0x40)) == ((uint)DragDropKeyStates.AltKey | 0x40) &&
+                available.HasFlag(DragDropEffects.Link)) return DragDropEffects.Link;
+            if ((keyStates & (uint)DragDropKeyStates.AltKey) != 0 && available.HasFlag(DragDropEffects.Copy))
+                return DragDropEffects.Copy;
+            if (available.HasFlag(DragDropEffects.Move)) return DragDropEffects.Move;
+            if (available.HasFlag(DragDropEffects.Copy)) return DragDropEffects.Copy;
+            if (available.HasFlag(DragDropEffects.Link)) return DragDropEffects.Link;
+            return DragDropEffects.None;
+        }
         if ((keyStates & (uint)DragDropKeyStates.ControlKey) != 0 && available.HasFlag(DragDropEffects.Copy))
             return DragDropEffects.Copy;
         if ((keyStates & (uint)DragDropKeyStates.ShiftKey) != 0 && available.HasFlag(DragDropEffects.Move))

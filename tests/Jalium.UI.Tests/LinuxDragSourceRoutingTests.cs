@@ -21,7 +21,7 @@ public sealed class LinuxDragSourceRoutingTests
             Assert.Equal(DragDropEffects.Copy, e.Effects);
         };
 
-        DragDropPlatform.RaiseLinuxGiveFeedback(source, DragDropEffects.Copy);
+        DragDropPlatform.RaiseNativeGiveFeedback(source, DragDropEffects.Copy);
 
         Assert.Equal(["preview", "bubble"], events);
     }
@@ -34,7 +34,7 @@ public sealed class LinuxDragSourceRoutingTests
         source.PreviewGiveFeedback += (_, e) => e.Handled = true;
         source.GiveFeedback += (_, _) => bubbleCount++;
 
-        DragDropPlatform.RaiseLinuxGiveFeedback(source, DragDropEffects.Move);
+        DragDropPlatform.RaiseNativeGiveFeedback(source, DragDropEffects.Move);
 
         Assert.Equal(0, bubbleCount);
     }
@@ -46,15 +46,15 @@ public sealed class LinuxDragSourceRoutingTests
 
         Assert.Equal(
             PlatformDragContinueAction.Continue,
-            DragDropPlatform.RaiseLinuxQueryContinueDrag(
+            DragDropPlatform.RaiseNativeQueryContinueDrag(
                 source, DragDropKeyStates.LeftMouseButton, escapePressed: false));
         Assert.Equal(
             PlatformDragContinueAction.Drop,
-            DragDropPlatform.RaiseLinuxQueryContinueDrag(
+            DragDropPlatform.RaiseNativeQueryContinueDrag(
                 source, DragDropKeyStates.None, escapePressed: false));
         Assert.Equal(
             PlatformDragContinueAction.Cancel,
-            DragDropPlatform.RaiseLinuxQueryContinueDrag(
+            DragDropPlatform.RaiseNativeQueryContinueDrag(
                 source, DragDropKeyStates.LeftMouseButton, escapePressed: true));
     }
 
@@ -71,7 +71,7 @@ public sealed class LinuxDragSourceRoutingTests
             e.Handled = true;
         };
 
-        PlatformDragContinueAction action = DragDropPlatform.RaiseLinuxQueryContinueDrag(
+        PlatformDragContinueAction action = DragDropPlatform.RaiseNativeQueryContinueDrag(
             source, DragDropKeyStates.LeftMouseButton, escapePressed: false);
 
         Assert.Equal(PlatformDragContinueAction.Cancel, action);

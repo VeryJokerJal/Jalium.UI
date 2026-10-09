@@ -572,6 +572,38 @@ JALIUM_API void jalium_draw_line(
     float strokeWidth
 );
 
+/// Fills a polygon. fillRule: 0 = EvenOdd, 1 = Nonzero.
+JALIUM_API void jalium_fill_polygon(JaliumRenderTarget* rt, const float* points,
+    uint32_t pointCount, JaliumBrush* brush, int32_t fillRule);
+JALIUM_API void jalium_draw_polygon(JaliumRenderTarget* rt, const float* points,
+    uint32_t pointCount, JaliumBrush* brush, float strokeWidth, int32_t closed,
+    int32_t lineJoin, float miterLimit);
+
+/// Path commands are float streams: Line [0,x,y], Cubic [1,c1x,c1y,c2x,c2y,x,y],
+/// Move [2,x,y], Quadratic [3,cx,cy,x,y], Arc [4,x,y,rx,ry,rotation,large,sweep],
+/// Close [5]. Open contours close implicitly for filling, never for stroking.
+/// Metal stroke metadata: Flags [6,bits] applies to the next segment (1 =
+/// stroked, 2 = smooth join); Caps [7,start,end,dash] applies to the current
+/// contour (0 = Flat, 1 = Square, 2 = Round, 3 = Triangle). Fill ignores metadata.
+/// Edge [8,mode] selects Metal fill/clip coverage (1 = Aliased, 2 = Antialiased).
+/// edgeMode: -1 = backend default, 1 = Aliased, 2 = Antialiased.
+JALIUM_API void jalium_fill_path(JaliumRenderTarget* rt, float startX, float startY,
+    const float* commands, uint32_t commandLength, JaliumBrush* brush,
+    int32_t fillRule, int32_t edgeMode);
+JALIUM_API void jalium_stroke_path(JaliumRenderTarget* rt, float startX, float startY,
+    const float* commands, uint32_t commandLength, JaliumBrush* brush,
+    float strokeWidth, int32_t closed, int32_t lineJoin, float miterLimit,
+    int32_t lineCap, const float* dashPattern, uint32_t dashCount,
+    float dashOffset, int32_t edgeMode);
+JALIUM_API void jalium_fill_path_at(JaliumRenderTarget* rt, float offsetX, float offsetY,
+    float startX, float startY, const float* commands, uint32_t commandLength,
+    JaliumBrush* brush, int32_t fillRule, int32_t edgeMode);
+JALIUM_API void jalium_stroke_path_at(JaliumRenderTarget* rt, float offsetX, float offsetY,
+    float startX, float startY, const float* commands, uint32_t commandLength,
+    JaliumBrush* brush, float strokeWidth, int32_t closed, int32_t lineJoin,
+    float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount,
+    float dashOffset, int32_t edgeMode);
+
 /// Draws text.
 /// @param rt The render target.
 /// @param text The text to draw.
@@ -687,6 +719,13 @@ JALIUM_API void jalium_push_rounded_rect_clip(JaliumRenderTarget* rt, float x, f
 /// unchanged. Older backends return NOT_SUPPORTED without changing their vtable.
 JALIUM_API JaliumResult jalium_push_elliptical_rect_clip(
     JaliumRenderTarget* rt, const JaliumEllipticalRectClip* clip);
+
+/// Pushes the union of a path's stroke outlines, including caps and dashes.
+/// Pop once with jalium_pop_clip on success. Unsupported backends leave state unchanged.
+JALIUM_API JaliumResult jalium_push_stroke_path_clip(JaliumRenderTarget* rt,
+    float startX, float startY, const float* commands, uint32_t commandLength,
+    float width, int32_t closed, int32_t join, float miter, int32_t cap,
+    const float* dash, uint32_t dashCount, float phase, int32_t edgeMode);
 
 /// Pushes a filled path clip using the FillPath command stream and fill rule
 /// (0 = even-odd, 1 = nonzero). Pop once with jalium_pop_clip on success.
@@ -810,9 +849,34 @@ JALIUM_API JaliumTextFormat* jalium_text_format_create(
     int32_t fontStyle
 );
 
+/// Creates a width-aware format (percentage of normal design, 100 = normal).
+/// Returns nullptr if the backend lacks this optional capability.
+JALIUM_API JaliumTextFormat* jalium_text_format_create_with_width(
+    JaliumContext* ctx, const wchar_t* fontFamily, float fontSize,
+    int32_t fontWeight, int32_t fontStyle, float widthPercentage);
+
 /// Destroys a text format.
 /// @param format The text format to destroy.
 JALIUM_API void jalium_text_format_destroy(JaliumTextFormat* format);
+
+/// Sets an ordered fallback list of existing formats with the same font size.
+/// Font faces and their private data are retained; caller formats may be destroyed.
+/// An empty list restores the original font cascade. Unsupported backends return NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_text_format_set_font_fallbacks(JaliumTextFormat* format,
+    JaliumTextFormat* const* fallbackFormats, uint32_t count);
+
+/// Intersects the face's actual character map with the supplied ranges. Disabling
+/// restores its original coverage. Enabled with zero ranges excludes every character.
+JALIUM_API JaliumResult jalium_text_format_set_unicode_ranges(JaliumTextFormat* format,
+    const JaliumUnicodeRange* ranges, uint32_t count, int32_t enabled);
+/// Queries direct face coverage, excluding system/cascade substitutes.
+JALIUM_API JaliumResult jalium_text_format_get_character_coverage(JaliumTextFormat* format,
+    const uint32_t* characters, uint32_t count, uint8_t* supported);
+/// Copies ordered font-display states without changing layout metrics. An earlier
+/// ready face preserves its glyphs; earlier pending faces claim their own ranges.
+/// Input formats/arrays may be released after this call. Zero entries clear the mask.
+JALIUM_API JaliumResult jalium_text_format_set_font_display(JaliumTextFormat* format,
+    const JaliumFontDisplayEntry* entries, uint32_t count);
 
 /// Registers a process-private, already-decoded sfnt font family. Data is copied.
 JALIUM_API JaliumFontResource* jalium_font_resource_register(const wchar_t* family, const uint8_t* data, uint32_t size);
@@ -820,6 +884,15 @@ JALIUM_API JaliumFontResource* jalium_font_resource_acquire(const wchar_t* famil
 JALIUM_API void jalium_font_resource_release(JaliumFontResource* resource);
 /// Borrowed IDWriteFontCollection pointer on Windows; null on other platforms.
 JALIUM_API void* jalium_font_resource_get_collection(JaliumFontResource* resource);
+
+/// Checks an installed Apple family/face or a live process-private resource.
+/// Returns 1 available, 0 missing/invalid, -1 when the platform does not support this query.
+JALIUM_API int32_t jalium_font_family_is_available(const wchar_t* family);
+/// Snapshots Apple system families on the calling thread; other platforms return 0.
+JALIUM_API int32_t jalium_font_get_system_family_count(void);
+/// Copies from the calling thread's last snapshot as nul-terminated UTF-8.
+/// Null buffer with zero capacity queries bytes required. Invalid or short buffers return 0.
+JALIUM_API int32_t jalium_font_copy_system_family(int32_t index, char* buffer, int32_t capacity);
 
 /// Sets the text alignment.
 /// @param format The text format.
@@ -911,6 +984,67 @@ JALIUM_API JaliumResult jalium_text_format_hit_test_text_position(
     uint32_t textPosition, int32_t isTrailingHit,
     JaliumTextHitTestResult* result
 );
+
+/// Returns the first visual line fragment of a UTF-16 range, with whole grapheme
+/// boundaries. Unsupported backends return JALIUM_ERROR_NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_text_format_hit_test_text_range(
+    JaliumTextFormat* format,
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    uint32_t textPosition, uint32_t length,
+    JaliumTextRangeMetrics* result
+);
+
+/// Returns the shaped visual row containing a UTF-16 insertion position.
+/// At a shared soft-wrap offset, backward affinity chooses the previous row.
+/// Unsupported backends return JALIUM_ERROR_NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_text_format_get_line_metrics(
+    JaliumTextFormat* format,
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    uint32_t textPosition, int32_t backwardAffinity,
+    JaliumTextLineMetrics* result
+);
+
+/// Creates an immutable, styled, word-wrapped paragraph. This additive API
+/// accepts UTF-16 explicitly on every platform and retains all font resources.
+/// Spans must cover the complete input in logical order without gaps/overlaps.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount, float maxWidth,
+    float minLineHeight, int32_t alignment, int32_t direction);
+/// Creates a paragraph with explicit wrapping: 0 word, 1 no wrap, 2 character.
+/// This additive entry point leaves the legacy creation API and provider ABI intact.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_with_wrapping(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount, float maxWidth,
+    float minLineHeight, int32_t alignment, int32_t direction, int32_t wrapping);
+JALIUM_API void jalium_text_paragraph_destroy(JaliumTextParagraph* paragraph);
+JALIUM_API uint32_t jalium_text_paragraph_line_count(JaliumTextParagraph* paragraph);
+JALIUM_API JaliumResult jalium_text_paragraph_get_line(JaliumTextParagraph* paragraph,
+    uint32_t line, JaliumParagraphLineMetrics* result);
+/// A null results pointer with zero capacity queries the required count.
+JALIUM_API JaliumResult jalium_text_paragraph_get_fragments(JaliumTextParagraph* paragraph,
+    uint32_t line, JaliumTextFragmentMetrics* results, uint32_t capacity, uint32_t* count);
+JALIUM_API JaliumResult jalium_text_paragraph_get_caret(JaliumTextParagraph* paragraph,
+    uint32_t line, uint32_t position, int32_t backwardAffinity, JaliumParagraphCaret* result);
+JALIUM_API JaliumResult jalium_text_paragraph_hit_test(JaliumTextParagraph* paragraph,
+    uint32_t line, float x, JaliumParagraphCaret* result);
+JALIUM_API JaliumResult jalium_text_paragraph_get_selection(JaliumTextParagraph* paragraph,
+    uint32_t line, uint32_t start, uint32_t length, JaliumTextRangeMetrics* results,
+    uint32_t capacity, uint32_t* count);
+/// Navigate words using the immutable paragraphs' actual shaped line/caret geometry.
+/// Offsets locate each paragraph in the UTF-16 document. Gaps must be paragraph breaks.
+/// Direction: 0=logical forward, 1=logical backward, 2=physical right, 3=physical left.
+/// Empty selection uses position and affinity; a nonempty selection is ordered.
+/// The result contains the document insertion position and affinity; x is unused.
+JALIUM_API JaliumResult jalium_text_paragraph_navigate_word(
+    JaliumTextParagraph* const* paragraphs, const uint32_t* offsets, uint32_t count,
+    const uint16_t* text, uint32_t length, uint32_t position,
+    uint32_t selectionStart, uint32_t selectionLength, int32_t direction,
+    int32_t backwardAffinity, JaliumParagraphCaret* result);
+JALIUM_API JaliumResult jalium_render_target_draw_paragraph_line(JaliumRenderTarget* target,
+    JaliumTextParagraph* paragraph, uint32_t line, float x, float y, float opacity);
 
 /// Measures text and returns metrics.
 /// Uses DirectWrite's IDWriteTextLayout for accurate measurement.
@@ -1283,6 +1417,12 @@ JALIUM_API void jalium_draw_blur_effect(JaliumRenderTarget* rt,
     float x, float y, float w, float h, float radius,
     float uvOffsetX, float uvOffsetY);
 
+/// Applies an element blur with the selected kernel (0 Gaussian, 1 Box).
+/// Backends without the optional kernel provider report NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_draw_blur_effect_kernel(JaliumRenderTarget* rt,
+    float x, float y, float w, float h, float radius, int32_t kernelType,
+    float uvOffsetX, float uvOffsetY);
+
 /// Applies a drop shadow effect to the captured element content and draws it.
 /// Draws the shadow (offset + blurred alpha) behind the original content.
 /// Must be called after jalium_effect_begin_capture / jalium_effect_end_capture.
@@ -1425,6 +1565,25 @@ JALIUM_API void jalium_draw_shader_effect(JaliumRenderTarget* rt,
     uint32_t shaderBytecodeSize,
     const float* constants,
     uint32_t constantFloatCount);
+
+/// Optional backend diagnostic for the most recent custom shader draw. Backends
+/// without the extension return NOT_SUPPORTED. The draw keeps its original
+/// content visible when compilation or a bytecode format is unsupported.
+JALIUM_API JaliumResult jalium_render_target_get_last_shader_effect_result(JaliumRenderTarget* rt);
+
+JALIUM_API void jalium_draw_shader_effect_hlsl(JaliumRenderTarget* rt,
+    float x,float y,float w,float h,const char* source,
+    const float* constants,uint32_t constantFloatCount);
+JALIUM_API void jalium_draw_glowing_border_highlight(JaliumRenderTarget* rt,
+    float x,float y,float w,float h,float phase,float r,float g,float b,
+    float stroke,float trail,float dim,float screenW,float screenH);
+JALIUM_API void jalium_draw_glowing_border_transition(JaliumRenderTarget* rt,
+    float fx,float fy,float fw,float fh,float tx,float ty,float tw,float th,
+    float head,float tail,float phase,float r,float g,float b,
+    float stroke,float trail,float dim,float screenW,float screenH);
+JALIUM_API void jalium_draw_ripple_effect(JaliumRenderTarget* rt,
+    float x,float y,float w,float h,float progress,float r,float g,float b,
+    float stroke,float dim,float screenW,float screenH);
 
 // ============================================================================
 // Content Border (U-shape, no top edge)

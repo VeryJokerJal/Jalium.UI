@@ -17,6 +17,7 @@ public class ScrollViewerOverlayScrollBarTests
         var scrollBar = new ScrollBar
         {
             IsOverlayStyle = true,
+            UseMacOSScrollBarBehavior = false,
             Orientation = Orientation.Vertical,
             Minimum = 0,
             Maximum = 1000,
@@ -82,6 +83,7 @@ public class ScrollViewerOverlayScrollBarTests
         var scrollBar = new ScrollBar
         {
             IsOverlayStyle = true,
+            UseMacOSScrollBarBehavior = false,
             Orientation = Orientation.Horizontal,
             Minimum = 0,
             Maximum = 1000,
@@ -141,6 +143,7 @@ public class ScrollViewerOverlayScrollBarTests
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
 
+        UseMobileScrollBars(viewer);
         viewer.Measure(new Size(200, 120));
         viewer.Arrange(new Rect(0, 0, 200, 120));
 
@@ -198,6 +201,8 @@ public class ScrollViewerOverlayScrollBarTests
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
 
+        UseMobileScrollBars(inner);
+        UseMobileScrollBars(outer);
         outer.Measure(new Size(200, 120));
         outer.Arrange(new Rect(0, 0, 200, 120));
 
@@ -245,6 +250,7 @@ public class ScrollViewerOverlayScrollBarTests
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
 
+        UseMobileScrollBars(viewer);
         viewer.Measure(new Size(200, 120));
         viewer.Arrange(new Rect(0, 0, 200, 120));
 
@@ -257,6 +263,8 @@ public class ScrollViewerOverlayScrollBarTests
     {
         var scrollBar = new ScrollBar
         {
+            IsOverlayStyle = false,
+            UseMacOSScrollBarBehavior = false,
             Orientation = Orientation.Vertical,
             Minimum = 0,
             Maximum = 100,
@@ -571,6 +579,7 @@ public class ScrollViewerOverlayScrollBarTests
             PanningMode = PanningMode.VerticalOnly
         };
 
+        UseMobileScrollBars(viewer);
         viewer.Measure(new Size(200, 120));
         viewer.Arrange(new Rect(0, 0, 200, 120));
         return viewer;
@@ -581,12 +590,19 @@ public class ScrollViewerOverlayScrollBarTests
         return new ScrollBar
         {
             IsOverlayStyle = true,
+            UseMacOSScrollBarBehavior = false,
             Orientation = orientation,
             Minimum = 0,
             Maximum = 1000,
             ViewportSize = 200,
             Value = 0
         };
+    }
+
+    private static void UseMobileScrollBars(ScrollViewer viewer)
+    {
+        GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar").UseMacOSScrollBarBehavior = false;
+        GetPrivateField<ScrollBar>(viewer, "_horizontalScrollBar").UseMacOSScrollBarBehavior = false;
     }
 
     private static void RaiseTouchDown(UIElement target, int pointerId, Point position)
