@@ -110,6 +110,10 @@ if (args.Length == 1 && args[0].StartsWith("--window-application-menu-case=", St
     return WindowApplicationMenuChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-reopen")
     return WindowReopenChecks.RunAll();
+if (args.Length == 1 && args[0] == "--window-reopen-foreground")
+    return WindowReopenForegroundChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-reopen-foreground-case=", StringComparison.Ordinal))
+    return WindowReopenForegroundChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-quit")
     return WindowQuitChecks.RunAll();
 if (args.Length == 1 && args[0] == "--window-native-quit")

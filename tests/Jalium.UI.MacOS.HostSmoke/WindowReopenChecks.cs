@@ -32,7 +32,8 @@ internal static class WindowReopenChecks
     internal static int RunAll()
     {
         int failures = 0;
-        for (int index = 0; index < Names.Length; index++)
+        int total = Names.Length * 2;
+        for (int index = 0; index < total; index++)
         {
             var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
             start.ArgumentList.Add($"--window-reopen-case={index}");
@@ -45,20 +46,22 @@ internal static class WindowReopenChecks
             }
             else if (process.ExitCode != 0) failures++;
         }
-        Console.WriteLine($"macOS Window reopen host checks: {Names.Length - failures}/{Names.Length} passed");
+        Console.WriteLine($"macOS Window reopen host checks: {total - failures}/{total} passed");
         return failures == 0 ? 0 : 1;
     }
 
     internal static int RunCase(string argument)
     {
-        if (!int.TryParse(argument.AsSpan("--window-reopen-case=".Length), out int index) || index < 0 || index >= Names.Length)
+        if (!int.TryParse(argument.AsSpan("--window-reopen-case=".Length), out int index) || index < 0 || index >= Names.Length * 2)
             return 2;
+        var titleBar = index < Names.Length ? WindowTitleBarStyle.Native : WindowTitleBarStyle.Custom;
+        index %= Names.Length;
         JaliumMacApplication.Initialize();
         var nativeApplication = NSApplication.SharedApplication;
         nativeApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
-        var main = CreateWindow("Reopen main window");
-        var other = CreateWindow("Reopen independent window");
+        var main = CreateWindow("Reopen main window", titleBar);
+        var other = CreateWindow("Reopen independent window", titleBar);
         _ = new Application { MainWindow = main, ShutdownMode = ShutdownMode.OnExplicitShutdown };
         using var host = new MenuTestDelegate();
         try
@@ -143,7 +146,7 @@ internal static class WindowReopenChecks
                         "closing main window was selected instead of the live independent window");
                     break;
                 case 10:
-                    var dialog = CreateWindow("Reopen modal dialog");
+                    var dialog = CreateWindow("Reopen modal dialog", titleBar);
                     dialog.Owner = main;
                     dialog.Shown += (_, _) =>
                     {
@@ -164,21 +167,21 @@ internal static class WindowReopenChecks
                     Require(main.IsEnabled && other.IsEnabled, "modal close did not restore prior window enablement");
                     break;
             }
-            Console.WriteLine($"PASS: {Names[index]}");
+            Console.WriteLine($"PASS: {titleBar}: {Names[index]}");
             return 0;
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"FAIL: {Names[index]}: {exception}");
+            Console.Error.WriteLine($"FAIL: {titleBar}: {Names[index]}: {exception}");
             return 1;
         }
         finally { main.Close(); other.Close(); }
     }
 
-    private static ReopenWindow CreateWindow(string title) => new()
+    private static ReopenWindow CreateWindow(string title, WindowTitleBarStyle titleBar) => new()
     {
         Title = title, Width = 320, Height = 240,
-        TitleBarStyle = WindowTitleBarStyle.Native, ShowActivated = false,
+        TitleBarStyle = titleBar, ShowActivated = false,
         Background = new SolidColorBrush(Color.FromRgb(0xf5, 0xfa, 0xfc)),
         Content = new TextBlock { Text = title, Margin = new Thickness(16) }
     };
