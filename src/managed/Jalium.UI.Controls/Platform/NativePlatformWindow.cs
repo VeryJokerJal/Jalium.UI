@@ -720,12 +720,17 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         int result = NativeMethods.AppleDragGetData(_handle, sessionId, mimeType, out nint data, out uint size);
         try
         {
-            if (result != 0 || data == 0 || size > int.MaxValue) return null;
-            var bytes = new byte[(int)size];
-            if (bytes.Length != 0) Marshal.Copy(data, bytes, 0, bytes.Length);
-            return bytes;
+            return result == 0 ? CopyMacOSDragData(data, size) : null;
         }
         finally { if (data != 0) NativeMethods.PlatformFree(data); }
+    }
+
+    internal static byte[]? CopyMacOSDragData(nint data, uint size)
+    {
+        if (data == 0 || size > ClipboardPlatform.MaxClipboardPayloadBytes) return null;
+        var bytes = new byte[(int)size];
+        if (bytes.Length != 0) Marshal.Copy(data, bytes, 0, bytes.Length);
+        return bytes;
     }
 
     internal nint GetMacOSDragSource(ulong sessionId) =>

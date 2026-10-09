@@ -35,6 +35,11 @@ if (args.Length == 1 && args[0] == "--accessibility-clipping")
 if (args.Length == 1 && args[0].StartsWith("--accessibility-clipping-case=", StringComparison.Ordinal))
     return AccessibilityClippingChecks.RunCase(args[0]);
 
+if (args.Length == 1 && args[0] == "--window-drag-representations")
+    return WindowDragRepresentationChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-drag-representation-case=", StringComparison.Ordinal))
+    return WindowDragRepresentationChecks.RunCase(args[0]);
+
 if (args.Length == 1 && args[0] == "--text-accessibility-appkit-probe")
     return TextAccessibilityNavigationChecks.ProbeAppKit();
 if (args.Length == 1 && args[0] == "--text-accessibility-navigation")

@@ -21,7 +21,7 @@ internal sealed class MacOSDragDataObject : IDataObject
         foreach (string mime in _mimeTypes)
         {
             _formats.SetData(mime, Array.Empty<byte>(), autoConvert: false);
-            if (ClipboardPlatform.GetFormatForMimeType(mime) is { } format)
+            if (ClipboardPlatform.GetFormatForMimeType(mime) is { } format && format != DataFormats.FileDrop)
                 _formats.SetData(format, Array.Empty<byte>(), autoConvert: true);
         }
     }
@@ -54,7 +54,28 @@ internal sealed class MacOSDragDataObject : IDataObject
         _values.SetData(mime, bytes, autoConvert: false);
         if (ClipboardPlatform.GetFormatForMimeType(mime) is { } format &&
             !_values.GetDataPresent(format, autoConvert: false))
-            _values.SetData(format, ClipboardPlatform.DecodeCrossPlatformRepresentation(format, bytes), autoConvert: true);
+        {
+            object value = ClipboardPlatform.DecodeCrossPlatformRepresentation(format, bytes);
+            // A URI list may contain only web links. Advertise the file alias
+            // only after its representation provides at least one file path.
+            if (format == DataFormats.FileDrop)
+            {
+                if (value is not string[] { Length: > 0 }) return;
+                _formats.SetData(format, value, autoConvert: true);
+            }
+            _values.SetData(format, value, autoConvert: true);
+        }
+    }
+
+    private void EnsureFileDrop()
+    {
+        if (_formats.GetDataPresent(DataFormats.FileDrop, autoConvert: false)) return;
+        foreach (string mime in _mimeTypes)
+        {
+            if (!ClipboardPlatform.MimeTypeMapsToFormat(mime, DataFormats.FileDrop)) continue;
+            Read(mime);
+            if (_formats.GetDataPresent(DataFormats.FileDrop, autoConvert: false)) break;
+        }
     }
 
     internal void Snapshot()
@@ -69,6 +90,7 @@ internal sealed class MacOSDragDataObject : IDataObject
     public object? GetData(Type format) => GetData(format.FullName ?? format.Name);
     public object? GetData(string format, bool autoConvert)
     {
+        if (IsFileFormat(format, autoConvert)) EnsureFileDrop();
         if (!_values.GetDataPresent(format, autoConvert))
         {
             foreach (string mime in _mimeTypes)
@@ -85,9 +107,21 @@ internal sealed class MacOSDragDataObject : IDataObject
     }
     public bool GetDataPresent(string format) => GetDataPresent(format, true);
     public bool GetDataPresent(Type format) => GetDataPresent(format.FullName ?? format.Name);
-    public bool GetDataPresent(string format, bool autoConvert) => _formats.GetDataPresent(format, autoConvert);
+    public bool GetDataPresent(string format, bool autoConvert)
+    {
+        if (IsFileFormat(format, autoConvert)) EnsureFileDrop();
+        return _formats.GetDataPresent(format, autoConvert);
+    }
+    private static bool IsFileFormat(string format, bool autoConvert) =>
+        string.Equals(format, DataFormats.FileDrop, StringComparison.OrdinalIgnoreCase) ||
+        autoConvert && (string.Equals(format, "FileName", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(format, "FileNameW", StringComparison.OrdinalIgnoreCase));
     public string[] GetFormats() => GetFormats(true);
-    public string[] GetFormats(bool autoConvert) => _formats.GetFormats(autoConvert);
+    public string[] GetFormats(bool autoConvert)
+    {
+        EnsureFileDrop();
+        return _formats.GetFormats(autoConvert);
+    }
     public void SetData(object data) => SetData(data.GetType(), data);
     public void SetData(Type format, object data) => SetData(format.FullName ?? format.Name, data);
     public void SetData(string format, object data) => SetData(format, data, true);

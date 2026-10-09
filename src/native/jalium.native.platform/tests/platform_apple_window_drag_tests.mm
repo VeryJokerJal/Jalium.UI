@@ -29,6 +29,67 @@ static void Require(bool value, const char* message) { if (!value) throw std::ru
 - (NSData*)dataForType:(NSPasteboardType)type { return [[self stringForType:type] dataUsingEncoding:NSUTF8StringEncoding]; }
 @end
 
+// Report an oversized representation without allocating hundreds of MiB. Any
+// attempt to read its bytes fails inside this isolated process, so a baseline
+// regression is observable without exposing an invalid pointer to memcpy.
+@interface JaliumDragOversizedData : NSData
+@property(nonatomic) NSUInteger reportedLength;
+@property(nonatomic) int byteReads;
+@end
+@implementation JaliumDragOversizedData
+- (NSUInteger)length { return _reportedLength; }
+- (const void*)bytes {
+    ++_byteReads;
+    @throw [NSException exceptionWithName:@"JaliumOwnedOversizedRead" reason:@"oversized representation bytes were read" userInfo:nil];
+}
+@end
+
+@interface JaliumDragReentrantData : NSData
+@property(nonatomic, strong) NSData* payload;
+@property(nonatomic, copy) void (^onBytes)();
+@end
+@implementation JaliumDragReentrantData
+- (NSUInteger)length { return _payload.length; }
+- (const void*)bytes {
+    if (_onBytes) { auto action = _onBytes; _onBytes = nil; action(); }
+    return _payload.bytes;
+}
+@end
+
+@interface JaliumDragRepresentationPasteboard : JaliumDragTestPasteboard
+@property(nonatomic, copy) NSArray<NSPasteboardType>* offered;
+@property(nonatomic, strong) NSData* firstData;
+@property(nonatomic) int dataReads;
+@end
+@implementation JaliumDragRepresentationPasteboard
+- (NSArray*)types { return _offered; }
+- (NSData*)dataForType:(NSPasteboardType)type {
+    ++_dataReads;
+    NSData* value = [type isEqualToString:_offered.firstObject] ? _firstData : nil;
+    if (self.onRead) { auto action = self.onRead; self.onRead = nil; action(); }
+    return value;
+}
+- (NSString*)stringForType:(NSPasteboardType)type {
+    ++_dataReads;
+    return [type isEqualToString:NSPasteboardTypeString] ? @"保留其他格式🙂" : nil;
+}
+@end
+
+static id g_ownedClipboard;
+static NSPasteboard* OwnedGeneralPasteboard(id object, SEL selector) {
+    (void)object; (void)selector; return (NSPasteboard*)g_ownedClipboard;
+}
+struct ClipboardReadProbe {
+    Method method;
+    IMP original;
+    explicit ClipboardReadProbe(id board) {
+        method = class_getClassMethod(NSPasteboard.class, @selector(generalPasteboard));
+        g_ownedClipboard = board;
+        original = method_setImplementation(method, reinterpret_cast<IMP>(OwnedGeneralPasteboard));
+    }
+    ~ClipboardReadProbe() { method_setImplementation(method, original); g_ownedClipboard = nil; }
+};
+
 @interface JaliumDragTestInfo : NSObject
 @property(nonatomic) NSInteger draggingSequenceNumber;
 @property(nonatomic, strong) id board;
@@ -664,7 +725,117 @@ static void RunDataCase(Fixture& f, int scenario, JaliumDragTestInfo* info) {
     } else throw std::runtime_error("unknown data scenario");
 }
 
-static constexpr int CasesPerStyle = 61;
+static void RunRepresentationCase(Fixture& f, int scenario, JaliumDragTestInfo* info) {
+    struct ActionReset { Fixture& fixture; ~ActionReset() { fixture.action = nullptr; } } actionReset{f};
+    constexpr NSUInteger limit = 256 * 1024 * 1024;
+    auto oversized = [JaliumDragOversizedData new];
+    oversized.reportedLength = scenario == 62 || scenario == 64 || scenario == 69
+        ? static_cast<NSUInteger>(UINT32_MAX) + 1 : limit + 1;
+    auto board = [JaliumDragRepresentationPasteboard new];
+    board.offered = @[NSPasteboardTypeHTML];
+    board.firstData = (NSData*)oversized; info.board = board;
+    auto sender = (id<NSDraggingInfo>)info;
+    SelectCopy(f);
+    if (scenario == 68 || scenario == 69) {
+        ClipboardReadProbe probe(board); // Never reads or writes the user's clipboard.
+        uint8_t* bytes = reinterpret_cast<uint8_t*>(1); uint32_t size = 99;
+        Require(jalium_clipboard_get_data("text/html", &bytes, &size) == JALIUM_ERROR_INVALID_ARGUMENT && !bytes && !size,
+            "oversized clipboard representation was copied or truncated");
+        Require(!oversized.byteReads && board.dataReads == 1, "oversized clipboard bytes were accessed");
+        return;
+    }
+    if (scenario == 70) {
+        ClipboardReadProbe probe(board);
+        for (int index = 0; index < 3; ++index) {
+            NSData* expected = index == 0 ? [@"<b>保留🙂</b>" dataUsingEncoding:NSUTF8StringEncoding] : index == 1 ? [NSData data] : nil;
+            board.firstData = expected;
+            uint8_t* bytes = reinterpret_cast<uint8_t*>(1); uint32_t size = 99;
+            Require(jalium_clipboard_get_data("text/html", &bytes, &size) == JALIUM_OK &&
+                (bytes != nullptr) == (expected != nil) && size == expected.length,
+                "valid, empty and missing clipboard representations were conflated");
+            if (size) Require(std::memcmp(bytes, expected.bytes, size) == 0, "clipboard bytes changed during copy");
+            jalium_platform_free(bytes);
+        }
+        return;
+    }
+    if (scenario == 65 || scenario == 66) board.offered = @[NSPasteboardTypeHTML, NSPasteboardTypeString];
+    if (scenario == 66) {
+        board.firstData = nil;
+        board.onRead = ^{ jalium_window_hide(f.window); };
+    } else if (scenario == 67) {
+        board.onRead = ^{
+            info.board = [JaliumDragTestPasteboard new]; ++info.draggingSequenceNumber;
+            [f.Target() draggingEntered:sender];
+        };
+    } else if (scenario == 71) board.offered = @[NSPasteboardTypeTIFF];
+    else if (scenario == 73) board.firstData = [NSData data];
+    else if (scenario == 74 || scenario == 75) {
+        auto reentrant = [JaliumDragReentrantData new];
+        reentrant.payload = [@"owned" dataUsingEncoding:NSUTF8StringEncoding];
+        reentrant.onBytes = ^{
+            info.board = [JaliumDragTestPasteboard new]; ++info.draggingSequenceNumber;
+            [f.Target() draggingEntered:sender];
+        };
+        board.firstData = reentrant;
+    }
+    [f.Target() draggingEntered:sender]; uint64_t token = f.Session(JALIUM_EVENT_DRAG_ENTER);
+    if (scenario == 61 || scenario == 62) {
+        uint8_t* bytes = reinterpret_cast<uint8_t*>(1); uint32_t size = 99;
+        Require(jalium_apple_drag_get_data(f.window, token, "text/html", &bytes, &size) == JALIUM_ERROR_INVALID_ARGUMENT && !bytes && !size,
+            "oversized lazy drag representation was copied");
+        Require(!oversized.byteReads && board.dataReads == 1, "oversized drag bytes were accessed");
+        Require([f.Target() prepareForDragOperation:sender], "rejected representation retired its live visit");
+    } else if (scenario == 71) {
+        (void)ReadVisit(f, token, "image/png", false);
+        Require(!oversized.byteReads && board.dataReads == 1, "oversized TIFF was decoded to synthesize PNG");
+    } else if (scenario == 74 || scenario == 75) {
+        if (scenario == 74) {
+            uint8_t* bytes = nullptr; uint32_t size = 0;
+            JaliumResult result = jalium_apple_drag_get_data(f.window, token, "text/html", &bytes, &size);
+            bool rejected = result == JALIUM_ERROR_INVALID_STATE && !bytes && !size;
+            jalium_platform_free(bytes);
+            Require(rejected, "bytes accessor reentry returned data from the retired visit");
+        } else Require(![f.Target() performDragOperation:sender] && !f.Count(JALIUM_EVENT_DROP),
+            "bytes accessor reentry delivered Drop into the successor");
+        uint64_t successor = f.Session(JALIUM_EVENT_DRAG_ENTER);
+        Require(successor != token && [f.Target() prepareForDragOperation:sender], "bytes accessor reentry retired its successor");
+        Require(!ReadVisit(f, successor, "text/plain").empty(), "successor lost its data after bytes accessor reentry");
+    } else if (scenario == 65 || scenario == 73) {
+        std::string delivered, mime; uint32_t deliveredSize = 99;
+        auto original = f.action;
+        f.action = [&](const JaliumPlatformEvent& e) {
+            original(e);
+            if (e.type == JALIUM_EVENT_DROP) {
+                deliveredSize = e.drag.dataSize; mime = e.drag.dataMimeType;
+                delivered.assign(e.drag.dataSize ? reinterpret_cast<const char*>(e.drag.data) : "", e.drag.dataSize);
+            }
+        };
+        Require([f.Target() performDragOperation:sender] && f.Count(JALIUM_EVENT_DROP) == 1,
+            "valid secondary or empty representation did not reach Drop");
+        Require(!oversized.byteReads && deliveredSize == (scenario == 65 ? std::strlen("保留其他格式🙂") : 0),
+            "Drop accessed oversized bytes or changed the valid payload size");
+        if (scenario == 65) Require(delivered == "保留其他格式🙂" && mime == "text/plain;charset=utf-8" && board.dataReads == 2,
+            "rejected primary representation discarded the valid secondary format");
+        RequireRetiredRead(f, token); f.action = original;
+    } else {
+        Require(![f.Target() performDragOperation:sender] && !f.Count(JALIUM_EVENT_DROP),
+            "oversized or retired representation reached Drop");
+        Require(!oversized.byteReads && board.dataReads == 1, "Drop read oversized bytes or continued after retirement");
+        if (scenario == 67) {
+            uint64_t successor = f.Session(JALIUM_EVENT_DRAG_ENTER);
+            Require(successor != token && [f.Target() prepareForDragOperation:sender], "failed Drop retired its successor");
+            Require(!ReadVisit(f, successor, "text/plain").empty(), "successor lost its readable representation");
+        } else if (scenario == 72) {
+            [f.Target() draggingExited:sender]; RequireRetiredRead(f, token);
+            info.board = [JaliumDragTestPasteboard new]; ++info.draggingSequenceNumber;
+            [f.Target() draggingEntered:sender];
+            Require([f.Target() performDragOperation:sender] && f.Count(JALIUM_EVENT_DROP) == 1,
+                "an oversized Drop prevented the next valid visit");
+        }
+    }
+}
+
+static constexpr int CasesPerStyle = 76;
 
 static int RunCase(int index) {
     constexpr uint32_t regular = JALIUM_WINDOW_STYLE_TITLEBAR | JALIUM_WINDOW_STYLE_CLOSABLE |
@@ -708,6 +879,8 @@ static int RunCase(int index) {
             }
             Require(replacement && replacement->events.empty() && replacement->native.visible,
                 "old target callback changed the replacement");
+        } else if (scenario >= 61) {
+            RunRepresentationCase(f, scenario, info);
         } else if (scenario >= 40) {
             RunDataCase(f, scenario, info);
         } else if (scenario >= 16) {
@@ -744,15 +917,21 @@ int main(int argc, char** argv) {
     struct rlimit coreLimit{0, 0}; setrlimit(RLIMIT_CORE, &coreLimit);
     if (argc == 2 && std::strncmp(argv[1], "--case=", 7) == 0) {
         int index = std::stoi(argv[1] + 7); if (index < 0 || index >= CasesPerStyle * 2) return 2;
-        try { return RunCase(index); }
-        catch (const std::exception& e) { std::fprintf(stderr, "FAIL %d: %s\n", index, e.what()); return 1; }
+        @try {
+            try { return RunCase(index); }
+            catch (const std::exception& e) { std::fprintf(stderr, "FAIL %d: %s\n", index, e.what()); return 1; }
+        } @catch (NSException* exception) {
+            std::fprintf(stderr, "FAIL %d: %s: %s\n", index, exception.name.UTF8String, exception.reason.UTF8String); return 1;
+        }
     }
     bool coreOnly = argc == 2 && std::strcmp(argv[1], "--core-only") == 0;
     bool extendedOnly = argc == 2 && std::strcmp(argv[1], "--extended-only") == 0;
-    if (argc != 1 && !coreOnly && !extendedOnly) return 2;
+    bool representationsOnly = argc == 2 && std::strcmp(argv[1], "--representations-only") == 0;
+    if (argc != 1 && !coreOnly && !extendedOnly && !representationsOnly) return 2;
     int passed = 0, total = 0;
     for (int index = 0; index < CasesPerStyle * 2; ++index) {
-        if ((coreOnly && index % CasesPerStyle >= 16) || (extendedOnly && index % CasesPerStyle < 16)) continue;
+        if ((coreOnly && index % CasesPerStyle >= 16) || (extendedOnly && index % CasesPerStyle < 16) ||
+            (representationsOnly && index % CasesPerStyle < 61)) continue;
         ++total;
         std::string argument = "--case=" + std::to_string(index);
         char* child[] = {argv[0], argument.data(), nullptr}; pid_t pid; int status = 0;

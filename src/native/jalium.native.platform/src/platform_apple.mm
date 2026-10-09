@@ -745,6 +745,9 @@ NSDragOperation OperationFromEffects(uint32_t effects)
 }
 
 static NSString* const AppleMimeWrapper = @"application/x-jalium-pasteboard-mime-";
+// Match ClipboardPlatform.MaxClipboardPayloadBytes before copying a promised
+// representation across the native/managed boundary.
+static constexpr NSUInteger MaxApplePasteboardPayloadBytes = 256 * 1024 * 1024;
 
 NSPasteboardType PasteboardTypeFromMime(const char* mime)
 {
@@ -846,10 +849,23 @@ NSData* ReadApplePasteboardData(NSPasteboard* pasteboard, const char* mime)
         return [[pasteboard stringForType:type] dataUsingEncoding:NSUTF8StringEncoding];
     if ([type isEqualToString:NSPasteboardTypePNG] && ![pasteboard.types containsObject:type]) {
         NSData* tiff = [pasteboard dataForType:NSPasteboardTypeTIFF];
+        if (tiff.length > MaxApplePasteboardPayloadBytes) return nil;
         NSBitmapImageRep* image = tiff ? [NSBitmapImageRep imageRepWithData:tiff] : nil;
         return [image representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
     }
     return [pasteboard dataForType:type];
+}
+
+JaliumResult CopyApplePasteboardData(NSData* data, uint8_t** out, uint32_t* size)
+{
+    if (!data) return JALIUM_OK;
+    NSUInteger length = data.length;
+    if (length > MaxApplePasteboardPayloadBytes) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto* bytes = static_cast<uint8_t*>(malloc(std::max<NSUInteger>(length, 1)));
+    if (!bytes) return JALIUM_ERROR_OUT_OF_MEMORY;
+    if (length) memcpy(bytes, data.bytes, length);
+    *out = bytes; *size = static_cast<uint32_t>(length);
+    return JALIUM_OK;
 }
 
 uint32_t AppleDragKeyStates(NSEvent* event)
@@ -2109,16 +2125,25 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     // still receive the first representation in the unchanged event ABI.
     NSPasteboard* pasteboard = window->dragTargetPasteboard;
     std::string mimeStorage; NSData* payload = nil;
+    NSUInteger payloadSize = 0;
     for (NSPasteboardType type in pasteboard.types) {
         MimeForPasteboardType(type, mimeStorage);
         payload = ReadApplePasteboardData(pasteboard, mimeStorage.c_str());
-        if (payload) break;
+        // Each promised read can retire this visit or start its successor.
+        if (_jaliumOwner != window || !CanReceiveAppleDrag(window) || !window->dragTargetActive ||
+            window->dragTargetGeneration != generation || window->dragTargetNativeSequence != sequence ||
+            AppleDragCancelled(window->dragTargetSource)) return NO;
+        payloadSize = payload.length;
+        if (payload && payloadSize <= MaxApplePasteboardPayloadBytes) break;
+        payload = nil;
     }
     if (!payload) return NO;
-    if (_jaliumOwner != window || !CanReceiveAppleDrag(window) ||
-        window->dragTargetGeneration != generation || AppleDragCancelled(window->dragTargetSource)) return NO;
+    const uint8_t* payloadBytes = static_cast<const uint8_t*>(payload.bytes);
+    if (_jaliumOwner != window || !CanReceiveAppleDrag(window) || !window->dragTargetActive ||
+        window->dragTargetGeneration != generation || window->dragTargetNativeSequence != sequence ||
+        AppleDragCancelled(window->dragTargetSource)) return NO;
     DispatchDragEvent(window, sender, JALIUM_EVENT_DROP, mimeStorage.c_str(),
-        static_cast<const uint8_t*>(payload.bytes), static_cast<uint32_t>(payload.length));
+        payloadBytes, static_cast<uint32_t>(payloadSize));
     if (_jaliumOwner != window || !CanReceiveAppleDrag(window) || !window->dragTargetActive ||
         window->dragTargetGeneration != generation || window->dragTargetNativeSequence != sequence) return NO;
     BOOL accepted = (window->dragEffect & EffectsFromOperation(sender.draggingSourceOperationMask)) != JALIUM_DRAG_EFFECT_NONE;
@@ -3555,13 +3580,14 @@ JaliumResult jalium_apple_drag_get_data(JaliumPlatformWindow* window, uint64_t s
     if (!CanReceiveAppleDrag(window) || !window->dragTargetActive ||
         window->dragTargetGeneration != generation || window->dragSession != sessionId ||
         window->dragTargetPasteboard != board) return JALIUM_ERROR_INVALID_STATE;
-    if (!data) return JALIUM_OK;
-    if (data.length > UINT32_MAX) return JALIUM_ERROR_INVALID_ARGUMENT;
-    auto* bytes = static_cast<uint8_t*>(malloc(std::max<NSUInteger>(data.length, 1)));
-    if (!bytes) return JALIUM_ERROR_OUT_OF_MEMORY;
-    if (data.length) memcpy(bytes, data.bytes, data.length);
-    *out = bytes; *size = static_cast<uint32_t>(data.length);
-    return JALIUM_OK;
+    JaliumResult result = CopyApplePasteboardData(data, out, size);
+    if (!CanReceiveAppleDrag(window) || !window->dragTargetActive ||
+        window->dragTargetGeneration != generation || window->dragSession != sessionId ||
+        window->dragTargetPasteboard != board) {
+        free(*out); *out = nullptr; *size = 0;
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+    return result;
 #else
     (void)window; (void)sessionId; return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
@@ -3725,13 +3751,15 @@ JaliumResult jalium_clipboard_get_formats(char** out){if(!out)return JALIUM_ERRO
     const char* utf8=joined.UTF8String?:"";
 #endif
     size_t n=strlen(utf8)+1;*out=(char*)malloc(n);if(!*out)return JALIUM_ERROR_OUT_OF_MEMORY;memcpy(*out,utf8,n);return JALIUM_OK;}
-JaliumResult jalium_clipboard_get_data(const char* mime,uint8_t** out,uint32_t* size){if(!mime||!out||!size)return JALIUM_ERROR_INVALID_ARGUMENT;*out=nullptr;*size=0;NSString* type=[NSString stringWithUTF8String:mime];
+JaliumResult jalium_clipboard_get_data(const char* mime,uint8_t** out,uint32_t* size){if(!mime||!out||!size)return JALIUM_ERROR_INVALID_ARGUMENT;*out=nullptr;*size=0;
 #if TARGET_OS_OSX
-    NSData* data=ReadApplePasteboardData(NSPasteboard.generalPasteboard,mime);
+    return CopyApplePasteboardData(ReadApplePasteboardData(NSPasteboard.generalPasteboard,mime), out, size);
 #else
+    NSString* type=[NSString stringWithUTF8String:mime];
     NSData* data=[UIPasteboard.generalPasteboard dataForPasteboardType:type];
+    if(!data)return JALIUM_OK;*size=(uint32_t)data.length;*out=(uint8_t*)malloc(std::max<NSUInteger>(data.length,1));if(!*out)return JALIUM_ERROR_OUT_OF_MEMORY;if(data.length)memcpy(*out,data.bytes,data.length);return JALIUM_OK;
 #endif
-    if(!data)return JALIUM_OK;*size=(uint32_t)data.length;*out=(uint8_t*)malloc(std::max<NSUInteger>(data.length,1));if(!*out)return JALIUM_ERROR_OUT_OF_MEMORY;if(data.length)memcpy(*out,data.bytes,data.length);return JALIUM_OK;}
+}
 JaliumResult jalium_clipboard_set_data(const JaliumClipboardDataItem* items,uint32_t count){
 #if TARGET_OS_OSX
     NSPasteboard* pb=NSPasteboard.generalPasteboard;[pb clearContents];NSMutableOrderedSet<NSPasteboardType>* types=[NSMutableOrderedSet orderedSet];for(uint32_t i=0;i<count;++i){if(items[i].mimeType)[types addObject:PasteboardTypeFromMime(items[i].mimeType)];}[pb declareTypes:types.array owner:nil];for(uint32_t i=0;i<count;++i){if(!items[i].mimeType)continue;NSString* type=PasteboardTypeFromMime(items[i].mimeType);NSData* data=[NSData dataWithBytes:items[i].data length:items[i].dataSize];if(![pb setData:data forType:type])return JALIUM_ERROR_INVALID_STATE;}return JALIUM_OK;
