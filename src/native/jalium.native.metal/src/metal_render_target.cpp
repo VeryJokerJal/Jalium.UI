@@ -370,6 +370,10 @@ struct MetalRenderTarget::Impl {
     } frames[kFrameCount];
     dispatch_semaphore_t inFlight = nullptr;
     id<MTLSharedEvent> completionEvent = nil;
+    bool commandDiagnostics = [] {
+        const char* setting = std::getenv("JALIUM_METAL_DIAGNOSTICS");
+        return setting && std::strcmp(setting, "1") == 0;
+    }();
     std::atomic<uint64_t> submittedEventValue{0};
     std::atomic<uint64_t> completedEventValue{0};
 
@@ -959,7 +963,7 @@ struct MetalRenderTarget::Impl {
         encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
         [encoder setFragmentTexture:whiteClipTexture atIndex:30];
         if (encoder) {
-            encoder.label = @"Jalium Metal 2D";
+            encoder.label = @"Jalium scene or effect";
             encoderUsesStencil = requireStencil || clips.size() > kMaxShaderClips;
             if (pathMsaa > 1) msaaContentsTarget = currentTarget;
             if(seedMsaa){
@@ -1963,7 +1967,13 @@ JaliumResult MetalRenderTarget::BeginDraw()
     [impl_->frame->retiredBuffers removeAllObjects];
     [impl_->frame->transientResources removeAllObjects];
     [impl_->frame->gpuRetainedObjects removeAllObjects];
-    impl_->commandBuffer = [impl_->queue commandBuffer];
+    if (impl_->commandDiagnostics) {
+        MTLCommandBufferDescriptor* descriptor = [MTLCommandBufferDescriptor new];
+        descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+        impl_->commandBuffer = [impl_->queue commandBufferWithDescriptor:descriptor];
+    } else {
+        impl_->commandBuffer = [impl_->queue commandBuffer];
+    }
     if (!impl_->commandBuffer) {
         dispatch_semaphore_signal(impl_->inFlight);
         return JALIUM_ERROR_DEVICE_LOST;
@@ -1995,6 +2005,7 @@ JaliumResult MetalRenderTarget::EndDraw()
                 options:MTLResourceStorageModeShared];
             if (impl_->readbackBuffer) {
                 id<MTLBlitCommandEncoder> blit = [impl_->commandBuffer blitCommandEncoder];
+                blit.label = @"Jalium readback copy";
                 [blit copyFromTexture:impl_->sceneTexture sourceSlice:0 sourceLevel:0
                     sourceOrigin:MTLOriginMake(0, 0, 0)
                     sourceSize:MTLSizeMake(impl_->pixelWidth, impl_->pixelHeight, 1)
@@ -2018,6 +2029,7 @@ JaliumResult MetalRenderTarget::EndDraw()
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         id<MTLRenderCommandEncoder> present =
             [impl_->commandBuffer renderCommandEncoderWithDescriptor:pass];
+        present.label = @"Jalium presentation";
         MetalShaderParams p{};
         p[0] = static_cast<float>(impl_->pixelWidth);
         p[1] = static_cast<float>(impl_->pixelHeight);
@@ -2056,6 +2068,11 @@ JaliumResult MetalRenderTarget::EndDraw()
             NSLog(@"Jalium Metal command failed: domain=%@ code=%ld description=%@",
                 completed.error.domain, static_cast<long>(completed.error.code),
                 completed.error.localizedDescription);
+            for (id<MTLCommandBufferEncoderInfo> info in
+                 completed.error.userInfo[MTLCommandBufferEncoderInfoErrorKey]) {
+                NSLog(@"Jalium Metal encoder: label=%@ state=%ld signposts=%@",
+                    info.label, static_cast<long>(info.errorState), info.debugSignposts);
+            }
         }
         if (completed.GPUEndTime >= completed.GPUStartTime)
             gpuNs->store(static_cast<int64_t>((completed.GPUEndTime - completed.GPUStartTime) * 1e9),

@@ -686,8 +686,23 @@ code 与 description，避免仅凭验收程序的泛化“尺寸／读回失败
   这属于当前主机 Release 验收，不能代替固定 Xcode 26.6、最低系统或其他 Apple RID。
 - [f57b044b Apple CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38084265610)
   的独立图像任务确认 CPU 解码通过、Metal 读回失败；在原日志中没有具体 GPU
-  错误，暂未确定其与本轮并发缺陷有因果关系。新日志用于继续定位。
+  错误，暂未确定其与本轮并发缺陷有因果关系。
   此轮未改动 Window AX、resize-drag 或真实前台激活失败的验收要求。
+
+随后 cdb42993 的独立图像 CI 实际记录
+MTLCommandBufferErrorDomain、code=2、
+Caused GPU Hang Error (00000003:kIOGPUCommandBufferCallbackErrorHang)。
+该单线程图像失败仍然存在；不能把本轮并发消费修复计为 CI GPU hang 的解决。
+新增独立 metal-readback CI 任务使用同一个 macos-26 运行器和固定 Xcode 26.6，
+分别执行无框架绘制代码的原生 Metal 清屏／BGRA 拷贝／共享事件信号检查，以及
+框架的读回生命周期与两线程竞争。任务保持失败返回，未跳过 GPU 验收。
+
+JALIUM_METAL_DIAGNOSTICS=1 现在明确启用各 encoder 的执行状态错误报告，
+并标记 scene/effect、readback copy、presentation 阶段；默认保持原来的 command
+创建方式。NSError 带有 encoder 信息时，失败日志输出其名称、状态及 signposts。
+加入这些诊断后，当前主机的完整 Metal + clipboard Release 回归
+**11/11**、无跳过，诊断模式实际开启；其中原生 GPU 基线检查也通过。
+上述 CI GPU hang 的具体绘制阶段和根因仍待新任务结果。
 
 ### v158：虚拟列表的滚动、退化恢复与无障碍树
 
