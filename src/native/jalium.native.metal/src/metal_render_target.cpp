@@ -2021,7 +2021,15 @@ JaliumResult MetalRenderTarget::EndDraw()
         }
     }
 
-    id<CAMetalDrawable> drawable = [impl_->layer nextDrawable];
+    id<CAMetalDrawable> drawable = nil;
+#if TARGET_OS_OSX
+    // Offscreen/readback targets can use a view which has no window. Such a
+    // layer has no display destination; keep scene rendering and GPU retirement
+    // independent of WindowServer drawable acquisition. Recheck each frame so
+    // attaching or detaching the same view changes presentation immediately.
+    if (((NSView*)impl_->hostView).window != nil)
+#endif
+        drawable = [impl_->layer nextDrawable];
     if (drawable) {
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable.texture;
