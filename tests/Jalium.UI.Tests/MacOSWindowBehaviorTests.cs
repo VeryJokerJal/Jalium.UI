@@ -2160,6 +2160,11 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         Assert.True(editor.Support.TrySetImeSelection(2, 2));
         editor.Support.OnImeCompositionStart();
         editor.Support.OnImeCompositionUpdate("pin", 2);
+        // AppKit keeps the selected committed text until commit; other hosts
+        // delete it at composition start. Geometry queries must preserve either state.
+        string expectedText = OperatingSystem.IsMacOS() ? "123456" : "1256";
+        Assert.Equal(expectedText, editor.Text().TrimEnd('\n'));
+        Assert.True(editor.Support.TryGetImeSurroundingText(out var before));
         Assert.True(editor.Support.TryGetImeTextRangeGeometry(2, 0, true, out var insertion));
         Rect caret = editor.Support.GetImeCaretRectangle();
         Assert.Equal(caret.X, insertion.Rectangle.X);
@@ -2169,9 +2174,14 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         Assert.True(editor.Support.TryGetImeCharacterIndex(new Point(letter.Rectangle.X + letter.Rectangle.Width / 4,
             letter.Rectangle.Y + letter.Rectangle.Height / 2), true, out int index));
         Assert.InRange(index, 1, 2);
-        Assert.Equal("123456", editor.Text().TrimEnd('\n'));
+        Assert.Equal(expectedText, editor.Text().TrimEnd('\n'));
+        Assert.True(editor.Support.TryGetImeSurroundingText(out var after));
+        Assert.Equal(before, after);
         editor.Support.OnImeCompositionEnd(null);
         Assert.False(editor.Support.TryGetImeTextRangeGeometry(0, 1, true, out _));
+        Assert.Equal(expectedText, editor.Text().TrimEnd('\n'));
+        Assert.True(editor.Support.TryGetImeSurroundingText(out var cancelled));
+        Assert.Equal(before, cancelled);
     }
 
     [Fact]
@@ -2182,13 +2192,17 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         password.Select(2, 2);
         IImeSupport support = password;
         support.OnImeCompositionStart(); support.OnImeCompositionUpdate("pin", 2);
+        string expectedPassword = OperatingSystem.IsMacOS() ? "secret" : "seet";
+        Assert.Equal(expectedPassword, password.Password);
         Assert.True(support.TryGetImeTextRangeGeometry(0, 3, true, out var marked));
         Assert.True(marked.Rectangle.Width > 0);
         Assert.False(support.TryGetImeTextRangeGeometry(0, 3, false, out _));
         Assert.False(support.TryGetImeCharacterIndex(new Point(30, 30), false, out _));
         Assert.False(support.TryGetImeSurroundingText(out _));
-        Assert.Equal("secret", password.Password);
+        Assert.Equal(expectedPassword, password.Password);
         support.OnImeCompositionEnd(null);
+        Assert.Equal(expectedPassword, password.Password);
+        Assert.False(support.TryGetImeTextRangeGeometry(0, 1, true, out _));
     }
 
     [MacOSNativeGeometryFact]
