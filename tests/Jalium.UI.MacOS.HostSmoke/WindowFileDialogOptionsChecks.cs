@@ -9,6 +9,7 @@ using Jalium.UI.Media;
 using Jalium.UI.Threading;
 using ObjCRuntime;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace Jalium.UI.MacOS;
 
@@ -113,6 +114,8 @@ internal static class WindowFileDialogOptionsChecks
                     observed = owner.AttachedSheet as NSSavePanel ?? observed;
                     if (watch.Elapsed.TotalSeconds > 8) throw new InvalidOperationException("native options did not complete");
                     if (observed == null || !observed.IsVisible || watch.Elapsed.TotalSeconds < .6) return;
+                    if (observed is NSOpenPanel && observed.AccessoryView != null)
+                        Require(AccessoryDisclosed(observed) == true, "open panel did not configure its options as disclosed");
                     if (phase == 1)
                     {
                         Require(observed.Handle != navigationPanel, "navigation reused the previous native panel");
@@ -300,6 +303,11 @@ internal static class WindowFileDialogOptionsChecks
     private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
     private static bool SameDirectory(string? actual, string expected)
         => actual != null && new FileDialogNavigation(actual).Root is { } identity && identity == new FileDialogNavigation(expected).Root;
+    private static readonly Selector AccessoryDisclosedSelector = new("isAccessoryViewDisclosed");
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+    private static extern byte GetAccessoryDisclosed(nint receiver, nint selector);
+    private static bool? AccessoryDisclosed(NSSavePanel? panel)
+        => panel is NSOpenPanel open ? GetAccessoryDisclosed(open.Handle, AccessoryDisclosedSelector.Handle) != 0 : null;
 
     private static int Observe(string root, string inside, string outside, int seconds)
     {
@@ -310,7 +318,7 @@ internal static class WindowFileDialogOptionsChecks
         var stack = new StackPanel { Margin = new Thickness(24), Spacing = 12 };
         stack.Children.Add(new TextBlock { Text = "文件范围与只读选择", FontSize = 22, Foreground = Brushes.White });
         stack.Children.Add(status); stack.Children.Add(editor);
-        var window = new Window { Title = "Jalium File Options v148", Width = 720, Height = 640, MinWidth = 600, MinHeight = 560,
+        var window = new Window { Title = "Jalium File Options v149", Width = 720, Height = 640, MinWidth = 600, MinHeight = 560,
             TitleBarStyle = WindowTitleBarStyle.Native, WindowStartupLocation = WindowStartupLocation.CenterScreen,
             Background = new SolidColorBrush(Color.FromRgb(0x1c, 0x20, 0x26)), Content = new ScrollViewer { Content = stack } };
         Application.Current!.MainWindow = window; bool closed = false; int actions = 0;
@@ -368,13 +376,20 @@ internal static class WindowFileDialogOptionsChecks
             var watch = Stopwatch.StartNew();
             var application = NSApplication.SharedApplication;
             var nativeOwner = Runtime.GetNSObject<NSView>(window.Handle)!.Window!;
+            var frame = nativeOwner.Frame;
+            Console.WriteLine($"OPTIONS FRAME: x={frame.X}; y={frame.Y}; width={frame.Width}; height={frame.Height}; screen={nativeOwner.Screen?.Frame}");
+            using var becameKey = NSNotificationCenter.DefaultCenter.AddObserver(NSWindow.DidBecomeKeyNotification,
+                notification => Console.WriteLine($"OPTIONS KEY BECAME: {((NSWindow)notification.Object!).Title}; owner={nativeOwner.IsKeyWindow}; sheet={nativeOwner.AttachedSheet?.Title}"));
+            using var resignedKey = NSNotificationCenter.DefaultCenter.AddObserver(NSWindow.DidResignKeyNotification,
+                notification => Console.WriteLine($"OPTIONS KEY RESIGNED: {((NSWindow)notification.Object!).Title}; owner={nativeOwner.IsKeyWindow}; sheet={nativeOwner.AttachedSheet?.Title}"));
             string? lastState = null;
             using var timer = NSTimer.CreateRepeatingTimer(.02, tick =>
             {
                 Dispatcher.CurrentDispatcher.ProcessQueue(); window.UpdateLayout();
-                var panel = nativeOwner.AttachedSheet as NSSavePanel;
+                var panel = nativeOwner.AttachedSheet as NSSavePanel ?? application.ModalWindow as NSSavePanel;
                 string state = $"running={application.Running}; active={application.Active}; key={application.KeyWindow?.Title}; modal={application.ModalWindow?.Title}; " +
-                    $"ownerKey={nativeOwner.IsKeyWindow}; panelKey={panel?.IsKeyWindow}; panelHasKey={panel != null && panel.Handle == application.KeyWindow?.Handle}";
+                    $"ownerKey={nativeOwner.IsKeyWindow}; panelKey={panel?.IsKeyWindow}; panelHasKey={panel != null && panel.Handle == application.KeyWindow?.Handle}; " +
+                    $"panelHandle={panel?.Handle}; disclosed={AccessoryDisclosed(panel)}; frame={nativeOwner.Frame}";
                 if (state != lastState) { lastState = state; Console.WriteLine($"OPTIONS APPLICATION: {state}"); }
                 if (!closed && watch.Elapsed.TotalSeconds < seconds) return;
                 if (!closed) window.Close();

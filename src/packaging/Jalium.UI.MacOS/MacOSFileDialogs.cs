@@ -4,6 +4,7 @@ using Jalium.UI.Controls.Platform;
 using UniformTypeIdentifiers;
 using System.Runtime.Versioning;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using ObjCRuntime;
 
 namespace Jalium.UI.MacOS;
@@ -15,6 +16,10 @@ internal static class MacOSFileDialogs
     // directories from completed sessions rather than mistaking that default
     // for the user's remembered location. Show is confined to the main thread.
     private static readonly Dictionary<(bool Save, bool Directory), string> LastDirectories = [];
+    private static readonly Selector DiscloseAccessorySelector = new("setAccessoryViewDisclosed:");
+
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+    private static extern void SetAccessoryDisclosed(nint receiver, nint selector, byte disclosed);
 
     public static string[]? Show(PlatformFileDialogOptions options)
     {
@@ -95,6 +100,12 @@ internal static class MacOSFileDialogs
             ApplyFilter();
         }
         panel.AccessoryView = accessory.View;
+        if (panel is NSOpenPanel && accessory.View != null)
+        {
+            // This public NSOpenPanel property is absent from the SDK binding.
+            // Choices must remain discoverable when navigation creates a panel.
+            SetAccessoryDisclosed(panel.Handle, DiscloseAccessorySelector.Handle, 1);
+        }
         try
         {
             var response = options.Owner == 0 ? (NSModalResponse)(long)panel.RunModal() : RunSheet(panel, options.Owner, session);
@@ -136,11 +147,21 @@ internal static class MacOSFileDialogs
         }, owner);
         try
         {
-            // Use AppKit's synchronous file-panel session. Waiting on an async
-            // completion handler deadlocks when ShowDialog is entered from a
-            // main dispatch-queue callback (including accessibility activation).
-            owner.BeginSheet(panel, _ => { });
-            var response = (NSModalResponse)(long)panel.RunModal();
+            // Let NSSavePanel establish its own sheet session before entering
+            // AppKit's modal loop. That loop can service sheet completion when
+            // ShowDialog is entered from the main queue; a nested managed
+            // dispatcher wait cannot service that completion reliably.
+            var application = NSApplication.SharedApplication;
+            bool completed = false;
+            NSModalResponse response = NSModalResponse.Cancel;
+            panel.BeginSheet(owner, result =>
+            {
+                completed = true;
+                response = (NSModalResponse)(long)result;
+                if (application.ModalWindow?.Handle == panel.Handle)
+                    application.StopModalWithCode((nint)response);
+            });
+            if (!completed) application.RunModalForWindow(panel);
             return ownerClosed ? NSModalResponse.Cancel : response;
         }
         finally

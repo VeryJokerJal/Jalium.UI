@@ -16,7 +16,7 @@ namespace Jalium.UI.MacOS;
 // Real file acceptance and multi-selection use the desktop tool separately.
 internal static class WindowFileDialogValidationChecks
 {
-    private const int Count = 14;
+    private const int Count = 18;
     private const string Prefix = "--window-file-dialog-validation-case=";
     internal static int RunAll()
     {
@@ -41,7 +41,7 @@ internal static class WindowFileDialogValidationChecks
     internal static int RunCase(string argument)
     {
         if (!int.TryParse(argument.AsSpan(Prefix.Length), out int index) || (uint)index >= Count) return 2;
-        int behavior = index switch { 11 => 0, 12 => 5, 13 => 10, _ => index };
+        int behavior = index switch { 11 or 15 => 0, 12 or 16 => 5, 13 or 17 => 10, 14 => 1, _ => index };
         var application = NSApplication.SharedApplication;
         application.ActivationPolicy = NSApplicationActivationPolicy.Regular;
         using var host = new ValidationDelegate();
@@ -176,12 +176,14 @@ internal static class WindowFileDialogValidationChecks
             {
                 bool completed = false;
                 Exception? showFailure = null;
-                Dispatcher.CurrentDispatcher.InvokeAsync(() =>
+                Action dispatch = () =>
                 {
                     try { Show(); }
                     catch (Exception error) { showFailure = error; }
                     finally { completed = true; }
-                });
+                };
+                if (index >= 14) application.BeginInvokeOnMainThread(dispatch);
+                else Dispatcher.CurrentDispatcher.InvokeAsync(dispatch);
                 // Deliver the wake through the native main queue, matching AX
                 // button activation. Do not manually drain the managed queue.
                 while (!completed && watch.Elapsed.TotalSeconds < 12)
@@ -199,7 +201,7 @@ internal static class WindowFileDialogValidationChecks
                 "cancellation changed the original dialog state");
             Require(observed!.SheetParent == null && !observed.IsVisible, "completed panel remained attached or visible");
             if (behavior is 3 or 10) Require(window!.Handle == 0, "owner close did not release its native handle");
-            Console.WriteLine($"PASS {index}: native owner, confirmation protocol and cancellation; fileOk={fileOk}; queued={queued}; mainQueueEntry={index >= 11}");
+            Console.WriteLine($"PASS {index}: native owner, confirmation protocol and cancellation; fileOk={fileOk}; queued={queued}; mainQueueEntry={index >= 11}; nativeQueueEntry={index >= 14}");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine($"FAIL {index}: {error}"); return 1; }
