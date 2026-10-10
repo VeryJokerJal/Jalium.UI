@@ -11,6 +11,13 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-attached-binding")
+    return WindowAttachedBindingChecks.Run();
+if (args.Length == 1 && args[0] == "--window-attached-binding-observe")
+    return WindowAttachedBindingChecks.Observe(false);
+if (args.Length == 1 && args[0] == "--window-attached-binding-observe-custom")
+    return WindowAttachedBindingChecks.Observe(true);
+
 if (args.Length == 1 && args[0] == "--window-bitmap-dpi")
     return WindowBitmapDpiChecks.Run();
 if (args.Length == 1 && args[0] == "--window-bitmap-dpi-observe")

@@ -59,7 +59,13 @@ else
     -D JALIUM_SPIRV_CROSS_INCLUDE_DIR= -D JALIUM_SPIRV_CROSS_LIBRARIES=)
 fi
 
-cmake --preset "$preset" -S "$native_root" "${cmake_compiler_args[@]}"
+# The macOS build below requests the AppKit test executables explicitly.
+# Their CMake option defaults to OFF and is independent of the Metal tests.
+cmake_test_args=()
+if [[ "$target" == macos ]]; then
+  cmake_test_args=(-D JALIUM_PLATFORM_BUILD_TESTS=ON)
+fi
+cmake --preset "$preset" -S "$native_root" "${cmake_compiler_args[@]}" "${cmake_test_args[@]}"
 bash "$repo_root/eng/apple/generate-metal-shaders.sh" "$target" "$configuration"
 if [[ "$target" == macos ]]; then
   payload_dir="$native_root/bin/native/$rid/$configuration"

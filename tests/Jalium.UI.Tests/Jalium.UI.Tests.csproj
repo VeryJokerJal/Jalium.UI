@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Compile Include="../Jalium.UI.MacOS.Tests/MacOSAttachedPropertyBindingTests.cs" Link="AttachedPropertyBindingTests.cs" />
   </ItemGroup>
 
   <ItemGroup>

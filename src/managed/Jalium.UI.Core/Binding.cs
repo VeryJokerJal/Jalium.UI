@@ -765,6 +765,9 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
     /// </summary>
     public abstract void UpdateSource();
 
+    // Controls report target edits separately from an explicit source update.
+    internal virtual void OnTargetValueChanged() => UpdateSource();
+
     /// <summary>
     /// Updates the target value.
     /// </summary>
@@ -899,13 +902,15 @@ public sealed class BindingExpression : BindingExpressionBase
     private DataSourceProvider? _dataSourceProvider;
     private DependencyObject? _sourceDependencyObject;
     private PropertyInfo? _sourceProperty;
+    private DependencyProperty? _sourceDependencyProperty;
     private object? _effectiveSource;
     private WeakReference<FrameworkElement>? _dataContextElement;
     private bool _isUpdating;
-    private bool _isLostFocusUpdate;
     private bool _isAsyncUpdatePending;
     private List<(INotifyPropertyChanged Notify, string PropertyName)>? _intermediateSubscriptions;
     private List<INotifyCollectionChanged>? _indexedCollectionSubscriptions;
+    private List<(DependencyObject Source, DependencyProperty Property,
+        Action<DependencyProperty, object?, object?> Handler)>? _intermediateDependencySubscriptions;
 
     // Converter / ConverterParameter 自身的可变状态订阅。
     // 若 Converter 实现 INotifyPropertyChanged 或继承自 DependencyObject，其属性变化时
@@ -954,7 +959,7 @@ public sealed class BindingExpression : BindingExpressionBase
     /// <summary>
     /// Gets the name of the source property that is updated by this binding.
     /// </summary>
-    public string? ResolvedSourcePropertyName => _sourceProperty?.Name;
+    public string? ResolvedSourcePropertyName => _sourceDependencyProperty?.Name ?? _sourceProperty?.Name;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="BindingExpression"/> class.
@@ -1154,19 +1159,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (mode != BindingMode.TwoWay && mode != BindingMode.OneWayToSource)
             return;
 
-        // If UpdateSourceTrigger is LostFocus or Explicit, only update when explicitly requested
-        // (LostFocus updates via OnTargetLostFocus; Explicit requires manual call).
-        // When called from DependencyObject.SetValue (automatic path), we must skip if
-        // the trigger is not PropertyChanged/Default.
-        var trigger = _binding.UpdateSourceTrigger;
-        if (trigger == UpdateSourceTrigger.Explicit)
-            return;
-        // LostFocus: block automatic updates triggered by property changes; only allow
-        // updates initiated by the LostFocus handler (which sets _isLostFocusUpdate = true).
-        if (trigger == UpdateSourceTrigger.LostFocus && !_isLostFocusUpdate)
-            return;
-
-        if (ResolvedSource == null || _sourceProperty == null)
+        if (ResolvedSource == null || (_sourceProperty == null && _sourceDependencyProperty == null))
             return;
 
         BindingDiagnostics.NotifyUpdateSource(this);
@@ -1189,7 +1182,7 @@ public sealed class BindingExpression : BindingExpressionBase
                 sourceValue = ConvertBack(targetValue);
                 sourceValue = BindingValueCoercion.Coerce(
                     sourceValue,
-                    _sourceProperty.PropertyType,
+                    _sourceDependencyProperty?.PropertyType ?? _sourceProperty!.PropertyType,
                     _binding.ConverterCulture ?? CultureInfo.CurrentCulture);
             }
             catch (Exception ex)
@@ -1205,7 +1198,10 @@ public sealed class BindingExpression : BindingExpressionBase
             // Step 4: Update source
             try
             {
-                _sourceProperty.SetValue(_effectiveSource ?? ResolvedSource, sourceValue);
+                if (_sourceDependencyProperty is { } property && _effectiveSource is DependencyObject source)
+                    source.SetValue(property, sourceValue);
+                else
+                    _sourceProperty!.SetValue(_effectiveSource ?? ResolvedSource, sourceValue);
             }
             catch (Exception ex)
             {
@@ -1290,7 +1286,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (ResolvedSource is not IDataErrorInfo dataErrorInfo || _binding.Path == null)
             return true;
 
-        var propertyName = _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _sourceDependencyProperty?.Name ?? _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
         var error = dataErrorInfo[propertyName];
 
         if (!string.IsNullOrEmpty(error))
@@ -1310,7 +1306,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (_notifyDataErrorInfo == null || _binding.Path == null)
             return;
 
-        var propertyName = _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _sourceDependencyProperty?.Name ?? _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
         var errors = _notifyDataErrorInfo.GetErrors(propertyName);
 
         if (errors != null)
@@ -1506,6 +1502,7 @@ public sealed class BindingExpression : BindingExpressionBase
     {
         _effectiveSource = null;
         _sourceProperty = null;
+        _sourceDependencyProperty = null;
 
         // Priority: explicit Source > ElementName > RelativeSource > DataContext
         if (_binding.Source != null)
@@ -1669,6 +1666,7 @@ public sealed class BindingExpression : BindingExpressionBase
     {
         _effectiveSource = null;
         _sourceProperty = null;
+        _sourceDependencyProperty = null;
 
         if (ResolvedSource == null || _binding.Path == null)
             return;
@@ -1683,7 +1681,7 @@ public sealed class BindingExpression : BindingExpressionBase
         for (int i = 0; i < segments.Length - 1; i++)
         {
             if (current == null) return;
-            if (!PropertyPath.TryReadBindingSegment(current, segments[i], out var next))
+            if (!_binding.Path.TryReadBindingSegment(current, segments[i], out var next))
                 return;
             current = next;
         }
@@ -1692,7 +1690,10 @@ public sealed class BindingExpression : BindingExpressionBase
 
         _effectiveSource = current;
         var lastSegment = segments[segments.Length - 1];
-        _sourceProperty = PropertyAccessorRegistry.TryGetPropertyInfo(current, lastSegment);
+        if (current is DependencyObject)
+            _sourceDependencyProperty = _binding.Path.TryGetAttachedDependencyProperty(lastSegment);
+        if (_sourceDependencyProperty == null)
+            _sourceProperty = PropertyAccessorRegistry.TryGetPropertyInfo(current, lastSegment);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
@@ -1716,7 +1717,7 @@ public sealed class BindingExpression : BindingExpressionBase
             if (current == null)
                 return _binding.FallbackValue;
 
-            if (!PropertyPath.TryReadBindingSegment(current, segment, out var next))
+            if (!_binding.Path.TryReadBindingSegment(current, segment, out var next))
                 return _binding.FallbackValue;
 
             current = next;
@@ -1794,7 +1795,7 @@ public sealed class BindingExpression : BindingExpressionBase
         {
             value = _binding.Converter.ConvertBack(
                 value,
-                _sourceProperty?.PropertyType ?? typeof(object),
+                _sourceDependencyProperty?.PropertyType ?? _sourceProperty?.PropertyType ?? typeof(object),
                 _binding.ConverterParameter,
                 _binding.ConverterCulture ?? System.Globalization.CultureInfo.CurrentCulture);
         }
@@ -2015,6 +2016,12 @@ public sealed class BindingExpression : BindingExpressionBase
 
     private void UnsubscribeFromIntermediates()
     {
+        if (_intermediateDependencySubscriptions != null)
+        {
+            foreach (var (source, _, handler) in _intermediateDependencySubscriptions)
+                source.PropertyChangedInternal -= handler;
+            _intermediateDependencySubscriptions = null;
+        }
         if (_intermediateSubscriptions != null)
         {
             foreach (var (notify, _) in _intermediateSubscriptions)
@@ -2043,6 +2050,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
         _intermediateSubscriptions = new();
         _indexedCollectionSubscriptions = new();
+        _intermediateDependencySubscriptions = new();
 
         object? current = ResolvedSource == null ? null : EvaluateXPath(ResolvedSource);
         // Subscribe to intermediate objects (segments[0] through segments[Length-2]).
@@ -2052,10 +2060,27 @@ public sealed class BindingExpression : BindingExpressionBase
         for (int i = 0; i < segments.Length; i++)
         {
             if (current == null) break;
+            if (current is DependencyObject dependencySource && !ReferenceEquals(current, _sourceDependencyObject))
+            {
+                var property = _binding.Path.TryGetAttachedDependencyProperty(PropertyPath.BindingPropertyName(segments[i])) ??
+                    DependencyProperty.FromName(current.GetType(), PropertyPath.BindingPropertyName(segments[i]));
+                if (property != null && !_intermediateDependencySubscriptions.Any(entry =>
+                    ReferenceEquals(entry.Source, dependencySource) && entry.Property == property))
+                {
+                    var weakExpression = new WeakReference<BindingExpression>(this);
+                    Action<DependencyProperty, object?, object?> handler = (changed, _, _) =>
+                    {
+                        if (changed == property && weakExpression.TryGetTarget(out var expression))
+                            expression.RefreshSourcePath();
+                    };
+                    dependencySource.PropertyChangedInternal += handler;
+                    _intermediateDependencySubscriptions.Add((dependencySource, property, handler));
+                }
+            }
             if (PropertyPath.TryGetIndexedSegment(segments[i], out var propertyName, out _))
             {
                 object? collection = current;
-                if (propertyName.Length > 0 && !PropertyAccessorRegistry.TryReadProperty(current, propertyName, out collection))
+                if (propertyName.Length > 0 && !_binding.Path.TryReadBindingSegment(current, propertyName, out collection))
                     break;
                 if (collection is INotifyCollectionChanged changed)
                 {
@@ -2068,10 +2093,13 @@ public sealed class BindingExpression : BindingExpressionBase
                     _intermediateSubscriptions.Add((indexedNotify, "Item[]"));
                 }
             }
-            if (i == segments.Length - 1 || !PropertyPath.TryReadBindingSegment(current, segments[i], out var intermediateObj))
+            if (i == segments.Length - 1 || !_binding.Path.TryReadBindingSegment(current, segments[i], out var intermediateObj))
                 break;
 
-            if (intermediateObj is INotifyPropertyChanged inpc)
+            if (intermediateObj is INotifyPropertyChanged inpc &&
+                (intermediateObj is not DependencyObject ||
+                 (_binding.Path.TryGetAttachedDependencyProperty(PropertyPath.BindingPropertyName(segments[i + 1])) ??
+                    DependencyProperty.FromName(intermediateObj.GetType(), PropertyPath.BindingPropertyName(segments[i + 1]))) == null))
             {
                 // Subscribe to this intermediate object for property changes
                 // (e.g., for path A.B.C, subscribe to A's value for "B" changes)
@@ -2082,7 +2110,9 @@ public sealed class BindingExpression : BindingExpressionBase
         }
     }
 
-    private void OnIndexedCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void OnIndexedCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => RefreshSourcePath();
+
+    private void RefreshSourcePath()
     {
         if (_isUpdating || !IsActive) return;
         ResolveSourceProperty();
@@ -2122,7 +2152,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (_binding.Path == null)
             return;
 
-        var propertyName = _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _sourceDependencyProperty?.Name ?? _binding.Path.CachedParsedSegments.LastOrDefault() ?? _binding.Path.Path;
 
         // Check if the changed property matches our binding path
         if (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == propertyName)
@@ -2164,6 +2194,8 @@ public sealed class BindingExpression : BindingExpressionBase
         }
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Owner-qualified paths use the same registered XAML type resolver as PropertyPath reads; explicit DependencyProperty parameters require no reflection.")]
     private void OnSourceDependencyPropertyChanged(DependencyProperty dp, object? oldValue, object? newValue)
     {
         if (_isUpdating) return;
@@ -2172,7 +2204,9 @@ public sealed class BindingExpression : BindingExpressionBase
 
         // Check if the changed property matches our path
         if (_binding.Path.CachedParsedSegments.Length > 0
-            && PropertyPath.BindingPropertyName(_binding.Path.CachedParsedSegments[0]) == dp.Name)
+            && (_binding.Path.TryGetAttachedDependencyProperty(PropertyPath.BindingPropertyName(_binding.Path.CachedParsedSegments[0])) is { } property
+                ? property == dp
+                : PropertyPath.BindingPropertyName(_binding.Path.CachedParsedSegments[0]) == dp.Name))
         {
             // For nested paths, re-resolve the property chain and re-subscribe intermediates
             if (_binding.Path.CachedParsedSegments.Length > 1
@@ -2194,18 +2228,13 @@ public sealed class BindingExpression : BindingExpressionBase
         else Styling.CssBorderRadiusProperties.ClearTemplate(Target);
     }
 
-    private void OnTargetLostFocus(object? sender, RoutedEventArgs e)
+    internal override void OnTargetValueChanged()
     {
-        _isLostFocusUpdate = true;
-        try
-        {
+        if (_binding.UpdateSourceTrigger is UpdateSourceTrigger.Default or UpdateSourceTrigger.PropertyChanged)
             UpdateSource();
-        }
-        finally
-        {
-            _isLostFocusUpdate = false;
-        }
     }
+
+    private void OnTargetLostFocus(object? sender, RoutedEventArgs e) => UpdateSource();
 
     private void OnDataContextChanged(object? sender, DependencyPropertyChangedEventArgs e)
     {

@@ -350,9 +350,9 @@ public class ListBox : Selector
         // but deliberately suppresses source transfer. This user action must
         // publish the final scalar values; each expression still enforces its
         // own mode and UpdateSourceTrigger.
-        GetBindingExpression(SelectedItemProperty)?.UpdateSource();
-        GetBindingExpression(SelectedIndexProperty)?.UpdateSource();
-        GetBindingExpression(SelectedValueProperty)?.UpdateSource();
+        GetBindingExpression(SelectedItemProperty)?.OnTargetValueChanged();
+        GetBindingExpression(SelectedIndexProperty)?.OnTargetValueChanged();
+        GetBindingExpression(SelectedValueProperty)?.OnTargetValueChanged();
     }
 
     /// <summary>
