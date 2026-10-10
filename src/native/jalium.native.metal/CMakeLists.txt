@@ -98,6 +98,18 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 option(JALIUM_METAL_BUILD_TESTS "Build macOS Metal/CoreText/AppKit smoke tests" OFF)
 if(JALIUM_METAL_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    add_executable(jalium.native.metal.image-orientation tests/metal_image_orientation.mm)
+    target_include_directories(jalium.native.metal.image-orientation PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/stb
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.media.core/include)
+    target_compile_options(jalium.native.metal.image-orientation PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.metal.image-orientation PRIVATE
+        jalium.native.metal jalium.native.core jalium.native.software jalium.native.media.apple
+        "-framework AppKit" "-framework CoreGraphics" "-framework ImageIO")
+    add_test(NAME jalium.native.metal.image-pixels COMMAND jalium.native.metal.image-orientation --pixels)
+    add_test(NAME jalium.native.metal.image-render COMMAND jalium.native.metal.image-orientation)
+    set_tests_properties(jalium.native.metal.image-pixels jalium.native.metal.image-render
+        PROPERTIES TIMEOUT 60)
     add_executable(jalium.native.metal.text-metrics tests/metal_text_metrics.mm)
     target_compile_options(jalium.native.metal.text-metrics PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.metal.text-metrics PRIVATE jalium.native.metal jalium.native.core

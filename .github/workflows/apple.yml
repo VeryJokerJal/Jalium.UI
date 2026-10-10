@@ -44,3 +44,21 @@ jobs:
         with:
           name: JaliumNative-Apple
           path: src/native/artifacts/apple/JaliumNative.xcframework
+
+  image-orientation:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure focused image tests
+        run: >-
+          cmake -S src/native -B /tmp/jalium-image-tests
+          -DCMAKE_BUILD_TYPE=Release -DJALIUM_METAL_BUILD_TESTS=ON
+          -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
+      - name: Build focused image tests
+        run: cmake --build /tmp/jalium-image-tests --target jalium.native.metal.image-orientation --parallel 4
+      - name: Verify CPU pixel order independently of GPU readback
+        run: ctest --test-dir /tmp/jalium-image-tests -R '^jalium.native.metal.image-pixels$' --output-on-failure -V
+      - name: Compare actual Metal rendering against software
+        if: ${{ !cancelled() }}
+        run: ctest --test-dir /tmp/jalium-image-tests -R '^jalium.native.metal.image-render$' --output-on-failure -V
