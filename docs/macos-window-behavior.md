@@ -306,6 +306,7 @@ artifacts 路径及已归属的本轮诊断。清理前后的受保护文件与�
 | 图标、透明度与窗口参与 | BGRA 图标转为 AppKit miniwindowImage；整窗 alpha；ShowInTaskbar 控制窗口菜单和轮换参与，保留普通窗口 FullScreenPrimary 与 popup FullScreenAuxiliary 角色；切换不修改尺寸 | v29 隐藏菜单条目后进入全屏、全屏中双向切换菜单参与及退出还原尺寸已实测；v55 已实测透明合成，窗口图标仍待实测 |
 | SystemBackdrop | 使用 AppKit 原生材质，位于渲染视图下方；随激活、系统外观与减少透明度设置变化；运行时切换保留几何和焦点 | 原生层级/属性及托管检查通过；v55 已查看 Auto/Mica/Mica Alt/Acrylic 的桌面外观与切换后继续编辑；系统外观、减少透明度和失活合成仍待验收 |
 | 半透明窗口背景 | Metal 自行预乘输入颜色，Window 的整窗清屏与局部背景填充传入原始 RGB，避免重复乘 alpha | v55 重跑 Impeller/Vello、1×/2×、五种 alpha 共 20 项 GPU 检查，重复局部绘制保留区域外像素；实际桌面透明与半透明背景合成及继续编辑已检查 |
+| 窗口位图与默认深度状态 | 物理像素读回保留捕获尺寸，拒绝短 stride，单次消费并处理并发调用；离屏视图不申请呈现 drawable；无模板裁剪时使用显式默认深度状态 | v161 普通 Debug Metal 18/18、隔离 Release Metal/图片/效果/clipboard 22/22、SDK 位图 12/12；Native/Custom 的实际截图、F6、编辑、焦点、最小尺寸及关闭已检查；固定远端虚拟 GPU 读回对照 13/13，图片 CPU/GPU 作业通过。实体多屏、VoiceOver、最低系统和完整流水线待验收 |
 | 动态整窗透明度 | macOS 原生 alpha 跟随 Opacity 的有效依赖属性值，覆盖绑定、样式、SetValue、SetCurrentValue 与动画；动画期间修改基值不覆盖当前动画值；解绑、清值及移除 HoldEnd 动画恢复有效基值 | v55 真实 NSWindow 28/28 通过；实际桌面 35%、绑定 80%、样式 50% 的合成、内容及编辑焦点已检查；动画中改基值后仍使用约 31% 的动画值，结束后托管与原生都恢复 65% |
 
 macOS 的 Dock 图标属于应用，不能按每个 Window 隐藏。窗口图标和 ShowInTaskbar
@@ -654,6 +655,56 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 修复负载上完成同一范围的实测，并核对实际加载的原生库。
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
+
+### v161：虚拟 GPU 的默认深度状态与 Window 再验收
+
+固定 macos-26 / Xcode 26.6 作业中的 Apple Paravirtual device 能执行
+单采样、4× MSAA、Stencil8、解析、BGRA 拷贝和 GPU shared-event signal。
+本轮继续分拆框架与原生 Metal 的差异；调整尺寸不是必要条件，未调整尺寸的
+框架清屏也失败。仅绑定裁剪纹理或设置裁剪区域时通过，单独调用
+setDepthStencilState:nil 就复现 GPU Hang。
+
+[Apple 的深度状态接口文档](https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setdepthstencilstate(_:))
+说明 nil 恢复 MTLDepthStencilDescriptor 的默认值。现在创建并复用显式默认状态，
+用于无模板裁剪的内容及 backdrop 效果绘制；模板裁剪继续使用已有比较状态。
+默认状态创建失败会使初始化失败。未更改纹理用途、MSAA、裁剪范围或呈现条件。
+
+原生对照覆盖纹理用途、1×1 R8 绑定、scissor、深度状态、AppKit、无窗口 layer
+及 GPU 拷贝待执行时替换纹理。默认对照使用与生产实现一致的显式默认状态；
+旧 nil 行为保留为手动 --gpu-nil-depth-repro 入口，不属于正常基线。
+框架的 resize/并发消费/窗口附着与脱离及独立的无 resize 读回均保持严格检查。
+
+本轮证据：
+
+- 修复前的远端 6b9def3d 作业为 **7/13**，单独的 nil 深度状态失败，
+  独立纹理绑定和 scissor 对照通过；两项框架读回均失败。
+- 修复后的远端 40fc1ba3 作业 **13/13、2.93 秒**，
+  [Apple run 38091188777](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38091188777)
+  的独立图片方向作业也通过 CPU 像素及真实 GPU 绘制两个阶段。
+- 本机普通 Debug Metal 集合 **18/18**；完成目标仅更新主库，最终另行重编译
+  最新测试驱动并复查。最终保留的正常 Debug 负载与源码一致。
+  隔离的完整 Release Metal/图片/效果/clipboard 集合 **22/22、16.93 秒**，
+  链接已准备的固定 DXC/SPIRV-Cross 静态编译器，原生导出检查通过。
+  七项 shader 输入与现有编译资产来源一致，两份 metallib 的大小和 SHA256
+  均与 manifest 匹配后复用。
+- 当前 PR 源码的隔离 SDK Release 构建成功，**31 个警告、0 个错误**；
+  --window-bitmap-dpi **12/12**。使用应用 MonoBundle 中的新原生库，无 DYLD 覆盖；
+  本机 Xcode 27 构建继续使用 ValidateXcodeVersion=false。
+- CUA 实际查看 Native/Custom 各 **3 张截图**：正常、旋转及最小尺寸。
+  两类窗口均从托管 **680 × 680** 调整到 **520 × 620 DIP**，
+  三列 96/144/192 DPI 图形与孔洞一致，按钮仍完整可达。
+  F6 各完成一次旋转/还原；中文 emoji 粘贴及 Command-A 的完整选区、
+  Tab 到旋转按钮和 Shift-Tab 回编辑框均由实际 AX 与截图确认。
+  Native 通过结束按钮、Custom 通过 Command-W 关闭，原 PID 74301/74386
+  均消失，没有匹配本轮身份及 PID 的崩溃报告。关闭后读取目标窗口的 CUA
+  调用返回 timeout，关闭结论依据原进程退出，未重新启动目标。
+
+上述软件 DPI 位图不代表实体混合 DPI 多屏验收；中文粘贴不代表原生候选窗输入。
+VoiceOver、最低系统、Intel 与签名发布仍不在本轮结论内。
+该源码头的完整 Apple native-and-packages 与 Linux 作业尚未结束；
+两个专项成功不代表整个 CI 或全部 Window/macOS 行为完成。
+临时产物的清理范围仍为两仓库名称恰为 artifacts 的路径及本轮自有隔离输出，
+保留正常工具链/原生负载、用户修改、源码测试和现有 PR 分支。
 
 ### v160：离屏视图、窗口呈现与独立 MSAA 对照
 
