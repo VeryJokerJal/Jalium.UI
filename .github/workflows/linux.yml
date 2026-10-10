@@ -46,6 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Validate native export scanner contracts
+        run: python3 eng/linux/test-native-exports.py
+
       - name: Install native dependencies
         run: |
           for attempt in 1 2 3 4 5; do
@@ -492,6 +495,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Validate native export scanner contracts
+        run: python3 eng/linux/test-native-exports.py
 
       - name: Build native, run managed tests and validate packages in Alpine
         run: |

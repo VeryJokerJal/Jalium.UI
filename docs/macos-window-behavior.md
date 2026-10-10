@@ -655,6 +655,50 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v155：Apple 构建入口与平台导出合同
+
+v154 发布后的云端检查未进入完整验收：Apple job 在第一条 native 构建命令
+因脚本权限为 644 返回 Permission denied；四个 Linux job 在真实 ELF 构建后
+要求 **14** 个 Apple Window/drag/AX 专用符号，停止于导出检查。前一 PR 提交
+`012101d9` 的 Apple/glibc-x64 日志也有相同错误，不能将这些 job 记为通过。
+
+Apple 工作流现以 `bash` 调用七个 native slice 入口和 XCFramework 打包入口，
+无需改变脚本或工作树权限。Linux 导出扫描从公共声明和托管 P/Invoke 中排除
+`jalium_apple_`、`jalium_android_` 专用命名空间；此前平台名单只有四个早期
+Apple 接口，后续 Window 接口被错误加入 Linux 必需导出。该排除不作用于
+实际 ELF 符号，因此 Linux DSO 若真的额外导出 Apple/Android 符号仍会失败。
+公共 Linux ABI、托管独有 import、非白名单导出和跨库引用检查保持严格。
+
+新增标准库 Python 回归，由 glibc/musl 两个 CI job 在构建前执行。相同 **13**
+项在旧检查器为 **7 失败、6 通过**，最终 **13/13**。覆盖导入别名与 EntryPoint、
+未来平台接口、名称仅含 apple 的公共接口、缺失公共/托管导出、新公共声明、
+额外 Apple/Android/其他导出、缺失库、跨库提供方及 readelf 的 global/weak/UND
+解析。测试使用模拟导出集合及 readelf 文本，不替代真实 Linux ELF 运行。
+
+两个完整 workflow 经 YAML 解析；Apple 的两个 shell run 块和对应脚本语法
+检查通过。以 bash 调用真实的 644 权限 build-native.sh，非法目标返回其预期
+参数错误（exit 2），已进入脚本；这项探针不表示七个发布 slice 全部构建通过。
+现有普通 Debug 负载又通过未修改的 macOS core/platform/Metal 导出检查，仍
+要求 Apple Window 接口。原生源码和负载未改动，没有新 UI、输入或窗口实测；
+v154 的实际两种标题栏记录保持其原范围。本轮云端构建须在新提交上另行确认。
+
+可重建检查：
+
+```text
+python3 eng/linux/test-native-exports.py
+python3 eng/apple/check-native-exports.py src/native/bin/native/osx-arm64/Debug --configuration Debug
+```
+
+本轮沿用当前 master 和现有 PR 分支，保留此前并发的 16 个文件；用户的 CSS、
+Tooltip、输入分发、测试项目及 Gallery 修改不进入提交。完整 Window/macOS
+目标及实体多屏、VoiceOver、最低系统版本、Intel 和发布验收仍未完成。
+
+清理 **1** 个 artifacts 根、**42** 个文件/链接、**53,323,352** 逻辑字节；两个
+仓库的字面 artifacts 路径不区分大小写均为 **0**。**18,998** 个受保护文件/
+链接、**1,690** 个目录、**508** 个原生输入、正常 Debug **27** 个输出及 Gallery
+**14** 个既有缺失路径在测试和清理前后保持一致。没有新观察进程、临时应用或
+外部诊断。提交后由真正的 CMake 完成目标仅刷新本地 master 的原生提交标记。
+
 ### v154：窗口位图的 DPI、裁剪与旋转
 
 v153 集成回归留下的 144/192 DPI 焦点裁剪失败，来自软件绘图上下文未采用
