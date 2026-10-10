@@ -44,3 +44,22 @@ jobs:
         with:
           name: JaliumNative-Apple
           path: src/native/artifacts/apple/JaliumNative.xcframework
+
+  metal-readback:
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      JALIUM_METAL_DIAGNOSTICS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - name: Configure focused readback tests
+        run: >-
+          cmake -S src/native -B /tmp/jalium-readback-tests
+          -DCMAKE_BUILD_TYPE=Release -DJALIUM_METAL_BUILD_TESTS=ON
+          -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
+      - name: Build focused readback tests
+        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback --parallel 4
+      - name: Verify direct GPU commands and framework readback
+        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium.native.metal.(gpu-baseline|readback)$' --output-on-failure -V

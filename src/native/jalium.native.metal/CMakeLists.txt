@@ -103,7 +103,8 @@ if(JALIUM_METAL_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_link_libraries(jalium.native.metal.readback PRIVATE jalium.native.metal jalium.native.core
         "-framework AppKit" "-framework Metal")
     add_test(NAME jalium.native.metal.readback COMMAND jalium.native.metal.readback)
-    set_tests_properties(jalium.native.metal.readback PROPERTIES TIMEOUT 30)
+    add_test(NAME jalium.native.metal.gpu-baseline COMMAND jalium.native.metal.readback --gpu-baseline)
+    set_tests_properties(jalium.native.metal.readback jalium.native.metal.gpu-baseline PROPERTIES TIMEOUT 30)
     add_executable(jalium.native.metal.text-metrics tests/metal_text_metrics.mm)
     target_compile_options(jalium.native.metal.text-metrics PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.metal.text-metrics PRIVATE jalium.native.metal jalium.native.core

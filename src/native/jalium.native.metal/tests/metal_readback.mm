@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -28,6 +29,60 @@ static void CheckResult(JaliumResult actual, JaliumResult expected, const char* 
         std::fprintf(stderr, "%s: result=%d expected=%d\n", operation, actual, expected);
         throw std::runtime_error(operation);
     }
+}
+
+static void TestNativeGPU()
+{
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    Check(device != nil, "Direct Metal device creation");
+    std::printf("Direct GPU: %s; unified=%d\n", device.name.UTF8String, device.hasUnifiedMemory);
+    id<MTLCommandQueue> queue = [device newCommandQueue];
+    MTLCommandBufferDescriptor* descriptor = [MTLCommandBufferDescriptor new];
+    descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+    id<MTLCommandBuffer> command = [queue commandBufferWithDescriptor:descriptor];
+    MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:7 height:5 mipmapped:NO];
+    textureDescriptor.storageMode = MTLStorageModePrivate;
+    textureDescriptor.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
+    id<MTLBuffer> pixels = [device newBufferWithLength:5 * 256 options:MTLResourceStorageModeShared];
+    id<MTLSharedEvent> event = [device newSharedEvent];
+    Check(command && texture && pixels && event, "Direct Metal resource creation");
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(1, 0, 0, 1);
+    id<MTLRenderCommandEncoder> clear = [command renderCommandEncoderWithDescriptor:pass];
+    clear.label = @"Direct Metal clear";
+    [clear endEncoding];
+    id<MTLBlitCommandEncoder> copy = [command blitCommandEncoder];
+    copy.label = @"Direct Metal readback";
+    [copy copyFromTexture:texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+        sourceSize:MTLSizeMake(7, 5, 1) toBuffer:pixels destinationOffset:0
+        destinationBytesPerRow:256 destinationBytesPerImage:5 * 256];
+    [copy endEncoding];
+    [command encodeSignalEvent:event value:1];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status == MTLCommandBufferStatusError) {
+        std::fprintf(stderr, "Direct Metal command failed: domain=%s code=%ld description=%s\n",
+            command.error.domain.UTF8String, static_cast<long>(command.error.code),
+            command.error.localizedDescription.UTF8String);
+        for (id<MTLCommandBufferEncoderInfo> info in
+             command.error.userInfo[MTLCommandBufferEncoderInfoErrorKey])
+            std::fprintf(stderr, "Direct Metal encoder: label=%s state=%ld\n",
+                info.label.UTF8String, static_cast<long>(info.errorState));
+    }
+    Check(command.status == MTLCommandBufferStatusCompleted, "Direct Metal GPU execution");
+    Check(event.signaledValue == 1, "Direct Metal GPU shared-event signal");
+    const uint8_t* bytes = static_cast<const uint8_t*>(pixels.contents);
+    for (int y = 0; y < 5; ++y) for (int x = 0; x < 7; ++x) {
+        const uint8_t* p = bytes + y * 256 + x * 4;
+        Check(p[0] == 0 && p[1] == 0 && p[2] == 255 && p[3] == 255,
+            "Direct Metal clear/copy BGRA pixels");
+    }
+    std::puts("PASS direct Metal clear, BGRA readback and shared-event signal");
 }
 
 struct Surface {
@@ -161,10 +216,15 @@ static void TestConcurrentFetch(Surface& surface)
     std::puts("PASS two concurrent callers consume each GPU capture once; subsequent captures work");
 }
 
-int main()
+int main(int argc, char** argv)
 {
     @autoreleasepool {
         try {
+            if (argc == 2 && std::strcmp(argv[1], "--gpu-baseline") == 0) {
+                TestNativeGPU();
+                return 0;
+            }
+            Check(argc == 1, "Unknown readback test option");
             [NSApplication sharedApplication];
             jalium_metal_init();
             Surface surface;
