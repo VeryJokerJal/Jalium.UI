@@ -11,6 +11,13 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-popup-wheel")
+    return WindowPopupWheelChecks.Run();
+if (args.Length == 1 && args[0] == "--window-popup-wheel-observe")
+    return WindowPopupWheelChecks.Observe(false);
+if (args.Length == 1 && args[0] == "--window-popup-wheel-observe-custom")
+    return WindowPopupWheelChecks.Observe(true);
+
 if (args.Length == 1 && args[0] == "--window-clipboard-files")
     return WindowClipboardFileChecks.Run();
 if (args.Length == 1 && args[0] == "--window-clipboard-files-observe")

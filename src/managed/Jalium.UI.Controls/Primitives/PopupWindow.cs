@@ -1134,6 +1134,20 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 break;
 
             case PlatformEventType.MouseWheel:
+                // A press or release may have happened outside this popup. An
+                // available native snapshot, including all-released, supersedes
+                // the local history; legacy packets keep the last known state.
+                if (evt.HasMouseButtonStates)
+                {
+                    _platformMouseButtons = new MouseButtonStates
+                    {
+                        Left = (evt.MouseButtons & 1) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                        Right = (evt.MouseButtons & 2) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                        Middle = (evt.MouseButtons & 4) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                        XButton1 = (evt.MouseButtons & 8) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                        XButton2 = (evt.MouseButtons & 16) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                    };
+                }
                 OnMouseWheel(
                     BuildMouseWParam(_platformMouseButtons),
                     nint.Zero,
