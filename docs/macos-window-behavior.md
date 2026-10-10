@@ -655,6 +655,103 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v147：文件面板的目录、隐藏项目与只读选择
+
+`Microsoft.Win32.CommonItemDialog` 的 `InitialDirectory`、`DefaultDirectory`、
+`RootDirectory`、`ShowHiddenItems` 和 `CustomPlaces` 现在分别传给 macOS 面板，
+不再把三个目录选项预先合成同一个初始路径。有效初始目录、文件名的有效父目录、
+当前进程内同类面板最近一次完成会话的目录、默认目录及有效根目录依次作为候选，
+每项须位于指定范围内。打开文件、保存与文件夹分别记忆最近目录；不声称实现
+跨进程的 ClientGuid 历史。AppKit 新面板的 DirectoryUrl 可以预先是 Documents，
+不能据此判断用户已经选择过目录，因此最近目录来自真正结束的面板会话。
+
+根目录用于引导选择范围：目录切换到范围外时，在 common/modal run-loop 中
+返回根目录；后续目录回调或会话结束使旧请求失效，避免覆盖后来进入的有效目录。
+根目录已消失时取消面板。打开面板按范围和筛选器启用文件；祖先
+目录可见，以保留原生路径显示。保存面板不会调用 ShouldEnableUrl，三个面板
+均在确认候选 URL 及完整批次时复查范围，拒绝时提供原生错误说明且不触发
+FileOk/FolderOk。此处是规范化后的路径范围，既不授权文件访问，也不是符号
+链接安全沙箱。参考 [WPF CommonItemDialog 源码](https://github.com/dotnet/wpf/blob/main/src/Microsoft.DotNet.Wpf/src/PresentationFramework/Microsoft/Win32/CommonItemDialog.cs)、
+[AppKit 目录属性](https://developer.apple.com/documentation/appkit/nssavepanel/directoryurl) 与
+[打开面板的启用回调](https://developer.apple.com/documentation/appkit/nsopensavepaneldelegate/panel(_:shouldenable:))。
+
+隐藏项目使用原生 ShowsHiddenFiles，默认仍为 false。CustomPlaces 通过原生
+“位置快捷方式”附件呈现：根目录在前、保留有效位置次序、去重，忽略缺失、
+范围外和未知 GUID；常见文档、桌面、下载、音乐、图片、影片与应用位置映射到
+当前平台目录。没有对应位置的 Windows 专属 GUID 不会制造虚假路径。
+当前 SDK 的 NSSavePanel.h 明确将 directoryURL 标为 configuration-only。
+真实快捷菜单曾执行回调并改变 DirectoryUrl 的 getter，但远程文件列表没有移动；
+同步 getter 检查不能证明导航成功。快捷位置和越界返回现先取消内部面板会话，
+重新创建面板并在配置阶段设置目录；只读选择、筛选器、当前保存名称和
+隐藏项保留，
+不会把内部导航当作调用方取消。owner 关闭会清除导航请求，禁止重开已关闭窗口。
+在本机 macOS 27.0.1 的当前工具观察中，重新创建打开面板后原生“选项”区域
+会折叠，需再次点击 Show Options；配置阶段与显示后的公开 disclosure 属性均只改变 getter，
+没有改变可见区域。无效的展开恢复逻辑已移除，此项作为明确未补齐的限制，
+不将这些观察扩大为其他入口、系统或硬件的结论。
+只读选择使用 NSButton switch，ShowReadOnly 控制显示，ReadOnlyChecked 提供
+初始值并在 FileOk 前公开；取消校验、整个面板取消或异常恢复旧公开状态，
+通过时保留事件处理器的修改。它是调用方的打开方式选择，不修改文件权限。
+附件与筛选器共同使用原生布局，仍保留仅有筛选器时的直接 NSPopUpButton，
+避免破坏既有面板行为。参考 [隐藏项目](https://developer.apple.com/documentation/appkit/nssavepanel/showshiddenfiles) 与
+[原生附件](https://developer.apple.com/documentation/appkit/nssavepanel/accessoryview)。
+
+平台返回的多选文件或文件夹批次包含无效路径时，现在拒绝整个批次，避免通过
+Where 过滤悄悄只发布其中的有效文件。单选仍只取第一项。
+
+- 新增托管选项和状态恢复 **21/21**，相关选项、确认与筛选集合 **70/70**；
+  启用原生几何的完整托管集合 **1471/1471、0 失败、0 跳过、15.61 秒**。
+- 同一最终 SDK 夹具在冻结 HEAD `e21978a77a533dda4203a4724dd4fedadf4e4a7b`
+  上为 **5/28、50.13 秒**，修复后 **28/28、56.67 秒**。覆盖三类面板的隐藏项、
+  根目录初始夹紧及目录返回、范围外文件/文件夹/保存候选、快捷位置过滤与
+  文档 GUID、只读初始值、取消/异常回滚、未显示的只读状态、目录优先级和
+  取消后重开、快捷菜单动作及迟到目录回调，导航创建新面板并保留只读/筛选/保存名称/隐藏项、
+  导航期间阻止旧选择确认及 owner 关闭时清除重开请求。配置检查及自有委托协议调用不
+  代替真实菜单导航和选择接受。
+- 原有筛选/扩展名/真实取消集合 **15/15、22.10 秒**；owner、可取消确认、
+  主队列进入及异常回归 **14/14、32.43 秒**。本轮原生 C++ 的 **506** 个输入
+  和冻结的 **12** 份 Debug 负载均未修改。
+- 最终 SDK 增量构建 **0 错误、18 项既有警告、22.42 秒**；相同夹具的基线
+  SDK 为 **0 错误、18 项警告、19.72 秒**。初版夹具把 ItemTitles 方法当成
+  属性、初版附件调用 NSButton 的只读 AccessibilityLabel 绑定，修正后编译
+  通过；这些编译问题没有计入旧产品负载的行为失败。
+- 初版原生行为集合 **19/22** 暴露了默认目录被 Documents 掩盖、文件夹面板
+  已选 URL 掩盖范围外候选两类问题；修复后以上最终集合包含追加的保存范围与
+  重开目录回归。这一中间结果不作为最终通过。
+- 两个 SDK 包分别核对 **16** 份原生库可加载节、**3** 份资源、**10** 份 linked
+  SDK DLL，并通过严格临时签名。最终实际观察进程 **74704** 加载本包的 **8** 份
+  Jalium 库与两份 Metal 资源，没有 DYLD 覆盖。
+- 桌面实际验收：查看 **720 × 672 DIP** 主窗口与原生打开、文件夹和保存
+  面板截图及 AX 树。打开快捷位置实际从 Root 切到 inside；通过原生路径菜单
+  进入范围外的 observer-owned 后，真实文件列表返回 Root。只读 True、所有
+  文件筛选和隐藏项跨内部导航保留。实际 Command 多选 `.隐藏🙂.txt` 与
+  `chosen.txt`，首次 FileOk 拒绝后通过 Return 重试，第二次发布完整两项。
+  另一次打开先改变只读值并触发拒绝，再点原生 Cancel，恢复只读 False 与
+  `original.txt`；隐藏目录 `.hidden-folder` 选择成功。
+- 保存面板取消后恢复原文件名 `范围记录🙂`；再次打开后，将名称用 AX 改为
+  `切换后保存🙂`，展开文件列表并经真实快捷菜单从 Root 切到 inside，名称
+  与文本筛选保留。点原生 Save 后，实际文件 `inside/切换后保存🙂.txt` 存在，
+  内容核对为 `owned option save`。此项证明 Unicode 文件名与目录切换保存，
+  不代表真实中文候选窗输入已验收。
+- 返回主窗口后的正反向 Tab、英文 A 输入及 Command-Z 撤销成功；最终
+  `actions=5`、文本恢复原值、`closed=True`，进程与自有 keeper 均退出 **0**。
+  原生打开面板在首次确认拒绝后的 Escape 和 Command-. 未取消；紧凑保存
+  面板 Escape 取消成功，但展开并导航后的 Return 未接受，鼠标 Save 接受
+  成功。这些入口的键盘差异仍待补查。主窗口拖动缩小持续被工具返回
+  `noWindowsAvailable`，本轮未核实手动缩窗或最小尺寸；v146 的既有证据不
+  替代本轮实际拖动验收。
+
+本轮已清理两个仓库内所有大小写不敏感、名称恰为 artifacts 的路径；删除
+**10,266** 个文件或链接、**3,997,051,061** 字节逻辑大小，剩余路径 **0**。
+同时删除两个自有 SDK 应用的偏好及用户私有 Metal 缓存，未发现新增自有
+诊断文件。清理前后 **18,996** 个受保护文件与 **1,690** 个目录的内容及模式
+精确一致，保留 `.tools`、并行修改及 Gallery 原有缺失文件；原生输入与普通
+Debug 负载未改变。
+AddToRecent、ClientGuid、CreatePrompt/CreateTestFile/OverwritePrompt 的非默认
+选项、ForcePreviewPane、ValidateNames/CheckFileExists=false 的原生差异仍待
+逐项补齐。路径大小写及别名边界、跨进程目录历史、真实中文候选窗、VoiceOver、
+多屏混合 DPI、停靠拖动、macOS 15、Intel 与签名发布仍未全部验收。
+
 ### v146：全局鼠标位置与窗口坐标一致
 
 `jalium_input_get_cursor_pos` 原先直接返回

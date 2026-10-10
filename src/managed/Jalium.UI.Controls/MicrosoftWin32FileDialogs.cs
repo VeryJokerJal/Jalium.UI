@@ -138,6 +138,7 @@ public abstract class CommonItemDialog : CommonDialog
 
         string[]? previousNames = _itemNames is null ? null : (string[])_itemNames.Clone();
         int? previousFilter = this is FileDialog fileDialog ? fileDialog.FilterIndex : null;
+        bool? previousReadOnly = this is OpenFileDialog openDialog ? openDialog.ReadOnlyChecked : null;
         bool accepted = false;
         _showing = true;
         _nativeSelectionAccepted = false;
@@ -158,6 +159,8 @@ public abstract class CommonItemDialog : CommonDialog
                 _itemNames = previousNames;
                 if (OperatingSystem.IsMacOS() && previousFilter is { } filter && this is FileDialog dialog)
                     dialog.FilterIndex = filter;
+                if (previousReadOnly is { } readOnly && this is OpenFileDialog open)
+                    open.ReadOnlyChecked = readOnly;
             }
             _nativeSelectionAccepted = false;
             _nativeValidationInvoked = false;
@@ -167,14 +170,16 @@ public abstract class CommonItemDialog : CommonDialog
 
     private protected bool NativeSelectionAccepted => _nativeSelectionAccepted;
 
-    private bool ValidateNativeSelection(string[] paths, int filterIndex)
+    private bool ValidateNativeSelection(string[] paths, int filterIndex, bool readOnly)
     {
         _nativeValidationInvoked = true;
         var previousNames = _itemNames;
         int? previousFilter = this is FileDialog fileDialog ? fileDialog.FilterIndex : null;
+        bool? previousReadOnly = this is OpenFileDialog openDialog ? openDialog.ReadOnlyChecked : null;
         bool accepted = false;
         _itemNames = (string[])paths.Clone();
         if (this is FileDialog dialog) dialog.FilterIndex = filterIndex;
+        if (this is OpenFileDialog open) open.ReadOnlyChecked = readOnly;
         try
         {
             var args = new CancelEventArgs();
@@ -187,6 +192,7 @@ public abstract class CommonItemDialog : CommonDialog
             {
                 _itemNames = previousNames;
                 if (previousFilter is { } filter && this is FileDialog canceledDialog) canceledDialog.FilterIndex = filter;
+                if (previousReadOnly is { } oldReadOnly && this is OpenFileDialog canceledOpen) canceledOpen.ReadOnlyChecked = oldReadOnly;
             }
         }
     }
@@ -207,6 +213,13 @@ public abstract class CommonItemDialog : CommonDialog
                 : RootDirectory;
         dialog.DereferenceLinks = DereferenceLinks;
         dialog.ValidateNames = ValidateNames;
+        if (OperatingSystem.IsMacOS())
+        {
+            dialog.InitialDirectory = InitialDirectory;
+            dialog.DefaultDirectory = DefaultDirectory;
+            dialog.RootDirectory = RootDirectory;
+            dialog.ShowHiddenItems = ShowHiddenItems;
+        }
         dialog.CustomPlaces.Clear();
 
         if (CustomPlaces is not null)
@@ -427,6 +440,7 @@ public sealed class OpenFileDialog : FileDialog
         if (accepted)
         {
             CaptureFileResults(dialog);
+            if (!NativeSelectionAccepted) ReadOnlyChecked = dialog.ReadOnlyChecked;
         }
 
         return accepted;
