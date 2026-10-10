@@ -2911,12 +2911,12 @@ int32_t jalium_apple_window_get_client_origin(JaliumPlatformWindow* w, int32_t* 
 }
 
 #if TARGET_OS_OSX
-static NSScreen* StartupScreenAtPoint(NSPoint point)
+static NSScreen* ScreenAtPoint(NSPoint point, bool requireWorkArea = true)
 {
     NSArray<NSScreen*>* screens = NSScreen.screens;
     std::vector<NSRect> frames;
     for (NSScreen* screen in screens)
-        frames.push_back(NSIsEmptyRect(screen.visibleFrame) ? NSZeroRect : screen.frame);
+        frames.push_back(requireWorkArea && NSIsEmptyRect(screen.visibleFrame) ? NSZeroRect : screen.frame);
     size_t index = jalium::platform::apple::NearestStartupScreen(point, frames);
     return index < screens.count ? screens[index] : nil;
 }
@@ -2943,9 +2943,9 @@ int32_t jalium_apple_window_apply_startup_location(JaliumPlatformWindow* w, int3
     NSScreen* screen = ownerWindow.screen;
     if (!screen && ownerWindow) {
         NSRect frame = ownerWindow.frame;
-        screen = StartupScreenAtPoint(NSMakePoint(NSMidX(frame), NSMidY(frame)));
+        screen = ScreenAtPoint(NSMakePoint(NSMidX(frame), NSMidY(frame)));
     }
-    if (!screen) screen = StartupScreenAtPoint(NSEvent.mouseLocation);
+    if (!screen) screen = ScreenAtPoint(NSEvent.mouseLocation);
     if (!screen || NSIsEmptyRect(screen.visibleFrame)) return JALIUM_ERROR_INVALID_STATE;
 
     bool useRestore = w->state != JALIUM_WINDOW_STATE_NORMAL || w->fullScreenTransition || w->applyingWindowState;
@@ -3552,7 +3552,14 @@ JaliumResult jalium_input_get_pointing_capabilities(int32_t* capabilities){if(!c
 JaliumResult jalium_platform_set_double_click_settings(uint32_t,float){return JALIUM_OK;}
 JaliumResult jalium_input_get_cursor_pos(float* x,float* y){if(!x||!y)return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
-    NSPoint p=NSEvent.mouseLocation;*x=p.x;*y=p.y;return JALIUM_OK;
+    NSPoint point = NSEvent.mouseLocation;
+    // Cursor and window geometry must share the same desktop origin and
+    // pixel mapping. AppKit reports points with an upward Y axis.
+    NSScreen* screen = ScreenAtPoint(point, false);
+    if (!screen) { *x = *y = 0; return JALIUM_ERROR_INVALID_STATE; }
+    NSPoint converted = FrameworkScreenPoint(point, screen);
+    *x = converted.x; *y = converted.y;
+    return JALIUM_OK;
 #else
     *x=*y=0;return JALIUM_ERROR_NOT_SUPPORTED;
 #endif

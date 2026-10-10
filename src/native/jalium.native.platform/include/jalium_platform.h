@@ -963,6 +963,11 @@ JALIUM_PLATFORM_API JaliumResult jalium_platform_set_double_click_settings(
     float distance);
 
 /// Gets the current mouse cursor position in global screen coordinates.
+/// On macOS, converts AppKit screen points to the top-left pixel coordinate
+/// space used by window positions and monitor geometry, using the display
+/// containing the pointer (or the nearest display for an off-screen point).
+/// An unavailable display topology zeroes both outputs and returns
+/// JALIUM_ERROR_INVALID_STATE.
 ///
 /// X11 and Win32 expose a compositor-independent global coordinate space and
 /// return JALIUM_OK. Wayland intentionally does not expose global pointer
