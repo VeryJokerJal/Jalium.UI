@@ -15,6 +15,7 @@
 
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 
 extern "C" void jalium_metal_init();
 
@@ -31,11 +32,13 @@ static void CheckResult(JaliumResult actual, JaliumResult expected, const char* 
     }
 }
 
-static void TestNativeGPU()
+static void TestNativeGPU(uint32_t samples)
 {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     Check(device != nil, "Direct Metal device creation");
-    std::printf("Direct GPU: %s; unified=%d\n", device.name.UTF8String, device.hasUnifiedMemory);
+    std::printf("Direct GPU: %s; unified=%d; samples=%u\n", device.name.UTF8String,
+        device.hasUnifiedMemory, samples);
+    Check([device supportsTextureSampleCount:samples], "Direct Metal sample-count support");
     id<MTLCommandQueue> queue = [device newCommandQueue];
     MTLCommandBufferDescriptor* descriptor = [MTLCommandBufferDescriptor new];
     descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
@@ -45,14 +48,35 @@ static void TestNativeGPU()
     textureDescriptor.storageMode = MTLStorageModePrivate;
     textureDescriptor.usage = MTLTextureUsageRenderTarget;
     id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
+    id<MTLTexture> multisample = nil, stencil = nil;
+    if (samples > 1) {
+        MTLTextureDescriptor* attachment = [MTLTextureDescriptor new];
+        attachment.textureType = MTLTextureType2DMultisample;
+        attachment.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        attachment.width = 7; attachment.height = 5; attachment.sampleCount = samples;
+        attachment.storageMode = MTLStorageModePrivate;
+        attachment.usage = MTLTextureUsageRenderTarget;
+        multisample = [device newTextureWithDescriptor:attachment];
+        attachment.pixelFormat = MTLPixelFormatStencil8;
+        stencil = [device newTextureWithDescriptor:attachment];
+        Check(multisample && stencil, "Direct Metal MSAA and stencil creation");
+    }
     id<MTLBuffer> pixels = [device newBufferWithLength:5 * 256 options:MTLResourceStorageModeShared];
     id<MTLSharedEvent> event = [device newSharedEvent];
     Check(command && texture && pixels && event, "Direct Metal resource creation");
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = texture;
+    pass.colorAttachments[0].texture = samples > 1 ? multisample : texture;
+    pass.colorAttachments[0].resolveTexture = samples > 1 ? texture : nil;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].storeAction = samples > 1
+        ? MTLStoreActionStoreAndMultisampleResolve : MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(1, 0, 0, 1);
+    if (stencil) {
+        pass.stencilAttachment.texture = stencil;
+        pass.stencilAttachment.loadAction = MTLLoadActionClear;
+        pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+        pass.stencilAttachment.clearStencil = 0;
+    }
     id<MTLRenderCommandEncoder> clear = [command renderCommandEncoderWithDescriptor:pass];
     clear.label = @"Direct Metal clear";
     [clear endEncoding];
@@ -82,13 +106,27 @@ static void TestNativeGPU()
         Check(p[0] == 0 && p[1] == 0 && p[2] == 255 && p[3] == 255,
             "Direct Metal clear/copy BGRA pixels");
     }
-    std::puts("PASS direct Metal clear, BGRA readback and shared-event signal");
+    std::printf("PASS direct Metal clear, BGRA readback and shared-event signal; samples=%u\n", samples);
 }
+
+@interface ReadbackMetalLayer : CAMetalLayer
+@property(nonatomic) NSUInteger drawableRequests;
+@property(nonatomic) BOOL suppressDrawables;
+@end
+
+@implementation ReadbackMetalLayer
+- (id<CAMetalDrawable>)nextDrawable
+{
+    self.drawableRequests++;
+    return self.suppressDrawables ? nil : [super nextDrawable];
+}
+@end
 
 struct Surface {
     std::unique_ptr<JaliumContext, decltype(&jalium_context_destroy)> context{
         jalium_context_create(JALIUM_BACKEND_METAL), jalium_context_destroy};
     NSView* view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 7, 5)];
+    ReadbackMetalLayer* layer = [ReadbackMetalLayer layer];
     std::unique_ptr<JaliumRenderTarget, decltype(&jalium_render_target_destroy)> target{
         nullptr, jalium_render_target_destroy};
     id<MTLCommandQueue> queue;
@@ -97,6 +135,8 @@ struct Surface {
     Surface()
     {
         Check(context != nullptr, "Metal context creation");
+        view.wantsLayer = YES;
+        view.layer = layer;
         JaliumSurfaceDescriptor descriptor{};
         descriptor.platform = JALIUM_PLATFORM_MACOS;
         descriptor.kind = JALIUM_SURFACE_KIND_NATIVE_WINDOW;
@@ -146,6 +186,8 @@ static void TestLifecycle(Surface& surface)
     CheckResult(surface.Fetch(nullptr, 0, width, height), JALIUM_ERROR_INVALID_STATE, "Empty size query");
     Check(width == 0 && height == 0, "Empty query dimensions");
     surface.Capture();
+    Check(surface.layer.drawableRequests == 0,
+        "A detached view must not acquire an onscreen drawable for readback");
     for (int query = 0; query < 2; ++query) {
         CheckResult(surface.Fetch(nullptr, 0, width, height), JALIUM_OK, "Pending size query");
         Check(width == 7 && height == 5, "Captured physical dimensions");
@@ -216,12 +258,54 @@ static void TestConcurrentFetch(Surface& surface)
     std::puts("PASS two concurrent callers consume each GPU capture once; subsequent captures work");
 }
 
+static void TestWindowAttachment(Surface& surface)
+{
+    NSWindow* window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 7, 5)
+        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    // This test observes drawable acquisition without depending on WindowServer
+    // presentation. Actual attached-window rendering is checked by the UI host.
+    surface.layer.suppressDrawables = YES;
+    NSUInteger expectedRequests = 0;
+    for (int iteration = 0; iteration < 3; ++iteration) {
+        window.contentView = surface.view;
+        Check(surface.view.window == window, "Render view attachment");
+        surface.Capture();
+        Check(surface.layer.drawableRequests == ++expectedRequests,
+            "An attached view must keep the presentation path");
+        std::vector<uint8_t> attachedPixels(5 * 40, 0xa5);
+        int32_t width = -1, height = -1;
+        CheckResult(surface.Fetch(attachedPixels.data(), 40, width, height), JALIUM_OK,
+            "Attached view readback when no drawable is available");
+        Check(width == 7 && height == 5, "Attached capture dimensions");
+        CheckPixels(attachedPixels, 40);
+
+        window.contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 7, 5)];
+        Check(surface.view.window == nil, "Render view detachment");
+        surface.Capture();
+        Check(surface.layer.drawableRequests == expectedRequests,
+            "A detached view must stop requesting onscreen drawables");
+        std::vector<uint8_t> detachedPixels(5 * 40, 0xa5);
+        CheckResult(surface.Fetch(detachedPixels.data(), 40, width, height), JALIUM_OK,
+            "Readback after view detachment");
+        Check(width == 7 && height == 5, "Detached capture dimensions");
+        CheckPixels(detachedPixels, 40);
+    }
+    [window close];
+    surface.layer.suppressDrawables = NO;
+    std::puts("PASS repeated view attachment/detachment preserves presentation selection and BGRA readback");
+}
+
 int main(int argc, char** argv)
 {
     @autoreleasepool {
         try {
             if (argc == 2 && std::strcmp(argv[1], "--gpu-baseline") == 0) {
-                TestNativeGPU();
+                TestNativeGPU(1);
+                return 0;
+            }
+            if (argc == 2 && std::strcmp(argv[1], "--gpu-msaa-baseline") == 0) {
+                TestNativeGPU(4);
                 return 0;
             }
             Check(argc == 1, "Unknown readback test option");
@@ -230,6 +314,7 @@ int main(int argc, char** argv)
             Surface surface;
             TestLifecycle(surface);
             TestConcurrentFetch(surface);
+            TestWindowAttachment(surface);
             return 0;
         } catch (const std::exception& error) {
             std::fprintf(stderr, "FAIL Metal readback: %s\n", error.what());
