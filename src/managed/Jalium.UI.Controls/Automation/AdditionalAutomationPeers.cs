@@ -1513,7 +1513,30 @@ public class ScrollBarAutomationPeer : RangeBaseAutomationPeer
     protected override object? GetPatternCore(PatternInterface patternInterface)
         => patternInterface == PatternInterface.RangeValue ? this : base.GetPatternCore(patternInterface);
 
-    public override void SetValue(double value) => ScrollBarOwner.Value = value;
+    public override void SetValue(double value)
+    {
+        if (!ScrollBarOwner.IsEnabled)
+            throw new InvalidOperationException("The scroll bar is disabled.");
+
+        // A viewer owns the content offset. Changing only the bar's Value
+        // moves its thumb without scrolling (and must not turn metric updates
+        // from the viewer into a feedback loop).
+        var viewer = ScrollBarOwner.TemplatedParent as ScrollViewer;
+        if (viewer == null && ScrollBarOwner.IsHostOwnedLayout)
+            viewer = ScrollBarOwner.VisualParent as ScrollViewer;
+        if (viewer != null)
+        {
+            value = Math.Clamp(value, Minimum, Maximum);
+            if (ScrollBarOwner.Orientation == Orientation.Horizontal)
+                viewer.ScrollToHorizontalOffset(value);
+            else
+                viewer.ScrollToVerticalOffset(value);
+        }
+        else
+        {
+            ScrollBarOwner.Value = value;
+        }
+    }
     public override double Value => ScrollBarOwner.Value;
     public override bool IsReadOnly => false;
     public override double Maximum => ScrollBarOwner.Maximum;

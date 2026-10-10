@@ -21,7 +21,7 @@ internal static class WindowPopupWheelChecks
 {
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
-    internal static int Run()
+    internal static int Run(bool directContent = false)
     {
         var app = NSApplication.SharedApplication;
         using var host = Initialize(app);
@@ -35,7 +35,7 @@ internal static class WindowPopupWheelChecks
                     try
                     {
                         var editor = new TextBox { Text = "弹出窗口后的编辑🙂", Height = 40 };
-                        owner = Owner(custom, editor);
+                        owner = Owner(custom, editor, directContent);
                         Application.Current!.MainWindow = owner;
                         owner.Show(); owner.UpdateLayout(); editor.Focus();
                         using var native = new NativePopup(owner, new Border { Background = Brushes.White }, 320, 240);
@@ -92,7 +92,7 @@ internal static class WindowPopupWheelChecks
                         }
                         else
                         {
-                            var viewer = List();
+                            var viewer = List(directContent);
                             using var scrolling = new NativePopup(owner, viewer, 340, 300);
                             scrolling.Visual.UpdateLayout();
                             scrolling.Root.PreviewMouseWheel += (_, e) => Console.WriteLine($"POPUP PROTOCOL: source={e.OriginalSource?.GetType().Name}; x={e.HorizontalDelta}; y={e.VerticalDelta}; precise={e.HasPreciseScrollingDeltas}");
@@ -107,6 +107,33 @@ internal static class WindowPopupWheelChecks
                             Require(viewer.HorizontalOffset > 0 && viewer.VerticalOffset == vertical,
                                 "horizontal popup scroll lost or moved the other axis");
                             Require(ReferenceEquals(focus, Keyboard.FocusedElement), "scrolling moved managed keyboard focus");
+                            if (directContent)
+                            {
+                                var rows = (StackPanel)viewer.Content!;
+                                Require(rows.ScrollOwner == null, "physical content still owns the viewer");
+                                viewer.CanContentScroll = true; scrolling.Visual.UpdateLayout();
+                                Require(rows.ScrollOwner == viewer && viewer.HorizontalOffset == 0 && viewer.VerticalOffset == 0,
+                                    "provider enable did not attach or reset old offsets");
+                                scroll.Horizontal = 0; scroll.Vertical = -48; SendScroll(scrolling.View, scroll);
+                                Require(viewer.VerticalOffset > 0, "enabled provider cannot scroll");
+                                viewer.CanContentScroll = false; scrolling.Visual.UpdateLayout();
+                                Require(rows.ScrollOwner == null && viewer.HorizontalOffset == 0 && viewer.VerticalOffset == 0,
+                                    "physical mode retained provider or its old offsets");
+                                SendScroll(scrolling.View, scroll);
+                                scroll.Vertical = 0; scroll.Horizontal = -48; SendScroll(scrolling.View, scroll);
+                                Require(viewer.HorizontalOffset == 48 && viewer.VerticalOffset == 48,
+                                    "reselected physical mode lost a scrolling axis");
+                            }
+                            viewer.IsDeferredScrollingEnabled = true;
+                            var horizontalBar = (Jalium.UI.Controls.Primitives.ScrollBar)typeof(ScrollViewer).GetField("_horizontalScrollBar", Private)!.GetValue(viewer)!;
+                            var verticalBar = (Jalium.UI.Controls.Primitives.ScrollBar)typeof(ScrollViewer).GetField("_verticalScrollBar", Private)!.GetValue(viewer)!;
+                            new Jalium.UI.Automation.Peers.ScrollBarAutomationPeer(horizontalBar).SetValue(96);
+                            new Jalium.UI.Automation.Peers.ScrollBarAutomationPeer(verticalBar).SetValue(84);
+                            scrolling.Visual.UpdateLayout();
+                            Require(viewer.HorizontalOffset == 96 && viewer.VerticalOffset == 84 &&
+                                viewer.ContentHorizontalOffset == 96 && viewer.ContentVerticalOffset == 84,
+                                "automation changed only a thumb or deferred its content offset");
+                            Require(ReferenceEquals(focus, Keyboard.FocusedElement), "automation scrolling changed keyboard focus");
                             Console.WriteLine($"PASS {custom}/{scenario}: precise two-axis popup ScrollViewer");
                             passed++; continue;
                         }
@@ -131,14 +158,53 @@ internal static class WindowPopupWheelChecks
                     catch (Exception e) { Console.Error.WriteLine($"FAIL {custom}/{scenario}: {e}"); }
                     finally { owner?.Close(); }
                 }
+            if (directContent)
+            {
+                // DisableDefaults keeps the input fixture minimal. Explicitly
+                // load the real theme for the separate default-template checks.
+                Jalium.UI.Controls.Themes.ThemeManager.Initialize(Application.Current!);
+                foreach (bool custom in new[] { false, true })
+                    foreach (ItemsControl items in new ItemsControl[] { new ListBox(), new ListView(), new TreeView() })
+                    {
+                        Window? owner = null;
+                        try
+                        {
+                            items.Width = 320; items.Height = 240;
+                            items.ItemsSource = Enumerable.Range(1, 600).Select(i => $"第 {i} 项🙂").ToArray();
+                            owner = Owner(custom, items, true); Application.Current!.MainWindow = owner;
+                            owner.Show(); owner.UpdateLayout();
+                            var viewer = Find<ScrollViewer>(items);
+                            Console.WriteLine($"POPUP TEMPLATE: control={items.GetType().Name}; template={items.Template != null}; parentMode={ScrollViewer.GetCanContentScroll(items)}; viewer={viewer != null}; mode={viewer?.CanContentScroll}");
+                            Require(viewer != null && viewer.CanContentScroll, "default items template did not enable content scrolling");
+                            var presenter = Find<ItemsPresenter>(items)!;
+                            Require(presenter.ScrollOwner == viewer, "default items presenter did not attach to viewer");
+                            if (items is ListBox)
+                            {
+                                var panel = Find<VirtualizingStackPanel>(items)!;
+                                Require(panel != null && panel.Children.Count < 200, "default list template stopped virtualizing");
+                            }
+                            ScrollViewer.SetCanContentScroll(items, false); owner.UpdateLayout();
+                            Require(!viewer!.CanContentScroll && presenter.ScrollOwner == null,
+                                "parent attached property did not disable content scrolling");
+                            ScrollViewer.SetCanContentScroll(items, true); owner.UpdateLayout();
+                            Require(viewer.CanContentScroll && presenter.ScrollOwner == viewer,
+                                "parent attached property did not restore content scrolling");
+                            Console.WriteLine($"PASS {custom}/{items.GetType().Name}: default template, provider binding and virtualization");
+                            passed++;
+                        }
+                        catch (Exception e) { Console.Error.WriteLine($"FAIL {custom}/{items.GetType().Name}: {e}"); }
+                        finally { owner?.Close(); }
+                    }
+            }
             NativeMethods.PlatformQuit(0);
         });
         app.Run();
-        Console.WriteLine($"macOS popup wheel native host checks: {passed}/16 passed");
-        return passed == 16 ? 0 : 1;
+        int expected = directContent ? 22 : 16;
+        Console.WriteLine($"macOS popup wheel native host checks: {passed}/{expected} passed");
+        return passed == expected ? 0 : 1;
     }
 
-    internal static int Observe(bool custom)
+    internal static int Observe(bool custom, bool directContent = false)
     {
         var app = NSApplication.SharedApplication;
         using var host = Initialize(app);
@@ -147,17 +213,20 @@ internal static class WindowPopupWheelChecks
         var editor = new TextBox { Text = "滚动后继续编辑🙂", Height = 40 };
         AutomationProperties.SetName(editor, "弹出列表后的编辑框");
         panel.Children.Add(new TextBlock { Text = "弹出列表的滚动", FontSize = 22 });
-        panel.Children.Add(new TextBlock { Text = "分别滚动窗口内列表和独立列表，检查横向、纵向滚动及返回编辑。", FontSize = 15, TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = directContent ? "滚动两种列表。按 F6 切换滚动方式，按 Escape 返回编辑。" : "分别滚动窗口内列表和独立列表，检查横向、纵向滚动及返回编辑。", FontSize = 15, TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(status); panel.Children.Add(editor);
         var overlayButton = Button("打开窗口内列表"); panel.Children.Add(overlayButton);
         var nativeButton = Button("打开独立列表"); panel.Children.Add(nativeButton);
+        var mode = Button("切换滚动方式（F6）");
+        if (directContent) panel.Children.Add(mode);
         var close = Button("关闭列表并返回编辑框"); panel.Children.Add(close);
         var size = Button("切换到最小尺寸"); panel.Children.Add(size);
         var finish = Button("结束检查"); panel.Children.Add(finish);
-        var owner = Owner(custom, panel);
+        var owner = Owner(custom, panel, directContent);
         Application.Current!.MainWindow = owner;
         NativePopup? independent = null;
         Popup? overlay = null;
+        ScrollViewer? currentViewer = null;
         int nativeWheels = 0, overlayWheels = 0, opens = 0, closes = 0;
         bool failed = false, closed = false;
         void CloseLists()
@@ -165,6 +234,7 @@ internal static class WindowPopupWheelChecks
             bool hadList = independent != null || overlay != null;
             independent?.Dispose(); independent = null;
             if (overlay != null) { overlay.IsOpen = false; overlay = null; }
+            currentViewer = null;
             if (hadList) closes++;
             editor.Focus();
         }
@@ -178,6 +248,7 @@ internal static class WindowPopupWheelChecks
             // Read offsets after ScrollViewer's bubbling handler has run.
             app.BeginInvokeOnMainThread(() =>
             {
+                if (!ReferenceEquals(currentViewer, viewer)) return;
                 status.Text = $"{(native ? "独立" : "窗口内")}列表已滚动；横向 {viewer.HorizontalOffset:0.##}，纵向 {viewer.VerticalOffset:0.##}。";
                 Console.WriteLine($"POPUP OFFSET: native={native}; x={viewer.HorizontalOffset}; y={viewer.VerticalOffset}");
             });
@@ -185,7 +256,13 @@ internal static class WindowPopupWheelChecks
         void Open(bool native)
         {
             CloseLists();
-            var viewer = List();
+            var viewer = List(directContent); currentViewer = viewer;
+            if (directContent) viewer.ScrollChanged += (_, _) =>
+            {
+                if (!ReferenceEquals(currentViewer, viewer)) return;
+                status.Text = $"{(native ? "独立" : "窗口内")}列表当前：横向 {viewer.HorizontalOffset:0.##}，纵向 {viewer.VerticalOffset:0.##}。";
+                Console.WriteLine($"POPUP METRIC: native={native}; provider={viewer.CanContentScroll}; x={viewer.HorizontalOffset}; y={viewer.VerticalOffset}");
+            };
             if (native)
             {
                 independent = new NativePopup(owner, viewer, 340, 300);
@@ -210,11 +287,23 @@ internal static class WindowPopupWheelChecks
         }
         overlayButton.Click += (_, _) => Safe(() => Open(false));
         nativeButton.Click += (_, _) => Safe(() => Open(true));
+        void SwitchMode()
+        {
+            if (currentViewer == null) Open(false);
+            var viewer = currentViewer!;
+            viewer.CanContentScroll = !viewer.CanContentScroll;
+            independent?.Visual.UpdateLayout(); owner.UpdateLayout(); editor.Focus();
+            status.Text = "滚动方式已切换；列表已回到起点。";
+            Console.WriteLine($"POPUP MODE: provider={viewer.CanContentScroll}; x={viewer.HorizontalOffset}; y={viewer.VerticalOffset}; owner={((StackPanel)viewer.Content!).ScrollOwner != null}");
+        }
+        mode.Click += (_, _) => Safe(SwitchMode);
         close.Click += (_, _) => Safe(CloseLists);
-        size.Click += (_, _) => { CloseLists(); owner.Width = 520; owner.Height = 540; owner.UpdateLayout(); };
+        size.Click += (_, _) => { CloseLists(); owner.Width = 520; owner.Height = directContent ? 590 : 540; owner.UpdateLayout(); };
         finish.Click += (_, _) => owner.Close();
         owner.PreviewKeyDown += (_, e) =>
         {
+            if (directContent && e.Key == Key.F6)
+            { Safe(SwitchMode); e.Handled = true; }
             if (e.Key == Key.Escape && (independent != null || overlay != null))
             { Safe(CloseLists); status.Text = "列表已关闭，可以继续编辑。"; e.Handled = true; }
         };
@@ -244,27 +333,42 @@ internal static class WindowPopupWheelChecks
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         return host;
     }
-    private static Window Owner(bool custom, UIElement content) => new()
+    private static Window Owner(bool custom, UIElement content, bool directContent = false) => new()
     {
-        Title = custom ? "Jalium Popup Wheel v152 Custom" : "Jalium Popup Wheel v152 Native",
-        Width = 680, Height = 570, MinWidth = 520, MinHeight = 540,
+        Title = (directContent ? "Jalium Scroll Content v153 " : "Jalium Popup Wheel v152 ") + (custom ? "Custom" : "Native"),
+        Width = 680, Height = directContent ? 620 : 570, MinWidth = 520, MinHeight = directContent ? 590 : 540,
         TitleBarStyle = custom ? WindowTitleBarStyle.Custom : WindowTitleBarStyle.Native,
         WindowStartupLocation = WindowStartupLocation.CenterScreen, Content = content,
         Background = new SolidColorBrush(Color.FromRgb(0x1c, 0x20, 0x26)),
     };
     private static Button Button(string text) => new() { Content = text, Height = 40, HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 350 };
-    private static ScrollViewer List()
+    private static ScrollViewer List(bool directContent = false)
     {
         var rows = new StackPanel { Width = 980, Spacing = 8, Margin = new Thickness(12) };
         for (int i = 1; i <= 30; i++) rows.Children.Add(new TextBlock
         { Text = $"第 {i:00} 项：中文🙂 Miii é · 滚动列表中的完整内容；关闭和重新打开后仍可操作。横向滚动后能读到末尾编号 {i:00}。", FontSize = 16, Height = 28 });
-        // A non-provider wrapper keeps this input fixture in physical scrolling.
-        // Direct IScrollInfo content currently ignores CanContentScroll=false;
-        // that separate provider-selection contract needs its own regression.
-        return new ScrollViewer { Width = 340, Height = 300, Content = new Border { Child = rows },
+        // Retain the v152 wrapped fixture; v153 exercises direct IScrollInfo
+        // content and mode changes through the same native popup input path.
+        var viewer = new ScrollViewer { Width = 340, Height = 300, Content = directContent ? rows : new Border { Child = rows },
             CanContentScroll = false,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             Background = new SolidColorBrush(Color.FromRgb(0x24, 0x2a, 0x33)) };
+        if (directContent)
+        {
+            foreach (string axis in new[] { "horizontal", "vertical" })
+            {
+                var bar = (DependencyObject)typeof(ScrollViewer).GetField("_" + axis + "ScrollBar", Private)!.GetValue(viewer)!;
+                AutomationProperties.SetName(bar, axis == "horizontal" ? "横向滚动列表" : "纵向滚动列表");
+            }
+        }
+        return viewer;
+    }
+    private static T? Find<T>(Visual visual) where T : Visual
+    {
+        if (visual is T value) return value;
+        for (int i = 0; i < visual.VisualChildrenCount; i++)
+            if (Find<T>(visual.GetVisualChild(i)!) is { } found) return found;
+        return null;
     }
     private static string FocusedName() => Keyboard.FocusedElement is DependencyObject d ? AutomationProperties.GetName(d) : "none";
     private static uint Mask(MouseEventArgs e) => (e.LeftButton == MouseButtonState.Pressed ? 1u : 0) |

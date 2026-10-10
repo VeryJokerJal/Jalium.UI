@@ -175,7 +175,7 @@ public partial class ScrollViewer : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanContentScrollProperty =
         DependencyProperty.RegisterAttached(nameof(CanContentScroll), typeof(bool), typeof(ScrollViewer),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnCanContentScrollChanged));
 
     /// <summary>
     /// Identifies the PanningMode dependency property.
@@ -568,7 +568,31 @@ public partial class ScrollViewer : ContentControl
         ClearEndAnchor(isVertical: false);
         ScrollInfo = null;
         base.OnContentChanged(oldContent, newContent);
-        ScrollInfo = ContentElement as IScrollInfo;
+        ScrollInfo = CanContentScroll ? ContentElement as IScrollInfo : null;
+    }
+
+    private static void OnCanContentScrollChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not ScrollViewer viewer)
+            return;
+
+        viewer.ResetMacOSWheelElasticity();
+        viewer.CancelSmoothScroll();
+        viewer.ClearEndAnchor(isVertical: true);
+        viewer.ClearEndAnchor(isVertical: false);
+        viewer.ScrollInfo = viewer.CanContentScroll ? viewer.ContentElement as IScrollInfo : null;
+
+        // The old provider's units need not be DIP. Start the new mode at its
+        // origin instead of treating logical offsets or pending targets as pixels.
+        viewer._scrollInfo?.SetHorizontalOffset(0);
+        viewer._scrollInfo?.SetVerticalOffset(0);
+        viewer._horizontalOffset = viewer._verticalOffset = 0;
+        viewer._requestedHorizontalOffset = viewer._requestedVerticalOffset = 0;
+        viewer._smoothTargetX = viewer._smoothTargetY = 0;
+        viewer.ContentElement?.InvalidateMeasure();
+        viewer.ContentElement?.InvalidateArrange();
+        viewer.InvalidateMeasure();
+        viewer.InvalidateArrange();
     }
 
     /// <summary>
@@ -2552,6 +2576,8 @@ public partial class ScrollViewer : ContentControl
     public void ScrollToHorizontalOffset(double offset)
     {
         offset = ValidateScrollOffset(offset, nameof(offset));
+        if (HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled)
+            offset = 0;
         if (!_isApplyingMacOSWheelScroll && !_isApplyingEndAnchor && !_isApplyingSmoothScrollStep)
             ResetMacOSWheelElasticity();
         if (!_isApplyingEndAnchor)
@@ -2605,6 +2631,8 @@ public partial class ScrollViewer : ContentControl
     {
         var rawOffset = offset;
         offset = ValidateScrollOffset(offset, nameof(offset));
+        if (VerticalScrollBarVisibility == ScrollBarVisibility.Disabled)
+            offset = 0;
         if (!_isApplyingMacOSWheelScroll && !_isApplyingEndAnchor && !_isApplyingSmoothScrollStep)
             ResetMacOSWheelElasticity();
         if (!_isApplyingEndAnchor)
@@ -4997,6 +5025,15 @@ public partial class ScrollViewer : ContentControl
                     scrollViewer.HorizontalScrollBarVisibility != ScrollBarVisibility.Disabled;
                 scrollViewer._scrollInfo.CanVerticallyScroll =
                     scrollViewer.VerticalScrollBarVisibility != ScrollBarVisibility.Disabled;
+            }
+
+            if (scrollViewer.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled)
+            {
+                scrollViewer.ScrollToHorizontalOffset(0);
+            }
+            if (scrollViewer.VerticalScrollBarVisibility == ScrollBarVisibility.Disabled)
+            {
+                scrollViewer.ScrollToVerticalOffset(0);
             }
 
             scrollViewer.InvalidateMeasure();
