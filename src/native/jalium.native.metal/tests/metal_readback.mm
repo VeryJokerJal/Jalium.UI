@@ -35,7 +35,7 @@ static void CheckResult(JaliumResult actual, JaliumResult expected, const char* 
 
 enum class GPUProfile {
     Plain, SceneUsage, ClipUsage, SampledClip, AppKit, Layer, Resize,
-    ClipOnly, ScissorOnly, DepthOnly
+    ClipOnly, ScissorOnly, DepthOnly, NilDepthRepro
 };
 
 static const char* ProfileName(GPUProfile profile)
@@ -50,6 +50,7 @@ static const char* ProfileName(GPUProfile profile)
     case GPUProfile::ClipOnly: return "clip-binding-only";
     case GPUProfile::ScissorOnly: return "scissor-only";
     case GPUProfile::DepthOnly: return "depth-state-only";
+    case GPUProfile::NilDepthRepro: return "nil-depth-repro";
     default: return "plain";
     }
 }
@@ -101,7 +102,8 @@ static void TestNativeGPU(uint32_t samples, GPUProfile profile = GPUProfile::Pla
     const bool sceneUsage = profile == GPUProfile::SceneUsage ||
         profile == GPUProfile::ClipUsage || profile == GPUProfile::SampledClip ||
         profile == GPUProfile::Resize || profile == GPUProfile::ClipOnly ||
-        profile == GPUProfile::ScissorOnly || profile == GPUProfile::DepthOnly;
+        profile == GPUProfile::ScissorOnly || profile == GPUProfile::DepthOnly ||
+        profile == GPUProfile::NilDepthRepro;
     if (sceneUsage) textureDescriptor.usage |= MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
     id<MTLTexture> clip = nil;
@@ -158,7 +160,15 @@ static void TestNativeGPU(uint32_t samples, GPUProfile profile = GPUProfile::Pla
     const bool combinedState = clip && profile != GPUProfile::ClipOnly;
     if (combinedState || profile == GPUProfile::ScissorOnly)
         [clear setScissorRect:MTLScissorRect{0, 0, 7, 5}];
-    if (combinedState || profile == GPUProfile::DepthOnly)
+    if (combinedState || profile == GPUProfile::DepthOnly) {
+        id<MTLDepthStencilState> state = [device newDepthStencilStateWithDescriptor:
+            [MTLDepthStencilDescriptor new]];
+        Check(state != nil, "Direct Metal explicit default depth/stencil state");
+        [clear setDepthStencilState:state];
+    }
+    // Opt-in reproducer for the previous implementation, kept out of the
+    // baseline tests which exercise the explicit default used by the renderer.
+    if (profile == GPUProfile::NilDepthRepro)
         [clear setDepthStencilState:nil];
     [clear endEncoding];
     id<MTLBlitCommandEncoder> copy = [command blitCommandEncoder];
@@ -414,7 +424,7 @@ int main(int argc, char** argv)
     @autoreleasepool {
         try {
             if (argc == 2) {
-                for (const auto& option : std::array<std::pair<const char*, GPUProfile>, 9>{{
+                for (const auto& option : std::array<std::pair<const char*, GPUProfile>, 10>{{
                     {"--gpu-scene-usage-baseline", GPUProfile::SceneUsage},
                     {"--gpu-clip-baseline", GPUProfile::ClipUsage},
                     {"--gpu-sampled-clip-baseline", GPUProfile::SampledClip},
@@ -423,7 +433,8 @@ int main(int argc, char** argv)
                     {"--gpu-resize-baseline", GPUProfile::Resize},
                     {"--gpu-clip-only-baseline", GPUProfile::ClipOnly},
                     {"--gpu-scissor-only-baseline", GPUProfile::ScissorOnly},
-                    {"--gpu-depth-only-baseline", GPUProfile::DepthOnly}}}) {
+                    {"--gpu-depth-only-baseline", GPUProfile::DepthOnly},
+                    {"--gpu-nil-depth-repro", GPUProfile::NilDepthRepro}}}) {
                     if (std::strcmp(argv[1], option.first) == 0) {
                         TestNativeGPU(4, option.second);
                         return 0;

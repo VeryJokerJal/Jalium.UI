@@ -391,6 +391,7 @@ struct MetalRenderTarget::Impl {
     id<MTLRenderPipelineState> clipPipeline = nil;
     id<MTLRenderPipelineState> pathMaskPipeline = nil;
     id<MTLComputePipelineState> blurPipeline = nil;
+    id<MTLDepthStencilState> defaultDepthStencilState = nil;
     id<MTLDepthStencilState> contentStencilState = nil;
     id<MTLDepthStencilState> clipStencilState = nil;
     id<MTLDepthStencilState> pathParityState = nil;
@@ -610,6 +611,10 @@ struct MetalRenderTarget::Impl {
         }
         blurPipeline = [device newComputePipelineStateWithFunction:blur error:&error];
 
+        // Metal defines nil as the descriptor defaults. Use an explicit state:
+        // resetting to nil can hang even a clear-only pass on paravirtual GPUs.
+        defaultDepthStencilState = [device newDepthStencilStateWithDescriptor:
+            [MTLDepthStencilDescriptor new]];
         MTLStencilDescriptor* contentStencil = [MTLStencilDescriptor new];
         contentStencil.stencilCompareFunction = MTLCompareFunctionEqual;
         contentStencil.stencilFailureOperation = MTLStencilOperationKeep;
@@ -665,7 +670,7 @@ struct MetalRenderTarget::Impl {
         if(!retirementCommands)retirementCommands = [NSMutableArray array];
         return shapePipeline && shapeReplacePipeline && texturePipeline &&
             textureReplacePipeline && presentPipeline && yuvPipeline && effectPipeline && contourMaskPipeline && highlightPipeline && transitionPipeline &&
-            clipPipeline && blurPipeline && contentStencilState && clipStencilState && pathMaskPipeline &&
+            clipPipeline && blurPipeline && defaultDepthStencilState && contentStencilState && clipStencilState && pathMaskPipeline &&
             pathParityState && pathWindingState && pathCoverState &&
             linearSampler && nearestSampler && highQualitySampler;
     }
@@ -816,7 +821,7 @@ struct MetalRenderTarget::Impl {
 
     void ApplyContentStencil(id<MTLRenderCommandEncoder> targetEncoder)
     {
-        [targetEncoder setDepthStencilState:encoderUsesStencil ? contentStencilState : nil];
+        [targetEncoder setDepthStencilState:encoderUsesStencil ? contentStencilState : defaultDepthStencilState];
         if (encoderUsesStencil) [targetEncoder setStencilReferenceValue:static_cast<uint32_t>(
             std::min<size_t>(clips.size(), 255))];
     }
@@ -3114,7 +3119,7 @@ void MetalRenderTarget::DrawShaderEffectFromSource(float x,float y,float w,float
     std::vector<float> values(valueCount,0);
     if(constants)std::copy_n(constants,constantCount,values.data());
     [encoder setRenderPipelineState:pipeline];
-    [encoder setDepthStencilState:nil];
+    [encoder setDepthStencilState:impl_->defaultDepthStencilState];
     [encoder setVertexBuffer:impl_->frame->vertices offset:offset atIndex:0];
     [encoder setVertexBytes:vertexParams.data() length:2 * sizeof(float) atIndex:1];
     NSUInteger constantBytes=static_cast<NSUInteger>(valueCount)*sizeof(float);
