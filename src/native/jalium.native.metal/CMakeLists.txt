@@ -106,7 +106,7 @@ if(JALIUM_METAL_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     add_test(NAME jalium.native.metal.readback-no-resize COMMAND jalium.native.metal.readback --framework-no-resize)
     add_test(NAME jalium.native.metal.gpu-baseline COMMAND jalium.native.metal.readback --gpu-baseline)
     add_test(NAME jalium.native.metal.gpu-msaa-baseline COMMAND jalium.native.metal.readback --gpu-msaa-baseline)
-    foreach(profile scene-usage clip sampled-clip appkit layer resize)
+    foreach(profile scene-usage clip sampled-clip appkit layer resize clip-only scissor-only depth-only)
         add_test(NAME jalium.native.metal.gpu-${profile}-baseline
             COMMAND jalium.native.metal.readback --gpu-${profile}-baseline)
         set_tests_properties(jalium.native.metal.gpu-${profile}-baseline PROPERTIES TIMEOUT 30)

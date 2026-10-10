@@ -33,7 +33,10 @@ static void CheckResult(JaliumResult actual, JaliumResult expected, const char* 
     }
 }
 
-enum class GPUProfile { Plain, SceneUsage, ClipUsage, SampledClip, AppKit, Layer, Resize };
+enum class GPUProfile {
+    Plain, SceneUsage, ClipUsage, SampledClip, AppKit, Layer, Resize,
+    ClipOnly, ScissorOnly, DepthOnly
+};
 
 static const char* ProfileName(GPUProfile profile)
 {
@@ -44,6 +47,9 @@ static const char* ProfileName(GPUProfile profile)
     case GPUProfile::AppKit: return "appkit";
     case GPUProfile::Layer: return "windowless-layer";
     case GPUProfile::Resize: return "pending-resize";
+    case GPUProfile::ClipOnly: return "clip-binding-only";
+    case GPUProfile::ScissorOnly: return "scissor-only";
+    case GPUProfile::DepthOnly: return "depth-state-only";
     default: return "plain";
     }
 }
@@ -94,12 +100,13 @@ static void TestNativeGPU(uint32_t samples, GPUProfile profile = GPUProfile::Pla
     textureDescriptor.usage = MTLTextureUsageRenderTarget;
     const bool sceneUsage = profile == GPUProfile::SceneUsage ||
         profile == GPUProfile::ClipUsage || profile == GPUProfile::SampledClip ||
-        profile == GPUProfile::Resize;
+        profile == GPUProfile::Resize || profile == GPUProfile::ClipOnly ||
+        profile == GPUProfile::ScissorOnly || profile == GPUProfile::DepthOnly;
     if (sceneUsage) textureDescriptor.usage |= MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
     id<MTLTexture> clip = nil;
     if (profile == GPUProfile::ClipUsage || profile == GPUProfile::SampledClip ||
-        profile == GPUProfile::Resize) {
+        profile == GPUProfile::Resize || profile == GPUProfile::ClipOnly) {
         MTLTextureDescriptor* mask = [MTLTextureDescriptor
             texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm width:1 height:1 mipmapped:NO];
         mask.storageMode = MTLStorageModeShared;
@@ -147,9 +154,12 @@ static void TestNativeGPU(uint32_t samples, GPUProfile profile = GPUProfile::Pla
         // Isolate the fragment binding used by the framework's clear encoder.
         // No shader or draw call participates in this clear/copy control.
         [clear setFragmentTexture:clip atIndex:30];
-        [clear setScissorRect:MTLScissorRect{0, 0, 7, 5}];
-        [clear setDepthStencilState:nil];
     }
+    const bool combinedState = clip && profile != GPUProfile::ClipOnly;
+    if (combinedState || profile == GPUProfile::ScissorOnly)
+        [clear setScissorRect:MTLScissorRect{0, 0, 7, 5}];
+    if (combinedState || profile == GPUProfile::DepthOnly)
+        [clear setDepthStencilState:nil];
     [clear endEncoding];
     id<MTLBlitCommandEncoder> copy = [command blitCommandEncoder];
     copy.label = @"Direct Metal readback";
@@ -404,13 +414,16 @@ int main(int argc, char** argv)
     @autoreleasepool {
         try {
             if (argc == 2) {
-                for (const auto& option : std::array<std::pair<const char*, GPUProfile>, 6>{{
+                for (const auto& option : std::array<std::pair<const char*, GPUProfile>, 9>{{
                     {"--gpu-scene-usage-baseline", GPUProfile::SceneUsage},
                     {"--gpu-clip-baseline", GPUProfile::ClipUsage},
                     {"--gpu-sampled-clip-baseline", GPUProfile::SampledClip},
                     {"--gpu-appkit-baseline", GPUProfile::AppKit},
                     {"--gpu-layer-baseline", GPUProfile::Layer},
-                    {"--gpu-resize-baseline", GPUProfile::Resize}}}) {
+                    {"--gpu-resize-baseline", GPUProfile::Resize},
+                    {"--gpu-clip-only-baseline", GPUProfile::ClipOnly},
+                    {"--gpu-scissor-only-baseline", GPUProfile::ScissorOnly},
+                    {"--gpu-depth-only-baseline", GPUProfile::DepthOnly}}}) {
                     if (std::strcmp(argv[1], option.first) == 0) {
                         TestNativeGPU(4, option.second);
                         return 0;
