@@ -31,6 +31,28 @@ static void Capture(const JaliumPlatformEvent* event, void* context)
 - (void)closeDocument:(id)sender { ++_closes; }
 @end
 
+@interface JaliumWindowTestKeyboardSheet : NSPanel
+@property(nonatomic) NSUInteger equivalents;
+@property(nonatomic) NSUInteger keyEvents;
+@property(nonatomic) NSEventType lastKeyType;
+@property(nonatomic) NSInteger lastWindowNumber;
+- (void)resetKeyEvents;
+@end
+@implementation JaliumWindowTestKeyboardSheet
+- (BOOL)performKeyEquivalent:(NSEvent*)event { ++_equivalents; _lastWindowNumber = event.windowNumber; return YES; }
+- (void)sendEvent:(NSEvent*)event {
+    if (event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp ||
+        event.type == NSEventTypeFlagsChanged) {
+        ++_keyEvents;
+        _lastKeyType = event.type;
+        _lastWindowNumber = event.windowNumber;
+        return;
+    }
+    [super sendEvent:event];
+}
+- (void)resetKeyEvents { _equivalents = 0; _keyEvents = 0; }
+@end
+
 struct TextDocument {
     JaliumPlatformWindow* window;
     NSString* text;
@@ -843,23 +865,113 @@ static void CheckDocumentMenuClose(uint32_t style)
     jalium_window_destroy(window);
 }
 
+static bool CheckSheetKeyboardRouting(uint32_t style)
+{
+    auto* window = Create(style);
+    NSView* view = View(window);
+    NSWindow* native = view.window;
+    std::vector<JaliumPlatformEvent> events;
+    jalium_window_set_event_callback(window, Capture, &events);
+    jalium_apple_window_show(window, 0);
+    auto* sheet = [[JaliumWindowTestKeyboardSheet alloc] initWithContentRect:NSMakeRect(0, 0, 320, 180)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    [native beginSheet:sheet completionHandler:nil];
+    Check(native.attachedSheet == sheet, "keyboard fixture attaches a native sheet");
+    bool passed = true;
+    auto verify = [&](bool value, const char* label) {
+        if (!value) passed = false;
+        std::printf("%s %s %s\n", value ? "PASS" : "FAIL",
+            style & JALIUM_WINDOW_STYLE_BORDERLESS ? "Custom" : "Native", label);
+    };
+    struct Key { NSString* text; NSUInteger flags; unsigned short code; const char* label; };
+    for (const auto& key : std::vector<Key>{
+        {@"w", NSEventModifierFlagCommand, 13, "sheet Command-W"},
+        {@"m", NSEventModifierFlagCommand, 46, "sheet Command-M"},
+        {@"f", NSEventModifierFlagCommand | NSEventModifierFlagControl, 3, "sheet fullscreen shortcut"},
+        {@"\t", NSEventModifierFlagControl, 0x30, "sheet Control-Tab"},
+        {@"\t", NSEventModifierFlagControl | NSEventModifierFlagShift, 0x30, "sheet Control-Shift-Tab"},
+        {@"\x1b", 0, 0x35, "sheet Escape equivalent"}}) {
+        events.clear(); [sheet resetKeyEvents];
+        NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:key.flags timestamp:0 windowNumber:native.windowNumber context:nil
+            characters:key.text charactersIgnoringModifiers:key.text isARepeat:NO keyCode:key.code];
+        BOOL handled = [native performKeyEquivalent:event];
+        verify(handled && sheet.equivalents == 1 && sheet.lastWindowNumber == sheet.windowNumber &&
+            events.empty() && !native.miniaturized,
+            key.label);
+    }
+    for (NSEventType type : {NSEventTypeKeyDown, NSEventTypeKeyUp, NSEventTypeFlagsChanged}) {
+        NSEvent* event = [NSEvent keyEventWithType:type location:NSZeroPoint
+            modifierFlags:type == NSEventTypeFlagsChanged ? NSEventModifierFlagShift | NX_DEVICELSHIFTKEYMASK : 0
+            timestamp:0 windowNumber:native.windowNumber context:nil characters:@"a"
+            charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:type == NSEventTypeFlagsChanged ? 0x38 : 0];
+        events.clear(); [sheet resetKeyEvents];
+        [native sendEvent:event];
+        verify(sheet.keyEvents == 1 && sheet.lastKeyType == type && sheet.lastWindowNumber == sheet.windowNumber && events.empty(),
+            type == NSEventTypeKeyDown ? "sheet owner keyDown" : type == NSEventTypeKeyUp ?
+                "sheet owner keyUp" : "sheet owner modifier event");
+        events.clear(); [sheet resetKeyEvents];
+        if (type == NSEventTypeKeyDown) [view keyDown:event];
+        else if (type == NSEventTypeKeyUp) [view keyUp:event];
+        else [view flagsChanged:event];
+        verify(sheet.keyEvents == 1 && sheet.lastKeyType == type && sheet.lastWindowNumber == sheet.windowNumber && events.empty(),
+            type == NSEventTypeKeyDown ? "sheet responder keyDown" : type == NSEventTypeKeyUp ?
+                "sheet responder keyUp" : "sheet responder modifier event");
+    }
+    NSEvent* close = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:native.windowNumber context:nil
+        characters:@"w" charactersIgnoringModifiers:@"w" isARepeat:NO keyCode:13];
+    jalium_window_set_enabled(window, 0);
+    events.clear(); [sheet resetKeyEvents];
+    verify(![native performKeyEquivalent:close] && sheet.equivalents == 0 && events.empty(),
+        "disabled owner does not dispatch an equivalent");
+    [native sendEvent:close];
+    verify(sheet.keyEvents == 0 && events.empty(), "disabled owner does not send a sheet key");
+    [view keyDown:close]; [view keyUp:close]; [view flagsChanged:close];
+    verify(sheet.keyEvents == 0 && events.empty(), "disabled responder does not dispatch sheet input");
+    jalium_window_set_enabled(window, 1);
+    [native endSheet:sheet returnCode:NSModalResponseCancel];
+    [sheet orderOut:nil];
+    Check(WaitUntil([&] { return native.attachedSheet == nil; }), "keyboard fixture detaches its sheet");
+    events.clear(); [sheet resetKeyEvents];
+    verify([native performKeyEquivalent:close] && Count(events, JALIUM_EVENT_CLOSE_REQUESTED) == 1 &&
+        sheet.equivalents == 0, "detached sheet restores document shortcut routing");
+    events.clear();
+    NSEvent* key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+        timestamp:0 windowNumber:native.windowNumber context:nil characters:@"a"
+        charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
+    [view keyDown:key];
+    verify(Count(events, JALIUM_EVENT_KEY_DOWN) == 1 && sheet.keyEvents == 0,
+        "detached sheet restores document text input");
+    jalium_window_destroy(window);
+    return passed;
+}
+
 int main(int argc, char** argv)
 {
     bool propertiesOnly = argc == 2 && std::strcmp(argv[1], "--properties-only") == 0;
     bool menuTrackingOnly = argc == 2 && std::strcmp(argv[1], "--menu-tracking-only") == 0;
     bool documentMenuOnly = argc == 2 && std::strcmp(argv[1], "--document-menu-only") == 0;
-    Check(argc == 1 || propertiesOnly || menuTrackingOnly || documentMenuOnly, "supported validation mode");
+    bool sheetKeyboardOnly = argc == 2 && std::strcmp(argv[1], "--sheet-keyboard-only") == 0;
+    Check(argc == 1 || propertiesOnly || menuTrackingOnly || documentMenuOnly || sheetKeyboardOnly, "supported validation mode");
     @autoreleasepool {
         Check(jalium_platform_init() == JALIUM_OK, "initialize platform");
         bool foregroundHost = UsesForegroundValidationHost();
         [NSApp setActivationPolicy:foregroundHost ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
         [NSApp finishLaunching];
-        if (!documentMenuOnly && foregroundHost && !AwaitForegroundValidation(@"Window 生命周期 · 前台回归")) {
+        if (!documentMenuOnly && !sheetKeyboardOnly && foregroundHost && !AwaitForegroundValidation(@"Window 生命周期 · 前台回归")) {
             jalium_platform_shutdown();
             return 3;
         }
         constexpr uint32_t regular = JALIUM_WINDOW_STYLE_TITLEBAR | JALIUM_WINDOW_STYLE_CLOSABLE |
             JALIUM_WINDOW_STYLE_RESIZABLE | JALIUM_WINDOW_STYLE_MINIMIZABLE | JALIUM_WINDOW_STYLE_MAXIMIZABLE;
+        if (sheetKeyboardOnly) {
+            bool passed = CheckSheetKeyboardRouting(regular);
+            passed = CheckSheetKeyboardRouting(JALIUM_WINDOW_STYLE_BORDERLESS | JALIUM_WINDOW_STYLE_CLOSABLE |
+                JALIUM_WINDOW_STYLE_RESIZABLE | JALIUM_WINDOW_STYLE_MINIMIZABLE | JALIUM_WINDOW_STYLE_MAXIMIZABLE) && passed;
+            jalium_platform_shutdown();
+            return passed ? 0 : 1;
+        }
         if (documentMenuOnly) {
             CheckDocumentMenuClose(regular);
             jalium_platform_shutdown();

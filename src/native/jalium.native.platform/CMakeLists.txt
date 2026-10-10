@@ -411,6 +411,9 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
         COMMAND jalium.native.platform.window.tests --menu-tracking-only)
     add_test(NAME jalium.native.platform.macos.window.document-menu
         COMMAND jalium.native.platform.window.tests --document-menu-only)
+    add_test(NAME jalium.native.platform.macos.window.sheet-keyboard
+        COMMAND jalium.native.platform.window.tests --sheet-keyboard-only)
+    set_tests_properties(jalium.native.platform.macos.window.sheet-keyboard PROPERTIES TIMEOUT 30)
     set_tests_properties(jalium.native.platform.macos.window PROPERTIES TIMEOUT 60)
     add_executable(jalium.native.platform.accessibility.tests tests/platform_apple_accessibility_tests.mm)
     target_include_directories(jalium.native.platform.accessibility.tests PRIVATE

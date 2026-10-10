@@ -25,6 +25,75 @@ public sealed class FileDialogOptionsTests
         finally { PlatformFileDialogs.Show = previous; }
     }
 
+    [Fact]
+    public void MacDirectoryAliasesPreserveRootIdentityInitialLocationAndPlaceDeduplication()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var files = new Files();
+        string alias = files.Root + "-alias";
+        Directory.CreateSymbolicLink(alias, files.Root);
+        try
+        {
+            var navigation = new FileDialogNavigation(alias);
+            Assert.Equal(files.Root, navigation.Root);
+            Assert.True(navigation.Contains(files.File));
+            Assert.True(navigation.Contains(Path.Combine(alias, "inside", "chosen.txt")));
+            Assert.Equal(files.Inside, navigation.InitialDirectory(Path.Combine(alias, "inside"), null, null, null));
+            Assert.Equal(new[] { files.Root, files.Inside }, navigation.Places(new (string? Path, Guid KnownFolder)[]
+            {
+                (Path.Combine(alias, "inside"), Guid.Empty), (files.Inside, Guid.Empty)
+            }));
+        }
+        finally { Directory.Delete(alias); }
+    }
+
+    [Fact]
+    public void MacDirectoryAliasesCompareMissingSaveLeavesAndRejectOutsideDirectoryTargets()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var files = new Files();
+        string alias = files.Root + "-alias", outsideLink = Path.Combine(files.Inside, "outside-link");
+        Directory.CreateSymbolicLink(alias, files.Root);
+        Directory.CreateSymbolicLink(outsideLink, files.Outside);
+        try
+        {
+            var navigation = new FileDialogNavigation(files.Root);
+            Assert.True(navigation.Contains(Path.Combine(alias, "inside", "new", "记录🙂.txt")));
+            Assert.False(navigation.Contains(Path.Combine(outsideLink, "记录🙂.txt")));
+            Assert.False(navigation.Contains(outsideLink));
+        }
+        finally { Directory.Delete(alias); Directory.Delete(outsideLink); }
+    }
+
+    [Fact]
+    public void MacDirectoryAliasNormalizationDoesNotDereferenceAFileLinkLeaf()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var files = new Files();
+        string external = Path.Combine(files.Outside, "chosen.txt"), link = Path.Combine(files.Inside, "file-link.txt");
+        System.IO.File.WriteAllText(external, "owned link target");
+        System.IO.File.CreateSymbolicLink(link, external);
+        Assert.True(new FileDialogNavigation(files.Root).Contains(link));
+        Assert.False(new FileDialogNavigation(files.Root).Contains(external));
+    }
+
+    [Fact]
+    public void MacDirectoryAliasTargetsCanContainAnAliasedParentDirectory()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        string root = Path.Combine(Path.GetTempPath(), "jalium-dir-alias-" + Guid.NewGuid().ToString("N"));
+        string alias = root + "-link";
+        Directory.CreateDirectory(root); Directory.CreateSymbolicLink(alias, root);
+        try
+        {
+            var physical = new FileDialogNavigation(root);
+            var linked = new FileDialogNavigation(alias);
+            Assert.Equal(physical.Root, linked.Root);
+            Assert.True(linked.Contains(Path.Combine(root, "记录🙂.txt")));
+        }
+        finally { Directory.Delete(alias); Directory.Delete(root, true); }
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]

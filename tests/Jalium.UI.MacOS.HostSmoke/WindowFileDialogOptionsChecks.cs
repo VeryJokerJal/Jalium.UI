@@ -16,7 +16,7 @@ namespace Jalium.UI.MacOS;
 // navigation, hidden-item selection and acceptance are verified through CUA.
 internal static class WindowFileDialogOptionsChecks
 {
-    private const int Count = 28;
+    private const int Count = 31;
     private const string Prefix = "--window-file-dialog-options-case=";
     internal static int RunAll()
     {
@@ -47,6 +47,7 @@ internal static class WindowFileDialogOptionsChecks
         string root = Path.Combine(Environment.GetEnvironmentVariable("JALIUM_MACOS_FILE_DIALOG_ROOT") ?? Path.GetTempPath(),
             "jalium-file-dialog-options-" + Guid.NewGuid().ToString("N"));
         string inside = Path.Combine(root, "inside"), outside = root + "-outside";
+        string alias = root + "-alias";
         Directory.CreateDirectory(inside); Directory.CreateDirectory(outside);
         string file = Path.Combine(inside, "chosen.txt"), other = Path.Combine(outside, "chosen.txt");
         File.WriteAllText(file, "owned selection"); File.WriteAllText(other, "owned selection");
@@ -62,8 +63,8 @@ internal static class WindowFileDialogOptionsChecks
                 TitleBarStyle = WindowTitleBarStyle.Native, Content = new TextBox { Text = "Owned option validation" } };
             Application.Current!.MainWindow = window; window.Show();
             var owner = Runtime.GetNSObject<NSView>(window.Handle)!.Window!;
-            Microsoft.Win32.CommonItemDialog dialog = index is 1 or 14 ? new Microsoft.Win32.OpenFolderDialog { FolderName = "original" }
-                : index is 2 or 19 or 21 or 22 or 26 ? new Microsoft.Win32.SaveFileDialog { FileName = index == 26 ? "导航记录🙂.txt" : "original.txt", Filter = "Text|*.txt|All|*.*" }
+            Microsoft.Win32.CommonItemDialog dialog = index is 1 or 14 or 29 ? new Microsoft.Win32.OpenFolderDialog { FolderName = "original" }
+                : index is 2 or 19 or 21 or 22 or 26 or 30 ? new Microsoft.Win32.SaveFileDialog { FileName = index == 26 ? "导航记录🙂.txt" : "original.txt", Filter = "Text|*.txt|All|*.*" }
                 : new Microsoft.Win32.OpenFileDialog { FileName = "original.txt", ShowReadOnly = index is 10 or 11 or 12 or 13 or 24,
                     ReadOnlyChecked = index is 10 or 18 };
             if (index == 24) ((Microsoft.Win32.FileDialog)dialog).Filter = "Text|*.txt|All|*.*";
@@ -83,6 +84,13 @@ internal static class WindowFileDialogOptionsChecks
                 dialog.CustomPlaces.Add(new Microsoft.Win32.FileDialogCustomPlace(Guid.NewGuid()));
             }
             if (index == 9) dialog.CustomPlaces.Add(Microsoft.Win32.FileDialogCustomPlaces.Documents);
+            if (index >= 28)
+            {
+                Directory.CreateSymbolicLink(alias, root);
+                dialog.RootDirectory = alias;
+                dialog.InitialDirectory = Path.Combine(alias, "inside");
+                dialog.CustomPlaces.Add(new Microsoft.Win32.FileDialogCustomPlace(Path.Combine(alias, "inside")));
+            }
             int confirmations = 0;
             if (dialog is Microsoft.Win32.FileDialog fileDialog)
                 fileDialog.FileOk += (_, args) =>
@@ -108,7 +116,7 @@ internal static class WindowFileDialogOptionsChecks
                     if (phase == 1)
                     {
                         Require(observed.Handle != navigationPanel, "navigation reused the previous native panel");
-                        Require(observed.DirectoryUrl?.Path == root, "navigation did not return to root");
+                        Require(SameDirectory(observed.DirectoryUrl?.Path, root), "navigation did not return to root");
                         if (index is 24 or 26)
                         {
                             var retained = Descendants(observed.AccessoryView).ToArray();
@@ -134,14 +142,14 @@ internal static class WindowFileDialogOptionsChecks
                     if (phase == 4)
                     {
                         Require(observed.Handle != navigationPanel, "custom navigation reused the previous native panel");
-                        Require(observed.DirectoryUrl?.Path == inside, "custom shortcut did not navigate after reopening");
+                        Require(SameDirectory(observed.DirectoryUrl?.Path, inside), "custom shortcut did not navigate after reopening");
                         Require(observed.ShowsHiddenFiles,
                             "custom navigation reset hidden items");
                         phase = 2; dispatched = true; observed.Cancel(observed); return;
                     }
                     if (phase == 3)
                     {
-                        Require(observed.DirectoryUrl?.Path == inside, "stale directory callback replaced the current valid directory");
+                        Require(SameDirectory(observed.DirectoryUrl?.Path, inside), "stale directory callback replaced the current valid directory");
                         phase = 2; dispatched = true; observed.Cancel(observed); return;
                     }
                     if (dispatched) return;
@@ -150,7 +158,19 @@ internal static class WindowFileDialogOptionsChecks
                     var readOnly = controls.OfType<NSButton>().FirstOrDefault(button => button.Title == "只读打开");
                     var shortcuts = controls.OfType<NSPopUpButton>().FirstOrDefault(popup => popup.ItemTitles().FirstOrDefault() == "位置快捷方式");
                     if (index <= 3 || index == 20) Require(observed.ShowsHiddenFiles == (index <= 2), "hidden option was ignored");
-                    if (index is 4 or 15 or 16 or 17 or 23) Require(observed.DirectoryUrl?.Path == inside, $"directory precedence was ignored: {observed.DirectoryUrl?.Path}; expected {inside}");
+                    if (index is 4 or 15 or 16 or 17 or 23) Require(SameDirectory(observed.DirectoryUrl?.Path, inside), $"directory precedence was ignored: {observed.DirectoryUrl?.Path}; expected {inside}");
+                    if (index >= 28)
+                    {
+                        Require(SameDirectory(observed.DirectoryUrl?.Path, inside), "directory alias did not retain the physical initial directory");
+                        Require(shortcuts != null && shortcuts.ItemTitles().SequenceEqual(new[] { "位置快捷方式", Path.GetFileName(root), "inside" }),
+                            "directory alias changed root identity or custom places");
+                        string physicalDirectory = new FileDialogNavigation(inside).Root!;
+                        using var own = NSUrl.FromFilename(index == 29 ? physicalDirectory
+                            : Path.Combine(physicalDirectory, Path.GetFileName(file)));
+                        bool accepted = observed.Delegate!.ValidateUrl(observed, own, out _);
+                        Require(accepted, "physical candidate in an aliased root was rejected");
+                        Require(confirmations == 1, "physical candidate did not publish exactly one confirmation");
+                    }
                     if (index is 5 or 7 or 14 or 22)
                     {
                         using var own = NSUrl.FromFilename(index == 14 ? inside : file);
@@ -264,6 +284,7 @@ internal static class WindowFileDialogOptionsChecks
         finally
         {
             if (window?.Handle != 0) window?.Close();
+            if (Directory.Exists(alias)) Directory.Delete(alias);
             Directory.Delete(root, true); Directory.Delete(outside, true);
             using var notification = NSNotification.FromName(NSApplication.WillTerminateNotification, application);
             host.WillTerminate(notification); application.Delegate = null!;
@@ -277,6 +298,8 @@ internal static class WindowFileDialogOptionsChecks
         foreach (var child in view.Subviews) foreach (var descendant in Descendants(child)) yield return descendant;
     }
     private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
+    private static bool SameDirectory(string? actual, string expected)
+        => actual != null && new FileDialogNavigation(actual).Root is { } identity && identity == new FileDialogNavigation(expected).Root;
 
     private static int Observe(string root, string inside, string outside, int seconds)
     {
@@ -287,7 +310,7 @@ internal static class WindowFileDialogOptionsChecks
         var stack = new StackPanel { Margin = new Thickness(24), Spacing = 12 };
         stack.Children.Add(new TextBlock { Text = "文件范围与只读选择", FontSize = 22, Foreground = Brushes.White });
         stack.Children.Add(status); stack.Children.Add(editor);
-        var window = new Window { Title = "Jalium File Options v147", Width = 720, Height = 640, MinWidth = 600, MinHeight = 560,
+        var window = new Window { Title = "Jalium File Options v148", Width = 720, Height = 640, MinWidth = 600, MinHeight = 560,
             TitleBarStyle = WindowTitleBarStyle.Native, WindowStartupLocation = WindowStartupLocation.CenterScreen,
             Background = new SolidColorBrush(Color.FromRgb(0x1c, 0x20, 0x26)), Content = new ScrollViewer { Content = stack } };
         Application.Current!.MainWindow = window; bool closed = false; int actions = 0;
@@ -344,11 +367,14 @@ internal static class WindowFileDialogOptionsChecks
             window.Show(); editor.Focus(); Console.WriteLine($"OPTIONS READY: root={root}; inside={inside}; outside={outside}");
             var watch = Stopwatch.StartNew();
             var application = NSApplication.SharedApplication;
+            var nativeOwner = Runtime.GetNSObject<NSView>(window.Handle)!.Window!;
             string? lastState = null;
             using var timer = NSTimer.CreateRepeatingTimer(.02, tick =>
             {
                 Dispatcher.CurrentDispatcher.ProcessQueue(); window.UpdateLayout();
-                string state = $"running={application.Running}; active={application.Active}; key={application.KeyWindow?.Title}; modal={application.ModalWindow?.Title}";
+                var panel = nativeOwner.AttachedSheet as NSSavePanel;
+                string state = $"running={application.Running}; active={application.Active}; key={application.KeyWindow?.Title}; modal={application.ModalWindow?.Title}; " +
+                    $"ownerKey={nativeOwner.IsKeyWindow}; panelKey={panel?.IsKeyWindow}; panelHasKey={panel != null && panel.Handle == application.KeyWindow?.Handle}";
                 if (state != lastState) { lastState = state; Console.WriteLine($"OPTIONS APPLICATION: {state}"); }
                 if (!closed && watch.Elapsed.TotalSeconds < seconds) return;
                 if (!closed) window.Close();

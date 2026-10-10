@@ -1407,10 +1407,32 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
 }
 - (void)sendEvent:(NSEvent*)event {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
+    if (self.attachedSheet && (event.type == NSEventTypeKeyDown ||
+        event.type == NSEventTypeKeyUp || event.type == NSEventTypeFlagsChanged)) {
+        // Bound input can still name the owner while a native sheet is open.
+        // Keep its keyboard session inside AppKit rather than dispatching to
+        // the document responder behind it. Mouse coordinates stay untouched.
+        NSWindow* sheet = self.attachedSheet;
+        NSEvent* key = [NSEvent keyEventWithType:event.type location:event.locationInWindow
+            modifierFlags:event.modifierFlags timestamp:event.timestamp windowNumber:sheet.windowNumber
+            context:nil characters:event.type == NSEventTypeFlagsChanged ? @"" : event.characters
+            charactersIgnoringModifiers:event.type == NSEventTypeFlagsChanged ? @"" : event.charactersIgnoringModifiers
+            isARepeat:event.type == NSEventTypeKeyDown && event.isARepeat keyCode:event.keyCode];
+        [sheet sendEvent:key];
+        return;
+    }
     [super sendEvent:event];
 }
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return NO;
+    if (self.attachedSheet) {
+        NSWindow* sheet = self.attachedSheet;
+        NSEvent* key = [NSEvent keyEventWithType:event.type location:event.locationInWindow
+            modifierFlags:event.modifierFlags timestamp:event.timestamp windowNumber:sheet.windowNumber
+            context:nil characters:event.characters charactersIgnoringModifiers:event.charactersIgnoringModifiers
+            isARepeat:event.isARepeat keyCode:event.keyCode];
+        return [sheet performKeyEquivalent:key];
+    }
     NSString* key = event.charactersIgnoringModifiers.lowercaseString;
     NSUInteger flags = event.modifierFlags;
     if (event.keyCode == 0x30 && (flags & NSEventModifierFlagControl) &&
@@ -1701,6 +1723,10 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 }
 - (void)keyDown:(NSEvent*)native {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
+    if (self.window.attachedSheet) {
+        [self.window sendEvent:native];
+        return;
+    }
     if (VirtualKeyForAppleEvent(native) == 0x1b) {
         // Targeted input can reach the content responder while AppKit's menu
         // loop owns the keyboard. Escape dismisses that menu before either
@@ -1733,6 +1759,10 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     if (_jaliumOwner && _jaliumOwner->enabled && self.imeEnabled) [self interpretKeyEvents:@[native]];
 }
 - (void)keyUp:(NSEvent*)native {
+    if (_jaliumOwner && _jaliumOwner->enabled && self.window.attachedSheet) {
+        [self.window sendEvent:native];
+        return;
+    }
     if (self.menuEscapeKeyDown && VirtualKeyForAppleEvent(native) == 0x1b) {
         self.menuEscapeKeyDown = NO;
         return;
@@ -1745,6 +1775,10 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 }
 - (void)flagsChanged:(NSEvent*)native {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
+    if (self.window.attachedSheet) {
+        [self.window sendEvent:native];
+        return;
+    }
     int32_t key = 0;
     NSUInteger mask = 0;
     switch (native.keyCode) {

@@ -56,10 +56,51 @@ internal sealed class FileDialogNavigation(string? rootDirectory)
     private static string? Normalize(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
-        try { return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)); }
+        try
+        {
+            string full = Path.GetFullPath(path);
+            // AppKit resolves directory aliases, including /var -> /private/var,
+            // before sending URL callbacks. Compare the same directory identity
+            // on both sides, while preserving a file link's own leaf name.
+            if (OperatingSystem.IsMacOS()) full = ResolveDirectoryAliases(full);
+            return Path.TrimEndingDirectorySeparator(full);
+        }
         catch (ArgumentException) { return null; }
         catch (NotSupportedException) { return null; }
         catch (PathTooLongException) { return null; }
+    }
+
+    private static string ResolveDirectoryAliases(string path, int depth = 0)
+    {
+        if (depth >= 40) return path;
+        try
+        {
+            var suffix = new Stack<string>();
+            string existing = path;
+            while (!Directory.Exists(existing))
+            {
+                string? parent = Path.GetDirectoryName(existing);
+                if (parent == null || parent == existing) return path;
+                suffix.Push(Path.GetFileName(existing));
+                existing = parent;
+            }
+            string resolved = Path.GetPathRoot(existing)!;
+            foreach (string component in existing[resolved.Length..].Split(Path.DirectorySeparatorChar,
+                StringSplitOptions.RemoveEmptyEntries))
+            {
+                resolved = Path.Combine(resolved, component);
+                var directory = new DirectoryInfo(resolved);
+                if (directory.LinkTarget != null)
+                {
+                    string? target = directory.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+                    if (target != null) resolved = ResolveDirectoryAliases(target, depth + 1);
+                }
+            }
+            foreach (string component in suffix) resolved = Path.Combine(resolved, component);
+            return resolved;
+        }
+        catch (IOException) { return path; }
+        catch (UnauthorizedAccessException) { return path; }
     }
 
     private static string? ExistingDirectory(string? path)
