@@ -11,6 +11,13 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-bitmap-dpi")
+    return WindowBitmapDpiChecks.Run();
+if (args.Length == 1 && args[0] == "--window-bitmap-dpi-observe")
+    return WindowBitmapDpiChecks.Observe(false);
+if (args.Length == 1 && args[0] == "--window-bitmap-dpi-observe-custom")
+    return WindowBitmapDpiChecks.Observe(true);
+
 if (args.Length == 1 && args[0] == "--window-content-scroll")
     return WindowPopupWheelChecks.Run(directContent: true);
 if (args.Length == 1 && args[0] == "--window-content-scroll-observe")
