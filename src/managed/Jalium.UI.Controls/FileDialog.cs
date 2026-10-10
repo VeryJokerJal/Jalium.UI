@@ -174,13 +174,27 @@ internal abstract class FileDialog
         FileOk?.Invoke(this, EventArgs.Empty);
     }
 
-    protected bool? ShowMacOSDialog(bool save, bool directory, bool multiple)
+    internal Func<string[], int, bool>? ValidateMacOSSelection { get; set; }
+
+    protected bool? ShowMacOSDialog(bool save, bool directory, bool multiple, nint owner = default)
     {
         if (CancellationToken.IsCancellationRequested || PlatformFileDialogs.Show is not { } show)
             return false;
         var options = new PlatformFileDialogOptions(
             save, directory, multiple, Title, InitialDirectory, FileName,
-            DefaultExt, AddExtension, DereferenceLinks, true, ParseFilter(), FilterIndex);
+            DefaultExt, AddExtension, DereferenceLinks, true, ParseFilter(), FilterIndex)
+        {
+            Owner = owner,
+            ValidateSelection = (paths, filterIndex) =>
+            {
+                var selected = paths.Take(multiple ? int.MaxValue : 1).ToArray();
+                return selected.Length > 0 && selected.All(path => directory
+                    ? !CheckPathExists || Directory.Exists(path)
+                    : (!CheckFileExists || File.Exists(path)) &&
+                      (!CheckPathExists || Directory.Exists(Path.GetDirectoryName(path))))
+                    && (ValidateMacOSSelection?.Invoke(selected, filterIndex) ?? true);
+            }
+        };
         var paths = show(options);
         var selected = paths?.Where(path => directory
                 ? !CheckPathExists || Directory.Exists(path)
@@ -262,7 +276,7 @@ internal sealed class OpenFileDialog : FileDialog
         }
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            return ShowMacOSDialog(save: false, directory: IsFolderPicker, multiple: Multiselect);
+            return ShowMacOSDialog(save: false, directory: IsFolderPicker, multiple: Multiselect, owner: owner);
 
         return false;
     }
@@ -530,7 +544,7 @@ internal sealed class SaveFileDialog : FileDialog
         }
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            return ShowMacOSDialog(save: true, directory: false, multiple: false);
+            return ShowMacOSDialog(save: true, directory: false, multiple: false, owner: owner);
 
         return false;
     }
@@ -1215,7 +1229,7 @@ public sealed class FolderBrowserDialog
             var paths = show(new PlatformFileDialogOptions(
                 false, true, Multiselect, Title ?? Description,
                 InitialDirectory ?? SelectedPath ?? Environment.GetFolderPath(RootFolder),
-                null, null, false, true, ShowNewFolderButton, [], 1));
+                null, null, false, true, ShowNewFolderButton, [], 1) { Owner = owner });
             var selected = paths?.Where(Directory.Exists).Take(Multiselect ? int.MaxValue : 1).ToArray();
             if (selected is not { Length: > 0 }) return false;
             SelectedPaths = selected;

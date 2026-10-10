@@ -7,6 +7,15 @@ public sealed record PlatformFileDialogOptions(
     string? DefaultExtension, bool AddExtension, bool DereferenceLinks,
     bool CreateDirectories, (string Name, string Pattern)[] Filters, int FilterIndex)
 {
+    /// <summary>The native owner handle, or zero for an application-modal panel.</summary>
+    public nint Owner { get; init; }
+
+    /// <summary>
+    /// Validates all selected paths before closing the panel. False keeps it open.
+    /// The filter index is one-based. Providers invoke this once per confirmation.
+    /// </summary>
+    public Func<string[], int, bool>? ValidateSelection { get; init; }
+
     /// <summary>The accepted native panel selection, using a one-based filter index.</summary>
     public int SelectedFilterIndex { get; set; } = FilterIndex;
 }

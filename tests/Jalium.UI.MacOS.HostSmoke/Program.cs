@@ -11,6 +11,11 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-file-dialog-validation")
+    return WindowFileDialogValidationChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-file-dialog-validation-case=", StringComparison.Ordinal))
+    return WindowFileDialogValidationChecks.RunCase(args[0]);
+
 if (args.Length == 1 && args[0] == "--window-file-dialogs")
     return WindowFileDialogChecks.RunAll();
 if (args.Length == 1 && args[0].StartsWith("--window-file-dialog-case=", StringComparison.Ordinal))

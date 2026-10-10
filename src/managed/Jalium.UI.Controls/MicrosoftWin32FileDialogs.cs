@@ -62,6 +62,9 @@ public abstract class CommonDialog
 /// </summary>
 public abstract class CommonItemDialog : CommonDialog
 {
+    private bool _showing;
+    private bool _nativeSelectionAccepted;
+    private bool _nativeValidationInvoked;
     private string? _defaultDirectory;
     private string? _initialDirectory;
     private string? _rootDirectory;
@@ -128,21 +131,64 @@ public abstract class CommonItemDialog : CommonDialog
 
     protected override bool RunDialog(nint hwndOwner)
     {
+        if (_showing)
+        {
+            throw new InvalidOperationException("The same file dialog cannot be shown while it is already open.");
+        }
+
         string[]? previousNames = _itemNames is null ? null : (string[])_itemNames.Clone();
-        if (!RunItemDialog(hwndOwner))
+        int? previousFilter = this is FileDialog fileDialog ? fileDialog.FilterIndex : null;
+        bool accepted = false;
+        _showing = true;
+        _nativeSelectionAccepted = false;
+        _nativeValidationInvoked = false;
+        try
         {
-            return false;
-        }
+            if (!RunItemDialog(hwndOwner)) return false;
+            if (_nativeValidationInvoked) return accepted = _nativeSelectionAccepted;
 
-        var args = new CancelEventArgs();
-        OnItemOk(args);
-        if (args.Cancel)
+            var args = new CancelEventArgs();
+            OnItemOk(args);
+            return accepted = !args.Cancel;
+        }
+        finally
         {
-            _itemNames = previousNames;
-            return false;
+            if (!accepted)
+            {
+                _itemNames = previousNames;
+                if (OperatingSystem.IsMacOS() && previousFilter is { } filter && this is FileDialog dialog)
+                    dialog.FilterIndex = filter;
+            }
+            _nativeSelectionAccepted = false;
+            _nativeValidationInvoked = false;
+            _showing = false;
         }
+    }
 
-        return true;
+    private protected bool NativeSelectionAccepted => _nativeSelectionAccepted;
+
+    private bool ValidateNativeSelection(string[] paths, int filterIndex)
+    {
+        _nativeValidationInvoked = true;
+        var previousNames = _itemNames;
+        int? previousFilter = this is FileDialog fileDialog ? fileDialog.FilterIndex : null;
+        bool accepted = false;
+        _itemNames = (string[])paths.Clone();
+        if (this is FileDialog dialog) dialog.FilterIndex = filterIndex;
+        try
+        {
+            var args = new CancelEventArgs();
+            OnItemOk(args);
+            return accepted = _nativeSelectionAccepted = !args.Cancel;
+        }
+        finally
+        {
+            if (!accepted)
+            {
+                _itemNames = previousNames;
+                if (previousFilter is { } filter && this is FileDialog canceledDialog) canceledDialog.FilterIndex = filter;
+            }
+        }
     }
 
     private protected abstract bool RunItemDialog(nint hwndOwner);
@@ -152,6 +198,7 @@ public abstract class CommonItemDialog : CommonDialog
 
     private protected void ApplyCommonOptions(LegacyFileDialog dialog)
     {
+        if (OperatingSystem.IsMacOS()) dialog.ValidateMacOSSelection = ValidateNativeSelection;
         dialog.Title = Title;
         dialog.InitialDirectory = !string.IsNullOrEmpty(InitialDirectory)
             ? InitialDirectory
@@ -313,6 +360,7 @@ public abstract class FileDialog : CommonItemDialog
 
     private protected void CaptureFileResults(LegacyFileDialog dialog)
     {
+        if (NativeSelectionAccepted) return;
         MutableItemNames = dialog.FileNames.Length > 0
             ? (string[])dialog.FileNames.Clone()
             : string.IsNullOrEmpty(dialog.FileName) ? null : [dialog.FileName];
@@ -493,7 +541,7 @@ public sealed class OpenFolderDialog : CommonItemDialog
         };
         ApplyCommonOptions(dialog);
         bool accepted = dialog.ShowDialog(hwndOwner) == true;
-        if (accepted)
+        if (accepted && !NativeSelectionAccepted)
         {
             MutableItemNames = dialog.FileNames.Length > 0
                 ? (string[])dialog.FileNames.Clone()
