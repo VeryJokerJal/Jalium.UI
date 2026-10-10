@@ -702,7 +702,24 @@ JALIUM_METAL_DIAGNOSTICS=1 现在明确启用各 encoder 的执行状态错误�
 创建方式。NSError 带有 encoder 信息时，失败日志输出其名称、状态及 signposts。
 加入这些诊断后，当前主机的完整 Metal + clipboard Release 回归
 **11/11**、无跳过，诊断模式实际开启；其中原生 GPU 基线检查也通过。
-上述 CI GPU hang 的具体绘制阶段和根因仍待新任务结果。
+acf421ff 的固定 Xcode 26.6 独立检查最终为 **1/2**：
+Apple Paravirtual device 的原生 Metal GPU 基线通过，框架读回在
+Fetch after resize 时返回 GPU hang。scene/effect、readback copy、presentation
+三个 encoder 均报告 Completed（state=1），没有给出 Faulted 阶段。
+同头的 CPU 图像检查仍通过，Metal 图像检查仍失败；不能将错误归咎于尺寸
+测量、完全不可用的 GPU 或已修复的并发消费。窗口呈现、MSAA 和 resize 等
+差异仍需继续隔离，CI GPU hang 的根因尚未确认。
+
+最终同源码的本机 Release 回归 **11/11**、诊断开启；普通 Debug 负载的
+readback、原生 GPU 基线与 paths **3/3**、诊断默认关闭。Debug/Release 均通过
+实际构建、CMake completion 和入口导出检查。本轮只修改 Metal 读回、诊断、
+原生验收及 CI/文档；原生视图的呈现行为尚未调整。
+
+所有本轮外部临时目录和测试进程已清理，两仓库的 literal artifacts 路径为 0。
+初始保护快照仍完整：19,005 个受保护文件中，仅三个 .DS_Store 在运行期间
+发生元数据变化，保留清理前的当前版本；其余文件、1,690 个目录和 506 个未改动
+原生输入均复核。普通原生负载经真实重建，原有文件全部保留并新增 readback
+程序，共 28 项；未清理 .tools、普通 bin/out 或用户的既有源码改动。
 
 ### v158：虚拟列表的滚动、退化恢复与无障碍树
 
