@@ -382,6 +382,13 @@ endif()
 
 if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     enable_testing()
+    # Manual external-process AX acceptance needs a live HostSmoke PID and
+    # existing Accessibility permission; build it without registering a CTest.
+    add_executable(jalium.native.platform.notification-observer
+        tests/platform_apple_notification_observer.mm)
+    target_compile_options(jalium.native.platform.notification-observer PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.notification-observer PRIVATE
+        "-framework Foundation" "-framework ApplicationServices")
     add_executable(jalium.native.platform.tests tests/platform_apple_tests.mm)
     target_include_directories(jalium.native.platform.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

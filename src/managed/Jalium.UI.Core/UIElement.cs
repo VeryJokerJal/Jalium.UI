@@ -5573,6 +5573,11 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     {
         base.OnVisualChildrenChanged(visualAdded, visualRemoved);
 
+        NotifyAutomationStructureChanged();
+    }
+
+    private void NotifyAutomationStructureChanged()
+    {
         // Find the nearest element (self or ancestor) with an existing automation peer
         UIElement? current = this;
         while (current != null)
@@ -6985,6 +6990,12 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // visible cannot keep keyboard focus.
         if (!(bool)(e.NewValue ?? true))
             Input.KeyboardFocusRevalidation.OnSelfFocusabilityChanged(element);
+
+        // The macOS control tree omits hidden elements, including descendants
+        // of a hidden ancestor. Refresh it even when focus did not change.
+        // Use an already queried peer/ancestor without creating a new peer.
+        if (OperatingSystem.IsMacOS())
+            element.NotifyAutomationStructureChanged();
     }
 
     private void RaiseIsEnabledChanged(DependencyPropertyChangedEventArgs e) => IsEnabledChanged?.Invoke(this, e);
