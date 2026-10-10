@@ -655,6 +655,54 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v160：离屏视图、窗口呈现与独立 MSAA 对照
+
+macOS 的离屏读回目标可以使用尚未挂入 NSWindow 的 NSView。旧实现仍向其
+CAMetalLayer 请求 drawable 并尝试呈现。本轮仅在视图有所属窗口时进入呈现路径，
+每帧重新读取所属关系；同一视图挂入窗口后恢复呈现，移出后继续场景绘制、
+读回与 GPU retirement。已附着窗口保留原有呈现选择，其他 Apple 平台保持原有路径。
+这符合 AppKit 的 [NSView.window](https://developer.apple.com/documentation/appkit/nsview/window)
+关系以及 Metal 的 [屏幕呈现](https://developer.apple.com/documentation/metal/onscreen-presentation) 模型。
+
+新增回归先链接修改前的普通 Debug 快照，在真实 Apple M6 上失败：
+“A detached view must not acquire an onscreen drawable for readback”。
+修复后读回检查继续覆盖尺寸查询、短 stride、行尾 padding、resize 和两线程
+竞争的八帧单次消费。三轮挂入／移出同一视图均验证 drawable 请求数与实际 BGRA
+像素；该连接回归让测试 layer 返回 nil，仅观察呈现选择，实际窗口呈现另由 SDK
+界面验证。独立原生 GPU 对照新增 4×MSAA、Stencil8、
+StoreAndMultisampleResolve，再复制到共享缓冲区并核对全部红色像素和事件值。
+
+当前主机结果：
+
+- 普通 Debug 的 readback、单采样 GPU 与 4×MSAA GPU 对照 **3/3**。
+- 精确 PR 源码叠加本轮修复的隔离 Release：Metal 与 clipboard 回归 **12/12**，
+  无跳过；诊断模式开启。两个 shader 输入与普通负载逐字相同，复用其既有
+  预编译 metallib，并核对 manifest 的大小与 SHA256。未用 embedded fallback
+  代替预编译负载。运行时 HLSL 编译器链接既有固定版本 Debug 静态依赖。
+- Debug/Release 均通过实际 CMake completion 与入口导出检查。
+- SDK 冒烟构建发现 MediaPlayer 被解析为 macOS SDK 的同名命名空间。
+  注册媒体解码器时现明确引用 global::Jalium.UI.Media.MediaPlayer；
+  修复后同一 SDK Release 构建成功，位图用例的 **12** 个组合均报告通过。
+- 两种标题栏的当前 SDK 窗口均查看实际截图：96/144/192 DPI 的三列图形大小、
+  圆角及内部孔洞一致；F6 往返旋转后继续编辑，中文及 emoji 保留。
+  设置最小尺寸后内容和按钮均可达，正反 Tab 返回编辑框，Command+A 的选区已查看。
+  Native 的结束按钮和 Custom 的 Command+W 均关闭原进程。
+  本机 SDK 构建使用 ValidateXcodeVersion=false，最低系统、固定工具链和签名发布仍待验收。
+
+[093065f3 Apple CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38088071142)
+的独立读回任务为 **2/3**：Apple Paravirtual device 的单采样与 4×MSAA 原生
+对照均通过，框架在 Fetch after resize 仍返回 MTLCommandBufferErrorDomain、
+code=2、GPU Hang。日志已只包含 scene/effect 和 readback copy，两者均为
+Completed（state=1）；移除离屏呈现没有解决该失败。
+同一头的 CPU 图像检查通过，Metal 图像仍失败。根因尚待继续隔离，完整 Apple CI
+和完整 Window/macOS 验收保持未完成。
+
+本轮临时源树、构建、SDK 应用及注册项、进程均已清理，两仓库 literal artifacts
+路径为 0。保护快照复核 **19,008** 个文件、**1,690** 个目录、**507** 个未改动
+原生输入，普通原生负载 **28** 项及 Gallery 既有的 **14** 个缺失路径。
+用户的 CSS、Tooltip、输入分发、测试项目和 Gallery 工作保留；
+普通 bin/out 与 .tools 保留。最终临时审计记录用于提交后的复查，随后删除。
+
 ### v159：Metal 读回的并发消费与失败诊断
 
 两个 FetchReadback 调用等待同一帧 GPU 命令时，旧实现会在等待期间释放锁。
