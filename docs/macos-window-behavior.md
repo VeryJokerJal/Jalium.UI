@@ -655,6 +655,40 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v159：Metal 读回的并发消费与失败诊断
+
+两个 FetchReadback 调用等待同一帧 GPU 命令时，旧实现会在等待期间释放锁。
+先返回的调用取走并清空捕获后，后一个仍返回成功和旧尺寸，却没有复制像素。
+本轮在真实 GPU 的 MTLSharedEvent 门控下复现：两个调用均返回
+JALIUM_OK、7×5，单次捕获被报告成功两次。修复在 fence 等待结束并重新取得锁后
+核对命令身份；捕获已经消费或换成新帧时，返回 INVALID_STATE、尺寸 0×0，
+保持调用方缓冲区及新的待取捕获不变。等待期间仍释放锁，保留非阻塞尺寸查询。
+
+新增原生 readback 用例验证空状态、重复请求、重复尺寸查询、短 stride、
+带行尾 padding 的真实 BGRA 像素、捕获后 resize 和单次消费。两线程竞争重复
+8 帧，每帧仅一个调用取得完整红色像素，另一个保持目的缓冲区不变并返回
+INVALID_STATE；随后重新请求继续成功。GPU 命令失败现记录 NSError 的 domain、
+code 与 description，避免仅凭验收程序的泛化“尺寸／读回失败”判定原因。
+
+验证记录：
+
+- 最新 PR 头 f57b044b 的隔离 Release 基线：Metal smoke、CPU 图像、Metal 图像
+  和私有剪贴板均通过；剪贴板 **47** 项，包括中文与 emoji URL。
+  这不能消除 macOS 26 CI 上相同用例的失败。
+- 加入修复后，全部 **9** 项 Metal CTest 与 **1** 项 clipboard CTest 最终通过。
+  首次扩大运行时为 9/10，路径检查明确拒绝缺少预编译 shader 的临时负载；
+  使用同一源码的生产 shader 生成脚本补齐两个 metallib 和 manifest 后，
+  路径检查通过预编译 ABI v5 及 **1158** 项真实 GPU 几何、画刷、捕获断言。
+  未关闭 shader 断言，也未把 embedded fallback 当成 bundle 验证。
+- Release 动态负载完成真实 CMake completion 和入口导出检查。
+  使用本机 Xcode 27／macOS 27、arm64、macOS 15 部署目标；运行时 HLSL 编译器
+  实际链接现有固定版本的 Debug DXC/SPIRV-Cross 静态依赖。
+  这属于当前主机 Release 验收，不能代替固定 Xcode 26.6、最低系统或其他 Apple RID。
+- [f57b044b Apple CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38084265610)
+  的独立图像任务确认 CPU 解码通过、Metal 读回失败；在原日志中没有具体 GPU
+  错误，暂未确定其与本轮并发缺陷有因果关系。新日志用于继续定位。
+  此轮未改动 Window AX、resize-drag 或真实前台激活失败的验收要求。
+
 ### v158：虚拟列表的滚动、退化恢复与无障碍树
 
 RazorItemsHost 的内部纵向、横向 ScrollViewer 现在明确启用 CanContentScroll，
