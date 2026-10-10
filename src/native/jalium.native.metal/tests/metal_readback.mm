@@ -11,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #import <AppKit/AppKit.h>
@@ -32,22 +33,85 @@ static void CheckResult(JaliumResult actual, JaliumResult expected, const char* 
     }
 }
 
-static void TestNativeGPU(uint32_t samples)
+enum class GPUProfile { Plain, SceneUsage, ClipUsage, SampledClip, AppKit, Layer, Resize };
+
+static const char* ProfileName(GPUProfile profile)
 {
+    switch (profile) {
+    case GPUProfile::SceneUsage: return "scene-usage";
+    case GPUProfile::ClipUsage: return "clip-usage";
+    case GPUProfile::SampledClip: return "sampled-clip";
+    case GPUProfile::AppKit: return "appkit";
+    case GPUProfile::Layer: return "windowless-layer";
+    case GPUProfile::Resize: return "pending-resize";
+    default: return "plain";
+    }
+}
+
+static void TestNativeGPU(uint32_t samples, GPUProfile profile = GPUProfile::Plain)
+{
+    if (profile == GPUProfile::AppKit || profile == GPUProfile::Layer)
+        [NSApplication sharedApplication];
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     Check(device != nil, "Direct Metal device creation");
-    std::printf("Direct GPU: %s; unified=%d; samples=%u\n", device.name.UTF8String,
-        device.hasUnifiedMemory, samples);
+    std::printf("Direct GPU: %s; unified=%d; samples=%u; profile=%s\n", device.name.UTF8String,
+        device.hasUnifiedMemory, samples, ProfileName(profile));
     Check([device supportsTextureSampleCount:samples], "Direct Metal sample-count support");
     id<MTLCommandQueue> queue = [device newCommandQueue];
+    NSView* view = nil;
+    CAMetalLayer* layer = nil;
+    if (profile == GPUProfile::Layer) {
+        view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 7, 5)];
+        view.wantsLayer = YES;
+        layer = [CAMetalLayer layer];
+        view.layer = layer;
+        layer.device = device;
+        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        layer.framebufferOnly = YES;
+        layer.opaque = YES;
+        layer.maximumDrawableCount = 3;
+        layer.allowsNextDrawableTimeout = YES;
+        layer.presentsWithTransaction = NO;
+        layer.displaySyncEnabled = YES;
+        CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        layer.colorspace = srgb;
+        CGColorSpaceRelease(srgb);
+        layer.drawableSize = CGSizeMake(7, 5);
+        Check(view.window == nil, "Direct Metal layer must stay windowless");
+    }
     MTLCommandBufferDescriptor* descriptor = [MTLCommandBufferDescriptor new];
     descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
     id<MTLCommandBuffer> command = [queue commandBufferWithDescriptor:descriptor];
+    id<MTLSharedEvent> resizeGate = nil;
+    if (profile == GPUProfile::Resize) {
+        resizeGate = [device newSharedEvent];
+        Check(resizeGate != nil, "Direct Metal resize gate creation");
+        [command encodeWaitForEvent:resizeGate value:1];
+    }
     MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:7 height:5 mipmapped:NO];
     textureDescriptor.storageMode = MTLStorageModePrivate;
     textureDescriptor.usage = MTLTextureUsageRenderTarget;
+    const bool sceneUsage = profile == GPUProfile::SceneUsage ||
+        profile == GPUProfile::ClipUsage || profile == GPUProfile::SampledClip ||
+        profile == GPUProfile::Resize;
+    if (sceneUsage) textureDescriptor.usage |= MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
+    id<MTLTexture> clip = nil;
+    if (profile == GPUProfile::ClipUsage || profile == GPUProfile::SampledClip ||
+        profile == GPUProfile::Resize) {
+        MTLTextureDescriptor* mask = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm width:1 height:1 mipmapped:NO];
+        mask.storageMode = MTLStorageModeShared;
+        mask.usage = profile == GPUProfile::SampledClip ? MTLTextureUsageShaderRead :
+            MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        clip = [device newTextureWithDescriptor:mask];
+        Check(clip != nil, "Direct Metal shared R8 clip creation");
+        const uint8_t white = 255;
+        [clip replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&white bytesPerRow:1];
+    }
+    std::printf("Direct resources: colorUsage=%lu; clipUsage=%lu\n",
+        static_cast<unsigned long>(texture.usage), static_cast<unsigned long>(clip.usage));
     id<MTLTexture> multisample = nil, stencil = nil;
     if (samples > 1) {
         MTLTextureDescriptor* attachment = [MTLTextureDescriptor new];
@@ -79,6 +143,13 @@ static void TestNativeGPU(uint32_t samples)
     }
     id<MTLRenderCommandEncoder> clear = [command renderCommandEncoderWithDescriptor:pass];
     clear.label = @"Direct Metal clear";
+    if (clip) {
+        // Isolate the fragment binding used by the framework's clear encoder.
+        // No shader or draw call participates in this clear/copy control.
+        [clear setFragmentTexture:clip atIndex:30];
+        [clear setScissorRect:MTLScissorRect{0, 0, 7, 5}];
+        [clear setDepthStencilState:nil];
+    }
     [clear endEncoding];
     id<MTLBlitCommandEncoder> copy = [command blitCommandEncoder];
     copy.label = @"Direct Metal readback";
@@ -88,6 +159,25 @@ static void TestNativeGPU(uint32_t samples)
     [copy endEncoding];
     [command encodeSignalEvent:event value:1];
     [command commit];
+    if (resizeGate) {
+        // Keep the submitted copy pending while replacing the surface's texture
+        // references, as Resize does before FetchReadback waits on its capture.
+        pass = nil; clear = nil; copy = nil;
+        textureDescriptor.width = 9; textureDescriptor.height = 3;
+        texture = [device newTextureWithDescriptor:textureDescriptor];
+        MTLTextureDescriptor* attachment = [MTLTextureDescriptor new];
+        attachment.textureType = MTLTextureType2DMultisample;
+        attachment.width = 9; attachment.height = 3; attachment.sampleCount = samples;
+        attachment.storageMode = MTLStorageModePrivate;
+        attachment.usage = MTLTextureUsageRenderTarget;
+        attachment.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        multisample = [device newTextureWithDescriptor:attachment];
+        attachment.pixelFormat = MTLPixelFormatStencil8;
+        stencil = [device newTextureWithDescriptor:attachment];
+        const bool replaced = texture && multisample && stencil;
+        resizeGate.signaledValue = 1;
+        Check(replaced, "Direct Metal replacement textures");
+    }
     [command waitUntilCompleted];
     if (command.status == MTLCommandBufferStatusError) {
         std::fprintf(stderr, "Direct Metal command failed: domain=%s code=%ld description=%s\n",
@@ -106,7 +196,8 @@ static void TestNativeGPU(uint32_t samples)
         Check(p[0] == 0 && p[1] == 0 && p[2] == 255 && p[3] == 255,
             "Direct Metal clear/copy BGRA pixels");
     }
-    std::printf("PASS direct Metal clear, BGRA readback and shared-event signal; samples=%u\n", samples);
+    std::printf("PASS direct Metal clear, BGRA readback and shared-event signal; samples=%u; profile=%s\n",
+        samples, ProfileName(profile));
 }
 
 @interface ReadbackMetalLayer : CAMetalLayer
@@ -207,6 +298,18 @@ static void TestLifecycle(Surface& surface)
     std::puts("PASS size queries, short stride, padded BGRA rows, resize, one-shot consumption");
 }
 
+static void TestCaptureWithoutResize(Surface& surface)
+{
+    surface.Capture();
+    std::vector<uint8_t> pixels(5 * 40, 0xa5);
+    int32_t width = -1, height = -1;
+    CheckResult(surface.Fetch(pixels.data(), 40, width, height), JALIUM_OK,
+        "Fetch without resize");
+    Check(width == 7 && height == 5, "Capture dimensions without resize");
+    CheckPixels(pixels, 40);
+    std::puts("PASS framework clear and BGRA readback without resizing the target");
+}
+
 static void TestConcurrentFetch(Surface& surface)
 {
     for (int iteration = 0; iteration < 8; ++iteration) {
@@ -300,6 +403,20 @@ int main(int argc, char** argv)
 {
     @autoreleasepool {
         try {
+            if (argc == 2) {
+                for (const auto& option : std::array<std::pair<const char*, GPUProfile>, 6>{{
+                    {"--gpu-scene-usage-baseline", GPUProfile::SceneUsage},
+                    {"--gpu-clip-baseline", GPUProfile::ClipUsage},
+                    {"--gpu-sampled-clip-baseline", GPUProfile::SampledClip},
+                    {"--gpu-appkit-baseline", GPUProfile::AppKit},
+                    {"--gpu-layer-baseline", GPUProfile::Layer},
+                    {"--gpu-resize-baseline", GPUProfile::Resize}}}) {
+                    if (std::strcmp(argv[1], option.first) == 0) {
+                        TestNativeGPU(4, option.second);
+                        return 0;
+                    }
+                }
+            }
             if (argc == 2 && std::strcmp(argv[1], "--gpu-baseline") == 0) {
                 TestNativeGPU(1);
                 return 0;
@@ -308,10 +425,15 @@ int main(int argc, char** argv)
                 TestNativeGPU(4);
                 return 0;
             }
-            Check(argc == 1, "Unknown readback test option");
+            const bool noResize = argc == 2 && std::strcmp(argv[1], "--framework-no-resize") == 0;
+            Check(argc == 1 || noResize, "Unknown readback test option");
             [NSApplication sharedApplication];
             jalium_metal_init();
             Surface surface;
+            if (noResize) {
+                TestCaptureWithoutResize(surface);
+                return 0;
+            }
             TestLifecycle(surface);
             TestConcurrentFetch(surface);
             TestWindowAttachment(surface);

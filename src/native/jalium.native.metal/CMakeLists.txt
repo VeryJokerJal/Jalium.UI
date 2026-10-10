@@ -103,9 +103,15 @@ if(JALIUM_METAL_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_link_libraries(jalium.native.metal.readback PRIVATE jalium.native.metal jalium.native.core
         "-framework AppKit" "-framework Metal" "-framework QuartzCore")
     add_test(NAME jalium.native.metal.readback COMMAND jalium.native.metal.readback)
+    add_test(NAME jalium.native.metal.readback-no-resize COMMAND jalium.native.metal.readback --framework-no-resize)
     add_test(NAME jalium.native.metal.gpu-baseline COMMAND jalium.native.metal.readback --gpu-baseline)
     add_test(NAME jalium.native.metal.gpu-msaa-baseline COMMAND jalium.native.metal.readback --gpu-msaa-baseline)
-    set_tests_properties(jalium.native.metal.readback jalium.native.metal.gpu-baseline
+    foreach(profile scene-usage clip sampled-clip appkit layer resize)
+        add_test(NAME jalium.native.metal.gpu-${profile}-baseline
+            COMMAND jalium.native.metal.readback --gpu-${profile}-baseline)
+        set_tests_properties(jalium.native.metal.gpu-${profile}-baseline PROPERTIES TIMEOUT 30)
+    endforeach()
+    set_tests_properties(jalium.native.metal.readback jalium.native.metal.readback-no-resize jalium.native.metal.gpu-baseline
         jalium.native.metal.gpu-msaa-baseline PROPERTIES TIMEOUT 30)
     add_executable(jalium.native.metal.image-orientation tests/metal_image_orientation.mm)
     target_include_directories(jalium.native.metal.image-orientation PRIVATE
