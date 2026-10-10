@@ -269,6 +269,17 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         if (!CanExposeChildren(peer)) return [];
         var children = new List<AutomationPeer>();
         var seen = new HashSet<AutomationPeer> { peer };
+        if (peer is ItemsControlAutomationPeer itemsPeer
+            && itemsPeer.ItemsOwner.ItemsHostInternal is VirtualizingPanel panel
+            && VirtualizingPanel.GetIsVirtualizing(itemsPeer.ItemsOwner))
+        {
+            // AX exposes realized rows. Reading the logical collection both walks every item
+            // in a lazy range and caches item identities that may no longer match recycled
+            // containers. The live panel supplies the same realized controls in visual order.
+            foreach (UIElement container in panel.Children)
+                if (container.GetAutomationPeer() is { } child) AddVisibleChild(child, children, seen);
+            return children;
+        }
         foreach (var child in peer.GetChildren()) AddVisibleChild(child, children, seen);
         return children;
     }

@@ -11,6 +11,13 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-virtualized-content")
+    return WindowVirtualizationChecks.Run();
+if (args.Length == 1 && args[0] == "--window-virtualized-content-observe")
+    return WindowVirtualizationChecks.Observe(false);
+if (args.Length == 1 && args[0] == "--window-virtualized-content-observe-custom")
+    return WindowVirtualizationChecks.Observe(true);
+
 if (args.Length == 1 && args[0] == "--window-attached-binding")
     return WindowAttachedBindingChecks.Run();
 if (args.Length == 1 && args[0] == "--window-attached-binding-observe")

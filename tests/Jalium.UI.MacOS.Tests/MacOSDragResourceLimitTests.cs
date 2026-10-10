@@ -60,9 +60,12 @@ public sealed class MacOSDragResourceLimitTests
             return new byte[mime == "application/b" ? 6 : 3];
         }, maxBytes: 8);
         data.Snapshot();
-        Assert.Equal([8, 5, 0 + 0 + 0 + 0 + 0], budgets.Take(2));
-        // b fits exactly, so c is never read.
-        Assert.Null(data.GetData("application/c", false));
+        Assert.Equal([8, 5, 5], budgets);
+        Assert.Equal(new byte[3], data.GetData("application/a", false));
+        Assert.Null(data.GetData("application/b", false));
+        Assert.Equal(new byte[3], data.GetData("application/c", false));
+        data.Snapshot();
+        Assert.Equal(3, budgets.Count);
     }
 
     [Fact]

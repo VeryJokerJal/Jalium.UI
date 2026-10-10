@@ -354,21 +354,25 @@ public class FocusVisualStyleCustomizationTests
 
             viewer.ScrollToVerticalOffset(80);
             window.UpdateLayout();
-            var partialClip = Assert.IsType<RectangleGeometry>(ring.GetLayoutClip());
+            var partialClip = Assert.IsAssignableFrom<Geometry>(ring.GetLayoutClip());
             var visibleRing = Rect.Intersect(new Rect(ring.RenderSize), partialClip.Bounds);
             Assert.InRange(visibleRing.Height, 0.001, ring.RenderSize.Height - 0.001);
+            Assert.True(partialClip.FillContains(new Point(visibleRing.X + visibleRing.Width / 2,
+                visibleRing.Y + visibleRing.Height / 2)));
 
             viewer.ScrollToVerticalOffset(200);
             window.UpdateLayout();
-            var clip = Assert.IsType<RectangleGeometry>(ring.GetLayoutClip());
+            var clip = Assert.IsAssignableFrom<Geometry>(ring.GetLayoutClip());
             Assert.True(Rect.Intersect(new Rect(ring.RenderSize), clip.Bounds).IsEmpty);
+            Assert.False(clip.FillContains(new Point(ring.RenderSize.Width / 2, ring.RenderSize.Height / 2)));
             Assert.True(button.IsKeyboardFocused);
 
             viewer.ScrollToVerticalOffset(0);
             window.UpdateLayout();
             Assert.Equal(originalTop, ring.VisualBounds.Y, 6);
-            var restoredClip = Assert.IsType<RectangleGeometry>(ring.GetLayoutClip());
+            var restoredClip = Assert.IsAssignableFrom<Geometry>(ring.GetLayoutClip());
             Assert.Equal(new Rect(ring.RenderSize), Rect.Intersect(new Rect(ring.RenderSize), restoredClip.Bounds));
+            Assert.True(restoredClip.FillContains(new Point(ring.RenderSize.Width / 2, ring.RenderSize.Height / 2)));
         }
         finally
         {

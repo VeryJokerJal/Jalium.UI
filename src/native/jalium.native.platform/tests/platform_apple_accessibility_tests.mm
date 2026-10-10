@@ -137,7 +137,7 @@ static int RunReadLifecycleCases(int onlyCase)
                     bool fired = false;
                     fixture.duringQuery = [&](JaliumAccessibilityRequest* request) {
                         const int32_t operation = path <= 2 ? JALIUM_AX_HIT_TEST : path == 3 ? JALIUM_AX_WINDOW_BUTTON
-                            : path == 4 ? JALIUM_AX_BEGIN_CHILDREN : path <= 6 ? JALIUM_AX_STRING
+                            : path == 4 ? JALIUM_AX_INFO : path <= 6 ? JALIUM_AX_STRING
                             : path <= 8 ? JALIUM_AX_TEXT_STYLES : JALIUM_AX_READ_CHILDREN;
                         if (fired || request->operation != operation ||
                             ((path == 6 || path == 8) && !request->text) || (path == 9 && !request->text)) return;
