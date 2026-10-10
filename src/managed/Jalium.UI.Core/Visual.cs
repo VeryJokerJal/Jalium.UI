@@ -877,7 +877,7 @@ public abstract class Visual : DependencyObject
         IEffectDrawingContext? effectDc = null;
         float captureX = 0, captureY = 0, captureW = 0, captureH = 0;
         bool effectCaptureOpen = false;
-        bool pushedClip = false;
+        int pushedClip = 0;
         bool pushedChildClip = false;
         bool pushedCssClip = false;
         Geometry? cssClipGeometry = null;
@@ -997,8 +997,7 @@ public abstract class Visual : DependencyObject
             var deferLayoutClip = this is UIElement { LayoutClipIncludesSelf: false };
             if (!deferLayoutClip && clipGeometry != null && drawingContext is IClipDrawingContext clipContext)
             {
-                clipContext.PushClip(clipGeometry);
-                pushedClip = true;
+                pushedClip = LayoutClipStack.Push(drawingContext, clipContext, clipGeometry);
             }
 
         // Templated-background layer. Painted BEFORE OnRender so that a
@@ -1069,10 +1068,13 @@ public abstract class Visual : DependencyObject
             // background capture now, leaving descendants and the later border
             // stroke above the inset shadow. Its outer part must not inherit
             // this element's temporary layout clip.
-            if (pushedClip && drawingContext is IClipDrawingContext shadowClipContext)
+            if (pushedClip > 0 && drawingContext is IClipDrawingContext shadowClipContext)
             {
-                pushedClip = false;
-                shadowClipContext.Pop();
+                while (pushedClip > 0)
+                {
+                    pushedClip--;
+                    shadowClipContext.Pop();
+                }
             }
             if (combinedCssShadows != null)
                 PaintCombinedCssShadowLayer(inset: true);
@@ -1081,15 +1083,13 @@ public abstract class Visual : DependencyObject
             if (!deferLayoutClip && clipGeometry != null &&
                 drawingContext is IClipDrawingContext restoredClipContext)
             {
-                restoredClipContext.PushClip(clipGeometry);
-                pushedClip = true;
+                pushedClip = LayoutClipStack.Push(drawingContext, restoredClipContext, clipGeometry);
             }
         }
 
         if (deferLayoutClip && clipGeometry != null && drawingContext is IClipDrawingContext childClipContext)
         {
-            childClipContext.PushClip(clipGeometry);
-            pushedClip = true;
+            pushedClip = LayoutClipStack.Push(drawingContext, childClipContext, clipGeometry);
         }
 
         var childClipGeometry = this is UIElement childClipElement
@@ -1146,10 +1146,13 @@ public abstract class Visual : DependencyObject
             pushedChildClip = false;
             insetClipContext2.Pop();
         }
-        if (pushedClip && drawingContext is IClipDrawingContext clipContext2)
+        if (pushedClip > 0 && drawingContext is IClipDrawingContext clipContext2)
         {
-            pushedClip = false;
-            clipContext2.Pop();
+            while (pushedClip > 0)
+            {
+                pushedClip--;
+                clipContext2.Pop();
+            }
         }
 
         if (!suppressOwnPaint) OnPostRender(drawingContext);
@@ -1349,10 +1352,13 @@ public abstract class Visual : DependencyObject
                     pushedChildClip = false;
                     insetClipContext.Pop();
                 }
-                if (pushedClip && drawingContext is IClipDrawingContext clipContext)
+                if (pushedClip > 0 && drawingContext is IClipDrawingContext clipContext)
                 {
-                    pushedClip = false;
-                    clipContext.Pop();
+                    while (pushedClip > 0)
+                    {
+                        pushedClip--;
+                        clipContext.Pop();
+                    }
                 }
                 if (pushedCssClip && drawingContext is IClipDrawingContext cssClipContext)
                 {

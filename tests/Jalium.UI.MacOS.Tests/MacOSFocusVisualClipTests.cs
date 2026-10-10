@@ -69,9 +69,35 @@ public sealed class MacOSFocusVisualClipTests
         Assert.True(fixture.Ring.GetLayoutClip()!.Bounds.Top < -2);
     }
 
+    [Fact]
+    public void NestedScrollViewerMasksBothViewportsAfterScrolling()
+    {
+        using var fixture = new ClipFixture(true, true);
+        var outer = new ScrollViewer
+        {
+            Width = 150, Height = 90,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            IsScrollInertiaEnabled = false,
+        };
+        fixture.Window.Content = null;
+        outer.Content = fixture.Viewer;
+        fixture.Window.Content = outer;
+        fixture.Layout();
+        fixture.Viewer.ScrollToHorizontalOffset(65);
+        fixture.Viewer.ScrollToVerticalOffset(45);
+        outer.ScrollToHorizontalOffset(20);
+        outer.ScrollToVerticalOffset(15);
+        fixture.Layout();
+        var stack = Assert.IsType<LayoutClipStack>(fixture.Ring.GetLayoutClip());
+        Assert.True(stack.Clips.Count >= 2);
+        foreach (var point in new[] { new Point(-1, 10), new Point(151, 10), new Point(10, 91) })
+            Assert.False(stack.FillContains(outer.TranslatePoint(point, fixture.Ring)));
+    }
+
     private static void AssertClip(FocusVisualAdorner ring, ScrollViewer viewer, Rect viewport)
     {
-        var actual = Assert.IsType<RectangleGeometry>(ring.GetLayoutClip()).Bounds;
+        var actual = ring.GetLayoutClip()!.Bounds;
         var expected = new Rect(viewer.TranslatePoint(viewport.TopLeft, ring), viewport.Size);
         Assert.Equal(expected.X, actual.X, 6);
         Assert.Equal(expected.Y, actual.Y, 6);

@@ -56,6 +56,7 @@
     <Compile Include="MacOSFontMatchingTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
     <Compile Remove="MacOSShapedWordNavigationTests.cs" />
     <Compile Include="MacOSShapedWordNavigationTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Include="../Jalium.UI.Tests/FocusVisualAncestorClipTests.cs" Link="FocusVisualAncestorClipTests.cs" />
     <Compile Include="../Jalium.UI.Tests/PathMarkupParserTests.cs" Link="PathRendering/PathMarkupParserTests.cs" />
     <Compile Include="../Jalium.UI.Tests/PathShapeTests.cs" Link="PathRendering/PathShapeTests.cs" />
     <Compile Include="../Jalium.UI.Tests/PathIconTests.cs" Link="PathRendering/PathIconTests.cs" />
