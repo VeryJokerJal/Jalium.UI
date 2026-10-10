@@ -714,20 +714,20 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
             NativeMethods.DragSetEffect(_handle, sessionId, effect);
     }
 
-    internal byte[]? GetMacOSDragData(ulong sessionId, string mimeType)
+    internal byte[]? GetMacOSDragData(ulong sessionId, string mimeType, int maxBytes)
     {
         if (!OperatingSystem.IsMacOS() || _handle == 0) return null;
         int result = NativeMethods.AppleDragGetData(_handle, sessionId, mimeType, out nint data, out uint size);
         try
         {
-            return result == 0 ? CopyMacOSDragData(data, size) : null;
+            return result == 0 ? CopyMacOSDragData(data, size, maxBytes) : null;
         }
         finally { if (data != 0) NativeMethods.PlatformFree(data); }
     }
 
-    internal static byte[]? CopyMacOSDragData(nint data, uint size)
+    internal static byte[]? CopyMacOSDragData(nint data, uint size, int maxBytes = ClipboardPlatform.MaxClipboardPayloadBytes)
     {
-        if (data == 0 || size > ClipboardPlatform.MaxClipboardPayloadBytes) return null;
+        if (data == 0 || maxBytes < 0 || size > maxBytes || size > ClipboardPlatform.MaxClipboardPayloadBytes) return null;
         var bytes = new byte[(int)size];
         if (bytes.Length != 0) Marshal.Copy(data, bytes, 0, bytes.Length);
         return bytes;

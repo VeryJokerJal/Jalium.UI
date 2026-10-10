@@ -993,8 +993,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             native.SetDragEffect(sessionId, effect);
     }
 
-    internal byte[]? GetPlatformDragData(ulong sessionId, string mimeType) =>
-        _platformWindow is NativePlatformWindow native ? native.GetMacOSDragData(sessionId, mimeType) : null;
+    internal byte[]? GetPlatformDragData(ulong sessionId, string mimeType, int maxBytes) =>
+        _platformWindow is NativePlatformWindow native ? native.GetMacOSDragData(sessionId, mimeType, maxBytes) : null;
 
     internal nint GetPlatformDragSource(ulong sessionId) =>
         _platformWindow is NativePlatformWindow native ? native.GetMacOSDragSource(sessionId) : 0;

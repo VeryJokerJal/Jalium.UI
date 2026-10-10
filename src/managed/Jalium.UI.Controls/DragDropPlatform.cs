@@ -1026,7 +1026,7 @@ internal static class NativeDropTarget
         {
             state.SourceHandle = window.GetPlatformDragSource(state.SessionId);
             state.CurrentData = MacOSDragDataObject.GetSourceData(state.SourceHandle) ??
-                new MacOSDragDataObject(evt.DragMimeTypes ?? [], mime => window.GetPlatformDragData(state.SessionId, mime));
+                new MacOSDragDataObject(evt.DragMimeTypes ?? [], (mime, maxBytes) => window.GetPlatformDragData(state.SessionId, mime, maxBytes));
         }
         else state.CurrentData = CreateDataObject(evt.DragMimeTypes, evt.DragDataMimeType, evt.DragData);
 

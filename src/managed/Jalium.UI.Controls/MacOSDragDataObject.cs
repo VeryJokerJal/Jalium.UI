@@ -4,19 +4,32 @@ using Jalium.UI.Controls.Platform;
 namespace Jalium.UI;
 
 // A pasteboard item is valid only during its target visit. Read lazily while
-// tracking, then retain every representation before application Drop handlers.
+// tracking, then retain bounded representations before application Drop handlers.
 internal sealed class MacOSDragDataObject : IDataObject
 {
     private readonly DataObject _formats = new();
     private readonly DataObject _values = new();
     private readonly string[] _mimeTypes;
     private readonly HashSet<string> _read = new(StringComparer.OrdinalIgnoreCase);
-    private Func<string, byte[]?>? _reader;
+    // Bound both cached payloads and work done for an untrusted format list.
+    internal const int MaxSnapshotBytes = 256 * 1024 * 1024;
+    internal const int MaxFormats = 64;
+    internal const int MaxFormatEntries = 1024;
+    private int _remainingBytes;
+    private Func<string, int, byte[]?>? _reader;
     private static SourceScope? s_source;
 
     internal MacOSDragDataObject(IEnumerable<string> mimeTypes, Func<string, byte[]?> reader)
+        : this(mimeTypes, (mime, _) => reader(mime)) { }
+
+    internal MacOSDragDataObject(IEnumerable<string> mimeTypes, Func<string, int, byte[]?> reader,
+        int maxBytes = MaxSnapshotBytes)
     {
-        _mimeTypes = mimeTypes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        ArgumentOutOfRangeException.ThrowIfNegative(maxBytes);
+        _remainingBytes = Math.Min(maxBytes, MaxSnapshotBytes);
+        _mimeTypes = mimeTypes.Take(MaxFormatEntries)
+            .Where(mime => !string.IsNullOrWhiteSpace(mime) && mime.Length <= 1024)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Take(MaxFormats).ToArray();
         _reader = reader;
         foreach (string mime in _mimeTypes)
         {
@@ -47,15 +60,28 @@ internal sealed class MacOSDragDataObject : IDataObject
         }
     }
 
-    private void Read(string mime)
+    private void Read(string mime, bool decode = true)
     {
-        if (_reader == null || !_read.Add(mime)) return;
-        if (_reader(mime) is not { } bytes) return;
-        _values.SetData(mime, bytes, autoConvert: false);
+        if (_reader != null && _remainingBytes > 0 && _read.Add(mime))
+        {
+            byte[]? bytes;
+            try { bytes = _reader(mime, _remainingBytes); }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                // One unavailable representation must not discard the rest of a drop.
+                return;
+            }
+            if (bytes == null || bytes.Length > _remainingBytes) return;
+            _remainingBytes -= bytes.Length;
+            _values.SetData(mime, bytes, autoConvert: false);
+        }
+        // Snapshot keeps encoded bytes only. In particular, do not inflate every
+        // advertised image before the application asks for a converted value.
+        if (!decode || _values.GetData(mime, autoConvert: false) is not byte[] cached) return;
         if (ClipboardPlatform.GetFormatForMimeType(mime) is { } format &&
             !_values.GetDataPresent(format, autoConvert: false))
         {
-            object value = ClipboardPlatform.DecodeCrossPlatformRepresentation(format, bytes);
+            object value = ClipboardPlatform.DecodeCrossPlatformRepresentation(format, cached);
             // A URI list may contain only web links. Advertise the file alias
             // only after its representation provides at least one file path.
             if (format == DataFormats.FileDrop)
@@ -80,8 +106,8 @@ internal sealed class MacOSDragDataObject : IDataObject
 
     internal void Snapshot()
     {
-        foreach (string mime in _mimeTypes) Read(mime);
-        Detach();
+        try { foreach (string mime in _mimeTypes) Read(mime, decode: false); }
+        finally { Detach(); }
     }
 
     internal void Detach() => _reader = null;
@@ -98,7 +124,7 @@ internal sealed class MacOSDragDataObject : IDataObject
                 if (mime.Equals(format, StringComparison.OrdinalIgnoreCase) ||
                     ClipboardPlatform.MimeTypeMapsToFormat(mime, format))
                 {
-                    Read(mime);
+                    Read(mime, decode: !mime.Equals(format, StringComparison.OrdinalIgnoreCase));
                     if (_values.GetDataPresent(format, autoConvert)) break;
                 }
             }
