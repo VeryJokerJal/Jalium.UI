@@ -71,13 +71,11 @@ if [[ "$target" == macos ]]; then
   payload_dir="$native_root/bin/native/$rid/$configuration"
   mkdir -p "$payload_dir"
   cp -f "$slice_dir"/*.metallib "$slice_dir/jalium_metal_manifest.json" "$payload_dir/"
+  # Build the default target so every enabled CTest executable is available,
+  # including new suites added without changes to this entry point.
+  cmake --build "$build_dir" --config "$configuration" --parallel "${JALIUM_BUILD_JOBS:-4}"
   cmake --build "$build_dir" --config "$configuration" \
-    --target jalium.native.metal.tests jalium.native.metal.fonts jalium.native.metal.regression jalium.native.metal.paths jalium.native.metal.effects \
-      jalium.native.platform.tests jalium.native.platform.window.tests jalium.native.platform.accessibility.tests \
-      jalium.native.platform.window.accessibility.tests jalium.native.platform.window.resize.tests \
-      jalium.native.platform.window.menu.tests jalium.native.platform.window.startup.tests \
-      jalium.native.platform.window.drag.tests jalium.native.package.complete \
-    --parallel "${JALIUM_BUILD_JOBS:-4}"
+    --target jalium.native.package.complete --parallel "${JALIUM_BUILD_JOBS:-4}"
   python3 "$repo_root/eng/apple/check-native-exports.py" "$payload_dir" --configuration "$configuration"
   JALIUM_METALLIB_DIR="$native_root/artifacts/apple/slices/$rid/$configuration" \
     ctest --test-dir "$build_dir" -C "$configuration" --output-on-failure

@@ -655,6 +655,48 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v157：跨平台预编辑合同、回收检查隔离与完整原生测试构建
+
+几何查询检查现在按宿主确认组合开始后的文字，并在查询及取消前后比较完整文字、
+光标和锚点。AppKit 继续保留选区，其他宿主沿用开始组合时删除选区的行为；密码
+检查仍禁止查询已提交文字、字符位置及 surrounding text。六个几何用例都继续执行。
+
+coercion 检查现在验证最大递归深度为一及嵌套读取返回当前基值。固定回调总次数
+会受正常属性读取影响，不构成防重入合同。临时移除实际保护后，macOS 和 Linux
+均测出最大深度五，测试失败；正式实现保留原保护。
+
+回收检查在建立树并完成加载/卸载后，先完成该 dispatcher 的 CSS 评价，再触发
+GC。定向激活 CSS 的引用追踪证实持有路径为
+`CssEvaluationScheduler.s_states[CurrentDispatcher].SubtreeRoots → CssNode.Target`。
+这批待执行工作完成后再判断 IME 订阅。临时增加强引用订阅时，遗漏 Unloaded
+通知的检查仍失败；恢复实际弱订阅并强制重新编译后，活跃 CSS 的两项检查通过。
+诊断和变异代码仅存在于隔离验证目录。
+
+macOS 构建入口现在先构建 CMake 默认目标，再执行真正的 package-complete 目标，
+由启用的 CMake 目标决定测试程序集合。导出检查与完整 CTest 入口继续执行。
+
+| 检查 | 本轮结果及范围 |
+| --- | --- |
+| Linux 定向复现 | 本机 Docker 的 amd64 Ubuntu 20.04 容器使用 SHA-512 核对的 .NET SDK 10.0.300；相同 25 项从 **7 失败/17 通过/1 跳过** 到 **24 通过/1 跳过**。跳过项是启用实际 AppKit 几何的专用检查；没有以 Linux 跳过六项预编辑查询检查 |
+| macOS 完整本地回归 | 隔离的最新 PR 源码和本轮改动，临时链接 DependencyProperty 与 IME 回收检查、启用原生几何：最终 **1701/1701**，无跳过。**961** 条上下文记录均为有效 Metal；首次完整运行暴露的两项回收失败已定位为待执行 CSS 工作，并完成上述隔离与变异验证 |
+| Xcode 默认构建 | 新建隔离 Xcode 工程，开启平台及 Metal 测试、关闭运行时 HLSL 编译器：默认构建和完成目标均成功，全部 **21** 个已注册测试的程序存在，macOS 导出门通过。这一验证没有代替完整生产 shader 工具链及 Apple 切片构建 |
+| 此前漏建的程序 | 实际 CTest **5/5**、无跳过：clipboard、macos.cursor、macos.text-font、screen-coordinate、metal.text-metrics |
+| 变异检查 | 移除 coercion 保护：macOS/Linux 各 **1** 项预期失败，深度 **5**；增加强 IME 订阅：正常卸载通过、遗漏卸载失败。恢复源码后强制重编译，活跃 CSS 检查 **2/2** |
+
+此前 v156 头的 [Apple CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38077148766)
+已进入实际 CTest：**22** 项、**9** 通过、**13** 失败，其中上述五项未运行；其余
+失败涉及前台激活、窗口无障碍/调整尺寸与 Metal 读回。当前本地五项通过只验收
+漏建修复，其他失败及全部 Apple 发布切片继续保留。
+
+同一头的 [Linux CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38077148783)
+中，已完成的 musl x64 与 glibc arm64 主套件各 **5619** 项、**12** 失败、
+**5532** 通过、**75** 跳过；失败包括本轮复现的七项断言，以及四项 Razor
+虚拟化和一项滚动焦点裁剪。其余任务当时仍运行；这一 CI 运行没有包含本轮修改。
+
+本轮改动为测试合同与构建入口，实际控件输入及绘制实现沿用既有版本。真实中文
+候选窗、实体混合 DPI、多屏、VoiceOver 与完整发布验收仍开放。现有 master 和
+PR 分支保持，用户的 CSS、Tooltip、输入分发、测试项目和 Gallery 工作保留。
+
 ### v156：Window 内容滚动的普通附加属性 Binding
 
 普通 Binding 现在读取 `(ScrollViewer.CanContentScroll)`、单个 DependencyProperty
