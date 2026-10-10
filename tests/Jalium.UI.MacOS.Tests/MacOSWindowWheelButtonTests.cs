@@ -12,6 +12,38 @@ namespace Jalium.UI.Tests;
 public sealed class MacOSWindowWheelButtonTests
 {
     [Theory]
+    [InlineData(0, MouseWheelPhase.None, MouseWheelPhase.None)]
+    [InlineData(0, MouseWheelPhase.Ended, MouseWheelPhase.None)]
+    [InlineData(0, MouseWheelPhase.None, MouseWheelPhase.Ended)]
+    [InlineData(0.125, MouseWheelPhase.Changed, MouseWheelPhase.None)]
+    [InlineData(-0.125, MouseWheelPhase.Changed, MouseWheelPhase.None)]
+    [InlineData(0.125, MouseWheelPhase.Ended, MouseWheelPhase.None)]
+    [InlineData(-0.125, MouseWheelPhase.None, MouseWheelPhase.Ended)]
+    public void NativeWheelRoutesPhaseOnlyAndSubUnitPacketsWithoutLosingLifecycle(
+        double vertical, MouseWheelPhase phase, MouseWheelPhase momentum)
+    {
+        using var fixture = new WheelFixture();
+        var received = new List<MouseWheelEventArgs>();
+        fixture.Target.PreviewMouseWheel += (_, e) => received.Add(e);
+        fixture.Target.MouseWheel += (_, e) => received.Add(e);
+        fixture.Send(new PlatformEvent
+        {
+            Type = PlatformEventType.MouseWheel, MouseX = 50, MouseY = 50,
+            HasMouseButtonStates = true, WheelDeltaY = (float)(vertical / 120),
+            WheelHasPreciseScrollingDeltas = true, WheelPhase = phase, WheelMomentumPhase = momentum,
+        });
+        Assert.Equal(2, received.Count);
+        Assert.All(received, e =>
+        {
+            Assert.Equal(0, e.Delta);
+            Assert.Equal(vertical, e.VerticalDelta, 6);
+            Assert.Equal(phase, e.Phase);
+            Assert.Equal(momentum, e.MomentumPhase);
+            Assert.False(e.Handled);
+        });
+    }
+
+    [Theory]
     [InlineData(0x80000000u, 0u, true)]
     [InlineData(0x80000001u, 1u, true)]
     [InlineData(0x80000002u, 2u, true)]
@@ -170,6 +202,8 @@ public sealed class MacOSWindowWheelButtonTests
                 WheelDeltaX = .125f, WheelDeltaY = -.25f, WheelHasPreciseScrollingDeltas = true,
                 WheelPhase = MouseWheelPhase.Changed,
             }]);
+        internal void Send(PlatformEvent evt) => typeof(Window)
+            .GetMethod("OnPlatformEvent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(Window, [evt]);
         public void Dispose()
         {
             Mouse.Capture(null);

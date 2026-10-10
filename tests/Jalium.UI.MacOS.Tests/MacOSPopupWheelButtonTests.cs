@@ -11,6 +11,38 @@ namespace Jalium.UI.Tests;
 [Collection("macOS Window globals")]
 public sealed class MacOSPopupWheelButtonTests
 {
+    [Theory]
+    [InlineData(0, MouseWheelPhase.None, MouseWheelPhase.None)]
+    [InlineData(0, MouseWheelPhase.Ended, MouseWheelPhase.None)]
+    [InlineData(0, MouseWheelPhase.None, MouseWheelPhase.Ended)]
+    [InlineData(0.125, MouseWheelPhase.Changed, MouseWheelPhase.None)]
+    [InlineData(-0.125, MouseWheelPhase.Changed, MouseWheelPhase.None)]
+    [InlineData(0.125, MouseWheelPhase.Ended, MouseWheelPhase.None)]
+    [InlineData(-0.125, MouseWheelPhase.None, MouseWheelPhase.Ended)]
+    public void PopupRoutesPhaseOnlyAndSubUnitPacketsWithoutLosingLifecycle(
+        double vertical, MouseWheelPhase phase, MouseWheelPhase momentum)
+    {
+        using var fixture = new Fixture();
+        var received = new List<MouseWheelEventArgs>();
+        fixture.Target.PreviewMouseWheel += (_, e) => received.Add(e);
+        fixture.Target.MouseWheel += (_, e) => received.Add(e);
+        fixture.Send(new PlatformEvent
+        {
+            Type = PlatformEventType.MouseWheel, MouseX = 100, MouseY = 100,
+            HasMouseButtonStates = true, WheelDeltaY = (float)(vertical / 120),
+            WheelHasPreciseScrollingDeltas = true, WheelPhase = phase, WheelMomentumPhase = momentum,
+        });
+        Assert.Equal(2, received.Count);
+        Assert.All(received, e =>
+        {
+            Assert.Equal(0, e.Delta);
+            Assert.Equal(vertical, e.VerticalDelta, 6);
+            Assert.Equal(phase, e.Phase);
+            Assert.Equal(momentum, e.MomentumPhase);
+            Assert.False(e.Handled);
+        });
+    }
+
     public static IEnumerable<object[]> Snapshots()
     {
         foreach (uint mask in new uint[] { 0, 1, 2, 4, 8, 16, 31, 0xffffffe0 })

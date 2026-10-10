@@ -553,11 +553,14 @@ public class DockTabPanel : Selector
         if (_tabStripScrollBar.Visibility != Visibility.Visible)
             return;
 
+        if (!double.IsFinite(e.VerticalDelta) || e.VerticalDelta == 0)
+            return;
+
         var pos = e.GetPosition(this);
         if (!GetTabStripInteractionRect().Contains(pos))
             return;
 
-        var delta = e.Delta > 0
+        var delta = e.VerticalDelta > 0
             ? -Math.Max(12, _tabStripScrollBar.SmallChange * 2)
             : Math.Max(12, _tabStripScrollBar.SmallChange * 2);
 
