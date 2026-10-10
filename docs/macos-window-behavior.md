@@ -681,7 +681,8 @@ setDepthStencilState:nil 就复现 GPU Hang。
 - 修复后的远端 40fc1ba3 作业 **13/13、2.93 秒**，
   [Apple run 38091188777](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38091188777)
   的独立图片方向作业也通过 CPU 像素及真实 GPU 绘制两个阶段。
-- 本机普通 Debug Metal 集合 **18/18、17.75 秒**。
+- 本机普通 Debug Metal 集合 **18/18**；完成目标仅更新主库，最终另行重编译
+  最新测试驱动并复查。最终保留的正常 Debug 负载与源码一致。
   隔离的完整 Release Metal/图片/效果/clipboard 集合 **22/22、16.93 秒**，
   链接已准备的固定 DXC/SPIRV-Cross 静态编译器，原生导出检查通过。
   七项 shader 输入与现有编译资产来源一致，两份 metallib 的大小和 SHA256
