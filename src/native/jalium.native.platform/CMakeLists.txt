@@ -390,6 +390,14 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     target_link_libraries(jalium.native.platform.tests PRIVATE
         ${PROJECT_NAME} "-framework AppKit")
     add_test(NAME jalium.native.platform.macos COMMAND jalium.native.platform.tests)
+    add_executable(jalium.native.platform.clipboard.tests tests/platform_apple_clipboard_tests.mm)
+    target_include_directories(jalium.native.platform.clipboard.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.clipboard.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.clipboard.tests PRIVATE
+        ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.clipboard COMMAND jalium.native.platform.clipboard.tests)
     add_executable(jalium.native.platform.cursor.tests tests/platform_apple_cursor_tests.mm)
     target_include_directories(jalium.native.platform.cursor.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

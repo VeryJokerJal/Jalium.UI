@@ -11,6 +11,13 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-clipboard-files")
+    return WindowClipboardFileChecks.Run();
+if (args.Length == 1 && args[0] == "--window-clipboard-files-observe")
+    return WindowClipboardFileChecks.Observe(false);
+if (args.Length == 1 && args[0] == "--window-clipboard-files-observe-custom")
+    return WindowClipboardFileChecks.Observe(true);
+
 if (args.Length == 1 && args[0] == "--window-message-box")
     return WindowMessageBoxChecks.RunAll();
 if (args.Length == 1 && args[0].StartsWith("--window-message-box-case=", StringComparison.Ordinal))

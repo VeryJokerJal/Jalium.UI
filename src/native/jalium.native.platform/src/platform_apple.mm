@@ -22,6 +22,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "platform_apple_window_startup_geometry.h"
 #include "platform_apple_screen_coordinates.h"
+#include "platform_apple_pasteboard.h"
 #include <IOKit/hidsystem/IOLLEvent.h>
 #else
 #import <UIKit/UIKit.h>
@@ -747,12 +748,13 @@ NSDragOperation OperationFromEffects(uint32_t effects)
 static NSString* const AppleMimeWrapper = @"application/x-jalium-pasteboard-mime-";
 // Match ClipboardPlatform.MaxClipboardPayloadBytes before copying a promised
 // representation across the native/managed boundary.
-static constexpr NSUInteger MaxApplePasteboardPayloadBytes = 256 * 1024 * 1024;
+static constexpr NSUInteger MaxApplePasteboardPayloadBytes = jalium::platform::apple::MaxPasteboardPayloadBytes;
 
 NSPasteboardType PasteboardTypeFromMime(const char* mime)
 {
     if (!mime) return nil;
     NSString* value = [NSString stringWithUTF8String:mime];
+    if (!value.length) return nil;
     NSString* base = [[value componentsSeparatedByString:@";"][0] lowercaseString];
     if ([base isEqualToString:@"text/plain"] || [value isEqualToString:@"UTF8_STRING"]) return NSPasteboardTypeString;
     if ([base isEqualToString:@"text/uri-list"]) return NSPasteboardTypeURL;
@@ -829,21 +831,7 @@ NSData* ReadApplePasteboardData(NSPasteboard* pasteboard, const char* mime)
     NSPasteboardType type = PasteboardTypeFromMime(mime);
     if (!type) return nil;
     if ([type isEqualToString:NSPasteboardTypeURL]) {
-        // Finder supplies one file URL per item. Reading the board-level first
-        // value would silently discard every remaining file.
-        NSMutableArray<NSString*>* urls = [NSMutableArray array];
-        if ([pasteboard respondsToSelector:@selector(pasteboardItems)]) {
-            for (NSPasteboardItem* item in pasteboard.pasteboardItems) {
-                NSString* value = [item stringForType:NSPasteboardTypeFileURL] ?: [item stringForType:NSPasteboardTypeURL];
-                if (value) [urls addObject:value];
-            }
-        }
-        if (!urls.count) {
-            NSString* value = [pasteboard stringForType:NSPasteboardTypeFileURL] ?: [pasteboard stringForType:NSPasteboardTypeURL];
-            if (value) [urls addObject:value];
-        }
-        if (!urls.count) return nil;
-        return [[[urls componentsJoinedByString:@"\r\n"] stringByAppendingString:@"\r\n"] dataUsingEncoding:NSUTF8StringEncoding];
+        return jalium::platform::apple::ReadPasteboardUriList(pasteboard);
     }
     if ([type isEqualToString:NSPasteboardTypeString])
         return [[pasteboard stringForType:type] dataUsingEncoding:NSUTF8StringEncoding];
@@ -3663,34 +3651,9 @@ JaliumResult jalium_drag_begin_with_image(JaliumPlatformWindow* window,
     if (!dragEvent || dragEvent.windowNumber != window->window.windowNumber ||
         (dragEvent.type != NSEventTypeLeftMouseDown && dragEvent.type != NSEventTypeLeftMouseDragged))
         return JALIUM_ERROR_INVALID_STATE;
-    NSPasteboardItem* pasteboard = [NSPasteboardItem new];
-    NSMutableArray<NSPasteboardItem*>* boards = [NSMutableArray arrayWithObject:pasteboard];
-    NSString* uriList = nil;
-    for (uint32_t index = 0; index < count; ++index) {
-        if (!items[index].mimeType || (!items[index].data && items[index].dataSize)) return JALIUM_ERROR_INVALID_ARGUMENT;
-        NSString* type = PasteboardTypeFromMime(items[index].mimeType);
-        NSData* data = [NSData dataWithBytes:items[index].data length:items[index].dataSize];
-        if (!type || !data) continue;
-        if ([type isEqualToString:NSPasteboardTypeURL]) {
-            uriList = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        } else if ([type isEqualToString:NSPasteboardTypeString]) {
-            NSString* value = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            if (value) [pasteboard setString:value forType:type];
-        } else [pasteboard setData:data forType:type];
-    }
-    bool firstURL = true;
-    for (NSString* raw in [uriList componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
-        NSString* value = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        if (!value.length || [value hasPrefix:@"#"]) continue;
-        NSURL* url = [NSURL URLWithString:value];
-        if (!url.scheme.length) continue;
-        NSPasteboardItem* board = firstURL ? pasteboard : [NSPasteboardItem new];
-        if (!firstURL) [boards addObject:board];
-        firstURL = false;
-        [board setString:url.absoluteString forType:NSPasteboardTypeURL];
-        if (url.fileURL) [board setString:url.absoluteString forType:NSPasteboardTypeFileURL];
-    }
-    if (!pasteboard.types.count) return JALIUM_ERROR_INVALID_ARGUMENT;
+    NSArray<NSPasteboardItem*>* boards = nil;
+    JaliumResult build = jalium::platform::apple::BuildPasteboardItems(items, count, PasteboardTypeFromMime, &boards);
+    if (build != JALIUM_OK) return build;
     NSMutableArray<NSDraggingItem*>* draggingItems = [NSMutableArray array];
     for (NSPasteboardItem* board in boards)
         [draggingItems addObject:[[NSDraggingItem alloc] initWithPasteboardWriter:board]];
@@ -3803,7 +3766,7 @@ JaliumResult jalium_clipboard_get_data(const char* mime,uint8_t** out,uint32_t* 
 }
 JaliumResult jalium_clipboard_set_data(const JaliumClipboardDataItem* items,uint32_t count){
 #if TARGET_OS_OSX
-    NSPasteboard* pb=NSPasteboard.generalPasteboard;[pb clearContents];NSMutableOrderedSet<NSPasteboardType>* types=[NSMutableOrderedSet orderedSet];for(uint32_t i=0;i<count;++i){if(items[i].mimeType)[types addObject:PasteboardTypeFromMime(items[i].mimeType)];}[pb declareTypes:types.array owner:nil];for(uint32_t i=0;i<count;++i){if(!items[i].mimeType)continue;NSString* type=PasteboardTypeFromMime(items[i].mimeType);NSData* data=[NSData dataWithBytes:items[i].data length:items[i].dataSize];if(![pb setData:data forType:type])return JALIUM_ERROR_INVALID_STATE;}return JALIUM_OK;
+    return jalium::platform::apple::WritePasteboardData(NSPasteboard.generalPasteboard, items, count, PasteboardTypeFromMime);
 #else
     UIPasteboard* pb=UIPasteboard.generalPasteboard;NSMutableDictionary* entry=[NSMutableDictionary dictionary];for(uint32_t i=0;i<count;++i){if(!items[i].mimeType)continue;entry[[NSString stringWithUTF8String:items[i].mimeType]]=[NSData dataWithBytes:items[i].data length:items[i].dataSize];}pb.items=count?@[entry]:@[];return JALIUM_OK;
 #endif
