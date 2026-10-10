@@ -2051,8 +2051,12 @@ JaliumResult MetalRenderTarget::EndDraw()
     std::atomic<int64_t>* gpuNs = &impl_->lastGpuNs;
     std::atomic<uint64_t>* completedValue = &impl_->completedEventValue;
     [impl_->commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-        if (completed.status == MTLCommandBufferStatusError)
+        if (completed.status == MTLCommandBufferStatusError) {
             backend->NoteDeviceError(static_cast<int64_t>(completed.error.code));
+            NSLog(@"Jalium Metal command failed: domain=%@ code=%ld description=%@",
+                completed.error.domain, static_cast<long>(completed.error.code),
+                completed.error.localizedDescription);
+        }
         if (completed.GPUEndTime >= completed.GPUStartTime)
             gpuNs->store(static_cast<int64_t>((completed.GPUEndTime - completed.GPUStartTime) * 1e9),
                 std::memory_order_release);
@@ -3323,6 +3327,12 @@ JaliumResult MetalRenderTarget::FetchReadback(uint8_t* buffer,uint32_t stride,
     if(stride<impl_->readbackWidth*4)return JALIUM_ERROR_INVALID_ARGUMENT;
     id<MTLCommandBuffer> command=impl_->readbackCommand;
     lock.unlock();[command waitUntilCompleted];lock.lock();
+    // Another fetch can consume this capture while the GPU fence is pending.
+    // Never report success for that consumed frame or read a newer capture.
+    if(impl_->readbackCommand!=command){
+        *outWidth=*outHeight=0;
+        return JALIUM_ERROR_INVALID_STATE;
+    }
     if(command.status==MTLCommandBufferStatusError)return JALIUM_ERROR_DEVICE_LOST;
     const uint8_t* source=static_cast<const uint8_t*>(impl_->readbackBuffer.contents);
     for(uint32_t y=0;y<impl_->readbackHeight;++y)
