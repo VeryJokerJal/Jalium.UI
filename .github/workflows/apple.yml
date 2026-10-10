@@ -61,5 +61,5 @@ jobs:
           -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
       - name: Build focused readback tests
         run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback --parallel 4
-      - name: Verify direct GPU commands, MSAA and framework readback
-        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium.native.metal.(gpu-(msaa-)?baseline|readback)$' --output-on-failure -V
+      - name: Verify GPU resources, bindings, AppKit and framework readback
+        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium.native.metal.(gpu-.*baseline|readback(-no-resize)?)$' --output-on-failure -V
