@@ -67,7 +67,7 @@ for the visible window rather than for the data, containers are recycled as you 
 follows `INotifyCollectionChanged`.
 
 ```xml
-<ScrollViewer>
+<ScrollViewer CanContentScroll="True">
   @virtualize(var row in Rows)
   {
     <Border Padding="8">
@@ -93,10 +93,15 @@ Rules worth knowing:
 - **The loop variable is the item.** `@row.Name` binds to the item's `Name`; `@row` on its own is
   the item. Both are rewritten for you.
 - **It needs a viewport.** Virtualization is only possible when something bounds the scrolling axis.
-  The best shape is the one above — the block directly inside a `ScrollViewer`. Otherwise give it an
+  The best shape is the one above — the block directly inside a `ScrollViewer` with
+  `CanContentScroll="True"`, so the host receives the viewer's viewport and scroll commands.
+  The viewer's default physical-scrolling mode does not delegate those commands to its content.
+  Otherwise give the host an
   explicit `Height` or `MaxHeight`. Placed where neither holds (inside a `StackPanel`, an
   `Auto`-sized grid row, or another item template) it falls back to non-virtualized layout and says
-  so in the trace; it will render correctly but without the benefit.
+  so in the trace; it will render correctly but without the benefit. This fallback is temporary:
+  once a finite viewport is available, it resumes the application's virtualization setting,
+  including its binding or an explicit `IsVirtualizing="False"` choice.
 - **Nesting works, one scope at a time.** An inner `@virtualize` resolves its source against the
   outer item, so `@virtualize(var it in g.Items)` inside `@virtualize(var g in Groups)` is fine. The
   inner body cannot reach back for `g`, because a template has a single DataContext — project the
