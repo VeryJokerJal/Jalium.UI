@@ -104,14 +104,13 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
                 {
                     if (!bridge._disposed && bridge._tree.TryGetId(peer, out ulong id))
                     {
-                        // A fallback group may just have lost its last semantic
-                        // property. Announce its changed ancestry at the root,
-                        // which remains discoverable while the group is omitted.
-                        if (notification == MacOSAXNotification.Layout && peer is MacOSFallbackAutomationPeer)
-                            id = 1;
-                        MacOSAccessibilityNative.Notify(bridge._platform.PlatformHandle, id,
-                            notification == MacOSAXNotification.Focus && !peer.HasKeyboardFocus()
-                                ? MacOSAXNotification.Layout : notification);
+                        var effectiveNotification = notification == MacOSAXNotification.Focus && !peer.HasKeyboardFocus()
+                            ? MacOSAXNotification.Layout : notification;
+                        // A hidden or newly omitted peer is no longer a valid
+                        // AppKit notification target. Announce changed ancestry
+                        // at the live root, preserving cached hidden identities.
+                        if (effectiveNotification == MacOSAXNotification.Layout) id = 1;
+                        MacOSAccessibilityNative.Notify(bridge._platform.PlatformHandle, id, effectiveNotification);
                     }
                 }
                 catch (Exception error) { Debug.WriteLine($"[macOS accessibility notification] {error}"); }

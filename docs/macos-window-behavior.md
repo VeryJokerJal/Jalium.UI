@@ -290,6 +290,7 @@ artifacts 路径及已归属的本轮诊断。清理前后的受保护文件与�
 | 输入法 | 焦点、只读状态、光标和布局变化推送上下文；候选矩形处理 flipped view 与 Retina；切换编辑器丢弃旧组合；AppKit cancelOperation 取消组合，组合期间仍分发 Command 快捷键 | 原生取消、只触发一次结束、保留原文选区及 Command 按键检查通过；真实中文候选窗待验收 |
 | AppKit 文本存储与替换 | 周边文本、UTF-16 文档选区、组合文本虚拟快照和任意替换范围；范围遵守字素边界并经过 PreviewTextInput；五种编辑器接入 | 原生协议和托管编辑/撤销检查通过；系统输入法与文本服务待实测 |
 | AppKit 文本几何 | 任意范围的首个视觉行矩形与实际 UTF-16 范围；屏幕点映射到编辑器；组合索引映射与密码保护；完整控件变换和 Retina 转换；TextBox 使用单次 CoreText 布局范围查询 | 原生协议、托管桥接与 20 项真实 CoreText 检查通过；8192 字符查询性能回归通过，系统候选窗待验收 |
+| 外部 AX 通知与控件身份 | macOS 可见性变化通知已存在的 Peer/祖先并刷新缓存；布局及失焦布局通知定位仍有效的根节点，保留隐藏身份 | v162 新增回归 6/6、相关 35/35；两种标题栏的实际 TextBox 值/UTF-16 选区/焦点、说明隐藏恢复/移除添加、窗口恢复和关闭各 9/9。外部只读 AXObserver 接收确认；全部控件通知与 VoiceOver 仍开放 |
 | AppKit 控件无障碍树 | 通过 NSAccessibilityElement 暴露 AutomationPeer 的中文名称、角色、状态、动作、值、文本选区及屏幕矩形；能力和写入方法发现按实际 provider 判断；Invoke 请求先返回再执行用户代码，排队后重新检查目标；排除隐藏及退出中的控件，拒绝旧 AX 对象动作；重新显示保留身份；已实现数据项采用实际容器 Peer | v57 同一原生方法发现探针由 3/8 提升至 8/8；外部 Inspector 确认静态文字 Value 只读、TextBox 可写；实际隐藏/关闭后旧按钮引用不可用且 Press 无效，同一窗口重开后旧引用恢复。v28 Gallery 隔离证据保留；其余属性、通知接收与 VoiceOver 待验收 |
 | EditControl 原生文本无障碍 | 专用 EditControlAutomationPeer 提供 Value/Text、UTF-16 选区、可见文本矩形与滚动；空文档和单行也保持 AXTextArea；AX 写入沿用编辑事务、撤销记录及 Text 绑定，禁用/只读/隐藏/移除/关闭状态拒绝写入；值和选区通知先于用户回调 | v117 修复前真实宿主 0/16，修复后两种标题栏 16/16；相关宿主 118/118，相关托管 573 通过、2 跳过；外部 AX 读写中文、emoji、多行、组合字符选区、只读能力及全屏往返已检查；外部通知接收与 VoiceOver 仍待验收 |
 | 三类文本控件的原生导航 | 视觉行、UTF-16 字形与屏幕点查询、可见范围、caret 行、单选数组、可撤销的选区替换；只读与禁用能力发现；公开 provider 的真实屏幕/DPI 范围 | v120 导航专项 42/42，相关真实宿主 267/267，托管全项目 897 通过、2 跳过，原生 C++ 2/2；两种标题栏的富文本格式/选区、撤销重做、只读、全屏往返与最小尺寸已实测；任意外部参数化 AX 调用、通知与 VoiceOver 仍开放 |
@@ -656,6 +657,71 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v162：外部 AX 通知与隐藏控件身份
+
+隐藏非焦点控件时，托管树已经省略节点，但没有结构变化事件；
+某些布局事件仍发给刚被省略的原生节点，外部 AXObserver 收不到可用的更新。
+现在 macOS 的实际可见性变化通知已有的自身或祖先 Peer，并刷新其子节点缓存，
+不为未经查询的控件新建 Peer。祖先隐藏引起的后代可见性变化也覆盖这一入口。
+布局通知发给仍可访问的根节点；失去焦点产生的通知先转换为布局通知，再选择目标。
+隐藏/恢复保留缓存身份，移除/重新添加继续沿用已有的销毁及新身份规则。
+
+新增可重复使用的 SDK 宿主入口
+--window-notifications-observe / --window-notifications-observe-custom，
+使用现有深色主题、中文内容及可滚动布局；F6 隐藏/恢复说明，F7 移除/添加说明，
+F8 在 640 × 740 与 520 × 620 DIP 间切换，F9 隐藏窗口并在一秒后恢复。
+编辑、选区、Tab 和关闭由普通 UI 完成；宿主单独记录实际文字、UTF-16 选区、
+焦点、可见性/附着次数、窗口大小及 Closed 状态。
+
+外部只读观察器 platform_apple_notification_observer.mm 使用 AXObserverCreate，
+订阅应用窗口及其内容，输出通知和当时可读的值、选区、焦点及 CFEqual 身份。
+避免菜单栏占满发现上限，销毁回调只使用已保存的注册信息，不查询失效节点。
+观察器要求已有 AX 权限及原始宿主 PID，不提示授权、不启动应用、不发送输入；
+原进程退出后结束。启用 macOS 平台测试后可构建
+jalium.native.platform.notification-observer，调用格式为 HOST_PID SECONDS，
+期限为 1–600 秒；它需要真实前台宿主，因此不注册为无人值守 CTest。
+
+本轮证据：
+
+- 修复前新增可见性回归 **1/6 通过、5/6 失败**；真实基线窗口隐藏/恢复说明
+  后树已变化，观察器却未收到相应布局通知。修复后同组 **6/6**，
+  通知/自定义节点/可见性/虚拟化相关集合 **35/35、0.80 秒**。
+  精确 PR 源码与本轮改动的 macOS 托管全集 **1,319 通过、2 跳过、22.62 秒**。
+- 隔离 Release 原生构建与导出检查成功；观察器以
+  -Wall -Wextra -Werror 编译成功，正式 CMake 观察器目标也构建成功。
+  SDK Release 宿主 **33 个警告、0 个错误**。早期 /var 别名构建的引用解析失败，
+  改用 /private 的规范路径后构建成功；实际应用加载自身 MonoBundle 原生负载，
+  没有 DYLD 覆盖。七项 shader 来源与两份 metallib manifest 经核对后复用。
+- Native 与 Custom 各 **9/9** 外部通知/身份检查。实际粘贴中文、emoji 与组合字符，
+  Command-A 完整选区分别为 **14 / 15 UTF-16 单位**；回调读取到目标值和选区。
+  Tab 与 Shift-Tab 的外部焦点回调、AXFocused 和应用焦点相符。
+- F6 隐藏与恢复均收到根节点 AXLayoutChanged；说明节点均保留身份 **9**，
+  隐藏阶段未收到其销毁事件。F7 移除收到原节点 AXUIElementDestroyed，
+  重新添加后的身份为 Native **29**、Custom **20**。
+  F9 隐藏/恢复保留根节点及编辑框身份，恢复后无需点击即可继续粘贴和全选。
+  不把应用及节点订阅可能重复产生的通知数量当作规范要求。
+- CUA 实际查看两类标题栏各 **3 张截图**：正常尺寸、最小尺寸及恢复后编辑。
+  最小尺寸所有操作仍可达。Native 通过结束按钮、Custom 通过 Command-W
+  关闭原 PID **76794 / 76898**；观察器 **76795 / 76899** 随原宿主退出，
+  最终 Closed=true，未把重启的新进程当作原进程的关闭证据。
+- 本机 Window AX 完整 CTest **242/244**，原生方法发现组通过。
+  两项最小化完成时的正常还原矩形失败仍开放；本轮通知修复不改变窗口几何。
+- 已结束的 [8dc3f8f8 Apple CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38092466717)
+  中专项 GPU 读回 **13/13**，独立图片方向 CPU/GPU 作业通过；
+  完整 native-and-packages 为 **32/37**，clipboard、Window、Window AX、
+  resize-drag 和 Metal regression 五组失败，其中 regression 超时。
+  远端 AX **242/244**、resize-drag **102/138** 与本机通知专项分开记录。
+  [同头 Linux CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38092466684)
+  的 musl arm64 作业失败：已报告 **5,476 通过、75 跳过**，
+  但测试宿主在模板替换场景运行时退出，最终 Test Run Aborted；
+  不能据已通过数量宣称全集通过。其余三个 Linux 作业在提交前仍进行中。
+
+上述外部 TextBox 值/选区/焦点、TextBlock 可见性与窗口生命周期通知已经实际接收。
+这不覆盖所有控件通知、VoiceOver、中文候选窗、物理输入、多屏混合 DPI、
+macOS 15/Intel 或签名发布。完整 CI 和整个 macOS/Window 目标继续开放。
+本轮测试输出按用户要求清理，保留正常工具链/原生负载、源码验证入口、
+现有分支及同时进行的用户修改。
+
 ### v161：虚拟 GPU 的默认深度状态与 Window 再验收
 
 固定 macos-26 / Xcode 26.6 作业中的 Apple Paravirtual device 能执行
@@ -701,8 +767,8 @@ setDepthStencilState:nil 就复现 GPU Hang。
 
 上述软件 DPI 位图不代表实体混合 DPI 多屏验收；中文粘贴不代表原生候选窗输入。
 VoiceOver、最低系统、Intel 与签名发布仍不在本轮结论内。
-该源码头的完整 Apple native-and-packages 与 Linux 作业尚未结束；
-两个专项成功不代表整个 CI 或全部 Window/macOS 行为完成。
+提交 v161 时，该源码头的完整 Apple native-and-packages 与 Linux 作业尚未结束；
+其后失败结果见 v162。两个专项成功不代表整个 CI 或全部 Window/macOS 行为完成。
 临时产物的清理范围仍为两仓库名称恰为 artifacts 的路径及本轮自有隔离输出，
 保留正常工具链/原生负载、用户修改、源码测试和现有 PR 分支。
 

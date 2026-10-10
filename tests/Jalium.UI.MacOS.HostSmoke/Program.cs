@@ -11,6 +11,11 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-notifications-observe")
+    return WindowNotificationChecks.Observe(false);
+if (args.Length == 1 && args[0] == "--window-notifications-observe-custom")
+    return WindowNotificationChecks.Observe(true);
+
 if (args.Length == 1 && args[0] == "--window-virtualized-content")
     return WindowVirtualizationChecks.Run();
 if (args.Length == 1 && args[0] == "--window-virtualized-content-observe")
