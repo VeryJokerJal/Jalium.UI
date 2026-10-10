@@ -4619,7 +4619,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         Dispatcher.EnsureNativeWake();
 
         uint style = ComputePlatformWindowStyle(
-            WindowStyle, ResizeMode, TitleBarStyle, Topmost, AllowsTransparency);
+            WindowStyle, ResizeMode, TitleBarStyle, Topmost, AllowsTransparency,
+            IsShowCloseButton, IsShowMinimizeButton, IsShowMaximizeButton);
 
         // DPI
         _dpiScale = NativeMethods.PlatformGetSystemDpiScale();
@@ -4735,7 +4736,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         ResizeMode resizeMode,
         WindowTitleBarStyle titleBarStyle,
         bool topmost,
-        bool allowsTransparency)
+        bool allowsTransparency,
+        bool showCloseButton = true,
+        bool showMinimizeButton = true,
+        bool showMaximizeButton = true)
     {
         const uint Borderless = 0x01;
         const uint Resizable = 0x02;
@@ -4747,13 +4751,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         const uint Transparent = 0x100;
 
         uint style = windowStyle == WindowStyle.None || titleBarStyle == WindowTitleBarStyle.Custom
-            ? Borderless | Closable
-            : Titlebar | Closable;
+            ? Borderless
+            : Titlebar;
 
-        if (resizeMode != ResizeMode.NoResize)
+        if (showCloseButton)
+            style |= Closable;
+        if (showMinimizeButton && resizeMode != ResizeMode.NoResize)
             style |= Minimizable;
         if (resizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip)
-            style |= Resizable | Maximizable;
+        {
+            style |= Resizable;
+            if (showMaximizeButton) style |= Maximizable;
+        }
         if (topmost)
             style |= TopmostStyle;
         if (allowsTransparency)
@@ -6358,7 +6367,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_platformWindow != null)
         {
             uint platformStyle = ComputePlatformWindowStyle(
-                WindowStyle, ResizeMode, TitleBarStyle, Topmost, AllowsTransparency);
+                WindowStyle, ResizeMode, TitleBarStyle, Topmost, AllowsTransparency,
+                IsShowCloseButton, IsShowMinimizeButton, IsShowMaximizeButton);
             if (_platformWindow.SetStyle(platformStyle))
             {
                 UpdatePlatformSizeConstraints();
@@ -7272,6 +7282,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             window.RequestFullRendering(EmptyRenderingDemand.Content);
         }
+
+        if (OperatingSystem.IsMacOS() &&
+            (e.Property == IsShowCloseButtonProperty ||
+             e.Property == IsShowMinimizeButtonProperty ||
+             e.Property == IsShowMaximizeButtonProperty))
+            window.UpdateWindowStyle();
 
         window.ApplyTitleBarPresentation();
         window.InvalidateMeasure();

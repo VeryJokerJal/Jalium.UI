@@ -11,6 +11,13 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-message-box")
+    return WindowMessageBoxChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-message-box-case=", StringComparison.Ordinal))
+    return WindowMessageBoxChecks.RunCase(args[0]);
+if (args.Length == 1 && args[0] == "--window-message-box-observe")
+    return WindowMessageBoxChecks.Observe();
+
 if (args.Length == 1 && args[0] == "--window-file-dialog-options")
     return WindowFileDialogOptionsChecks.RunAll();
 if (args.Length == 1 && args[0].StartsWith("--window-file-dialog-options-case=", StringComparison.Ordinal))

@@ -655,6 +655,77 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v150：消息框的响应、关闭与长文本
+
+框架消息框现在遵循 [MessageBox 的按键与关闭规则](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/windows/how-to-open-message-box)：
+只有 OK 时，Escape 返回 OK；包含 Cancel 时，Escape 与窗口关闭返回 Cancel；
+Yes/No 必须明确选择，不提供关闭按钮，普通关闭请求会被拒绝。
+所属窗口已经接受关闭时仍允许完成清理，Yes/No 的强制结束回退为 No，
+避免阻塞所属窗口的退出，也不会把关闭解释为 Yes。按钮触发的模态关闭
+被 Closing 取消后，不再立即重复请求关闭。
+
+指定的默认按钮在 Loaded 后获得键盘焦点；无效默认结果继续回退到该组合的
+第一个按钮。Tab、Shift+Tab 可改变响应焦点，Return 激活当前焦点按钮。
+短消息不增加消息区域的空 Tab 停靠点；长消息保留键盘滚动路径。
+
+消息与图标使用受宽度约束的 Grid。消息区上限为主屏工作区高度的 60%，
+超过后垂直滚动，响应按钮仍在消息区下方。RightAlign 与 RtlReading 分别
+应用于消息的对齐和阅读方向，继续保留现有标题栏、字体、图标与按钮样式。
+
+此次验收也发现并修复原生标题栏遗漏：IsShowCloseButton、
+IsShowMinimizeButton 与 IsShowMaximizeButton 现在参与原生窗口创建配置，
+在 macOS 上更改这些属性会同步原生按钮能力。隐藏最大化按钮不取消窗口
+的边缘缩放能力；隐藏关闭按钮不阻止已授权的程序关闭。
+
+本轮在 macOS 27.0.1、Apple Silicon、一个真实 1× 屏幕验证：
+
+- 修复前隔离应用的 OK Escape 没有响应，Yes/No 可被关闭，对齐与方向选项
+  被忽略；默认 Cancel 的 Return 原本通过。实际长消息窗口超出屏幕，
+  底部响应按钮不可见。此前台 OK Escape 复现同时记录 AppKit active=true。
+- 最终原生启用的托管回归 **1513/1513**，其中新增消息框检查 **38/38**；
+  本次 Metal 上下文记录 960 条，全部有效，其中消息框检查对应 38 条。
+  覆盖全部按钮组合与有效/无效默认值、隐藏 Cancel、正常与被取消的关闭、
+  所属窗口清理、短消息 Tab 循环、对齐/方向及长文本可滚动性。
+- SDK 原生消息框检查 **23/23**（26.22 秒）：使用所属原生视图的 NSEvent
+  路由、按钮与关闭协议，覆盖响应结果、明确选择限制、所属关闭/取消关闭、
+  长消息 PageDown、主队列入口。另检查八种实时原生标题栏按钮配置，
+  均保持客户区尺寸、托管焦点与原生 firstResponder；隐藏关闭按钮后
+  程序关闭仍成功。协议注入不替代下面的真实按键验收。
+- CUA 实际窗口完成九次操作：OK Escape→OK，OKCancel Return→Cancel，
+  Yes/No Escape 与 Command-W 保留对话框，Tab/Shift+Tab 后 Space→No，
+  另一次 Tab 到 Yes 后 Return→Yes；YesNoCancel 默认 No 的 Return→No，
+  Escape→Cancel；OKCancel 标题栏关闭→Cancel。
+- 长消息截图显示底部 OK/Cancel 均可见。Shift+Tab 与 PageDown 把滚动条
+  从 0 移到 792，再移到 2524.14453125；截图读到第 100 行及
+  “最后一行：完整可读”。从滚动区域 Escape→Cancel。无障碍树能读取
+  消息、响应按钮及可写滚动条；此路径的 AX 焦点报告 splitter，
+  尚未据此宣称 VoiceOver 阅读顺序或焦点语义通过。
+- RightAlign|RtlReading 的实际截图核对了阿拉伯文与中文行的右边缘。
+  短消息实际 Tab 在 OK/Cancel 之间循环。每次返回所属窗口仍 enabled，
+  最终实际输入 a 后 Command-Z 恢复原文。结束记录 actions=9、closed=true，
+  应用与保持唤醒进程都已退出。
+- 最终 SDK 应用严格验证临时签名；16 份原生库的可加载节、3 个 Metal
+  资源及 10 个 SDK 托管程序集与本轮输入一致。运行时八个原生库实际
+  来自该应用的 MonoBundle，没有 DYLD 覆盖；原生库沿用 v148/v149
+  已核对的 Debug 负载，本轮没有 C++ 修改。
+
+可通过 HostSmoke 的 --window-message-box 运行协议检查，
+--window-message-box-observe 打开交互验收窗口。测试源与入口已保留，
+临时隔离应用、日志、快照与辅助程序按用户要求清理。
+
+本轮清理删除 5594 个文件/链接、2,490,193,972 个逻辑字节；UI 与 Gallery
+的 artifacts 路径均为零。19000 个受保护文件、1690 个目录、506 个原生
+输入及提交前的 12 个正常 Debug 负载文件保持一致；没有匹配本轮独有
+应用标识及创建时间的外部偏好、缓存或崩溃报告需要删除。
+
+本轮限制：CUA 一次坐标点击报告 noWindowsAvailable，之后使用可读出的
+实际按钮完成操作；原生 Window 菜单确认为 Close disabled，但 Escape
+没有可靠结束菜单跟踪，最后使用其公开 Cancel 无障碍动作结束，
+这次不记为菜单键盘退出通过。长文本高度依据主屏工作区，
+跨不同尺寸/DPI 屏幕的消息框布局仍待实际验证；VoiceOver、物理应用切换、
+嵌套消息框、Windows 专有桌面选项及 Windows/Linux 运行行为不在此次验收结论内。
+完整 macOS 行为目标仍在继续。
+
 ### v149：文件面板的选项可见性与原生 sheet 会话
 
 带文件类型、快捷位置或只读选择的打开/文件夹面板现在默认展开选项区，
