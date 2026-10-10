@@ -11,6 +11,13 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-content-scroll")
+    return WindowPopupWheelChecks.Run(directContent: true);
+if (args.Length == 1 && args[0] == "--window-content-scroll-observe")
+    return WindowPopupWheelChecks.Observe(false, directContent: true);
+if (args.Length == 1 && args[0] == "--window-content-scroll-observe-custom")
+    return WindowPopupWheelChecks.Observe(true, directContent: true);
+
 if (args.Length == 1 && args[0] == "--window-popup-wheel")
     return WindowPopupWheelChecks.Run();
 if (args.Length == 1 && args[0] == "--window-popup-wheel-observe")

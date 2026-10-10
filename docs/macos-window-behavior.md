@@ -655,6 +655,67 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v153：内容滚动合同与无障碍滚动条
+
+直接以 StackPanel 等 IScrollInfo 作为内容时，旧 ScrollViewer 不检查
+`CanContentScroll=false`，仍使用内容 provider；固定宽度列表的横向偏移因此
+不能移动实际内容。现在只在属性为 true 时连接 provider，false 使用物理偏移。
+默认 false 与 [CanContentScroll 合同](https://learn.microsoft.com/en-us/dotnet/api/system.windows.controls.scrollviewer.cancontentscroll?view=windowsdesktop-10.0) 一致。
+运行中切换先取消弹性、平滑目标和末端锚点，再释放旧 owner、选择新 provider
+并重新布局。不同 provider 的单位可能不同，切换时明确回到双轴起点。
+Disabled 轴的直接滚动和运行中禁用都归零，不保留不可用的实际偏移。
+
+ListBox、ListView、ComboBox、TreeView 和 TreeSelector 默认样式明确启用内容
+滚动；内部 viewer 通过 `{TemplateBinding ScrollViewer.CanContentScroll}`
+跟随控件上的附加属性，调用者仍可关闭它。TemplateBinding 现在从注册的
+XAML owner 类型解析带 owner 的源属性，保留 AOT 路径。普通单段附加属性
+Binding 的解析问题另行保留，不将此 TemplateBinding 修复扩展为其验收。
+
+实际桌面还复现了另一问题：AX 把横向滑块值设置为 400 后，滑块移动，
+但列表仍显示首列，内容偏移是 0。ScrollBarAutomationPeer 原先仅设置 Value；
+现在所属 ScrollViewer 负责提交对应轴的内容偏移，独立 ScrollBar 保留数值
+强制转换且不生成 Scroll 命令，禁用控件拒绝动作。该所属窗口路由参考
+[WPF ScrollBarAutomationPeer](https://raw.githubusercontent.com/dotnet/wpf/main/src/Microsoft.DotNet.Wpf/src/PresentationFramework/System/Windows/Automation/Peers/ScrollBarAutomationPeer.cs)。
+自动化范围设置立即提交内容，不按延迟拖动滑块处理；焦点和另一轴保持不变。
+
+| 检查 | 本轮结果 |
+| --- | --- |
+| 修复前后托管回归 | provider 合同的相同 20 项测试在旧实现为 **16 失败、4 通过**；新增 AX 的相同 5 项在旧 peer 为 **5 失败、0 通过**。最终 **42/42**，包含 25 项合同/AX、5 项模板虚拟化及 12 项 BringIntoView。覆盖设置顺序、默认值、绑定更新、六次模式往返、内容更换/移除、双轴禁用及恢复、实际子元素几何、延迟拖动策略和独立滚动条 |
+| 本地原提交链的完整回归 | `07866237` 加本轮源码，启用原生几何为 **1582/1582**，零跳过；**960** 个上下文全部为有效 Metal。CSS、Tooltip、输入分发和用户测试项目修改未混入 |
+| 最新 PR 集成 | 发布前发现 PR 已加入 `e51e4e83`、`6d006067`、`7ecbdcfd` 的三个修复，涉及 **16** 个文件，与本轮 **10** 个文件无交集。隔离叠加后的针对性回归 **75/75**；完整回归 **1648/1650**，零跳过，**961** 个上下文全部为有效 Metal。两项失败为 FocusVisualAncestorClipTests 的 144/192 DPI 软件像素检查；未包含本轮改动的 `7ecbdcfd` 基线单独运行同组为 **1 通过、2 失败**，96 DPI 通过。集成结果不记为全绿 |
+| 最终 SDK 协议 | 最新 PR 集成源码的直接内容入口 **22/22**；既有包装内容入口 **16/16**。两种标题栏均经过真实 NSView 的受控 NSEvent、原生回调和 ABI，物理双轴各 **48 DIP**，extent **1004×1096**、viewport **340×300**；再检查模式往返和 AX 提交 **96×84 DIP**。额外六项实际默认 ListBox/ListView/TreeView 模板检查通过，附加属性能关闭并恢复 provider，列表保留虚拟化 |
+| 构建与载入 | 最终集成 SDK **0 错误、28 项既有警告、68.67 秒**。临时包严格签名通过，**16** 份 Jalium 原生复制的可载入段、**3** 份资源和 **10** 份 SDK 程序集一致。最终 Native、Custom 进程均从自身 MonoBundle 加载全部 **8** 个 Jalium dylib，没有 DYLD 覆盖。本轮和并发三项修复均没有原生输入改动 |
+| 实际截图与键盘 | 最终集成 Native/Custom 都在 **520×590 DIP 客户区**检查；截图分别 **520×622**（含原生标题栏）与 **520×590**。按钮和编辑框可见，Tab 定位按钮、Return 打开列表。AX 设置横向 **400**、纵向 **120** 后实际文字横移，偏移和编辑焦点一致；F6 两次切换回到起点。桌面纵向滚动显示 Native 第 18 项、Custom 第 17 项，偏移分别约 **622/590 DIP** |
+| 独立列表与收尾 | 两种标题栏分别完成独立列表 **两次打开、两次桌面滚动**，模式往返、Escape/关闭按钮返回编辑、输入 a 与 ⌘Z 恢复原文。每种最终集成观察记录 **3 打开/3 关闭**，closed=True、failed=False；观察和保活进程退出 0。独立列表未被工具纳入截图/AX 清单，其滚动由所属窗口反馈和真实回调核对，不算独立窗口像素/完整无障碍树验收 |
+
+最初的非集成窗口 AX 操作只移动滑块，已作为失败证据保留在本节；后来来源
+不明的滚轮事件不算该操作通过。最终独立构建和最新 PR 集成构建均另行完成
+两种标题栏的上述完整实测。一次全量运行使用相对 DYLD 路径，导致测试进程
+找不到原生库；改用绝对路径的完整结果才作为本轮验收。
+
+桌面横向 scroll 仍返回原生零增量，没有验证物理横向滚轮；AX 内容横移和
+受控 NSEvent 的双轴检查不代替真实滚轮或持键输入。ComboBox/TreeSelector
+样式参与构建，但其实际弹出列表尚未验收；普通附加属性 Binding、VoiceOver、
+多屏/混合 DPI/Spaces、macOS 15/Intel 和签名发布继续开放。最新 PR 的两项
+软件 DPI 基线失败也继续开放，不表示 Window 或全部 macOS 行为完成。
+
+可重建入口：
+
+```text
+Jalium.UI.MacOS.HostSmoke --window-content-scroll
+Jalium.UI.MacOS.HostSmoke --window-content-scroll-observe
+Jalium.UI.MacOS.HostSmoke --window-content-scroll-observe-custom
+```
+
+两阶段验收后清理（为最新 PR 集成重建了一次），合计移除 **14,727** 个文件/
+链接、**5,322,473,886** 逻辑字节。两个仓库最终不区分大小写的字面 artifacts
+路径均为 **0**，本轮观察/保活进程退出，没有匹配本轮包标识的外部偏好、缓存
+或诊断遗留。**18,990** 个受保护文件/链接、**1,690** 个目录、**508** 个原生
+输入保持一致；完整工具链、用户未提交改动、Gallery 的 **14** 个既有缺失路径
+保留。正常 Debug 的 **27** 个输出在测试和清理时不变；提交后用真正的 CMake
+完成目标刷新本地 master 的提交标记，其余 **26** 项保持一致。本地 master
+仅提交本轮文件；既有 PR 分支保留并发三个修复，再合并本轮提交，不切换分支。
+
 ### v152：独立弹窗滚轮的按键快照
 
 `PopupWindow` 原先仅保留自己收到的按下/释放历史。当按键在所属窗口或其他

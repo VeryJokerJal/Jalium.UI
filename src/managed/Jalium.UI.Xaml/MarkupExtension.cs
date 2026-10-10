@@ -1006,6 +1006,15 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
 
     private static DependencyProperty? ResolveDependencyProperty(Type type, string propertyName)
     {
+        // Attached template sources belong to the named owner, not to the
+        // templated parent's CLR type (e.g. ListBox -> ScrollViewer.CanContentScroll).
+        // Use the registered XAML types and DP registry so this also works in AOT.
+        int separator = propertyName.LastIndexOf('.');
+        if (separator > 0 && separator < propertyName.Length - 1)
+        {
+            var owner = XamlTypeRegistry.GetType(propertyName[..separator]);
+            return owner == null ? null : DependencyProperty.FromName(owner, propertyName[(separator + 1)..]);
+        }
         // AOT-safe DependencyProperty lookup via the registry (no reflection).
         return DependencyProperty.FromName(type, propertyName);
     }
