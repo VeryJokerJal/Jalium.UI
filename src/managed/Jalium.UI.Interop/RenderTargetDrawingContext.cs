@@ -2263,7 +2263,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
         else if (geometry is GeometryGroup group)
         {
-            DrawPathGeometry(brush, pen, FlattenGeometryGroup(group, DevicePathTolerance()));
+            DrawGeometryGroup(this, brush, pen, group, DevicePathTolerance());
         }
         else if (geometry is CombinedGeometry combined)
         {
@@ -2286,6 +2286,21 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         else if (geometry is PathGeometry pathGeom)
         {
             DrawPathGeometry(brush, pen, pathGeom);
+        }
+    }
+
+    // The group's transform is already on the context stack. Only the fill may
+    // bake child centerlines: strokes must retain each child's local coordinate
+    // space so the entire pen (including dashes, caps and joins) is transformed.
+    internal static void DrawGeometryGroup(DrawingContext context, Brush? brush, Pen? pen,
+        GeometryGroup group, double tolerance = 0.125)
+    {
+        if (brush != null)
+            context.DrawGeometry(brush, null, FlattenGeometryGroup(group, tolerance));
+        if (pen != null)
+        {
+            foreach (var child in group.Children)
+                context.DrawGeometry(null, pen, child);
         }
     }
 

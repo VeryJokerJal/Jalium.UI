@@ -10,6 +10,35 @@ namespace Jalium.UI.Tests;
 public sealed class MacOSPathRenderingTests : MacOSGeometryTestBase
 {
     [Fact]
+    public void NativeGroupDispatchSeparatesCompoundFillFromUnmodifiedChildStrokes()
+    {
+        var child = new GeometryGroup { Transform = new ScaleTransform(2, 3) };
+        child.Children.Add(new LineGeometry(new Point(4, 6), new Point(20, 6))
+            { Transform = new RotateTransform(90) });
+        var group = new GeometryGroup { FillRule = FillRule.EvenOdd };
+        group.Children.Add(child);
+        var pen = new Pen(Brushes.White, 3) { StartLineCap = PenLineCap.Round, DashStyle = DashStyles.Dash };
+        var sink = new GeometrySink();
+        RenderTargetDrawingContext.DrawGeometryGroup(sink, Brushes.Teal, pen, group);
+        Assert.Equal(2, sink.Calls.Count);
+        var fill = sink.Calls[0];
+        Assert.Same(Brushes.Teal, fill.Brush);
+        Assert.Null(fill.Pen);
+        Assert.Equal(FillRule.EvenOdd, Assert.IsType<PathGeometry>(fill.Geometry).FillRule);
+        var stroke = sink.Calls[1];
+        Assert.Null(stroke.Brush);
+        Assert.Same(pen, stroke.Pen);
+        Assert.Same(child, stroke.Geometry);
+        // Fill-only and stroke-only calls must not duplicate either pass.
+        sink.Calls.Clear();
+        RenderTargetDrawingContext.DrawGeometryGroup(sink, null, pen, group);
+        Assert.Same(child, Assert.Single(sink.Calls).Geometry);
+        sink.Calls.Clear();
+        RenderTargetDrawingContext.DrawGeometryGroup(sink, Brushes.Teal, null, group);
+        Assert.Null(Assert.Single(sink.Calls).Pen);
+    }
+
+    [Fact]
     public void RecordingPreservesEdgeModeAndCapturedGeometry()
     {
         var geometry = new PathGeometry();
@@ -230,7 +259,9 @@ public sealed class MacOSPathRenderingTests : MacOSGeometryTestBase
     {
         public Geometry? Geometry;
         public EdgeMode Edge;
-        public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry) => Geometry = geometry;
+        public readonly List<(Brush? Brush, Pen? Pen, Geometry Geometry)> Calls = new();
+        public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
+        { Geometry = geometry; Calls.Add((brush, pen, geometry)); }
         public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry, EdgeMode edgeMode)
         { Geometry = geometry; Edge = edgeMode; }
         public override void DrawLine(Pen pen, Point point0, Point point1) { }
