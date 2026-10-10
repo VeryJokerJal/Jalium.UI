@@ -59,6 +59,7 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
         _disposed = true;
         if (_platform.PlatformHandle != 0)
             MacOSAccessibilityNative.SetCallback(_platform.PlatformHandle, 0, 0);
+        _tree.Dispose();
         if (_context.IsAllocated) _context.Free();
         lock (s_gate)
         {
@@ -171,6 +172,18 @@ internal sealed unsafe partial class MacOSAccessibilityTree
     private readonly ConditionalWeakTable<AutomationPeer, NodeId> _ids = new();
     private readonly Dictionary<ulong, WeakReference<AutomationPeer>> _peers = [];
     private ulong _nextId = 1;
+    private ulong _nextPruneId = 512;
+    private ulong _nextSnapshot = 1;
+    private readonly Dictionary<ulong, (ulong Node, ulong[] Ids)> _childSnapshots = [];
+    private bool _disposed;
+
+    internal void Dispose()
+    {
+        _disposed = true;
+        _childSnapshots.Clear();
+        _peers.Clear();
+        _ids.Clear();
+    }
 
     internal MacOSAccessibilityTree(Window window)
     {
@@ -181,8 +194,9 @@ internal sealed unsafe partial class MacOSAccessibilityTree
 
     internal bool TryGetId(AutomationPeer peer, out ulong id)
     {
-        peer = RealizedPeer(peer);
         id = 0;
+        if (_disposed) return false;
+        peer = RealizedPeer(peer);
         if (!BelongsToWindow(peer)) return false;
         id = GetId(peer);
         return true;
@@ -195,9 +209,13 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         ulong id = _nextId++;
         _ids.Add(peer, new(id));
         _peers.Add(id, new(peer));
-        if ((id & 511) == 0)
+        if (id >= _nextPruneId)
+        {
             foreach (var entry in _peers.ToArray())
                 if (!entry.Value.TryGetTarget(out _)) _peers.Remove(entry.Key);
+            // Geometric spacing keeps registering a large live tree linear.
+            _nextPruneId = _nextId + (ulong)Math.Max(512, _peers.Count);
+        }
         return id;
     }
 
@@ -289,13 +307,32 @@ internal sealed unsafe partial class MacOSAccessibilityTree
     {
         if (ReferenceEquals(peer, _root)) return 0;
         var seen = new HashSet<AutomationPeer> { peer };
-        for (var parent = peer.GetParent(); parent != null && seen.Add(parent); parent = parent.GetParent())
+        // A realized item may live under a template/virtualizing host whose
+        // raw peer ancestry omits its logical ItemsControl. Match the normalized
+        // children relationship rather than returning the Window in that case.
+        var itemParent = peer.Owner is UIElement container
+            ? ItemsControl.ItemsControlFromItemContainer(container)?.GetAutomationPeer() : null;
+        for (var parent = itemParent ?? peer.GetParent(); parent != null && seen.Add(parent); parent = parent.GetParent())
             if (IsVisible(parent)) return GetId(parent);
         return 1;
     }
 
     internal bool Handle(ref MacOSAXRequest request)
     {
+        if (_disposed) return false;
+        // Cleanup must work even after the parent was detached or hidden.
+        if (request.Operation is MacOSAXOperation.ReadChildren or MacOSAXOperation.ReleaseChildren)
+        {
+            if (!_childSnapshots.TryGetValue(request.ResultId, out var snapshot)
+                || snapshot.Node != request.NodeId) return false;
+            if (request.Operation == MacOSAXOperation.ReleaseChildren)
+                return _childSnapshots.Remove(request.ResultId);
+            if (request.TextCapacity < snapshot.Ids.Length
+                || (snapshot.Ids.Length != 0 && request.Text == null)) return false;
+            snapshot.Ids.AsSpan().CopyTo(new Span<ulong>(request.Text, snapshot.Ids.Length));
+            request.ChildCount = snapshot.Ids.Length;
+            return true;
+        }
         if (!_peers.TryGetValue(request.NodeId, out var weak) || !weak.TryGetTarget(out var peer)) return false;
         if (!BelongsToWindow(peer))
         {
@@ -336,6 +373,15 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 }
                 var buttonPeer = button?.GetAutomationPeer();
                 request.ResultId = buttonPeer != null && IsVisible(buttonPeer) ? GetId(buttonPeer) : 0;
+                return true;
+            case MacOSAXOperation.BeginChildren:
+                // No peer references escape this callback. Reentrant requests get
+                // independent tokens; subsequent requests always enumerate anew.
+                var ids = Children(peer).Select(GetId).ToArray();
+                if (_disposed) return false;
+                request.ResultId = _nextSnapshot++;
+                request.ChildCount = ids.Length;
+                _childSnapshots.Add(request.ResultId, (request.NodeId, ids));
                 return true;
             case MacOSAXOperation.Child:
                 var children = Children(peer);

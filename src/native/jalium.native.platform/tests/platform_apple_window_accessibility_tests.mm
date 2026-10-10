@@ -171,6 +171,18 @@ struct ContentAccessibility {
                 request->x = 20; request->y = 30; request->width = 100; request->height = 40;
                 request->textCount = 7;
                 return 1;
+        case JALIUM_AX_BEGIN_CHILDREN:
+            request->resultId = 1;
+            request->childCount = request->nodeId == 1 ? 1 : 0;
+            return 1;
+        case JALIUM_AX_READ_CHILDREN:
+            if (request->textCapacity < request->childCount) return 0;
+            for (int i = 0; i < request->childCount; ++i) {
+                const uint64_t id = (uint64_t)i + 2;
+                std::memcpy(request->text + i * 4, &id, sizeof(id));
+            }
+            return 1;
+        case JALIUM_AX_RELEASE_CHILDREN: return 1;
             case JALIUM_AX_CHILD:
                 if (request->nodeId != 1 || request->index != 0) return 0;
                 request->resultId = 2; return 1;

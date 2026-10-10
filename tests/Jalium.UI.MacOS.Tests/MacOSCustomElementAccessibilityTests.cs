@@ -234,8 +234,24 @@ public sealed unsafe class MacOSCustomElementAccessibilityTests
         }
         internal List<ulong> Children(ulong id)
         {
-            int count = Request(id, MacOSAXOperation.Info).ChildCount;
-            return Enumerable.Range(0, count).Select(index => Request(id, MacOSAXOperation.Child, index).ResultId).ToList();
+            var request = Request(id, MacOSAXOperation.BeginChildren);
+            try
+            {
+                var ids = new ulong[request.ChildCount];
+                fixed (ulong* buffer = ids)
+                {
+                    request.Operation = MacOSAXOperation.ReadChildren;
+                    request.Text = (char*)buffer;
+                    request.TextCapacity = ids.Length;
+                    Assert.True(_tree.Handle(ref request));
+                }
+                return ids.ToList();
+            }
+            finally
+            {
+                request.Operation = MacOSAXOperation.ReleaseChildren;
+                Assert.True(_tree.Handle(ref request));
+            }
         }
         internal string Text(ulong id, MacOSAXString property)
         {
@@ -247,6 +263,6 @@ public sealed unsafe class MacOSCustomElementAccessibilityTests
         {
             var request = new MacOSAXRequest { NodeId = id, Operation = MacOSAXOperation.Action, Index = (int)action }; return _tree.Handle(ref request);
         }
-        public void Dispose() { Keyboard.Focus(null); Window.Close(); }
+        public void Dispose() { _tree.Dispose(); Keyboard.Focus(null); Window.Close(); }
     }
 }

@@ -23,6 +23,15 @@ int32_t Query(JaliumAccessibilityRequest* request, void* context)
         request->textCount = 4; request->width = 200; request->height = 40; return 1;
     }
     if (request->operation == JALIUM_AX_ATTACHED) return 1;
+    if (request->operation == JALIUM_AX_BEGIN_CHILDREN) {
+        request->resultId = 1; request->childCount = request->nodeId == 1 ? 1 : 0; return 1;
+    }
+    if (request->operation == JALIUM_AX_READ_CHILDREN) {
+        if (request->textCapacity < request->childCount) return 0;
+        if (request->childCount) { const uint64_t id = 2; std::memcpy(request->text, &id, sizeof(id)); }
+        return 1;
+    }
+    if (request->operation == JALIUM_AX_RELEASE_CHILDREN) return 1;
     if (request->operation == JALIUM_AX_CHILD && request->nodeId == 1 && request->index == 0) { request->resultId = 2; return 1; }
     if (request->operation == JALIUM_AX_TEXT_STYLES) {
         request->textCount = fixture.payload.length;

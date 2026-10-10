@@ -4,7 +4,7 @@ using Jalium.UI.Interop;
 
 namespace Jalium.UI.Controls.Automation.MacOS;
 
-internal enum MacOSAXOperation { Info, Child, String, Focus, HitTest, Action, SetValue, TextSelection, SetTextSelection, TextBounds, Attached, WindowButton, TextNavigation, TextStyles, TextStyleRange }
+internal enum MacOSAXOperation { Info, Child, String, Focus, HitTest, Action, SetValue, TextSelection, SetTextSelection, TextBounds, Attached, WindowButton, TextNavigation, TextStyles, TextStyleRange, BeginChildren, ReadChildren, ReleaseChildren }
 internal enum MacOSAXTextNavigation { LineForIndex, RangeForIndex, RangeForLine, RangeForPosition, VisibleTextRange, InsertionLine, SetInsertionLine, ReplaceSelection }
 internal enum MacOSAXWindowButton { Default, Cancel, Close, Minimize, Zoom }
 internal enum MacOSAXString { Name, Help, Identifier, Value, Placeholder }

@@ -424,17 +424,37 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
 - (NSArray*)accessibilityChildren {
     JaliumAppleAccessibilityBridge* bridge = _bridge;
     JaliumAccessibilityRequest request{};
-    if (![self info:&request]) return @[];
-    int count = request.childCount;
-    NSMutableArray* children = [NSMutableArray new];
-    for (int index = 0; index < count; index++) {
-        request.operation = JALIUM_AX_CHILD; request.index = index;
-        if ([bridge query:&request]) {
-            id child = [bridge element:request.resultId];
-            if (child) [children addObject:child];
+    request.nodeId = _nodeId;
+    request.operation = JALIUM_AX_BEGIN_CHILDREN;
+    // query may reject an accepted callback when it retires the tree. Still
+    // release the token through the captured callback/context below.
+    const auto callback = bridge.callback;
+    void* context = bridge.userData;
+    const BOOL accepted = [bridge query:&request];
+    if (!request.resultId) return @[];
+    @try {
+        if (!accepted || request.childCount < 0) return @[];
+        try {
+            std::vector<uint64_t> ids((size_t)request.childCount);
+            request.operation = JALIUM_AX_READ_CHILDREN;
+            request.text = reinterpret_cast<uint16_t*>(ids.data());
+            request.textCapacity = request.childCount;
+            if (![bridge query:&request] || request.childCount != (int32_t)ids.size()) return @[];
+            NSMutableArray* children = [NSMutableArray new];
+            for (uint64_t nodeId : ids) {
+                id child = [bridge element:nodeId];
+                if (child) [children addObject:child];
+            }
+            return [bridge hasAccessibleContent] ? children : @[];
+        } catch (const std::bad_alloc&) { return @[]; }
+    } @finally {
+        // Only call the original context while it is still installed. Disposal
+        // clears managed snapshots before freeing that context.
+        if (callback && bridge.callback == callback && bridge.userData == context) {
+            request.operation = JALIUM_AX_RELEASE_CHILDREN;
+            callback(&request, context);
         }
     }
-    return [bridge hasAccessibleContent] ? children : @[];
 }
 - (NSArray*)accessibilityChildrenInNavigationOrder { return self.accessibilityChildren; }
 - (NSArray*)accessibilityVisibleChildren {

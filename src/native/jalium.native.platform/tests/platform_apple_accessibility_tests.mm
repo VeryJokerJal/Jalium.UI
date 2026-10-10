@@ -23,6 +23,8 @@ struct Fixture {
     NSString* stylePayload = nil;
     bool oversizedStyles = false;
     int childCount = 1;
+    int childEnumerations = 0;
+    int snapshotReleases = 0;
     std::function<void(JaliumAccessibilityRequest*)> duringQuery;
 };
 static int32_t Query(JaliumAccessibilityRequest* request, void* context)
@@ -42,6 +44,19 @@ static int32_t Query(JaliumAccessibilityRequest* request, void* context)
             request->x = 20; request->y = 30; request->width = 100; request->height = 40;
             request->textCount = 4;
             return 1;
+        case JALIUM_AX_BEGIN_CHILDREN:
+            fixture.childEnumerations++;
+            request->resultId = 1;
+            request->childCount = request->nodeId == 1 ? fixture.childCount : 0;
+            return 1;
+        case JALIUM_AX_READ_CHILDREN:
+            if (request->textCapacity < request->childCount) return 0;
+            for (int i = 0; i < request->childCount; ++i) {
+                const uint64_t id = (uint64_t)i + 2;
+                std::memcpy(request->text + i * 4, &id, sizeof(id));
+            }
+            return 1;
+        case JALIUM_AX_RELEASE_CHILDREN: fixture.snapshotReleases++; return 1;
         case JALIUM_AX_CHILD:
             if (request->nodeId != 1 || request->index < 0 || request->index >= fixture.childCount) return 0;
             request->resultId = (uint64_t)request->index + 2; return 1;
@@ -122,10 +137,10 @@ static int RunReadLifecycleCases(int onlyCase)
                     bool fired = false;
                     fixture.duringQuery = [&](JaliumAccessibilityRequest* request) {
                         const int32_t operation = path <= 2 ? JALIUM_AX_HIT_TEST : path == 3 ? JALIUM_AX_WINDOW_BUTTON
-                            : path == 4 ? JALIUM_AX_INFO : path <= 6 ? JALIUM_AX_STRING
-                            : path <= 8 ? JALIUM_AX_TEXT_STYLES : JALIUM_AX_CHILD;
+                            : path == 4 ? JALIUM_AX_BEGIN_CHILDREN : path <= 6 ? JALIUM_AX_STRING
+                            : path <= 8 ? JALIUM_AX_TEXT_STYLES : JALIUM_AX_READ_CHILDREN;
                         if (fired || request->operation != operation ||
-                            ((path == 6 || path == 8) && !request->text) || (path == 9 && request->index != 1)) return;
+                            ((path == 6 || path == 8) && !request->text) || (path == 9 && !request->text)) return;
                         fired = true;
                         if (mutation == 0) { jalium_window_destroy(fixture.window); fixture.window = nullptr; }
                         else if (mutation == 1) jalium_window_hide(fixture.window);
@@ -340,6 +355,16 @@ int main(int argc, const char** argv)
         Check([child.accessibilityLabel isEqual:@"中文🙂"], "UTF-16 name and surrogate pair survive ABI");
         Check(child.accessibilityParent == root && root.accessibilityParent == view.window, "accessible ancestry reaches native Window");
         Check(root.accessibilityChildren.firstObject == child, "repeated queries retain native AX identity");
+        fixture.childCount = 4096;
+        const int enumerationsBefore = fixture.childEnumerations;
+        const int releasesBefore = fixture.snapshotReleases;
+        NSArray* bulkChildren = root.accessibilityChildren;
+        Check(bulkChildren.count == 4096 && bulkChildren.firstObject == child,
+            "large child snapshots preserve IDs and order");
+        Check(fixture.childEnumerations == enumerationsBefore + 1 && fixture.snapshotReleases == releasesBefore + 1,
+            "one native children request enumerates once and releases its snapshot");
+        fixture.childCount = 1;
+
         Check([root respondsToSelector:@selector(accessibilityNotifiesWhenDestroyed)]
             && [child respondsToSelector:@selector(accessibilityNotifiesWhenDestroyed)]
             && [root accessibilityNotifiesWhenDestroyed] && [child accessibilityNotifiesWhenDestroyed],
