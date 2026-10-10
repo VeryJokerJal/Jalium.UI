@@ -4906,7 +4906,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         var previous = GetValue(property);
         SetCurrentValue(property, value);
         if (!Equals(previous, GetValue(property)))
-            Jalium.UI.Data.BindingOperations.GetBindingExpressionBase(this, property)?.UpdateSource();
+            Jalium.UI.Data.BindingOperations.GetBindingExpressionBase(this, property)?.OnTargetValueChanged();
     }
 
     private bool _isSyncingPlatformSize;

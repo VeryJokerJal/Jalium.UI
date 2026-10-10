@@ -128,12 +128,17 @@ public sealed class PropertyPath
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Binding path segments use PropertyAccessorRegistry and public indexer reflection when no typed accessor exists.")]
-    internal static bool TryReadBindingSegment(object current, string segment, out object? value)
+    internal bool TryReadBindingSegment(object current, string segment, out object? value)
     {
+        if (current is DependencyObject source && TryGetAttachedDependencyProperty(segment) is { } property)
+        {
+            value = source.GetValue(property);
+            return true;
+        }
         if (TryGetIndexedSegment(segment, out var propertyName, out var index))
         {
             object? indexedSource = current;
-            if (propertyName.Length > 0 && !PropertyAccessorRegistry.TryReadProperty(current, propertyName, out indexedSource))
+            if (propertyName.Length > 0 && !TryReadBindingSegment(current, propertyName, out indexedSource))
             {
                 value = null;
                 return false;
@@ -148,6 +153,29 @@ public sealed class PropertyPath
             return false;
         }
         return PropertyAccessorRegistry.TryReadProperty(current, segment, out value);
+    }
+
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Owner-qualified property paths use the existing registered type resolver, with FindType reflection fallback.")]
+    internal DependencyProperty? TryGetAttachedDependencyProperty(string segment)
+    {
+        if (!segment.StartsWith('(') || !segment.EndsWith(')')) return null;
+        var name = segment[1..^1];
+        if (int.TryParse(name, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var index))
+            return index < _pathParameters.Count ? _pathParameters[index] as DependencyProperty : null;
+
+        // The single-DependencyProperty constructor retains its descriptive path,
+        // while the supplied object provides an unambiguous, reflection-free owner.
+        foreach (var parameter in _pathParameters)
+            if (parameter is DependencyProperty property &&
+                (name == $"{property.OwnerType.Name}.{property.Name}" ||
+                 name == $"{property.OwnerType.FullName}.{property.Name}"))
+                return property;
+
+        var dot = name.LastIndexOf('.');
+        if (dot <= 0 || dot == name.Length - 1) return null;
+        var owner = FindType(name[..dot]);
+        return owner == null ? null : DependencyProperty.FromName(owner, name[(dot + 1)..]);
     }
 
     /// <summary>
@@ -338,35 +366,15 @@ public sealed class PropertyPath
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Falls back to Assembly.GetType(string) inside FindType for trimmed types.")]
-    private static object? ResolveAttachedProperty(object current, string attachedProperty)
+    private object? ResolveAttachedProperty(object current, string attachedProperty)
     {
-        // Parse Type.Property
-        var dotIndex = attachedProperty.LastIndexOf('.');
-        if (dotIndex < 0)
-            return null;
-
-        var typeName = attachedProperty[..dotIndex];
-        var propertyName = attachedProperty[(dotIndex + 1)..];
-
-        // Find the owner type and look up the DP via the AOT-safe registry.
-        var ownerType = FindType(typeName);
-        if (ownerType == null)
-            return null;
-
-        var dp = DependencyProperty.FromName(ownerType, propertyName);
-        if (dp == null)
-            return null;
-
-        if (current is DependencyObject depObj)
-        {
-            return depObj.GetValue(dp);
-        }
-
-        return null;
+        return current is DependencyObject source &&
+            TryGetAttachedDependencyProperty($"({attachedProperty})") is { } property
+            ? source.GetValue(property) : null;
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("PropertyPath segment write may walk user types via reflection.")]
-    private static bool SetSegmentValue(object current, string segment, object? value)
+    private bool SetSegmentValue(object current, string segment, object? value)
     {
         // Handle indexer
         if (segment.StartsWith('[') && segment.EndsWith(']'))
@@ -449,26 +457,12 @@ public sealed class PropertyPath
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Falls back to Assembly.GetType(string) inside FindType for trimmed types.")]
-    private static bool SetAttachedPropertyValue(object current, string attachedProperty, object? value)
+    private bool SetAttachedPropertyValue(object current, string attachedProperty, object? value)
     {
-        var dotIndex = attachedProperty.LastIndexOf('.');
-        if (dotIndex < 0)
-            return false;
-
-        var typeName = attachedProperty[..dotIndex];
-        var propertyName = attachedProperty[(dotIndex + 1)..];
-
-        var ownerType = FindType(typeName);
-        if (ownerType == null)
-            return false;
-
-        var dp = DependencyProperty.FromName(ownerType, propertyName);
-        if (dp == null)
-            return false;
-
-        if (current is DependencyObject depObj)
+        if (current is DependencyObject source &&
+            TryGetAttachedDependencyProperty($"({attachedProperty})") is { } property)
         {
-            depObj.SetValue(dp, value);
+            source.SetValue(property, value);
             return true;
         }
 

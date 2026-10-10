@@ -1608,7 +1608,7 @@ public class DependencyObject : DispatcherObject
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
             if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
             {
-                binding.UpdateSource();
+                binding.OnTargetValueChanged();
             }
         }
         if (this is UIElement displayElement && dp == UIElement.VisibilityProperty &&
@@ -1687,7 +1687,7 @@ public class DependencyObject : DispatcherObject
         if (uiElement.StopCssTransitionForLocalValue(dp))
         {
             if (notifyBinding && _bindings?.TryGetValue(dp, out var localBinding) == true)
-                localBinding.UpdateSource();
+                localBinding.OnTargetValueChanged();
             return true;
         }
 
@@ -1711,7 +1711,7 @@ public class DependencyObject : DispatcherObject
         {
             if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
             {
-                binding.UpdateSource();
+                binding.OnTargetValueChanged();
             }
 
             return true;
@@ -1724,7 +1724,7 @@ public class DependencyObject : DispatcherObject
 
         if (notifyBinding && _bindings?.TryGetValue(dp, out var fallbackBinding) == true)
         {
-            fallbackBinding.UpdateSource();
+            fallbackBinding.OnTargetValueChanged();
         }
 
         return true;

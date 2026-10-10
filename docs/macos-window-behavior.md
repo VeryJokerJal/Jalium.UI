@@ -655,6 +655,60 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v156：Window 内容滚动的普通附加属性 Binding
+
+普通 Binding 现在读取 `(ScrollViewer.CanContentScroll)`、单个 DependencyProperty
+构造的 PropertyPath 以及 `(0)` 参数路径。使用注册的 owner 类型或显式属性对象
+解析属性；根及中间 DependencyObject 按属性身份接收通知，源替换和解除绑定时
+撤销旧订阅。附加属性后可继续通过已有 CLR/indexer 段，写回和 ConvertBack 使用
+注册属性类型，IDataErrorInfo/INotifyDataErrorInfo 使用属性名接收及清除错误。
+语法依据：[WPF PropertyPath 文档](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/advanced/propertypath-xaml-syntax)。
+
+手动 `UpdateSource()` 可以提交 LostFocus/Explicit 绑定；控件自动通知走独立入口，
+仍遵守原模式和触发器。Window 的原生尺寸反馈及 ListBox 的原子选择同步使用自动
+通知入口，保留表达式。首次完整检查暴露的四项尺寸/SizeToContent 触发器回归已
+修复，最终套件再次全部通过。
+
+| 检查 | 本轮结果及范围 |
+| --- | --- |
+| 新增托管合同 | 相同 **26** 项：旧实现 **18 失败/8 通过**，最终 **26/26**。覆盖三种路径、双向触发器、转换、同名属性身份、嵌套/索引源替换、DataContext、解除订阅、非法路径及两种错误通知 |
+| 完整本地回归 | 隔离的最新 PR 源码加本轮改动，临时链接九份已有 Binding/PropertyPath 测试，启用原生几何：**1741/1741**，无跳过；**961** 条记录均为有效 Metal 上下文。新用例在 macOS 项目中默认编译，同时链接到 Windows 测试项目；没有实际 Windows 宿主验收 |
+| 最终 SDK | Native/Custom 标题栏 × 三种路径，**6/6**。窗口显示后检查 source/target 往返、提供者连接/断开、两种模式实际偏移、偏移重置、绑定保留及编辑/原生 responder 焦点 |
+| 实际桌面 | 两种标题栏均查看普通及 **520×600** 截图；F6 三次、F7、Tab/Return、再切换后两种列表模式均滚动到 **180 DIP**。End/BackSpace 删除末尾 emoji，实际 Command-Z 恢复原值；完整 Tab 链到结束按钮后 Return 关闭 |
+| 最小 Custom 布局 | 外层滚动条在较短内容区出现；Tab 可到达结束按钮，实际外层滚动后整个按钮和焦点边框可见 |
+| 实际加载 | 两个桌面进程各加载自己包中的 **8** 个 Jalium 原生库。四个验收包的 **124** 个原生/运行时/资源/Jalium 程序集文件保持各自签名后指纹；最终 SDK 在校验通知修复后重新构建并执行，桌面观察覆盖未改变的滚动/布局路径 |
+
+本地测试宿主仍使用安装的 macOS SDK **26.5**，在 Xcode **27.0** 下以
+`ValidateXcodeVersion=false` 构建并实际运行；这不构成 Apple 发布包或最低系统版本
+验收。可重建的宿主入口为 `--window-attached-binding`、
+`--window-attached-binding-observe` 和 `--window-attached-binding-observe-custom`。
+
+前一轮发布头 `f780d917` 的云端任务已结束：
+
+- [Apple run 38073489333](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38073489333)
+  失败于请求未启用的 `jalium.native.platform.tests`，已越过脚本权限问题。本轮
+  macOS 构建明确设置 `JALIUM_PLATFORM_BUILD_TESTS=ON`，保留其他 slice 行为；实际
+  隔离 Xcode 项目生成确认脚本所需八个 AppKit 测试目标及完成目标均存在。该生成
+  检查关闭运行时 shader compiler，仅验证目标，完整 Apple CI 须在新头上另验。
+- [Linux run 38073489360](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38073489360)
+  的四种原生构建/导出门均进入后续测试；每种托管主套件 **5619** 项、**75** 跳过，
+  glibc x64 **12** 失败、glibc arm64 **16** 失败、musl x64 **12** 失败、musl arm64
+  **14** 失败。共同涉及 Razor 虚拟化、滚动焦点裁剪、IME 临时几何及重入 coercion；
+  arm64 另有 IME 生命周期，glibc arm64 另有 Dispatcher。组合包任务跳过，Linux
+  与完整发布验收仍开放。这些日志运行的是本轮 Binding 修复前的源码。
+
+本轮普通附加路径的上述合同已验收；其他 Binding 模式/语法、ComboBox/TreeSelector
+实际弹出列表、实体多屏/混合 DPI、VoiceOver、最低系统版本及签名发布保持独立缺项。
+现有 master 和 PR 分支保持，用户的 CSS、Tooltip、输入分发、测试项目和 Gallery
+工作不进入本轮提交。
+
+验收后清理 **1** 个 artifacts 根、**9,539** 个文件/链接、**2,891,610,082**
+逻辑字节；两个仓库不区分大小写的字面 artifacts 路径、本轮应用进程、外部临时
+产物及已归属诊断均为 **0**。**18,994** 个受保护文件/链接、**1,690** 个目录、
+**508** 个原生输入、正常 Debug **27** 个输出及 Gallery **14** 个既有缺失路径
+在验收和清理前后保持一致；完整 `.tools` 保留。提交后只由真正的 CMake 完成目标
+更新正常负载的提交标记。
+
 ### v155：Apple 构建入口与平台导出合同
 
 v154 发布后的云端检查未进入完整验收：Apple job 在第一条 native 构建命令
