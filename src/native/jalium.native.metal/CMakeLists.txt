@@ -100,6 +100,7 @@ option(JALIUM_METAL_BUILD_TESTS "Build macOS Metal/CoreText/AppKit smoke tests" 
 if(JALIUM_METAL_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     add_executable(jalium.native.metal.image-orientation tests/metal_image_orientation.mm)
     target_include_directories(jalium.native.metal.image-orientation PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.text/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/stb
         ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.media.core/include)
     target_compile_options(jalium.native.metal.image-orientation PRIVATE -fobjc-arc)
