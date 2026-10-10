@@ -37,13 +37,11 @@ FIXED_SYMBOLS = {
 # implementations intentionally live outside the Linux shared libraries.
 NON_LINUX_SYMBOLS = {
     "core": {"jalium_text_copy_outline_path"},  # Windows core; Linux uses text.
-    "platform": {
-        "jalium_apple_notify_lifecycle",
-        "jalium_apple_register_scene_root",
-        "jalium_apple_set_root_view",
-        "jalium_apple_unregister_scene_root",
-    },
 }
+# These namespaces are platform-specific, including new Window entry points.
+# Exclude declarations and imports, not actual exports: an Apple/Android symbol
+# unexpectedly present in a Linux DSO must still fail the undeclared-export gate.
+NON_LINUX_PREFIXES = ("jalium_apple_", "jalium_android_")
 
 API_RE_TEMPLATE = r"\b(?:%s)\b(?:(?![;{}]).)*?\b(jalium_[A-Za-z0-9_]+)\s*\("
 COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\r\n]*", re.DOTALL)
@@ -72,7 +70,10 @@ def extract_api_symbols(paths: list[Path], macros: tuple[str, ...]) -> set[str]:
     result: set[str] = set()
     for path in paths:
         text = COMMENT_RE.sub(" ", path.read_text(encoding="utf-8", errors="replace"))
-        result.update(pattern.findall(text))
+        result.update(
+            symbol for symbol in pattern.findall(text)
+            if not symbol.startswith(NON_LINUX_PREFIXES)
+        )
     return result
 
 
@@ -151,9 +152,8 @@ def extract_pinvokes(repo: Path) -> dict[str, set[str]]:
                 continue
             entrypoint = ENTRYPOINT_RE.search(match.group(2))
             symbol = entrypoint.group(1) if entrypoint else match.group(3)
-            # This validator is for Linux payloads. Android entry points share
-            # NativeMethods.cs but are intentionally absent from Linux DSOs.
-            if symbol.startswith("jalium_android_"):
+            # Shared sources declare other platforms' private namespaces too.
+            if symbol.startswith(NON_LINUX_PREFIXES):
                 continue
             if symbol.startswith("jalium_"):
                 result[library].add(symbol)

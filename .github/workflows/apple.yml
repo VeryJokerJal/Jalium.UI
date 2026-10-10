@@ -25,15 +25,15 @@ jobs:
         run: dotnet workload install ios tvos macos --version 10.0.300.2
       - name: Build Apple native slices
         run: |
-          eng/apple/build-native.sh macos Release
-          eng/apple/build-native.sh ios Release
-          eng/apple/build-native.sh iossimulator Release
-          eng/apple/build-native.sh tvos Release
-          eng/apple/build-native.sh tvossimulator Release
-          eng/apple/build-native.sh visionos Release
-          eng/apple/build-native.sh visionsimulator Release
+          bash eng/apple/build-native.sh macos Release
+          bash eng/apple/build-native.sh ios Release
+          bash eng/apple/build-native.sh iossimulator Release
+          bash eng/apple/build-native.sh tvos Release
+          bash eng/apple/build-native.sh tvossimulator Release
+          bash eng/apple/build-native.sh visionos Release
+          bash eng/apple/build-native.sh visionsimulator Release
       - name: Assemble static XCFramework
-        run: eng/apple/package-xcframework.sh Release
+        run: bash eng/apple/package-xcframework.sh Release
       - name: Build Apple entry packages
         run: |
           dotnet build src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj -c Release -p:JaliumPlatform=macos
