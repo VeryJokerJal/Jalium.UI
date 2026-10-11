@@ -1702,8 +1702,11 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 @property(nonatomic) BOOL cursorHidden;
 @property(nonatomic, strong) NSCursor* shapeCursor;
 @property(nonatomic, strong) JaliumAppleAccessibilityBridge* accessibilityBridge;
+@property(nonatomic) NSUInteger cursorMouseButtons;
+@property(nonatomic, strong) NSTrackingArea* cursorTrackingArea;
 - (void)applyCursor;
 - (void)restoreCursor;
+- (void)cancelCursorTracking;
 - (void)cancelMarkedText;
 @end
 
@@ -1771,7 +1774,35 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     // this view's hide request, including when focus or the window disappears.
     if (_cursorHidden) { [NSCursor unhide]; _cursorHidden = NO; }
 }
+- (void)cancelCursorTracking {
+    _cursorMouseButtons = 0;
+    [self restoreCursor];
+}
 - (void)applyCursor {
+    NSWindow* window = self.window;
+    // Cursor setters and retained view callbacks can run after focus, sheet or
+    // visibility changes. Only the active client under the physical pointer may
+    // replace/hide the cursor; losing ownership balances this view's hide only.
+    if (!_jaliumOwner || !_jaliumOwner->enabled || _jaliumOwner->destroying ||
+        _jaliumOwner->miniaturizing || !NSApp.active || !window.visible ||
+        window.miniaturized || window.attachedSheet || self.hiddenOrHasHiddenAncestor ||
+        _jaliumOwner->dragSource || _jaliumOwner->dragTargetActive) {
+        [self cancelCursorTracking];
+        return;
+    }
+    // AppKit keeps a mouse gesture with its original responder outside the
+    // window. Only buttons delivered to this view can extend cursor ownership;
+    // a fresh snapshot releases stale capture if mouse-up was consumed elsewhere.
+    _cursorMouseButtons &= NSEvent.pressedMouseButtons & 0x1f;
+    if (!_cursorMouseButtons) {
+        NSPoint point = NSEvent.mouseLocation;
+        NSPoint local = [self convertPoint:[window convertPointFromScreen:point] fromView:nil];
+        if (!NSPointInRect(local, self.visibleRect) ||
+            [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] != window.windowNumber) {
+            [self restoreCursor];
+            return;
+        }
+    }
     if (_cursorShape == JALIUM_CURSOR_HIDDEN) {
         if (!_cursorHidden) { [NSCursor hide]; _cursorHidden = YES; }
         return;
@@ -1788,15 +1819,27 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 }
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
-    for (NSTrackingArea* area in self.trackingAreas) [self removeTrackingArea:area];
+    if (_cursorTrackingArea && [self.trackingAreas containsObject:_cursorTrackingArea])
+        [self removeTrackingArea:_cursorTrackingArea];
     NSTrackingArea* area = [[NSTrackingArea alloc] initWithRect:self.bounds
         options:NSTrackingMouseEnteredAndExited|NSTrackingMouseMoved|NSTrackingCursorUpdate|
-                NSTrackingActiveInKeyWindow|NSTrackingInVisibleRect
+                NSTrackingActiveInActiveApp|NSTrackingInVisibleRect|NSTrackingEnabledDuringMouseDrag
         owner:self userInfo:nil];
+    _cursorTrackingArea = area;
     [self addTrackingArea:area];
 }
 - (void)dispatchMouse:(NSEvent*)native type:(JaliumEventType)type button:(int32_t)button {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
+    NSInteger nativeButton = native.buttonNumber;
+    if (nativeButton >= 0 && nativeButton <= 4) {
+        NSUInteger bit = NSUInteger(1) << nativeButton;
+        bool available = NSApp.active && self.window.visible && !self.window.miniaturized &&
+            !self.window.attachedSheet && !self.hiddenOrHasHiddenAncestor && !_jaliumOwner->miniaturizing;
+        if (available && (type == JALIUM_EVENT_MOUSE_DOWN || native.type == NSEventTypeLeftMouseDragged ||
+            native.type == NSEventTypeRightMouseDragged || native.type == NSEventTypeOtherMouseDragged))
+            _cursorMouseButtons |= bit;
+        else if (type == JALIUM_EVENT_MOUSE_UP) _cursorMouseButtons &= ~bit;
+    }
     NSPoint point=[self convertPoint:native.locationInWindow fromView:nil];
     JaliumPlatformEvent event{}; event.type=type;
     event.mouse.x=point.x*_jaliumOwner->scale;event.mouse.y=point.y*_jaliumOwner->scale;
@@ -1817,16 +1860,18 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 - (void)rightMouseDragged:(NSEvent*)e {[self mouseMoved:e];}
 - (void)otherMouseDragged:(NSEvent*)e {[self mouseMoved:e];}
 - (void)mouseDown:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_DOWN button:JALIUM_MOUSE_BUTTON_LEFT];}
-- (void)mouseUp:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:JALIUM_MOUSE_BUTTON_LEFT];}
+- (void)mouseUp:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:JALIUM_MOUSE_BUTTON_LEFT];[self applyCursor];}
 - (void)rightMouseDown:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_DOWN button:JALIUM_MOUSE_BUTTON_RIGHT];}
-- (void)rightMouseUp:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:JALIUM_MOUSE_BUTTON_RIGHT];}
+- (void)rightMouseUp:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:JALIUM_MOUSE_BUTTON_RIGHT];[self applyCursor];}
 - (void)otherMouseDown:(NSEvent*)e {
     if (e.buttonNumber >= 2 && e.buttonNumber <= 4)
         [self dispatchMouse:e type:JALIUM_EVENT_MOUSE_DOWN button:static_cast<int32_t>(e.buttonNumber)];
 }
 - (void)otherMouseUp:(NSEvent*)e {
-    if (e.buttonNumber >= 2 && e.buttonNumber <= 4)
+    if (e.buttonNumber >= 2 && e.buttonNumber <= 4) {
         [self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:static_cast<int32_t>(e.buttonNumber)];
+        [self applyCursor];
+    }
 }
 - (void)mouseEntered:(NSEvent*)e {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
@@ -1834,7 +1879,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 }
 - (void)mouseExited:(NSEvent*)e {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
-    DispatchSimple(_jaliumOwner,JALIUM_EVENT_MOUSE_LEAVE);[self restoreCursor];[NSCursor.arrowCursor set];
+    DispatchSimple(_jaliumOwner,JALIUM_EVENT_MOUSE_LEAVE);[self applyCursor];
 }
 - (void)scrollWheel:(NSEvent*)native {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
@@ -2242,6 +2287,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
     JaliumPlatformWindow* window = _jaliumOwner;
     if (!sender || !CanReceiveAppleDrag(window)) return NSDragOperationNone;
+    [self cancelCursorTracking];
     uint64_t generation = window->dragTargetGeneration + 1;
     DispatchDragEvent(window, sender, JALIUM_EVENT_DRAG_ENTER);
     if (_jaliumOwner != window || !CanReceiveAppleDrag(window) ||
@@ -2432,10 +2478,14 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     DispatchWindowEvent(_owner, e);
     [self windowDidResize:note];
 }
-- (void)windowDidBecomeKey:(NSNotification*)note {DispatchSimple(_owner,JALIUM_EVENT_ACTIVATE);}
-- (void)windowDidResignKey:(NSNotification*)note {if(_owner)[_owner->view restoreCursor];DispatchSimple(_owner,JALIUM_EVENT_DEACTIVATE);}
+- (void)windowDidBecomeKey:(NSNotification*)note {
+    DispatchSimple(_owner,JALIUM_EVENT_ACTIVATE);
+    if (_owner) [_owner->view applyCursor];
+}
+- (void)windowDidResignKey:(NSNotification*)note {if(_owner)[_owner->view cancelCursorTracking];DispatchSimple(_owner,JALIUM_EVENT_DEACTIVATE);}
 - (void)windowWillMiniaturize:(NSNotification*)note {
     if (!_owner) return;
+    [_owner->view cancelCursorTracking];
     if (!_owner->miniaturizing) BeginWindowMinimize(_owner);
     ++_owner->miniaturizationSequence;
     // Stop custom resize tracking at the start of AppKit's animation, before
@@ -2958,7 +3008,7 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
     {std::scoped_lock lock(g_windowsMutex);std::erase(g_windows,window);}
     window->view.jaliumOwner=nullptr;
 #if TARGET_OS_OSX
-    [window->view restoreCursor];
+    [window->view cancelCursorTracking];
     ((JaliumAppleWindow*)window->window).jaliumOwner = nullptr;
     [window->window.parentWindow removeChildWindow:window->window];
     for (NSWindow* child in window->window.childWindows.copy)
@@ -3237,7 +3287,7 @@ void jalium_window_hide(JaliumPlatformWindow* w){if(!w)return;w->visible=false;
     [w->systemMenu cancelTrackingWithoutAnimation];
     if (!IsLiveWindow(w, nativeWindow)) return;
     RefreshWindowMenuItem(w);
-    [w->view restoreCursor];
+    [w->view cancelCursorTracking];
     [w->window orderOut:nil];
 #else
     w->view.hidden=YES;
@@ -3316,6 +3366,7 @@ void jalium_window_set_cursor(JaliumPlatformWindow* window,JaliumCursorShape cur
     if (window->view.cursorShape != cursor) {
         window->view.cursorShape = cursor;
         window->view.shapeCursor = CursorForShape(cursor);
+        [window->window invalidateCursorRectsForView:window->view];
     }
     [window->view applyCursor];
 #else
@@ -3573,7 +3624,7 @@ int32_t jalium_window_set_enabled(JaliumPlatformWindow* w,int32_t enabled){if(!w
         CancelAppleDrag(w);
         CancelPendingWindowSelection(w);
         [w->systemMenu cancelTrackingWithoutAnimation];
-        [w->view restoreCursor];
+        [w->view cancelCursorTracking];
         [nativeWindow makeFirstResponder:nil];
         if (nativeWindow.jaliumOwner != w) return JALIUM_OK;
     }
@@ -3900,6 +3951,7 @@ JaliumResult jalium_drag_begin_with_image(JaliumPlatformWindow* window,
         window->retiredDragSources = [NSHashTable hashTableWithOptions:
             NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality];
     window->dragSource = source;
+    [window->view cancelCursorTracking];
     // Movement alone does not cover stationary Escape, modifier changes or
     // button release. Install before entering AppKit: startup can synchronously
     // dispatch terminal events before returning its NSDraggingSession.
@@ -3945,6 +3997,7 @@ JaliumResult jalium_drag_begin_with_image(JaliumPlatformWindow* window,
         if (IsLiveWindow(window, nativeWindow) && window->dragSource == source) {
             if (session) [window->retiredDragSources addObject:session];
             window->dragSource.reset();
+            [window->view applyCursor];
         }
     }
     if (performed) *performed = source->performedEffect;
