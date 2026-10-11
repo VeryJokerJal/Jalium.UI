@@ -965,11 +965,20 @@ int main(int argc, char** argv)
             }
             for (int getter = 0; getter < 3; ++getter) {
                 for (int operation = 0; operation < 4; ++operation) {
-                    for (int action = 0; action < 4; ++action) {
+                    for (int action = 0; action < 4; ++action) for (int initialShift : {0, -2}) {
                         const char* actions[] = {"Resize", "Move", "native frame", "repeated native frame"};
                         std::string name = std::string("restore capture geometry ") + captureOperations[operation] +
                             " " + captureGetters[getter] + " retains " + actions[action];
+                        if (initialShift) name += " with adjusted initial frame";
                         run(name.c_str(), [=](Fixture& f) {
+                            if (initialShift) {
+                                NSRect frame = f.native.frame;
+                                frame.origin.y += initialShift;
+                                [f.native setFrame:frame display:NO];
+                                Require(NSEqualRects(f.native.frame, frame),
+                                    "geometry target could not apply its adjusted initial frame");
+                                f.events.clear();
+                            }
                             auto changeGeometry = [action](Fixture& target) {
                                 if (action == 0) jalium_window_resize(target.window, 720, 540);
                                 else if (action == 1) jalium_window_move(target.window, 344, 312);
@@ -984,6 +993,12 @@ int main(int argc, char** argv)
                                 // Let an equivalent NSWindow establish its own content-size
                                 // anchor, screen conversion and frame alignment independently.
                                 Fixture control(style);
+                                // First display can constrain a new reference differently
+                                // from the existing target after the work area changes.
+                                // Both primitives must start from the same actual frame.
+                                [control.native setFrame:initialTarget display:NO];
+                                Require(NSEqualRects(control.native.frame, initialTarget),
+                                    "geometry reference did not start from the target frame");
                                 for (int step = 0; step < repetitions; ++step) {
                                     changeGeometry(control);
                                     expectedFrames.push_back(control.native.frame);
@@ -1622,6 +1637,11 @@ int main(int argc, char** argv)
                         [reference setFrame:originalFrame display:NO];
                         [reference orderFront:nil];
                         referenceOrderedFrame = reference.frame;
+                        // Match the already displayed target after AppKit has applied
+                        // first-show constraints to this independent reference.
+                        [reference setFrame:originalFrame display:NO];
+                        Require(NSEqualRects(reference.frame, originalFrame),
+                            "resize reference did not start from the target frame");
                         double scale = jalium_window_get_dpi_scale(f.window);
                         [reference setContentSize:NSMakeSize(600 / scale, 400 / scale)];
                         referenceFrame = reference.frame;
