@@ -657,6 +657,66 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v163：拖拽样本的全局坐标与屏幕内尺寸约束
+
+应用在调整尺寸期间移动窗口时，已排队的鼠标样本仍保留其发生时的坐标。
+原实现再次经当前 NSWindow 变换换算位置，会把应用移动量叠加到下一次指针位移；
+远端 move / move+resize 失败额外出现 **+40 X / −25 Y**。
+现在优先读取事件自身 CGEvent 的全局位置，并转换到 AppKit 屏幕坐标；
+无 CGEvent 时仍处理关联窗口坐标和无窗口的屏幕坐标。
+跟踪循环继续保留应用最新几何、动态尺寸约束、固定对边以及隐藏/关闭等中断行为，
+没有读取系统当前指针或向其他应用发送事件。
+
+拖拽夹具直接创建本进程的固定全局点事件，经 NSApp 自有队列读取；
+新增在应用修改几何前已构造样本的回归，覆盖两种标题栏与四种几何变更。
+这些队列/跟踪模式检查与物理鼠标验收分开。
+[Apple CGEvent 对应关系](https://developer.apple.com/documentation/appkit/nsevent/cgevent)
+及[全局事件位置](https://developer.apple.com/documentation/coregraphics/cgevent/location)
+已核对。
+
+远端原生标题栏的 720 客户区高度被 AppKit 缩为 **647**，外框为 **679**。
+[NSWindow 的屏幕约束](https://developer.apple.com/documentation/appkit/nswindow/constrainframerect(_:to:))
+会限制高于屏幕的可调整窗口。两项客户区约束夹具现根据当前可用屏幕、标题栏高度
+和 DPI 选择可容纳的最大值，并把上边缘放在可用区域内；继续严格检查最小值、
+最大值与原上边缘锚点。未改动生产窗口的 AppKit 屏幕裁剪规则。
+
+可选前台宿主现在同时核对 NSWorkspace 实际前台 PID、AppKit active、key 和 main；
+仅 AppKit 选中不算前台接受。Info.plist 可设置 1–600 秒等待期，默认仍为 180 秒。
+私有剪贴板保留严格 Unicode 路径断言，失败时增加原生 URL/路径与两种
+pasteboard URL 表示的诊断；本轮未根据本机通过结果推断远端 Unicode 问题已修复。
+
+本轮证据：
+
+- 新全局点/几何集合在旧生产实现 **0/80**；修复后 **80/80**。
+  最终完整 resize-drag **146/146、14.85 秒**，Window AX **244/244、105.61 秒**，
+  CTest 两组 **2/2、120.46 秒、退出 0**。
+- 客户区最小/最大与 legacy 上边缘各 **2/2**；私有剪贴板 **47 项、退出 0**。
+  Window 属性/输入/IME 几何及菜单跟踪 Escape 入口均退出 **0**。
+  先前的两项最小化还原矩形失败在本轮精确 PR 基线已 **244/244**，
+  本轮未复现，也没有将其归因于此次拖拽修复。
+- 隔离 Release 原生四个目标构建成功；正常 Debug 平台库由真实 CMake 重建。
+  托管代码未在本轮修改；没有把 v162 托管全集当作本轮重新执行。
+- CUA 读取并查看前台门禁窗口；Raise、坐标及 AX 操作没有使其取得实际前台。
+  两个原始 PID **83400 / 84796** 均超时，accepted=0，未执行前台生命周期断言。
+  未把门禁拒绝、历史截图或应用重启算作当前负载的焦点/物理拖拽通过。
+- [已发布 v162 的 Apple CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38095098845)
+  两项独立 readback/image 作业成功；native-and-packages **31/37**，
+  clipboard、Window、Window AX、resize-drag、Metal smoke 和 regression 六组失败，
+  后两组各约 30 秒超时。这是修复前远端结果，本轮新头 CI 另行记录。
+  [同头 Linux](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38095098732)
+  glibc x64、musl x64、musl arm64 已成功，glibc arm64 在本轮发布前仍进行中。
+
+测试结束后清理 **3,339** 个自有临时文件、**383** 个目录、
+**234,050,558** 字节、两个应用及两个应用缓存；匹配本轮崩溃诊断为 **0**。
+两个仓库不区分大小写的字面 artifacts、本轮临时根、进程及应用注册均为 **0**。
+清理前后 **19,012** 个受保护文件、**1,690** 个目录、**506** 个非本轮原生输入、
+五份本轮原生源码和 Gallery 的 **14** 个原有缺失路径一致。
+保留并发 Window、AX Bridge、XAML 与虚拟化测试修改，未纳入本轮提交。
+正常 Debug 负载保留 **28** 个条目；仅平台 dylib 与真实 CMake 完成标记更新，
+其余 26 个条目保持原内容和模式。最低系统、Intel、混合 DPI、物理拖拽、
+VoiceOver、前台生命周期与完整 CI 仍开放，整体 macOS/Window 目标未完成。
+
+
 ### v162：外部 AX 通知与隐藏控件身份
 
 隐藏非焦点控件时，托管树已经省略节点，但没有结构变化事件；

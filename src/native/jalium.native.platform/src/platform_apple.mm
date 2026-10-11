@@ -3268,6 +3268,20 @@ int32_t jalium_window_begin_move_drag(JaliumPlatformWindow* w){
     (void)w;return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
 }
+#if TARGET_OS_OSX
+static NSPoint ResizeEventScreenPoint(NSEvent* event, NSWindow* window)
+{
+    if (CGEventRef core = event.CGEvent) {
+        // The event retains its global point even if the application moved
+        // the window before this queued sample was dequeued. A fresh window
+        // transform must not add that move to the pointer displacement.
+        CGPoint point = CGEventGetLocation(core);
+        return NSMakePoint(point.x, NSMaxY(NSScreen.screens.firstObject.frame) - point.y);
+    }
+    return event.window ? [window convertPointToScreen:event.locationInWindow] : event.locationInWindow;
+}
+#endif
+
 int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow* w,int32_t edge)
 {
 #if TARGET_OS_OSX
@@ -3280,7 +3294,7 @@ int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow* w,int32_t edge)
         press.type != NSEventTypeLeftMouseDown) return JALIUM_ERROR_INVALID_STATE;
     NSWindow* nativeWindow = w->window;
     NSRect start = nativeWindow.frame;
-    NSPoint origin = [nativeWindow convertPointToScreen:press.locationInWindow];
+    NSPoint origin = ResizeEventScreenPoint(press, nativeWindow);
     NSRect lastFrame = start;
     NSPoint lastPoint = origin;
     bool left = (edge & 4) != 0, right = (edge & 8) != 0;
@@ -3310,7 +3324,7 @@ int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow* w,int32_t edge)
             start = current;
             origin = lastPoint;
         }
-        NSPoint point = [nativeWindow convertPointToScreen:event.locationInWindow];
+        NSPoint point = ResizeEventScreenPoint(event, nativeWindow);
         CGFloat dx = point.x - origin.x, dy = point.y - origin.y;
         NSRect content = [nativeWindow contentRectForFrameRect:start];
         CGFloat frameWidth = start.size.width - content.size.width;

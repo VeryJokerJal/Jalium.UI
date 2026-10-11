@@ -27,11 +27,20 @@ static bool UsesForegroundValidationHost()
 - (void)start:(NSButton*)sender;
 @end
 
+static bool HasForegroundValidationSelection(NSWindow* window)
+{
+    // AppKit selection alone can disagree with the actual foreground app
+    // after externally routed accessibility/input actions.
+    pid_t foreground = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+    return foreground == getpid() && NSApp.active && NSApp.keyWindow == window && NSApp.mainWindow == window;
+}
+
 @implementation JaliumForegroundValidationGate
 - (void)start:(NSButton*)sender
 {
-    if (!NSApp.active || NSApp.keyWindow != self.window || NSApp.mainWindow != self.window) {
-        std::printf("FOREGROUND_REJECT pid=%d active=%d key=%d main=%d\n", getpid(),
+    if (!HasForegroundValidationSelection(self.window)) {
+        std::printf("FOREGROUND_REJECT pid=%d foreground=%d active=%d key=%d main=%d\n", getpid(),
+            NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
             NSApp.active, NSApp.keyWindow == self.window, NSApp.mainWindow == self.window);
         self.status.stringValue = @"请先点击此窗口取得前台焦点，再开始回归。";
         return;
@@ -80,14 +89,18 @@ static bool AwaitForegroundValidation(NSString* title)
     std::printf("FOREGROUND_READY pid=%d bundle=%s suite=%s\n", getpid(),
         NSBundle.mainBundle.bundleIdentifier.UTF8String, title.UTF8String);
     std::fflush(stdout);
-    NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:180];
+    id configuredTimeout = [NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumForegroundValidationTimeoutSeconds"];
+    double timeout = [configuredTimeout respondsToSelector:@selector(doubleValue)] ? [configuredTimeout doubleValue] : 180;
+    if (!(timeout >= 1 && timeout <= 600)) timeout = 180;
+    NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     while (!gate.requested && window.visible && deadline.timeIntervalSinceNow > 0) {
         jalium_platform_poll_events();
         [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     }
-    bool selected = gate.requested && NSApp.active && NSApp.keyWindow == window && NSApp.mainWindow == window;
-    std::printf("FOREGROUND_START pid=%d accepted=%d active=%d key=%d main=%d\n",
-        getpid(), selected, NSApp.active, NSApp.keyWindow == window, NSApp.mainWindow == window);
+    bool selected = gate.requested && HasForegroundValidationSelection(window);
+    std::printf("FOREGROUND_START pid=%d accepted=%d foreground=%d active=%d key=%d main=%d\n",
+        getpid(), selected, NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
+        NSApp.active, NSApp.keyWindow == window, NSApp.mainWindow == window);
     std::fflush(stdout);
     [window orderOut:nil];
     [window close];
