@@ -488,17 +488,37 @@ bool CaptureNormalFrame(JaliumPlatformWindow* window)
     // SDK getters can close their Window or start another state request.
     // Commit the complete normal snapshot only while its original owner and
     // state still survive, keeping both native objects alive across each read.
-    NSRect frame = nativeWindow.frame;
-    if (!current()) return false;
-    NSSize content = view.bounds.size;
-    if (!current()) return false;
-    NSUInteger style = nativeWindow.styleMask;
-    if (!current()) return false;
-    window->restoreFrame = frame;
-    window->restoreContentSize = content;
-    window->restoreStyleMask = style;
-    window->hasRestoreFrame = true;
-    return true;
+    struct Snapshot { NSRect frame; NSSize content; NSUInteger style; };
+    auto read = [&](Snapshot& snapshot) {
+        snapshot.frame = nativeWindow.frame;
+        if (!current()) return false;
+        snapshot.content = view.bounds.size;
+        if (!current()) return false;
+        snapshot.style = nativeWindow.styleMask;
+        return current();
+    };
+    Snapshot snapshot, next;
+    if (!read(snapshot)) return false;
+    // A getter can return its pre-callback value even when that callback has
+    // changed the normal frame. Re-read the entire tuple until consecutive
+    // reads agree; otherwise an old frame can replace a newer content size
+    // or a nested capture made by Move/Resize during minimize preparation.
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        if (!read(next)) return false;
+        if (NSEqualRects(snapshot.frame, next.frame) &&
+            NSEqualSizes(snapshot.content, next.content) && snapshot.style == next.style) {
+            window->restoreFrame = next.frame;
+            window->restoreContentSize = next.content;
+            window->restoreStyleMask = next.style;
+            window->hasRestoreFrame = true;
+            return true;
+        }
+        snapshot = next;
+    }
+    // An embedding getter that changes geometry on every read cannot supply
+    // a coherent tuple. Keep the previous snapshot and stop this operation
+    // rather than trapping the main thread in an unbounded capture loop.
+    return false;
 }
 
 bool ApplyPendingStartupPlacement(JaliumPlatformWindow* window)
@@ -2712,6 +2732,39 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         !_owner->miniaturizing && !_owner->deminiaturizing &&
         !_owner->fullScreenTransition &&
         (sizeChanged || _owner->window.inLiveResize || _owner->interactiveResize);
+    bool normalizesMaximized = false;
+    if (userResize && _owner->state == JALIUM_WINDOW_STATE_MAXIMIZED) {
+        auto* window = _owner;
+        NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+        uint64_t request = window->stateRequestSequence;
+        auto current = [&] {
+            return _owner == window && IsLiveWindow(window, nativeWindow) && !window->destroying &&
+                window->state == JALIUM_WINDOW_STATE_MAXIMIZED && window->stateRequestSequence == request;
+        };
+        NSRect actual = nativeWindow.frame;
+        if (!current()) return;
+        normalizesMaximized = !NSEqualRects(actual, window->maximizedFrame);
+        if (normalizesMaximized && !window->interactiveResize) {
+            bool liveResize = nativeWindow.inLiveResize;
+            if (!current()) return;
+            if (!liveResize) {
+                NSScreen* screen = nativeWindow.screen ?: NSScreen.mainScreen;
+                if (!current()) return;
+                NSRect workArea = MaximizedFrameForScreen(nativeWindow, screen);
+                if (!current()) return;
+                NSRect latest = nativeWindow.frame;
+                if (!current() || !NSEqualRects(actual, latest)) return;
+                // Dock/menu-bar changes can correct a filled frame after its
+                // original request. Exact current work-area alignment remains
+                // Maximized; other geometry and live resizing remain user edits.
+                if (NSEqualRects(actual, workArea)) {
+                    window->maximizedFrame = actual;
+                    userResize = false;
+                    normalizesMaximized = false;
+                }
+            }
+        }
+    }
     // A newer native geometry change retires deferred startup positioning
     // before its state callback can request another placement.
     if (userResize && _owner->state != JALIUM_WINDOW_STATE_MINIMIZED)
@@ -2722,9 +2775,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         PublishWindowState(_owner, JALIUM_WINDOW_STATE_MAXIMIZED);
         if (!_owner) return;
     }
-    if (userResize &&
-        _owner->state == JALIUM_WINDOW_STATE_MAXIMIZED &&
-        !NSEqualRects(_owner->window.frame, _owner->maximizedFrame)) {
+    if (normalizesMaximized && _owner->state == JALIUM_WINDOW_STATE_MAXIMIZED) {
         _owner->requestedState = JALIUM_WINDOW_STATE_NORMAL;
         PublishWindowState(_owner, JALIUM_WINDOW_STATE_NORMAL);
         if (!_owner) return;
