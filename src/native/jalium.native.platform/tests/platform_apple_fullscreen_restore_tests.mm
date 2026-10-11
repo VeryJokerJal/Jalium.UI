@@ -106,6 +106,20 @@ struct Fixture {
             "query restore bounds");
         return NSMakeRect(x, y, width, height);
     }
+    void RequireBounds(NSRect expected, const char* message)
+    {
+        NSRect actual = Bounds();
+        if (!NSEqualRects(actual, expected)) {
+            std::fprintf(stderr, "Fullscreen geometry: expected=%s actual=%s frame=%s client=%s "
+                "state=%d mask=%lu mini=%d visible=%d active=%d work=%s\n",
+                NSStringFromRect(expected).UTF8String, NSStringFromRect(actual).UTF8String,
+                NSStringFromRect(native.frame).UTF8String,
+                NSStringFromSize(((__bridge NSView*)(void*)jalium_window_get_native_handle(window)).bounds.size).UTF8String,
+                jalium_window_get_state(window), (unsigned long)native.styleMask, native.miniaturized,
+                native.visible, NSApp.active, NSStringFromRect(native.screen.visibleFrame).UTF8String);
+        }
+        Require(NSEqualRects(actual, expected), message);
+    }
     static void OnNormal(const JaliumPlatformEvent* event, void* context)
     {
         auto& f = *static_cast<Fixture*>(context);
@@ -152,14 +166,14 @@ int main()
                     if (mode == 2 || mode == 5) target = JALIUM_WINDOW_STATE_MAXIMIZED;
                     Require(Pump([&] { return jalium_window_get_state(f.window) == target; }), "drain exit state");
                     if (mode == 5) expected = NSMakeRect(175, 135, 420, 300);
-                    Require(NSEqualRects(f.Bounds(), expected), "expanded exit replaced restore bounds");
+                    f.RequireBounds(expected, "expanded exit replaced restore bounds");
                     jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
                     Require(Pump([&] { return !f.native.miniaturized && jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL; }), "return normal");
-                    Require(NSEqualRects(f.Bounds(), expected), "normal surface lost saved geometry");
+                    f.RequireBounds(expected, "normal surface lost saved geometry");
                     // A subsequent ordinary change must still capture its new geometry.
                     jalium_window_move(f.window, 165, 125); jalium_window_resize(f.window, 380, 280);
                     jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
-                    Require(NSEqualRects(f.Bounds(), NSMakeRect(165, 125, 380, 280)), "later normal geometry ignored");
+                    f.RequireBounds(NSMakeRect(165, 125, 380, 280), "later normal geometry ignored");
                     ++passed; std::printf("PASS %s fullscreen restore mode=%d\n", style == regular ? "Native" : "Custom", mode);
                 } catch (const std::exception& error) {
                     std::fprintf(stderr, "FAIL %s fullscreen restore mode=%d: %s\n", style == regular ? "Native" : "Custom", mode, error.what());
