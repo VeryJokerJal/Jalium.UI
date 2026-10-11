@@ -97,6 +97,7 @@ struct JaliumPlatformWindow {
     uint64_t fullScreenRequestSequence = 0;
     bool miniaturizing = false;
     uint64_t miniaturizationSequence = 0;
+    uint64_t pendingMiniaturizationRequest = 0;
     bool pendingActivation = false;
     bool pendingMainSelection = false;
     uint64_t selectionGeneration = 0;
@@ -560,6 +561,7 @@ void RequestWindowSelection(JaliumPlatformWindow* window, bool activate)
 void BeginWindowMinimize(JaliumPlatformWindow* window)
 {
     ++window->stateRequestSequence;
+    window->pendingMiniaturizationRequest = window->stateRequestSequence;
     CancelPendingWindowSelection(window);
     if (window->state == JALIUM_WINDOW_STATE_NORMAL) CaptureNormalFrame(window);
     window->beforeMinimize = window->state;
@@ -658,8 +660,8 @@ void ApplyQueuedWindowState(JaliumPlatformWindow* window)
     if (!IsLiveWindow(window) || window->destroying || window->fullScreenTransition ||
         window->appKitZooming || window->applyingWindowState || window->pendingAppleStyle ||
         window->miniaturizing || window->deminiaturizing) return;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
     if (window->pendingStartupPlacement && window->state == JALIUM_WINDOW_STATE_NORMAL) {
-        NSWindow* nativeWindow = window->window;
         window->applyingWindowState = true;
         if (!ApplyPendingStartupPlacement(window)) return;
         window->applyingWindowState = false;
@@ -674,16 +676,37 @@ void ApplyQueuedWindowState(JaliumPlatformWindow* window)
     }
     bool nativeZoom = window->requestedNativeZoom;
     window->requestedNativeZoom = false;
-    if (nativeZoom && (!window->enabled || !window->visible || !window->window.visible ||
-        !(window->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE))) {
-        window->requestedState = window->state;
-        return;
+    if (nativeZoom) {
+        uint64_t requestSequence = window->stateRequestSequence;
+        auto state = window->state, requestedState = window->requestedState;
+        bool minimized = false;
+        for (int pass = 0; pass < 2; ++pass) {
+            minimized = nativeWindow.miniaturized;
+            bool visible = nativeWindow.visible;
+            if (!IsLiveWindow(window, nativeWindow)) return;
+            if (window->stateRequestSequence != requestSequence || window->state != state ||
+                window->requestedState != requestedState || window->requestedNativeZoom ||
+                window->miniaturizing || window->deminiaturizing || window->fullScreenTransition ||
+                window->applyingWindowState) return;
+            if (!window->enabled || !window->visible || (!visible && !minimized) ||
+                !(window->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE)) {
+                window->requestedState = window->state;
+                return;
+            }
+        }
+        if (minimized && requestedState != JALIUM_WINDOW_STATE_MINIMIZED) {
+            // A minimized window is natively invisible. Restore it before
+            // replaying best-fit Zoom or completing a paired cancellation.
+            window->requestedNativeZoom = true;
+            window->deminiaturizing = true;
+            [nativeWindow deminiaturize:nil];
+            return;
+        }
     }
     if (window->requestedState == window->state) {
         ApplyPendingWindowSelection(window);
         return;
     }
-    NSWindow* nativeWindow = window->window;
     if (nativeZoom && window->requestedState == JALIUM_WINDOW_STATE_MAXIMIZED)
         [window->window zoom:nil];
     else ApplyWindowState(window, window->requestedState);
@@ -1553,17 +1576,38 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
 }
 - (void)miniaturize:(id)sender {
     auto* owner = _jaliumOwner;
-    NSWindow* nativeWindow = self;
-    if (!owner || !IsLiveWindow(owner, nativeWindow) || owner->miniaturizing || self.miniaturized) return;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = self;
+    if (!owner || !IsLiveWindow(owner, nativeWindow) || owner->miniaturizing) return;
+    bool minimized = nativeWindow.miniaturized;
+    if (!IsLiveWindow(owner, nativeWindow) || owner->miniaturizing || minimized) return;
     // Cover native chrome/menu actions as well as the platform API. Begin
     // before AppKit's will-miniaturize observers can request a newer state.
     BeginWindowMinimize(owner);
     uint64_t sequence = owner->miniaturizationSequence;
+    uint64_t request = owner->pendingMiniaturizationRequest;
     [super miniaturize:sender];
-    // A rejected native request emits no will/did pair. Do not leave later
-    // requests waiting for an acknowledgement that cannot arrive.
-    if (IsLiveWindow(owner, nativeWindow) && sequence == owner->miniaturizationSequence)
-        owner->miniaturizing = false;
+    if (!IsLiveWindow(owner, nativeWindow) || sequence != owner->miniaturizationSequence ||
+        request != owner->pendingMiniaturizationRequest) return;
+    // AppKit can return before will-miniaturize, even before the next main
+    // queue turn. Keep new requests queued until that acknowledgement. A
+    // primitive that makes no observable progress must not block forever.
+    __weak JaliumAppleWindow* weakWindow = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        JaliumAppleWindow* __attribute__((objc_precise_lifetime)) currentWindow = weakWindow;
+        auto* current = currentWindow.jaliumOwner;
+        if (!current || !IsLiveWindow(current, currentWindow) ||
+            current->pendingMiniaturizationRequest != request ||
+            current->miniaturizationSequence != sequence || !current->miniaturizing) return;
+        bool nativeMinimized = currentWindow.miniaturized;
+        if (!IsLiveWindow(current, currentWindow) ||
+            current->pendingMiniaturizationRequest != request ||
+            current->miniaturizationSequence != sequence || !current->miniaturizing || nativeMinimized) return;
+        current->miniaturizing = false;
+        // Retain the request identity for a late start. Do not retry a silent
+        // minimize automatically; drain any newer state or selection instead.
+        if (current->requestedState != JALIUM_WINDOW_STATE_MINIMIZED)
+            ApplyQueuedWindowState(current);
+    });
 }
 - (void)performMiniaturize:(id)sender {
     if (!_jaliumOwner || !_jaliumOwner->enabled ||
@@ -2671,7 +2715,18 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 - (void)windowWillMiniaturize:(NSNotification*)note {
     if (!_owner) return;
     [_owner->view cancelCursorTracking];
-    if (!_owner->miniaturizing) BeginWindowMinimize(_owner);
+    if (!_owner->miniaturizing) {
+        if (_owner->pendingMiniaturizationRequest) {
+            // A previously unacknowledged request may start after recovery.
+            // Preserve the latest explicit request and the current state.
+            if (_owner->state == JALIUM_WINDOW_STATE_NORMAL) CaptureNormalFrame(_owner);
+            if (!_owner) return;
+            _owner->beforeMinimize = _owner->state;
+            _owner->miniaturizing = true;
+        } else BeginWindowMinimize(_owner);
+    }
+    if (!_owner) return;
+    _owner->pendingMiniaturizationRequest = 0;
     ++_owner->miniaturizationSequence;
     // Stop custom resize tracking at the start of AppKit's animation, before
     // miniaturized and the framework state change at its completion.
@@ -3499,7 +3554,7 @@ void jalium_window_set_title(JaliumPlatformWindow* w,const JaliumUtf16Char* titl
 }
 void jalium_window_resize(JaliumPlatformWindow* w,int32_t width,int32_t height){if(!w||width<=0||height<=0)return;
 #if TARGET_OS_OSX
-    NSWindow* nativeWindow = w->window;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
     NSSize contentSize = NSMakeSize(width/w->scale,height/w->scale);
     if (w->applyingAppleStyle && w->hasRestoreFrame) {
         SynchronizeRestoreStyle(w);
@@ -3522,14 +3577,18 @@ void jalium_window_resize(JaliumPlatformWindow* w,int32_t width,int32_t height){
     bool wasApplyingState = w->applyingState;
     w->applyingState = true;
     [nativeWindow setContentSize:contentSize];
-    if (IsLiveWindow(w, nativeWindow)) w->applyingState = wasApplyingState;
+    if (IsLiveWindow(w, nativeWindow)) {
+        w->applyingState = wasApplyingState;
+        if (w->state == JALIUM_WINDOW_STATE_NORMAL && w->pendingMiniaturizationRequest)
+            CaptureNormalFrame(w);
+    }
 #else
     CGRect f=w->view.frame;f.size=CGSizeMake(width/w->scale,height/w->scale);w->view.frame=f;
 #endif
 }
 void jalium_window_move(JaliumPlatformWindow* w,int32_t x,int32_t y){if(!w)return;w->x=x;w->y=y;
 #if TARGET_OS_OSX
-    NSWindow* nativeWindow = w->window;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
     if (w->applyingAppleStyle && w->hasRestoreFrame) {
         SynchronizeRestoreStyle(w);
         w->pendingStartupPlacement = true;
@@ -3553,7 +3612,11 @@ void jalium_window_move(JaliumPlatformWindow* w,int32_t x,int32_t y){if(!w)retur
         w->restoreFrame.origin = NSMakePoint(topLeft.x, topLeft.y - w->restoreFrame.size.height);
     if (w->applyingAppleStyle) { w->applyingState = wasApplyingState; return; }
     [nativeWindow setFrameTopLeftPoint:topLeft];
-    if (IsLiveWindow(w, nativeWindow)) w->applyingState = wasApplyingState;
+    if (IsLiveWindow(w, nativeWindow)) {
+        w->applyingState = wasApplyingState;
+        if (w->state == JALIUM_WINDOW_STATE_NORMAL && w->pendingMiniaturizationRequest)
+            CaptureNormalFrame(w);
+    }
 #endif
 }
 void jalium_window_set_state(JaliumPlatformWindow* w,JaliumWindowState state){if(!w)return;

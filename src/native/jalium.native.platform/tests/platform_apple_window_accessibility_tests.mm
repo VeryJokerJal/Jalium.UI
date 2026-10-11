@@ -619,6 +619,19 @@ struct RejectedMinimization {
     }
 };
 
+// Return from the primitive before its start notification. Completion still
+// runs the original AppKit method; only this owned window's request is held.
+struct DeferredMinimizationStart : RejectedMinimization {
+    NSWindow* window;
+    explicit DeferredMinimizationStart(NSWindow* native)
+        : RejectedMinimization(native), window(native) {}
+    void Complete()
+    {
+        g_rejectedMiniaturizeWindow = nil;
+        reinterpret_cast<void (*)(id, SEL, id)>(g_originalMiniaturize)(window, @selector(miniaturize:), nil);
+    }
+};
+
 struct ControlledFullScreen;
 static ControlledFullScreen* g_fullScreen = nullptr;
 static IMP g_originalFullScreenToggle = nullptr, g_originalStyleMask = nullptr;
@@ -699,6 +712,7 @@ int main(int argc, char** argv)
         (argc == 2 && std::strcmp(argv[1], "--delayed-restore-only") == 0);
     bool replacementOnly = argc == 2 && std::strcmp(argv[1], "--replacement-only") == 0;
     bool minimizeTransitionOnly = argc == 2 && std::strcmp(argv[1], "--minimize-transition-only") == 0;
+    bool minimizeStartOnly = argc == 2 && std::strcmp(argv[1], "--minimize-start-only") == 0;
     bool activationTransitionOnly = argc == 2 && std::strcmp(argv[1], "--activation-transition-only") == 0;
     bool fullScreenFailureOnly = argc == 2 && std::strcmp(argv[1], "--fullscreen-failure-only") == 0;
     bool fullScreenFocusOnly = argc == 2 && std::strcmp(argv[1], "--fullscreen-focus-only") == 0;
@@ -707,7 +721,7 @@ int main(int argc, char** argv)
     bool frameOnly = (argc == 2 && std::strcmp(argv[1], "--frame-only") == 0) ||
         [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumValidationFrameOnly"] boolValue];
     const char* caseName = argc == 2 && std::strncmp(argv[1], "--case-name=", 12) == 0 ? argv[1] + 12 : nullptr;
-    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !minimizeTransitionOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
+    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
     @autoreleasepool {
         Require(jalium_platform_init() == 0, "platform initialization failed");
         bool foregroundHost = UsesForegroundValidationHost();
@@ -743,6 +757,8 @@ int main(int argc, char** argv)
                     std::strcmp(name, "delayed deminiaturization drains the latest state request") != 0) return;
                 if (replacementOnly && std::strstr(name, "replacement window") == nullptr) return;
                 if (minimizeTransitionOnly && std::strstr(name, "minimize completion") == nullptr) return;
+                if (minimizeStartOnly && std::strstr(name, "minimize start") == nullptr &&
+                    std::strcmp(name, "minimize completion rejection releases later requests") != 0) return;
                 if (activationTransitionOnly && std::strstr(name, "activation completion") == nullptr) return;
                 if (fullScreenFailureOnly && std::strstr(name, "fullscreen failure") == nullptr) return;
                 if (fullScreenFocusOnly && std::strstr(name, "fullscreen focus") == nullptr) return;
@@ -1021,13 +1037,181 @@ int main(int argc, char** argv)
             run("minimize completion rejection releases later requests", [](Fixture& f) {
                 NSRect restore = RestoreBounds(f); RejectedMinimization rejected(f.native);
                 jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
-                Require(!f.native.miniaturized && jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL &&
-                    Settable(f.native, NSAccessibilityPositionAttribute), "rejected minimization left its transition active");
+                Require(Pump([&] { return !f.native.miniaturized &&
+                    jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL &&
+                    Settable(f.native, NSAccessibilityPositionAttribute); }),
+                    "rejected minimization left its transition active");
                 jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
                 Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED,
                     "later state request remained queued after native rejection");
                 jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
                 Require(NSEqualRects(RestoreBounds(f), restore), "rejected minimization lost normal geometry");
+            });
+            for (auto initial : {JALIUM_WINDOW_STATE_NORMAL, JALIUM_WINDOW_STATE_MAXIMIZED})
+                for (auto requested : {JALIUM_WINDOW_STATE_NORMAL, JALIUM_WINDOW_STATE_MAXIMIZED})
+                    for (bool nativeAction : {false, true}) {
+                        char name[160];
+                        std::snprintf(name, sizeof(name), "minimize start queues %s from %s via %s",
+                            requested == JALIUM_WINDOW_STATE_NORMAL ? "restore" : "maximize",
+                            initial == JALIUM_WINDOW_STATE_NORMAL ? "normal" : "maximized",
+                            nativeAction ? "native action" : "platform API");
+                        run(name, [=](Fixture& f) {
+                            NSRect restore = RestoreBounds(f);
+                            jalium_window_set_state(f.window, initial);
+                            NSRect frame = f.native.frame;
+                            f.events.clear();
+                            DeferredMinimizationStart delayed(f.native);
+                            if (nativeAction) [f.native miniaturize:nil];
+                            else jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                            jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                            jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                            jalium_window_set_state(f.window, requested);
+                            Require(!f.native.miniaturized && jalium_window_get_state(f.window) == initial &&
+                                NSEqualRects(f.native.frame, frame), "request changed geometry before native minimize start");
+                            Require(!Settable(f.native, NSAccessibilityPositionAttribute) &&
+                                !Settable(f.native, NSAccessibilitySizeAttribute), "pending native start exposed writable geometry");
+                            for (const auto& event : f.events)
+                                Require(event.type != JALIUM_EVENT_STATE_CHANGED,
+                                    "queued state was published before native minimize start");
+                            bool completed = false;
+                            WindowNotification acknowledged(f, NSWindowDidMiniaturizeNotification, [&] { completed = true; });
+                            delayed.Complete();
+                            Require(Pump([&] { return completed && !f.native.miniaturized &&
+                                jalium_window_get_state(f.window) == requested; }), "native start lost the latest queued state");
+                            Require(NSEqualRects(RestoreBounds(f), restore), "native start replaced normal restore bounds");
+                        });
+                    }
+            run("minimize start preserves paired native Zoom cancellation", [](Fixture& f) {
+                NSRect restore = RestoreBounds(f), frame = f.native.frame;
+                DeferredMinimizationStart delayed(f.native);
+                [f.native miniaturize:nil];
+                f.events.clear();
+                [f.native zoom:nil]; [f.native zoom:nil];
+                Require(NSEqualRects(f.native.frame, frame), "paired Zoom changed frame before native minimize start");
+                for (const auto& event : f.events)
+                    Require(event.type != JALIUM_EVENT_STATE_CHANGED,
+                        "paired Zoom was published before native minimize start");
+                bool completed = false;
+                WindowNotification acknowledged(f, NSWindowDidMiniaturizeNotification, [&] { completed = true; });
+                delayed.Complete();
+                Require(Pump([&] { return completed && !f.native.miniaturized &&
+                    jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL; }), "native start lost paired Zoom cancellation");
+                Require(NSEqualRects(RestoreBounds(f), restore), "paired start Zoom replaced normal restore bounds");
+            });
+            run("minimize start retains native Zoom best-fit", [](Fixture& f) {
+                NSRect restore = RestoreBounds(f), frame = f.native.frame;
+                BestFitZoom bestFit(f.native);
+                DeferredMinimizationStart delayed(f.native);
+                [f.native miniaturize:nil];
+                [f.native zoom:nil];
+                Require(NSEqualRects(f.native.frame, frame), "native Zoom changed frame before minimize start");
+                bool completed = false;
+                WindowNotification acknowledged(f, NSWindowDidMiniaturizeNotification, [&] { completed = true; });
+                delayed.Complete();
+                Require(Pump([&] { return completed && !f.native.miniaturized &&
+                    jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED; }), "native start lost best-fit Zoom");
+                Require(NSEqualRects(f.native.frame, bestFit.delegate.standardFrame) &&
+                    NSEqualRects(RestoreBounds(f), restore), "native start replaced best-fit or normal geometry");
+            });
+            for (auto requested : {JALIUM_WINDOW_STATE_NORMAL, JALIUM_WINDOW_STATE_MAXIMIZED}) {
+                run(requested == JALIUM_WINDOW_STATE_NORMAL
+                    ? "minimize start after recovery preserves latest restore"
+                    : "minimize start after recovery preserves latest maximize", [=](Fixture& f) {
+                    NSRect restore = RestoreBounds(f);
+                    DeferredMinimizationStart delayed(f.native);
+                    [f.native miniaturize:nil];
+                    Require(Pump([&] { return Settable(f.native, NSAccessibilityPositionAttribute); }),
+                        "missing native start blocked later geometry forever");
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    jalium_window_set_state(f.window, requested);
+                    Require(jalium_window_get_state(f.window) == requested,
+                        "later state remained blocked after missing-start recovery");
+                    bool completed = false;
+                    WindowNotification acknowledged(f, NSWindowDidMiniaturizeNotification, [&] { completed = true; });
+                    delayed.Complete();
+                    Require(Pump([&] { return completed && !f.native.miniaturized &&
+                        jalium_window_get_state(f.window) == requested; }), "late native start overwrote the latest state");
+                    Require(NSEqualRects(RestoreBounds(f), restore), "late native start replaced normal restore bounds");
+                });
+            }
+            for (int geometry = 0; geometry < 3; ++geometry) {
+                const char* names[] = {"minimize start preserves explicit resize",
+                    "minimize start preserves explicit move", "minimize start preserves explicit resize then move"};
+                run(names[geometry], [=](Fixture& f) {
+                    NSRect expected = RestoreBounds(f);
+                    DeferredMinimizationStart delayed(f.native);
+                    [f.native miniaturize:nil];
+                    if (geometry != 1) {
+                        NSRect originalFrame = f.native.frame;
+                        NSWindow* reference = [[NSWindow alloc] initWithContentRect:
+                            [f.native contentRectForFrameRect:originalFrame] styleMask:f.native.styleMask
+                            backing:NSBackingStoreBuffered defer:YES];
+                        reference.releasedWhenClosed = NO;
+                        reference.contentMinSize = f.native.contentMinSize;
+                        reference.contentMaxSize = f.native.contentMaxSize;
+                        [reference setFrame:originalFrame display:NO];
+                        [reference orderFront:nil];
+                        double scale = jalium_window_get_dpi_scale(f.window);
+                        [reference setContentSize:NSMakeSize(600 / scale, 400 / scale)];
+                        NSRect referenceFrame = reference.frame;
+                        expected.origin.x += (NSMinX(referenceFrame) - NSMinX(originalFrame)) * scale;
+                        expected.origin.y += (NSMaxY(originalFrame) - NSMaxY(referenceFrame)) * scale;
+                        [reference close];
+                        jalium_window_resize(f.window, 600, 400);
+                        expected.size = NSMakeSize(600, 400);
+                    }
+                    if (geometry != 0) {
+                        jalium_window_move(f.window, 180, 200);
+                        expected.origin = NSMakePoint(180, 200);
+                    }
+                    NSRect actual = RestoreBounds(f);
+                    if (!NSEqualRects(actual, expected))
+                        std::fprintf(stderr, "Minimize start geometry: expected=%s actual=%s native=%s scale=%.2f\n",
+                            NSStringFromRect(expected).UTF8String, NSStringFromRect(actual).UTF8String,
+                            NSStringFromRect(f.native.frame).UTF8String, jalium_window_get_dpi_scale(f.window));
+                    Require(NSEqualRects(actual, expected), "pending start lost explicit normal geometry");
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    bool completed = false;
+                    WindowNotification acknowledged(f, NSWindowDidMiniaturizeNotification, [&] { completed = true; });
+                    delayed.Complete();
+                    Require(Pump([&] { return completed && !f.native.miniaturized &&
+                        jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL; }), "explicit geometry did not return to normal");
+                    Require(NSEqualRects(RestoreBounds(f), expected), "acknowledgement replaced explicit normal geometry");
+                });
+            }
+            run("minimize start recovery ignores a retired target", [=](Fixture& f) {
+                DeferredMinimizationStart delayed(f.native);
+                [f.native miniaturize:nil];
+                f.Destroy();
+                Fixture replacement(style, 300, 200, 420, 300);
+                NSRect frame = replacement.native.frame, restore = RestoreBounds(replacement);
+                Pump([] { return false; }, 1.1);
+                Require(NSEqualRects(replacement.native.frame, frame) &&
+                    NSEqualRects(RestoreBounds(replacement), restore) &&
+                    jalium_window_get_state(replacement.window) == JALIUM_WINDOW_STATE_NORMAL,
+                    "retired minimize recovery changed its replacement");
+            });
+            run("minimize start recovery callback preserves its replacement", [=](Fixture& f) {
+                DeferredMinimizationStart delayed(f.native);
+                [f.native miniaturize:nil];
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                struct Context {
+                    Fixture* original; uint32_t style; std::unique_ptr<Fixture> replacement; NSRect frame;
+                } context{&f, style, nullptr, NSZeroRect};
+                jalium_window_set_event_callback(f.window, [](const JaliumPlatformEvent* event, void* data) {
+                    auto& c = *static_cast<Context*>(data);
+                    if (event->type != JALIUM_EVENT_STATE_CHANGED || c.replacement ||
+                        event->stateChanged.newState != JALIUM_WINDOW_STATE_MAXIMIZED) return;
+                    c.original->Destroy();
+                    c.replacement = std::make_unique<Fixture>(c.style, 300, 200, 420, 300);
+                    c.frame = c.replacement->native.frame;
+                }, &context);
+                Require(Pump([&] { return context.replacement != nullptr; }), "missing-start recovery did not drain the queued callback");
+                Pump([] { return true; });
+                Require(NSEqualRects(context.replacement->native.frame, context.frame) &&
+                    jalium_window_get_state(context.replacement->window) == JALIUM_WINDOW_STATE_NORMAL,
+                    "recovery callback changed a replacement window");
             });
             run("minimize completion retains replacement after a start callback closes its window", [=](Fixture& f) {
                 std::unique_ptr<Fixture> replacement; NSRect saved;
