@@ -100,6 +100,21 @@ static bool WaitUntil(const std::function<bool()>& condition)
     return condition();
 }
 
+static void LogActivationState(const char* stage, NSWindow* window)
+{
+    // A successful activation request does not prove AppKit or desktop
+    // selection. Retain both states when a foreground assertion fails.
+    NSString* bundle = NSBundle.mainBundle.bundleIdentifier ?: @"<none>";
+    std::fprintf(stderr, "ACTIVATION_STATE stage=%s pid=%d foreground=%d active=%d running=%d "
+        "runningActive=%d policy=%ld bundle=%s visible=%d mini=%d key=%d main=%d "
+        "canKey=%d canMain=%d selectedKey=%d selectedMain=%d\n", stage, getpid(),
+        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
+        NSApp.active, NSApp.running, NSRunningApplication.currentApplication.active,
+        (long)NSApp.activationPolicy, bundle.UTF8String, window.visible, window.miniaturized,
+        window.keyWindow, window.mainWindow, window.canBecomeKeyWindow, window.canBecomeMainWindow,
+        NSApp.keyWindow == window, NSApp.mainWindow == window);
+}
+
 static JaliumPlatformWindow* Create(uint32_t style, int x = 80, int y = 100)
 {
     JaliumWindowParams params{};
@@ -1325,8 +1340,13 @@ int main(int argc, char** argv)
         }
 
         jalium_apple_window_show(owner, 1);
-        Check(jalium_window_activate(owner) == 0, "activate owner");
-        Check(WaitUntil([&] { return NSApp.active && View(owner).window.keyWindow; }),
+        NSWindow* ownerNative = View(owner).window;
+        int32_t ownerActivation = jalium_window_activate(owner);
+        if (ownerActivation != JALIUM_OK) LogActivationState("owner-request-rejected", ownerNative);
+        Check(ownerActivation == JALIUM_OK, "activate owner");
+        bool ownerActivated = WaitUntil([&] { return NSApp.active && View(owner).window.keyWindow; });
+        if (!ownerActivated) LogActivationState("owner-activation-timeout", ownerNative);
+        Check(ownerActivated,
             "nonactivating show checks require actual owner activation");
         NSWindow* keyBefore = NSApp.keyWindow;
         events.clear();
@@ -1335,6 +1355,7 @@ int main(int argc, char** argv)
         jalium_window_activate(window);
         bool activated = WaitUntil([&] { return native.keyWindow; });
         if (!activated) {
+            LogActivationState("requested-window-timeout", native);
             std::fprintf(stderr, "Activation: active=%d policy=%ld key=%s main=%s requested visible=%d key-capable=%d owner visible=%d key-capable=%d\n",
                 NSApp.active, (long)NSApp.activationPolicy, NSApp.keyWindow.title.UTF8String,
                 NSApp.mainWindow.title.UTF8String, native.visible, native.canBecomeKeyWindow,

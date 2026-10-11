@@ -657,6 +657,57 @@ v78 补查独立全屏窗口的两种标题栏连续输入、最小布局及键�
 v58 复用了 v57，v59–v84 均重新构建各轮实际使用的负载。
 本轮构建输出已按用户要求清理，历史构建路径不作为当前交付文件。
 
+### v165：前台选择状态与 GPU 停滞步骤
+
+原生激活请求成功与窗口实际选中分别记录。前台断言失败时，夹具输出系统前台 PID、
+AppKit active/running、NSRunningApplication active、策略和 bundle，以及目标窗口的
+visible、miniaturized、key/main 能力与实际选择。
+[Apple activate() 文档](https://developer.apple.com/documentation/appkit/nsapplication/activate())
+明确说明该调用发起激活请求，不保证激活结果。断言继续要求实际 owner 激活，
+前台宿主继续同时核对系统 PID、active、key 和 main。
+
+Metal regression 现在在每个检查前写出步骤名及 scale/MSAA 上下文，
+并立即刷新通过记录。CTest 超时时可保留最后进入的检查。
+现有独立 GPU 作业补入同一组绘制回归；原有完整运行时编译器作业继续执行，
+两种配置的结果分别记录，超时仍为 30 秒。
+
+本轮证据：
+
+- 隔离 Release 的两个夹具构建成功。六组相关 CTest **5/6、13.56 秒、退出 8**；
+  属性/输入/IME、菜单跟踪、文档菜单及 sheet 键盘路由通过。
+  Metal regression 的四种 scale/MSAA 组合与光标检查共 **33/33、2.13 秒**。
+  两份正常 metallib 的大小/SHA256 匹配 manifest，复用的 shader 源码与冻结版本一致。
+- 唯一失败仍为 owner 激活前置条件。新日志明确记录：请求已接受，
+  应用 active=0、policy=Accessory、bundle=<none>；owner visible=1、mini=0，
+  canKey/canMain=1，但 key/main 和实际选择均为 0，系统前台 PID 属于其他应用。
+  这组证据尚不能证明前台宿主中的生命周期已经通过。
+- 无运行时编译器依赖、无 DYLD/metallib 环境覆盖的配置下，
+  同一组 regression **33/33、3.01 秒**。扩展后的 GPU 作业目标与选择表达式
+  在 diagnostics=1 下验证 **14/14、1.83 秒**；两份工作流 YAML 均解析成功。
+  该配置与完整运行时编译器检查分别保留。
+- 当前签名的前台宿主已由 CUA 打开并查看实际 **480×248** 窗口截图；
+  Raise、按钮和标题栏点击未取得系统前台。原 PID **448** 等待 600 秒后，
+  日志记录 **accepted=0** 并说明未执行夹具断言，随后原进程退出。
+  未重新启动已退出应用或计为实际焦点通过。
+- [108cb40f 完整 Apple CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38100900044)
+  已结束，原生检查 **35/37、283.11 秒**；clipboard、Window AX、resize-drag、
+  drag lifetime 与 Metal smoke 通过。失败为 Window owner 激活前置条件与
+  Metal regression **30.03 秒超时**。独立 Window 作业 **10/11**，
+  独立 readback/image 作业成功。这是本轮诊断修改前的远端结果。
+- 普通开发 CMake 未启用测试目标；尝试夹具目标返回 unknown target，
+  因此本轮夹具来自上述隔离 Release 构建。正常 Debug 完成标记由真实
+  package.complete 目标刷新，不把历史普通测试驱动当作新增诊断已执行的证据。
+
+测试后清理 **3,434** 个自有临时文件、**446** 个目录、
+**309,285,095** 字节及一个应用；匹配本轮缓存和崩溃诊断均为 **0**。
+两个仓库字面 artifacts、本轮进程、临时根及应用注册均为 **0**。
+清理前后 **19,015** 个受保护文件、**1,690** 个目录、**509** 个非本轮原生输入、
+四份本轮源码及 Gallery 的 **14** 个原有缺失路径一致，保留 **2** 项并发文件变更。
+普通 Debug 负载 **28** 个条目中仅真实 CMake 完成标记更新，其余 **27** 个条目一致。
+新头 GPU 停滞诊断、完整 CI、前台生命周期、物理输入/多屏、VoiceOver、
+最低系统及发布验收仍开放；整体 macOS/Window 目标保持进行中。
+
+
 ### v164：多格式总量限制与混合 Unicode URI
 
 剪贴板与 Window 拖拽共用的输入构建器现在先检查所有表示的累计字节数，
