@@ -4,6 +4,61 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+### v185：恢复边界 getter 的回调生命周期与请求顺序
+
+2026-10-12 冻结本地 `e6488781` 的 Platform 后，frame／bounds／styleMask getter
+中的嵌入回调关闭窗口，可以让 `CaptureNormalFrame` 继续访问已释放的 C++ owner。
+48 项独立 ASAN 对照中，24 项存活对照通过，24 项关闭检查报内存错误
+（包含 heap-use-after-free 及 style／Zoom 路径的无效地址访问），总计 10.93 秒。
+同一独立夹具的首版修复为 48/48、10.66 秒；它只用于定位与修复对照。
+
+恢复快照现在持有原 NSWindow 与 view，在每次 getter 返回后复核注册身份、
+原 view 与状态，完整 tuple 验证后才更新 frame／content size／style。
+最大化、原生 Zoom、最小化和全屏开始调用方在继续访问 owner 或调用原生操作前
+检查原窗口及请求身份。全屏过渡先占位再读 responder，避免回调中的更新请求
+被稍后的开始初始化覆盖。接受的原生 Zoom 更新状态请求序号，因此较早的
+API 请求不会用旧 getter 返回值覆盖新的 best-fit Zoom。
+
+- 永久夹具新增 **102** 项检查：两种标题栏、三个 getter、四种入口，覆盖存活、
+  关闭、创建替代窗口和更新的 Normal 请求；另覆盖旧 Normal／Minimized／
+  Maximized 请求读取 styleMask 时发起新的原生 Zoom。原生最小化的正向检查
+  必须收到实际 did-miniaturize；全屏组使用受控 delegate 完成协议，不能视为
+  物理全屏验收。替代窗口检查同时验证状态、原生 frame、restore bounds 和迟到事件。
+- 最终 Debug ASAN 专项 **102/102、21.19 秒**，没有 ASAN 报错。相同最终
+  夹具加冻结旧 dylib 的新 Zoom 顺序组 **2/6**：两项 MAX 存活对照通过，
+  四项旧 Normal／Minimized 覆盖新 Zoom 的检查失败；最终修复六项均通过。
+- 夹具曾尝试切换目标窗口的运行时类，随后观察到
+  `NSKVONotifying_JaliumAppleWindow_JaliumRestoreSnapshot_frame` 的零 frame，
+  以及 `NSRemoteView hostWindowDidResignKey:` 的参数断言。该夹具改法已撤回。
+  最终方式保持 AppKit／KVO 对象类，仅让保留的目标对象执行一次 getter 回调，
+  其他对象仍调用原 getter，作用域结束还原 IMP。异常退出与几何失败记录不计通过。
+- 首轮 PR Ninja Release 为 **19/20、230.26 秒**；新增 96 项通过，但原有三个
+  Native 最小化／激活状态与几何用例失败。另一次直接调用 NSApp.run 应用入口
+  在 0.99 秒后以 -6 退出，没有 nonce/PID 完成记录；这条调用没有通过验收。
+  最终完整组结果另见本节后续记录，首轮失败不会因后续通过而删除。
+- 最终 PR Ninja Release 注册组 **20/20、239.62 秒**，完整 AX **586/586**；
+  该范围排除了使用 shell LaunchServices 启动器的主 Window 组，其余注册组
+  全部执行。原有三个失败用例本次通过，但没有据此确认首轮失败根因。
+- 最终 canonical Debug 的临时应用再次检查实际截图、AX 和原生按钮：
+  最小化后最大化，再最小化后 Normal，均等待实际 did-miniaturize，最后
+  frame **(200,708,640,512)** 与初始一致，最大化 **(0,90,2560,1320)**。
+  本次也没有复现一像素变化；工具操作期间系统前台 PID 与目标不同，
+  不能将此结果作为物理输入或真实前台验收。应用随后正常退出。
+- 本轮早期真实截图与 AX 观察使用未修改的 e648 Debug：最大化后最小化恢复链
+  依次完成实际原生最小化，最后 frame 恢复 **(200,708,640,512)**；最大化为
+  **(0,90,2560,1320)**，没有复现 v184 的一像素状态变化。此观察不关闭原问题，
+  也不构成物理输入、前台/HID 或 VoiceOver 验收。
+- 公开平台导出 **94/94** 保持一致，CMake 与现有状态／几何断言、默认三秒 Pump、
+  **240 秒** AX CTest 超时不变。PR 保留其既有 12 行子节点快照提供器。
+- 前一 PR 头 **7213b971** 的 Apple Window／GPU／图像 job 通过，但完整
+  native-and-packages job 已在 iOS shader 工具配置失败：多个 MACOSX_BUNDLE
+  install target 缺少 `BUNDLE DESTINATION`。这不是 v185 新源码的 CI 结果。
+
+这一修复只关闭已复现的恢复快照回调内存错误与新原生 Zoom 被旧 API 请求覆盖。
+任意 getter 改变几何而状态不变的快照一致性、其他 getter／键盘与 IME 回调、
+一像素状态变化、成对 Zoom、激活与全屏几何、物理设备、Spaces／混合 DPI、
+VoiceOver 和完整跨平台签名包仍需继续验收，整体目标保持进行中。
+
 ### v184：延迟到达的原生最小化开始通知
 
 2026-10-12 在当前 SDK 上观察到 `-[NSWindow miniaturize:]` 返回时，甚至下一次

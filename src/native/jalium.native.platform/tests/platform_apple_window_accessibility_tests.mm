@@ -261,6 +261,60 @@ static NSRect RestoreBounds(Fixture& fixture)
     return NSMakeRect(x, y, width, height);
 }
 
+struct RestoreSnapshotProbe;
+static RestoreSnapshotProbe* g_restoreSnapshot = nullptr;
+static NSRect ReadRestoreSnapshotRect(id object, SEL selector);
+static NSUInteger ReadRestoreSnapshotMask(id object, SEL selector);
+
+// A native getter may execute embedding code before returning its original
+// value. Intercept only this fixture's object and restore the actual getter.
+struct RestoreSnapshotProbe {
+    id target;
+    Method method;
+    IMP original;
+    std::function<void()> onRead;
+    bool called = false;
+    RestoreSnapshotProbe(Fixture& fixture, SEL selector, std::function<void()> action)
+        : target(selector == @selector(bounds)
+            ? (__bridge id)(void*)jalium_window_get_native_handle(fixture.window) : fixture.native),
+          onRead(std::move(action))
+    {
+        Class cls = object_getClass(target);
+        Method inherited = class_getInstanceMethod(cls, selector);
+        original = method_getImplementation(inherited);
+        // Keep AppKit/KVO's object class intact. Other objects use the real
+        // getter; only this retained target executes the callback once.
+        class_addMethod(cls, selector, original, method_getTypeEncoding(inherited));
+        method = class_getInstanceMethod(cls, selector);
+        g_restoreSnapshot = this;
+        method_setImplementation(method, selector == @selector(styleMask)
+            ? reinterpret_cast<IMP>(ReadRestoreSnapshotMask) : reinterpret_cast<IMP>(ReadRestoreSnapshotRect));
+    }
+    ~RestoreSnapshotProbe() {
+        method_setImplementation(method, original);
+        g_restoreSnapshot = nullptr;
+    }
+    void Invoke(id object) {
+        if (object != target || called) return;
+        called = true;
+        onRead();
+    }
+};
+static NSRect ReadRestoreSnapshotRect(id object, SEL selector)
+{
+    auto* probe = g_restoreSnapshot;
+    NSRect value = reinterpret_cast<NSRect (*)(id, SEL)>(probe->original)(object, selector);
+    probe->Invoke(object);
+    return value;
+}
+static NSUInteger ReadRestoreSnapshotMask(id object, SEL selector)
+{
+    auto* probe = g_restoreSnapshot;
+    NSUInteger value = reinterpret_cast<NSUInteger (*)(id, SEL)>(probe->original)(object, selector);
+    probe->Invoke(object);
+    return value;
+}
+
 // Delay only this owned test window's request, so the state machine must wait
 // for AppKit's acknowledgement regardless of the desktop animation timing.
 static NSWindow* g_deferredWindow = nil;
@@ -711,6 +765,7 @@ int main(int argc, char** argv)
     bool delayedRestoreOnly = g_traceSuccessfulRestores ||
         (argc == 2 && std::strcmp(argv[1], "--delayed-restore-only") == 0);
     bool replacementOnly = argc == 2 && std::strcmp(argv[1], "--replacement-only") == 0;
+    bool restoreCaptureOnly = argc == 2 && std::strcmp(argv[1], "--restore-capture-only") == 0;
     bool minimizeTransitionOnly = argc == 2 && std::strcmp(argv[1], "--minimize-transition-only") == 0;
     bool minimizeStartOnly = argc == 2 && std::strcmp(argv[1], "--minimize-start-only") == 0;
     bool activationTransitionOnly = argc == 2 && std::strcmp(argv[1], "--activation-transition-only") == 0;
@@ -721,7 +776,7 @@ int main(int argc, char** argv)
     bool frameOnly = (argc == 2 && std::strcmp(argv[1], "--frame-only") == 0) ||
         [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumValidationFrameOnly"] boolValue];
     const char* caseName = argc == 2 && std::strncmp(argv[1], "--case-name=", 12) == 0 ? argv[1] + 12 : nullptr;
-    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
+    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
     @autoreleasepool {
         Require(jalium_platform_init() == 0, "platform initialization failed");
         bool foregroundHost = UsesForegroundValidationHost();
@@ -756,6 +811,7 @@ int main(int argc, char** argv)
                 if (delayedRestoreOnly &&
                     std::strcmp(name, "delayed deminiaturization drains the latest state request") != 0) return;
                 if (replacementOnly && std::strstr(name, "replacement window") == nullptr) return;
+                if (restoreCaptureOnly && std::strstr(name, "restore capture") == nullptr) return;
                 if (minimizeTransitionOnly && std::strstr(name, "minimize completion") == nullptr) return;
                 if (minimizeStartOnly && std::strstr(name, "minimize start") == nullptr &&
                     std::strcmp(name, "minimize completion rejection releases later requests") != 0) return;
@@ -774,6 +830,136 @@ int main(int argc, char** argv)
                     std::fprintf(stderr, "FAIL %s: %s: %s\n", style == regular ? "Native" : "Custom", name, error.what());
                 }
             };
+            const char* captureGetters[] = {"frame", "bounds", "style"};
+            const SEL captureSelectors[] = {@selector(frame), @selector(bounds), @selector(styleMask)};
+            const char* captureOperations[] = {"maximize", "native Zoom", "native minimize", "fullscreen will"};
+            for (int getter = 0; getter < 3; ++getter) {
+                for (int operation = 0; operation < 4; ++operation) {
+                    for (int action = 0; action < 3; ++action) {
+                        const char* actions[] = {"keeps live geometry", "closes the original", "preserves a replacement window"};
+                        std::string name = std::string("restore capture ") + captureOperations[operation] +
+                            " " + captureGetters[getter] + " " + actions[action];
+                        run(name.c_str(), [=](Fixture& f) {
+                            NSRect normal = f.native.frame, restore = RestoreBounds(f);
+                            std::unique_ptr<Fixture> replacement;
+                            NSRect replacementFrame = NSZeroRect, replacementRestore = NSZeroRect;
+                            BestFitZoom bestFit(f.native);
+                            ControlledFullScreen fullscreen(f.native);
+                            RestoreSnapshotProbe probe(f, captureSelectors[getter], [&] {
+                                if (!action) return;
+                                auto* address = f.window;
+                                f.Destroy();
+                                if (action == 2) {
+                                    replacement = std::make_unique<Fixture>(style, 500, 300, 560, 360);
+                                    replacementFrame = replacement->native.frame;
+                                    replacementRestore = RestoreBounds(*replacement);
+                                    std::printf("Restore capture replacement: reusedAddress=%d\n", replacement->window == address);
+                                }
+                            });
+                            bool completed = false;
+                            WindowNotification acknowledged(f, NSWindowDidMiniaturizeNotification, [&] { completed = true; });
+                            if (operation == 0) jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                            else if (operation == 1) [f.native zoom:nil];
+                            else if (operation == 2) [f.native miniaturize:nil];
+                            else fullscreen.Will();
+                            Require(probe.called, "restore capture did not exercise the getter callback");
+                            if (action) {
+                                Require(!f.window && NSEqualRects(f.native.frame, normal),
+                                    "retired capture continued changing its original native window");
+                                for (const auto& event : f.events)
+                                    Require(event.type != JALIUM_EVENT_STATE_CHANGED,
+                                        "retired capture published another state");
+                                if (replacement) {
+                                    Require(jalium_window_get_state(replacement->window) == JALIUM_WINDOW_STATE_NORMAL &&
+                                        NSEqualRects(replacement->native.frame, replacementFrame) &&
+                                        NSEqualRects(RestoreBounds(*replacement), replacementRestore),
+                                        "retired capture changed its replacement's state or geometry");
+                                    for (const auto& event : replacement->events)
+                                        Require(event.type != JALIUM_EVENT_STATE_CHANGED,
+                                            "retired capture dispatched a state to its replacement");
+                                }
+                                return;
+                            }
+                            if (operation == 2) {
+                                Require(Pump([&] { return completed && f.native.miniaturized; }),
+                                    "live capture did not reach actual native minimize completion");
+                            } else if (operation == 3) {
+                                fullscreen.Complete();
+                                Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN; }),
+                                    "live fullscreen capture did not publish its completion");
+                            } else {
+                                Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED,
+                                    "live capture lost its requested maximized state");
+                            }
+                            Require(NSEqualRects(RestoreBounds(f), restore), "live capture changed normal restore bounds");
+                            jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                            if (operation == 3) fullscreen.Complete();
+                            Require(Pump([&] { return !f.native.miniaturized &&
+                                jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL; }),
+                                "live capture could not restore its normal state");
+                            Require(NSEqualRects(f.native.frame, normal) && NSEqualRects(RestoreBounds(f), restore),
+                                "live capture lost its final normal geometry");
+                        });
+                    }
+                    if (operation == 3) continue;
+                    std::string name = std::string("restore capture ") + captureOperations[operation] +
+                        " " + captureGetters[getter] + " preserves a newer normal request";
+                    run(name.c_str(), [=](Fixture& f) {
+                        NSRect normal = f.native.frame, restore = RestoreBounds(f);
+                        RestoreSnapshotProbe probe(f, captureSelectors[getter], [&] {
+                            jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                        });
+                        if (operation == 0) jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                        else if (operation == 1) [f.native zoom:nil];
+                        else [f.native miniaturize:nil];
+                        Require(probe.called, "newer request did not exercise the getter callback");
+                        Require(!f.native.miniaturized && jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL &&
+                            NSEqualRects(f.native.frame, normal) && NSEqualRects(RestoreBounds(f), restore),
+                            "older capture overrode a newer normal request");
+                        for (const auto& event : f.events)
+                            Require(event.type != JALIUM_EVENT_STATE_CHANGED,
+                                "older capture published a state after its request was replaced");
+                    });
+                }
+                std::string name = std::string("restore capture fullscreen will ") + captureGetters[getter] +
+                    " preserves a newer normal request";
+                run(name.c_str(), [=](Fixture& f) {
+                    NSRect normal = f.native.frame, restore = RestoreBounds(f);
+                    ControlledFullScreen fullscreen(f.native);
+                    RestoreSnapshotProbe probe(f, captureSelectors[getter], [&] {
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    });
+                    fullscreen.Will();
+                    Require(probe.called, "fullscreen did not exercise the getter callback");
+                    fullscreen.Complete();
+                    Require(Pump([&] { return fullscreen.toggles == 1; }),
+                        "fullscreen capture lost the newer normal request");
+                    fullscreen.Complete();
+                    Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL; }) &&
+                        NSEqualRects(f.native.frame, normal) && NSEqualRects(RestoreBounds(f), restore),
+                        "fullscreen capture replaced normal restore geometry");
+                });
+            }
+            for (auto requested : {JALIUM_WINDOW_STATE_NORMAL, JALIUM_WINDOW_STATE_MINIMIZED,
+                JALIUM_WINDOW_STATE_MAXIMIZED}) {
+                std::string name = "restore capture state validation preserves newer native Zoom " +
+                    std::to_string(static_cast<int>(requested));
+                run(name.c_str(), [=](Fixture& f) {
+                    NSRect restore = RestoreBounds(f);
+                    BestFitZoom bestFit(f.native);
+                    bool minimized = false;
+                    WindowNotification acknowledged(f, NSWindowDidMiniaturizeNotification, [&] { minimized = true; });
+                    RestoreSnapshotProbe probe(f, @selector(styleMask), [&] { [f.native zoom:nil]; });
+                    jalium_window_set_state(f.window, requested);
+                    Require(probe.called, "state validation did not exercise the native Zoom callback");
+                    if (requested == JALIUM_WINDOW_STATE_MINIMIZED)
+                        Require(!Pump([&] { return minimized; }), "an older state minimized the newer native Zoom");
+                    Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED &&
+                        NSEqualRects(f.native.frame, bestFit.delegate.standardFrame) &&
+                        NSEqualRects(RestoreBounds(f), restore),
+                        "an older state overrode native Zoom best-fit or normal restore geometry");
+                });
+            }
             run("content AX focus follows the actual input view", [](Fixture& f) {
                 ContentAccessibility ax(f); ax.CheckFocused();
             });
