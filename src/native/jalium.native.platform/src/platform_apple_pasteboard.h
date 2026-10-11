@@ -17,13 +17,20 @@ inline JaliumResult BuildPasteboardItems(const Item* items, uint32_t count,
     *output = nil;
     if ((!items && count) || count > maxItems) return JALIUM_ERROR_INVALID_ARGUMENT;
     if (!count) { *output = @[]; return JALIUM_OK; }
+    // Bound all input representations before copying any bytes. Individually
+    // valid formats can otherwise exceed the payload budget when combined.
+    NSUInteger totalBytes = 0;
+    for (uint32_t index = 0; index < count; ++index) {
+        const auto& item = items[index];
+        if (!item.mimeType || (!item.data && item.dataSize) || item.dataSize > maxBytes - totalBytes)
+            return JALIUM_ERROR_INVALID_ARGUMENT;
+        totalBytes += item.dataSize;
+    }
     NSPasteboardItem* first = [NSPasteboardItem new];
     NSMutableArray<NSPasteboardItem*>* boards = [NSMutableArray arrayWithObject:first];
     NSString* uriList = nil;
     for (uint32_t index = 0; index < count; ++index) {
         const auto& item = items[index];
-        if (!item.mimeType || (!item.data && item.dataSize) || item.dataSize > maxBytes)
-            return JALIUM_ERROR_INVALID_ARGUMENT;
         NSPasteboardType type = typeFromMime(item.mimeType);
         if (!type) return JALIUM_ERROR_INVALID_ARGUMENT;
         NSData* data = [NSData dataWithBytes:item.data length:item.dataSize];
@@ -37,12 +44,28 @@ inline JaliumResult BuildPasteboardItems(const Item* items, uint32_t count,
     if ([uriList hasPrefix:@"\uFEFF"]) uriList = [uriList substringFromIndex:1];
     __block NSUInteger urlCount = 0;
     __block JaliumResult result = JALIUM_OK;
+    // Encode raw IRI characters ourselves while retaining existing escapes.
+    // Foundation on macOS 26 can re-encode those escapes when the same URL
+    // also contains raw Unicode. NSURL still validates the resulting URI.
+    NSCharacterSet* uriCharacters = [NSCharacterSet characterSetWithCharactersInString:
+        @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~:/?#[]@!$&'()*+,;=%"];
+    NSRegularExpression* invalidPercent = [NSRegularExpression regularExpressionWithPattern:
+        @"%(?![0-9A-Fa-f]{2})" options:0 error:nil];
     // Enumerate lazily: a bounded byte payload can still contain millions of
     // empty/comment lines, which must not allocate a separate array of strings.
     [uriList enumerateLinesUsingBlock:^(NSString* raw, BOOL* stop) {
         NSString* value = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         if (!value.length || [value hasPrefix:@"#"]) return;
-        NSURL* url = [NSURL URLWithString:value];
+        value = [invalidPercent stringByReplacingMatchesInString:value options:0
+            range:NSMakeRange(0, value.length) withTemplate:@"%25"];
+        NSString* encoded = [value stringByAddingPercentEncodingWithAllowedCharacters:uriCharacters];
+        NSURLComponents* components = encoded ?
+            [NSURLComponents componentsWithString:encoded encodingInvalidCharacters:NO] : nil;
+        // Reapply the decoded host through Foundation's host setter so an
+        // international hostname keeps its native IDNA representation.
+        NSString* host = components.host;
+        if (host.length && ![host canBeConvertedToEncoding:NSASCIIStringEncoding]) components.host = host;
+        NSURL* url = components.URL;
         if (!url.scheme.length) return;
         if (++urlCount > maxItems) { result = JALIUM_ERROR_INVALID_ARGUMENT; *stop = YES; return; }
         NSPasteboardItem* board = urlCount == 1 ? first : [NSPasteboardItem new];

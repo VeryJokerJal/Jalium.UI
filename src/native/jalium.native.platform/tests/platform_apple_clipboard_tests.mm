@@ -65,6 +65,52 @@ int main()
         Check(BuildPasteboardItems(items, 1, Type, &built, uris.size() - 1) == JALIUM_ERROR_INVALID_ARGUMENT && !built,
             "representation bytes bound");
 
+        std::string shortText = "hello", shortHtml = "<b/>";
+        JaliumClipboardDataItem formats[] = {Item("text/plain", shortText), Item("text/html", shortHtml)};
+        NSUInteger formatBytes = shortText.size() + shortHtml.size();
+        Check(BuildPasteboardItems(formats, 2, Type, &built, formatBytes - 1) == JALIUM_ERROR_INVALID_ARGUMENT && !built,
+            "aggregate format bytes rejected before materialization");
+        Check(BuildPasteboardItems(formats, 2, Type, &built, formatBytes) == JALIUM_OK && built.count == 1 &&
+            [[built[0] stringForType:NSPasteboardTypeString] isEqualToString:@"hello"] &&
+            [[built[0] dataForType:NSPasteboardTypeHTML] isEqual:[NSData dataWithBytes:shortHtml.data() length:shortHtml.size()]],
+            "exact aggregate format budget retains both native representations");
+        std::string noBytes;
+        JaliumClipboardDataItem emptyFormats[] = {Item("text/plain", noBytes), Item("text/html", noBytes)};
+        Check(BuildPasteboardItems(emptyFormats, 2, Type, &built, 0) == JALIUM_OK && built.count == 1 &&
+            [[built[0] stringForType:NSPasteboardTypeString] isEqualToString:@""] &&
+            [built[0] dataForType:NSPasteboardTypeHTML].length == 0,
+            "zero aggregate budget accepts empty native representations");
+
+        std::string iriBatch = "file:///tmp/中文%F0%9F%99%82%23%25%20space.txt\n"
+            "https://example.test/路径%2Ftail?q=文%20字&plus=%2B#片%25段\n"
+            "https://例子.test/中文%F0%9F%99%82\n"
+            "file:///tmp/中文100%.txt\n"
+            "https://[::1]:8443/a%20b?q=%25#中文\n"
+            "mailto:用户%40example.test?subject=中文%20%F0%9F%99%82\n"
+            "file:///tmp/%5B中文%5D-%2520.txt\n";
+        auto iriItem = Item("text/uri-list", iriBatch);
+        Check(WritePasteboardData(board, &iriItem, 1, Type) == JALIUM_OK, "mixed raw and escaped IRI batch writes");
+        NSArray<NSURL*>* iriUrls = [board readObjectsForClasses:@[NSURL.class] options:@{}];
+        Check(iriUrls.count == 7, "native URL reader retains the complete mixed IRI batch");
+        Check([iriUrls[0].path isEqualToString:@"/tmp/中文🙂#% space.txt"],
+            "file Unicode, emoji and escaped punctuation decode once");
+        Check([iriUrls[1].absoluteString isEqualToString:
+            @"https://example.test/%E8%B7%AF%E5%BE%84%2Ftail?q=%E6%96%87%20%E5%AD%97&plus=%2B#%E7%89%87%25%E6%AE%B5"],
+            "web path, query and fragment retain encoded delimiters");
+        if (![iriUrls[2].host isEqualToString:[NSURL URLWithString:@"https://例子.test"].host])
+            std::fprintf(stderr, "IRI host diagnostic: url=%s host=%s expected=%s\n",
+                iriUrls[2].absoluteString.UTF8String, iriUrls[2].host.UTF8String,
+                [NSURL URLWithString:@"https://例子.test"].host.UTF8String);
+        Check([iriUrls[2].host isEqualToString:[NSURL URLWithString:@"https://例子.test"].host] &&
+            [iriUrls[2].path isEqualToString:@"/中文🙂"], "international host and mixed escaped path remain usable");
+        Check([iriUrls[3].path isEqualToString:@"/tmp/中文100%.txt"], "literal percent in an IRI filename is encoded once");
+        Check([iriUrls[4].absoluteString isEqualToString:@"https://[::1]:8443/a%20b?q=%25#%E4%B8%AD%E6%96%87"],
+            "IPv6 host, port and escaped query retain their native URL structure");
+        Check([iriUrls[5].absoluteString isEqualToString:
+            @"mailto:%E7%94%A8%E6%88%B7%40example.test?subject=%E4%B8%AD%E6%96%87%20%F0%9F%99%82"],
+            "opaque URL scheme retains the encoded address and query");
+        Check([iriUrls[6].path isEqualToString:@"/tmp/[中文]-%20.txt"], "escaped brackets and literal escape text decode once");
+
         std::string mixed = "\xEF\xBB\xBF# comment\r\n\r\n relative/path \n"
             "https://example.test/a%20b\nfile:///tmp/a%23%25.txt\nfile:///tmp/a%23%25.txt\n";
         auto mixedItem = Item("text/uri-list", mixed);
@@ -93,10 +139,21 @@ int main()
         bad = {"text/plain", &invalid, 1}; reject(&bad, 1, "invalid text UTF8");
         bad = {"text/plain", &invalid, static_cast<uint32_t>(MaxPasteboardPayloadBytes + 1)};
         reject(&bad, 1, "oversize rejected before reading pointer");
+        JaliumClipboardDataItem aggregateOversize[] = {
+            {"text/plain", &invalid, static_cast<uint32_t>(MaxPasteboardPayloadBytes / 2 + 1)},
+            {"text/html", &invalid, static_cast<uint32_t>(MaxPasteboardPayloadBytes / 2 + 1)}};
+        // Each declared size fits separately. Their sum must be rejected
+        // before reading either buffer or clearing the existing private board.
+        reject(aggregateOversize, 2, "aggregate oversize rejected before reading any representation");
         std::string empty = "# only comments\r\n relative";
         bad = Item("text/uri-list", empty); reject(&bad, 1, "URL-only write with no absolute URLs");
         Check(jalium_clipboard_set_data(nullptr, 1) == JALIUM_ERROR_INVALID_ARGUMENT,
             "public invalid write rejects without taking the general board");
+        NSInteger generalGeneration = NSPasteboard.generalPasteboard.changeCount;
+        Check(jalium_clipboard_set_data(aggregateOversize, 2) == JALIUM_ERROR_INVALID_ARGUMENT,
+            "public aggregate oversize rejects before reading any representation");
+        Check(NSPasteboard.generalPasteboard.changeCount == generalGeneration,
+            "public rejected aggregate write retains the user's clipboard generation");
 
         std::string zero;
         auto emptyText = Item("text/plain", zero);
