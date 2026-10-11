@@ -35,18 +35,24 @@ struct Surface {
     NSView* view;
     int width, height;
     float scale;
-    Surface(float dpiScale, uint32_t samples, int logicalSize = 128)
+    Surface(float dpiScale, uint32_t samples, int logicalSize = 128,
+        JaliumRenderingEngine defaultEngine = JALIUM_ENGINE_AUTO)
         : context(jalium_context_create(JALIUM_BACKEND_METAL), jalium_context_destroy),
           target(nullptr, jalium_render_target_destroy),
           view([[NSView alloc] initWithFrame:NSMakeRect(0, 0, logicalSize, logicalSize)]),
           width(std::lround(logicalSize * dpiScale)), height(width), scale(dpiScale) {
         Check(context != nullptr, "context");
+        Check(jalium_context_set_default_engine(context.get(), defaultEngine) == JALIUM_OK,
+            "context default engine");
         JaliumSurfaceDescriptor descriptor{};
         descriptor.platform = JALIUM_PLATFORM_MACOS;
         descriptor.kind = JALIUM_SURFACE_KIND_NATIVE_WINDOW;
         descriptor.handle0 = reinterpret_cast<intptr_t>((__bridge void*)view);
         target.reset(jalium_render_target_create_for_surface(context.get(), &descriptor, width, height));
         Check(target != nullptr, "target");
+        Check(jalium_render_target_get_engine(target.get()) ==
+            (defaultEngine == JALIUM_ENGINE_AUTO ? JALIUM_ENGINE_IMPELLER : defaultEngine),
+            "new target inherits the context default engine");
         jalium_render_target_set_dpi(target.get(), 96 * scale, 96 * scale);
         jalium_render_target_set_path_msaa(target.get(), samples);
     }
@@ -450,11 +456,29 @@ int main() {
         try {
             CheckPrecompiledShaders();
             [NSApplication sharedApplication]; jalium_metal_init();
+            {
+                Surface defaultVello(1, 4, 128, JALIUM_ENGINE_VELLO);
+                Matrix(defaultVello);
+                Check(jalium_render_target_set_engine(defaultVello.target.get(), JALIUM_ENGINE_IMPELLER) ==
+                    JALIUM_OK, "switch default Vello target to Impeller");
+                Matrix(defaultVello);
+                Check(jalium_render_target_set_engine(defaultVello.target.get(), JALIUM_ENGINE_VELLO) ==
+                    JALIUM_OK, "reuse Vello after switching to Impeller");
+                Matrix(defaultVello);
+            }
             for (float scale : {1.0f, 1.5f, 2.0f}) for (uint32_t samples : {1u, 4u}) {
                 Surface surface(scale, samples); Matrix(surface); EllipticalArcs(surface); SpecialStyles(surface);
                 GradientColors(surface); GradientColors(surface,-1); DamageAndCaptures(surface);
+                surface.Begin();
                 Check(jalium_render_target_set_engine(surface.target.get(),JALIUM_ENGINE_VELLO)==JALIUM_OK,"Vello engine");
-                Check(jalium_render_target_get_engine(surface.target.get())==JALIUM_ENGINE_VELLO,"active Vello engine");
+                Check(jalium_render_target_get_engine(surface.target.get())==JALIUM_ENGINE_IMPELLER,
+                    "mid-frame engine switch preserves the active engine");
+                surface.End();
+                surface.Begin();
+                Check(jalium_render_target_get_engine(surface.target.get())==JALIUM_ENGINE_VELLO,
+                    "pending Vello engine becomes active at the next BeginDraw");
+                surface.End();
+                checks += 2;
                 Matrix(surface); EllipticalArcs(surface); GradientColors(surface,-1);
             }
             Surface large(2, 4, 400);

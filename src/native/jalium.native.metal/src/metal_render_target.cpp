@@ -1921,8 +1921,6 @@ bool MetalRenderTarget::Initialize(const JaliumSurfaceDescriptor* surface)
         impl_->pathMsaa/=2;
     impl_->pendingPathMsaa=impl_->pathMsaa;
     if (!impl_->InitializePipelines()) return false;
-    impl_->vello=std::make_unique<MetalVelloPipeline>(impl_->device);
-    (void)impl_->vello->Initialize();
     return Resize(width_, height_) == JALIUM_OK;
 }
 
@@ -3300,6 +3298,12 @@ JaliumResult MetalRenderTarget::SetRenderingEngine(JaliumRenderingEngine engine)
     JaliumRenderingEngine resolved=ResolveRenderingEngine(engine,JALIUM_BACKEND_METAL);
     if(resolved!=JALIUM_ENGINE_IMPELLER&&resolved!=JALIUM_ENGINE_VELLO)
         return JALIUM_ERROR_NOT_SUPPORTED;
+    if(resolved==JALIUM_ENGINE_VELLO&&!impl_->vello){
+        // Default Impeller windows do not need Vello's compute pipelines.
+        // Keep one initialization attempt per target, including failures.
+        impl_->vello=std::make_unique<MetalVelloPipeline>(impl_->device);
+        (void)impl_->vello->Initialize();
+    }
     if(resolved==JALIUM_ENGINE_VELLO&&(!impl_->vello||!impl_->vello->IsReady()))
         return JALIUM_ERROR_NOT_SUPPORTED;
     if(impl_->drawing)impl_->FlushVello();
