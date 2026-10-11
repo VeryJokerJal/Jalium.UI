@@ -976,6 +976,7 @@ int main(int argc, char** argv)
                                 else [target.native setFrame:target.ChangedFrame() display:NO];
                             };
                             NSRect expectedFrame, expectedRestore;
+                            NSRect initialTarget = f.native.frame;
                             int repetitions = action == 3 ? 4 : 1;
                             std::vector<NSRect> expectedFrames;
                             std::vector<NSSize> expectedContents;
@@ -993,11 +994,25 @@ int main(int argc, char** argv)
                             }
                             BestFitZoom bestFit(f.native);
                             ControlledFullScreen fullscreen(f.native);
+                            NSRect targetBeforeCapture = f.native.frame;
                             int changes = 0;
                             RestoreSnapshotProbe probe(f, captureSelectors[getter], [&] {
                                 changeGeometry(f);
-                                Require(NSEqualRects(f.native.frame, expectedFrames.at(changes)) &&
-                                    NSEqualSizes(((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size, expectedContents.at(changes)),
+                                NSRect actualFrame = f.native.frame;
+                                NSSize actualContent = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+                                bool applied = NSEqualRects(actualFrame, expectedFrames.at(changes)) &&
+                                    NSEqualSizes(actualContent, expectedContents.at(changes));
+                                if (!applied) {
+                                    NSScreen* screen = f.native.screen;
+                                    std::fprintf(stderr, "Restore callback geometry: getter=%s operation=%s action=%s step=%d initial=%s before-capture=%s expected-frame=%s actual-frame=%s expected-content=%s actual-content=%s screen=%s work=%s scale=%.2f state=%d mini=%d\n",
+                                        captureGetters[getter], captureOperations[operation], actions[action], changes,
+                                        NSStringFromRect(initialTarget).UTF8String, NSStringFromRect(targetBeforeCapture).UTF8String,
+                                        NSStringFromRect(expectedFrames.at(changes)).UTF8String, NSStringFromRect(actualFrame).UTF8String,
+                                        NSStringFromSize(expectedContents.at(changes)).UTF8String, NSStringFromSize(actualContent).UTF8String,
+                                        NSStringFromRect(screen.frame).UTF8String, NSStringFromRect(screen.visibleFrame).UTF8String,
+                                        screen.backingScaleFactor, jalium_window_get_state(f.window), f.native.miniaturized);
+                                }
+                                Require(applied,
                                     "getter callback did not apply the independent geometry");
                                 ++changes;
                             }, 1, repetitions);
@@ -1591,10 +1606,13 @@ int main(int argc, char** argv)
                     "minimize start preserves explicit move", "minimize start preserves explicit resize then move"};
                 run(names[geometry], [=](Fixture& f) {
                     NSRect expected = RestoreBounds(f);
+                    NSRect originalFrame = NSZeroRect;
+                    NSRect referenceOrderedFrame = NSZeroRect, referenceFrame = NSZeroRect;
+                    NSRect referenceWork = NSZeroRect;
                     DeferredMinimizationStart delayed(f.native);
                     [f.native miniaturize:nil];
                     if (geometry != 1) {
-                        NSRect originalFrame = f.native.frame;
+                        originalFrame = f.native.frame;
                         NSWindow* reference = [[NSWindow alloc] initWithContentRect:
                             [f.native contentRectForFrameRect:originalFrame] styleMask:f.native.styleMask
                             backing:NSBackingStoreBuffered defer:YES];
@@ -1603,9 +1621,11 @@ int main(int argc, char** argv)
                         reference.contentMaxSize = f.native.contentMaxSize;
                         [reference setFrame:originalFrame display:NO];
                         [reference orderFront:nil];
+                        referenceOrderedFrame = reference.frame;
                         double scale = jalium_window_get_dpi_scale(f.window);
                         [reference setContentSize:NSMakeSize(600 / scale, 400 / scale)];
-                        NSRect referenceFrame = reference.frame;
+                        referenceFrame = reference.frame;
+                        referenceWork = reference.screen.visibleFrame;
                         expected.origin.x += (NSMinX(referenceFrame) - NSMinX(originalFrame)) * scale;
                         expected.origin.y += (NSMaxY(originalFrame) - NSMaxY(referenceFrame)) * scale;
                         [reference close];
@@ -1617,10 +1637,17 @@ int main(int argc, char** argv)
                         expected.origin = NSMakePoint(180, 200);
                     }
                     NSRect actual = RestoreBounds(f);
-                    if (!NSEqualRects(actual, expected))
+                    if (!NSEqualRects(actual, expected)) {
                         std::fprintf(stderr, "Minimize start geometry: expected=%s actual=%s native=%s scale=%.2f\n",
                             NSStringFromRect(expected).UTF8String, NSStringFromRect(actual).UTF8String,
                             NSStringFromRect(f.native.frame).UTF8String, jalium_window_get_dpi_scale(f.window));
+                        NSScreen* screen = f.native.screen;
+                        std::fprintf(stderr, "Minimize resize reference: original=%s ordered=%s resized=%s reference-work=%s screen=%s target-work=%s style=%lu class=%s\n",
+                            NSStringFromRect(originalFrame).UTF8String, NSStringFromRect(referenceOrderedFrame).UTF8String,
+                            NSStringFromRect(referenceFrame).UTF8String, NSStringFromRect(referenceWork).UTF8String,
+                            NSStringFromRect(screen.frame).UTF8String, NSStringFromRect(screen.visibleFrame).UTF8String,
+                            static_cast<unsigned long>(f.native.styleMask), object_getClassName(f.native));
+                    }
                     Require(NSEqualRects(actual, expected), "pending start lost explicit normal geometry");
                     jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
                     bool completed = false;
