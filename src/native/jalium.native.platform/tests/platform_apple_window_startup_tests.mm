@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -86,6 +87,23 @@ struct FrameProbe {
     FrameProbe() { g_originalFrame = method_setImplementation(frame, reinterpret_cast<IMP>(SetFrame)); }
     ~FrameProbe() { method_setImplementation(frame, g_originalFrame); g_afterFrame = {}; g_frameTarget = nil; }
 };
+static NSWindow* g_orderTarget;
+static IMP g_originalOrder;
+static void OrderFront(id window, SEL selector, id sender)
+{
+    if (window != g_orderTarget)
+        reinterpret_cast<void(*)(id, SEL, id)>(g_originalOrder)(window, selector, sender);
+}
+struct OrderProbe {
+    Method order = class_getInstanceMethod(NSWindow.class, @selector(orderFront:));
+    explicit OrderProbe(NSWindow* target)
+    {
+        Require(!g_orderTarget && !target.visible, "order probe requires a hidden exclusive target");
+        g_orderTarget = target;
+        g_originalOrder = method_setImplementation(order, reinterpret_cast<IMP>(OrderFront));
+    }
+    ~OrderProbe() { method_setImplementation(order, g_originalOrder); g_orderTarget = nil; }
+};
 struct Fixture {
     JaliumPlatformWindow* window;
     NSWindow* native;
@@ -101,6 +119,63 @@ struct Fixture {
     ~Fixture() { if (window) Destroy(); }
     intptr_t Handle() const { return (intptr_t)(__bridge void*)native; }
 };
+struct MiniProbe;
+static MiniProbe* g_miniProbe;
+static IMP g_originalMini, g_originalDemini, g_originalMiniState;
+static void Miniaturize(id, SEL, id);
+static void Deminiaturize(id, SEL, id);
+static BOOL IsMiniaturized(id, SEL);
+// Control this hidden SDK window's notification sequence, while retaining
+// real NSView/NSWindow geometry, display selection and frame alignment.
+struct MiniProbe {
+    NSWindow* target;
+    bool minimized = false;
+    std::function<void()> afterWill;
+    Method mini = class_getInstanceMethod(NSWindow.class, @selector(miniaturize:));
+    Method demini = class_getInstanceMethod(NSWindow.class, @selector(deminiaturize:));
+    Method state = class_getInstanceMethod(NSWindow.class, @selector(isMiniaturized));
+    explicit MiniProbe(NSWindow* target) : target(target)
+    {
+        Require(g_miniProbe == nullptr && !target.visible, "mini probe requires a hidden exclusive target");
+        g_miniProbe = this;
+        g_originalMini = method_setImplementation(mini, reinterpret_cast<IMP>(Miniaturize));
+        g_originalDemini = method_setImplementation(demini, reinterpret_cast<IMP>(Deminiaturize));
+        g_originalMiniState = method_setImplementation(state, reinterpret_cast<IMP>(IsMiniaturized));
+    }
+    ~MiniProbe()
+    {
+        method_setImplementation(mini, g_originalMini);
+        method_setImplementation(demini, g_originalDemini);
+        method_setImplementation(state, g_originalMiniState);
+        g_miniProbe = nullptr;
+        if (g_frameTarget == target) { g_afterFrame = {}; g_frameTarget = nil; }
+    }
+};
+static void Miniaturize(id object, SEL selector, id sender)
+{
+    if (!g_miniProbe || object != g_miniProbe->target) {
+        reinterpret_cast<void(*)(id, SEL, id)>(g_originalMini)(object, selector, sender); return;
+    }
+    NSWindow* window = g_miniProbe->target;
+    [window.delegate windowWillMiniaturize:[NSNotification notificationWithName:NSWindowWillMiniaturizeNotification object:window]];
+    if (g_miniProbe->afterWill) { auto action = std::move(g_miniProbe->afterWill); action(); }
+    g_miniProbe->minimized = true;
+    [window.delegate windowDidMiniaturize:[NSNotification notificationWithName:NSWindowDidMiniaturizeNotification object:window]];
+}
+static void Deminiaturize(id object, SEL selector, id sender)
+{
+    if (!g_miniProbe || object != g_miniProbe->target) {
+        reinterpret_cast<void(*)(id, SEL, id)>(g_originalDemini)(object, selector, sender); return;
+    }
+    g_miniProbe->minimized = false;
+    NSWindow* window = g_miniProbe->target;
+    [window.delegate windowDidDeminiaturize:[NSNotification notificationWithName:NSWindowDidDeminiaturizeNotification object:window]];
+}
+static BOOL IsMiniaturized(id object, SEL selector)
+{
+    return g_miniProbe && object == g_miniProbe->target ? g_miniProbe->minimized :
+        reinterpret_cast<BOOL(*)(id, SEL)>(g_originalMiniState)(object, selector);
+}
 struct PlacementCheck {
     NSWindow* target;
     NSRect before, work, reference, requested, expected;
@@ -168,6 +243,17 @@ struct MoveProbe {
         Require(count > 0 && this->x == x && this->y == y, "move notification does not match real geometry");
     }
 };
+struct CallbackReset {
+    Fixture& fixture;
+    ~CallbackReset() { if (fixture.window) jalium_window_set_event_callback(fixture.window, nullptr, nullptr); }
+};
+static void PumpUntil(const std::function<bool()>& done)
+{
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!done() && std::chrono::steady_clock::now() < deadline)
+        [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+    Require(done(), "queued startup placement did not finish within three seconds");
+}
 int main()
 {
     @autoreleasepool {
@@ -273,7 +359,147 @@ int main()
                 placement.Verify();
                 moves.Matches(f);
             });
+            run("minimized placement survives native normal restore", [](Fixture& f) {
+                NSScreen* screen = TestStartupScreen();
+                PlacementCheck placement(f.native, f.native.frame, screen, screen.visibleFrame);
+                MiniProbe mini(f.native);
+                [f.native miniaturize:nil];
+                Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED,
+                    "controlled SDK minimization did not finish");
+                Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK,
+                    "minimized startup placement rejected");
+                [f.native deminiaturize:nil];
+                Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL && !f.native.visible,
+                    "restore must finish without displaying the fixture");
+                placement.Verify();
+            });
+            run("miniaturizing placement waits for normal restore", [](Fixture& f) {
+                NSScreen* screen = TestStartupScreen();
+                NSRect before = f.native.frame;
+                PlacementCheck placement(f.native, before, screen, screen.visibleFrame);
+                MiniProbe mini(f.native);
+                bool deferred = false;
+                mini.afterWill = [&] {
+                    Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK,
+                        "in-flight startup placement rejected");
+                    deferred = NSEqualRects(f.native.frame, before);
+                };
+                [f.native miniaturize:nil];
+                Require(deferred, "startup placement changed native geometry during minimization");
+                [f.native deminiaturize:nil];
+                Require(!f.native.visible, "controlled restore displayed its fixture");
+                placement.Verify();
+            });
             if (!baselineSize) continue;
+            run("deferred frame callback retains newer owner placement before maximize", [=](Fixture& f) {
+                Fixture owner(style);
+                NSRect ownerFrame = owner.native.frame;
+                ownerFrame.origin.x += 180; ownerFrame.origin.y -= 120;
+                [owner.native setFrame:ownerFrame display:NO];
+                PlacementCheck placement(f.native, f.native.frame, TestStartupScreen(owner.native), owner.native.frame);
+                MiniProbe mini(f.native); [f.native miniaturize:nil];
+                Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK, "initial minimized placement rejected");
+                bool called = false;
+                g_frameTarget = f.native;
+                g_afterFrame = [&] {
+                    called = true;
+                    Require(jalium_apple_window_apply_startup_location(f.window, 2, owner.Handle()) == JALIUM_OK,
+                        "newer owner placement rejected");
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                };
+                [f.native deminiaturize:nil];
+                PumpUntil([&] { return called && jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED; });
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                placement.Verify();
+                Require(!f.native.visible, "deferred state request displayed its fixture");
+            });
+            run("deferred frame callback can close and replace its target", [=](Fixture& f) {
+                std::unique_ptr<Fixture> replacement; NSRect replacementFrame;
+                MiniProbe mini(f.native); [f.native miniaturize:nil];
+                Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK, "minimized placement rejected");
+                g_frameTarget = f.native;
+                g_afterFrame = [&] {
+                    Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK, "queued replacement precursor rejected");
+                    f.Destroy(); replacement = std::make_unique<Fixture>(style); replacementFrame = replacement->native.frame;
+                };
+                [f.native deminiaturize:nil];
+                Require(replacement != nullptr, "deferred frame callback did not execute");
+                [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.03]];
+                Require(NSEqualRects(replacement->native.frame, replacementFrame) && !replacement->native.visible,
+                    "retired placement modified its replacement");
+            });
+            for (int sequence : {0, 1, 2, 3})
+                run(sequence == 0 ? "newer move then resize survives minimized placement" :
+                    sequence == 1 ? "newer resize then move survives minimized placement" :
+                    sequence == 2 ? "newer resize retains minimized centered position" :
+                    "newer move retains minimized normal size", [=](Fixture& f) {
+                    NSScreen* screen = TestStartupScreen();
+                    PlacementCheck placement(f.native, f.native.frame, screen, screen.visibleFrame);
+                    NSWindow* control = [[NSWindow alloc] initWithContentRect:
+                        [NSWindow contentRectForFrameRect:placement.expected styleMask:f.native.styleMask]
+                        styleMask:f.native.styleMask backing:NSBackingStoreBuffered defer:NO];
+                    control.releasedWhenClosed = NO;
+                    [control setFrame:placement.expected display:NO];
+                    MiniProbe mini(f.native); [f.native miniaturize:nil];
+                    Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK, "minimized placement rejected");
+                    CGFloat scale = f.native.backingScaleFactor;
+                    const int x = 210, y = 190, width = 487, height = 347;
+                    NSPoint topLeft = NSMakePoint(x / scale, NSMaxY(NSScreen.screens.firstObject.frame) - y / scale);
+                    auto move = [&] { [control setFrameTopLeftPoint:topLeft]; jalium_window_move(f.window, x, y); };
+                    auto resize = [&] { [control setContentSize:NSMakeSize(width / scale, height / scale)]; jalium_window_resize(f.window, width, height); };
+                    if (sequence == 0) { move(); resize(); }
+                    else if (sequence == 1) { resize(); move(); }
+                    else if (sequence == 2) resize();
+                    else move();
+                    NSRect expected = control.frame; [control close];
+                    [f.native deminiaturize:nil];
+                    if (!SameFrame(f.native.frame, expected)) {
+                        PrintRect("expected-new-geometry-AppKit", expected); PrintRect("actual-new-geometry", f.native.frame);
+                        std::fprintf(stderr, "\n");
+                    }
+                    Require(SameFrame(f.native.frame, expected), "deferred startup placement overwrote newer explicit geometry");
+                    Require(!f.native.visible, "merged geometry displayed its fixture");
+                });
+            run("normal notification retains a newer explicit move", [](Fixture& f) {
+                MiniProbe mini(f.native); [f.native miniaturize:nil];
+                Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK, "minimized placement rejected");
+                bool moved = false;
+                std::pair<Fixture*, bool*> context{&f, &moved};
+                CallbackReset reset{f};
+                jalium_window_set_event_callback(f.window, [](const JaliumPlatformEvent* event, void* data) {
+                    auto& context = *static_cast<std::pair<Fixture*, bool*>*>(data);
+                    if (event->type == JALIUM_EVENT_STATE_CHANGED && event->stateChanged.newState == JALIUM_WINDOW_STATE_NORMAL) {
+                        *context.second = true; jalium_window_move(context.first->window, 230, 170);
+                    }
+                }, &context);
+                [f.native deminiaturize:nil];
+                [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.03]];
+                int x, y; jalium_window_get_position(f.window, &x, &y);
+                Require(moved && x == 230 && y == 170 && !f.native.visible, "normal callback move was overwritten");
+            });
+            run("minimized maximized placement keeps the normal restore frame", [](Fixture& f) {
+                NSScreen* screen = TestStartupScreen();
+                PlacementCheck placement(f.native, f.native.frame, screen, screen.visibleFrame);
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                MiniProbe mini(f.native); [f.native miniaturize:nil];
+                Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK, "minimized maximized placement rejected");
+                [f.native deminiaturize:nil];
+                Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED, "restore lost prior maximized state");
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                placement.Verify();
+                Require(!f.native.visible, "maximized restore displayed its fixture");
+            });
+            run("newer external normal resize retires queued maximized placement", [](Fixture& f) {
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK, "maximized placement rejected");
+                [f.native setContentSize:NSMakeSize(487, 347)];
+                Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL, "external resize did not restore normal state");
+                NSRect latest = f.native.frame;
+                OrderProbe order(f.native);
+                jalium_apple_window_show(f.window, 0);
+                Require(!f.native.visible && SameFrame(f.native.frame, latest), "Show reapplied retired startup geometry");
+                jalium_window_hide(f.window);
+            });
             run("alignment oracle rejects a one-point placement error", [](Fixture& f) {
                 NSScreen* screen = TestStartupScreen();
                 PlacementCheck placement(f.native, f.native.frame, screen, screen.visibleFrame);

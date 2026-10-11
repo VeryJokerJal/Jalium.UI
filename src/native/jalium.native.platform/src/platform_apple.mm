@@ -81,6 +81,7 @@ struct JaliumPlatformWindow {
     NSSize restoreContentSize = NSZeroSize;
     NSRect maximizedFrame = NSZeroRect;
     bool hasRestoreFrame = false;
+    bool pendingStartupPlacement = false;
     bool applyingState = false;
     bool applyingWindowState = false;
     bool appKitZooming = false;
@@ -428,6 +429,22 @@ void CaptureNormalFrame(JaliumPlatformWindow* window)
     window->hasRestoreFrame = true;
 }
 
+bool ApplyPendingStartupPlacement(JaliumPlatformWindow* window)
+{
+    if (!window->pendingStartupPlacement) return true;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    window->pendingStartupPlacement = false;
+    bool wasApplyingState = window->applyingState;
+    window->applyingState = true;
+    [nativeWindow setFrame:window->restoreFrame display:NO];
+    if (!IsLiveWindow(window, nativeWindow)) return false;
+    window->applyingState = wasApplyingState;
+    // Retain a newer placement made by a move/resize callback. Otherwise
+    // save AppKit's actual aligned frame before publishing Normal.
+    if (!window->pendingStartupPlacement) CaptureNormalFrame(window);
+    return true;
+}
+
 void ApplyWindowState(JaliumPlatformWindow* window, JaliumWindowState state);
 void ApplyQueuedWindowState(JaliumPlatformWindow* window);
 
@@ -590,6 +607,20 @@ void ApplyQueuedWindowState(JaliumPlatformWindow* window)
 {
     if (!IsLiveWindow(window) || window->destroying || window->fullScreenTransition ||
         window->appKitZooming || window->applyingWindowState || window->miniaturizing || window->deminiaturizing) return;
+    if (window->pendingStartupPlacement && window->state == JALIUM_WINDOW_STATE_NORMAL) {
+        NSWindow* nativeWindow = window->window;
+        window->applyingWindowState = true;
+        if (!ApplyPendingStartupPlacement(window)) return;
+        window->applyingWindowState = false;
+        if (window->pendingStartupPlacement) {
+            // One frame change per drain. Let AppKit unwind callbacks before
+            // applying a newer placement or capturing it for another state.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (IsLiveWindow(window, nativeWindow)) ApplyQueuedWindowState(window);
+            });
+            return;
+        }
+    }
     bool nativeZoom = window->requestedNativeZoom;
     window->requestedNativeZoom = false;
     if (nativeZoom && (!window->enabled || !window->visible || !window->window.visible ||
@@ -2460,6 +2491,10 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         !_owner->miniaturizing && !_owner->deminiaturizing &&
         !_owner->fullScreenTransition &&
         (sizeChanged || _owner->window.inLiveResize || _owner->interactiveResize);
+    // A newer native geometry change retires deferred startup positioning
+    // before its state callback can request another placement.
+    if (userResize && _owner->state != JALIUM_WINDOW_STATE_MINIMIZED)
+        _owner->pendingStartupPlacement = false;
     // Zoom is AppKit-driven, but managed SizeToContent must see the state before
     // it sees the new size. The normal frame was saved before entering AppKit.
     if (_owner->appKitZooming && _owner->state == JALIUM_WINDOW_STATE_NORMAL) {
@@ -2553,10 +2588,12 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     window->miniaturizing = false;
     if (!window->deminiaturizing) window->requestedState = window->beforeMinimize;
     window->deminiaturizing = true;
+    if (window->beforeMinimize == JALIUM_WINDOW_STATE_NORMAL &&
+        !ApplyPendingStartupPlacement(window)) return;
     PublishWindowState(window, window->beforeMinimize);
     if (!IsLiveWindow(window, nativeWindow)) return;
     window->deminiaturizing = false;
-    if (window->requestedState != window->state || window->requestedNativeZoom ||
+    if (window->pendingStartupPlacement || window->requestedState != window->state || window->requestedNativeZoom ||
         window->pendingActivation || window->pendingMainSelection) {
         __weak JaliumAppleWindow* weakWindow = (JaliumAppleWindow*)window->window;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -3226,7 +3263,8 @@ int32_t jalium_apple_window_apply_startup_location(JaliumPlatformWindow* w, int3
     if (!screen) screen = ScreenAtPoint(NSEvent.mouseLocation);
     if (!screen || NSIsEmptyRect(screen.visibleFrame)) return JALIUM_ERROR_INVALID_STATE;
 
-    bool useRestore = w->state != JALIUM_WINDOW_STATE_NORMAL || w->fullScreenTransition || w->applyingWindowState;
+    bool useRestore = w->state != JALIUM_WINDOW_STATE_NORMAL || w->fullScreenTransition ||
+        w->applyingWindowState || w->miniaturizing || w->deminiaturizing;
     if (useRestore && !w->hasRestoreFrame) return JALIUM_ERROR_INVALID_STATE;
     NSRect frame = useRestore ? w->restoreFrame : nativeWindow.frame;
     NSRect work = screen.visibleFrame;
@@ -3240,7 +3278,9 @@ int32_t jalium_apple_window_apply_startup_location(JaliumPlatformWindow* w, int3
     frame = jalium::platform::apple::CenterStartupFrame(frame, reference, work);
     if (useRestore) {
         w->restoreFrame = frame;
-        if (w->state != JALIUM_WINDOW_STATE_MAXIMIZED || w->fullScreenTransition || w->applyingWindowState)
+        w->pendingStartupPlacement = true;
+        if (w->state != JALIUM_WINDOW_STATE_MAXIMIZED || w->fullScreenTransition ||
+            w->applyingWindowState || w->miniaturizing || w->deminiaturizing)
             return JALIUM_OK;
         frame = MaximizedFrameForScreen(nativeWindow, screen);
     }
@@ -3339,9 +3379,23 @@ void jalium_window_set_title(JaliumPlatformWindow* w,const JaliumUtf16Char* titl
 void jalium_window_resize(JaliumPlatformWindow* w,int32_t width,int32_t height){if(!w||width<=0||height<=0)return;
 #if TARGET_OS_OSX
     NSWindow* nativeWindow = w->window;
+    NSSize contentSize = NSMakeSize(width/w->scale,height/w->scale);
+    if (w->pendingStartupPlacement && w->hasRestoreFrame) {
+        // A later explicit size belongs to the queued normal frame. Match
+        // AppKit's top-left anchor for titled windows and bottom-left anchor
+        // for borderless windows when it applies the content size.
+        NSRect content = [nativeWindow contentRectForFrameRect:w->restoreFrame];
+        content.size = contentSize;
+        NSRect resized = [nativeWindow frameRectForContentRect:content];
+        resized.origin = NSMakePoint(NSMinX(w->restoreFrame),
+            (nativeWindow.styleMask & NSWindowStyleMaskTitled)
+                ? NSMaxY(w->restoreFrame) - resized.size.height : NSMinY(w->restoreFrame));
+        w->restoreFrame = resized;
+        w->restoreContentSize = contentSize;
+    }
     bool wasApplyingState = w->applyingState;
     w->applyingState = true;
-    [nativeWindow setContentSize:NSMakeSize(width/w->scale,height/w->scale)];
+    [nativeWindow setContentSize:contentSize];
     if (IsLiveWindow(w, nativeWindow)) w->applyingState = wasApplyingState;
 #else
     CGRect f=w->view.frame;f.size=CGSizeMake(width/w->scale,height/w->scale);w->view.frame=f;
@@ -3362,9 +3416,12 @@ void jalium_window_move(JaliumPlatformWindow* w,int32_t x,int32_t y){if(!w)retur
     }
     double primaryScale = NSScreen.screens.firstObject.backingScaleFactor ?: 1.0;
     using jalium::platform::apple::ScreenPoint;
-    [nativeWindow setFrameTopLeftPoint:NSMakePoint(
+    NSPoint topLeft = NSMakePoint(
         ScreenPoint(x, NSMinX(destination.frame), primaryScale, destination.backingScaleFactor),
-        desktopTop - ScreenPoint(y, desktopTop - NSMaxY(destination.frame), primaryScale, destination.backingScaleFactor))];
+        desktopTop - ScreenPoint(y, desktopTop - NSMaxY(destination.frame), primaryScale, destination.backingScaleFactor));
+    if (w->pendingStartupPlacement && w->hasRestoreFrame)
+        w->restoreFrame.origin = NSMakePoint(topLeft.x, topLeft.y - w->restoreFrame.size.height);
+    [nativeWindow setFrameTopLeftPoint:topLeft];
     if (IsLiveWindow(w, nativeWindow)) w->applyingState = wasApplyingState;
 #endif
 }
