@@ -1,8 +1,10 @@
 #include "jalium_platform.h"
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
+#include <cmath>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 
 static void Require(bool condition, const char* message)
@@ -69,6 +71,11 @@ struct FullScreen {
         if (full) [window.delegate windowDidEnterFullScreen:note];
         else [window.delegate windowDidExitFullScreen:note];
     }
+    void Fail()
+    {
+        if (full) [window.delegate windowDidFailToExitFullScreen:window];
+        else [window.delegate windowDidFailToEnterFullScreen:window];
+    }
 };
 static void Toggle(id object, SEL selector, id sender)
 {
@@ -87,7 +94,7 @@ struct Fixture {
     NSWindow* native;
     bool callback = false;
     bool zoom = false;
-    explicit Fixture(uint32_t style)
+    explicit Fixture(uint32_t style, bool show = true)
     {
         JaliumWindowParams params{};
         params.title = reinterpret_cast<const JaliumUtf16Char*>(u"Fullscreen restore regression");
@@ -96,9 +103,9 @@ struct Fixture {
         Require(window != nullptr, "create fixture");
         native = ((__bridge NSView*)(void*)jalium_window_get_native_handle(window)).window;
         native.animationBehavior = NSWindowAnimationBehaviorNone;
-        jalium_apple_window_show(window, 0);
+        if (show) jalium_apple_window_show(window, 0);
     }
-    ~Fixture() { jalium_window_destroy(window); }
+    ~Fixture() { if (window) jalium_window_destroy(window); }
     NSRect Bounds()
     {
         int32_t x, y, width, height;
@@ -130,6 +137,103 @@ struct Fixture {
         else {
             jalium_window_move(f.window, 175, 135);
             jalium_window_resize(f.window, 420, 300);
+            jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+        }
+    }
+};
+
+struct RecoveryEvents {
+    int count = 0;
+    static void Record(const JaliumPlatformEvent* event, void* context)
+    {
+        if (event->type == JALIUM_EVENT_STATE_CHANGED)
+            ++static_cast<RecoveryEvents*>(context)->count;
+    }
+};
+static NSWindow* closeFrameTarget = nil;
+static std::function<void()> closeAfterFrame;
+static IMP originalFrame = nullptr;
+static void ClosingFrame(id object, SEL selector, NSRect frame, BOOL display)
+{
+    reinterpret_cast<void (*)(id, SEL, NSRect, BOOL)>(originalFrame)(object, selector, frame, display);
+    if (object == closeFrameTarget && closeAfterFrame) {
+        auto call = std::move(closeAfterFrame); closeFrameTarget = nil; call();
+    }
+}
+struct FrameClose {
+    Method method;
+    FrameClose(NSWindow* target, std::function<void()> action)
+    {
+        Class cls = object_getClass(target);
+        SEL selector = @selector(setFrame:display:);
+        Method inherited = class_getInstanceMethod(cls, selector);
+        originalFrame = method_getImplementation(inherited);
+        class_addMethod(cls, selector, originalFrame, method_getTypeEncoding(inherited));
+        method = class_getInstanceMethod(cls, selector);
+        method_setImplementation(method, reinterpret_cast<IMP>(ClosingFrame));
+        closeFrameTarget = target; closeAfterFrame = std::move(action);
+    }
+    ~FrameClose()
+    {
+        method_setImplementation(method, originalFrame);
+        closeAfterFrame = {}; closeFrameTarget = nil;
+    }
+};
+static NSRect StyledNormal(NSWindow* target, NSSize client, NSPoint topLeft)
+{
+    NSWindow* control = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, client.width, client.height)
+        styleMask:target.styleMask backing:NSBackingStoreBuffered defer:NO];
+    control.releasedWhenClosed = NO;
+    [control setContentSize:client]; [control setFrameTopLeftPoint:topLeft];
+    NSRect frame = control.frame; [control close]; return frame;
+}
+static bool SameFrame(NSRect a, NSRect b)
+{
+    return std::abs(a.origin.x-b.origin.x) < .01 && std::abs(a.origin.y-b.origin.y) < .01 &&
+        std::abs(a.size.width-b.size.width) < .01 && std::abs(a.size.height-b.size.height) < .01;
+}
+struct RecoveryAction {
+    Fixture* fixture;
+    bool titled, close;
+    NSRect expectedBounds;
+    int calls = 0;
+    bool observedStyle = false, observedBounds = false;
+    uint32_t replacementStyle;
+    bool resizeFirst = false;
+    NSRect expectedGeometry = NSZeroRect;
+    std::unique_ptr<Fixture> replacement;
+    NSRect replacementFrame = NSZeroRect;
+    static void Invoke(const JaliumPlatformEvent* event, void* context)
+    {
+        auto& action = *static_cast<RecoveryAction*>(context);
+        if (event->type != JALIUM_EVENT_STATE_CHANGED ||
+            event->stateChanged.newState != JALIUM_WINDOW_STATE_NORMAL || action.calls) return;
+        ++action.calls;
+        auto& f = *action.fixture;
+        action.observedStyle = ((f.native.styleMask & NSWindowStyleMaskTitled) != 0) == action.titled;
+        int32_t x, y, width, height;
+        action.observedBounds = jalium_apple_window_get_restore_bounds(f.window, &x, &y, &width, &height) == JALIUM_OK &&
+            NSEqualRects(NSMakeRect(x, y, width, height), action.expectedBounds);
+        if (action.close) {
+            jalium_window_destroy(f.window); f.window = nullptr;
+            action.replacement = std::make_unique<Fixture>(action.replacementStyle, false);
+            action.replacementFrame = action.replacement->native.frame;
+        } else {
+            CGFloat scale = f.native.backingScaleFactor;
+            NSWindow* control = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 320 / scale, 240 / scale)
+                styleMask:f.native.styleMask backing:NSBackingStoreBuffered defer:NO];
+            control.releasedWhenClosed = NO;
+            [control setFrame:f.native.frame display:NO];
+            NSPoint topLeft = NSMakePoint(175 / scale, NSMaxY(NSScreen.screens.firstObject.frame) - 135 / scale);
+            NSSize client = NSMakeSize(420 / scale, 300 / scale);
+            if (action.resizeFirst) {
+                [control setContentSize:client]; [control setFrameTopLeftPoint:topLeft];
+                jalium_window_resize(f.window, 420, 300); jalium_window_move(f.window, 175, 135);
+            } else {
+                [control setFrameTopLeftPoint:topLeft]; [control setContentSize:client];
+                jalium_window_move(f.window, 175, 135); jalium_window_resize(f.window, 420, 300);
+            }
+            action.expectedGeometry = control.frame; [control close];
             jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
         }
     }
@@ -179,9 +283,150 @@ int main()
                     std::fprintf(stderr, "FAIL %s fullscreen restore mode=%d: %s\n", style == regular ? "Native" : "Custom", mode, error.what());
                 }
             }
+            uint32_t custom = (regular & ~JALIUM_WINDOW_STYLE_TITLEBAR) | JALIUM_WINDOW_STYLE_BORDERLESS;
+            for (int mutation = 0; mutation < 3; ++mutation) for (bool maximized : {false, true}) {
+                try {
+                    Fixture f(style, false);
+                    if (mutation == 2) Require(jalium_apple_window_set_titlebar_extended(f.window, 1) == JALIUM_OK,
+                        "extended setup rejected");
+                    NSSize client = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+                    NSPoint topLeft = NSMakePoint(NSMinX(f.native.frame), NSMaxY(f.native.frame));
+                    if (maximized) jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                    FullScreen transition(f.native);
+                    RecoveryEvents events;
+                    jalium_window_set_event_callback(f.window, RecoveryEvents::Record, &events);
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_FULLSCREEN);
+                    uint32_t desired = mutation == 0 ? (style == regular ? custom : regular) : style;
+                    if (mutation == 0) Require(jalium_apple_window_set_style(f.window, desired) == JALIUM_OK,
+                        "deferred style rejected");
+                    else Require(jalium_apple_window_set_titlebar_extended(f.window, mutation == 1) == JALIUM_OK,
+                        "deferred extension rejected");
+                    transition.Fail(); transition.Fail();
+                    Require(Pump([&] { return events.count != 0; }), "failed entry did not publish recovery");
+                    Require(events.count == 1 && jalium_window_get_state(f.window) ==
+                        (maximized ? JALIUM_WINDOW_STATE_MAXIMIZED : JALIUM_WINDOW_STATE_NORMAL),
+                        "failed entry duplicated or changed recovered state");
+                    bool titled = (desired & JALIUM_WINDOW_STYLE_TITLEBAR) != 0;
+                    bool extended = titled && mutation == 1;
+                    Require(((f.native.styleMask & NSWindowStyleMaskTitled) != 0) == titled &&
+                        ((f.native.styleMask & NSWindowStyleMaskFullSizeContentView) != 0) == extended &&
+                        (f.native.titleVisibility == NSWindowTitleHidden) == extended &&
+                        f.native.titlebarAppearsTransparent == extended,
+                        "failed fullscreen entry lost deferred title-bar style");
+                    if (maximized) Require(SameFrame(f.native.frame, f.native.screen.visibleFrame),
+                        "failed styled entry lost maximized work area");
+                    NSRect expected = StyledNormal(f.native, client, topLeft);
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    Require(!f.native.visible && SameFrame(f.native.frame, expected) &&
+                        NSEqualSizes(((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size, client),
+                        "failed styled entry changed normal client geometry");
+                    ++passed; std::printf("PASS %s failed-entry style=%d maximized=%d\n",
+                        style == regular ? "Native" : "Custom", mutation, maximized);
+                } catch (const std::exception& error) {
+                    std::fprintf(stderr, "FAIL %s failed-entry style=%d maximized=%d: %s\n",
+                        style == regular ? "Native" : "Custom", mutation, maximized, error.what());
+                }
+            }
+            for (int mutation = 0; mutation < 3; ++mutation) {
+                try {
+                    Fixture f(style, false);
+                    if (mutation == 2) Require(jalium_apple_window_set_titlebar_extended(f.window, 1) == JALIUM_OK,
+                        "extended exit setup rejected");
+                    NSSize client = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+                    NSPoint topLeft = NSMakePoint(NSMinX(f.native.frame), NSMaxY(f.native.frame));
+                    FullScreen transition(f.native);
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_FULLSCREEN); transition.Complete();
+                    Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN; }),
+                        "exit fixture did not enter");
+                    uint32_t desired = mutation == 0 ? (style == regular ? custom : regular) : style;
+                    if (mutation == 0) jalium_apple_window_set_style(f.window, desired);
+                    else jalium_apple_window_set_titlebar_extended(f.window, mutation == 1);
+                    NSWindowStyleMask deferredMask = f.native.styleMask;
+                    RecoveryEvents events;
+                    jalium_window_set_event_callback(f.window, RecoveryEvents::Record, &events);
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL); transition.Fail(); transition.Fail();
+                    Require(Pump([&] { return events.count != 0; }), "failed exit did not publish recovery");
+                    Require(events.count == 1 && jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN &&
+                        f.native.styleMask == deferredMask, "failed exit applied style inside fullscreen");
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL); transition.Complete();
+                    Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL; }),
+                        "later styled exit did not finish");
+                    bool titled = (desired & JALIUM_WINDOW_STYLE_TITLEBAR) != 0;
+                    bool extended = titled && mutation == 1;
+                    Require(((f.native.styleMask & NSWindowStyleMaskTitled) != 0) == titled &&
+                        ((f.native.styleMask & NSWindowStyleMaskFullSizeContentView) != 0) == extended &&
+                        !f.native.visible && SameFrame(f.native.frame, StyledNormal(f.native, client, topLeft)) &&
+                        NSEqualSizes(((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size, client),
+                        "later exit lost deferred style or normal geometry");
+                    ++passed; std::printf("PASS %s failed-exit deferred style=%d\n", style == regular ? "Native" : "Custom", mutation);
+                } catch (const std::exception& error) {
+                    std::fprintf(stderr, "FAIL %s failed-exit deferred style=%d: %s\n", style == regular ? "Native" : "Custom",
+                        mutation, error.what());
+                }
+            }
+            for (int mode = 0; mode < 3; ++mode) {
+                try {
+                    bool close = mode == 2;
+                    Fixture f(style, false);
+                    FullScreen transition(f.native);
+                    uint32_t desired = style == regular ? custom : regular;
+                    RecoveryAction action{&f, (desired & JALIUM_WINDOW_STYLE_TITLEBAR) != 0, close, f.Bounds()};
+                    action.replacementStyle = style;
+                    action.resizeFirst = mode == 1;
+                    jalium_window_set_event_callback(f.window, RecoveryAction::Invoke, &action);
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_FULLSCREEN);
+                    jalium_apple_window_set_style(f.window, desired);
+                    transition.Fail();
+                    Require(Pump([&] { return action.calls != 0; }), "recovered style callback did not run");
+                    Require(action.observedStyle && action.observedBounds, "recovery callback observed stale style or normal bounds");
+                    if (close) {
+                        Require(!f.window && action.replacement && !action.replacement->native.visible &&
+                            SameFrame(action.replacement->native.frame, action.replacementFrame),
+                            "failed transition touched a replacement window");
+                    } else {
+                        Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED; }),
+                            "recovery callback lost its newer state");
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                        CGFloat scale = f.native.backingScaleFactor;
+                        NSRect expected = action.expectedGeometry;
+                        f.RequireBounds(NSMakeRect(std::lround(NSMinX(expected) * scale),
+                            std::lround((NSMaxY(NSScreen.screens.firstObject.frame) - NSMaxY(expected)) * scale), 420, 300),
+                            "recovery callback lost newer normal geometry");
+                        Require(SameFrame(f.native.frame, expected) &&
+                            NSEqualSizes(((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size,
+                                NSMakeSize(420 / scale, 300 / scale)), "recovery callback diverged from SDK geometry");
+                        Require(!f.native.visible, "recovery callback displayed its fixture");
+                    }
+                    ++passed; std::printf("PASS %s failed-entry callback mode=%d\n", style == regular ? "Native" : "Custom", mode);
+                } catch (const std::exception& error) {
+                    std::fprintf(stderr, "FAIL %s failed-entry callback mode=%d: %s\n", style == regular ? "Native" : "Custom",
+                        mode, error.what());
+                }
+            }
+            try {
+                Fixture f(style, false);
+                FullScreen transition(f.native);
+                RecoveryEvents events;
+                jalium_window_set_event_callback(f.window, RecoveryEvents::Record, &events);
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_FULLSCREEN);
+                jalium_apple_window_set_style(f.window, style == regular ? custom : regular);
+                std::unique_ptr<Fixture> replacement; NSRect saved = NSZeroRect;
+                FrameClose close(f.native, [&] {
+                    jalium_window_destroy(f.window); f.window = nullptr;
+                    replacement = std::make_unique<Fixture>(style, false); saved = replacement->native.frame;
+                });
+                transition.Fail();
+                Require(Pump([&] { return replacement || events.count != 0; }), "frame-close recovery did not finish");
+                Require(!f.window && replacement && events.count == 0 && !replacement->native.visible &&
+                    SameFrame(replacement->native.frame, saved), "style frame callback did not stop retired recovery");
+                ++passed; std::printf("PASS %s failed-entry style frame close\n", style == regular ? "Native" : "Custom");
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "FAIL %s failed-entry style frame close: %s\n", style == regular ? "Native" : "Custom",
+                    error.what());
+            }
         }
         jalium_platform_shutdown();
-        std::printf("macOS fullscreen restore checks: %d/12 passed\n", passed);
-        return passed == 12 ? 0 : 1;
+        std::printf("macOS fullscreen restore checks: %d/38 passed\n", passed);
+        return passed == 38 ? 0 : 1;
     }
 }
