@@ -4,6 +4,48 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+### v187：Window CI 的精确几何失败与新增诊断
+
+2026-10-12 核对 v186 发布头 **1da5e42e** 的
+[Window CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38182178142)，
+结果为 **15/17**，AX **609/610**、恢复几何 **115/116**；该次 CI 未通过。
+本机 v186 的 21/21 仍是本机证据，不能替代这两个 runner 上的失败：
+
+- `minimize start preserves explicit resize`：期望正常客户区
+  **(200,193,600,400)**，实际 **(200,195,600,400)**，原生 frame
+  **(200,141,600,432)**，scale **1.0**。大小正确，位置相差 **2 DIP**。
+- `restore capture geometry native minimize style retains repeated native frame`：
+  在四次 getter 回调修改原生 frame 的过程中，未得到独立参照窗口的几何。
+  旧日志未包含失败步骤的实际 frame／content，因此不能据此确定原因。
+
+本轮先冻结本地 **717f03ad** 的 Debug Platform／Core／Window AX 可执行文件，
+对上述两个完整 case name 及旧的两次 Zoom 取消 case 分别运行；每个 case 的
+原生／自绘两种标题栏都是 **2/2**。编译独立诊断夹具后，相同三个 case 在
+实际工作区再次各 **2/2**，未在本机复现 CI 故障或旧的成对 Zoom 异常。
+
+临时夹具还把单个保留的 NSScreen 对象的 visibleFrame 控制为
+**(0,375,1024,674)**，在本机 **(0,0,1920,1080)** 屏幕中对应较小工作区。
+三个原生 case 都通过，显式 Resize 正常边界为 **(200,193,600,400)**，
+四次 frame 修改仍一致。该 probe 仅匹配原 NSScreen 对象；后续自绘窗口读到
+实际 **(0,82,1920,968)** 工作区，不能将它们计为较小工作区验收，也不能把
+此控制读数当作实际 runner 或显示器环境复现。临时环境开关不会进入产品源码。
+
+永久 Window AX 夹具现在仅在原严格比较失败时补充诊断：
+
+- 恢复 getter：具体回调步骤、参照创建前／捕获前的目标 frame、预期与实际
+  frame 和 content size、屏幕／工作区、scale、逻辑状态及原生最小化状态。
+- 显式 Resize：原始 frame，原生参照窗口显示后／缩放后的 frame、参照及目标
+  工作区、屏幕 frame、style mask 和实际运行时类。
+
+精确几何比较、原独立参照、检查数量、三秒 Pump 与两个 240 秒 CTest 超时
+全部保留。本轮没有修改 Platform 生产行为或 CMake，也没有据本机通过而关闭
+CI 两项故障、旧成对 Zoom、真实前台、物理输入或 VoiceOver 的验收缺口。
+
+最终候选 PR Ninja Release 的本机原生注册组 **21/21、277.84 秒**，AX
+**610/610**、独立恢复几何 **116/116**，JUnit 无失败或 skip。该范围仍排除
+使用 shell LaunchServices 启动器的主 Window 应用组；本机通过不能证明已修复
+上述 CI runner 上的差异。本轮提交只包含永久夹具的失败诊断和本文。
+
 ### v186：同状态几何回调的完整恢复快照与工作区修正
 
 2026-10-12 冻结 `0208e3ab` 后，getter 回调只改变尺寸／位置而不改变状态，
