@@ -2386,9 +2386,23 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         window->fullScreenHadContentFocus = false;
         window->fullScreenTransition = false;
         window->applyingWindowState = true;
-        PublishWindowState(window, window->beforeFullScreen);
-        if (weakView.jaliumOwner != window) return;
         ApplyAppleStyle(window);
+        if (weakView.jaliumOwner != window) return;
+        // AppKit can still expose its expanded exit frame here. Restore the
+        // framework's saved geometry before publishing Normal or draining a
+        // queued Zoom/minimize, which would otherwise save that expanded frame
+        // as the next normal RestoreBounds. State callbacks then see the
+        // restored surface and may apply newer geometry without being undone.
+        if (window->beforeFullScreen == JALIUM_WINDOW_STATE_NORMAL && window->hasRestoreFrame) {
+            [window->window setFrame:window->restoreFrame display:YES];
+            if (weakView.jaliumOwner != window) return;
+        } else if (window->beforeFullScreen == JALIUM_WINDOW_STATE_MAXIMIZED) {
+            NSScreen* screen = window->window.screen ?: NSScreen.mainScreen;
+            [window->window setFrame:MaximizedFrameForScreen(window->window, screen) display:YES];
+            if (weakView.jaliumOwner != window) return;
+            window->maximizedFrame = window->window.frame;
+        }
+        PublishWindowState(window, window->beforeFullScreen);
         if (weakView.jaliumOwner != window) return;
         RestoreFullScreenContentFocus(window, hadContentFocus);
         if (weakView.jaliumOwner != window) return;

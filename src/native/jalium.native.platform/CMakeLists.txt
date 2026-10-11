@@ -454,6 +454,17 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.platform.macos.window.validation-loop
         COMMAND jalium.native.platform.window.validation-loop.tests)
     set_tests_properties(jalium.native.platform.macos.window.validation-loop PROPERTIES TIMEOUT 5)
+    add_executable(jalium.native.platform.window.fullscreen-restore.tests
+        tests/platform_apple_fullscreen_restore_tests.mm)
+    target_include_directories(jalium.native.platform.window.fullscreen-restore.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.fullscreen-restore.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.fullscreen-restore.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.fullscreen-restore.tests)
+    add_test(NAME jalium.native.platform.macos.window.fullscreen-restore
+        COMMAND jalium.native.platform.window.fullscreen-restore.tests)
+    set_tests_properties(jalium.native.platform.macos.window.fullscreen-restore PROPERTIES TIMEOUT 30)
     add_test(NAME jalium.native.platform.macos.window COMMAND "${CMAKE_COMMAND}"
         "-DHOST_APP=$<TARGET_BUNDLE_DIR:jalium.native.platform.window.app.tests>"
         "-DHOST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/window-app-runs"
