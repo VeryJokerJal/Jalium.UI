@@ -37,6 +37,11 @@ int main()
             options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
         Check(files.count == 4, "AppKit reads the complete native file batch");
         Check([files[0].path isEqualToString:@"/tmp/one file.txt"], "space survives native URL reading");
+        if (![files[1].path isEqualToString:@"/tmp/中文🙂.txt"])
+            std::fprintf(stderr, "Unicode URL diagnostic: url=%s path=%s file-url=%s public-url=%s\n",
+                files[1].absoluteString.UTF8String, files[1].path.UTF8String,
+                [board.pasteboardItems[1] stringForType:NSPasteboardTypeFileURL].UTF8String,
+                [board.pasteboardItems[1] stringForType:NSPasteboardTypeURL].UTF8String);
         Check([files[1].path isEqualToString:@"/tmp/中文🙂.txt"], "Unicode survives native URL reading");
         Check([files[2].absoluteString hasSuffix:@"/folder/"], "directory URL retained");
         Check([files[3] isEqual:files[0]], "duplicate and order retained");

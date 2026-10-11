@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #include "jalium_platform.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -127,6 +128,21 @@ struct Fixture {
         return frame;
     }
 };
+
+static NSSize ScreenFittingClientMaximum(Fixture& fixture)
+{
+    // A titled NSWindow automatically constrains an oversized frame to its
+    // screen. Keep these client-limit tests inside that independent OS limit.
+    NSRect visible = fixture.native.screen.visibleFrame;
+    double scale = jalium_window_get_dpi_scale(fixture.window);
+    NSRect content = [fixture.native contentRectForFrameRect:fixture.native.frame];
+    CGFloat decoration = fixture.native.frame.size.height - content.size.height;
+    NSSize maximum = NSMakeSize(std::min(900.0, std::floor((visible.size.width - 80) * scale)),
+        std::min(720.0, std::floor((visible.size.height - decoration - 40) * scale)));
+    Require(maximum.width >= 480 && maximum.height >= 360, "screen cannot fit the client-limit fixture");
+    [fixture.native setFrameTopLeftPoint:NSMakePoint(NSMinX(visible) + 40, NSMaxY(visible) - 20)];
+    return maximum;
+}
 
 // Retain a logical text selection while AppKit changes its actual responder.
 // A content peer must not report focus merely because its window remains key.
@@ -728,7 +744,9 @@ int main(int argc, char** argv)
                     "AX combined size/position published an intermediate top-left position");
             });
             run("frame respects client minimum and maximum", [](Fixture& f) {
-                Require(jalium_window_set_min_max_size(f.window, 480, 360, 900, 720) == 0, "size constraints failed");
+                NSSize maximum = ScreenFittingClientMaximum(f);
+                Require(jalium_window_set_min_max_size(f.window, 480, 360, maximum.width, maximum.height) == 0,
+                    "size constraints failed");
                 NSRect requested = f.native.frame;
                 requested.size = NSMakeSize(40, 40);
                 [f.native setAccessibilityFrame:requested];
@@ -738,7 +756,7 @@ int main(int argc, char** argv)
                 requested = f.native.frame; requested.size = NSMakeSize(1000, 1000);
                 [f.native setAccessibilityFrame:requested];
                 jalium_window_get_client_size(f.window, &width, &height);
-                Require(width == 900 && height == 720, "AX size did not clamp to the client maximum");
+                Require(width == maximum.width && height == maximum.height, "AX size did not clamp to the client maximum");
             });
             run("fixed window remains movable without resizing", [style](Fixture& f) {
                 jalium_apple_window_set_style(f.window, style & ~JALIUM_WINDOW_STYLE_RESIZABLE);
@@ -1543,7 +1561,8 @@ int main(int argc, char** argv)
                     "legacy position failed on a fixed window");
             });
             run("legacy size constraints preserve the upper edge", [](Fixture& f) {
-                Require(jalium_window_set_min_max_size(f.window, 480, 360, 900, 720) == JALIUM_OK,
+                NSSize maximum = ScreenFittingClientMaximum(f);
+                Require(jalium_window_set_min_max_size(f.window, 480, 360, maximum.width, maximum.height) == JALIUM_OK,
                     "legacy size constraints were rejected");
                 NSRect before = f.native.frame;
                 int width, height;
@@ -1555,7 +1574,7 @@ int main(int argc, char** argv)
                         std::fprintf(stderr, "Legacy size anchor: minimum=%d before=%s after=%s client=%dx%d\n",
                             minimum, NSStringFromRect(before).UTF8String, NSStringFromRect(f.native.frame).UTF8String,
                             width, height);
-                    Require(width == (minimum ? 480 : 900) && height == (minimum ? 360 : 720) &&
+                    Require(width == (minimum ? 480 : maximum.width) && height == (minimum ? 360 : maximum.height) &&
                         NSMinX(f.native.frame) == NSMinX(before) && NSMaxY(f.native.frame) == NSMaxY(before),
                         "constrained legacy size changed the top-left anchor");
                 }

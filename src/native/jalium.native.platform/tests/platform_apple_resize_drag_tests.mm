@@ -72,6 +72,22 @@ static NSEvent* Mouse(NSWindow* window, NSEventType type, NSPoint location)
         windowNumber:window.windowNumber context:nil eventNumber:2 clickCount:1 pressure:0];
 }
 
+static NSEvent* ScreenMouse(NSEventType type, NSPoint location)
+{
+    // Create an owned event with a fixed global location. Converting back
+    // through a window that moved during tracking can use a stale transform.
+    CGPoint quartz = CGPointMake(location.x, NSMaxY(NSScreen.screens.firstObject.frame) - location.y);
+    CGEventRef core = CGEventCreateMouseEvent(nullptr,
+        type == NSEventTypeLeftMouseUp ? kCGEventLeftMouseUp : kCGEventLeftMouseDragged,
+        quartz, kCGMouseButtonLeft);
+    Require(core != nullptr, "owned screen event creation failed");
+    NSEvent* event = [NSEvent eventWithCGEvent:core];
+    CFRelease(core);
+    Require(event != nil && event.CGEvent != nullptr &&
+        CGPointEqualToPoint(CGEventGetLocation(event.CGEvent), quartz), "owned event lost its fixed screen point");
+    return event;
+}
+
 static void CheckCancellation(Fixture& fixture, uint32_t style, int change)
 {
     Press press(fixture.native);
@@ -236,7 +252,8 @@ static void ApplyGeometryUpdate(Fixture& fixture, uint32_t style, int change)
             style ^ (JALIUM_WINDOW_STYLE_TITLEBAR | JALIUM_WINDOW_STYLE_BORDERLESS));
 }
 
-static void CheckGeometryUpdate(Fixture& fixture, uint32_t style, int edge, int change, bool fromCallback)
+static void CheckGeometryUpdate(Fixture& fixture, uint32_t style, int edge, int change, bool fromCallback,
+    bool capturedBeforeUpdate = false)
 {
     Press press(fixture.native);
     NSRect before = fixture.native.frame;
@@ -260,14 +277,17 @@ static void CheckGeometryUpdate(Fixture& fixture, uint32_t style, int edge, int 
         }, &context);
     } else mutation = Schedule(0.03, update);
     auto post = [&](NSEventType type, NSPoint screen) {
-        [NSApp postEvent:Mouse(fixture.native, type, [fixture.native convertPointFromScreen:screen]) atStart:NO];
+        [NSApp postEvent:ScreenMouse(type, screen) atStart:NO];
     };
     NSPoint first = NSMakePoint(origin.x + 15, origin.y - 12);
     NSPoint final = fromCallback ? NSMakePoint(origin.x + 30, origin.y - 24) : first;
+    NSEvent* captured = capturedBeforeUpdate ? ScreenMouse(NSEventTypeLeftMouseDragged, final) : nil;
     NSTimer* initial = nil;
     if (fromCallback) initial = Schedule(0.03, [=] { post(NSEventTypeLeftMouseDragged, first); });
     NSTimer* drag = Schedule(fromCallback ? 0.08 : 0.06, [&] {
-        dragged = true; post(NSEventTypeLeftMouseDragged, final);
+        dragged = true;
+        if (captured) [NSApp postEvent:captured atStart:NO];
+        else post(NSEventTypeLeftMouseDragged, final);
     });
     NSTimer* up = Schedule(fromCallback ? 0.12 : 0.09, [&] {
         released = true; post(NSEventTypeLeftMouseUp, final);
@@ -329,6 +349,9 @@ int main(int argc, char** argv)
                     });
                 run("resize callback geometry remains in the gesture", [=](Fixture& f) {
                     CheckGeometryUpdate(f, style, 10, change, true);
+                });
+                run("captured screen point survives application geometry", [=](Fixture& f) {
+                    CheckGeometryUpdate(f, style, 10, change, false, true);
                 });
             }
         }
