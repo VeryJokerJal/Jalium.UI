@@ -10,8 +10,17 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
+
+@interface StyleFocusTarget : NSView
+@end
+@implementation StyleFocusTarget
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)becomeFirstResponder { return YES; }
+- (BOOL)resignFirstResponder { return YES; }
+@end
 
 static void Require(bool condition, const char* message)
 { if (!condition) throw std::runtime_error(message); }
@@ -254,6 +263,21 @@ static void PumpUntil(const std::function<bool()>& done)
         [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
     Require(done(), "queued startup placement did not finish within three seconds");
 }
+static NSRect StyledFrame(NSWindow* target, NSSize client, NSPoint topLeft)
+{
+    NSWindow* control = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, client.width, client.height)
+        styleMask:target.styleMask backing:NSBackingStoreBuffered defer:NO];
+    control.releasedWhenClosed = NO;
+    [control setContentSize:client]; [control setFrameTopLeftPoint:topLeft];
+    NSRect expected = control.frame; [control close]; return expected;
+}
+static void VerifyStyledNormal(Fixture& f, NSSize client, NSPoint topLeft)
+{
+    NSRect expected = StyledFrame(f.native, client, topLeft);
+    NSSize actual = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+    Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL && !f.native.visible &&
+        SameFrame(f.native.frame, expected) && NSEqualSizes(actual, client), "style callback lost newer normal geometry");
+}
 int main()
 {
     @autoreleasepool {
@@ -390,7 +414,168 @@ int main()
                 Require(!f.native.visible, "controlled restore displayed its fixture");
                 placement.Verify();
             });
+            const char* mutations[] = {"title-bar style switch", "extended title-bar enable", "extended title-bar disable"};
+            for (int mutation : {0, 1, 2}) for (bool maximized : {false, true}) {
+                std::string name = std::string(mutations[mutation]) +
+                    (maximized ? " preserves maximized normal geometry" : " preserves minimized normal geometry");
+                run(name.c_str(), [=](Fixture& f) {
+                    if (mutation == 2)
+                        Require(jalium_apple_window_set_titlebar_extended(f.window, 1) == JALIUM_OK, "extended setup rejected");
+                    NSSize normalContent = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+                    NSScreen* screen = TestStartupScreen();
+                    PlacementCheck placement(f.native, f.native.frame, screen, screen.visibleFrame);
+                    NSPoint normalTopLeft = NSMakePoint(NSMinX(placement.expected), NSMaxY(placement.expected));
+                    NSWindow* control = [[NSWindow alloc] initWithContentRect:
+                        [NSWindow contentRectForFrameRect:placement.expected styleMask:f.native.styleMask]
+                        styleMask:f.native.styleMask backing:NSBackingStoreBuffered defer:NO];
+                    control.releasedWhenClosed = NO;
+                    [control setFrame:placement.expected display:NO];
+                    std::unique_ptr<MiniProbe> mini;
+                    if (maximized) jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                    else { mini = std::make_unique<MiniProbe>(f.native); [f.native miniaturize:nil]; }
+                    Require(jalium_apple_window_apply_startup_location(f.window, 1, 0) == JALIUM_OK, "deferred styled placement rejected");
+                    if (mutation == 0)
+                        Require(jalium_apple_window_set_style(f.window, style == regular ? custom : regular) == JALIUM_OK,
+                            "title-bar style switch rejected");
+                    else Require(jalium_apple_window_set_titlebar_extended(f.window, mutation == 1) == JALIUM_OK,
+                        "extended title-bar change rejected");
+                    control.styleMask = f.native.styleMask;
+                    [control setContentSize:normalContent];
+                    [control setFrameTopLeftPoint:normalTopLeft];
+                    NSRect expected = control.frame; [control close];
+                    if (maximized) {
+                        Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED &&
+                            SameFrame(f.native.frame, screen.visibleFrame), "style change lost the maximized work-area frame");
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    }
+                    else [f.native deminiaturize:nil];
+                    NSSize actualContent = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+                    if (!SameFrame(f.native.frame, expected) || !NSEqualSizes(actualContent, normalContent)) {
+                        PrintRect("expected-style-frame-AppKit", expected); PrintRect("actual-style-frame", f.native.frame);
+                        std::fprintf(stderr, "expected-client=(%.6f,%.6f) actual-client=(%.6f,%.6f) mask=%lu\n",
+                            normalContent.width, normalContent.height, actualContent.width, actualContent.height,
+                            static_cast<unsigned long>(f.native.styleMask));
+                    }
+                    Require(jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL && !f.native.visible &&
+                        SameFrame(f.native.frame, expected) && NSEqualSizes(actualContent, normalContent),
+                        "style change lost normal client geometry or position");
+                });
+            }
             if (!baselineSize) continue;
+            for (bool wasMaximized : {false, true})
+                run(wasMaximized ? "style frame callback retains newer normal state" :
+                    "style frame callback retains newer maximize restore geometry", [=](Fixture& f) {
+                    NSSize client = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+                    NSPoint topLeft = NSMakePoint(NSMinX(f.native.frame), NSMaxY(f.native.frame));
+                    if (wasMaximized) jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                    bool called = false; g_frameTarget = f.native;
+                    g_afterFrame = [&] {
+                        called = true;
+                        jalium_window_set_state(f.window, wasMaximized ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_MAXIMIZED);
+                    };
+                    Require(jalium_apple_window_set_style(f.window, style == regular ? custom : regular) == JALIUM_OK,
+                        "reentrant state style change rejected");
+                    PumpUntil([&] { return called && jalium_window_get_state(f.window) ==
+                        (wasMaximized ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_MAXIMIZED); });
+                    if (!wasMaximized) jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    VerifyStyledNormal(f, client, topLeft);
+                });
+            run("style frame callback retains newer owner placement", [=](Fixture& f) {
+                Fixture owner(style);
+                NSSize client = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+                NSPoint topLeft = NSMakePoint(NSMinX(f.native.frame), NSMaxY(f.native.frame));
+                bool called = false; g_frameTarget = f.native;
+                g_afterFrame = [&] {
+                    called = true;
+                    Require(jalium_apple_window_apply_startup_location(f.window, 2, owner.Handle()) == JALIUM_OK,
+                        "style callback owner placement rejected");
+                };
+                Require(jalium_apple_window_set_style(f.window, style == regular ? custom : regular) == JALIUM_OK,
+                    "reentrant placement style change rejected");
+                Require(called, "style placement callback did not execute");
+                PlacementCheck placement(f.native, StyledFrame(f.native, client, topLeft), TestStartupScreen(owner.native), owner.native.frame);
+                placement.Verify();
+                Require(NSEqualSizes(((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size, client),
+                    "style placement changed normal client size");
+            });
+            run("style frame callback retains newer resize and move", [=](Fixture& f) {
+                bool called = false; g_frameTarget = f.native;
+                g_afterFrame = [&] { called = true; jalium_window_resize(f.window, 487, 347); jalium_window_move(f.window, 250, 180); };
+                Require(jalium_apple_window_set_style(f.window, style == regular ? custom : regular) == JALIUM_OK,
+                    "reentrant explicit geometry style change rejected");
+                Require(called, "style geometry callback did not execute");
+                CGFloat scale = f.native.backingScaleFactor;
+                VerifyStyledNormal(f, NSMakeSize(487 / scale, 347 / scale),
+                    NSMakePoint(250 / scale, NSMaxY(NSScreen.screens.firstObject.frame) - 180 / scale));
+            });
+            run("style frame callback retains newer title-bar style and extension", [=](Fixture& f) {
+                NSSize client = ((__bridge NSView*)(void*)jalium_window_get_native_handle(f.window)).bounds.size;
+                NSPoint topLeft = NSMakePoint(NSMinX(f.native.frame), NSMaxY(f.native.frame));
+                bool called = false; g_frameTarget = f.native;
+                g_afterFrame = [&] {
+                    called = true;
+                    Require(jalium_apple_window_set_style(f.window, regular) == JALIUM_OK &&
+                        jalium_apple_window_set_titlebar_extended(f.window, 1) == JALIUM_OK, "nested latest style rejected");
+                };
+                Require(jalium_apple_window_set_style(f.window, style == regular ? custom : regular) == JALIUM_OK,
+                    "outer style rejected");
+                PumpUntil([&] { return called && (f.native.styleMask & NSWindowStyleMaskTitled) &&
+                    (f.native.styleMask & NSWindowStyleMaskFullSizeContentView) &&
+                    f.native.titleVisibility == NSWindowTitleHidden && f.native.titlebarAppearsTransparent; });
+                VerifyStyledNormal(f, client, topLeft);
+            });
+            run("style frame callback can close and replace its target", [=](Fixture& f) {
+                std::unique_ptr<Fixture> replacement; NSRect saved;
+                g_frameTarget = f.native;
+                g_afterFrame = [&] { f.Destroy(); replacement = std::make_unique<Fixture>(style); saved = replacement->native.frame; };
+                jalium_apple_window_set_style(f.window, style == regular ? custom : regular);
+                Require(replacement && !replacement->native.visible && NSEqualRects(replacement->native.frame, saved),
+                    "style frame callback modified replacement geometry");
+            });
+            run("queued style update cannot modify a closed target replacement", [=](Fixture& f) {
+                bool called = false;
+                g_frameTarget = f.native;
+                g_afterFrame = [&] {
+                    called = true;
+                    jalium_apple_window_set_style(f.window, regular);
+                    jalium_apple_window_set_titlebar_extended(f.window, 1);
+                };
+                jalium_apple_window_set_style(f.window, style == regular ? custom : regular);
+                Require(called, "queued style callback did not execute");
+                f.Destroy(); Fixture replacement(style); NSRect saved = replacement.native.frame;
+                [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.03]];
+                Require(!replacement.native.visible && NSEqualRects(replacement.native.frame, saved),
+                    "queued style update changed replacement geometry");
+            });
+            run("style frame callback retains newer attached native responder", [=](Fixture& f) {
+                NSView* platformView = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                Require([f.native makeFirstResponder:platformView] && f.native.firstResponder == platformView,
+                    "platform focus setup did not actually take focus");
+                StyleFocusTarget* target = [[StyleFocusTarget alloc] initWithFrame:NSMakeRect(20, 20, 40, 40)];
+                [f.native.contentView addSubview:target];
+                bool called = false; g_frameTarget = f.native;
+                std::function<void()> focusWhenAttached;
+                focusWhenAttached = [&] {
+                    // AppKit detaches content while replacing its frame view.
+                    // Exercise a valid focus request once it is attached again.
+                    if (target.window != f.native || platformView.window != f.native) {
+                        g_frameTarget = f.native; g_afterFrame = focusWhenAttached; return;
+                    }
+                    called = true;
+                    Require([f.native makeFirstResponder:target] && f.native.firstResponder == target,
+                        "new native responder did not actually take focus");
+                };
+                g_afterFrame = focusWhenAttached;
+                jalium_apple_window_set_style(f.window, style == regular ? custom : regular);
+                g_afterFrame = {}; g_frameTarget = nil;
+                if (!called || f.native.firstResponder != target)
+                    std::fprintf(stderr, "STYLE_FOCUS called=%d expected=%p actual=%p actual-class=%s target-window=%p target-parent=%p platform-window=%p\n",
+                        called, (__bridge void*)target, (__bridge void*)f.native.firstResponder,
+                        NSStringFromClass(f.native.firstResponder.class).UTF8String,
+                        (__bridge void*)target.window, (__bridge void*)target.superview, (__bridge void*)platformView.window);
+                Require(called && f.native.firstResponder == target && !f.native.visible,
+                    "style restoration replaced a newer native responder");
+            });
             run("deferred frame callback retains newer owner placement before maximize", [=](Fixture& f) {
                 Fixture owner(style);
                 NSRect ownerFrame = owner.native.frame;
