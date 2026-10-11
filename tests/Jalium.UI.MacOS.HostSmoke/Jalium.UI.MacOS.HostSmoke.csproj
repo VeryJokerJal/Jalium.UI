@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <LinkMode>None</LinkMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj"
+                      ExcludeAssets="build;buildTransitive" />
+  </ItemGroup>
+  <Target Name="DeduplicateMacOSNativeLibraries" BeforeTargets="_ComputeDynamicLibrariesToReidentify">
+    <RemoveDuplicates Inputs="@(_FileNativeReference)">
+      <Output TaskParameter="Filtered" ItemName="_UniqueMacOSNativeReference" />
+    </RemoveDuplicates>
+    <ItemGroup>
+      <_FileNativeReference Remove="@(_FileNativeReference)" />
+      <_FileNativeReference Include="@(_UniqueMacOSNativeReference)" />
+    </ItemGroup>
+  </Target>
+</Project>

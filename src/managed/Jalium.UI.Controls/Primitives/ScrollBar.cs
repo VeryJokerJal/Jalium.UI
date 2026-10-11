@@ -114,12 +114,13 @@ public class ScrollBar : RangeBase
     /// <summary>
     /// Identifies the IsOverlayStyle dependency property.
     /// Overlay scroll bars use a compact edge indicator without track chrome or
-    /// line buttons. The default is enabled on mobile operating systems.
+    /// line buttons. The default follows macOS preferences and is enabled on mobile systems.
     /// </summary>
     internal static readonly DependencyProperty IsOverlayStyleProperty =
         DependencyProperty.Register(nameof(IsOverlayStyle), typeof(bool), typeof(ScrollBar),
             new PropertyMetadata(
-                OperatingSystem.IsAndroid() || OperatingSystem.IsIOS(),
+                OperatingSystem.IsAndroid() || OperatingSystem.IsIOS() ||
+                (OperatingSystem.IsMacOS() && Controls.Platform.MacOSScrollBarSettings.PrefersOverlayScrollBars),
                 OnOverlayStyleChanged));
 
     #endregion
@@ -199,6 +200,21 @@ public class ScrollBar : RangeBase
     public Track Track => _track!;
 
     internal bool IsThumbDragging => _isDragging;
+
+    internal bool UseMacOSScrollBarBehavior { get; set; } = OperatingSystem.IsMacOS();
+    private bool UsesLineButtons => !IsOverlayStyle && !UseMacOSScrollBarBehavior;
+
+    private double CurrentOverlayIndicatorThickness => _isOverlayLongPressExpanded ||
+        (UseMacOSScrollBarBehavior && (IsMouseOver || _isDragging || IsKeyboardFocusWithin))
+            ? OverlayExpandedIndicatorThickness
+            : UseMacOSScrollBarBehavior ? 6.0 : OverlayIndicatorThickness;
+
+    internal void ApplyMacOSScrollBarPreferences(bool prefersOverlay)
+    {
+        Controls.Platform.MacOSScrollBarSettings.ApplyDefault(this, IsOverlayStyleProperty, prefersOverlay);
+        if (_autoHideVisualTimer is { IsEnabled: true })
+            StartAutoHideTransition(_autoHideVisualAnimTo, _autoHideVisibilityAnimTo);
+    }
 
     #endregion
 
@@ -297,12 +313,26 @@ public class ScrollBar : RangeBase
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
         ResourcesChanged += OnResourcesChangedHandler;
+        IsKeyboardFocusWithinChanged += (_, _) =>
+        {
+            if (IsOverlayStyle && UseMacOSScrollBarBehavior)
+                ApplyAutoHideVisualState(_autoHideCollapseProgress);
+        };
         Unloaded += static (sender, _) => (sender as ScrollBar)?.CompleteInteractionForDetach();
         RegisterScrollCommandBindings();
 
         _autoHideCollapseProgress = IsThumbSlim ? 1.0 : 0.0;
         ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
+        if (OperatingSystem.IsMacOS())
+        {
+            Loaded += OnMacOSScrollBarLoaded;
+            Controls.Platform.MacOSScrollBarSettings.ApplyDefault(this, IsOverlayStyleProperty,
+                Controls.Platform.MacOSScrollBarSettings.PrefersOverlayScrollBars);
+        }
     }
+
+    private void OnMacOSScrollBarLoaded(object sender, RoutedEventArgs e)
+        => ApplyMacOSScrollBarPreferences(Controls.Platform.MacOSScrollBarSettings.PrefersOverlayScrollBars);
 
     private void RegisterScrollCommandBindings()
     {
@@ -976,7 +1006,7 @@ public class ScrollBar : RangeBase
             var width = explicitWidth
                 ? Math.Max(0, Width - insets.Left - insets.Right)
                 : DefaultThickness;
-            var buttonHeight = IsOverlayStyle ? 0.0 : width; // Square desktop buttons
+            var buttonHeight = UsesLineButtons ? width : 0.0;
 
             _lineUpButton?.Measure(new Size(width, buttonHeight));
             _lineDownButton?.Measure(new Size(width, buttonHeight));
@@ -996,7 +1026,7 @@ public class ScrollBar : RangeBase
             var height = explicitHeight
                 ? Math.Max(0, Height - insets.Top - insets.Bottom)
                 : DefaultThickness;
-            var buttonWidth = IsOverlayStyle ? 0.0 : height; // Square desktop buttons
+            var buttonWidth = UsesLineButtons ? height : 0.0;
 
             _lineUpButton?.Measure(new Size(buttonWidth, height));
             _lineDownButton?.Measure(new Size(buttonWidth, height));
@@ -1022,18 +1052,17 @@ public class ScrollBar : RangeBase
         var crossAxisSize = Orientation == Orientation.Vertical ? inner.Width : inner.Height;
         ApplyAutoHideVisualState(_autoHideCollapseProgress, crossAxisSize, suppressArrangeInvalidation: true);
 
-        if (IsOverlayStyle)
+        if (!UsesLineButtons)
         {
-            // Mobile scroll bars are edge indicators, not desktop chrome. Keep a
-            // widened transparent host for a finger-sized Thumb target, while the
-            // visual track spans almost the full axis near the outer edge.
+            // macOS and mobile bars have no line buttons. The track spans the axis
+            // with a small end inset, including the persistent macOS presentation.
             _lineUpButton?.Arrange(default);
             _lineDownButton?.Arrange(default);
 
             if (Orientation == Orientation.Vertical)
             {
                 var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, inner.Height / 2));
-            _track?.Arrange(new Rect(
+                _track?.Arrange(new Rect(
                     inner.Left,
                     inner.Top + endInset,
                     inner.Width,
@@ -1563,6 +1592,14 @@ public class ScrollBar : RangeBase
         targetCollapseProgress = Math.Clamp(targetCollapseProgress, 0.0, 1.0);
         targetVisibilityProgress = Math.Clamp(targetVisibilityProgress, 0.0, 1.0);
 
+        if (UseMacOSScrollBarBehavior && Controls.Platform.MacOSScrollBarSettings.PrefersReducedMotion)
+        {
+            StopAutoHideVisualTimer();
+            ApplyAutoHideVisualState(targetCollapseProgress);
+            ApplyAutoHideVisibilityState(targetVisibilityProgress);
+            return;
+        }
+
         if (Math.Abs(_autoHideCollapseProgress - targetCollapseProgress) <= 0.001 &&
             Math.Abs(_autoHideVisibilityProgress - targetVisibilityProgress) <= 0.001)
         {
@@ -1635,7 +1672,7 @@ public class ScrollBar : RangeBase
 
         if (_lineUpButton != null && _lineDownButton != null)
         {
-            if (IsOverlayStyle)
+            if (!UsesLineButtons)
             {
                 _lineUpButton.Visibility = Visibility.Collapsed;
                 _lineDownButton.Visibility = Visibility.Collapsed;
@@ -1693,8 +1730,8 @@ public class ScrollBar : RangeBase
 
         if (_track?.DecreaseRepeatButton != null && _track.IncreaseRepeatButton != null)
         {
-            // Touch panning should remain available across the transparent overlay
-            // gutter. Only the thumb itself stays interactive in mobile mode.
+            // The transparent overlay gutter passes input through to content;
+            // only the thumb stays interactive. Persistent bars retain track paging.
             _track.DecreaseRepeatButton.IsHitTestVisible = !IsOverlayStyle;
             _track.IncreaseRepeatButton.IsHitTestVisible = !IsOverlayStyle;
         }
@@ -1732,13 +1769,10 @@ public class ScrollBar : RangeBase
 
             if (IsOverlayStyle && _track.Thumb != null)
             {
-                var indicatorThickness = _isOverlayLongPressExpanded
-                    ? OverlayExpandedIndicatorThickness
-                    : OverlayIndicatorThickness;
                 ApplyOverlayThumbInsets(
                     _track.Thumb,
                     thumbThickness,
-                    indicatorThickness,
+                    CurrentOverlayIndicatorThickness,
                     suppressArrangeInvalidation);
             }
             else if (_track.Thumb != null)
@@ -1987,6 +2021,7 @@ public class ScrollBar : RangeBase
         if (IsOverlayStyle)
         {
             StartAutoHideVisualTransition(0.0);
+            ApplyAutoHideVisualState(_autoHideCollapseProgress);
         }
     }
 
@@ -1996,11 +2031,27 @@ public class ScrollBar : RangeBase
         _isDragging = false;
         _thumbDragAccumulatedHorizontal = 0;
         _thumbDragAccumulatedVertical = 0;
+        if (IsOverlayStyle && UseMacOSScrollBarBehavior)
+            ApplyAutoHideVisualState(_autoHideCollapseProgress);
     }
 
     #endregion
 
     #region Overrides
+
+    protected override void OnMouseEnter(MouseEventArgs e)
+    {
+        base.OnMouseEnter(e);
+        if (IsOverlayStyle && UseMacOSScrollBarBehavior)
+            ApplyAutoHideVisualState(_autoHideCollapseProgress);
+    }
+
+    protected override void OnMouseLeave(MouseEventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (IsOverlayStyle && UseMacOSScrollBarBehavior)
+            ApplyAutoHideVisualState(_autoHideCollapseProgress);
+    }
 
     /// <inheritdoc />
     protected override void OnValueChanged(double oldValue, double newValue)
@@ -2043,11 +2094,9 @@ public class ScrollBar : RangeBase
         {
             if (ReferenceEquals(current, _track?.Thumb))
             {
-                // The Thumb fills the wider overlay layout host so the 8-DIP
-                // long-press visual has room to expand inward. That transparent
-                // layout space is not a touch target: only the original 2-DIP
-                // strip may start interaction. After Hold, touch capture keeps
-                // the active contact dragging even when it leaves that strip.
+                // The Thumb fills the wider layout host to allow inward expansion.
+                // macOS has a 12-DIP mouse target; mobile keeps the original 2-DIP
+                // strip until Hold. Capture continues dragging outside the strip.
                 return IsPointWithinOverlayIndicator(point) ? result : null;
             }
         }
@@ -2064,7 +2113,7 @@ public class ScrollBar : RangeBase
 
         var edgeInset = Math.Min(OverlayIndicatorEdgeInset, crossAxisSize);
         var indicatorThickness = Math.Min(
-            OverlayIndicatorThickness,
+            UseMacOSScrollBarBehavior ? Math.Max(12.0, CurrentOverlayIndicatorThickness) : OverlayIndicatorThickness,
             Math.Max(0, crossAxisSize - edgeInset));
         var indicatorStart = Math.Max(0, crossAxisSize - edgeInset - indicatorThickness);
         var indicatorEnd = indicatorStart + indicatorThickness;
@@ -2157,6 +2206,8 @@ public class ScrollBar : RangeBase
 
     private void DrawFallbackArrows(DrawingContext dc)
     {
+        if (!UsesLineButtons)
+            return;
         const double baseArrowSize = 8.0;
         var parts = GetPartsRect(RenderSize);
         var fallbackArrowBrush = ResolveArrowBrush();

@@ -1,5 +1,6 @@
 using System.Reflection;
 using Jalium.UI.Controls;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
@@ -67,6 +68,7 @@ public sealed class ScrollViewerVirtualizedContentRealizationTests
             var template = new ControlTemplate(typeof(ListBox));
             template.SetVisualTree(() => new ScrollViewer
             {
+                CanContentScroll = true,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
                 Content = new ItemsPresenter(),

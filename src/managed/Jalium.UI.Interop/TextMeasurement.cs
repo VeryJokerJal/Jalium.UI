@@ -28,7 +28,7 @@ public static partial class TextMeasurement
 
     private readonly struct FormatKey : IEquatable<FormatKey>
     {
-        public FormatKey(int contextGeneration, string fontFamily, float fontSize, int fontWeight, int fontStyle)
+        public FormatKey(int contextGeneration, string fontFamily, float fontSize, int fontWeight, int fontStyle, bool noWrap)
         {
             ContextGeneration = contextGeneration;
             FontFamily = fontFamily;
@@ -37,6 +37,7 @@ public static partial class TextMeasurement
             FontSize = MathF.Round(fontSize, 3);
             FontWeight = fontWeight;
             FontStyle = fontStyle;
+            NoWrap = noWrap;
         }
 
         private int ContextGeneration { get; }
@@ -44,12 +45,13 @@ public static partial class TextMeasurement
         private float FontSize { get; }
         private int FontWeight { get; }
         private int FontStyle { get; }
+        private bool NoWrap { get; }
 
         public bool Equals(FormatKey other) =>
             ContextGeneration == other.ContextGeneration &&
             FontSize.Equals(other.FontSize) &&
             FontWeight == other.FontWeight &&
-            FontStyle == other.FontStyle &&
+            FontStyle == other.FontStyle && NoWrap == other.NoWrap &&
             string.Equals(FontFamily, other.FontFamily, StringComparison.Ordinal);
 
         public override bool Equals(object? obj) => obj is FormatKey other && Equals(other);
@@ -62,6 +64,7 @@ public static partial class TextMeasurement
             hash.Add(FontSize);
             hash.Add(FontWeight);
             hash.Add(FontStyle);
+            hash.Add(NoWrap);
             return hash.ToHashCode();
         }
     }
@@ -166,8 +169,9 @@ public static partial class TextMeasurement
         public readonly int FontStyle;
         public readonly float MaxWidth;
         public readonly float MaxHeight;
+        public readonly bool NoWrap;
 
-        public MeasureKey(string text, string fontFamily, float fontSize, int fontWeight, int fontStyle, float maxWidth, float maxHeight)
+        public MeasureKey(string text, string fontFamily, float fontSize, int fontWeight, int fontStyle, float maxWidth, float maxHeight, bool noWrap)
         {
             Text = text;
             FontFamily = fontFamily;
@@ -176,6 +180,7 @@ public static partial class TextMeasurement
             FontStyle = fontStyle;
             MaxWidth = maxWidth;
             MaxHeight = maxHeight;
+            NoWrap = noWrap;
         }
 
         public bool Equals(MeasureKey other) =>
@@ -183,7 +188,7 @@ public static partial class TextMeasurement
             && FontWeight == other.FontWeight
             && FontStyle == other.FontStyle
             && MaxWidth == other.MaxWidth
-            && MaxHeight == other.MaxHeight
+            && MaxHeight == other.MaxHeight && NoWrap == other.NoWrap
             && string.Equals(FontFamily, other.FontFamily, StringComparison.Ordinal)
             && string.Equals(Text, other.Text, StringComparison.Ordinal);
 
@@ -199,6 +204,7 @@ public static partial class TextMeasurement
             hash.Add(FontStyle);
             hash.Add(MaxWidth);
             hash.Add(MaxHeight);
+            hash.Add(NoWrap);
             return hash.ToHashCode();
         }
     }
@@ -257,22 +263,22 @@ public static partial class TextMeasurement
             return false;
         }
 
-        var fontFamily = formattedText.FontFamily ?? string.Empty;
-        var format = GetOrCreateFormat(context, fontFamily, (float)formattedText.FontSize, formattedText.FontWeight, formattedText.FontStyle);
+        var fontFamily = Jalium.UI.Styling.CssFontFaces.MaterializeSource(
+            FontWidthRenderingSource.ForFormattedText(formattedText.FontFamily ?? string.Empty, formattedText.FontStretch), formattedText.Text);
+        // Determine max width/height for measurement
+        var maxWidth = formattedText.MaxTextWidth;
+        var maxHeight = formattedText.MaxTextHeight;
+
+        bool noWrap = IsMacOSUnboundedWidth((float)maxWidth) || OperatingSystem.IsMacOS() && maxWidth <= 0;
+        if (!float.IsFinite((float)maxWidth) || maxWidth <= 0) maxWidth = 100000;
+        if (!float.IsFinite((float)maxHeight) || maxHeight <= 0) maxHeight = 100000;
+        var format = GetOrCreateFormat(context, fontFamily, (float)formattedText.FontSize,
+            formattedText.FontWeight, formattedText.FontStyle, noWrap);
         if (format == null)
         {
             ApproximateMeasurement(formattedText);
             return false;
         }
-
-        // Determine max width/height for measurement
-        var maxWidth = formattedText.MaxTextWidth;
-        var maxHeight = formattedText.MaxTextHeight;
-
-        if (double.IsInfinity(maxWidth) || double.IsNaN(maxWidth) || maxWidth <= 0)
-            maxWidth = 100000;
-        if (double.IsInfinity(maxHeight) || double.IsNaN(maxHeight) || maxHeight <= 0)
-            maxHeight = 100000;
 
         // 先查测量结果缓存：命中即免去一次 DirectWrite CreateTextLayout + 整形（虚拟化滚动的主成本）。
         var measureKey = new MeasureKey(
@@ -282,7 +288,7 @@ public static partial class TextMeasurement
             formattedText.FontWeight,
             formattedText.FontStyle,
             (float)maxWidth,
-            (float)maxHeight);
+            (float)maxHeight, noWrap);
 
         if (_measureCache.TryGetValue(measureKey, out var cachedEntry))
         {
@@ -328,7 +334,7 @@ public static partial class TextMeasurement
                     request.Text,
                     request.MaxWidth,
                     request.MaxHeight),
-                out var metrics))
+                out var metrics, noWrap))
         {
             ApproximateMeasurement(formattedText);
             return false;
@@ -435,7 +441,7 @@ public static partial class TextMeasurement
     public static TextMetrics GetFontMetrics(string fontFamily, double fontSize, int fontWeight = 400, int fontStyle = 0)
     {
         if (fontSize == 0) return default;
-        fontFamily ??= string.Empty;
+        fontFamily = Jalium.UI.Styling.CssFontFaces.MaterializeSource(fontFamily ?? string.Empty, null);
         // 先查度量缓存（按配置常量缓存，命中即 O(1) 返回，免去每帧 native DWrite 调用）。
         // Capture the cache state before the context. RenderContext replacement
         // publishes the new context before clearing text caches, so an in-flight
@@ -569,43 +575,7 @@ public static partial class TextMeasurement
     /// <param name="result">The hit test result.</param>
     /// <returns>True if the hit test succeeded; false if native context is unavailable.</returns>
     public static bool HitTestPoint(string text, string fontFamily, double fontSize, float pointX, out TextHitTestResult result)
-    {
-        result = default;
-        if (string.IsNullOrEmpty(text))
-            return false;
-
-        var context = RenderContext.Current;
-        if (context == null || !context.IsValid)
-            return false;
-
-        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, 400);
-        if (!TryInvokeFormatWithDisposedRetry(
-                context,
-                fontFamily,
-                (float)fontSize,
-                400,
-                0,
-                format,
-                (Text: text, MaxWidth: 100000f, MaxHeight: 100000f, PointX: pointX, PointY: 0f),
-                static (candidate, request) =>
-                {
-                    var success = candidate.HitTestPoint(
-                        request.Text,
-                        request.MaxWidth,
-                        request.MaxHeight,
-                        request.PointX,
-                        request.PointY,
-                        out var hit);
-                    return (Success: success, Result: hit);
-                },
-                out var invocation))
-        {
-            return false;
-        }
-
-        result = invocation.Result;
-        return invocation.Success;
-    }
+        => HitTestPointWrapped(text, fontFamily, fontSize, 400, 0, float.PositiveInfinity, pointX, 0, out result);
 
     /// <summary>
     /// Wrap-aware variant of <see cref="HitTestPoint"/>. Pass the same
@@ -633,7 +603,11 @@ public static partial class TextMeasurement
         if (context == null || !context.IsValid)
             return false;
 
-        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle);
+        if (float.IsNaN(maxWidth) || float.IsNegativeInfinity(maxWidth)) return false;
+        fontFamily = Jalium.UI.Styling.CssFontFaces.MaterializeSource(fontFamily, text);
+        bool noWrap = IsMacOSUnboundedWidth(maxWidth);
+        if (float.IsPositiveInfinity(maxWidth)) maxWidth = 100000;
+        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle, noWrap);
         if (!TryInvokeFormatWithDisposedRetry(
                 context,
                 fontFamily,
@@ -653,7 +627,7 @@ public static partial class TextMeasurement
                         out var hit);
                     return (Success: success, Result: hit);
                 },
-                out var invocation))
+                out var invocation, noWrap))
         {
             return false;
         }
@@ -674,43 +648,7 @@ public static partial class TextMeasurement
     /// <param name="result">The hit test result with caret position.</param>
     /// <returns>True if the query succeeded; false if native context is unavailable.</returns>
     public static bool HitTestTextPosition(string text, string fontFamily, double fontSize, uint textPosition, bool isTrailingHit, out TextHitTestResult result)
-    {
-        result = default;
-        if (string.IsNullOrEmpty(text))
-            return false;
-
-        var context = RenderContext.Current;
-        if (context == null || !context.IsValid)
-            return false;
-
-        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, 400);
-        if (!TryInvokeFormatWithDisposedRetry(
-                context,
-                fontFamily,
-                (float)fontSize,
-                400,
-                0,
-                format,
-                (Text: text, MaxWidth: 100000f, MaxHeight: 100000f, TextPosition: textPosition, IsTrailingHit: isTrailingHit),
-                static (candidate, request) =>
-                {
-                    var success = candidate.HitTestTextPosition(
-                        request.Text,
-                        request.MaxWidth,
-                        request.MaxHeight,
-                        request.TextPosition,
-                        request.IsTrailingHit,
-                        out var hit);
-                    return (Success: success, Result: hit);
-                },
-                out var invocation))
-        {
-            return false;
-        }
-
-        result = invocation.Result;
-        return invocation.Success;
-    }
+        => HitTestTextPositionWrapped(text, fontFamily, fontSize, 400, 0, float.PositiveInfinity, textPosition, isTrailingHit, out result);
 
     /// <summary>
     /// Wrap-aware variant of <see cref="HitTestTextPosition"/>. Passing the
@@ -738,7 +676,11 @@ public static partial class TextMeasurement
         if (context == null || !context.IsValid)
             return false;
 
-        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle);
+        if (float.IsNaN(maxWidth) || float.IsNegativeInfinity(maxWidth)) return false;
+        fontFamily = Jalium.UI.Styling.CssFontFaces.MaterializeSource(fontFamily, text);
+        bool noWrap = IsMacOSUnboundedWidth(maxWidth);
+        if (float.IsPositiveInfinity(maxWidth)) maxWidth = 100000;
+        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle, noWrap);
         if (!TryInvokeFormatWithDisposedRetry(
                 context,
                 fontFamily,
@@ -758,11 +700,62 @@ public static partial class TextMeasurement
                         out var hit);
                     return (Success: success, Result: hit);
                 },
-                out var invocation))
+                out var invocation, noWrap))
         {
             return false;
         }
 
+        result = invocation.Result;
+        return invocation.Success;
+    }
+
+    /// <summary>Shapes once and returns the first visual line fragment of a UTF-16 range.</summary>
+    public static bool HitTestTextRangeWrapped(string text, string fontFamily, double fontSize,
+        int fontWeight, int fontStyle, float maxWidth, uint textPosition, uint length, out TextRangeMetrics result)
+    {
+        result = default;
+        if (textPosition > text.Length || length > text.Length - textPosition) return false;
+        var context = RenderContext.Current;
+        if (context == null || !context.IsValid) return false;
+        if (float.IsNaN(maxWidth) || float.IsNegativeInfinity(maxWidth)) return false;
+        fontFamily = Jalium.UI.Styling.CssFontFaces.MaterializeSource(fontFamily, text);
+        bool noWrap = IsMacOSUnboundedWidth(maxWidth);
+        if (float.IsPositiveInfinity(maxWidth)) maxWidth = 100000;
+        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle, noWrap);
+        if (!TryInvokeFormatWithDisposedRetry(context, fontFamily, (float)fontSize, fontWeight, fontStyle, format,
+            (Text: text, MaxWidth: maxWidth, TextPosition: textPosition, Length: length),
+            static (candidate, request) =>
+            {
+                bool success = candidate.HitTestTextRange(request.Text, request.MaxWidth, 100000f,
+                    request.TextPosition, request.Length, out var range);
+                return (Success: success, Result: range);
+            }, out var invocation, noWrap)) return false;
+        result = invocation.Result;
+        return invocation.Success;
+    }
+
+    /// <summary>Shapes once to resolve a visual row and both of its insertion edges.</summary>
+    public static bool TryGetVisualLineMetrics(string text, string fontFamily, double fontSize,
+        int fontWeight, int fontStyle, float maxWidth, uint textPosition, bool backwardAffinity,
+        out TextLineMetrics result)
+    {
+        result = default;
+        if (textPosition > text.Length) return false;
+        var context = RenderContext.Current;
+        if (context == null || !context.IsValid) return false;
+        if (float.IsNaN(maxWidth) || float.IsNegativeInfinity(maxWidth)) return false;
+        fontFamily = Jalium.UI.Styling.CssFontFaces.MaterializeSource(fontFamily, text);
+        bool noWrap = IsMacOSUnboundedWidth(maxWidth);
+        if (float.IsPositiveInfinity(maxWidth)) maxWidth = 100000;
+        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle, noWrap);
+        if (!TryInvokeFormatWithDisposedRetry(context, fontFamily, (float)fontSize, fontWeight, fontStyle, format,
+            (Text: text, MaxWidth: maxWidth, TextPosition: textPosition, Backward: backwardAffinity),
+            static (candidate, request) =>
+            {
+                bool success = candidate.GetLineMetrics(request.Text, request.MaxWidth, 100000f,
+                    request.TextPosition, request.Backward, out var row);
+                return (Success: success, Result: row);
+            }, out var invocation, noWrap)) return false;
         result = invocation.Result;
         return invocation.Success;
     }
@@ -776,7 +769,8 @@ public static partial class TextMeasurement
         NativeTextFormat? initialFormat,
         TState state,
         Func<NativeTextFormat, TState, TResult> operation,
-        out TResult result)
+        out TResult result,
+        bool noWrap = false)
     {
         if (initialFormat != null && initialFormat.IsValid)
         {
@@ -809,7 +803,8 @@ public static partial class TextMeasurement
                 fontFamily,
                 fontSize,
                 fontWeight,
-                fontStyle);
+                fontStyle,
+                noWrap);
             if (replacement == null || !replacement.IsValid)
             {
                 result = default!;
@@ -891,47 +886,162 @@ public static partial class TextMeasurement
     /// descenders past the bottom of their own measured box.
     /// </para>
     ///
-    /// <para>
-    /// So resolve the stack the way the author meant it: take the first entry that actually exists,
-    /// exactly like CSS. Only when nothing in the list resolves does the caller fall back to
-    /// approximations — which is now the genuinely-unknown-font case it was written for.
-    /// </para>
+    /// <para>The first available face provides the primary metrics. On macOS, subsequent
+    /// available faces form an ordered CoreText cascade for characters missing from it.
+    /// The same immutable cascade is used by layout, drawing and caret queries.</para>
     /// </summary>
     internal static NativeTextFormat CreateTextFormatFromFamilyList(
         RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle)
     {
         fontFamily = Jalium.UI.Styling.CssFontFaces.Unblock(fontFamily);
-        if (fontFamily.IndexOf(',') < 0)
-        {
-            return context.CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
-        }
-
+        float width = FontWidthRenderingSource.TryUnwrap(fontFamily, out var percentage, out var source)
+            ? (float)Math.Min(percentage, float.MaxValue) : 100;
+        if (context.Backend != RenderBackend.Metal) width = 100;
+        fontFamily = source;
+        if (OperatingSystem.IsMacOS() && Jalium.UI.Styling.CssFontRenderingPlan.TryDecode(fontFamily, out var plan))
+            return CreateCssTextFormat(context, plan, fontSize, fontWeight, fontStyle, width);
         Exception? firstFailure = null;
-        foreach (var candidate in fontFamily.Split(','))
+        NativeTextFormat? primary = null;
+        var fallbacks = new List<NativeTextFormat>();
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        try
         {
-            // CSS allows quoting family names that contain spaces; strip those so
-            // 'Segoe UI' and "Segoe UI" resolve the same as the bare name.
-            var name = candidate.Trim().Trim('\'', '"').Trim();
-            if (name.Length == 0) continue;
-
-            try
+            foreach (string name in EnumerateFontFamilyNames(fontFamily))
             {
-                var format = context.CreateTextFormat(name, fontSize, fontWeight, fontStyle);
-                if (format.IsValid) return format;
+                if (OperatingSystem.IsMacOS())
+                {
+                    if (!names.Add(name)) continue;
+                    try { if (NativeMethods.FontFamilyIsAvailable(name) == 0) continue; }
+                    catch (EntryPointNotFoundException) { } // Older native payload keeps its fallback.
+                }
+                NativeTextFormat format;
+                try { format = context.CreateTextFormat(name, fontSize, fontWeight, fontStyle, width); }
+                catch (Exception ex) { firstFailure ??= ex; continue; }
+                if (!format.IsValid) { format.Dispose(); continue; }
+                if (!OperatingSystem.IsMacOS()) return format;
+                if (primary is null) primary = format;
+                else fallbacks.Add(format);
             }
-            catch (Exception ex)
+            if (primary is null)
             {
-                firstFailure ??= ex;
+                if (firstFailure != null) throw firstFailure;
+                return context.CreateTextFormat(OperatingSystem.IsMacOS() ? FrameworkElement.DefaultFontFamilyName : fontFamily,
+                    fontSize, fontWeight, fontStyle, width);
             }
+            if (fallbacks.Count > 0)
+            {
+                try
+                {
+                    var status = primary.SetFontFallbacks(fallbacks);
+                    if (status is not (JaliumResult.Ok or JaliumResult.NotSupported))
+                        throw new InvalidOperationException($"Cannot configure font fallback: {status}");
+                }
+                catch (EntryPointNotFoundException) { } // Compatibility with an older native payload.
+            }
+            var result = primary;
+            primary = null;
+            return result;
         }
-
-        // Nothing in the stack resolved. Rethrow the first real error so the caller's
-        // negative cache + diagnostics behave exactly as they did for a single bad name.
-        if (firstFailure != null) throw firstFailure;
-        return context.CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+        finally
+        {
+            primary?.Dispose();
+            foreach (var fallback in fallbacks) fallback.Dispose();
+        }
     }
 
-    private static NativeTextFormat? GetOrCreateFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle = 0)
+    // Quoted family names can contain commas and escaped quotes/backslashes.
+    // CSS computed families serialize those names; splitting on every comma loses them.
+    internal static IEnumerable<string> EnumerateFontFamilyNames(string source)
+    {
+        var name = new System.Text.StringBuilder(); char quote = '\0'; bool escaped = false;
+        foreach (char character in source)
+        {
+            if (escaped) { name.Append(character); escaped = false; continue; }
+            if (character == '\\' && quote != '\0') { escaped = true; continue; }
+            if (quote != '\0') { if (character == quote) quote = '\0'; else name.Append(character); continue; }
+            if (character is '\'' or '"') { quote = character; continue; }
+            if (character == ',')
+            {
+                string family = name.ToString().Trim(); if (family.Length > 0) yield return family;
+                name.Clear();
+            }
+            else name.Append(character);
+        }
+        if (escaped) name.Append('\\');
+        string last = name.ToString().Trim(); if (last.Length > 0) yield return last;
+    }
+
+    internal static long FontCacheEpoch => Volatile.Read(ref _metricsCacheState).Epoch;
+
+    internal static bool TryGetFontCharacterCoverage(string family, int weight, int style, uint[] characters, out byte[] supported)
+    {
+        supported = new byte[characters.Length];
+        var context = RenderContext.Current;
+        if (!OperatingSystem.IsMacOS() || context is not { IsValid: true, Backend: RenderBackend.Metal }) return false;
+        var format = GetOrCreateFormat(context, family, 20, weight, style);
+        if (format is null) return false;
+        try
+        {
+            // The ABI bounds each request; a document can still contain more
+            // distinct Unicode scalars than one request permits.
+            for (int offset = 0; offset < Math.Max(1, characters.Length); offset += 65536)
+            {
+                var chunk = characters.Skip(offset).Take(65536).ToArray();
+                if (!format.TryGetCharacterCoverage(chunk, out var values)) return false;
+                values.CopyTo(supported, offset);
+            }
+            return true;
+        }
+        catch (ObjectDisposedException) { return false; }
+    }
+
+    internal readonly record struct RenderingFont(string Family, float Size, int Weight, int Style, float Width);
+
+    // Accessibility consumes the same primary face as drawing. In particular,
+    // encoded CSS plans, quoted family lists and width keys are not font names.
+    internal static RenderingFont? GetRenderingFont(string family, string text, double size, int weight, int style)
+    {
+        var context = RenderContext.Current;
+        if (context is null || !context.IsValid || context.Backend != RenderBackend.Metal) return null;
+        family = Jalium.UI.Styling.CssFontFaces.MaterializeSource(family, text);
+        var format = GetOrCreateFormat(context, family, (float)size, weight, style);
+        return format is null ? null : new(format.FontFamily, format.FontSize, format.FontWeight, format.FontStyle, format.FontWidthPercentage);
+    }
+
+    private static NativeTextFormat CreateCssTextFormat(RenderContext context, Jalium.UI.Styling.CssFontRenderingPlan plan,
+        float size, int weight, int style, float width)
+    {
+        var formats = new NativeTextFormat?[plan.Faces.Length]; NativeTextFormat? primary = null;
+        void Check(JaliumResult status)
+        { if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure CSS font cascade: {status}"); }
+        try
+        {
+            for (int i = 0; i < formats.Length; i++)
+                if (plan.Faces[i] is { Family: { } family } face)
+                {
+                    var format = context.CreateTextFormat(family, size, face.Weight, style, (float)Math.Min(face.Width, float.MaxValue)); formats[i] = format;
+                    Check(format.SetUnicodeRanges(face.Ranges));
+                }
+            var metric = plan.MetricsFace >= 0 ? plan.Faces[plan.MetricsFace] : null;
+            primary = context.CreateTextFormat(metric?.Family ?? FrameworkElement.DefaultFontFamilyName, size,
+                metric?.Weight ?? weight, style, (float)Math.Min(metric?.Width ?? width, float.MaxValue));
+            // Keep the first available face's metrics. The empty primary charset
+            // makes actual glyph selection use the ordered, restricted cascade.
+            Check(primary.SetFontFallbacks(formats.OfType<NativeTextFormat>().ToArray()));
+            Check(primary.SetUnicodeRanges([]));
+            Check(primary.SetFontDisplay(plan.Faces, formats));
+            var result = primary; primary = null; return result;
+        }
+        finally
+        {
+            primary?.Dispose(); foreach (var format in formats) format?.Dispose();
+        }
+    }
+
+    private static bool IsMacOSUnboundedWidth(float width) => OperatingSystem.IsMacOS() &&
+        float.IsPositiveInfinity(width);
+
+    private static NativeTextFormat? GetOrCreateFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle = 0, bool noWrap = false)
     {
         if (string.IsNullOrWhiteSpace(fontFamily))
         {
@@ -943,7 +1053,7 @@ public static partial class TextMeasurement
             fontSize = 12;
         }
 
-        var key = new FormatKey(context.Generation, fontFamily, fontSize, fontWeight, fontStyle);
+        var key = new FormatKey(context.Generation, fontFamily, fontSize, fontWeight, fontStyle, noWrap);
 
         var readSnapshot = Volatile.Read(ref _formatReadCache);
         if (readSnapshot.TryGetValue(key, out var readCached) && readCached.IsValid)
@@ -985,6 +1095,8 @@ public static partial class TextMeasurement
             try
             {
                 var format = CreateTextFormatFromFamilyList(context, fontFamily, fontSize, fontWeight, fontStyle);
+                try { if (noWrap) format.SetNoWrap(true); }
+                catch { format.Dispose(); throw; }
                 if (!CanPopulateGlobalFormatCache(context))
                 {
                     format.Dispose();

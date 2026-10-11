@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Styling;
 
@@ -1073,6 +1074,7 @@ internal static class CssEngine
         CollectCustomDeclarations();
         var parent = CssMatcher.CssAncestor(element);
         var state = EnsureState(element);
+        var previousFontWidth = state.FontStretchPercentage;
         state.ContextualColors = null;
         state.FontStretchPercentage = null;
         state.FontStyleComputed = null;
@@ -1160,20 +1162,23 @@ internal static class CssEngine
         {
             var slots = new CssSlotAccumulator { LogicalRightToLeft = logicalRightToLeft };
 
-            // Font-family/weight/style establish the rulers for ex/cap/ch/ic.
+            // Font-family/weight/style/width establish the rulers for ex/cap/ch/ic.
             // Probe CSS layers without disturbing native local values or bindings.
             var fontContext = lengths.Fonts ?? CssFontContext.Initial;
-            foreach (var fontName in new[] { "font-family", "font-weight", "font-style" })
+            foreach (var fontName in new[] { "font-family", "font-weight", "font-style", "font-stretch" })
             {
                 var merged = declarations.FirstOrDefault(d => d.Declaration.Name == fontName);
                 if (merged.Declaration.Value is null) continue;
-                var nativeName = fontName == "font-family" ? "FontFamily" : fontName == "font-weight" ? "FontWeight" : "FontStyle";
+                var nativeName = fontName == "font-family" ? "FontFamily" : fontName == "font-weight" ? "FontWeight" :
+                    fontName == "font-style" ? "FontStyle" : "FontStretch";
                 if (CssDependencyPropertyLookup.Find(element.GetType(), nativeName) is { } native && element.HasLocalOrAnimatedValue(native)) continue;
                 var fontSink = new CssSetterCollector();
                 var faceValue = computation?.FontPropertyCycle(fontName) == true ? new CssWideValue(fontName, "unset") : merged.Declaration.Value;
                 faceValue.TryApply(new CssApplyContext(element, lengths, slots), fontSink);
                 foreach (var entry in fontSink.Values)
                     fontContext = fontContext with { Element = fontContext.Element.With(entry.Key.Name, entry.Value.Value) };
+                if (fontName == "font-stretch")
+                    fontContext = fontContext with { Element = fontContext.Element with { Width = CssFontStretchValue.Computed(element) } };
                 if (fontContext.IsRoot) fontContext = fontContext with { Root = fontContext.Element };
                 lengths = lengths.WithFonts(fontContext);
             }
@@ -1296,6 +1301,8 @@ internal static class CssEngine
         if (!preview)
         {
             ApplyDiff(element, collector.Values, collector.LayoutState);
+            if (OperatingSystem.IsMacOS() && previousFontWidth != state.FontStretchPercentage)
+                FontWidthRenderingSource.Invalidate(element);
             CssInheritedColorObserver.Finish(state);
             CssInheritedBoxObserver.Finish(state);
             CssColorBrushObserver.Finish(state);

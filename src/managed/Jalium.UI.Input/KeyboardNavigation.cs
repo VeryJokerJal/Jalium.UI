@@ -495,12 +495,13 @@ public sealed partial class KeyboardNavigation
         List<(UIElement Element, int VisualOrder)> results,
         ref int visualOrder)
     {
-        if (!element.IsEnabled || element.Visibility != Visibility.Visible)
+        if (!element.IsEnabled || element.Visibility != Visibility.Visible ||
+            Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element))
         {
             return;
         }
 
-        if (element.Focusable && GetIsTabStop(element))
+        if (element.Focusable && element.IsVisible && GetIsTabStop(element))
         {
             results.Add((element, visualOrder++));
         }

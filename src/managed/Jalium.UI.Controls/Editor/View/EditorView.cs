@@ -156,14 +156,23 @@ internal sealed class EditorView
     /// <summary>
     /// Updates layout metrics based on font settings.
     /// </summary>
-    public void UpdateLayout(string fontFamily, double fontSize)
+    private int _measurementWeight = 400;
+    private int _measurementStyle;
+    private long _measurementFontEpoch;
+
+    public void UpdateLayout(string fontFamily, double fontSize, int fontWeight = 400, int fontStyle = 0)
     {
         if (_cachedFontFamily == fontFamily && _cachedFontSize == fontSize &&
+            _measurementWeight == fontWeight && _measurementStyle == fontStyle &&
+            _measurementFontEpoch == TextMeasurement.FontCacheEpoch &&
             (fontSize <= 0 || _lineHeight > 0))
             return;
 
         _cachedFontFamily = fontFamily;
         _cachedFontSize = fontSize;
+        _measurementWeight = fontWeight;
+        _measurementStyle = fontStyle;
+        _measurementFontEpoch = TextMeasurement.FontCacheEpoch;
 
         if (_lineCache.Count > 0)
         {
@@ -180,7 +189,7 @@ internal sealed class EditorView
         }
 
         // Get font metrics from native measurement
-        var metrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize, 400, 0);
+        var metrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize, fontWeight, fontStyle);
         _lineHeight = metrics.LineHeight > 0
             ? Math.Ceiling(metrics.LineHeight)
             : Math.Ceiling(fontSize * 1.35);
@@ -593,7 +602,7 @@ internal sealed class EditorView
                 var caretCachedLine = GetOrCreateLineCacheEntry(caretLine, caretDocLine);
                 string caretLineText = Document.GetLineText(caretLine);
                 int clampedCaretColumn = Math.Clamp(caretColumn, 0, caretLineText.Length);
-                double caretX = GetColumnX(caretCachedLine, caretLineText, clampedCaretColumn, textAreaLeft);
+                double caretX = GetColumnX(caretCachedLine, caretLineText, clampedCaretColumn, textAreaLeft, caret.BackwardAffinity);
                 double caretY = GetLineTop(caretLine);
 
                 if (caretX >= textAreaLeft && caretY >= 0 && caretY < renderSize.Height)
@@ -701,7 +710,8 @@ internal sealed class EditorView
                 var tokenText = lineText.Substring(tokenStart, tokenLength);
 
                 var brush = ResolveBrushForClassification(token.Classification, defaultForeground);
-                var formatted = new FormattedText(tokenText, fontFamily, fontSize) { Foreground = brush };
+                var formatted = new FormattedText(tokenText, fontFamily, fontSize)
+                { Foreground = brush, FontWeight = fontWeight.ToOpenTypeWeight(), FontStyle = fontStyle.ToOpenTypeStyle() };
                 double tokenX = GetColumnX(cachedLine, lineText, tokenStart, textAreaLeft);
                 dc.DrawText(formatted, new Point(tokenX, y));
             }
@@ -710,7 +720,8 @@ internal sealed class EditorView
         {
             // Plain text rendering
             string text = visibleColumnLimit < lineText.Length ? lineText[..visibleColumnLimit] : lineText;
-            var formatted = new FormattedText(text, fontFamily, fontSize) { Foreground = defaultForeground };
+            var formatted = new FormattedText(text, fontFamily, fontSize)
+            { Foreground = defaultForeground, FontWeight = fontWeight.ToOpenTypeWeight(), FontStyle = fontStyle.ToOpenTypeStyle() };
             dc.DrawText(formatted, new Point(textAreaLeft - HorizontalOffset, y));
         }
     }
@@ -890,6 +901,36 @@ internal sealed class EditorView
         cachedLine.Highlighting = highlighted;
         cachedLine.IsHighlightingDirty = false;
         return highlighted;
+    }
+
+    internal IReadOnlyList<Jalium.UI.Automation.AutomationTextStyleSpan> GetAutomationTextStyles(Jalium.UI.Automation.AutomationTextStyle style, Brush defaultForeground)
+    {
+        var spans = new List<Jalium.UI.Automation.AutomationTextStyleSpan>();
+        if (Document == null || Document.TextLength == 0) return [new(0, 0, style)];
+        if (Highlighter == null) return [new(0, Document.TextLength, style)];
+        // Use the renderer's stateful highlighting cache and brush resolver,
+        // including folded lines: formatting is independent of visibility.
+        for (int number = 1; number <= Document.LineCount; number++)
+        {
+            var line = Document.GetLineByNumber(number); string text = Document.GetLineText(number);
+            var highlighted = GetOrComputeHighlightedLine(GetOrCreateLineCacheEntry(number, line), number, text);
+            int column = 0;
+            foreach (var token in highlighted.Tokens)
+            {
+                int start = Math.Clamp(token.StartOffset, column, line.Length);
+                int end = (int)Math.Clamp((long)token.StartOffset + token.Length, start, line.Length);
+                if (start > column) Jalium.UI.Automation.AutomationTextStyles.Add(spans, line.Offset + column, start - column, style);
+                if (end > start)
+                {
+                    var brush = ResolveBrushForClassification(token.Classification, defaultForeground);
+                    Jalium.UI.Automation.AutomationTextStyles.Add(spans, line.Offset + start, end - start,
+                        style with { Foreground = Jalium.UI.Automation.AutomationTextStyleFactory.Color(brush) });
+                }
+                column = end;
+            }
+            if (column < line.TotalLength) Jalium.UI.Automation.AutomationTextStyles.Add(spans, line.Offset + column, line.TotalLength - column, style);
+        }
+        return spans;
     }
 
     private void TrimLineCache(int firstVisibleLine, int lastVisibleLine)
@@ -1129,9 +1170,17 @@ internal sealed class EditorView
         return false;
     }
 
-    private double GetColumnX(EditorViewLine cachedLine, string lineText, int column, double textAreaLeft)
+    private double GetColumnX(EditorViewLine cachedLine, string lineText, int column, double textAreaLeft, bool backward = false)
     {
         int clampedColumn = Math.Clamp(column, 0, lineText.Length);
+        if (OperatingSystem.IsMacOS() && lineText.Length > 0)
+        {
+            bool trailing = (backward || clampedColumn == lineText.Length) && clampedColumn > 0;
+            int position = trailing ? GraphemeClusters.PreviousBoundary(lineText, clampedColumn) : clampedColumn;
+            if (TextMeasurement.HitTestTextPositionWrapped(lineText, GetMeasurementFontFamily(), GetMeasurementFontSize(),
+                _measurementWeight, _measurementStyle, float.PositiveInfinity, (uint)position, trailing, out var hit) &&
+                double.IsFinite(hit.CaretX)) return textAreaLeft + hit.CaretX - HorizontalOffset;
+        }
         double prefixWidth = GetPrefixWidth(cachedLine, lineText, clampedColumn);
         return textAreaLeft + prefixWidth - HorizontalOffset;
     }
@@ -1154,7 +1203,8 @@ internal sealed class EditorView
         // Use DirectWrite's native hit testing for accurate character mapping
         string fontFamily = GetMeasurementFontFamily();
         double fontSize = GetMeasurementFontSize();
-        if (TextMeasurement.HitTestPoint(lineText, fontFamily, fontSize, (float)relativeX, out var hitResult))
+        if (TextMeasurement.HitTestPointWrapped(lineText, fontFamily, fontSize, _measurementWeight, _measurementStyle,
+            float.PositiveInfinity, (float)relativeX, 0, out var hitResult))
         {
             int column = (int)hitResult.TextPosition;
             if (hitResult.IsTrailingHit != 0)
@@ -1199,7 +1249,7 @@ internal sealed class EditorView
         return measured;
     }
 
-    private static double MeasurePrefixWidth(string lineText, int column, string fontFamily, double fontSize)
+    private double MeasurePrefixWidth(string lineText, int column, string fontFamily, double fontSize)
     {
         if (string.IsNullOrEmpty(lineText) || column <= 0 || fontSize <= 0)
             return 0;
@@ -1214,14 +1264,16 @@ internal sealed class EditorView
         if (clampedColumn < lineText.Length)
         {
             // Get the leading edge of character at clampedColumn = trailing edge of previous character
-            if (TextMeasurement.HitTestTextPosition(lineText, fontFamily, fontSize, (uint)clampedColumn, false, out var hitResult)
+            if (TextMeasurement.HitTestTextPositionWrapped(lineText, fontFamily, fontSize, _measurementWeight, _measurementStyle,
+                float.PositiveInfinity, (uint)clampedColumn, false, out var hitResult)
                 && hitResult.CaretX > 0)
                 return hitResult.CaretX;
         }
         else
         {
             // At end of line: get the trailing edge of the last character
-            if (TextMeasurement.HitTestTextPosition(lineText, fontFamily, fontSize, (uint)(clampedColumn - 1), true, out var hitResult)
+            if (TextMeasurement.HitTestTextPositionWrapped(lineText, fontFamily, fontSize, _measurementWeight, _measurementStyle,
+                float.PositiveInfinity, (uint)GraphemeClusters.PreviousBoundary(lineText, clampedColumn), true, out var hitResult)
                 && hitResult.CaretX > 0)
                 return hitResult.CaretX;
         }
@@ -1231,7 +1283,8 @@ internal sealed class EditorView
         if (prefixText.Length == 0)
             return 0;
 
-        var formatted = new FormattedText(prefixText, fontFamily, fontSize);
+        var formatted = new FormattedText(prefixText, fontFamily, fontSize)
+        { FontWeight = _measurementWeight, FontStyle = _measurementStyle };
         TextMeasurement.MeasureText(formatted);
         return formatted.WidthIncludingTrailingWhitespace > 0
             ? formatted.WidthIncludingTrailingWhitespace
@@ -1273,7 +1326,7 @@ internal sealed class EditorView
     /// <summary>
     /// Gets the visual position of a document offset.
     /// </summary>
-    public Point GetPointFromOffset(int offset, bool showLineNumbers)
+    public Point GetPointFromOffset(int offset, bool showLineNumbers, bool backwardAffinity = false)
     {
         if (Document == null || _lineHeight <= 0) return Point.Zero;
 
@@ -1295,7 +1348,7 @@ internal sealed class EditorView
         double textAreaLeft = showLineNumbers ? TextAreaLeft : 0;
         string anchorLineText = Document.GetLineText(anchorLineNumber);
         var anchorCachedLine = GetOrCreateLineCacheEntry(anchorLineNumber, anchorLine);
-        double x = GetColumnX(anchorCachedLine, anchorLineText, column, textAreaLeft);
+        double x = GetColumnX(anchorCachedLine, anchorLineText, column, textAreaLeft, backwardAffinity);
         double y = GetLineTop(anchorLineNumber);
 
         return new Point(x, y);

@@ -1321,6 +1321,13 @@ internal static partial class ClipboardPlatform
 
     private static bool SetDataObjectCrossPlatform(global::Jalium.UI.IDataObject dataObject)
     {
+        return SetNativeClipboardData(BuildCrossPlatformRepresentations(dataObject)
+            .Select(pair => new ClipboardRepresentation(pair.Key, pair.Value)).ToArray());
+    }
+
+    // Clipboard and native drag sources publish the same desktop data contract.
+    internal static Dictionary<string, byte[]> BuildCrossPlatformRepresentations(global::Jalium.UI.IDataObject dataObject)
+    {
         var representations = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
 
         string? text = GetStringData(dataObject, DataFormats.UnicodeText)
@@ -1336,6 +1343,12 @@ internal static partial class ClipboardPlatform
         string? rtf = GetStringData(dataObject, DataFormats.Rtf);
         if (rtf != null)
             AddRepresentations(representations, DataFormats.Rtf, Encoding.UTF8.GetBytes(rtf));
+
+        foreach (string format in new[] { DataFormats.CommaSeparatedValue, DataFormats.Xaml })
+        {
+            if (GetStringData(dataObject, format) is { } value)
+                AddRepresentations(representations, format, Encoding.UTF8.GetBytes(value));
+        }
 
         if (TryGetFileDropData(dataObject.GetData(DataFormats.FileDrop), out string[] files))
             AddRepresentations(representations, DataFormats.FileDrop, Encoding.UTF8.GetBytes(BuildUriList(files)));
@@ -1380,8 +1393,16 @@ internal static partial class ClipboardPlatform
             }
         }
 
-        return SetNativeClipboardData(
-            representations.Select(pair => new ClipboardRepresentation(pair.Key, pair.Value)).ToArray());
+        return representations;
+    }
+
+    internal static object DecodeCrossPlatformRepresentation(string format, byte[] bytes)
+    {
+        if (format == DataFormats.FileDrop) return ParseUriList(bytes);
+        if (format == DataFormats.Bitmap && DecodePng(bytes) is { } image)
+            return new PlatformClipboardBitmapSource(image.Width, image.Height, image.Stride, image.Data);
+        if (format == DataFormats.WaveAudio) return new MemoryStream(bytes, writable: false);
+        return IsEncodedTextFormat(format) ? DecodeClipboardText(format, bytes) : bytes;
     }
 
     private static string? GetStringData(global::Jalium.UI.IDataObject dataObject, string format) =>
@@ -1497,7 +1518,7 @@ internal static partial class ClipboardPlatform
         return offered.FirstOrDefault(value => MimeTypeMapsToFormat(value, format));
     }
 
-    private static bool MimeTypeMapsToFormat(string mimeType, string format)
+    internal static bool MimeTypeMapsToFormat(string mimeType, string format)
     {
         string? mapped = GetFormatForMimeType(mimeType);
         if (mapped == null)
@@ -2061,6 +2082,8 @@ internal static class ClipboardProvider
             return new AndroidClipboardProvider();
         if (PlatformFactory.IsLinux)
             return new LinuxClipboardProvider();
+        if (OperatingSystem.IsMacOS())
+            return new MacOSClipboardProvider();
         return new UnsupportedClipboardProvider();
     }
 }
@@ -2174,6 +2197,12 @@ internal sealed class LinuxClipboardProvider : ClipboardProviderBase
 }
 
 internal sealed class AndroidClipboardProvider : ClipboardProviderBase
+{
+    public override bool RequiresSta => false;
+    public override bool SupportsPersistence => true;
+}
+
+internal sealed class MacOSClipboardProvider : ClipboardProviderBase
 {
     public override bool RequiresSta => false;
     public override bool SupportsPersistence => true;

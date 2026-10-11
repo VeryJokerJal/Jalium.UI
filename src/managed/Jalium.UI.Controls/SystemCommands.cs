@@ -78,7 +78,7 @@ public static class SystemCommands
     {
         ArgumentNullException.ThrowIfNull(window);
 
-        if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             _ = window.TryShowSystemMenuAtScreen(screenLocation);
             return;

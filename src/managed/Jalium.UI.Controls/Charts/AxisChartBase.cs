@@ -544,6 +544,11 @@ public abstract class AxisChartBase : ChartBase
         if (!IsZoomEnabled)
             return;
 
+        // Phase-only packets must still be routed for gesture lifecycle tracking.
+        // Use the original delta so sub-unit movement retains its direction.
+        if (!double.IsFinite(e.VerticalDelta) || e.VerticalDelta == 0)
+            return;
+
         var plotArea = GetPlotArea();
         var pos = e.GetPosition(this);
 
@@ -560,7 +565,7 @@ public abstract class AxisChartBase : ChartBase
                 out _viewportMinY, out _viewportMaxY);
         }
 
-        var zoomFactor = e.Delta > 0 ? 0.85 : 1.15;
+        var zoomFactor = e.VerticalDelta > 0 ? 0.85 : 1.15;
 
         // Compute the mouse position as a fraction of the plot area
         var xFraction = (pos.X - plotArea.Left) / plotArea.Width;

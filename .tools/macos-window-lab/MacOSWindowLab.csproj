@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <AssemblyName>MacOSWindowLab</AssemblyName>
+    <AppBundleManifest>$(MSBuildThisFileDirectory)Info.plist</AppBundleManifest>
+    <RootNamespace>MacOSWindowLab</RootNamespace>
+    <PublishAot>false</PublishAot>
+    <LinkMode>None</LinkMode>
+    <ValidateXcodeVersion>false</ValidateXcodeVersion>
+    <EnableJalxamlCodeGeneration>false</EnableJalxamlCodeGeneration>
+    <JaliumMacNativeRoot Condition="'$(JaliumMacNativeRoot)' == ''">$(MSBuildThisFileDirectory)../../src/native/bin/native/osx-arm64/$(Configuration)</JaliumMacNativeRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Remove="Info.plist" />
+    <None Include="Info.plist" />
+    <ProjectReference Include="../../src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj" ExcludeAssets="build;buildTransitive" />
+    <BundleResource Include="$(JaliumMacNativeRoot)/*.metallib" LogicalName="%(Filename)%(Extension)" />
+    <BundleResource Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" LogicalName="jalium_metal_manifest.json" />
+  </ItemGroup>
+  <Target Name="DeduplicateMacOSNativeLibraries" BeforeTargets="_ComputeDynamicLibrariesToReidentify">
+    <RemoveDuplicates Inputs="@(_FileNativeReference)">
+      <Output TaskParameter="Filtered" ItemName="_UniqueMacOSNativeReference" />
+    </RemoveDuplicates>
+    <ItemGroup>
+      <_FileNativeReference Remove="@(_FileNativeReference)" />
+      <_FileNativeReference Include="@(_UniqueMacOSNativeReference)" />
+    </ItemGroup>
+  </Target>
+</Project>

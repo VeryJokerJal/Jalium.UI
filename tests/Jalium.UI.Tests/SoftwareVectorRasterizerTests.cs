@@ -20,6 +20,69 @@ namespace Jalium.UI.Tests;
 /// </summary>
 public class SoftwareVectorRasterizerTests
 {
+    [Theory]
+    [InlineData(false, PenLineCap.Flat)]
+    [InlineData(false, PenLineCap.Round)]
+    [InlineData(true, PenLineCap.Square)]
+    [InlineData(true, PenLineCap.Round)]
+    public void GeometryGroupStrokeMatchesRecursiveTransformRendering(bool dashed, PenLineCap cap)
+    {
+        var leaf = new PathGeometry { Transform = new ScaleTransform(2, 3) };
+        var figure = new PathFigure { StartPoint = new Point(4, 6), IsFilled = false };
+        figure.Segments.Add(new LineSegment(new Point(20, 6)));
+        figure.Segments.Add(new LineSegment(new Point(20, 16)));
+        leaf.Figures.Add(figure);
+        var nested = new GeometryGroup
+        {
+            Transform = new MatrixTransform(new Matrix(0, 1, -1, 0, 70, 4))
+        };
+        nested.Children.Add(leaf);
+        var root = new GeometryGroup { Transform = new TranslateTransform(10, 8) };
+        root.Children.Add(nested);
+        var pen = new Pen(Brushes.White, 3)
+        {
+            StartLineCap = cap, EndLineCap = cap, DashCap = cap,
+            LineJoin = PenLineJoin.Round
+        };
+        if (dashed)
+        {
+            pen.DashStyle = new DashStyle { Offset = 0.5 };
+            pen.DashStyle.Dashes.Add(2);
+            pen.DashStyle.Dashes.Add(1);
+        }
+        var expected = new DrawingGroup { Transform = root.Transform };
+        var childDrawing = new DrawingGroup { Transform = nested.Transform };
+        childDrawing.Children.Add(new GeometryDrawing(null, pen, leaf));
+        expected.Children.Add(childDrawing);
+        var actual = Pixels(new GeometryDrawing(null, pen, root));
+        Assert.Equal(Pixels(expected), actual);
+        // Reproduce the reviewed bug: only centerlines inherit child transforms.
+        var flattened = RenderTargetDrawingContext.FlattenGeometryGroup(root);
+        flattened.Transform = root.Transform;
+        Assert.False(actual.SequenceEqual(Pixels(new GeometryDrawing(null, pen, flattened))));
+        Assert.Contains(actual.Where((_, i) => i % 4 == 3), alpha => alpha > 0);
+    }
+
+    [Theory]
+    [InlineData(FillRule.EvenOdd, 0)]
+    [InlineData(FillRule.Nonzero, 255)]
+    public void GeometryGroupCompoundFillKeepsOuterWindingRule(FillRule rule, int centerAlpha)
+    {
+        var group = new GeometryGroup { FillRule = rule, Transform = new TranslateTransform(8, 8) };
+        group.Children.Add(new RectangleGeometry(new Rect(4, 4, 50, 50)));
+        group.Children.Add(new RectangleGeometry(new Rect(8, 8, 12, 12))
+            { Transform = new ScaleTransform(2, 2) });
+        var pixels = Pixels(new GeometryDrawing(Brushes.White, null, group));
+        var flat = RenderTargetDrawingContext.FlattenGeometryGroup(group);
+        flat.Transform = group.Transform;
+        Assert.Equal(Pixels(new GeometryDrawing(Brushes.White, null, flat)), pixels);
+        Assert.Equal(centerAlpha, (int)pixels[(32 * 96 + 32) * 4 + 3]);
+        Assert.Equal(255, (int)pixels[(16 * 96 + 16) * 4 + 3]);
+    }
+
+    private static byte[] Pixels(Drawing drawing) =>
+        SoftwareVectorRasterizer.Rasterize(drawing, 96, 96, new Rect(0, 0, 96, 96))!;
+
     private static (byte B, byte G, byte R, byte A) GetPixel(byte[] px, int width, int x, int y)
     {
         int off = (y * width + x) * 4;

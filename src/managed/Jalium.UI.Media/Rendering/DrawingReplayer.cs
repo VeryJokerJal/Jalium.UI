@@ -141,7 +141,7 @@ internal static class DrawingReplayer
                     target.DrawGeometry(
                         (Brush?)c.A,
                         (Pen?)c.B,
-                        (Geometry)c.C!);
+                        (Geometry)c.C!, (EdgeMode)(int)c.V0);
                     break;
 
                 case DrawCommandKind.DrawImage:

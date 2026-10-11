@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using Jalium.UI.Data;
 using Jalium.UI.Animation;
 using Jalium.UI.Controls;
 using Jalium.UI.Media.Animation;
@@ -392,6 +393,86 @@ public class AnimationEngineTests
 
         element.BeginAnimation(UIElement.OpacityProperty, null); // cleanup
         AnimationManager.ProcessFrame(Stopwatch.GetTimestamp());
+    }
+
+    [Fact]
+    public void BeginAnimationNull_HoldEnd_RestoresBaseValue()
+    {
+        var element = new ProbeElement { Opacity = 0.9 };
+        long t0 = Stopwatch.GetTimestamp();
+        RunInsideFrame(t0, _ => element.BeginAnimation(UIElement.OpacityProperty,
+            new DoubleAnimation { From = 0.2, To = 0.8, Duration = TimeSpan.FromSeconds(1) }));
+        AnimationManager.ProcessFrame(t0 + Ticks(0.5));
+        Assert.Equal(0.5, element.Opacity, 6);
+
+        element.BeginAnimation(UIElement.OpacityProperty, (AnimationTimeline?)null);
+
+        Assert.Equal(0.9, element.Opacity, 6);
+        Assert.False(element.HasAnimation(UIElement.OpacityProperty));
+        Assert.False(element.HasAnimatedValue(UIElement.OpacityProperty));
+    }
+
+    [Fact]
+    public void BeginAnimationNull_AfterHoldEndCompletion_RestoresLatestBaseValue()
+    {
+        var element = new ProbeElement { Opacity = 0.9 };
+        long t0 = Stopwatch.GetTimestamp();
+        RunInsideFrame(t0, _ => element.BeginAnimation(UIElement.OpacityProperty,
+            new DoubleAnimation { From = 0.2, To = 0.8, Duration = TimeSpan.FromSeconds(1) }));
+        AnimationManager.ProcessFrame(t0 + Ticks(2));
+        element.Opacity = 0.6;
+        Assert.Equal(0.8, element.Opacity, 6);
+
+        element.BeginAnimation(UIElement.OpacityProperty, (AnimationTimeline?)null);
+
+        Assert.Equal(0.6, element.Opacity, 6);
+        Assert.False(element.HasAnimatedValue(UIElement.OpacityProperty));
+    }
+
+    [Fact]
+    public void BeginAnimationNull_HoldEnd_PreservesBindingBaseValue()
+    {
+        var element = new ProbeElement();
+        var source = new OpacityBindingSource { Value = 0.9 };
+        BindingOperations.SetBinding(element, UIElement.OpacityProperty,
+            new Binding(nameof(OpacityBindingSource.Value)) { Source = source, Mode = BindingMode.OneWay });
+        var expression = BindingOperations.GetBindingExpression(element, UIElement.OpacityProperty);
+        long t0 = Stopwatch.GetTimestamp();
+        RunInsideFrame(t0, _ => element.BeginAnimation(UIElement.OpacityProperty,
+            new DoubleAnimation { From = 0.2, To = 0.8, Duration = TimeSpan.FromSeconds(1) }));
+        AnimationManager.ProcessFrame(t0 + Ticks(0.5));
+        element.BeginAnimation(UIElement.OpacityProperty, (AnimationTimeline?)null);
+
+        Assert.Equal(0.9, element.Opacity, 6);
+        Assert.Same(expression, BindingOperations.GetBindingExpression(element, UIElement.OpacityProperty));
+        source.Value = 0.7;
+        expression!.UpdateTarget();
+        Assert.Equal(0.7, element.Opacity, 6);
+    }
+
+    [Fact]
+    public void BeginAnimation_ReplaceHoldEnd_DoesNotOverwriteBaseValue()
+    {
+        var element = new ProbeElement { Opacity = 0.9 };
+        long t0 = Stopwatch.GetTimestamp();
+        RunInsideFrame(t0, _ => element.BeginAnimation(UIElement.OpacityProperty,
+            new DoubleAnimation { From = 0.2, To = 0.8, Duration = TimeSpan.FromSeconds(1) }));
+        AnimationManager.ProcessFrame(t0 + Ticks(0.5));
+        RunInsideFrame(t0 + Ticks(0.5), _ => element.BeginAnimation(UIElement.OpacityProperty,
+            new DoubleAnimation { To = 0.7, Duration = TimeSpan.FromSeconds(1) }));
+        AnimationManager.ProcessFrame(t0 + Ticks(0.5));
+        Assert.Equal(0.5, element.Opacity, 6);
+        AnimationManager.ProcessFrame(t0 + Ticks(1));
+        Assert.Equal(0.6, element.Opacity, 6);
+
+        element.BeginAnimation(UIElement.OpacityProperty, (AnimationTimeline?)null);
+
+        Assert.Equal(0.9, element.Opacity, 6);
+    }
+
+    private sealed class OpacityBindingSource
+    {
+        public double Value { get; set; }
     }
 
     [Fact]

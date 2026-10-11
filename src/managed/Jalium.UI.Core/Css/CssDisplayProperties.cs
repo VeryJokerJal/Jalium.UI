@@ -90,8 +90,11 @@ internal static class CssDisplayProperties
             if (node.Target is UIElement native)
             {
                 var layer = native.GetEffectiveValueLayer(UIElement.VisibilityProperty);
-                if (native.HasLocalOrAnimatedValue(UIElement.VisibilityProperty) ||
-                    layer is not null and not (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+                // A display animation mirrors layout participation into native
+                // Visibility. It must not replace CSS visibility inheritance.
+                if (!IsDisplayVisibilityMirror(native) &&
+                    (native.HasLocalOrAnimatedValue(UIElement.VisibilityProperty) ||
+                     layer is not null and not (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState)))
                     return native.Visibility;
             }
             if (node.Target.GetEffectiveValueLayer(VisibilityProperty) is
@@ -117,11 +120,7 @@ internal static class CssDisplayProperties
             if (current.Target is UIElement native)
             {
                 var layer = native.GetEffectiveValueLayer(UIElement.VisibilityProperty);
-                var displayMirror = native is FrameworkElement
-                    { CssRuntimeState.AnimatedDisplayVisibilityMirror: true } &&
-                    !native.HasLocalValue(UIElement.VisibilityProperty) &&
-                    !native.HasExplicitAnimation(UIElement.VisibilityProperty);
-                if (!displayMirror &&
+                if (!IsDisplayVisibilityMirror(native) &&
                     (native.HasLocalOrAnimatedValue(UIElement.VisibilityProperty) ||
                      layer is not null and not (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState)))
                     return native.Visibility switch
@@ -138,6 +137,11 @@ internal static class CssDisplayProperties
         }
         return CssVisibilityMode.Visible;
     }
+
+    private static bool IsDisplayVisibilityMirror(UIElement element) =>
+        element is FrameworkElement { CssRuntimeState.AnimatedDisplayVisibilityMirror: true } &&
+        !element.HasLocalValue(UIElement.VisibilityProperty) &&
+        !element.HasExplicitAnimation(UIElement.VisibilityProperty);
 
     internal static bool HasVisibilityStyleOnPath(DependencyObject target)
     {

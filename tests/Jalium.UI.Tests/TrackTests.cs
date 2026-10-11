@@ -231,6 +231,8 @@ public class TrackTests
         // equal to its cross-axis thickness (width) — rather than a long thin sliver.
         var scrollBar = new ScrollBar
         {
+            UseMacOSScrollBarBehavior = false,
+            IsOverlayStyle = false,
             Orientation = Orientation.Vertical,
             Minimum = 0,
             Maximum = 42_000_000,
@@ -254,8 +256,11 @@ public class TrackTests
     [Fact]
     public void ScrollBar_IsThumbSlim_ShouldReduceThumbCrossAxisWidth()
     {
+        // Exercise the classic auto-hide geometry independently of system preferences.
         var scrollBar = new ScrollBar
         {
+            UseMacOSScrollBarBehavior = false,
+            IsOverlayStyle = false,
             Orientation = Orientation.Vertical,
             Minimum = 0,
             Maximum = 1000,

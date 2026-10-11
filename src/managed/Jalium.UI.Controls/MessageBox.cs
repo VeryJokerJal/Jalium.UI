@@ -172,7 +172,7 @@ public sealed class MessageBox
     {
         if (!Controls.Platform.PlatformFactory.IsWindows)
         {
-            var dialog = new MessageBoxDialog(messageBoxText, caption, button, icon, defaultResult);
+            var dialog = new MessageBoxDialog(messageBoxText, caption, button, icon, defaultResult, options);
             if (owner != IntPtr.Zero && Window.TryGetOpenWindow(owner) is { } ownerWindow)
             {
                 dialog.Owner = ownerWindow;

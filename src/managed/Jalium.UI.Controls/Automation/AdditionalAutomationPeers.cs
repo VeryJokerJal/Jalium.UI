@@ -228,14 +228,75 @@ public class GridSplitterAutomationPeer : ThumbAutomationPeer, Jalium.UI.Automat
 /// <summary>
 /// Exposes RichTextBox types to UI Automation.
 /// </summary>
-public class RichTextBoxAutomationPeer : TextAutomationPeer
+public class RichTextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProviderSource, IAutomationTextViewSource, IAutomationTextStyleSource
 {
-    public RichTextBoxAutomationPeer(RichTextBox owner) : base(owner) { }
+    private readonly Jalium.UI.Automation.Provider.ITextProvider _textProvider;
+
+    public RichTextBoxAutomationPeer(RichTextBox owner) : base(owner)
+        => _textProvider = new Jalium.UI.Automation.Provider.AutomationTextProvider(this, this);
+
+    private RichTextBox RichTextBoxOwner => (RichTextBox)Owner;
+
+    IReadOnlyList<AutomationTextStyleSpan> IAutomationTextStyleSource.GetTextStyles() => RichTextBoxOwner.GetAutomationTextStyles();
 
     protected override AutomationControlType GetAutomationControlTypeCore()
         => AutomationControlType.Document;
 
     protected override string GetClassNameCore() => nameof(RichTextBox);
+
+    protected override object? GetPatternCore(PatternInterface patternInterface)
+        => patternInterface == PatternInterface.Text ? _textProvider : base.GetPatternCore(patternInterface);
+
+    string IAutomationTextProviderSource.Text => RichTextBoxOwner.GetPlainText();
+    int IAutomationTextProviderSource.SelectionStart => RichTextBoxOwner.Selection.Start.DocumentOffset;
+    int IAutomationTextProviderSource.SelectionLength =>
+        RichTextBoxOwner.Selection.End.DocumentOffset - RichTextBoxOwner.Selection.Start.DocumentOffset;
+    bool IAutomationTextProviderSource.IsReadOnly => RichTextBoxOwner.IsReadOnly;
+    SupportedTextSelection IAutomationTextProviderSource.SupportedTextSelection => SupportedTextSelection.Single;
+    void IAutomationTextProviderSource.Select(int start, int length)
+        => ((IImeSupport)RichTextBoxOwner).TrySetImeSelection(start, length);
+    void IAutomationTextProviderSource.ScrollIntoView(int start, int length)
+        => RichTextBoxOwner.ScrollToAutomationOffset(start);
+
+    int IAutomationTextViewSource.CaretIndex => RichTextBoxOwner.CaretPosition?.DocumentOffset ?? 0;
+    bool IAutomationTextViewSource.CaretHasBackwardAffinity => RichTextBoxOwner.CaretPosition?.LogicalDirection == Documents.LogicalDirection.Backward;
+    Rect IAutomationTextViewSource.TextViewport => RichTextBoxOwner.AutomationTextViewport;
+    IReadOnlyList<AutomationTextLine> IAutomationTextViewSource.GetTextLines() => RichTextBoxOwner.GetAutomationTextLines();
+    bool IAutomationTextViewSource.TryGetInsertionIndex(Point localPoint, out int index)
+        => RichTextBoxOwner.TryGetAutomationInsertionIndex(localPoint, out index);
+    bool IAutomationTextViewSource.ReplaceSelection(string text) => IsEnabled() && !RichTextBoxOwner.IsReadOnly
+        && RichTextBoxOwner.ReplaceAutomationSelection(text);
+
+    IReadOnlyList<Rect> IAutomationTextProviderSource.GetBoundingRectangles(int start, int length)
+        => AutomationVisibility.ClipRectangles(RichTextBoxOwner, GetTextBounds(start, length));
+
+    private IReadOnlyList<Rect> GetTextBounds(int start, int length)
+    {
+        var support = (IImeSupport)RichTextBoxOwner;
+        string text = RichTextBoxOwner.GetPlainText();
+        if (!ImeTextEncoding.TryNormalizeUtf16Range(text, start, length, out start, out length))
+            return Array.Empty<Rect>();
+        var rectangles = new List<Rect>();
+        if (text.Length == 0)
+        {
+            var emptyCaret = Rect.Intersect(RichTextBoxOwner.GetImeCaretRectangle(), RichTextBoxOwner.AutomationTextViewport);
+            return !emptyCaret.IsEmpty && emptyCaret.Width > 0 && emptyCaret.Height > 0 ? [emptyCaret] : [];
+        }
+        int end = start + length;
+        do
+        {
+            if (!support.TryGetImeTextRangeGeometry(start, end - start, false, out var geometry)) break;
+            Rect rectangle = geometry.Rectangle;
+            if (rectangle.Width <= 0) rectangle = new(rectangle.X, rectangle.Y, 1, rectangle.Height);
+            var clipped = Rect.Intersect(rectangle, RichTextBoxOwner.AutomationTextViewport);
+            if (!clipped.IsEmpty && clipped.Width > 0 && clipped.Height > 0) rectangles.Add(clipped);
+            int next = geometry.Start + geometry.Length;
+            if (next <= start) break;
+            start = next;
+        }
+        while (start < end);
+        return rectangles;
+    }
 }
 
 #endregion
@@ -1076,7 +1137,7 @@ public sealed class ContentControlAutomationPeer : FrameworkElementAutomationPee
 /// <summary>
 /// Exposes TitleBarButton types to UI Automation.
 /// </summary>
-public sealed class TitleBarButtonAutomationPeer : ButtonBaseAutomationPeer
+public sealed class TitleBarButtonAutomationPeer : ButtonBaseAutomationPeer, IInvokeProvider
 {
     public TitleBarButtonAutomationPeer(TitleBarButton owner) : base(owner) { }
 
@@ -1084,6 +1145,33 @@ public sealed class TitleBarButtonAutomationPeer : ButtonBaseAutomationPeer
         => AutomationControlType.Button;
 
     protected override string GetClassNameCore() => nameof(TitleBarButton);
+
+    protected override string GetNameCore() => CaptionName(((TitleBarButton)Owner).Kind);
+
+    private string CaptionName(TitleBarButtonKind kind)
+    {
+        // Explicit AutomationProperties.Name is handled by AutomationPeer.
+        // Preserve labeled custom content, but never announce PART_* IDs for
+        // the built-in icon-only caption buttons.
+        if (ButtonBaseOwner.Content is string { Length: > 0 } text) return text;
+        if (ButtonBaseOwner.Content is FrameworkElement { Name.Length: > 0 } content) return content.Name;
+        var (key, fallback) = kind switch
+        {
+            TitleBarButtonKind.Close => ("TitleBarCloseButtonName", "Close"),
+            TitleBarButtonKind.Minimize => ("TitleBarMinimizeButtonName", "Minimize"),
+            TitleBarButtonKind.Maximize => ("TitleBarMaximizeButtonName", "Maximize"),
+            TitleBarButtonKind.Restore => ("TitleBarRestoreButtonName", "Restore"),
+            _ => ("TitleBarButtonName", "Window button")
+        };
+        return ButtonBaseOwner.TryFindResource(key) is string { Length: > 0 } localized ? localized : fallback;
+    }
+
+    internal void OnKindChanged(TitleBarButtonKind oldKind)
+    {
+        if (!string.IsNullOrEmpty(AutomationProperties.GetName(Owner))) return;
+        string oldName = CaptionName(oldKind), newName = GetName();
+        if (oldName != newName) RaisePropertyChangedEvent(AutomationProperty.NameProperty, oldName, newName);
+    }
 }
 
 #endregion
@@ -1425,7 +1513,30 @@ public class ScrollBarAutomationPeer : RangeBaseAutomationPeer
     protected override object? GetPatternCore(PatternInterface patternInterface)
         => patternInterface == PatternInterface.RangeValue ? this : base.GetPatternCore(patternInterface);
 
-    public override void SetValue(double value) => ScrollBarOwner.Value = value;
+    public override void SetValue(double value)
+    {
+        if (!ScrollBarOwner.IsEnabled)
+            throw new InvalidOperationException("The scroll bar is disabled.");
+
+        // A viewer owns the content offset. Changing only the bar's Value
+        // moves its thumb without scrolling (and must not turn metric updates
+        // from the viewer into a feedback loop).
+        var viewer = ScrollBarOwner.TemplatedParent as ScrollViewer;
+        if (viewer == null && ScrollBarOwner.IsHostOwnedLayout)
+            viewer = ScrollBarOwner.VisualParent as ScrollViewer;
+        if (viewer != null)
+        {
+            value = Math.Clamp(value, Minimum, Maximum);
+            if (ScrollBarOwner.Orientation == Orientation.Horizontal)
+                viewer.ScrollToHorizontalOffset(value);
+            else
+                viewer.ScrollToVerticalOffset(value);
+        }
+        else
+        {
+            ScrollBarOwner.Value = value;
+        }
+    }
     public override double Value => ScrollBarOwner.Value;
     public override bool IsReadOnly => false;
     public override double Maximum => ScrollBarOwner.Maximum;

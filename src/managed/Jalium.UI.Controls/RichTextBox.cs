@@ -13,7 +13,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// A control that displays and allows editing of rich text content using a FlowDocument.
 /// </summary>
-public class RichTextBox : TextBoxBase, IImeSupport
+public partial class RichTextBox : TextBoxBase, IImeSupport
 {
     private InputMethodWeakSubscription<RichTextBox>? _imeSubscription;
     internal override bool UsesDefaultTextInputHandlers => false;
@@ -150,6 +150,10 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// Whether an undo/redo operation is in progress.
     /// </summary>
     private new bool _isUndoRedoing;
+    private DocumentState? _documentChangeBlockStart;
+    private DocumentState? _documentChangeBlockNotificationStart;
+    private DocumentState? _observedDocumentState;
+    private UndoAction _documentChangeBlockUndoAction;
 
     // Double/Triple click
     private DateTime _lastClickTime;
@@ -158,6 +162,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     // Layout cache
     private FlowDocumentLayoutInfo? _layoutCache;
+    private RenderContext? _layoutContext;
+    private double _layoutWidth = double.NaN;
     private bool _layoutDirty = true;
 
     // IME composition state
@@ -194,18 +200,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
         get => _document;
         set
         {
-            if (_document != value)
-            {
-                RestoreDocumentElementEnabledStates();
-                _document = value ?? new FlowDocument();
-                TrackDocumentChanges();
-                _caretPosition = _document.ContentStart;
-                _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
-                _spellCheckedText = null;
-                ApplyDocumentEnabledState();
-                InvalidateLayout();
-                InvalidateVisual();
-            }
+            using var change = DeclareChangeBlock();
+            ReplaceDocument(value ?? new FlowDocument(), clearHistory: true);
         }
     }
 
@@ -219,10 +215,16 @@ public class RichTextBox : TextBoxBase, IImeSupport
         {
             if (value != null && ReferenceEquals(value.Document, _document))
             {
+                if (value.Parent is null && _document.Blocks.Count != 0 &&
+                    value.DocumentOffset == _document.GetText().Length)
+                    value = _document.GetPositionAtOffset(value.DocumentOffset - 1, LogicalDirection.Backward) ?? value;
                 _caretPosition = value;
+                _selectionAnchor = value;
+                if (_selection is null or { IsEmpty: true })
+                    _selection = new TextSelection(value, value);
                 ResetCaretBlink();
                 EnsureCaretVisible();
-                UpdateImeWindowIfComposing();
+                OnSelectionChanged();
                 InvalidateVisual();
             }
         }
@@ -240,9 +242,9 @@ public class RichTextBox : TextBoxBase, IImeSupport
         }
     }
 
-    internal override bool CanUndoCore => _undoStack.Count > 0;
+    internal override bool CanUndoCore => IsUndoEnabled && UndoLimit != 0 && !IsChangeBlockOpen && _undoStack.Count > 0;
 
-    internal override bool CanRedoCore => _redoStack.Count > 0;
+    internal override bool CanRedoCore => IsUndoEnabled && UndoLimit != 0 && !IsChangeBlockOpen && _redoStack.Count > 0;
 
     internal override double HorizontalOffsetCore
     {
@@ -289,9 +291,10 @@ public class RichTextBox : TextBoxBase, IImeSupport
     public RichTextBox()
     {
         _document = new FlowDocument();
-        TrackDocumentChanges();
+        AddLogicalChild(_document);
         _caretPosition = _document.ContentStart;
         _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
+        TrackDocumentChanges();
 
         Focusable = true;
         Cursor = Cursors.IBeam;
@@ -323,7 +326,33 @@ public class RichTextBox : TextBoxBase, IImeSupport
     private void TrackDocumentChanges()
     {
         _documentChangeSubscription?.Dispose();
+        _observedDocumentState = SaveDocumentState();
         _documentChangeSubscription = new DocumentChangeSubscription(this, _document);
+    }
+
+    private void ReplaceDocument(FlowDocument document, bool clearHistory)
+    {
+        if (ReferenceEquals(_document, document)) return;
+        if (document.Parent is { } parent && !ReferenceEquals(parent, this))
+            throw new InvalidOperationException("The FlowDocument already belongs to another logical parent.");
+        _documentChangeSubscription?.Dispose();
+        RestoreDocumentElementEnabledStates();
+        RemoveLogicalChild(_document);
+        _document = document;
+        AddLogicalChild(_document);
+        _caretPosition = _document.ContentStart;
+        _selectionAnchor = _caretPosition;
+        _selection = new TextSelection(_caretPosition, _caretPosition);
+        TrackDocumentChanges();
+        _spellCheckedText = null;
+        if (clearHistory)
+        {
+            ClearUndoHistory();
+            _documentChangeBlockUndoAction = UndoAction.Clear;
+        }
+        ApplyDocumentEnabledState();
+        InvalidateLayout();
+        InvalidateVisual();
     }
 
     private sealed class DocumentChangeSubscription : IDisposable
@@ -336,6 +365,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
             _owner = new(owner);
             _document = document;
             document.ViewerPaginationChanged += Changed;
+            document.ContentChanged += ContentChanged;
         }
 
         private void Changed(object? _, EventArgs __)
@@ -345,7 +375,17 @@ public class RichTextBox : TextBoxBase, IImeSupport
             {
                 owner.InvalidateLayout();
                 owner.InvalidateVisual();
+                if (!owner.IsChangeBlockOpen && !owner._isUndoRedoing)
+                    owner._observedDocumentState = owner.SaveDocumentState();
             }
+            else Dispose();
+        }
+
+        private void ContentChanged(object? _, EventArgs __)
+        {
+            if (_document is not { } document) return;
+            if (_owner.TryGetTarget(out var owner) && ReferenceEquals(owner._document, document))
+                owner.OnDocumentContentChanged();
             else Dispose();
         }
 
@@ -354,6 +394,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
             if (_document is not { } document) return;
             _document = null;
             document.ViewerPaginationChanged -= Changed;
+            document.ContentChanged -= ContentChanged;
         }
     }
 
@@ -364,6 +405,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
     internal override void SelectAllCore()
     {
         _selection = new TextSelection(_document.ContentStart, _document.ContentEnd);
+        _selectionAnchor = _document.ContentStart;
         _caretPosition = _document.ContentEnd;
         UpdateImeWindowIfComposing();
         InvalidateVisual();
@@ -378,6 +420,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (_caretPosition != null)
         {
             _selection = new TextSelection(_caretPosition, _caretPosition);
+            _selectionAnchor = _caretPosition;
             UpdateImeWindowIfComposing();
             InvalidateVisual();
             OnSelectionChanged();
@@ -418,10 +461,15 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     internal override bool UndoCore()
     {
-        if (!IsUndoEnabled || _undoStack.Count == 0)
+        if (!IsUndoEnabled || UndoLimit == 0 || IsChangeBlockOpen || _undoStack.Count == 0)
+            return false;
+
+        if (!_undoStack.Peek().Snapshot.CanRestore(_document, this))
             return false;
 
         _isUndoRedoing = true;
+        BeginChange();
+        _documentChangeBlockUndoAction = UndoAction.Undo;
         try
         {
             var currentState = SaveDocumentState();
@@ -433,6 +481,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         finally
         {
             _isUndoRedoing = false;
+            EndChange();
         }
 
         InvalidateLayout();
@@ -446,10 +495,15 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     internal override bool RedoCore()
     {
-        if (!IsUndoEnabled || _redoStack.Count == 0)
+        if (!IsUndoEnabled || UndoLimit == 0 || IsChangeBlockOpen || _redoStack.Count == 0)
+            return false;
+
+        if (!_redoStack.Peek().Snapshot.CanRestore(_document, this))
             return false;
 
         _isUndoRedoing = true;
+        BeginChange();
+        _documentChangeBlockUndoAction = UndoAction.Redo;
         try
         {
             var currentState = SaveDocumentState();
@@ -461,6 +515,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         finally
         {
             _isUndoRedoing = false;
+            EndChange();
         }
 
         InvalidateLayout();
@@ -550,17 +605,18 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// <param name="text">The plain text to set.</param>
     protected override void SetText(string text)
     {
+        using var change = DeclareChangeBlock();
         PushUndo();
-        RestoreDocumentElementEnabledStates();
-        _document = FlowDocument.FromText(text);
-        TrackDocumentChanges();
+        ReplaceDocument(FlowDocument.FromText(text), clearHistory: false);
         _caretPosition = _document.ContentEnd;
         _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
+        _selectionAnchor = _document.ContentStart;
         _spellCheckedText = null;
         ApplyDocumentEnabledState();
         InvalidateLayout();
         UpdateImeWindowIfComposing();
         InvalidateVisual();
+        OnSelectionChanged();
     }
 
     internal string GetPlainText() => GetText();
@@ -570,7 +626,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = _document.FontFamily ?? FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = ResolveNativeRunFamily(null);
         var fontSize = _document.FontSize;
         return TextMeasurement.GetFontMetrics(fontFamily, fontSize).LineHeight;
     }
@@ -581,7 +637,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = _document.FontFamily ?? FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = ResolveNativeRunFamily(null);
         var fontSize = _document.FontSize;
         var formattedText = new FormattedText(text, fontFamily, fontSize)
         {
@@ -863,6 +919,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
 
         var currentWeight = _selection.GetPropertyValue(TextElement.FontWeightProperty);
@@ -883,6 +940,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
 
         var currentStyle = _selection.GetPropertyValue(TextElement.FontStyleProperty);
@@ -903,6 +961,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
 
         var currentDecorations = _selection.GetPropertyValue(TextElement.TextDecorationsProperty);
@@ -940,6 +999,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
         _selection.ApplyPropertyValue(TextElement.FontFamilyProperty, new FontFamily(fontFamily));
         InvalidateLayout();
@@ -955,6 +1015,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
         _selection.ApplyPropertyValue(TextElement.FontSizeProperty, fontSize);
         InvalidateLayout();
@@ -970,6 +1031,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
         _selection.ApplyPropertyValue(TextElement.ForegroundProperty, brush);
         InvalidateVisual();
@@ -984,109 +1046,13 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     protected void InsertParagraphBreak()
     {
-        if (IsReadOnly)
-            return;
-
-        PushUndo();
-
-        if (_selection != null && !_selection.IsEmpty)
-        {
-            DeleteSelectionInternal();
-        }
-
-        if (_caretPosition == null)
-            return;
-
-        if (_caretPosition.Parent is Run run)
-        {
-            var paragraph = run.Parent as Paragraph;
-            if (paragraph == null)
-                return;
-
-            var offset = _caretPosition.Offset;
-            var textBefore = run.Text.Substring(0, offset);
-            var textAfter = run.Text.Substring(offset);
-
-            // Find the index of this run in the paragraph
-            var runIndex = paragraph.Inlines.IndexOf(run);
-
-            // Create the new paragraph with the text after the split point
-            var newParagraph = new Paragraph();
-
-            // Add remaining text from current run to new paragraph
-            if (!string.IsNullOrEmpty(textAfter))
-            {
-                newParagraph.Inlines.Add(new Run(textAfter));
-            }
-
-            // Move all inlines after the current run to the new paragraph
-            for (int i = paragraph.Inlines.Count - 1; i > runIndex; i--)
-            {
-                var inline = paragraph.Inlines[i];
-                paragraph.Inlines.RemoveAt(i);
-                newParagraph.Inlines.Insert(0, inline);
-            }
-
-            // Update the current run to only contain text before the split
-            run.Text = textBefore;
-
-            // If current run is now empty, remove it (but keep paragraph)
-            if (string.IsNullOrEmpty(textBefore) && paragraph.Inlines.Count > 1)
-            {
-                paragraph.Inlines.Remove(run);
-            }
-
-            // If new paragraph has no inlines, add an empty run
-            if (newParagraph.Inlines.Count == 0)
-            {
-                newParagraph.Inlines.Add(new Run(string.Empty));
-            }
-
-            // Insert the new paragraph after the current one
-            var blockIndex = _document.Blocks.IndexOf(paragraph);
-            if (blockIndex >= 0 && blockIndex < _document.Blocks.Count - 1)
-            {
-                _document.Blocks.Insert(blockIndex + 1, newParagraph);
-            }
-            else
-            {
-                _document.Blocks.Add(newParagraph);
-            }
-
-            // Move caret to the start of the new paragraph
-            _caretPosition = _document.GetPositionAtOffset(
-                _caretPosition.DocumentOffset + 1, LogicalDirection.Forward) ?? _document.ContentEnd;
-            _selection = new TextSelection(_caretPosition, _caretPosition);
-        }
-        else if (_caretPosition.Parent is Paragraph para)
-        {
-            // Caret is directly in the paragraph (no runs), add a new empty paragraph
-            var newParagraph = new Paragraph(new Run(string.Empty));
-            var blockIndex = _document.Blocks.IndexOf(para);
-            if (blockIndex >= 0 && blockIndex < _document.Blocks.Count - 1)
-            {
-                _document.Blocks.Insert(blockIndex + 1, newParagraph);
-            }
-            else
-            {
-                _document.Blocks.Add(newParagraph);
-            }
-
-            _caretPosition = _document.GetPositionAtOffset(
-                _caretPosition.DocumentOffset + 1, LogicalDirection.Forward) ?? _document.ContentEnd;
-            _selection = new TextSelection(_caretPosition, _caretPosition);
-        }
-        else
-        {
-            // Fallback: just insert newline as text
-            InsertText("\n");
-            return;
-        }
-
-        ResetCaretBlink();
-        EnsureCaretVisible();
-        InvalidateLayout();
-        InvalidateVisual();
+        if (IsReadOnly) return;
+        using var change = DeclareChangeBlock();
+        if (_selection is { IsEmpty: false }) DeleteSelectionInternal();
+        if (_document.Blocks.Count == 0)
+            _document.Blocks.Add(new Paragraph());
+        int start = _selection?.Start.DocumentOffset ?? _caretPosition?.DocumentOffset ?? 0;
+        TryReplaceImeText(start, 0, "\n");
     }
 
     /// <summary>
@@ -1094,102 +1060,10 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     protected override void InsertText(string textToInsert)
     {
-        if (IsReadOnly || string.IsNullOrEmpty(textToInsert))
-            return;
-
-        PushUndo();
-
-        // Delete selection if any
-        if (_selection != null && !_selection.IsEmpty)
-        {
-            DeleteSelectionInternal();
-        }
-
-        // Insert text at caret position
-        if (_caretPosition != null)
-        {
-            // For now, insert text by modifying the document
-            // This is a simplified implementation
-            InsertTextAtPosition(_caretPosition, textToInsert);
-        }
-
-        ResetCaretBlink();
-        EnsureCaretVisible();
-        InvalidateLayout();
-        InvalidateVisual();
-    }
-
-    private void InsertTextAtPosition(TextPointer position, string text)
-    {
-        if (position.Parent is Run run)
-        {
-            var offset = position.Offset;
-            run.Text = run.Text.Insert(offset, text);
-
-            // Update caret position
-            _caretPosition = _document.GetPositionAtOffset(
-                position.DocumentOffset + text.Length, LogicalDirection.Forward);
-        }
-        else if (position.Parent is Paragraph paragraph)
-        {
-            // Find the appropriate Run to insert into based on offset within the paragraph
-            int paragraphOffset = position.Offset;
-            int accumulated = 0;
-
-            // Try to find the Run at or near the offset position
-            Run? targetRun = null;
-            int insertOffset = 0;
-
-            foreach (var inline in paragraph.Inlines)
-            {
-                if (inline is Run r)
-                {
-                    if (paragraphOffset >= accumulated && paragraphOffset <= accumulated + r.Text.Length)
-                    {
-                        targetRun = r;
-                        insertOffset = paragraphOffset - accumulated;
-                        break;
-                    }
-                    accumulated += r.Text.Length;
-                }
-            }
-
-            if (targetRun != null)
-            {
-                // Insert into the existing Run
-                targetRun.Text = targetRun.Text.Insert(insertOffset, text);
-            }
-            else if (paragraph.Inlines.Count > 0 && paragraph.Inlines[paragraph.Inlines.Count - 1] is Run lastRun)
-            {
-                // Append to the last Run
-                lastRun.Text += text;
-            }
-            else
-            {
-                // Create a new Run
-                paragraph.Inlines.Add(new Run(text));
-            }
-
-            // Update caret position
-            _caretPosition = _document.GetPositionAtOffset(
-                position.DocumentOffset + text.Length, LogicalDirection.Forward);
-        }
-        else if (_document.Blocks.Count == 0)
-        {
-            // Document is empty, create a new paragraph
-            var newRun = new Run(text);
-            var newParagraph = new Paragraph(newRun);
-            _document.Blocks.Add(newParagraph);
-
-            // Point caret to the Run, not the Paragraph
-            _caretPosition = _document.GetPositionAtOffset(text.Length, LogicalDirection.Forward);
-        }
-
-        // Update selection to be empty at new caret position
-        if (_caretPosition != null)
-        {
-            _selection = new TextSelection(_caretPosition, _caretPosition);
-        }
+        if (IsReadOnly || string.IsNullOrEmpty(textToInsert)) return;
+        int start = _selection?.Start.DocumentOffset ?? _caretPosition?.DocumentOffset ?? 0;
+        int length = _selection is { IsEmpty: false } ? _selection.End.DocumentOffset - start : 0;
+        TryReplaceImeText(start, length, textToInsert);
     }
 
     /// <summary>
@@ -1200,6 +1074,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (_selection == null || _selection.IsEmpty)
             return;
 
+        using var change = DeclareChangeBlock();
         PushUndo();
         DeleteSelectionInternal();
         InvalidateLayout();
@@ -1211,12 +1086,15 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (_selection == null || _selection.IsEmpty)
             return;
 
-        // Delete the selected text
+        int start = _selection.Start.DocumentOffset;
+        // A whole Run can be removed by TextRange. Resolve a fresh position in
+        // the live graph rather than retaining its now detached start pointer.
         _selection.Text = string.Empty;
 
         // Update caret to selection start
-        _caretPosition = _selection.Start;
+        _caretPosition = _document.GetPositionAtOffset(start, LogicalDirection.Forward) ?? _document.ContentEnd;
         _selection = new TextSelection(_caretPosition, _caretPosition);
+        _selectionAnchor = _caretPosition;
 
         UpdateImeWindowIfComposing();
         OnSelectionChanged();
@@ -1227,15 +1105,71 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     protected new void PushUndo()
     {
-        if (!IsUndoEnabled || _isUndoRedoing)
+        if (!IsUndoEnabled || UndoLimit == 0 || _isUndoRedoing)
             return;
 
-        var state = SaveDocumentState();
+        if (IsChangeBlockOpen)
+        {
+            // The outer boundary compares the graph before committing history.
+            // An identical replacement must preserve the existing redo queue.
+            return;
+        }
+        PushDocumentUndo(SaveDocumentState());
+    }
+
+    protected override void OnChangeBlockStarted()
+    {
+        base.OnChangeBlockStarted();
+        _documentChangeBlockNotificationStart = SaveDocumentState();
+        _documentChangeBlockStart = IsUndoEnabled && UndoLimit != 0 && !_isUndoRedoing
+            ? _documentChangeBlockNotificationStart : null;
+        _documentChangeBlockUndoAction = _isUndoRedoing ? UndoAction.None
+            : IsUndoEnabled && UndoLimit != 0 ? UndoAction.Create : UndoAction.None;
+    }
+
+    protected override void OnChangeBlockEnded()
+    {
+        var start = _documentChangeBlockStart;
+        var notificationStart = _documentChangeBlockNotificationStart;
+        var action = _documentChangeBlockUndoAction;
+        _documentChangeBlockStart = null;
+        _documentChangeBlockNotificationStart = null;
+        if (action != UndoAction.Undo && action != UndoAction.Redo && IsUndoEnabled && UndoLimit != 0 && start is not null &&
+            (!ReferenceEquals(start.Snapshot.Document, _document) || start.Snapshot.HasChanges))
+            PushDocumentUndo(start);
+        TextChangedEventArgs? changed = notificationStart is not null &&
+            (!ReferenceEquals(notificationStart.Snapshot.Document, _document) || notificationStart.Snapshot.HasChanges)
+            ? CreateDocumentChangedEvent(notificationStart.Text, _document.GetText(), action) : null;
+        if (changed is not null && notificationStart is not null &&
+            ReferenceEquals(_caretPosition, notificationStart.Caret))
+            RebindDocumentPositions(notificationStart, _document.GetText(), changed.Changes.FirstOrDefault());
+        _observedDocumentState = SaveDocumentState();
+        if (changed is not null && notificationStart is not null)
+        {
+            base.OnTextChanged(changed);
+            if (notificationStart.CaretOffset != _observedDocumentState.CaretOffset ||
+                notificationStart.AnchorOffset != _observedDocumentState.AnchorOffset ||
+                notificationStart.MovingOffset != _observedDocumentState.MovingOffset)
+                OnSelectionChanged();
+        }
+        base.OnChangeBlockEnded();
+    }
+
+    protected override void ClearUndoHistory()
+    {
+        base.ClearUndoHistory();
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _documentChangeBlockStart = IsChangeBlockOpen && IsUndoEnabled && UndoLimit != 0 ? SaveDocumentState() : null;
+    }
+
+    private void PushDocumentUndo(DocumentState state)
+    {
         _undoStack.Push(state);
         _redoStack.Clear();
 
         // Limit stack size
-        while (_undoStack.Count > UndoLimit)
+        while (UndoLimit >= 0 && _undoStack.Count > UndoLimit)
         {
             var temp = new Stack<DocumentState>();
             while (_undoStack.Count > 1)
@@ -1252,24 +1186,106 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     private DocumentState SaveDocumentState()
     {
+        var caret = _caretPosition ?? _document.ContentStart;
         return new DocumentState(
-            _document.GetText(),
-            _caretPosition?.DocumentOffset ?? 0,
-            _selection?.Start.DocumentOffset ?? 0,
-            _selection?.End.DocumentOffset ?? 0);
+            DocumentSnapshot.Capture(_document), caret,
+            _selection?.AnchorPosition ?? caret,
+            _selection?.MovingPosition ?? caret,
+            _selectionAnchor ?? caret, _document.GetText());
+    }
+
+    protected override void OnSelectionChanged()
+    {
+        if (!IsChangeBlockOpen && !_isUndoRedoing && _observedDocumentState is { } observed &&
+            ReferenceEquals(observed.Snapshot.Document, _document) &&
+            (!observed.Snapshot.HasChanges || observed.Text == _document.GetText()))
+        {
+            // Writing the same effective typography value can add a local
+            // value without a content notification. It must not leave stale
+            // selection positions in the next formatting undo snapshot.
+            var caret = _caretPosition ?? _document.ContentStart;
+            _observedDocumentState = new DocumentState(observed.Snapshot, caret,
+                _selection?.AnchorPosition ?? caret, _selection?.MovingPosition ?? caret,
+                _selectionAnchor ?? caret, observed.Text);
+        }
+        if (!IsChangeBlockOpen)
+        {
+            UpdateImeWindowIfComposing();
+            RefreshLinuxImeContext();
+        }
+        base.OnSelectionChanged();
+    }
+
+    private void OnDocumentContentChanged()
+    {
+        InvalidateLayout();
+        InvalidateVisual();
+        if (IsChangeBlockOpen || _isUndoRedoing || _observedDocumentState is not { } previous ||
+            !previous.Snapshot.HasChanges) return;
+        using var change = DeclareChangeBlock();
+        var text = _document.GetText();
+        var args = CreateDocumentChangedEvent(previous.Text, text,
+            IsUndoEnabled && UndoLimit != 0 ? UndoAction.Create : UndoAction.None);
+        RebindDocumentPositions(previous, text, args.Changes.FirstOrDefault());
+        if (previous.CaretOffset != _caretPosition?.DocumentOffset || previous.AnchorOffset != _selection?.AnchorPosition.DocumentOffset ||
+            previous.MovingOffset != _selection?.MovingPosition.DocumentOffset)
+            OnSelectionChanged();
+        if (IsUndoEnabled && UndoLimit != 0) PushDocumentUndo(previous);
+        _observedDocumentState = SaveDocumentState();
+        base.OnTextChanged(args);
+    }
+
+    private void RebindDocumentPositions(DocumentState previous, string text, TextChange? difference)
+    {
+        TextPointer Map(int offset, LogicalDirection direction)
+        {
+            int mapped = offset;
+            if (difference is not null)
+            {
+                int end = difference.Offset + difference.RemovedLength;
+                mapped = offset < difference.Offset ? offset
+                    : offset >= end ? offset + difference.AddedLength - difference.RemovedLength
+                    : difference.Offset + Math.Min(offset - difference.Offset, difference.AddedLength);
+            }
+            mapped = ImeTextEncoding.SnapToGraphemeBoundary(text, mapped, direction == LogicalDirection.Forward);
+            return _document.GetPositionAtOffset(mapped, direction) ?? _document.ContentEnd;
+        }
+        _caretPosition = Map(previous.CaretOffset, previous.Caret.LogicalDirection);
+        _selection = new TextSelection(Map(previous.AnchorOffset, previous.SelectionAnchor.LogicalDirection),
+            Map(previous.MovingOffset, previous.SelectionMoving.LogicalDirection));
+        _selectionAnchor = Map(previous.CaretAnchorOffset, previous.CaretAnchor.LogicalDirection);
+    }
+
+    private TextChangedEventArgs CreateDocumentChangedEvent(string before, string after, UndoAction action)
+    {
+        ICollection<TextChange> changes = Array.Empty<TextChange>();
+        if (before != after)
+        {
+            int prefix = 0;
+            while (prefix < before.Length && prefix < after.Length && before[prefix] == after[prefix]) prefix++;
+            int suffix = 0;
+            while (suffix < before.Length - prefix && suffix < after.Length - prefix &&
+                before[before.Length - 1 - suffix] == after[after.Length - 1 - suffix]) suffix++;
+            changes = new[] { new TextChange { Offset = prefix, RemovedLength = before.Length - prefix - suffix,
+                AddedLength = after.Length - prefix - suffix } };
+        }
+        return new TextChangedEventArgs(TextChangedEvent, action, changes) { Source = this };
     }
 
     private void RestoreDocumentState(DocumentState state)
     {
-        _document = FlowDocument.FromText(state.Text);
-        TrackDocumentChanges();
-        _caretPosition = _document.GetPositionAtOffset(state.CaretOffset, LogicalDirection.Forward);
-        var start = _document.GetPositionAtOffset(state.SelectionStart, LogicalDirection.Forward);
-        var end = _document.GetPositionAtOffset(state.SelectionEnd, LogicalDirection.Forward);
-        if (start != null && end != null)
-        {
-            _selection = new TextSelection(start, end);
-        }
+        RestoreDocumentElementEnabledStates();
+        state.Snapshot.Restore(_document);
+        ReplaceDocument(state.Snapshot.Document, clearHistory: false);
+        // TextPointer is immutable. Its original parent and affinity remain
+        // valid after restoring the original graph, including bidi boundaries.
+        _caretPosition = state.Caret;
+        _selection = new TextSelection(state.SelectionAnchor, state.SelectionMoving);
+        _selectionAnchor = state.CaretAnchor;
+        _spellCheckedText = null;
+        ApplyDocumentEnabledState();
+        OnSelectionChanged();
+        ResetCaretBlink();
     }
 
     /// <summary>
@@ -1314,7 +1330,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
             return;
         }
 
-        var lineHeight = GetDefaultLineHeight();
+        var lineHeight = GetCaretLineHeight();
         var caretX = caretPos.Value.X;
         var caretY = caretPos.Value.Y;
 
@@ -1345,22 +1361,12 @@ public class RichTextBox : TextBoxBase, IImeSupport
     }
 
     /// <summary>
-    /// Called when the selection changes.
-    /// </summary>
-    protected override void OnSelectionChanged()
-    {
-        base.OnSelectionChanged();
-        UpdateImeWindowIfComposing();
-        RefreshLinuxImeContext();
-        // Raise selection changed event if needed
-    }
-
-    /// <summary>
     /// Invalidates the layout cache.
     /// </summary>
     protected void InvalidateLayout()
     {
         _layoutDirty = true;
+        _layoutCache?.Dispose();
         _layoutCache = null;
         RefreshLinuxImeContext();
     }
@@ -1515,12 +1521,24 @@ public class RichTextBox : TextBoxBase, IImeSupport
             Math.Max(1, lineLayout.Width) + 2 * pad, lineLayout.Height + 2 * pad);
         void DrawLineContent()
         {
+            if (lineLayout.NativeLine is { } nativeLine)
+            {
+                var range = nativeLine.Metrics.Line;
+                var formatted = new FormattedText(nativeLine.Paragraph.Text.Substring((int)range.TextPosition, (int)range.Length),
+                    _document.FontFamily ?? FrameworkElement.DefaultFontFamilyName, _document.FontSize)
+                {
+                    PlatformTextLine = nativeLine,
+                    Foreground = ResolveDocumentForegroundBrush(),
+                    MaxTextWidth = Math.Max(1, lineLayout.Width),
+                    MaxTextHeight = Math.Max(1, lineLayout.Height)
+                };
+                dc.DrawText(formatted, new Point(x, y));
+            }
             Dictionary<TextElement, DecorationSegment>? decorations = null;
             foreach (var runLayout in lineLayout.Runs)
             {
                 if (runLayout.Run != null)
                 {
-                    var text = runLayout.Run.Text;
                     var foreground = runLayout.Run.Foreground
                         ?? _document.Foreground
                         ?? ResolveDocumentForegroundBrush();
@@ -1533,22 +1551,25 @@ public class RichTextBox : TextBoxBase, IImeSupport
                     var fontWeight = runLayout.Run.FontWeight;
                     var fontStyle = runLayout.Run.FontStyle;
 
-                    var formattedText = new FormattedText(text, fontFamily, fontSize)
-                    {
-                        Foreground = foreground,
-                        FontWeight = fontWeight.ToOpenTypeWeight(),
-                        FontStyle = fontStyle.ToOpenTypeStyle()
-                    };
-
                     var runX = x + runLayout.X;
-                    dc.DrawText(formattedText, new Point(runX, y));
+                    if (lineLayout.NativeLine is null)
+                    {
+                        var formattedText = new FormattedText(runLayout.Run.Text, fontFamily, fontSize)
+                        {
+                            Foreground = foreground,
+                            FontWeight = fontWeight.ToOpenTypeWeight(),
+                            FontStyle = fontStyle.ToOpenTypeStyle()
+                        };
+                        dc.DrawText(formattedText, new Point(runX, y));
+                    }
                     CollectRunTextDecorations(runLayout, runX, fontFamily, fontSize,
                         fontWeight, fontStyle, ref decorations);
                 }
             }
             if (decorations is not null)
                 foreach (var segment in decorations.Values.OrderBy(static item => item.Depth))
-                    DrawTextDecorationSegment(dc, segment, y);
+                    DrawTextDecorationSegment(dc, segment, lineLayout.NativeLine is null
+                        ? y : y + lineLayout.Baseline - segment.Ascent);
         }
         if (TryDrawDocumentTextShadows(dc, lineLayout, x, y, bounds,
                 DrawLineContent))
@@ -1776,6 +1797,18 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
         foreach (var lineLayout in blockLayout.Lines)
         {
+            if (lineLayout.NativeLine is { } nativeLine)
+            {
+                if (y + lineLayout.Height > contentBounds.Top && y < contentBounds.Bottom)
+                {
+                    int start = Math.Clamp(selStart - lineLayout.ParagraphOffset, 0, nativeLine.Paragraph.Text.Length);
+                    int end = Math.Clamp(selEnd - lineLayout.ParagraphOffset, start, nativeLine.Paragraph.Text.Length);
+                    foreach (var rectangle in nativeLine.Paragraph.Selection(nativeLine.Index, start, end - start))
+                        dc.DrawRectangle(selBrush, null, new Rect(x + rectangle.X, y, rectangle.Width, lineLayout.Height));
+                }
+                y += lineLayout.Height;
+                continue;
+            }
             // Check if this line intersects the selection
             if (lineLayout.EndOffset > selStart && lineLayout.StartOffset < selEnd)
             {
@@ -1817,15 +1850,34 @@ public class RichTextBox : TextBoxBase, IImeSupport
         y += blockLayout.Margin.Bottom;
     }
 
-    private double GetXOffsetInLine(LineLayoutInfo lineLayout, int targetOffset)
+    private double GetXOffsetInLine(LineLayoutInfo lineLayout, int targetOffset, bool trailing = false, bool backward = false)
     {
+        if (lineLayout.NativeLine is { } nativeLine)
+        {
+            int offset = targetOffset - lineLayout.ParagraphOffset;
+            if (trailing)
+            {
+                offset = GraphemeClusters.NextBoundary(nativeLine.Paragraph.Text, offset);
+                backward = true;
+            }
+            offset = Math.Clamp(offset, (int)nativeLine.Metrics.Line.TextPosition,
+                (int)(nativeLine.Metrics.Line.TextPosition + nativeLine.Metrics.Line.Length));
+            return nativeLine.Paragraph.Caret(nativeLine.Index, offset, backward).X;
+        }
         foreach (var runLayout in lineLayout.Runs)
         {
-            if (targetOffset >= runLayout.StartOffset && targetOffset <= runLayout.EndOffset && runLayout.Run != null)
+            if (targetOffset >= runLayout.StartOffset &&
+                (targetOffset < runLayout.EndOffset || targetOffset == lineLayout.EndOffset && targetOffset == runLayout.EndOffset) &&
+                runLayout.Run is { } run)
             {
-                var offsetInRun = targetOffset - runLayout.StartOffset;
-                var textBefore = runLayout.Run.Text.Substring(0, Math.Min(offsetInRun, runLayout.Run.Text.Length));
-                return runLayout.X + MeasureText(textBefore, runLayout.Run);
+                int offset = Math.Clamp(targetOffset - runLayout.StartOffset, 0, run.Text.Length);
+                string family = run.FontFamily?.Source ?? _document.FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+                double size = run.FontSize > 0 ? run.FontSize : _document.FontSize;
+                if (run.Text.Length > 0 && TextMeasurement.HitTestTextPositionWrapped(run.Text, family, size,
+                    run.FontWeight.ToOpenTypeWeight(), run.FontStyle.ToOpenTypeStyle(), 100000f, (uint)offset, trailing, out var hit))
+                    return runLayout.X + hit.CaretX;
+                if (trailing) offset = GraphemeClusters.NextBoundary(run.Text, offset);
+                return runLayout.X + MeasureText(run.Text[..offset], run);
             }
         }
 
@@ -1847,7 +1899,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (caretPos == null)
             return;
 
-        var lineHeight = GetDefaultLineHeight();
+        var lineHeight = GetCaretLineHeight();
         var caretBrush = ResolveCaretBrush();
         if (caretBrush == null)
             return;
@@ -1951,7 +2003,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
         foreach (var blockLayout in layout.Blocks)
         {
-            var result = FindPositionInBlock(blockLayout, offset, x, ref y);
+            var result = FindPositionInBlock(blockLayout, offset, position.LogicalDirection, x, ref y);
             if (result != null)
                 return result;
         }
@@ -1959,13 +2011,17 @@ public class RichTextBox : TextBoxBase, IImeSupport
         return new Point(contentBounds.Left, contentBounds.Top);
     }
 
-    private Point? FindPositionInBlock(BlockLayoutInfo blockLayout, int targetOffset, double x, ref double y)
+    private Point? FindPositionInBlock(BlockLayoutInfo blockLayout, int targetOffset,
+        LogicalDirection direction, double x, ref double y)
     {
         x += blockLayout.Margin.Left;
 
-        foreach (var lineLayout in blockLayout.Lines)
+        for (int i = 0; i < blockLayout.Lines.Count; i++)
         {
-            if (targetOffset >= lineLayout.StartOffset && targetOffset <= lineLayout.EndOffset)
+            var lineLayout = blockLayout.Lines[i];
+            bool nextRow = direction == LogicalDirection.Forward && targetOffset == lineLayout.EndOffset &&
+                i + 1 < blockLayout.Lines.Count && blockLayout.Lines[i + 1].StartOffset == targetOffset;
+            if (targetOffset >= lineLayout.StartOffset && targetOffset <= lineLayout.EndOffset && !nextRow)
             {
                 // Found the line containing the offset
                 var lineX = x;
@@ -1974,14 +2030,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
                     if (targetOffset >= runLayout.StartOffset && targetOffset <= runLayout.EndOffset)
                     {
                         // Found the run containing the offset
-                        var offsetInRun = targetOffset - runLayout.StartOffset;
-                        if (runLayout.Run != null)
-                        {
-                            var textBeforeCaret = runLayout.Run.Text.Substring(0, Math.Min(offsetInRun, runLayout.Run.Text.Length));
-                            var textWidth = MeasureText(textBeforeCaret, runLayout.Run);
-                            return new Point(lineX + runLayout.X + textWidth, y);
-                        }
-                        return new Point(lineX + runLayout.X, y);
+                        return new Point(lineX + GetXOffsetInLine(lineLayout, targetOffset,
+                            backward: direction == LogicalDirection.Backward), y);
                     }
                 }
                 return new Point(lineX + lineLayout.Width, y);
@@ -1991,7 +2041,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
         foreach (var childLayout in blockLayout.ChildBlocks)
         {
-            var result = FindPositionInBlock(childLayout, targetOffset, x, ref y);
+            var result = FindPositionInBlock(childLayout, targetOffset, direction, x, ref y);
             if (result != null)
                 return result;
         }
@@ -2025,6 +2075,26 @@ public class RichTextBox : TextBoxBase, IImeSupport
     {
         var fontSize = _document.FontSize;
         return fontSize * 1.5;
+    }
+
+    private double GetCaretLineHeight()
+    {
+        if (_caretPosition is null) return GetDefaultLineHeight();
+        var layout = EnsureLayout(GetContentBounds().Width);
+        if (layout is null) return GetDefaultLineHeight();
+        var lines = new List<(LineLayoutInfo line, double y, double x)>();
+        double y = 0;
+        CollectAllLines(layout.Blocks, 0, ref y, lines);
+        int offset = _caretPosition.DocumentOffset;
+        for (int i = 0; i < lines.Count; ++i)
+        {
+            var line = lines[i].line;
+            if (offset < line.StartOffset || offset > line.EndOffset) continue;
+            if (offset == line.EndOffset && _caretPosition.LogicalDirection == LogicalDirection.Forward &&
+                i + 1 < lines.Count && lines[i + 1].line.StartOffset == offset) continue;
+            return line.Height;
+        }
+        return GetDefaultLineHeight();
     }
 
     private double UpdateRichCaretAnimation()
@@ -2157,10 +2227,14 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     private FlowDocumentLayoutInfo? EnsureLayout(double maxWidth)
     {
-        if (!_layoutDirty && _layoutCache != null)
+        if (!_layoutDirty && _layoutCache != null && _layoutWidth == maxWidth &&
+            ReferenceEquals(_layoutContext, RenderContext.Current) && NativePresentationIsCurrent(_layoutCache.Blocks))
             return _layoutCache;
 
+        _layoutCache?.Dispose();
         _layoutCache = LayoutDocument(maxWidth);
+        _layoutContext = RenderContext.Current;
+        _layoutWidth = maxWidth;
         _layoutDirty = false;
         return _layoutCache;
     }
@@ -2178,6 +2252,13 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
         foreach (var block in layout.Blocks)
             CollectDecorationFragments(block, layout.DecorationFragments);
+
+        var lines = new List<(LineLayoutInfo line, double y, double x)>();
+        double height = 0;
+        CollectAllLines(layout.Blocks, 0, ref height, lines);
+        layout.TotalHeight = height;
+        foreach (var line in lines)
+            layout.TotalWidth = Math.Max(layout.TotalWidth, line.x + line.line.Width);
 
         return layout;
     }
@@ -2250,6 +2331,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     private void LayoutParagraph(Paragraph paragraph, BlockLayoutInfo blockLayout, double maxWidth, ref int currentOffset)
     {
+        if (TryLayoutNativeParagraph(paragraph, blockLayout, maxWidth, ref currentOffset))
+            return;
         var lineLayout = new LineLayoutInfo
         {
             StartOffset = currentOffset,
@@ -2271,6 +2354,121 @@ public class RichTextBox : TextBoxBase, IImeSupport
         {
             blockLayout.Lines.Add(lineLayout);
         }
+    }
+
+    private bool TryLayoutNativeParagraph(Paragraph paragraph, BlockLayoutInfo blockLayout,
+        double maxWidth, ref int currentOffset)
+    {
+        if (!OperatingSystem.IsMacOS() || RenderContext.Current?.Backend != RenderBackend.Metal)
+            return false;
+        var spans = new List<NativeTextParagraph.Span>();
+        var sources = new List<Run?>();
+        var family = ResolveNativeRunFamily(null);
+        void Add(string text, Run? run)
+        {
+            if (text.Length == 0) return;
+            var color = ResolveNativeRunColor(run);
+            var font = ResolveNativeRunFont(run);
+            spans.Add(new NativeTextParagraph.Span(text, font.Family, font.Size,
+                font.Weight, font.Style, color.Color, color.Opacity));
+            sources.Add(run);
+        }
+        void Flatten(Inline inline)
+        {
+            if (inline is Run run) Add(run.Text, run);
+            else if (inline is LineBreak) Add("\n", null);
+            else if (inline is Span span) foreach (var child in span.Inlines) Flatten(child);
+        }
+        foreach (var inline in paragraph.Inlines) Flatten(inline);
+        int direction = GetNativeParagraphDirection(paragraph);
+        var native = NativeTextParagraph.TryCreate(spans, family, _document.FontSize,
+            Math.Max(1, maxWidth), double.IsFinite(paragraph.LineHeight) && paragraph.LineHeight > 0
+                ? paragraph.LineHeight : GetDefaultLineHeight(), paragraph.TextAlignment,
+            direction == 1 ? FlowDirection.RightToLeft : FlowDirection.LeftToRight, naturalDirection: direction < 0);
+        if (native is null) return false;
+        blockLayout.NativeParagraph = native;
+        blockLayout.NativeDirection = direction;
+        for (int i = 0; i < sources.Count; ++i)
+        {
+            blockLayout.NativeColors.Add((sources[i], spans[i].Color, spans[i].Opacity));
+            blockLayout.NativeFonts.Add((sources[i], spans[i].FontFamily, spans[i].FontSize,
+                spans[i].FontWeight, spans[i].FontStyle));
+        }
+        blockLayout.NativeFontEpoch = TextMeasurement.FontCacheEpoch;
+        int paragraphOffset = currentOffset;
+        foreach (var row in native.Lines)
+        {
+            var metrics = row.Metrics;
+            var line = new LineLayoutInfo
+            {
+                NativeLine = row, ParagraphOffset = paragraphOffset,
+                StartOffset = paragraphOffset + (int)metrics.Line.TextPosition,
+                EndOffset = paragraphOffset + (int)(metrics.Line.TextPosition + metrics.Line.Length),
+                Width = metrics.Line.X + metrics.Line.Width, Height = metrics.Line.Height, Baseline = metrics.Baseline
+            };
+            foreach (var fragment in row.Fragments)
+                line.Runs.Add(new RunLayoutInfo
+                {
+                    Run = sources[(int)fragment.SpanIndex], X = fragment.X, Width = fragment.Width,
+                    StartOffset = paragraphOffset + (int)fragment.TextPosition,
+                    EndOffset = paragraphOffset + (int)(fragment.TextPosition + fragment.Length)
+                });
+            line.Runs.Sort(static (a, b) => a.X.CompareTo(b.X));
+            blockLayout.Lines.Add(line);
+        }
+        currentOffset += native.Text.Length;
+        return true;
+    }
+
+    private string ResolveNativeRunFamily(Run? run) => run?.FontFamily?.GetRenderingSource(run) ??
+        _document.FontFamily?.GetRenderingSource(_document) ?? FrameworkElement.DefaultFontFamilyName;
+
+    private (string Family, double Size, int Weight, int Style) ResolveNativeRunFont(Run? run) =>
+        (ResolveNativeRunFamily(run), run is { FontSize: > 0 } ? run.FontSize : _document.FontSize,
+            run?.FontWeight.ToOpenTypeWeight() ?? 400, run?.FontStyle.ToOpenTypeStyle() ?? 0);
+
+    private (Color Color, double Opacity) ResolveNativeRunColor(Run? run)
+    {
+        Brush? brush = run?.Foreground ?? _document.Foreground ?? ResolveDocumentForegroundBrush();
+        var color = brush switch
+        {
+            SolidColorBrush solid => solid.Color,
+            GradientBrush { GradientStops.Count: > 0 } gradient => gradient.GradientStops[0].Color,
+            _ => Colors.White
+        };
+        return (color, Jalium.UI.Styling.CssFontFaces.IsBlocked(ResolveNativeRunFamily(run)) ? 0 : brush?.Opacity ?? 1);
+    }
+
+    private int GetNativeParagraphDirection(Paragraph paragraph)
+    {
+        // An unspecified macOS paragraph follows its first strong character.
+        // A declared direction, including explicit LTR, overrides that default.
+        for (TextElement? element = paragraph; element is not null; element = element.Parent)
+            if (element.HasValueAboveInherited(Block.FlowDirectionProperty))
+                return (FlowDirection)element.GetValue(Block.FlowDirectionProperty)! == FlowDirection.RightToLeft ? 1 : 0;
+        if (_document.HasValueAboveInherited(FlowDocument.FlowDirectionProperty))
+            return _document.FlowDirection == FlowDirection.RightToLeft ? 1 : 0;
+        for (FrameworkElement? element = this; element is not null; element = element.FrameworkParent)
+            if (element.HasValueAboveInherited(FlowDirectionProperty))
+                return FlowDirection == FlowDirection.RightToLeft ? 1 : 0;
+        return -1;
+    }
+
+    private bool NativePresentationIsCurrent(List<BlockLayoutInfo> blocks)
+    {
+        foreach (var block in blocks)
+        {
+            if (block.NativeParagraph is not null && (block.NativeFontEpoch != TextMeasurement.FontCacheEpoch ||
+                block.Block is Paragraph paragraph && block.NativeDirection != GetNativeParagraphDirection(paragraph))) return false;
+            // Inherited typography can change without a Run content notification.
+            // Never reuse shaped glyphs or IME geometry with a different font.
+            foreach (var (run, family, size, weight, style) in block.NativeFonts)
+                if (ResolveNativeRunFont(run) != (family, size, weight, style)) return false;
+            foreach (var (run, color, opacity) in block.NativeColors)
+                if (ResolveNativeRunColor(run) != (color, opacity)) return false;
+            if (!NativePresentationIsCurrent(block.ChildBlocks)) return false;
+        }
+        return true;
     }
 
     private void LayoutInline(Inline inline, BlockLayoutInfo blockLayout, ref LineLayoutInfo lineLayout,
@@ -2366,32 +2564,39 @@ public class RichTextBox : TextBoxBase, IImeSupport
     protected override void OnKeyDown(KeyEventArgs e)
     {
         var shift = e.IsShiftDown;
-        var ctrl = e.IsControlDown;
+        var editingKey = MacOSTextKeyBehavior.ResolveEditingKey(e);
+        var ctrl = e.IsControlDown && editingKey == e.Key;
+        var commandNavigation = MacOSTextKeyBehavior.IsCommandNavigation(e);
+        var optionWord = MacOSTextKeyBehavior.IsOptionWord(e);
 
         if (_isImeComposing && ShouldDeferKeyToIme(e.Key, ctrl))
         {
             return;
         }
 
-        switch (e.Key)
+        switch (editingKey)
         {
             case Key.Left:
-                HandleLeftKey(shift, ctrl);
+                if (commandNavigation) HandleMacOSVisualLineBoundary(shift, end: false);
+                else HandleLeftKey(shift, ctrl, optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Right:
-                HandleRightKey(shift, ctrl);
+                if (commandNavigation) HandleMacOSVisualLineBoundary(shift, end: true);
+                else HandleRightKey(shift, ctrl, optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Up:
-                HandleUpKey(shift);
+                if (commandNavigation) HandleHomeKey(shift, ctrl: true);
+                else HandleUpKey(shift);
                 e.Handled = true;
                 break;
 
             case Key.Down:
-                HandleDownKey(shift);
+                if (commandNavigation) HandleEndKey(shift, ctrl: true);
+                else HandleDownKey(shift);
                 e.Handled = true;
                 break;
 
@@ -2406,12 +2611,12 @@ public class RichTextBox : TextBoxBase, IImeSupport
                 break;
 
             case Key.Back:
-                HandleBackspace(ctrl);
+                HandleBackspace(ctrl, optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Delete:
-                HandleDelete(ctrl);
+                HandleDelete(ctrl, optionWord);
                 e.Handled = true;
                 break;
 
@@ -2520,10 +2725,17 @@ public class RichTextBox : TextBoxBase, IImeSupport
         if (e.Handled || IsReadOnly)
             return;
 
+        if (e.ImeReplacementRange is { } range)
+        {
+            e.Handled = TryReplaceImeText(range.Start, range.Length, e.Text);
+            return;
+        }
+
         if (!string.IsNullOrEmpty(e.Text))
         {
             var text = e.Text;
-            if (text.Length == 1 && char.IsControl(text[0]) && text[0] != '\t')
+            // Editing keys (including AcceptsTab) are handled by KeyDown.
+            if (text.Length == 1 && char.IsControl(text[0]))
                 return;
 
             InsertText(text);
@@ -2619,6 +2831,9 @@ public class RichTextBox : TextBoxBase, IImeSupport
             {
                 if (newCaretPosition != null)
                 {
+                    int wordIndex = MacOSTextKeyBehavior.GetWordIndexFromPoint(this, _document.GetText(), position,
+                        newCaretPosition.DocumentOffset);
+                    newCaretPosition = _document.GetPositionAtOffset(wordIndex, LogicalDirection.Forward) ?? newCaretPosition;
                     SelectWordAt(newCaretPosition);
                     _wordSelectionAnchorStartOffset = _selection?.Start.DocumentOffset ?? 0;
                     _wordSelectionAnchorEndOffset = _selection?.End.DocumentOffset ?? _wordSelectionAnchorStartOffset;
@@ -2685,6 +2900,9 @@ public class RichTextBox : TextBoxBase, IImeSupport
         {
             if (_isWordSelecting)
             {
+                int wordIndex = MacOSTextKeyBehavior.GetWordIndexFromPoint(this, _document.GetText(), position,
+                    newCaretPosition.DocumentOffset);
+                newCaretPosition = _document.GetPositionAtOffset(wordIndex, LogicalDirection.Forward) ?? newCaretPosition;
                 ExtendWordSelection(newCaretPosition);
             }
             else if (_selectionAnchor != null)
@@ -2701,10 +2919,18 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        var lineHeight = GetDefaultLineHeight();
-        var delta = e.Delta > 0 ? -3 : 3;
-        VerticalOffsetCore += delta * lineHeight;
-        e.Handled = true;
+        var input = new MouseWheelScrollInput(e, 3 * Math.Max(1, MeasureTextWidth("M")), 3 * GetDefaultLineHeight());
+        if (input.Horizontal == 0 && input.Vertical == 0) return;
+        var bounds = GetContentBounds();
+        var layout = EnsureLayout(bounds.Width);
+        if (layout == null) return;
+        double oldX = HorizontalOffset;
+        double oldY = VerticalOffset;
+        if (input.Horizontal != 0)
+            HorizontalOffsetCore = Math.Clamp(oldX + input.Horizontal, 0, Math.Max(0, layout.TotalWidth - bounds.Width));
+        if (input.Vertical != 0)
+            VerticalOffsetCore = Math.Clamp(oldY + input.Vertical, 0, Math.Max(0, layout.TotalHeight - bounds.Height));
+        input.MarkHandled(e, horizontal: HorizontalOffset != oldX, vertical: VerticalOffset != oldY);
     }
 
     private TextPointer? GetTextPositionFromPoint(Point point)
@@ -2799,6 +3025,12 @@ public class RichTextBox : TextBoxBase, IImeSupport
         {
             if (targetY >= y && targetY < y + lineLayout.Height)
             {
+                if (lineLayout.NativeLine is { } nativeLine)
+                {
+                    var hit = nativeLine.Paragraph.HitTest(nativeLine.Index, targetX - blockLayout.Margin.Left);
+                    return _document.GetPositionAtOffset(lineLayout.ParagraphOffset + (int)hit.TextPosition,
+                        hit.BackwardAffinity != 0 ? LogicalDirection.Backward : LogicalDirection.Forward);
+                }
                 // Found the line
                 double x = blockLayout.Margin.Left;
                 foreach (var runLayout in lineLayout.Runs)
@@ -2811,13 +3043,14 @@ public class RichTextBox : TextBoxBase, IImeSupport
                             var localX = targetX - x - runLayout.X;
                             var charIndex = FindCharIndexFromX(runLayout.Run, localX);
                             var offset = runLayout.StartOffset + charIndex;
-                            return _document.GetPositionAtOffset(offset, LogicalDirection.Forward);
+                            return _document.GetPositionAtOffset(offset, offset == lineLayout.EndOffset ?
+                                LogicalDirection.Backward : LogicalDirection.Forward);
                         }
                         return _document.GetPositionAtOffset(runLayout.StartOffset, LogicalDirection.Forward);
                     }
                 }
                 // Clicked past the end of the line
-                return _document.GetPositionAtOffset(lineLayout.EndOffset, LogicalDirection.Forward);
+                return _document.GetPositionAtOffset(lineLayout.EndOffset, LogicalDirection.Backward);
             }
             y += lineLayout.Height;
         }
@@ -2842,6 +3075,13 @@ public class RichTextBox : TextBoxBase, IImeSupport
         var fontSize = run.FontSize;
         if (fontSize <= 0)
             fontSize = _document.FontSize;
+
+        if (TextMeasurement.HitTestPointWrapped(text, fontFamily, fontSize,
+            run.FontWeight.ToOpenTypeWeight(), run.FontStyle.ToOpenTypeStyle(), 100000f, (float)x, 0, out var hit))
+        {
+            int offset = Math.Clamp((int)hit.TextPosition, 0, text.Length);
+            return hit.IsTrailingHit != 0 ? GraphemeClusters.NextBoundary(text, offset) : GraphemeClusters.SnapNearest(text, offset);
+        }
 
         int index = text.Length;
         double prevWidth = 0;
@@ -3007,12 +3247,41 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     #region Key Handlers
 
-    private void HandleLeftKey(bool shift, bool ctrl)
+    private TextPointer? GetMacOSWordPosition(bool right, bool shift)
+    {
+        if (_caretPosition is null) return null;
+        string text = _document.GetText();
+        var layout = EnsureLayout(GetContentBounds().Width);
+        var sources = new List<(NativeTextParagraph Paragraph, int Offset)>();
+        void Collect(List<BlockLayoutInfo> blocks)
+        {
+            foreach (var block in blocks)
+            {
+                if (block.NativeParagraph is { } paragraph && block.Lines.Count > 0)
+                    sources.Add((paragraph, block.Lines[0].ParagraphOffset));
+                Collect(block.ChildBlocks);
+            }
+        }
+        if (layout is not null) Collect(layout.Blocks);
+        int start = _selection?.Start.DocumentOffset ?? 0;
+        int length = shift ? 0 : (_selection?.End.DocumentOffset ?? 0) - start;
+        if (NativeTextParagraph.TryNavigateWord(text, sources, _caretPosition.DocumentOffset,
+            start, length, right, _caretPosition.LogicalDirection == LogicalDirection.Backward, out var destination))
+            return _document.GetPositionAtOffset((int)destination.TextPosition,
+                destination.BackwardAffinity != 0 ? LogicalDirection.Backward : LogicalDirection.Forward);
+        return _document.GetPositionAtOffset(MacOSTextKeyBehavior.FindWordBoundary(text,
+            _caretPosition.DocumentOffset, right, physical: true, selectionStart: start, selectionLength: length),
+            right ? LogicalDirection.Forward : LogicalDirection.Backward);
+    }
+
+    private void HandleLeftKey(bool shift, bool ctrl, bool optionWord = false)
     {
         if (_caretPosition == null)
             return;
 
-        var newPosition = ctrl
+        var newPosition = optionWord
+            ? GetMacOSWordPosition(false, shift)
+            : ctrl
             ? FindPreviousWordBoundary(_caretPosition)
             : _caretPosition.GetNextInsertionPosition(LogicalDirection.Backward);
 
@@ -3033,16 +3302,18 @@ public class RichTextBox : TextBoxBase, IImeSupport
         InvalidateVisual();
     }
 
-    private void HandleRightKey(bool shift, bool ctrl)
+    private void HandleRightKey(bool shift, bool ctrl, bool optionWord = false)
     {
         if (_caretPosition == null)
             return;
 
-        var newPosition = ctrl
+        var newPosition = optionWord
+            ? GetMacOSWordPosition(true, shift)
+            : ctrl
             ? FindNextWordBoundary(_caretPosition)
             : _caretPosition.GetNextInsertionPosition(LogicalDirection.Forward);
 
-                    newPosition ??= _document.ContentEnd;
+        newPosition ??= _caretPosition;
 
         if (shift)
         {
@@ -3125,7 +3396,9 @@ public class RichTextBox : TextBoxBase, IImeSupport
         for (int i = 0; i < allLines.Count; i++)
         {
             var (line, _, _) = allLines[i];
-            if (caretOffset >= line.StartOffset && caretOffset <= line.EndOffset)
+            bool nextRow = _caretPosition.LogicalDirection == LogicalDirection.Forward && caretOffset == line.EndOffset &&
+                i + 1 < allLines.Count && allLines[i + 1].line.StartOffset == caretOffset;
+            if (caretOffset >= line.StartOffset && caretOffset <= line.EndOffset && !nextRow)
             {
                 currentLineIndex = i;
                 break;
@@ -3144,7 +3417,14 @@ public class RichTextBox : TextBoxBase, IImeSupport
         // Use the current caret X position to find the nearest character on the target line
         var targetLine = allLines[targetLineIndex];
         var targetY = targetLine.y + lineHeight / 2;
-        var targetX = caretPos.Value.X - (contentBounds.Left - _horizontalOffset);
+        var targetX = caretPos.Value.X;
+
+        if (targetLine.line.NativeLine is { } nativeLine)
+        {
+            var hit = nativeLine.Paragraph.HitTest(nativeLine.Index, targetX - targetLine.x);
+            return _document.GetPositionAtOffset(targetLine.line.ParagraphOffset + (int)hit.TextPosition,
+                hit.BackwardAffinity != 0 ? LogicalDirection.Backward : LogicalDirection.Forward) ?? _document.ContentEnd;
+        }
 
         // Find the position on the target line at the same X offset
         foreach (var runLayout in targetLine.line.Runs)
@@ -3155,13 +3435,14 @@ public class RichTextBox : TextBoxBase, IImeSupport
                 var localX = targetX - targetLine.x - runLayout.X;
                 var charIndex = FindCharIndexFromX(runLayout.Run, localX);
                 var offset = runLayout.StartOffset + charIndex;
-                return _document.GetPositionAtOffset(offset, LogicalDirection.Forward) ?? _document.ContentEnd;
+                return _document.GetPositionAtOffset(offset, offset == targetLine.line.EndOffset ?
+                    LogicalDirection.Backward : LogicalDirection.Forward) ?? _document.ContentEnd;
             }
         }
 
         // X is past the end of the target line
         if (targetX > targetLine.x + targetLine.line.Width)
-            return _document.GetPositionAtOffset(targetLine.line.EndOffset, LogicalDirection.Forward) ?? _document.ContentEnd;
+            return _document.GetPositionAtOffset(targetLine.line.EndOffset, LogicalDirection.Backward) ?? _document.ContentEnd;
 
         // X is before the start of the target line
         return _document.GetPositionAtOffset(targetLine.line.StartOffset, LogicalDirection.Forward) ?? _document.ContentStart;
@@ -3182,6 +3463,41 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
             CollectAllLines(blockLayout.ChildBlocks, x, ref y, result);
             y += blockLayout.Margin.Bottom;
+        }
+    }
+
+    private void HandleMacOSVisualLineBoundary(bool shift, bool end)
+    {
+        if (_caretPosition == null) return;
+        var layout = EnsureLayout(GetContentBounds().Width);
+        if (layout == null) return;
+        var lines = new List<(LineLayoutInfo line, double y, double x)>();
+        double y = 0;
+        CollectAllLines(layout.Blocks, 0, ref y, lines);
+        int offset = _caretPosition.DocumentOffset;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i].line;
+            if (offset < line.StartOffset || offset > line.EndOffset) continue;
+            if (offset == line.EndOffset && _caretPosition.LogicalDirection == LogicalDirection.Forward &&
+                i + 1 < lines.Count && lines[i + 1].line.StartOffset == offset) continue;
+            int target = end ? line.EndOffset : line.StartOffset;
+            bool backward = end;
+            if (line.NativeLine is { } nativeLine)
+            {
+                var metrics = nativeLine.Metrics.Line;
+                target = line.ParagraphOffset + (int)(end ? metrics.RightCaretPosition : metrics.LeftCaretPosition);
+                backward = (end ? metrics.RightBackwardAffinity : metrics.LeftBackwardAffinity) != 0;
+            }
+            var destination = _document.GetPositionAtOffset(target,
+                backward ? LogicalDirection.Backward : LogicalDirection.Forward);
+            if (destination == null) return;
+            if (shift) ExtendSelection(destination);
+            else { _caretPosition = destination; ClearSelection(); }
+            ResetCaretBlink();
+            EnsureCaretVisible();
+            InvalidateVisual();
+            return;
         }
     }
 
@@ -3317,61 +3633,41 @@ public class RichTextBox : TextBoxBase, IImeSupport
         return _document.ContentEnd;
     }
 
-    private void HandleBackspace(bool ctrl)
+    private void HandleBackspace(bool ctrl, bool optionWord = false)
     {
-        if (IsReadOnly)
-            return;
-
-        if (_selection != null && !_selection.IsEmpty)
+        if (IsReadOnly) return;
+        if (_selection is { IsEmpty: false }) DeleteSelection();
+        else if (_caretPosition is { } caret)
         {
-            DeleteSelection();
+            // ContentEnd can select the final paragraph terminator. Editing
+            // from that position belongs just before the immutable terminator.
+            int textLength = _document.GetText().Length;
+            if (textLength > 0 && caret.DocumentOffset == textLength)
+                caret = _document.GetPositionAtOffset(textLength - 1, LogicalDirection.Backward) ?? caret;
+            var previous = optionWord
+                ? _document.GetPositionAtOffset(MacOSTextKeyBehavior.FindWordBoundary(
+                    _document.GetText(), caret.DocumentOffset, forward: false), LogicalDirection.Backward)
+                : ctrl ? FindPreviousWordBoundary(caret) : caret.GetNextInsertionPosition(LogicalDirection.Backward);
+            if (previous is not null)
+                TryReplaceImeText(previous.DocumentOffset, caret.DocumentOffset - previous.DocumentOffset, string.Empty);
         }
-        else if (_caretPosition != null)
-        {
-            var prevPosition = ctrl
-                ? FindPreviousWordBoundary(_caretPosition)
-                : _caretPosition.GetNextInsertionPosition(LogicalDirection.Backward);
-
-            if (prevPosition != null)
-            {
-                PushUndo();
-                var range = new TextRange(prevPosition, _caretPosition);
-                range.Text = string.Empty;
-                _caretPosition = prevPosition;
-                _selection = new TextSelection(prevPosition, prevPosition);
-                InvalidateLayout();
-            }
-        }
-
         EnsureCaretVisible();
         InvalidateVisual();
     }
 
-    private void HandleDelete(bool ctrl)
+    private void HandleDelete(bool ctrl, bool optionWord = false)
     {
-        if (IsReadOnly)
-            return;
-
-        if (_selection != null && !_selection.IsEmpty)
+        if (IsReadOnly) return;
+        if (_selection is { IsEmpty: false }) DeleteSelection();
+        else if (_caretPosition is { } caret)
         {
-            DeleteSelection();
+            var next = optionWord
+                ? _document.GetPositionAtOffset(MacOSTextKeyBehavior.FindWordBoundary(
+                    _document.GetText(), caret.DocumentOffset, forward: true), LogicalDirection.Forward)
+                : ctrl ? FindNextWordBoundary(caret) : caret.GetNextInsertionPosition(LogicalDirection.Forward);
+            if (next is not null)
+                TryReplaceImeText(caret.DocumentOffset, next.DocumentOffset - caret.DocumentOffset, string.Empty);
         }
-        else if (_caretPosition != null)
-        {
-            var nextPosition = ctrl
-                ? FindNextWordBoundary(_caretPosition)
-                : _caretPosition.GetNextInsertionPosition(LogicalDirection.Forward);
-
-            if (nextPosition != null)
-            {
-                PushUndo();
-                var range = new TextRange(_caretPosition, nextPosition);
-                range.Text = string.Empty;
-                _selection = new TextSelection(_caretPosition, _caretPosition);
-                InvalidateLayout();
-            }
-        }
-
         EnsureCaretVisible();
         InvalidateVisual();
     }
@@ -3438,6 +3734,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
     private (int start, int end) GetWordRangeAtOffset(int offset)
     {
         var text = _document.GetText();
+        if (MacOSTextKeyBehavior.TryGetWordRange(text, offset, out int nativeStart, out int nativeLength))
+            return (nativeStart, nativeStart + nativeLength);
         if (string.IsNullOrEmpty(text))
         {
             return (0, 0);
@@ -3575,6 +3873,42 @@ public class RichTextBox : TextBoxBase, IImeSupport
         return true;
     }
 
+    private bool TrySetImeSelection(int start, int length)
+    {
+        if (!ImeTextEncoding.TryNormalizeUtf16Range(_document.GetText(), start, length,
+                out start, out length))
+            return false;
+        var beginning = _document.GetPositionAtOffset(start, LogicalDirection.Forward) ?? _document.ContentStart;
+        var end = _document.GetPositionAtOffset(start + length,
+            length == 0 ? LogicalDirection.Forward : LogicalDirection.Backward) ?? _document.ContentEnd;
+        _selection = new TextSelection(beginning, end);
+        _selectionAnchor = beginning;
+        _caretPosition = end;
+        OnSelectionChanged();
+        ResetCaretBlink();
+        EnsureCaretVisible();
+        InvalidateVisual();
+        return true;
+    }
+
+    private bool TryReplaceImeText(int start, int length, string text)
+    {
+        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(_document.GetText(), start, length,
+                out start, out length)) return false;
+        using var change = DeclareChangeBlock();
+        PushUndo();
+        TrySetImeSelection(start, length);
+        _caretPosition = DocumentTextEditing.Replace(_document, start, length, text);
+        _selection = new TextSelection(_caretPosition, _caretPosition);
+        _selectionAnchor = _caretPosition;
+        OnSelectionChanged();
+        ResetCaretBlink();
+        EnsureCaretVisible();
+        InvalidateLayout();
+        InvalidateVisual();
+        return true;
+    }
+
     /// <inheritdoc />
     internal Point GetImeCaretPosition()
     {
@@ -3604,9 +3938,104 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     internal Rect GetImeCaretRectangle()
     {
+        if (((IImeSupport)this).TryGetImeTextRangeGeometry(_isImeComposing ?
+            Math.Clamp(_imeCompositionCursor, 0, _imeCompositionString.Length) : (_caretPosition?.DocumentOffset ?? 0),
+            0, _isImeComposing, out var geometry))
+            return new Rect(geometry.Rectangle.X, geometry.Rectangle.Y, 1, geometry.Rectangle.Height);
         Point bottom = GetImeCaretPosition();
         double height = Math.Max(1, GetDefaultLineHeight());
         return new Rect(bottom.X, bottom.Y - height, 1, height);
+    }
+
+    private Rect GetImeCompositionCaret(int index, bool trailing)
+    {
+        var anchor = _document.GetPositionAtOffset(GetImeAnchorOffset(), LogicalDirection.Forward) ?? _document.ContentStart;
+        var point = GetCaretScreenPosition(GetContentBounds(), anchor) ?? new Point(GetContentBounds().X, GetContentBounds().Y);
+        var format = GetImeFormatting(anchor);
+        return ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, point,
+            GetLineHeightForFormatting(format.FontSize), format.FontFamily, format.FontSize,
+            format.FontWeight.ToOpenTypeWeight(), format.FontStyle.ToOpenTypeStyle(), 100000f,
+            text =>
+            {
+                var formatted = new FormattedText(text, format.FontFamily, format.FontSize)
+                { FontWeight = format.FontWeight.ToOpenTypeWeight(), FontStyle = format.FontStyle.ToOpenTypeStyle() };
+                TextMeasurement.MeasureText(formatted);
+                return formatted.Width;
+            });
+    }
+
+    bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
+    {
+        geometry = default;
+        if (composition)
+            return _isImeComposing && ImeTextGeometry.TryGetFirstLineRange(_imeCompositionString,
+                start, length, GetImeCompositionCaret, out geometry);
+        string text = _document.GetText();
+        if (!ImeTextEncoding.TryNormalizeUtf16Range(text, start, length, out start, out length)) return false;
+        Rect bounds = GetContentBounds();
+        var layout = EnsureLayout(bounds.Width);
+        if (layout == null) return false;
+        double y = bounds.Top - _verticalOffset;
+        var lines = new List<(LineLayoutInfo line, double y, double x)>();
+        CollectAllLines(layout.Blocks, bounds.Left - _horizontalOffset, ref y, lines);
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var entry = lines[i];
+            int limit = i + 1 < lines.Count ? lines[i + 1].line.StartOffset : text.Length;
+            bool activeRowEnd = length == 0 && _caretPosition?.DocumentOffset == start &&
+                _caretPosition.LogicalDirection == LogicalDirection.Backward && start == entry.line.EndOffset;
+            if (start < entry.line.StartOffset || start > limit ||
+                (start == limit && i + 1 < lines.Count && !activeRowEnd)) continue;
+            int end = Math.Min(start + length, limit);
+            if (length > 0 && entry.line.NativeLine is { } nativeLine)
+            {
+                int nativeStart = Math.Clamp(start - entry.line.ParagraphOffset, 0, nativeLine.Paragraph.Text.Length);
+                int nativeEnd = Math.Clamp(end - entry.line.ParagraphOffset, nativeStart, nativeLine.Paragraph.Text.Length);
+                var rectangles = nativeLine.Paragraph.Selection(nativeLine.Index, nativeStart, nativeEnd - nativeStart);
+                if (rectangles.Length > 0)
+                {
+                    double left = rectangles.Min(static rectangle => rectangle.X);
+                    double right = rectangles.Max(static rectangle => rectangle.X + rectangle.Width);
+                    geometry = new ImeTextRangeGeometry(new Rect(entry.x + left, entry.y,
+                        right - left, entry.line.Height), start, end - start);
+                    return true;
+                }
+            }
+            Rect caret(int offset, bool trailing) => new(entry.x +
+                GetXOffsetInLine(entry.line, Math.Min(offset, entry.line.EndOffset), trailing,
+                    backward: length == 0 && _caretPosition?.DocumentOffset == start &&
+                        _caretPosition.LogicalDirection == LogicalDirection.Backward),
+                entry.y, 0, Math.Max(1, entry.line.Height));
+            if (!ImeTextGeometry.TryGetFirstLineRange(text, start, end - start, caret, out geometry)) return false;
+            return true;
+        }
+        return false;
+    }
+
+    bool IImeSupport.TryGetImeCharacterIndex(Point point, bool composition, out int index)
+    {
+        index = -1;
+        if (!GetContentBounds().Contains(point)) return false;
+        if (!composition)
+        {
+            var position = GetTextPositionFromPoint(point);
+            if (position == null) return false;
+            index = ImeTextEncoding.SnapToGraphemeBoundary(_document.GetText(), position.DocumentOffset, false);
+            return true;
+        }
+        if (!_isImeComposing) return false;
+        var anchor = _document.GetPositionAtOffset(GetImeAnchorOffset(), LogicalDirection.Forward) ?? _document.ContentStart;
+        var format = GetImeFormatting(anchor);
+        Rect caret = GetImeCompositionCaret(0, false);
+        return ImeTextGeometry.TryHitTest(_imeCompositionString, point, new Point(caret.X, caret.Y), caret.Height,
+            format.FontFamily, format.FontSize, format.FontWeight.ToOpenTypeWeight(), format.FontStyle.ToOpenTypeStyle(),
+            100000f, text =>
+            {
+                var formatted = new FormattedText(text, format.FontFamily, format.FontSize)
+                { FontWeight = format.FontWeight.ToOpenTypeWeight(), FontStyle = format.FontStyle.ToOpenTypeStyle() };
+                TextMeasurement.MeasureText(formatted);
+                return formatted.Width;
+            }, true, out index);
     }
 
     /// <inheritdoc />
@@ -3617,7 +4046,12 @@ public class RichTextBox : TextBoxBase, IImeSupport
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
 
-        if (_selection != null && !_selection.IsEmpty)
+        if (OperatingSystem.IsMacOS())
+        {
+            _imeCompositionStart = _selection is { IsEmpty: false }
+                ? _selection.Start.DocumentOffset : _caretPosition?.DocumentOffset ?? 0;
+        }
+        else if (_selection != null && !_selection.IsEmpty)
         {
             DeleteSelection();
             _imeCompositionStart = _caretPosition?.DocumentOffset ?? _imeCompositionStart;
@@ -3658,6 +4092,10 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
     bool IImeSupport.DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
         => DeleteImeSurroundingText(beforeUtf8ByteCount, afterUtf8ByteCount);
+
+    bool IImeSupport.TrySetImeSelection(int start, int length) => TrySetImeSelection(start, length);
+
+    bool IImeSupport.TryReplaceImeText(int start, int length, string text) => TryReplaceImeText(start, length, text);
 
     Point IImeSupport.GetImeCaretPosition() => GetImeCaretPosition();
 
@@ -3768,31 +4206,33 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Represents the state of a document for undo/redo.
     /// </summary>
-    private class DocumentState
+    private sealed class DocumentState(
+        DocumentSnapshot snapshot, TextPointer caret, TextPointer selectionAnchor,
+        TextPointer selectionMoving, TextPointer caretAnchor, string text)
     {
-        public string Text { get; }
-        public int CaretOffset { get; }
-        public int SelectionStart { get; }
-        public int SelectionEnd { get; }
-
-        public DocumentState(string text, int caretOffset, int selectionStart, int selectionEnd)
-        {
-            Text = text;
-            CaretOffset = caretOffset;
-            SelectionStart = selectionStart;
-            SelectionEnd = selectionEnd;
-        }
+        internal DocumentSnapshot Snapshot { get; } = snapshot;
+        internal TextPointer Caret { get; } = caret;
+        internal TextPointer SelectionAnchor { get; } = selectionAnchor;
+        internal TextPointer SelectionMoving { get; } = selectionMoving;
+        internal TextPointer CaretAnchor { get; } = caretAnchor;
+        internal string Text { get; } = text;
+        internal int CaretOffset { get; } = caret.DocumentOffset;
+        internal int AnchorOffset { get; } = selectionAnchor.DocumentOffset;
+        internal int MovingOffset { get; } = selectionMoving.DocumentOffset;
+        internal int CaretAnchorOffset { get; } = caretAnchor.DocumentOffset;
     }
 
     /// <summary>
     /// Layout information for the entire document.
     /// </summary>
-    private class FlowDocumentLayoutInfo
+    private class FlowDocumentLayoutInfo : IDisposable
     {
         public List<BlockLayoutInfo> Blocks { get; } = new();
         public Dictionary<TextElement, DecorationFragmentMetrics> DecorationFragments { get; } =
             new(ReferenceEqualityComparer.Instance);
         public double TotalHeight { get; set; }
+        public double TotalWidth { get; set; }
+        public void Dispose() { foreach (var block in Blocks) block.Dispose(); }
     }
 
     private sealed class DecorationFragmentMetrics(int firstOffset, int lastOffset)
@@ -3807,12 +4247,22 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Layout information for a block element.
     /// </summary>
-    private class BlockLayoutInfo
+    private class BlockLayoutInfo : IDisposable
     {
         public Block Block { get; set; } = null!;
         public Thickness Margin { get; set; }
         public List<LineLayoutInfo> Lines { get; } = new();
         public List<BlockLayoutInfo> ChildBlocks { get; } = new();
+        public NativeTextParagraph? NativeParagraph { get; set; }
+        public int NativeDirection { get; set; }
+        public List<(Run? Run, Color Color, double Opacity)> NativeColors { get; } = new();
+        public List<(Run? Run, string Family, double Size, int Weight, int Style)> NativeFonts { get; } = new();
+        public long NativeFontEpoch { get; set; }
+        public void Dispose()
+        {
+            NativeParagraph?.Dispose();
+            foreach (var block in ChildBlocks) block.Dispose();
+        }
     }
 
     /// <summary>
@@ -3820,6 +4270,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     private class LineLayoutInfo
     {
+        public NativeTextParagraph.Line? NativeLine { get; set; }
+        public int ParagraphOffset { get; set; }
         public int StartOffset { get; set; }
         public int EndOffset { get; set; }
         public double Width { get; set; }

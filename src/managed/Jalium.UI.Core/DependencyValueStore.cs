@@ -41,7 +41,7 @@ internal sealed class DependencyValueStore
         CssBase,
     }
 
-    private sealed class LayerValues
+    internal sealed class LayerValues
     {
         public object? Local;
         public object? ParentTemplateTrigger;
@@ -53,9 +53,11 @@ internal sealed class DependencyValueStore
         public object? StyleSetter;
         public object? Current;
         public BaseValueSource CurrentSource;
+
+        internal LayerValues Clone() => (LayerValues)MemberwiseClone();
     }
 
-    private struct Entry
+    internal struct Entry
     {
         public DependencyProperty Property;
         public LayerMask Mask;
@@ -78,6 +80,37 @@ internal sealed class DependencyValueStore
     private int _count;
 
     internal int Count => _count;
+
+    // Coercion can reject a tentative property write. Snapshot only that
+    // property's layers; unrelated writes made by the callback remain intact.
+    // Single-source properties need no allocation.
+    internal Entry CaptureProperty(DependencyProperty property)
+    {
+        var index = FindIndex(property);
+        if (index < 0) return default;
+        var snapshot = GetEntry(index);
+        if (snapshot.Values is not null) snapshot.Values = snapshot.Values.Clone();
+        return snapshot;
+    }
+
+    internal void RestoreProperty(DependencyProperty property, Entry snapshot)
+    {
+        var index = FindIndex(property);
+        if (snapshot.Mask == LayerMask.None)
+        {
+            if (index >= 0) RemoveEntry(index);
+            return;
+        }
+        if (index < 0)
+        {
+            EnsureCapacity(_count + 1);
+            index = _count++;
+            GetEntry(index) = snapshot;
+            EnsureIndexIfNeeded();
+            if (_indices is not null) _indices[property.GlobalIndex] = index;
+        }
+        else GetEntry(index) = snapshot;
+    }
 
     internal bool TryGetEffective(
         DependencyProperty property,

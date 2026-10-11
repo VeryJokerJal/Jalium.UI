@@ -7,7 +7,8 @@ namespace Jalium.UI.Media;
 
 /// <summary>
 /// Specifies the system backdrop type for a window.
-/// These are DWM system backdrops that blur content behind the window (desktop, other apps).
+/// Uses DWM backdrops on Windows and corresponding AppKit materials on macOS.
+/// An opaque Window.Background covers the native material.
 /// </summary>
 public enum WindowBackdropType
 {
@@ -17,25 +18,28 @@ public enum WindowBackdropType
     None = 0,
 
     /// <summary>
-    /// Let the Desktop Window Manager (DWM) automatically decide the system-drawn backdrop material.
+    /// Let DWM select the material on Windows; uses the window background material on macOS.
     /// </summary>
     Auto = 1,
 
     /// <summary>
     /// Mica effect - samples the desktop wallpaper with blur and tint.
     /// Available on Windows 11 22000+.
+    /// Uses the AppKit window background material on macOS.
     /// </summary>
     Mica = 2,
 
     /// <summary>
     /// Acrylic effect - blurs content behind the window with tint.
     /// Available on Windows 11 22H2+.
+    /// Uses the AppKit popover material on macOS.
     /// </summary>
     Acrylic = 3,
 
     /// <summary>
     /// Mica Alt effect - similar to Mica but with a different appearance.
     /// Available on Windows 11 22H2+.
+    /// Uses the AppKit under-window background material on macOS.
     /// </summary>
     MicaAlt = 4
 }

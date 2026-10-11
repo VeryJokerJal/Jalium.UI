@@ -6,7 +6,7 @@ using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 namespace Jalium.UI.Controls.Helpers;
 
 /// <summary>
-/// Enumerates installed font families using Win32 GDI — no System.Drawing dependency.
+/// Enumerates installed font families using GDI, CoreText or Fontconfig.
 /// </summary>
 internal static partial class FontEnumerationHelper
 {
@@ -14,33 +14,34 @@ internal static partial class FontEnumerationHelper
     {
         if (!OperatingSystem.IsWindows())
         {
-            return OperatingSystem.IsLinux()
-                ? EnumerateSystemFontFamiliesLinux()
+            return OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()
+                ? EnumerateSystemFontFamiliesNative()
                 : null;
         }
 
         return EnumerateSystemFontFamiliesWindows();
     }
 
-    private static unsafe string[]? EnumerateSystemFontFamiliesLinux()
+    private static unsafe string[]? EnumerateSystemFontFamiliesNative()
     {
         try
         {
-            int count = NativeMethods.TextGetSystemFontFamilyCount();
+            bool apple = OperatingSystem.IsMacOS();
+            int count = apple ? NativeMethods.FontGetSystemFamilyCount() : NativeMethods.TextGetSystemFontFamilyCount();
             if (count is <= 0 or > 100_000)
                 return null;
 
             var fontNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int index = 0; index < count; index++)
             {
-                int required = NativeMethods.TextCopySystemFontFamily(index, null, 0);
+                int required = apple ? NativeMethods.FontCopySystemFamily(index, null, 0) : NativeMethods.TextCopySystemFontFamily(index, null, 0);
                 if (required is <= 1 or > 64 * 1024)
                     continue;
 
                 var buffer = new byte[required];
                 fixed (byte* pointer = buffer)
                 {
-                    int copied = NativeMethods.TextCopySystemFontFamily(index, pointer, buffer.Length);
+                    int copied = apple ? NativeMethods.FontCopySystemFamily(index, pointer, buffer.Length) : NativeMethods.TextCopySystemFontFamily(index, pointer, buffer.Length);
                     if (copied != required || buffer[^1] != 0)
                         continue;
                 }
@@ -53,6 +54,7 @@ internal static partial class FontEnumerationHelper
             if (fontNames.Count == 0)
                 return null;
 
+            if (apple) fontNames.Add(FrameworkElement.DefaultFontFamilyName);
             var result = fontNames.ToArray();
             Array.Sort(result, StringComparer.CurrentCultureIgnoreCase);
             return result;
@@ -63,7 +65,7 @@ internal static partial class FontEnumerationHelper
                                           MarshalDirectiveException)
         {
             // A managed-only/minimal deployment may intentionally omit the
-            // native text payload (and therefore Fontconfig). Callers retain a
+            // native font payload. Callers retain a
             // small deterministic fallback instead of failing type init.
             return null;
         }

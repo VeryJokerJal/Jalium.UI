@@ -199,8 +199,7 @@ public partial class TextBlock
     private bool HasAuthoredLetterSpacingOnInlines()
     {
         foreach (var range in GetInlineTextRanges())
-            if (range.Run.GetValueSourceInternal(CssFlowProperties.LetterSpacingProperty)
-                    .BaseValueSource != BaseValueSource.Default)
+            if (HasAuthoredFlowValue(range.Run, CssFlowProperties.LetterSpacingProperty))
                 return true;
         return false;
     }

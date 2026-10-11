@@ -57,7 +57,7 @@ internal sealed class CssFontDependency(CssNode node)
 }
 
 internal readonly record struct CssFontInfo(string Family, int Weight = 400, int Style = 0, bool IsCss = false,
-    CssComputedFontFamily? ComputedFamily = null)
+    CssComputedFontFamily? ComputedFamily = null, double Width = 100)
 {
     internal static CssFontInfo Initial => new(SystemFonts.MessageFontFamily.Source);
     internal FontUnitMetrics Metrics(double size, CssFontDependency? dependency = null)
@@ -65,9 +65,9 @@ internal readonly record struct CssFontInfo(string Family, int Weight = 400, int
         var resolved = Family;
         if (IsCss && dependency?.Node is { } node)
             resolved = ComputedFamily is { } computed
-                ? CssFontFaces.Resolve(node, computed.RenderingNames, Weight, Style, "0水")
-                : CssFontFaces.Resolve(node, Family, Weight, Style, "0水");
-        return TextMeasurement.GetFontUnitMetrics(resolved, size, Weight, Style);
+                ? CssFontFaces.Resolve(node, computed.RenderingNames, Weight, Style, "0水", Width)
+                : CssFontFaces.Resolve(node, Family, Weight, Style, "0水", Width);
+        return TextMeasurement.GetFontUnitMetrics(FontWidthRenderingSource.Wrap(resolved, Width), size, Weight, Style);
     }
 
     internal FontMathConstants MathConstants(CssFontDependency? dependency = null)
@@ -75,9 +75,9 @@ internal readonly record struct CssFontInfo(string Family, int Weight = 400, int
         var resolved = Family;
         if (IsCss && dependency?.Node is { } node)
             resolved = ComputedFamily is { } computed
-                ? CssFontFaces.Resolve(node, computed.RenderingNames, Weight, Style)
-                : CssFontFaces.Resolve(node, Family, Weight, Style);
-        return TextMeasurement.GetFontMathConstants(resolved, Weight, Style);
+                ? CssFontFaces.Resolve(node, computed.RenderingNames, Weight, Style, width: Width)
+                : CssFontFaces.Resolve(node, Family, Weight, Style, width: Width);
+        return TextMeasurement.GetFontMathConstants(FontWidthRenderingSource.Wrap(resolved, Width), Weight, Style);
     }
 
     internal static CssFontInfo Read(CssNode node)
@@ -87,7 +87,7 @@ internal readonly record struct CssFontInfo(string Family, int Weight = 400, int
         var weight = Value("FontWeight") is FontWeight w ? w.ToOpenTypeWeight() : 400;
         var style = Value("FontStyle") is FontStyle s ? s : FontStyles.Normal;
         return new(family?.Source ?? Initial.Family, weight, style == FontStyles.Italic ? 1 : style == FontStyles.Oblique ? 2 : 0,
-            family?.IsCssFamily == true, family?.CssComputedFamily);
+            family?.IsCssFamily == true, family?.CssComputedFamily, CssFontStretchValue.Computed(node));
     }
 
     internal CssFontInfo With(string property, object? value) => property switch
@@ -98,6 +98,7 @@ internal readonly record struct CssFontInfo(string Family, int Weight = 400, int
         },
         "FontWeight" when value is FontWeight weight => this with { Weight = weight.ToOpenTypeWeight() },
         "FontStyle" when value is FontStyle style => this with { Style = style == FontStyles.Italic ? 1 : style == FontStyles.Oblique ? 2 : 0 },
+        "FontStretch" when value is FontStretch stretch => this with { Width = CssFontStretchValue.Percentage(stretch) },
         _ => this,
     };
 }

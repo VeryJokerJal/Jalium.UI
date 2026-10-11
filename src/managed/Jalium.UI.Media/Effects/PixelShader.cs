@@ -37,6 +37,7 @@ public sealed class PixelShader : Animatable
     private short _shaderMajorVersion;
     private short _shaderMinorVersion;
     private string? _sourceHlsl;
+    private bool _invalidRenderReported;
 
     #endregion
 
@@ -82,9 +83,10 @@ public sealed class PixelShader : Animatable
 
     /// <summary>
     /// Optional SM6 HLSL <b>source</b> for this shader. When set, backends compile
-    /// it at runtime (D3D12 via D3DCompile, Vulkan via DXC→SPIR-V) instead of using
+    /// it at runtime (D3D12 via D3DCompile, Vulkan via DXC→SPIR-V, Metal via
+    /// DXC→SPIR-V→MSL) instead of using
     /// the precompiled <see cref="UriSource"/> DXBC bytecode. This is the only way
-    /// a custom pixel-shader effect runs on the Vulkan backend, which cannot consume
+    /// a custom pixel-shader effect runs on the Vulkan and Metal backends, which cannot consume
     /// DirectX bytecode. The shader must follow the custom-effect convention:
     /// <c>float4 main(float2 uv : TEXCOORD0) : SV_Target</c> sampling the captured
     /// content via <c>Texture2D : register(t0)</c> + <c>SamplerState : register(s0)</c>
@@ -103,6 +105,7 @@ public sealed class PixelShader : Animatable
             if (!string.Equals(_sourceHlsl, value, StringComparison.Ordinal))
             {
                 _sourceHlsl = value;
+                _invalidRenderReported = false;
                 ShaderBytecodeChanged?.Invoke(this, EventArgs.Empty);
                 WritePostscript();
             }
@@ -251,6 +254,7 @@ public sealed class PixelShader : Animatable
 
     private void LoadPixelShaderFromStreamIntoMemory(Stream? source)
     {
+        _invalidRenderReported = false;
         _shaderBytecode = null;
         _shaderMajorVersion = 0;
         _shaderMinorVersion = 0;
@@ -311,6 +315,19 @@ public sealed class PixelShader : Animatable
     internal static void OnInvalidPixelShaderEncountered()
     {
         InvalidPixelShaderEncountered?.Invoke(null, EventArgs.Empty);
+    }
+
+    internal void ReportRenderResult(bool succeeded)
+    {
+        if (succeeded)
+        {
+            _invalidRenderReported = false;
+        }
+        else if (!_invalidRenderReported)
+        {
+            _invalidRenderReported = true;
+            OnInvalidPixelShaderEncountered();
+        }
     }
 
     #endregion

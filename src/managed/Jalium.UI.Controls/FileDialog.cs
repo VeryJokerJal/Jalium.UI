@@ -30,6 +30,10 @@ internal abstract class FileDialog
     /// </summary>
     public string? InitialDirectory { get; set; }
 
+    internal string? DefaultDirectory { get; set; }
+    internal string? RootDirectory { get; set; }
+    internal bool ShowHiddenItems { get; set; }
+
     /// <summary>
     /// Gets or sets the default file extension.
     /// </summary>
@@ -150,6 +154,9 @@ internal abstract class FileDialog
     {
         Title = null;
         InitialDirectory = null;
+        DefaultDirectory = null;
+        RootDirectory = null;
+        ShowHiddenItems = false;
         DefaultExt = null;
         Filter = null;
         FilterIndex = 1;
@@ -172,6 +179,49 @@ internal abstract class FileDialog
     protected virtual void OnFileOk()
     {
         FileOk?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal Func<string[], int, bool, bool>? ValidateMacOSSelection { get; set; }
+
+    protected bool? ShowMacOSDialog(bool save, bool directory, bool multiple, nint owner = default)
+    {
+        if (CancellationToken.IsCancellationRequested || PlatformFileDialogs.Show is not { } show)
+            return false;
+        var navigation = new FileDialogNavigation(RootDirectory);
+        var openDialog = this as OpenFileDialog;
+        bool initialReadOnly = openDialog?.ReadOnlyChecked ?? false;
+        bool Valid(string path) => navigation.Contains(path) && (directory
+            ? !CheckPathExists || Directory.Exists(path)
+            : (!CheckFileExists || File.Exists(path)) &&
+              (!CheckPathExists || Directory.Exists(Path.GetDirectoryName(path))));
+        PlatformFileDialogOptions options = null!;
+        options = new PlatformFileDialogOptions(
+            save, directory, multiple, Title, InitialDirectory, FileName,
+            DefaultExt, AddExtension, DereferenceLinks, true, ParseFilter(), FilterIndex)
+        {
+            Owner = owner,
+            DefaultDirectory = DefaultDirectory,
+            RootDirectory = RootDirectory,
+            ShowHiddenItems = ShowHiddenItems,
+            CustomPlaces = CustomPlaces.Select(place => (place.Path, place.KnownFolderGuid)).ToArray(),
+            ShowReadOnly = !directory && openDialog?.ShowReadOnly == true,
+            ReadOnlyChecked = initialReadOnly,
+            ValidateSelection = (paths, filterIndex) =>
+            {
+                var selected = paths.Take(multiple ? int.MaxValue : 1).ToArray();
+                return selected.Length > 0 && selected.All(Valid)
+                    && (ValidateMacOSSelection?.Invoke(selected, filterIndex, options.ReadOnlyChecked) ?? true);
+            }
+        };
+        var paths = show(options);
+        var selected = paths?.Take(multiple ? int.MaxValue : 1).ToArray();
+        if (selected is not { Length: > 0 } || !selected.All(Valid)) return false;
+        if (openDialog != null) openDialog.ReadOnlyChecked = options.ReadOnlyChecked;
+        FilterIndex = options.SelectedFilterIndex;
+        FileName = selected[0];
+        FileNames = selected;
+        OnFileOk();
+        return true;
     }
 
     /// <summary>
@@ -214,7 +264,7 @@ internal sealed class OpenFileDialog : FileDialog
     public bool Multiselect { get; set; }
 
     /// <summary>
-    /// Gets or sets whether read-only files can be selected.
+    /// Gets or sets whether the native panel displays an open-as-read-only choice.
     /// </summary>
     public bool ShowReadOnly { get; set; }
 
@@ -239,6 +289,9 @@ internal sealed class OpenFileDialog : FileDialog
         {
             return ShowLinuxDialog(owner);
         }
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return ShowMacOSDialog(save: false, directory: IsFolderPicker, multiple: Multiselect, owner: owner);
 
         return false;
     }
@@ -504,6 +557,9 @@ internal sealed class SaveFileDialog : FileDialog
         {
             return ShowLinuxDialog(owner);
         }
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return ShowMacOSDialog(save: true, directory: false, multiple: false, owner: owner);
 
         return false;
     }
@@ -1180,6 +1236,20 @@ public sealed class FolderBrowserDialog
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             return ShowLinuxDialog(owner);
+        }
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX) && PlatformFileDialogs.Show is { } show)
+        {
+            if (CancellationToken.IsCancellationRequested) return false;
+            var paths = show(new PlatformFileDialogOptions(
+                false, true, Multiselect, Title ?? Description,
+                InitialDirectory ?? SelectedPath ?? Environment.GetFolderPath(RootFolder),
+                null, null, false, true, ShowNewFolderButton, [], 1) { Owner = owner });
+            var selected = paths?.Where(Directory.Exists).Take(Multiselect ? int.MaxValue : 1).ToArray();
+            if (selected is not { Length: > 0 }) return false;
+            SelectedPaths = selected;
+            SelectedPath = selected[0];
+            return true;
         }
 
         return false;

@@ -173,6 +173,13 @@ internal static class DrawingObjectPool
     public static FormattedText CanonicalizeFormattedText(FormattedText text)
     {
         var canonicalFg = CanonicalizeBrush(text.Foreground);
+        // Shaped lines carry their own run fonts, colors and native owner.
+        // Scalar FormattedText fields cannot establish value equality for
+        // them, and the global pool must not retain another layout's handle.
+        if (text.PlatformTextLine is not null)
+        {
+            return text.CreateRenderSnapshot(canonicalFg);
+        }
         int hash = HashFormattedText(text, canonicalFg);
 
         if (s_formattedTexts.TryGetValue(hash, out var cached) &&

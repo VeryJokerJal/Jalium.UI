@@ -32,7 +32,7 @@ lock_file="$repo_root/eng/apple/dependencies.lock.json"
 
 dxc_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependencies"]["DirectXShaderCompiler"]["revision"])' "$lock_file")"
 spirv_cross_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependencies"]["SPIRV-Cross"]["revision"])' "$lock_file")"
-fingerprint="$dxc_revision:$spirv_cross_revision:$sdk:$deployment:$configuration:$(xcodebuild -version | tr '\n' ' ')"
+fingerprint="static-runtime-v3:$dxc_revision:$spirv_cross_revision:$sdk:$deployment:$configuration:$(xcodebuild -version | tr '\n' ' ')"
 
 if [[ -f "$slice_root/.complete" ]] && [[ "$(cat "$slice_root/.complete")" == "$fingerprint" ]] && [[ -f "$env_file" ]]; then
   echo "$env_file"
@@ -56,11 +56,33 @@ dxc_source="$source_root/DirectXShaderCompiler"
 spirv_cross_source="$source_root/SPIRV-Cross"
 checkout_pinned https://github.com/microsoft/DirectXShaderCompiler.git "$dxc_revision" "$dxc_source"
 checkout_pinned https://github.com/KhronosGroup/SPIRV-Cross.git "$spirv_cross_revision" "$spirv_cross_source"
+git -C "$dxc_source" submodule update --init --depth 1 \
+  external/SPIRV-Headers external/SPIRV-Tools external/DirectX-Headers
+
+# Upstream explicitly declares dxcompiler SHARED, independently of
+# BUILD_SHARED_LIBS. Give the pinned checkout a static-target option rather
+# than merging archives which omit dxcapi.cpp and its initialization code.
+python3 - "$dxc_source/tools/clang/tools/dxcompiler/CMakeLists.txt" <<'PY'
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+source = path.read_text(encoding="utf-8-sig")
+original = "add_clang_library(dxcompiler SHARED ${SOURCES})"
+replacement = '''if (JALIUM_DXC_STATIC_RUNTIME)
+  add_clang_library(dxcompiler STATIC ${SOURCES})
+else()
+  add_clang_library(dxcompiler SHARED ${SOURCES})
+endif()'''
+if "if (JALIUM_DXC_STATIC_RUNTIME)" not in source:
+    if original not in source:
+        raise SystemExit("pinned DXC target declaration changed")
+    path.write_text(source.replace(original, replacement), encoding="utf-8")
+PY
 
 # Build the host compiler once. It is used by the offline shader pipeline; the
 # target slice below is linked into Jalium for dynamic SourceHlsl compilation.
 host_dxc_build="$host_root/dxc"
-if [[ ! -x "$host_dxc_build/bin/dxc" ]]; then
+if [[ "$target" != macos && ! -x "$host_dxc_build/bin/llvm-tblgen" ]]; then
   cmake -S "$dxc_source" -B "$host_dxc_build" -G Ninja \
     -C "$dxc_source/cmake/caches/PredefinedParams.cmake" \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
@@ -68,7 +90,7 @@ if [[ ! -x "$host_dxc_build/bin/dxc" ]]; then
     -DLLVM_INCLUDE_TESTS=OFF -DCLANG_INCLUDE_TESTS=OFF \
     -DHLSL_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
     -DLLVM_BUILD_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF
-  cmake --build "$host_dxc_build" --target dxc llvm-tblgen --parallel
+  cmake --build "$host_dxc_build" --target dxc llvm-tblgen --parallel "${JALIUM_BUILD_JOBS:-4}"
 fi
 
 common_apple_args=(
@@ -78,6 +100,16 @@ common_apple_args=(
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment"
   -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
 )
+compiler_configuration="$configuration"
+if [[ "$target" == macos ]]; then
+  # Native desktop builds need no separate host LLVM build. Keep the compiler
+  # optimized even in a Debug Gallery; shader compilation otherwise dominates
+  # the first frame and duplicates several gigabytes of dependency objects.
+  common_apple_args=( -G Ninja -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT="$sdk"
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment" )
+  compiler_configuration=Release
+fi
 if [[ "$system_name" != Darwin ]]; then
   common_apple_args+=( -DCMAKE_SYSTEM_NAME="$system_name" )
 fi
@@ -87,12 +119,16 @@ cmake -S "$spirv_cross_source" -B "$spirv_cross_build" "${common_apple_args[@]}"
   -DBUILD_SHARED_LIBS=OFF -DSPIRV_CROSS_STATIC=ON \
   -DSPIRV_CROSS_CLI=OFF -DSPIRV_CROSS_ENABLE_TESTS=OFF \
   -DSPIRV_CROSS_ENABLE_C_API=ON -DSPIRV_CROSS_ENABLE_MSL=ON \
-  -DSPIRV_CROSS_ENABLE_GLSL=OFF -DSPIRV_CROSS_ENABLE_HLSL=OFF \
+  -DSPIRV_CROSS_ENABLE_GLSL=ON -DSPIRV_CROSS_ENABLE_HLSL=OFF \
   -DSPIRV_CROSS_ENABLE_CPP=OFF -DSPIRV_CROSS_ENABLE_REFLECT=OFF
 cmake --build "$spirv_cross_build" --config "$configuration" \
-  --target spirv-cross-c spirv-cross-msl spirv-cross-core --parallel
+  --target spirv-cross-c spirv-cross-msl spirv-cross-glsl spirv-cross-core --parallel "${JALIUM_BUILD_JOBS:-4}"
 
 dxc_build="$build_root/dxc"
+tablegen_args=(-DLLVM_OPTIMIZED_TABLEGEN=OFF)
+if [[ "$target" != macos ]]; then
+  tablegen_args=( -DLLVM_TABLEGEN="$host_dxc_build/bin/llvm-tblgen" )
+fi
 cmake -S "$dxc_source" -B "$dxc_build" "${common_apple_args[@]}" \
   -C "$dxc_source/cmake/caches/PredefinedParams.cmake" \
   -DBUILD_SHARED_LIBS=OFF -DENABLE_SPIRV_CODEGEN=ON \
@@ -100,8 +136,10 @@ cmake -S "$dxc_source" -B "$dxc_build" "${common_apple_args[@]}" \
   -DCLANG_INCLUDE_TESTS=OFF -DHLSL_INCLUDE_TESTS=OFF \
   -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_BUILD_EXAMPLES=OFF \
   -DLLVM_INCLUDE_BENCHMARKS=OFF \
-  -DLLVM_TABLEGEN="$host_dxc_build/bin/llvm-tblgen"
-cmake --build "$dxc_build" --config "$configuration" --target dxcompiler --parallel
+  -DJALIUM_DXC_STATIC_RUNTIME=ON "${tablegen_args[@]}"
+cmake --build "$dxc_build" --config "$compiler_configuration" \
+  --target dxcompiler LLVMDxilCompression LLVMDxilPIXPasses LLVMPassPrinters \
+  --parallel "${JALIUM_BUILD_JOBS:-4}"
 
 dxc_archives=()
 while IFS= read -r archive; do dxc_archives+=("$archive"); done < <(
@@ -113,6 +151,10 @@ if [[ ${#dxc_archives[@]} -eq 0 ]]; then
 fi
 dxc_merged="$slice_root/libJaliumDxcRuntime.a"
 /usr/bin/libtool -static -o "$dxc_merged" "${dxc_archives[@]}"
+if ! nm -gU "$dxc_merged" | grep ' _DxcCreateInstance$' >/dev/null; then
+  echo "DXC runtime archive is missing DxcCreateInstance" >&2
+  exit 3
+fi
 
 find_archive() {
   local stem="$1"
@@ -120,8 +162,9 @@ find_archive() {
 }
 spvc_c="$(find_archive spirv-cross-c)"
 spvc_msl="$(find_archive spirv-cross-msl)"
+spvc_glsl="$(find_archive spirv-cross-glsl)"
 spvc_core="$(find_archive spirv-cross-core)"
-if [[ -z "$spvc_c" || -z "$spvc_msl" || -z "$spvc_core" ]]; then
+if [[ -z "$spvc_c" || -z "$spvc_msl" || -z "$spvc_glsl" || -z "$spvc_core" ]]; then
   echo "SPIRV-Cross did not produce the C/MSL/core archives for $rid" >&2
   exit 3
 fi
@@ -130,8 +173,10 @@ fi
   printf 'JALIUM_DXC_INCLUDE_DIR=%q\n' "$dxc_source/include"
   printf 'JALIUM_DXC_LIBRARY=%q\n' "$dxc_merged"
   printf 'JALIUM_SPIRV_CROSS_INCLUDE_DIR=%q\n' "$spirv_cross_source"
-  printf 'JALIUM_SPIRV_CROSS_LIBRARIES=%q\n' "$spvc_c;$spvc_msl;$spvc_core"
-  printf 'JALIUM_DXC_HOST_EXECUTABLE=%q\n' "$host_dxc_build/bin/dxc"
+  printf 'JALIUM_SPIRV_CROSS_LIBRARIES=%q\n' "$spvc_c;$spvc_msl;$spvc_glsl;$spvc_core"
+  if [[ -x "$host_dxc_build/bin/dxc" ]]; then
+    printf 'JALIUM_DXC_HOST_EXECUTABLE=%q\n' "$host_dxc_build/bin/dxc"
+  fi
 } > "$env_file"
 printf '%s' "$fingerprint" > "$slice_root/.complete"
 echo "$env_file"

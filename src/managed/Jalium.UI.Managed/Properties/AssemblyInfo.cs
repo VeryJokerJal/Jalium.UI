@@ -1,6 +1,10 @@
 using System.Runtime.CompilerServices;
 using Jalium.UI.Markup;
 
+[assembly: InternalsVisibleTo("Jalium.One.Modules.CodeEditor")]
+[assembly: InternalsVisibleTo("Jalium.One.Modules.CodeEditor.Tests")]
+[assembly: InternalsVisibleTo("Jalium.One.Modules.Main")]
+[assembly: InternalsVisibleTo("Jalium.One.Modules.Main.Tests")]
 [assembly: InternalsVisibleTo("Jalium.UI.Input")]
 [assembly: InternalsVisibleTo("Jalium.UI.Controls")]
 [assembly: InternalsVisibleTo("Jalium.UI.Interop")]
@@ -13,6 +17,8 @@ using Jalium.UI.Markup;
 [assembly: InternalsVisibleTo("ReactiveUI.Wpf")]
 [assembly: InternalsVisibleTo("Jalium.UI.Desktop")]
 [assembly: InternalsVisibleTo("Jalium.UI.Android")]
+[assembly: InternalsVisibleTo("Jalium.UI.MacOS")]
+[assembly: InternalsVisibleTo("Jalium.UI.MacOS.HostSmoke")]
 [assembly: InternalsVisibleTo("Jalium.UI.LinuxPortalSmoke")]
 
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI")]

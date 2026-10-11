@@ -49,7 +49,7 @@ public sealed class LinuxDragDropTests
 
         try
         {
-            LinuxDropTarget.ProcessEvent(window, new PlatformEvent
+            NativeDropTarget.ProcessEvent(window, new PlatformEvent
             {
                 Type = PlatformEventType.DragEnter,
                 DragSessionId = 42,
@@ -58,7 +58,7 @@ public sealed class LinuxDragDropTests
                 MouseX = 100,
                 MouseY = 100,
             });
-            LinuxDropTarget.ProcessEvent(window, new PlatformEvent
+            NativeDropTarget.ProcessEvent(window, new PlatformEvent
             {
                 Type = PlatformEventType.DragOver,
                 DragSessionId = 42,
@@ -67,7 +67,7 @@ public sealed class LinuxDragDropTests
                 MouseX = 100,
                 MouseY = 100,
             });
-            LinuxDropTarget.ProcessEvent(window, new PlatformEvent
+            NativeDropTarget.ProcessEvent(window, new PlatformEvent
             {
                 Type = PlatformEventType.Drop,
                 DragSessionId = 42,
@@ -81,7 +81,7 @@ public sealed class LinuxDragDropTests
         }
         finally
         {
-            LinuxDropTarget.RevokeWindow(window);
+            NativeDropTarget.RevokeWindow(window);
         }
 
         Assert.Equal(["preview-enter", "enter", "drop"], routed);
@@ -95,7 +95,7 @@ public sealed class LinuxDragDropTests
                          "file:///tmp/hello%20world.txt\r\n" +
                          "file:///home/user/%E4%B8%AD%E6%96%87.md\n";
 
-        string[] files = LinuxDropTarget.ParseUriList(uriList);
+        string[] files = NativeDropTarget.ParseUriList(uriList);
 
         Assert.Equal(2, files.Length);
         Assert.Equal("/tmp/hello world.txt", files[0]);
@@ -108,7 +108,7 @@ public sealed class LinuxDragDropTests
         byte[] payload = Encoding.UTF8.GetBytes(
             "file:///tmp/one.txt\r\nfile:///tmp/two%20words.txt\r\n");
 
-        DataObject data = LinuxDropTarget.CreateDataObject(
+        DataObject data = NativeDropTarget.CreateDataObject(
             ["text/uri-list", "text/plain;charset=utf-8"],
             "text/uri-list",
             payload);
@@ -130,7 +130,7 @@ public sealed class LinuxDragDropTests
         int allowed,
         int expected)
     {
-        DragDropEffects effect = LinuxDropTarget.SelectSingleEffect(
+        DragDropEffects effect = NativeDropTarget.SelectSingleEffect(
             DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link,
             (DragDropEffects)allowed,
             keyStates);

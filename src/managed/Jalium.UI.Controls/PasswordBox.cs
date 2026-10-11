@@ -77,6 +77,7 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
     private bool _isImeComposing;
     private string _imeCompositionString = string.Empty;
     private int _imeCompositionCursor;
+    private int _imeCompositionStart;
 
     #endregion
 
@@ -929,7 +930,7 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
             return;
 
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
-        var textBeforeCaret = GetDisplayText().Substring(0, Math.Min(_caretIndex, _password.Length));
+        var textBeforeCaret = GetDisplayText()[..Math.Clamp(_imeCompositionStart, 0, _password.Length)];
         var x = Math.Round(contentRect.X + MeasureDisplayTextWidth(textBeforeCaret) - roundedHorizontalOffset);
         var y = contentRect.Y;
 
@@ -1378,17 +1379,22 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
     private void HandleKeyDown(KeyEventArgs e)
     {
         var shift = e.IsShiftDown;
-        var ctrl = e.IsControlDown;
+        var editingKey = MacOSTextKeyBehavior.ResolveEditingKey(e);
+        var ctrl = e.IsControlDown && editingKey == e.Key;
+        var commandNavigation = MacOSTextKeyBehavior.IsCommandNavigation(e);
+        var optionWord = MacOSTextKeyBehavior.IsOptionWord(e);
 
-        switch (e.Key)
+        switch (editingKey)
         {
             case Key.Left:
-                HandleLeftKey(shift, ctrl);
+                if (commandNavigation) HandleHomeKey(shift);
+                else HandleLeftKey(shift, ctrl || optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Right:
-                HandleRightKey(shift, ctrl);
+                if (commandNavigation) HandleEndKey(shift);
+                else HandleRightKey(shift, ctrl || optionWord);
                 e.Handled = true;
                 break;
 
@@ -1402,13 +1408,23 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
                 e.Handled = true;
                 break;
 
+            case Key.Up when commandNavigation:
+                HandleHomeKey(shift);
+                e.Handled = true;
+                break;
+
+            case Key.Down when commandNavigation:
+                HandleEndKey(shift);
+                e.Handled = true;
+                break;
+
             case Key.Back:
-                HandleBackspace(ctrl);
+                HandleBackspace(ctrl || optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Delete:
-                HandleDelete(ctrl);
+                HandleDelete(ctrl || optionWord);
                 e.Handled = true;
                 break;
 
@@ -1943,6 +1959,12 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
     /// <inheritdoc />
     internal Rect GetImeCaretRectangle()
     {
+        if (_isImeComposing)
+        {
+            Rect caret = GetImeCompositionCaret(ImeTextEncoding.SnapToGraphemeBoundary(_imeCompositionString,
+                Math.Clamp(_imeCompositionCursor, 0, _imeCompositionString.Length), false), false);
+            return new Rect(caret.X, caret.Y, 1, caret.Height);
+        }
         Point bottom = GetCaretScreenPosition();
         double height = Math.Max(1, Math.Round(GetLineHeight()));
         return new Rect(bottom.X, bottom.Y - height, 1, height);
@@ -1964,15 +1986,57 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
     {
         var lineHeight = Math.Round(GetLineHeight());
         var displayText = GetDisplayText();
-        var textBeforeCaret = displayText.Substring(0, Math.Min(_caretIndex, displayText.Length));
+        int offset = Math.Clamp(_isImeComposing ? _imeCompositionStart : _caretIndex, 0, displayText.Length);
+        var textBeforeCaret = displayText[..offset];
         var border = BorderThickness;
         var padding = Padding;
         var contentHeight = Math.Max(0, RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom);
 
-        double x = padding.Left - _horizontalOffset + MeasureDisplayTextWidth(textBeforeCaret);
-        double y = padding.Top + GetVerticalContentOffset(contentHeight, lineHeight);
+        double x = Math.Round(border.Left + padding.Left + MeasureDisplayTextWidth(textBeforeCaret) - Math.Round(_horizontalOffset));
+        if (_isImeComposing && _imeCompositionCursor > 0)
+            x += MeasureDisplayTextWidth(_imeCompositionString[..Math.Min(_imeCompositionCursor, _imeCompositionString.Length)]);
+        double y = Math.Round(border.Top + padding.Top) + GetVerticalContentOffset(contentHeight, lineHeight);
 
         return new Point(x, y + lineHeight);
+    }
+
+    private Rect GetImeCompositionCaret(int index, bool trailing)
+    {
+        double height = Math.Max(1, Math.Round(GetLineHeight()));
+        var border = BorderThickness;
+        var padding = Padding;
+        double contentHeight = Math.Max(0, Math.Round(RenderSize.Height - border.TotalHeight - padding.TotalHeight));
+        string display = GetDisplayText();
+        double x = Math.Round(border.Left + padding.Left + MeasureDisplayTextWidth(
+            display[..Math.Clamp(_imeCompositionStart, 0, display.Length)]) - Math.Round(_horizontalOffset));
+        double y = Math.Round(border.Top + padding.Top) + GetVerticalContentOffset(contentHeight, height);
+        float width = (float)Math.Max(1, RenderSize.Width - border.TotalWidth - padding.TotalWidth);
+        return ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, new Point(x, y), height,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize,
+            400, 0, width, MeasureDisplayTextWidth);
+    }
+
+    bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
+    {
+        geometry = default;
+        return composition && _isImeComposing && ImeTextGeometry.TryGetFirstLineRange(_imeCompositionString,
+            start, length, GetImeCompositionCaret, out geometry);
+    }
+
+    bool IImeSupport.TryGetImeCharacterIndex(Point point, bool composition, out int index)
+    {
+        index = -1;
+        if (!composition || !_isImeComposing) return false;
+        var border = BorderThickness;
+        var padding = Padding;
+        var viewport = new Rect(border.Left + padding.Left, border.Top + padding.Top,
+            Math.Max(0, RenderSize.Width - border.TotalWidth - padding.TotalWidth),
+            Math.Max(0, RenderSize.Height - border.TotalHeight - padding.TotalHeight));
+        if (!viewport.Contains(point)) return false;
+        Rect caret = GetImeCompositionCaret(0, false);
+        return ImeTextGeometry.TryHitTest(_imeCompositionString, point, new Point(caret.X, caret.Y), caret.Height,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize,
+            400, 0, (float)Math.Max(1, viewport.Width), MeasureDisplayTextWidth, true, out index);
     }
 
     /// <inheritdoc />
@@ -1981,10 +2045,13 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
         _isImeComposing = true;
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
-
-        if (_selectionLength > 0)
+        _imeCompositionStart = _caretIndex;
+        if (OperatingSystem.IsMacOS())
+            _imeCompositionStart = _selectionLength > 0 ? _selectionStart : _caretIndex;
+        else if (_selectionLength > 0)
         {
             DeleteSelection();
+            _imeCompositionStart = _caretIndex;
         }
 
         InvalidateVisual();

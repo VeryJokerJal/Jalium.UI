@@ -1,4 +1,5 @@
 #include "metal_backend.h"
+#include "metal_text_paragraph.h"
 #include "metal_internal.h"
 #include "metal_shaders.h"
 #include "metal_shader_compiler.h"
@@ -6,6 +7,9 @@
 #include "jalium_impeller_stroke.h"
 #include "jalium_rendering_engine.h"
 #include "jalium_triangulate.h"
+#include "jalium_flatten.h"
+#include "jalium_path_cache.h"
+#include "jalium_scanline_rasterizer.h"
 
 #include <algorithm>
 #include <array>
@@ -41,9 +45,10 @@ namespace {
 constexpr uint32_t kFrameCount = 3;
 constexpr size_t kInitialVertexBytes = 4u * 1024u * 1024u;
 constexpr float kPi = 3.14159265358979323846f;
-constexpr size_t kClipCountParam = 208;
-constexpr size_t kClipBaseParam = 212;
-constexpr size_t kClipParamStride = 16;
+// Effects use [180, 507]. Keep clips disjoint even at maximum stack depth.
+constexpr size_t kClipCountParam = 508;
+constexpr size_t kClipBaseParam = 512;
+constexpr size_t kClipParamStride = 20;
 constexpr size_t kMaxShaderClips = 18;
 
 struct Matrix3x2 {
@@ -126,20 +131,150 @@ struct StrokeVertex {
     float r, g, b, a;
 };
 
+std::vector<Contour> BuildStrokeContours(const std::vector<Contour>& contours,
+    float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap,
+    const float* dashPattern, uint32_t dashCount, float dashOffset, float scale)
+{
+    std::vector<StrokeVertex> vertices;
+    std::vector<uint32_t> indices;
+    std::vector<Contour> outlines;
+    auto pointKey = [](float x, float y) {
+        uint32_t a, b;
+        std::memcpy(&a, &x, sizeof(a)); std::memcpy(&b, &y, sizeof(b));
+        return (uint64_t(a) << 32) | b;
+    };
+    const auto defaultCap = static_cast<ImpellerCap>(std::clamp(lineCap, 0, 3));
+    for (const auto& contour : contours) {
+        if (contour.VertexCount() < 2) continue;
+        std::vector<float> points = contour.points;
+        std::vector<uint8_t> flags = contour.segmentFlags;
+        flags.resize(points.size() / 2 - 1, 1);
+        const bool isClosed = contour.closed || (closed && contours.size() == 1);
+        if (isClosed && (points[0] != points[points.size() - 2] || points[1] != points.back())) {
+            points.push_back(points[0]); points.push_back(points[1]); flags.push_back(1);
+        }
+        const uint32_t count = static_cast<uint32_t>(points.size() / 2);
+        const auto startCap = contour.startCap < 0 ? defaultCap : static_cast<ImpellerCap>(contour.startCap);
+        const auto endCap = contour.endCap < 0 ? defaultCap : static_cast<ImpellerCap>(contour.endCap);
+        const auto dashCap = contour.dashCap < 0 ? defaultCap : static_cast<ImpellerCap>(contour.dashCap);
+        std::unordered_map<uint64_t, uint8_t> smooth;
+        for (uint32_t i = 0; i + 1 < count; ++i)
+            if (flags[i] & 2) smooth[pointKey(points[i * 2], points[i * 2 + 1])] = 3;
+        auto emit = [&](const std::vector<float>& polyline, bool subClosed,
+                        ImpellerCap first, ImpellerCap last) {
+            std::vector<uint8_t> joins(polyline.size() / 2, 1);
+            for (size_t i = 0; i < joins.size(); ++i)
+                if (smooth.count(pointKey(polyline[i * 2], polyline[i * 2 + 1]))) joins[i] = 3;
+            ExpandStrokePath(vertices, indices, polyline.data(), uint32_t(polyline.size() / 2), strokeWidth,
+                static_cast<ImpellerJoin>(std::clamp(lineJoin, 0, 2)),
+                std::isfinite(miterLimit) ? std::max(1.0f, miterLimit) : 10.0f,
+                dashCap, subClosed, 1, 1, 1, 1, &outlines, 1 / std::max(scale, 0.01f),
+                first, last, joins.data());
+        };
+        struct Run { std::vector<float> points; bool start, end, closed = false; double phase; };
+        std::vector<Run> runs;
+        double length = 0;
+        bool active = false;
+        for (uint32_t i = 0; i + 1 < count; ++i) {
+            const float x = points[i * 2], y = points[i * 2 + 1];
+            const float nx = points[i * 2 + 2], ny = points[i * 2 + 3];
+            if (flags[i] & 1) {
+                if (!active) {
+                    runs.push_back({{x, y}, !isClosed && i == 0, false, false, length});
+                    active = true;
+                }
+                runs.back().points.insert(runs.back().points.end(), {nx, ny});
+                runs.back().end = !isClosed && i + 2 == count;
+            } else active = false;
+            length += std::hypot(double(nx) - x, double(ny) - y);
+        }
+        if (isClosed && !runs.empty() && (flags.front() & 1) && (flags.back() & 1)) {
+            if (runs.size() == 1) runs[0].closed = true;
+            else {
+                Run seam = std::move(runs.back()); runs.pop_back();
+                seam.points.insert(seam.points.end(), runs[0].points.begin() + 2, runs[0].points.end());
+                runs[0] = std::move(seam);
+            }
+        }
+        for (const auto& run : runs) {
+            if (dashPattern && dashCount) {
+                struct Dash { std::vector<float> points; bool start, end; };
+                std::vector<Dash> dashes;
+                double cycle = 0;
+                for (uint32_t d = 0; d < dashCount; ++d) cycle += dashPattern[d];
+                if (dashCount % 2) cycle *= 2;
+                const float phase = cycle > 0 ? float(std::fmod(double(dashOffset) + run.phase, cycle)) : dashOffset;
+                WalkDashPattern(run.points.data(), uint32_t(run.points.size() / 2), dashPattern, dashCount, phase,
+                    [&](const float* sub, uint32_t n, bool first, bool last) {
+                        dashes.push_back({std::vector<float>(sub, sub + n * 2), first, last});
+                    });
+                if (run.closed && dashes.size() > 1 && dashes.front().start && dashes.back().end) {
+                    auto seam = std::move(dashes.back()); dashes.pop_back();
+                    seam.points.insert(seam.points.end(), dashes.front().points.begin() + 2, dashes.front().points.end());
+                    seam.start = seam.end = false;
+                    dashes.front() = std::move(seam);
+                }
+                for (const auto& dash : dashes)
+                    emit(dash.points, run.closed && dashes.size() == 1 && dash.start && dash.end,
+                        run.start && dash.start ? startCap : dashCap,
+                        run.end && dash.end ? endCap : dashCap);
+            } else emit(run.points, run.closed, run.start ? startCap : dashCap, run.end ? endCap : dashCap);
+        }
+    }
+    return outlines;
+}
+
+struct PathClipMask {
+    PixelRect bounds{};
+    std::vector<uint8_t> coverage;
+    id<MTLTexture> texture = nil;
+};
+
 struct ClipState {
     RectF localRect;
     RectF deviceRect;
     Matrix3x2 deviceToLocal;
     float radii[4] = {};
+    float radiiY[4] = {-1,-1,-1,-1};
+    uint32_t edges = 15;
     bool rounded = false;
     bool exclude = false;
     bool aliased = false;
+    std::shared_ptr<const PathClipMask> pathMask;
 };
 
 struct CapturedTexture {
     id<MTLTexture> texture = nil;
     RectF bounds;
 };
+
+struct CaptureStyle {
+    std::vector<ClipState> clips;
+    float opacity;
+};
+
+JaliumEllipticalRectClip RoundedContour(float x,float y,float w,float h,
+    float tl=0,float tr=0,float br=0,float bl=0)
+{
+    JaliumEllipticalRectClip c{};c.structSize=sizeof(c);c.edges=15;
+    c.x=x;c.y=y;c.width=w;c.height=h;
+    const float radii[]={tl,tr,br,bl};
+    for(size_t i=0;i<4;++i)c.radiusX[i]=c.radiusY[i]=std::max(radii[i],0.0f);
+    return c;
+}
+
+JaliumEllipticalRectClip InsetContour(JaliumEllipticalRectClip c,float spread)
+{
+    float ix=std::min(spread,c.width*0.5f),iy=std::min(spread,c.height*0.5f);
+    c.x+=ix;c.y+=iy;c.width=std::max(0.0f,c.width-2*ix);c.height=std::max(0.0f,c.height-2*iy);
+    auto radius=[spread](float r){
+        if(spread>=0)return std::max(r-spread,0.0f);
+        float expansion=-spread,ratio=r/expansion;
+        float t=ratio-1;return r+expansion*(r<expansion?1+t*t*t:1);
+    };
+    for(size_t i=0;i<4;++i){c.radiusX[i]=radius(c.radiusX[i]);c.radiusY[i]=radius(c.radiusY[i]);}
+    return c;
+}
 
 struct MetalRetainedLayer {
     id<MTLTexture> texture = nil;
@@ -219,6 +354,7 @@ struct MetalRenderTarget::Impl {
     std::unique_ptr<MetalVelloPipeline> vello;
     VelloSceneEncoder velloEncoder;
     bool flushingVello = false;
+    PathGeometryCache pathCache{256};
 
     struct FrameResources {
         id<MTLBuffer> vertices = nil;
@@ -228,9 +364,16 @@ struct MetalRenderTarget::Impl {
         NSMutableArray* transientHeaps = nil;
         NSMutableArray* transientResources = nil;
         NSMutableArray* gpuRetainedObjects = nil;
+        id<MTLTexture> pathMask = nil;
+        id<MTLTexture> pathMaskMsaa = nil;
+        id<MTLTexture> pathStencil = nil;
     } frames[kFrameCount];
     dispatch_semaphore_t inFlight = nullptr;
     id<MTLSharedEvent> completionEvent = nil;
+    bool commandDiagnostics = [] {
+        const char* setting = std::getenv("JALIUM_METAL_DIAGNOSTICS");
+        return setting && std::strcmp(setting, "1") == 0;
+    }();
     std::atomic<uint64_t> submittedEventValue{0};
     std::atomic<uint64_t> completedEventValue{0};
 
@@ -242,23 +385,47 @@ struct MetalRenderTarget::Impl {
     id<MTLRenderPipelineState> presentPipeline = nil;
     id<MTLRenderPipelineState> yuvPipeline = nil;
     id<MTLRenderPipelineState> effectPipeline = nil;
+    id<MTLRenderPipelineState> contourMaskPipeline = nil;
+    id<MTLRenderPipelineState> highlightPipeline = nil;
     id<MTLRenderPipelineState> transitionPipeline = nil;
     id<MTLRenderPipelineState> clipPipeline = nil;
+    id<MTLRenderPipelineState> pathMaskPipeline = nil;
     id<MTLComputePipelineState> blurPipeline = nil;
+    id<MTLDepthStencilState> defaultDepthStencilState = nil;
     id<MTLDepthStencilState> contentStencilState = nil;
     id<MTLDepthStencilState> clipStencilState = nil;
+    id<MTLDepthStencilState> pathParityState = nil;
+    id<MTLDepthStencilState> pathWindingState = nil;
+    id<MTLDepthStencilState> pathCoverState = nil;
     NSMutableDictionary<NSNumber*, id<MTLRenderPipelineState>>* customPipelines = nil;
+    NSMutableDictionary<NSNumber*, NSNumber*>* customConstantBytes = nil;
+    NSMutableDictionary<NSNumber*, NSNumber*>* failedCustomPipelines = nil;
+    JaliumResult lastShaderResult = JALIUM_OK;
     id<MTLSamplerState> linearSampler = nil;
     id<MTLSamplerState> nearestSampler = nil;
     id<MTLSamplerState> highQualitySampler = nil;
+    id<MTLTexture> whiteClipTexture = nil;
+    id<MTLBuffer> emptyGradientStops = nil;
+    struct GradientEntry {
+        std::vector<JaliumGradientStop> source;
+        id<MTLBuffer> buffer = nil;
+        uint64_t lastUse = 0;
+    };
+    mutable std::unordered_map<uint64_t, GradientEntry> gradientCache;
+    mutable size_t gradientCacheBytes = 0;
+    mutable uint64_t gradientClock = 0;
 
     id<MTLTexture> sceneTexture = nil;
     id<MTLTexture> msaaTexture = nil;
     id<MTLTexture> msaaBaselineTexture = nil;
+    // Private macOS MSAA storage survives encoder and frame boundaries.
+    // A target switch still needs to seed it from that target's resolved image.
+    id<MTLTexture> msaaContentsTarget = nil;
     id<MTLTexture> stencilTexture = nil;
     id<MTLTexture> currentTarget = nil;
     id<MTLCommandBuffer> commandBuffer = nil;
     id<MTLRenderCommandEncoder> encoder = nil;
+    bool encoderUsesStencil = false;
     FrameResources* frame = nullptr;
 
     std::vector<Matrix3x2> transforms{Matrix3x2{}};
@@ -266,7 +433,12 @@ struct MetalRenderTarget::Impl {
     std::vector<ClipState> clips;
     std::vector<RectF> dirtyRects;
     std::vector<std::pair<id<MTLTexture>, CapturedTexture>> captureStack;
+    std::vector<std::vector<ClipState>> retainedClipStack;
     std::vector<CapturedTexture> activeEffectCaptures;
+    std::vector<CaptureStyle> effectCaptureStyles;
+    std::vector<bool> effectCaptureAttempts;
+    std::vector<CaptureStyle> transitionCaptureStyles;
+    std::vector<int> activeTransitionSlots;
     CapturedTexture effectCapture;
     CapturedTexture transitionSlots[2];
     CapturedTexture desktopCapture;
@@ -358,7 +530,7 @@ struct MetalRenderTarget::Impl {
     }
 
     id<MTLTexture> NewPersistentTexture(uint32_t width, uint32_t height,
-        id<MTLHeap>* heapOut)
+        id<MTLHeap> __strong* heapOut)
     {
         if (!persistentHeaps) persistentHeaps = [NSMutableArray array];
         id<MTLTexture> texture = NewHeapTexture(persistentHeaps, nil, width, height);
@@ -373,6 +545,7 @@ struct MetalRenderTarget::Impl {
         if (corePath) {
             library = [device newLibraryWithURL:[NSURL fileURLWithPath:corePath]
                 error:&error];
+            if(library&&![library newFunctionWithName:@"jalium_core_abi_v5"])library=nil;
         }
         // Source trees and debugger-hosted native tests remain self-contained.
         // Formal packages always carry jalium_core.metallib and therefore do
@@ -383,15 +556,25 @@ struct MetalRenderTarget::Impl {
                 options:nil error:&error];
         }
         if (!library) return false;
+        const float emptyStop[5]{};
+        emptyGradientStops = [device newBufferWithBytes:emptyStop length:sizeof(emptyStop)
+            options:MTLResourceStorageModeShared];
+        whiteClipTexture = CreateTexture(device, 1, 1, MTLPixelFormatR8Unorm, MTLStorageModeShared);
+        const uint8_t white = 255;
+        [whiteClipTexture replaceRegion:MTLRegionMake2D(0,0,1,1) mipmapLevel:0
+            withBytes:&white bytesPerRow:1];
         id<MTLFunction> vertex = [library newFunctionWithName:@"jalium_vertex"];
         id<MTLFunction> shape = [library newFunctionWithName:@"jalium_shape_fragment"];
         id<MTLFunction> texture = [library newFunctionWithName:@"jalium_texture_fragment"];
         id<MTLFunction> yuv = [library newFunctionWithName:@"jalium_yuv_fragment"];
         id<MTLFunction> effect = [library newFunctionWithName:@"jalium_effect_fragment"];
+        id<MTLFunction> mask = [library newFunctionWithName:@"jalium_contour_mask_fragment"];
+        id<MTLFunction> highlight = [library newFunctionWithName:@"jalium_highlight_fragment"];
         id<MTLFunction> transition=[library newFunctionWithName:@"jalium_transition_fragment"];
         id<MTLFunction> clip = [library newFunctionWithName:@"jalium_clip_stencil_fragment"];
+        id<MTLFunction> pathMask = [library newFunctionWithName:@"jalium_path_mask_fragment"];
         id<MTLFunction> blur = [library newFunctionWithName:@"jalium_blur"];
-        if (!vertex || !shape || !texture || !yuv || !effect || !transition || !clip || !blur) return false;
+        if (!vertex || !shape || !texture || !yuv || !effect || !mask || !highlight || !transition || !clip || !blur || !pathMask) return false;
 
         auto createRenderPipeline = [&](id<MTLFunction> fragment, bool blending,
                                         bool usesStencil = true) {
@@ -407,12 +590,15 @@ struct MetalRenderTarget::Impl {
         };
         shapePipeline = createRenderPipeline(shape, true);
         shapeReplacePipeline = createRenderPipeline(shape, false);
+        pathMaskPipeline = createRenderPipeline(pathMask, true);
         texturePipeline = createRenderPipeline(texture, true);
         textureReplacePipeline = createRenderPipeline(texture, false);
         presentPipeline = createRenderPipeline(texture, false, false);
         yuvPipeline = createRenderPipeline(yuv, true);
         effectPipeline = createRenderPipeline(effect, true);
         transitionPipeline=createRenderPipeline(transition,true);
+        contourMaskPipeline=createRenderPipeline(mask,false);
+        highlightPipeline=createRenderPipeline(highlight,true);
         {
             MTLRenderPipelineDescriptor* descriptor = [MTLRenderPipelineDescriptor new];
             descriptor.vertexFunction = vertex;
@@ -425,6 +611,10 @@ struct MetalRenderTarget::Impl {
         }
         blurPipeline = [device newComputePipelineStateWithFunction:blur error:&error];
 
+        // Metal defines nil as the descriptor defaults. Use an explicit state:
+        // resetting to nil can hang even a clear-only pass on paravirtual GPUs.
+        defaultDepthStencilState = [device newDepthStencilStateWithDescriptor:
+            [MTLDepthStencilDescriptor new]];
         MTLStencilDescriptor* contentStencil = [MTLStencilDescriptor new];
         contentStencil.stencilCompareFunction = MTLCompareFunctionEqual;
         contentStencil.stencilFailureOperation = MTLStencilOperationKeep;
@@ -444,6 +634,20 @@ struct MetalRenderTarget::Impl {
         clipDepth.frontFaceStencil = clipStencil;
         clipDepth.backFaceStencil = clipStencil;
         clipStencilState = [device newDepthStencilStateWithDescriptor:clipDepth];
+        auto pathState = [&](MTLCompareFunction compare, MTLStencilOperation frontOp,
+                             MTLStencilOperation backOp) {
+            MTLDepthStencilDescriptor* descriptor = [MTLDepthStencilDescriptor new];
+            MTLStencilDescriptor* front = [MTLStencilDescriptor new];
+            front.stencilCompareFunction = compare;
+            front.depthStencilPassOperation = frontOp;
+            MTLStencilDescriptor* back = [front copy];
+            back.depthStencilPassOperation = backOp;
+            descriptor.frontFaceStencil = front; descriptor.backFaceStencil = back;
+            return [device newDepthStencilStateWithDescriptor:descriptor];
+        };
+        pathParityState = pathState(MTLCompareFunctionAlways, MTLStencilOperationInvert, MTLStencilOperationInvert);
+        pathWindingState = pathState(MTLCompareFunctionAlways, MTLStencilOperationIncrementWrap, MTLStencilOperationDecrementWrap);
+        pathCoverState = pathState(MTLCompareFunctionNotEqual, MTLStencilOperationKeep, MTLStencilOperationKeep);
 
         MTLSamplerDescriptor* sampler = [MTLSamplerDescriptor new];
         sampler.minFilter = MTLSamplerMinMagFilterLinear;
@@ -460,17 +664,21 @@ struct MetalRenderTarget::Impl {
         sampler.maxAnisotropy = 8;
         highQualitySampler = [device newSamplerStateWithDescriptor:sampler];
         customPipelines = [NSMutableDictionary dictionary];
+        customConstantBytes = [NSMutableDictionary dictionary];
+        failedCustomPipelines = [NSMutableDictionary dictionary];
         if(!persistentHeaps)persistentHeaps = [NSMutableArray array];
         if(!retirementCommands)retirementCommands = [NSMutableArray array];
         return shapePipeline && shapeReplacePipeline && texturePipeline &&
-            textureReplacePipeline && presentPipeline && yuvPipeline && effectPipeline && transitionPipeline &&
-            clipPipeline && blurPipeline && contentStencilState && clipStencilState &&
+            textureReplacePipeline && presentPipeline && yuvPipeline && effectPipeline && contourMaskPipeline && highlightPipeline && transitionPipeline &&
+            clipPipeline && blurPipeline && defaultDepthStencilState && contentStencilState && clipStencilState && pathMaskPipeline &&
+            pathParityState && pathWindingState && pathCoverState &&
             linearSampler && nearestSampler && highQualitySampler;
     }
 
-    id<MTLRenderPipelineState> CustomPipeline(const char* hlsl)
+    id<MTLRenderPipelineState> CustomPipeline(const char* hlsl,uint32_t& requiredBytes)
     {
-        if(!hlsl||!*hlsl)return nil;
+        requiredBytes=0;lastShaderResult=JALIUM_OK;
+        if(!hlsl||!*hlsl){lastShaderResult=JALIUM_ERROR_INVALID_ARGUMENT;return nil;}
         uint64_t hash=Fnv1a64(hlsl,std::strlen(hlsl));
 #ifdef JALIUM_METAL_SHADER_CACHE_ABI
         constexpr const char* cacheAbi=JALIUM_METAL_SHADER_CACHE_ABI;
@@ -482,8 +690,18 @@ struct MetalRenderTarget::Impl {
         const char* deviceName=device.name.UTF8String;if(deviceName)
             hash=Fnv1a64(deviceName,std::strlen(deviceName),hash);
         NSNumber* key=@(hash);
-        id<MTLRenderPipelineState> cached=customPipelines[key];if(cached)return cached;
+        id<MTLRenderPipelineState> cached=customPipelines[key];
+        if(cached){requiredBytes=customConstantBytes[key].unsignedIntValue;return cached;}
+        if(failedCustomPipelines[key]){lastShaderResult=static_cast<JaliumResult>(
+            failedCustomPipelines[key].unsignedIntValue);return nil;}
         std::string msl,entry,errorText;
+        auto failed=[&](){
+            lastShaderResult=errorText.find("not linked")!=std::string::npos?
+                JALIUM_ERROR_NOT_SUPPORTED:JALIUM_ERROR_INVALID_ARGUMENT;
+            failedCustomPipelines[key]=@(lastShaderResult);
+            NSLog(@"Jalium Metal pixel shader: %s",errorText.c_str());
+            return static_cast<id<MTLRenderPipelineState>>(nil);
+        };
         NSString* cacheDirectory=nil;NSArray<NSString*>* roots=NSSearchPathForDirectoriesInDomains(
             NSCachesDirectory,NSUserDomainMask,YES);
         if(roots.count){cacheDirectory=[roots[0] stringByAppendingPathComponent:
@@ -496,23 +714,25 @@ struct MetalRenderTarget::Impl {
         if(cachePath){NSString* cachedSource=[NSString stringWithContentsOfFile:cachePath
                 encoding:NSUTF8StringEncoding error:nil];
             if(cachedSource.length){msl=cachedSource.UTF8String;entry="jalium_custom_fragment";
-                loadedFromDisk=true;}}
-        if(msl.empty()&&!CompileMetalPixelShader(hlsl,msl,entry,errorText))return nil;
+                loadedFromDisk=std::sscanf(msl.c_str(),"// JaliumConstantBytes=%u",&requiredBytes)==1;
+                if(!loadedFromDisk)msl.clear();}}
+        if(msl.empty()&&!CompileMetalPixelShader(hlsl,msl,entry,errorText,&requiredBytes))return failed();
         NSError* error=nil;
         auto makeLibrary=[&](){return [device newLibraryWithSource:
             [NSString stringWithUTF8String:msl.c_str()] options:nil error:&error];};
         id<MTLLibrary> custom=makeLibrary();
         if(!custom&&loadedFromDisk){[NSFileManager.defaultManager removeItemAtPath:cachePath error:nil];
             msl.clear();entry.clear();errorText.clear();
-            if(!CompileMetalPixelShader(hlsl,msl,entry,errorText))return nil;
+            if(!CompileMetalPixelShader(hlsl,msl,entry,errorText,&requiredBytes))return failed();
             error=nil;custom=makeLibrary();loadedFromDisk=false;}
-        if(!custom)return nil;
-        if(cachePath&&!loadedFromDisk&&!msl.empty())[[NSString stringWithUTF8String:msl.c_str()]
+        if(!custom){errorText=error.localizedDescription.UTF8String?:"MSL compilation failed";return failed();}
+        std::string cacheSource="// JaliumConstantBytes="+std::to_string(requiredBytes)+"\n"+msl;
+        if(cachePath&&!loadedFromDisk&&!msl.empty())[[NSString stringWithUTF8String:cacheSource.c_str()]
             writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
         id<MTLFunction> fragment=[custom newFunctionWithName:
             [NSString stringWithUTF8String:entry.c_str()]];
         id<MTLFunction> vertex=[library newFunctionWithName:@"jalium_vertex"];
-        if(!fragment||!vertex)return nil;
+        if(!fragment||!vertex){errorText="shader entry point missing";return failed();}
         MTLRenderPipelineDescriptor* descriptor=[MTLRenderPipelineDescriptor new];
         descriptor.vertexFunction=vertex;descriptor.fragmentFunction=fragment;
         descriptor.colorAttachments[0].pixelFormat=MTLPixelFormatBGRA8Unorm;
@@ -520,7 +740,8 @@ struct MetalRenderTarget::Impl {
         descriptor.rasterSampleCount=pathMsaa;
         ConfigurePremultipliedBlend(descriptor.colorAttachments[0]);
         id<MTLRenderPipelineState> pipeline=[device newRenderPipelineStateWithDescriptor:descriptor error:&error];
-        if(pipeline)customPipelines[key]=pipeline;return pipeline;
+        if(!pipeline){errorText=error.localizedDescription.UTF8String?:"pixel shader pipeline creation failed";return failed();}
+        customPipelines[key]=pipeline;customConstantBytes[key]=@(requiredBytes);return pipeline;
     }
 
     Matrix3x2 DeviceTransform() const
@@ -542,6 +763,7 @@ struct MetalRenderTarget::Impl {
                 msaaBaselineTexture && msaaBaselineTexture.width == pixelWidth &&
                 msaaBaselineTexture.height == pixelHeight)))
             return true;
+        msaaContentsTarget = nil;
         sceneTexture = CreateTexture(device, pixelWidth, pixelHeight);
         if(pathMsaa>1){MTLTextureDescriptor* multisample=[MTLTextureDescriptor new];
             multisample.textureType=MTLTextureType2DMultisample;
@@ -577,6 +799,31 @@ struct MetalRenderTarget::Impl {
     void EndEncoder()
     {
         if (encoder) { [encoder endEncoding]; encoder = nil; }
+        encoderUsesStencil = false;
+    }
+
+    void WillChangeClip()
+    {
+        FlushVello();
+        // Built-in fragments evaluate the complete small clip stack directly.
+        // Keep their encoder open; deep stacks and custom shaders use stencil.
+        if (encoderUsesStencil || clips.size() >= kMaxShaderClips) EndEncoder();
+    }
+
+    void UpdateClipScissor()
+    {
+        MTLScissorRect scissor = CurrentScissor();
+        velloEncoder.SetScissor(static_cast<float>(scissor.x), static_cast<float>(scissor.y),
+            static_cast<float>(scissor.x + scissor.width),
+            static_cast<float>(scissor.y + scissor.height));
+        if (encoder && scissor.width && scissor.height) [encoder setScissorRect:scissor];
+    }
+
+    void ApplyContentStencil(id<MTLRenderCommandEncoder> targetEncoder)
+    {
+        [targetEncoder setDepthStencilState:encoderUsesStencil ? contentStencilState : defaultDepthStencilState];
+        if (encoderUsesStencil) [targetEncoder setStencilReferenceValue:static_cast<uint32_t>(
+            std::min<size_t>(clips.size(), 255))];
     }
 
     void EncodeStencilStack(id<MTLRenderCommandEncoder> targetEncoder)
@@ -606,6 +853,8 @@ struct MetalRenderTarget::Impl {
             p[base + 13] = clip.radii[3];
             p[base + 14] = static_cast<float>(1u |
                 (clip.exclude ? 2u : 0u) | (clip.aliased ? 4u : 0u));
+            for(size_t j=0;j<4;++j)p[base+15+j]=clip.radiiY[j]>=0?clip.radiiY[j]:clip.radii[j];
+            p[base+19]=static_cast<float>(clip.edges);
 
             std::vector<MetalVertex> vertices;
             if (clip.exclude) {
@@ -620,10 +869,16 @@ struct MetalRenderTarget::Impl {
             NSUInteger offset = 0;
             if (!UploadVertices(vertices.data(), vertices.size(), offset)) return;
             [targetEncoder setRenderPipelineState:clipPipeline];
+            if (clip.pathMask) {
+                p[30] = 1; p[31] = clip.pathMask->bounds.x; p[32] = clip.pathMask->bounds.y;
+                p[33] = clip.pathMask->bounds.w; p[34] = clip.pathMask->bounds.h;
+            }
+            [targetEncoder setFragmentTexture:clip.pathMask && clip.pathMask->texture
+                ? clip.pathMask->texture : whiteClipTexture atIndex:30];
             [targetEncoder setDepthStencilState:clipStencilState];
             [targetEncoder setStencilReferenceValue:static_cast<uint32_t>(i)];
             [targetEncoder setVertexBuffer:frame->vertices offset:offset atIndex:0];
-            [targetEncoder setVertexBytes:p.data() length:p.size()*sizeof(float) atIndex:1];
+            [targetEncoder setVertexBytes:p.data() length:2 * sizeof(float) atIndex:1];
             [targetEncoder setFragmentBytes:p.data() length:p.size()*sizeof(float) atIndex:0];
             [targetEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
                 vertexCount:static_cast<NSUInteger>(vertices.size())];
@@ -634,7 +889,7 @@ struct MetalRenderTarget::Impl {
     {
         float left = 0, top = 0, right = static_cast<float>(pixelWidth),
             bottom = static_cast<float>(pixelHeight);
-        if (!fullInvalidation && !dirtyRects.empty()) {
+        if (currentTarget == sceneTexture && !fullInvalidation && !dirtyRects.empty()) {
             left = std::numeric_limits<float>::infinity();
             top = std::numeric_limits<float>::infinity();
             right = -std::numeric_limits<float>::infinity();
@@ -656,21 +911,33 @@ struct MetalRenderTarget::Impl {
         top = std::clamp(top, 0.0f, static_cast<float>(pixelHeight));
         right = std::clamp(right, left, static_cast<float>(pixelWidth));
         bottom = std::clamp(bottom, top, static_cast<float>(pixelHeight));
-        return MTLScissorRect{static_cast<NSUInteger>(std::floor(left)),
-            static_cast<NSUInteger>(std::floor(top)),
-            static_cast<NSUInteger>(std::ceil(right - left)),
-            static_cast<NSUInteger>(std::ceil(bottom - top))};
+        const NSUInteger x = static_cast<NSUInteger>(std::floor(left));
+        const NSUInteger y = static_cast<NSUInteger>(std::floor(top));
+        // Round both edges outwards; ceil(right - left) drops the last pixel
+        // when a damage or clip rectangle begins at a fractional coordinate.
+        return MTLScissorRect{x, y,
+            right > left ? static_cast<NSUInteger>(std::ceil(right)) - x : 0,
+            bottom > top ? static_cast<NSUInteger>(std::ceil(bottom)) - y : 0};
     }
 
     id<MTLRenderCommandEncoder> EnsureEncoder(bool clear = false,
-        MTLClearColor color = MTLClearColorMake(0, 0, 0, 0))
+        MTLClearColor color = MTLClearColorMake(0, 0, 0, 0), bool requireStencil = false)
     {
         if (!flushingVello && vello && vello->IsReady() &&
             velloEncoder.HasWork()) FlushVello();
-        if (encoder && !clear) return encoder;
+        if (!clear) {
+            MTLScissorRect scissor = CurrentScissor();
+            if (!scissor.width || !scissor.height) return nil;
+        }
+        if (encoder && !clear && (!requireStencil || encoderUsesStencil)) return encoder;
         EndEncoder();
         if (!commandBuffer || !currentTarget) return nil;
-        if(pathMsaa>1&&!clear){
+        bool preserveMsaa = false;
+#if TARGET_OS_OSX
+        preserveMsaa = pathMsaa > 1 && !clear && msaaContentsTarget == currentTarget;
+#endif
+        const bool seedMsaa = pathMsaa > 1 && !clear && !preserveMsaa;
+        if(seedMsaa){
             id<MTLBlitCommandEncoder> baselineBlit=[commandBuffer blitCommandEncoder];
             if(!baselineBlit)return nil;
             [baselineBlit copyFromTexture:currentTarget sourceSlice:0 sourceLevel:0
@@ -683,19 +950,28 @@ struct MetalRenderTarget::Impl {
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = pathMsaa>1?msaaTexture:currentTarget;
         pass.colorAttachments[0].resolveTexture = pathMsaa>1?currentTarget:nil;
-        pass.colorAttachments[0].loadAction = pathMsaa>1?MTLLoadActionClear:
+        pass.colorAttachments[0].loadAction = pathMsaa>1?
+            (preserveMsaa ? MTLLoadActionLoad : MTLLoadActionClear):
             (clear ? MTLLoadActionClear : MTLLoadActionLoad);
+#if TARGET_OS_OSX
+        pass.colorAttachments[0].storeAction = pathMsaa>1?
+            MTLStoreActionStoreAndMultisampleResolve:MTLStoreActionStore;
+#else
         pass.colorAttachments[0].storeAction = pathMsaa>1?
             MTLStoreActionMultisampleResolve:MTLStoreActionStore;
+#endif
         pass.colorAttachments[0].clearColor = color;
         pass.stencilAttachment.texture = stencilTexture;
         pass.stencilAttachment.loadAction = MTLLoadActionClear;
         pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
         pass.stencilAttachment.clearStencil = 0;
         encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+        [encoder setFragmentTexture:whiteClipTexture atIndex:30];
         if (encoder) {
-            encoder.label = @"Jalium Metal 2D";
-            if(pathMsaa>1&&!clear){
+            encoder.label = @"Jalium scene or effect";
+            encoderUsesStencil = requireStencil || clips.size() > kMaxShaderClips;
+            if (pathMsaa > 1) msaaContentsTarget = currentTarget;
+            if(seedMsaa){
                 MTLScissorRect full{0,0,pixelWidth,pixelHeight};[encoder setScissorRect:full];
                 MetalShaderParams baseline{};baseline[0]=(float)pixelWidth;
                 baseline[1]=(float)pixelHeight;baseline[17]=1;
@@ -703,7 +979,7 @@ struct MetalRenderTarget::Impl {
                 NSUInteger offset=0;if(UploadVertices(vertices.data(),vertices.size(),offset)){
                     [encoder setRenderPipelineState:textureReplacePipeline];
                     [encoder setVertexBuffer:frame->vertices offset:offset atIndex:0];
-                    [encoder setVertexBytes:baseline.data() length:baseline.size()*sizeof(float) atIndex:1];
+                    [encoder setVertexBytes:baseline.data() length:2 * sizeof(float) atIndex:1];
                     [encoder setFragmentBytes:baseline.data() length:baseline.size()*sizeof(float) atIndex:0];
                     [encoder setFragmentTexture:msaaBaselineTexture atIndex:0];
                     [encoder setFragmentSamplerState:nearestSampler atIndex:0];
@@ -714,10 +990,8 @@ struct MetalRenderTarget::Impl {
             MTLScissorRect scissor = CurrentScissor();
             if (scissor.width > 0 && scissor.height > 0)
                 [encoder setScissorRect:scissor];
-            EncodeStencilStack(encoder);
-            [encoder setDepthStencilState:contentStencilState];
-            [encoder setStencilReferenceValue:static_cast<uint32_t>(
-                std::min<size_t>(clips.size(), 255))];
+            if (encoderUsesStencil) EncodeStencilStack(encoder);
+            ApplyContentStencil(encoder);
         }
         return encoder;
     }
@@ -742,11 +1016,46 @@ struct MetalRenderTarget::Impl {
         offsetOut = static_cast<NSUInteger>(frame->offset);
         std::memcpy(static_cast<uint8_t*>(frame->vertices.contents) + frame->offset,
             vertices, bytes);
-#if TARGET_OS_OSX
-        [frame->vertices didModifyRange:NSMakeRange(frame->offset, bytes)];
-#endif
         frame->offset += bytes;
         return true;
+    }
+
+    id<MTLBuffer> GradientStops(const std::vector<JaliumGradientStop>& stops) const
+    {
+        if (stops.empty()) return emptyGradientStops;
+        const size_t bytes = stops.size() * sizeof(JaliumGradientStop);
+        const uint64_t key = Fnv1a64(stops.data(), bytes);
+        auto found = gradientCache.find(key);
+        if (found != gradientCache.end() && found->second.source.size() == stops.size() &&
+            std::memcmp(found->second.source.data(), stops.data(), bytes) == 0) {
+            found->second.lastUse = ++gradientClock;
+            return found->second.buffer;
+        }
+        auto sorted = stops;
+        std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+            return a.position < b.position;
+        });
+        std::vector<float> values;
+        values.reserve(stops.size() * 5);
+        for (const auto& stop : sorted)
+            values.insert(values.end(), {stop.position,stop.r,stop.g,stop.b,stop.a});
+        id<MTLBuffer> buffer = [device newBufferWithBytes:values.data()
+            length:values.size()*sizeof(float) options:MTLResourceStorageModeShared];
+        if (!buffer || bytes > 64u*1024u) return buffer;
+        if (found != gradientCache.end()) {
+            gradientCacheBytes -= found->second.source.size()*sizeof(JaliumGradientStop);
+            gradientCache.erase(found);
+        }
+        gradientCache.emplace(key, GradientEntry{stops,buffer,++gradientClock});
+        gradientCacheBytes += bytes;
+        while (gradientCache.size() > 128 || gradientCacheBytes > 4u*1024u*1024u) {
+            auto victim = gradientCache.begin();
+            for (auto it = gradientCache.begin(); it != gradientCache.end(); ++it)
+                if (it->second.lastUse < victim->second.lastUse) victim = it;
+            gradientCacheBytes -= victim->second.source.size()*sizeof(JaliumGradientStop);
+            gradientCache.erase(victim);
+        }
+        return buffer;
     }
 
     void PopulateBrush(MetalShaderParams& p, Brush* brush) const
@@ -771,16 +1080,8 @@ struct MetalRenderTarget::Impl {
         }
         if (!stops) return;
         p[44] = static_cast<float>(spread);
-        uint32_t count = std::min<uint32_t>(static_cast<uint32_t>(stops->size()), 32);
-        p[45] = static_cast<float>(count);
-        for (uint32_t i = 0; i < count; ++i) {
-            size_t base = 48 + static_cast<size_t>(i) * 5;
-            p[base] = (*stops)[i].position;
-            p[base + 1] = (*stops)[i].r;
-            p[base + 2] = (*stops)[i].g;
-            p[base + 3] = (*stops)[i].b;
-            p[base + 4] = (*stops)[i].a;
-        }
+        p.gradientStops = GradientStops(*stops);
+        p[45] = p.gradientStops ? static_cast<float>(stops->size()) : 0;
     }
 
     MetalShaderParams Params(Brush* brush, uint32_t primitive) const
@@ -792,6 +1093,10 @@ struct MetalRenderTarget::Impl {
         if (!Invert(DeviceTransform(), inverse)) inverse = {};
         p[20] = inverse.m11; p[21] = inverse.m12; p[22] = inverse.m21;
         p[23] = inverse.m22; p[24] = inverse.dx; p[25] = inverse.dy;
+        if (auto mask = CurrentPathClip()) {
+            p[30] = 1; p[31] = mask->bounds.x; p[32] = mask->bounds.y;
+            p[33] = mask->bounds.w; p[34] = mask->bounds.h;
+        }
         const size_t clipCount = std::min(clips.size(), kMaxShaderClips);
         p[kClipCountParam] = static_cast<float>(clipCount);
         // Keep the innermost clips when an adversarial tree exceeds the shader
@@ -818,9 +1123,26 @@ struct MetalRenderTarget::Impl {
             uint32_t mode = 1u | (clip.exclude ? 2u : 0u) |
                 (clip.aliased ? 4u : 0u);
             p[base + 14] = static_cast<float>(mode);
+            for(size_t j=0;j<4;++j)p[base+15+j]=clip.radiiY[j]>=0?clip.radiiY[j]:clip.radii[j];
+            p[base+19]=static_cast<float>(clip.edges);
         }
         PopulateBrush(p, brush);
         return p;
+    }
+
+    std::shared_ptr<const PathClipMask> CurrentPathClip() const
+    {
+        for (auto clip = clips.rbegin(); clip != clips.rend(); ++clip)
+            if (clip->pathMask) return clip->pathMask;
+        return {};
+    }
+
+    void BindPathClip(id<MTLRenderCommandEncoder> targetEncoder)
+    {
+        auto mask = CurrentPathClip();
+        id<MTLTexture> texture = mask && mask->texture ? mask->texture : whiteClipTexture;
+        [targetEncoder setFragmentTexture:texture atIndex:30];
+        if (frame && mask) [frame->gpuRetainedObjects addObject:texture];
     }
 
     bool Draw(const std::vector<MetalVertex>& vertices,
@@ -828,17 +1150,30 @@ struct MetalRenderTarget::Impl {
         id<MTLTexture> texture = nil, id<MTLSamplerState> sampler = nil)
     {
         if (vertices.empty() || !pipeline) return false;
+        const MTLScissorRect scissor = CurrentScissor();
+        if (scissor.width == 0 || scissor.height == 0) return false;
+        float left = vertices.front().x, right = left;
+        float top = vertices.front().y, bottom = top;
+        for (const MetalVertex& vertex : vertices) {
+            left = std::min(left, vertex.x); right = std::max(right, vertex.x);
+            top = std::min(top, vertex.y); bottom = std::max(bottom, vertex.y);
+        }
+        if (right <= scissor.x || bottom <= scissor.y ||
+            left >= scissor.x + scissor.width || top >= scissor.y + scissor.height)
+            return false;
         id<MTLRenderCommandEncoder> e = EnsureEncoder();
         if (!e) return false;
         NSUInteger offset = 0;
         if (!UploadVertices(vertices.data(), vertices.size(), offset)) return false;
         [e setRenderPipelineState:pipeline];
-        [e setDepthStencilState:contentStencilState];
-        [e setStencilReferenceValue:static_cast<uint32_t>(
-            std::min<size_t>(clips.size(), 255))];
+        ApplyContentStencil(e);
         [e setVertexBuffer:frame->vertices offset:offset atIndex:0];
-        [e setVertexBytes:params.data() length:params.size() * sizeof(float) atIndex:1];
+        [e setVertexBytes:params.data() length:2 * sizeof(float) atIndex:1];
         [e setFragmentBytes:params.data() length:params.size() * sizeof(float) atIndex:0];
+        id<MTLBuffer> stops = params.gradientStops ?: emptyGradientStops;
+        [e setFragmentBuffer:stops offset:0 atIndex:1];
+        if (frame && stops) [frame->gpuRetainedObjects addObject:stops];
+        BindPathClip(e);
         if (texture) {
             [e setFragmentTexture:texture atIndex:0];
             if(frame&&frame->gpuRetainedObjects)[frame->gpuRetainedObjects addObject:texture];
@@ -867,6 +1202,247 @@ struct MetalRenderTarget::Impl {
     {
         return {{x,y,u0,v0},{x+w,y,u1,v0},{x+w,y+h,u1,v1},
                 {x,y,u0,v0},{x+w,y+h,u1,v1},{x,y+h,u0,v1}};
+    }
+
+    std::shared_ptr<const CachedPathGeometry> PathContours(float startX, float startY,
+        const float* commands, uint32_t length)
+    {
+        if (!std::isfinite(startX) || !std::isfinite(startY)) return {};
+        for (uint32_t i = 0; i < length;) {
+            const float tag = commands[i];
+            uint32_t size = tag == 0 || tag == 2 ? 3 : tag == 1 ? 7 :
+                tag == 3 ? 5 : tag == 4 ? 8 : tag == 5 ? 1 : tag == 6 || tag == 8 ? 2 : tag == 7 ? 4 : 0;
+            if (!size || size > length - i) return {};
+            for (uint32_t j = 1; j < size; ++j)
+                if (!std::isfinite(commands[i + j])) return {};
+            if (tag == 6 || tag == 7 || tag == 8)
+                for (uint32_t j = 1; j < size; ++j)
+                    if (commands[i + j] < 0 || commands[i + j] > 3 ||
+                        commands[i + j] != std::floor(commands[i + j])) return {};
+            i += size;
+        }
+        const auto t = DeviceTransform();
+        const float scale = MaxScaleFromMatrix(t.m11, t.m12, t.m21, t.m22);
+        if (!(scale > 0) || !std::isfinite(scale)) return {};
+        const uint32_t bucket = ScaleBucketFromMaxScale(scale);
+        const uint64_t key = HashPathInput(startX, startY, commands, length, 0, bucket);
+        if (auto cached = pathCache.FindAndTouch(key)) return cached->entry;
+        // Use the upper edge of the scale bucket, so a cache hit never loosens
+        // the promised device-pixel curve error under animation or rotation.
+        const float upperScale = std::exp2((static_cast<int32_t>(bucket) + 0.5f) * 0.25f);
+        auto geometry = std::make_shared<CachedPathGeometry>();
+        geometry->contours = FlattenPathToContours(startX, startY, commands, length,
+            std::max(1e-6f, 0.125f / upperScale));
+        size_t coordinates = 0;
+        for (const auto& c : geometry->contours) coordinates += c.points.size();
+        // Bound entry count and payloads (64 MiB of coordinates plus metadata).
+        if (coordinates <= 65536) pathCache.Insert(key, geometry);
+        return geometry;
+    }
+
+    static bool StencilWindingFits(const std::vector<Contour>& contours)
+    {
+        // Stencil8 winding wraps at 256. Bound the possible final winding by
+        // the number of upward edges active at any y; overflow takes the exact
+        // integer scanline route instead. Downward counts equal upward counts
+        // after implicit closure, including self-intersecting contours.
+        std::vector<std::pair<float, int>> events;
+        for (const auto& contour : contours) {
+            const uint32_t n = contour.VertexCount();
+            if (n < 3) continue;
+            for (uint32_t i = 0; i < n; ++i) {
+                float a = contour.Y(i), b = contour.Y((i + 1) % n);
+                if (a < b) { events.emplace_back(a, 1); events.emplace_back(b, -1); }
+            }
+        }
+        std::sort(events.begin(), events.end()); // removals precede additions
+        int count = 0;
+        for (const auto& event : events) {
+            count += event.second;
+            if (count >= 256) return false;
+        }
+        return true;
+    }
+
+    bool FillStencilContours(const std::vector<Contour>& contours, Brush* brush,
+        FillRule rule, const PixelRect& bounds)
+    {
+        if (!frame || !commandBuffer || !pathMaskPipeline || !bounds.w || !bounds.h) return false;
+        const uint32_t w = (static_cast<uint32_t>(bounds.w) + 31) & ~31u;
+        const uint32_t h = (static_cast<uint32_t>(bounds.h) + 31) & ~31u;
+        if (!frame->pathMask || frame->pathMask.width < w || frame->pathMask.height < h ||
+            frame->pathStencil.sampleCount != pathMsaa) {
+            frame->pathMask = CreateTexture(device, w, h);
+            auto create = [&](MTLPixelFormat format) {
+                MTLTextureDescriptor* descriptor = [MTLTextureDescriptor
+                    texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
+                descriptor.textureType = MTLTextureType2DMultisample;
+                descriptor.sampleCount = pathMsaa;
+                descriptor.storageMode = MTLStorageModePrivate;
+                descriptor.usage = MTLTextureUsageRenderTarget;
+                return [device newTextureWithDescriptor:descriptor];
+            };
+            frame->pathMaskMsaa = create(MTLPixelFormatBGRA8Unorm);
+            frame->pathStencil = create(MTLPixelFormatStencil8);
+        }
+        if (!frame->pathMask || !frame->pathMaskMsaa || !frame->pathStencil) return false;
+        EndEncoder();
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = frame->pathMaskMsaa;
+        pass.colorAttachments[0].resolveTexture = frame->pathMask;
+        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+        pass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+        pass.stencilAttachment.texture = frame->pathStencil;
+        pass.stencilAttachment.loadAction = MTLLoadActionClear;
+        pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+        pass.stencilAttachment.clearStencil = 0;
+        id<MTLRenderCommandEncoder> maskEncoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+        if (!maskEncoder) return false;
+        [maskEncoder setFragmentTexture:whiteClipTexture atIndex:30];
+        [maskEncoder setFragmentBuffer:emptyGradientStops offset:0 atIndex:1];
+        MetalShaderParams params{};
+        params[0] = frame->pathMask.width; params[1] = frame->pathMask.height;
+        params[4] = params[5] = params[6] = params[7] = params[17] = 1;
+        params[20] = params[23] = 1;
+        std::vector<MetalVertex> fans;
+        // One signed fan per contour. A single anchor for every edge works for
+        // holes, intersecting siblings and self-intersections without ear cuts.
+        for (const auto& contour : contours) {
+            const auto n = contour.VertexCount();
+            if (n < 3) continue;
+            MetalVertex anchor{contour.X(0) - bounds.x, contour.Y(0) - bounds.y, 0, 0};
+            for (uint32_t i = 1; i + 1 < n; ++i) {
+                fans.push_back(anchor);
+                fans.push_back({contour.X(i) - bounds.x, contour.Y(i) - bounds.y, 0, 0});
+                fans.push_back({contour.X(i + 1) - bounds.x, contour.Y(i + 1) - bounds.y, 0, 0});
+            }
+        }
+        auto encode = [&](const std::vector<MetalVertex>& vertices,
+                          id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> state) {
+            NSUInteger offset = 0;
+            if (!UploadVertices(vertices.data(), vertices.size(), offset)) return;
+            [maskEncoder setRenderPipelineState:pipeline];
+            [maskEncoder setDepthStencilState:state];
+            [maskEncoder setStencilReferenceValue:0];
+            [maskEncoder setVertexBuffer:frame->vertices offset:offset atIndex:0];
+            [maskEncoder setVertexBytes:params.data() length:2 * sizeof(float) atIndex:1];
+            [maskEncoder setFragmentBytes:params.data() length:params.size() * sizeof(float) atIndex:0];
+            [maskEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:vertices.size()];
+        };
+        encode(fans, clipPipeline, rule == FillRule::EvenOdd ? pathParityState : pathWindingState);
+        encode(DeviceQuad(0, 0, bounds.w, bounds.h), shapeReplacePipeline, pathCoverState);
+        [maskEncoder endEncoding];
+        // The independent mask pass never changes the target's clip stencil.
+        // EnsureEncoder restores deep clips, dirty scissoring and capture state.
+        auto quad = DeviceQuad(bounds.x, bounds.y, bounds.w, bounds.h, 0, 0,
+            float(bounds.w) / frame->pathMask.width, float(bounds.h) / frame->pathMask.height);
+        auto colorParams = Params(brush, 0);
+        return Draw(quad, pathMaskPipeline, colorParams, frame->pathMask, nearestSampler);
+    }
+
+    void FillContours(const std::vector<Contour>& source, Brush* brush,
+        FillRule rule, int32_t edgeMode = -1)
+    {
+        if (!drawing || !brush || source.empty()) return;
+        FlushVello();
+        const MTLScissorRect scissor = CurrentScissor();
+        if (!scissor.width || !scissor.height) return;
+        const auto transform = DeviceTransform();
+        std::vector<Contour> contours = source;
+        float minX = INFINITY, minY = INFINITY, maxX = -INFINITY, maxY = -INFINITY;
+        for (auto& contour : contours) {
+            for (size_t i = 0; i + 1 < contour.points.size(); i += 2) {
+                float x, y;
+                Transform(transform, contour.points[i], contour.points[i + 1], x, y);
+                if (!std::isfinite(x) || !std::isfinite(y)) return;
+                contour.points[i] = x; contour.points[i + 1] = y;
+                minX = std::min(minX, x); minY = std::min(minY, y);
+                maxX = std::max(maxX, x); maxY = std::max(maxY, y);
+            }
+        }
+        const PixelRect bounds{static_cast<int>(scissor.x), static_cast<int>(scissor.y),
+            static_cast<int>(scissor.width), static_cast<int>(scissor.height), 1};
+        minX = std::max(minX, float(bounds.x)); minY = std::max(minY, float(bounds.y));
+        maxX = std::min(maxX, float(bounds.x + bounds.w)); maxY = std::min(maxY, float(bounds.y + bounds.h));
+        if (!(minX < maxX) || !(minY < maxY)) return;
+        if (edgeMode != 1 && edgeMode != 2 && pathMsaa > 1 &&
+            !PreferAnalyticFill(maxX - minX, maxY - minY) &&
+            (rule == FillRule::EvenOdd || StencilWindingFits(contours))) {
+            const int left = static_cast<int>(std::floor(minX));
+            const int top = static_cast<int>(std::floor(minY));
+            PixelRect maskBounds{left, top, int(std::ceil(maxX)) - left, int(std::ceil(maxY)) - top, 1};
+            if (FillStencilContours(contours, brush, rule, maskBounds)) return;
+        }
+        std::vector<PixelRect> coverage;
+        RasterizePathToRects(contours, rule, coverage, &bounds, edgeMode == 1);
+        std::vector<MetalVertex> vertices;
+        vertices.reserve(coverage.size() * 6);
+        for (const auto& rect : coverage) {
+            auto quad = DeviceQuad(rect.x, rect.y, rect.w, rect.h,
+                rect.alpha, 0, rect.alpha, 0);
+            vertices.insert(vertices.end(), quad.begin(), quad.end());
+        }
+        auto params = Params(brush, 0);
+        params[26] = 1;
+        Draw(vertices, shapePipeline, params);
+    }
+
+    JaliumResult PushContourClip(const std::vector<Contour>& source, FillRule rule, int32_t edgeMode)
+    {
+    auto contours = source;
+    const auto transform = DeviceTransform();
+    float left = float(pixelWidth), top = float(pixelHeight), right = 0, bottom = 0;
+    for (auto& contour : contours) for (size_t i = 0; i + 1 < contour.points.size(); i += 2) {
+        float x, y; Transform(transform, contour.points[i], contour.points[i + 1], x, y);
+        if (!std::isfinite(x) || !std::isfinite(y)) return JALIUM_ERROR_INVALID_ARGUMENT;
+        contour.points[i] = x; contour.points[i + 1] = y;
+        left = std::min(left, x); top = std::min(top, y);
+        right = std::max(right, x); bottom = std::max(bottom, y);
+    }
+    auto previous = CurrentPathClip();
+    left = std::max(left, 0.0f); top = std::max(top, 0.0f);
+    right = std::min(right, float(pixelWidth)); bottom = std::min(bottom, float(pixelHeight));
+    if (previous) {
+        left = std::max(left, float(previous->bounds.x)); top = std::max(top, float(previous->bounds.y));
+        right = std::min(right, float(previous->bounds.x + previous->bounds.w));
+        bottom = std::min(bottom, float(previous->bounds.y + previous->bounds.h));
+    }
+    auto mask = std::make_shared<PathClipMask>();
+    if (left < right && top < bottom) {
+        mask->bounds = {int(std::floor(left)), int(std::floor(top)),
+            int(std::ceil(right)) - int(std::floor(left)), int(std::ceil(bottom)) - int(std::floor(top)), 1};
+        std::vector<PixelRect> rects;
+        RasterizePathToRects(contours, rule, rects, &mask->bounds, edgeMode == 1);
+        mask->coverage.resize(size_t(mask->bounds.w) * mask->bounds.h);
+        for (const auto& rect : rects) {
+            const uint8_t alpha = uint8_t(std::clamp(std::lround(rect.alpha * 255), 0l, 255l));
+            for (int y = rect.y; y < rect.y + rect.h; ++y)
+                std::fill_n(mask->coverage.data() + size_t(y - mask->bounds.y) * mask->bounds.w + rect.x - mask->bounds.x,
+                    rect.w, alpha);
+        }
+        if (previous) for (int y = 0; y < mask->bounds.h; ++y) for (int x = 0; x < mask->bounds.w; ++x) {
+            const int px = x + mask->bounds.x - previous->bounds.x;
+            const int py = y + mask->bounds.y - previous->bounds.y;
+            auto& alpha = mask->coverage[size_t(y) * mask->bounds.w + x];
+            alpha = uint8_t((uint32_t(alpha) * previous->coverage[size_t(py) * previous->bounds.w + px] + 127) / 255);
+        }
+        MTLStorageMode storage = MTLStorageModeShared;
+#if TARGET_OS_OSX
+        if (!device.hasUnifiedMemory) storage = MTLStorageModeManaged;
+#endif
+        mask->texture = CreateTexture(device, mask->bounds.w, mask->bounds.h, MTLPixelFormatR8Unorm, storage);
+        if (!mask->texture) return JALIUM_ERROR_OUT_OF_MEMORY;
+        [mask->texture replaceRegion:MTLRegionMake2D(0, 0, mask->bounds.w, mask->bounds.h) mipmapLevel:0
+            withBytes:mask->coverage.data() bytesPerRow:mask->bounds.w];
+    }
+    WillChangeClip();
+    ClipState clip;
+    clip.localRect = clip.deviceRect = {float(mask->bounds.x), float(mask->bounds.y),
+        float(mask->bounds.w), float(mask->bounds.h)};
+    clip.aliased = true; clip.pathMask = mask;
+    clips.push_back(std::move(clip)); UpdateClipScissor();
+    return JALIUM_OK;
     }
 
     void DrawShape(float x, float y, float w, float h, const float radii[4],
@@ -967,41 +1543,123 @@ struct MetalRenderTarget::Impl {
         Draw(DeviceQuad(x, y, w, h), texturePipeline, p, texture, nearestSampler);
     }
 
-    id<MTLTexture> Blur(id<MTLTexture> source, float radius,
-        float requestedSigma = 0.0f, uint32_t blurType = JALIUM_BACKDROP_BLUR_GAUSSIAN)
+    static RectF Inflate(RectF bounds,float amount)
     {
-        if (!source || radius <= 0.01f || !commandBuffer) return source;
+        return {bounds.x-amount,bounds.y-amount,
+            bounds.width+2*amount,bounds.height+2*amount};
+    }
+
+    static uint32_t BlurPasses(float radius)
+    {
+        return static_cast<uint32_t>(std::clamp(std::ceil(
+            (radius/32.0f)*(radius/32.0f)),1.0f,16.0f));
+    }
+
+    static float BlurSupport(float radius)
+    {
+        if(radius<=0.01f)return 0;
+        uint32_t passes=BlurPasses(radius);
+        return passes*static_cast<int>(std::min(radius/std::sqrt(float(passes)),32.0f));
+    }
+
+    struct BlurredTexture {
+        id<MTLTexture> texture;
+        int originX=0,originY=0;
+    };
+
+    BlurredTexture Blur(id<MTLTexture> source, float radius,
+        float requestedSigma = 0.0f, uint32_t blurType = JALIUM_BACKDROP_BLUR_GAUSSIAN,
+        bool transparentBorder = false,const RectF* sampledBounds = nullptr)
+    {
+        if (!source || radius <= 0.01f || !commandBuffer) return {source};
         EndEncoder();
-        id<MTLTexture> temp = NewTransientTexture(
-            static_cast<uint32_t>(source.width), static_cast<uint32_t>(source.height));
-        id<MTLTexture> output = NewTransientTexture(
-            static_cast<uint32_t>(source.width), static_cast<uint32_t>(source.height));
-        if (!temp || !output) return source;
         float sigma = requestedSigma > 0.0f ? requestedSigma :
             (blurType == JALIUM_BACKDROP_BLUR_BOX
                 ? radius / std::sqrt(3.0f) : radius / 3.0f);
-        uint32_t passes=std::clamp<uint32_t>(static_cast<uint32_t>(
-            std::ceil((radius/32.0f)*(radius/32.0f))),1,16);
+        uint32_t passes=BlurPasses(radius);
         float passRadius=std::min(radius/std::sqrt(static_cast<float>(passes)),32.0f);
-        float params[8] = {passRadius, 1.0f,
+        float params[151] = {passRadius, 1.0f,
             std::max(sigma/std::sqrt(static_cast<float>(passes)), 0.5f),
             blurType == JALIUM_BACKDROP_BLUR_FROSTED ? 1.0f : 0.0f,
-            static_cast<float>(blurType),0,0,0};
-        auto dispatch = [&](id<MTLTexture> input, id<MTLTexture> destination) {
+            static_cast<float>(blurType),transparentBorder?1.0f:0.0f,0,0};
+        int kernelRadius=static_cast<int>(passRadius);
+        float kernelSigma=std::max(params[2],std::max(kernelRadius/3.0f,0.5f));
+        float weightSum=0;
+        for(int i=-kernelRadius;i<=kernelRadius;++i){
+            float weight=blurType==JALIUM_BACKDROP_BLUR_BOX?1.0f:
+                std::exp(-float(i*i)/(2*kernelSigma*kernelSigma));
+            params[52+i]=weight;weightSum+=weight;
+        }
+        params[10]=1/std::max(weightSum,1e-6f);
+        int pairs=0;
+        for(int i=-kernelRadius;i<=kernelRadius;i+=2){
+            float left=params[52+i],right=i<kernelRadius?params[53+i]:0;
+            float weight=left+right;
+            params[85+pairs]=i+right/std::max(weight,1e-6f);
+            params[118+pairs]=weight;++pairs;
+        }
+        params[17]=pairs;
+
+        struct Region {int left,top,right,bottom;};
+        const int width=static_cast<int>(source.width),height=static_cast<int>(source.height);
+        params[13]=width;params[14]=height;
+        std::vector<Region> regions(passes*2,{0,0,width,height});
+        if(sampledBounds){
+            // Linear sampling also reads the adjacent texel. Work backwards
+            // through every separable pass so each intermediate includes the
+            // exact halo consumed by the next pass, including frosted jitter.
+            Region region{
+                static_cast<int>(std::clamp(std::floor(sampledBounds->x)-1,0.0f,float(width-1))),
+                static_cast<int>(std::clamp(std::floor(sampledBounds->y)-1,0.0f,float(height-1))),
+                static_cast<int>(std::clamp(std::ceil(sampledBounds->x+sampledBounds->width)+1,1.0f,float(width))),
+                static_cast<int>(std::clamp(std::ceil(sampledBounds->y+sampledBounds->height)+1,1.0f,float(height)))};
+            region.right=std::max(region.right,region.left+1);
+            region.bottom=std::max(region.bottom,region.top+1);
+            const int jitter=blurType==JALIUM_BACKDROP_BLUR_FROSTED?1:0;
+            for(int step=static_cast<int>(regions.size())-1;step>=0;--step){
+                regions[step]=region;
+                int hx=step%2==0?kernelRadius:jitter;
+                int hy=step%2==0?jitter:kernelRadius;
+                region={std::max(0,region.left-hx),std::max(0,region.top-hy),
+                    std::min(width,region.right+hx),std::min(height,region.bottom+hy)};
+            }
+        }
+        const Region storage=regions.front();
+        const uint32_t storageWidth=storage.right-storage.left,storageHeight=storage.bottom-storage.top;
+        auto temp=NewTransientTexture(storageWidth,storageHeight);
+        auto output=NewTransientTexture(storageWidth,storageHeight);
+        if(!temp||!output)return {source};
+        params[15]=storage.left;params[16]=storage.top;
+        if(sampledBounds){
+            // Shadow compositing can sample outside the computed region.
+            // Clear untouched texels once, not before every compute pass.
+            MTLRenderPassDescriptor* clear=[MTLRenderPassDescriptor renderPassDescriptor];
+            clear.colorAttachments[0].texture=output;
+            clear.colorAttachments[0].loadAction=MTLLoadActionClear;
+            clear.colorAttachments[0].storeAction=MTLStoreActionStore;
+            clear.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);
+            auto clearEncoder=[commandBuffer renderCommandEncoderWithDescriptor:clear];
+            [clearEncoder endEncoding];
+        }
+        auto dispatch = [&](id<MTLTexture> input, id<MTLTexture> destination,uint32_t step) {
+            const auto& region=regions[step];
+            params[6]=region.left;params[7]=region.top;
+            params[8]=region.right-region.left;params[9]=region.bottom-region.top;
+            params[11]=step==0?0:storage.left;params[12]=step==0?0:storage.top;
             id<MTLComputeCommandEncoder> compute = [commandBuffer computeCommandEncoder];
             [compute setComputePipelineState:blurPipeline];
             [compute setTexture:input atIndex:0]; [compute setTexture:destination atIndex:1];
             [compute setBytes:params length:sizeof(params) atIndex:0];
-            MTLSize threads = MTLSizeMake(8, 8, 1);
-            MTLSize groups = MTLSizeMake((destination.width + 7) / 8,
-                (destination.height + 7) / 8, 1);
+            MTLSize threads = MTLSizeMake(32, 8, 1);
+            MTLSize groups = MTLSizeMake((static_cast<uint32_t>(params[8]) + 31) / 32,
+                (static_cast<uint32_t>(params[9]) + 7) / 8, 1);
             [compute dispatchThreadgroups:groups threadsPerThreadgroup:threads];
             [compute endEncoding];
         };
         id<MTLTexture> input=source;
-        for(uint32_t pass=0;pass<passes;++pass){params[1]=1;dispatch(input,temp);
-            params[1]=0;dispatch(temp,output);input=output;}
-        return output;
+        for(uint32_t pass=0;pass<passes;++pass){params[1]=1;dispatch(input,temp,pass*2);
+            params[1]=0;dispatch(temp,output,pass*2+1);input=output;}
+        return {output,storage.left,storage.top};
     }
 
     CapturedTexture Snapshot(RectF bounds)
@@ -1031,6 +1689,127 @@ struct MetalRenderTarget::Impl {
             effectCapture.bounds.y+uvOffsetY*dpiY/96.0f,
             output.width,output.height};
     }
+
+    float EffectScale() const
+    {
+        auto m=DeviceTransform();
+        return 0.5f*(std::hypot(m.m11,m.m12)+std::hypot(m.m21,m.m22));
+    }
+
+    static void SetContour(MetalShaderParams& p,const JaliumEllipticalRectClip& c,
+        size_t base=420)
+    {
+        p[base]=c.x;p[base+1]=c.y;p[base+2]=c.width;p[base+3]=c.height;
+        for(size_t i=0;i<4;++i){p[base+4+i]=c.radiusX[i];p[base+8+i]=c.radiusY[i];}
+        p[base+12]=static_cast<float>(c.edges);
+    }
+
+    // Captures retain screen-space pixels. Derive UVs from each transformed
+    // vertex so a rotated element is not rotated a second time when sampled.
+    std::vector<MetalVertex> EffectQuad(float x,float y,float w,float h,
+        id<MTLTexture> texture,RectF source,float originX=0,float originY=0) const
+    {
+        auto vertices=Quad(x,y,w,h);
+        RectF destination=TransformBounds(DeviceTransform(),x,y,w,h);
+        for(auto& v:vertices){
+            v.u=(source.x-originX+(v.x-destination.x)*source.width/std::max(destination.width,1e-6f))/texture.width;
+            v.v=(source.y-originY+(v.y-destination.y)*source.height/std::max(destination.height,1e-6f))/texture.height;
+        }
+        return vertices;
+    }
+
+    void CompositeEffectSource(float x,float y,float w,float h,float uvX=0,float uvY=0)
+    {
+        if(!effectCapture.texture)return;
+        auto p=Params(nullptr,0);
+        Draw(EffectQuad(x,y,w,h,effectCapture.texture,EffectSource(x,y,w,h,uvX,uvY)),
+            texturePipeline,p,effectCapture.texture,linearSampler);
+    }
+
+    id<MTLTexture> EffectPass(id<MTLTexture> source,MetalShaderParams p,
+        id<MTLRenderPipelineState> pipeline,const std::vector<MetalVertex>& vertices)
+    {
+        FlushVello();EndEncoder();
+        id<MTLTexture> result=NewTransientTexture(pixelWidth,pixelHeight);
+        if(!result)return nil;
+        auto previous=currentTarget;auto savedClips=std::move(clips);clips.clear();
+        currentTarget=result;p[17]=1;p[kClipCountParam]=0;p[30]=0;
+        EnsureEncoder(true,MTLClearColorMake(0,0,0,0));
+        bool ok=Draw(vertices,pipeline,p,source,linearSampler);
+        EndEncoder();currentTarget=previous;clips=std::move(savedClips);UpdateClipScissor();
+        return ok?result:nil;
+    }
+
+    id<MTLTexture> ContourMask(const JaliumEllipticalRectClip& contour,bool inverted)
+    {
+        auto p=Params(nullptr,0);SetContour(p,contour);p[180]=inverted?1:0;
+        return EffectPass(nil,p,contourMaskPipeline,
+            DeviceQuad(0,0,static_cast<float>(pixelWidth),static_cast<float>(pixelHeight)));
+    }
+
+    id<MTLTexture> CropEffectInput()
+    {
+        if(!effectCapture.texture)return nil;
+        EndEncoder();RectF bounds=effectCapture.bounds;
+        int left=static_cast<int>(std::floor(bounds.x)),top=static_cast<int>(std::floor(bounds.y));
+        int width=static_cast<int>(std::ceil(bounds.x+bounds.width))-left;
+        int height=static_cast<int>(std::ceil(bounds.y+bounds.height))-top;
+        if(width<=0||height<=0||width>16384||height>16384)return nil;
+        auto input=NewTransientTexture(width,height);if(!input)return nil;
+        MTLRenderPassDescriptor* clear=[MTLRenderPassDescriptor renderPassDescriptor];
+        clear.colorAttachments[0].texture=input;clear.colorAttachments[0].loadAction=MTLLoadActionClear;
+        clear.colorAttachments[0].storeAction=MTLStoreActionStore;
+        clear.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);
+        auto clearEncoder=[commandBuffer renderCommandEncoderWithDescriptor:clear];[clearEncoder endEncoding];
+        int sx=std::max(left,0),sy=std::max(top,0);
+        int sw=std::min(left+width,static_cast<int>(pixelWidth))-sx;
+        int sh=std::min(top+height,static_cast<int>(pixelHeight))-sy;
+        if(sw>0&&sh>0){auto blit=[commandBuffer blitCommandEncoder];
+            [blit copyFromTexture:effectCapture.texture sourceSlice:0 sourceLevel:0
+                sourceOrigin:MTLOriginMake(sx,sy,0) sourceSize:MTLSizeMake(sw,sh,1)
+                toTexture:input destinationSlice:0 destinationLevel:0
+                destinationOrigin:MTLOriginMake(sx-left,sy-top,0)];[blit endEncoding];}
+        return input;
+    }
+
+    bool PaintShadow(const JaliumEllipticalRectClip& contour,float blur,
+        float ox,float oy,float r,float g,float b,float a,
+        const JaliumEllipticalRectClip* constraint=nullptr,bool inner=false)
+    {
+        if(a<=0||(!inner&&(contour.width<=0||contour.height<=0)))return true;
+        auto shifted=contour;shifted.x+=ox;shifted.y+=oy;
+        id<MTLTexture> mask=ContourMask(shifted,inner);
+        if(!mask)return false;
+        float radius=blur*EffectScale();
+        RectF sampled=inner&&constraint?
+            TransformBounds(DeviceTransform(),constraint->x,constraint->y,constraint->width,constraint->height):
+            Inflate(TransformBounds(DeviceTransform(),shifted.x,shifted.y,shifted.width,shifted.height),
+                BlurSupport(radius)+2);
+        auto blurred=Blur(mask,radius,0,JALIUM_BACKDROP_BLUR_GAUSSIAN,!inner,&sampled);
+        mask=blurred.texture;
+        auto p=Params(nullptr,0);p[180]=5;p[181]=r;p[182]=g;p[183]=b;p[184]=a;
+        if(constraint){SetContour(p,*constraint);p[185]=inner?1:2;}
+        return Draw(DeviceQuad(0,0,static_cast<float>(pixelWidth),static_cast<float>(pixelHeight),
+            -float(blurred.originX)/mask.width,-float(blurred.originY)/mask.height,
+            float(pixelWidth-blurred.originX)/mask.width,float(pixelHeight-blurred.originY)/mask.height),
+            effectPipeline,p,mask,linearSampler);
+    }
+
+    bool PaintAlphaShadow(float blur,float ox,float oy,float r,float g,float b,float a)
+    {
+        if(!effectCapture.texture)return false;
+        if(a<=0)return true;
+        float radius=blur*EffectScale();
+        RectF sampled=Inflate(effectCapture.bounds,BlurSupport(radius)+2);
+        auto blurred=Blur(effectCapture.texture,radius,0,JALIUM_BACKDROP_BLUR_GAUSSIAN,true,&sampled);
+        auto mask=blurred.texture;
+        auto m=DeviceTransform();float dx=m.m11*ox+m.m21*oy,dy=m.m12*ox+m.m22*oy;
+        auto p=Params(nullptr,0);p[180]=5;p[181]=r;p[182]=g;p[183]=b;p[184]=a;
+        return Draw(DeviceQuad(0,0,static_cast<float>(pixelWidth),static_cast<float>(pixelHeight),
+            (-dx-blurred.originX)/mask.width,(-dy-blurred.originY)/mask.height,
+            (pixelWidth-dx-blurred.originX)/mask.width,(pixelHeight-dy-blurred.originY)/mask.height),
+            effectPipeline,p,mask,linearSampler);
+    }
 };
 
 MetalRenderTarget::MetalRenderTarget(MetalBackend* backend, int32_t width,
@@ -1046,13 +1825,23 @@ MetalRenderTarget::~MetalRenderTarget()
 {
     if (!impl_) return;
     impl_->EndEncoder();
-    if (impl_->commandBuffer) { [impl_->commandBuffer commit]; [impl_->commandBuffer waitUntilCompleted]; }
+    if (impl_->commandBuffer) {
+        [impl_->commandBuffer commit];
+        [impl_->commandBuffer waitUntilCompleted];
+        // An unfinished BeginDraw consumed a slot without installing EndDraw's
+        // completion handler. Return it before waiting for submitted frames.
+        if (impl_->drawing && impl_->inFlight)
+            dispatch_semaphore_signal(impl_->inFlight);
+    }
     for (uint32_t i = 0; i < kFrameCount; ++i) {
         if (impl_->inFlight)
             dispatch_semaphore_wait(impl_->inFlight, DISPATCH_TIME_FOREVER);
     }
     for(id<MTLCommandBuffer> command in impl_->retirementCommands)
         [command waitUntilCompleted];
+    // libdispatch requires the original semaphore count at destruction.
+    for (uint32_t i = 0; impl_->inFlight && i < kFrameCount; ++i)
+        dispatch_semaphore_signal(impl_->inFlight);
 }
 
 bool MetalRenderTarget::Initialize(void* nativeHandle)
@@ -1142,10 +1931,10 @@ JaliumResult MetalRenderTarget::Resize(int32_t width, int32_t height)
     if (width <= 0 || height <= 0) return JALIUM_ERROR_INVALID_ARGUMENT;
     if (impl_->drawing) return JALIUM_ERROR_INVALID_STATE;
     width_ = width; height_ = height;
-    impl_->pixelWidth = std::max(1u, static_cast<uint32_t>(
-        std::ceil(width * impl_->dpiX / 96.0f)));
-    impl_->pixelHeight = std::max(1u, static_cast<uint32_t>(
-        std::ceil(height * impl_->dpiY / 96.0f)));
+    // The render-target ABI takes physical pixels. DPI scales drawing
+    // coordinates in DeviceTransform, never the swap-chain dimensions.
+    impl_->pixelWidth = static_cast<uint32_t>(width);
+    impl_->pixelHeight = static_cast<uint32_t>(height);
     impl_->layer.drawableSize = CGSizeMake(impl_->pixelWidth, impl_->pixelHeight);
 #if !TARGET_OS_OSX
     impl_->layer.frame = ((UIView*)impl_->hostView).bounds;
@@ -1183,7 +1972,13 @@ JaliumResult MetalRenderTarget::BeginDraw()
     [impl_->frame->retiredBuffers removeAllObjects];
     [impl_->frame->transientResources removeAllObjects];
     [impl_->frame->gpuRetainedObjects removeAllObjects];
-    impl_->commandBuffer = [impl_->queue commandBuffer];
+    if (impl_->commandDiagnostics) {
+        MTLCommandBufferDescriptor* descriptor = [MTLCommandBufferDescriptor new];
+        descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+        impl_->commandBuffer = [impl_->queue commandBufferWithDescriptor:descriptor];
+    } else {
+        impl_->commandBuffer = [impl_->queue commandBuffer];
+    }
     if (!impl_->commandBuffer) {
         dispatch_semaphore_signal(impl_->inFlight);
         return JALIUM_ERROR_DEVICE_LOST;
@@ -1215,6 +2010,7 @@ JaliumResult MetalRenderTarget::EndDraw()
                 options:MTLResourceStorageModeShared];
             if (impl_->readbackBuffer) {
                 id<MTLBlitCommandEncoder> blit = [impl_->commandBuffer blitCommandEncoder];
+                blit.label = @"Jalium readback copy";
                 [blit copyFromTexture:impl_->sceneTexture sourceSlice:0 sourceLevel:0
                     sourceOrigin:MTLOriginMake(0, 0, 0)
                     sourceSize:MTLSizeMake(impl_->pixelWidth, impl_->pixelHeight, 1)
@@ -1230,7 +2026,15 @@ JaliumResult MetalRenderTarget::EndDraw()
         }
     }
 
-    id<CAMetalDrawable> drawable = [impl_->layer nextDrawable];
+    id<CAMetalDrawable> drawable = nil;
+#if TARGET_OS_OSX
+    // Offscreen/readback targets can use a view which has no window. Such a
+    // layer has no display destination; keep scene rendering and GPU retirement
+    // independent of WindowServer drawable acquisition. Recheck each frame so
+    // attaching or detaching the same view changes presentation immediately.
+    if (((NSView*)impl_->hostView).window != nil)
+#endif
+        drawable = [impl_->layer nextDrawable];
     if (drawable) {
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable.texture;
@@ -1238,6 +2042,7 @@ JaliumResult MetalRenderTarget::EndDraw()
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         id<MTLRenderCommandEncoder> present =
             [impl_->commandBuffer renderCommandEncoderWithDescriptor:pass];
+        present.label = @"Jalium presentation";
         MetalShaderParams p{};
         p[0] = static_cast<float>(impl_->pixelWidth);
         p[1] = static_cast<float>(impl_->pixelHeight);
@@ -1252,7 +2057,7 @@ JaliumResult MetalRenderTarget::EndDraw()
         if (impl_->UploadVertices(quad.data(), quad.size(), offset)) {
             [present setRenderPipelineState:impl_->presentPipeline];
             [present setVertexBuffer:impl_->frame->vertices offset:offset atIndex:0];
-            [present setVertexBytes:p.data() length:p.size() * sizeof(float) atIndex:1];
+            [present setVertexBytes:p.data() length:2 * sizeof(float) atIndex:1];
             [present setFragmentBytes:p.data() length:p.size() * sizeof(float) atIndex:0];
             [present setFragmentTexture:impl_->sceneTexture atIndex:0];
             [present setFragmentSamplerState:impl_->linearSampler atIndex:0];
@@ -1271,8 +2076,17 @@ JaliumResult MetalRenderTarget::EndDraw()
     std::atomic<int64_t>* gpuNs = &impl_->lastGpuNs;
     std::atomic<uint64_t>* completedValue = &impl_->completedEventValue;
     [impl_->commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-        if (completed.status == MTLCommandBufferStatusError)
+        if (completed.status == MTLCommandBufferStatusError) {
             backend->NoteDeviceError(static_cast<int64_t>(completed.error.code));
+            NSLog(@"Jalium Metal command failed: domain=%@ code=%ld description=%@",
+                completed.error.domain, static_cast<long>(completed.error.code),
+                completed.error.localizedDescription);
+            for (id<MTLCommandBufferEncoderInfo> info in
+                 completed.error.userInfo[MTLCommandBufferEncoderInfoErrorKey]) {
+                NSLog(@"Jalium Metal encoder: label=%@ state=%ld signposts=%@",
+                    info.label, static_cast<long>(info.errorState), info.debugSignposts);
+            }
+        }
         if (completed.GPUEndTime >= completed.GPUStartTime)
             gpuNs->store(static_cast<int64_t>((completed.GPUEndTime - completed.GPUStartTime) * 1e9),
                 std::memory_order_release);
@@ -1303,17 +2117,17 @@ void MetalRenderTarget::Clear(float r, float g, float b, float a)
     // region. Clear damage with a replace-blended GPU quad instead.
     MetalSolidBrush clearBrush(r, g, b, a);
     MetalShaderParams p = impl_->Params(&clearBrush, 0);
-    for (const RectF& dirty : impl_->dirtyRects) {
-        RectF clipped{
-            std::max(dirty.x, 0.0f), std::max(dirty.y, 0.0f),
-            std::min(dirty.x + dirty.width, static_cast<float>(impl_->pixelWidth)) -
-                std::max(dirty.x, 0.0f),
-            std::min(dirty.y + dirty.height, static_cast<float>(impl_->pixelHeight)) -
-                std::max(dirty.y, 0.0f)};
-        if (clipped.width <= 0 || clipped.height <= 0) continue;
-        impl_->Draw(Impl::DeviceQuad(clipped.x, clipped.y, clipped.width,
-            clipped.height), impl_->shapeReplacePipeline, p);
-    }
+    // Drawing replays the bounding damage scissor. Replace every pixel in that
+    // same region, including gaps and fractional edge samples, before replay;
+    // otherwise translucent effects accumulate at MSAA edges or between rects.
+    const MTLScissorRect damage = impl_->CurrentScissor();
+    p[17] = 1.0f;
+    p[kClipCountParam] = 0.0f;
+    p[30] = 0;
+    if (damage.width && damage.height)
+        impl_->Draw(Impl::DeviceQuad(static_cast<float>(damage.x),
+            static_cast<float>(damage.y),static_cast<float>(damage.width),
+            static_cast<float>(damage.height)),impl_->shapeReplacePipeline,p);
 }
 
 void MetalRenderTarget::FillRectangle(float x, float y, float w, float h,
@@ -1427,75 +2241,55 @@ void MetalRenderTarget::FillPolygon(const float* points, uint32_t pointCount,
     Brush* brush, int32_t fillRule)
 {
     if (!impl_->drawing || !points || pointCount < 3 || !brush) return;
-    if(impl_->activeEngine==JALIUM_ENGINE_VELLO&&impl_->vello&&impl_->vello->IsReady()){
+    for (size_t i=0;i<size_t(pointCount)*2;++i) if (!std::isfinite(points[i])) return;
+    if(impl_->activeEngine==JALIUM_ENGINE_VELLO&&impl_->vello&&impl_->vello->IsReady()&&
+        dynamic_cast<MetalSolidBrush*>(brush)){
         impl_->velloEncoder.EncodeFillPolygon(points,pointCount,impl_->EngineBrush(brush),
             fillRule==0?FillRule::EvenOdd:FillRule::NonZero,impl_->VelloTransform(),impl_->opacity);
         return;
     }
-    std::vector<uint32_t> indices;
-    if (!TriangulatePolygonRobust(points, pointCount, indices)) return;
-    Matrix3x2 transform = impl_->DeviceTransform();
-    std::vector<MetalVertex> vertices;
-    vertices.reserve(indices.size());
-    for (uint32_t index : indices) {
-        MetalVertex vertex{};
-        Transform(transform, points[index * 2], points[index * 2 + 1],
-            vertex.x, vertex.y);
-        vertices.push_back(vertex);
-    }
-    MetalShaderParams params = impl_->Params(brush, 0);
-    impl_->Draw(vertices, impl_->shapePipeline, params);
-    (void)fillRule;
+    Contour contour;
+    contour.points.assign(points, points + static_cast<size_t>(pointCount) * 2);
+    contour.closed = true;
+    impl_->FillContours({contour}, brush, fillRule == 0 ? FillRule::EvenOdd : FillRule::NonZero);
 }
 
 void MetalRenderTarget::DrawPolygon(const float* points, uint32_t pointCount,
     Brush* brush, float strokeWidth, bool closed, int32_t lineJoin,
     float miterLimit)
 {
-    if (!points || pointCount < 2 || !brush || !(strokeWidth > 0)) return;
-    std::vector<StrokeVertex> strokeVertices;
+    if (!impl_->drawing || !points || pointCount < 2 || !brush ||
+        !(strokeWidth > 0) || !std::isfinite(strokeWidth)) return;
+    for (size_t i=0;i<size_t(pointCount)*2;++i) if (!std::isfinite(points[i])) return;
+    std::vector<StrokeVertex> vertices;
     std::vector<uint32_t> indices;
-    if (!ExpandStrokePath(strokeVertices, indices, points, pointCount,
-        strokeWidth, static_cast<ImpellerJoin>(std::clamp(lineJoin, 0, 2)),
-        miterLimit, ImpellerCap::Butt, closed, 1, 1, 1, 1)) return;
-    Matrix3x2 transform = impl_->DeviceTransform();
-    std::vector<MetalVertex> vertices;
-    vertices.reserve(indices.size());
-    for (uint32_t index : indices) {
-        if (index >= strokeVertices.size()) continue;
-        MetalVertex vertex{};
-        Transform(transform, strokeVertices[index].x, strokeVertices[index].y,
-            vertex.x, vertex.y);
-        vertices.push_back(vertex);
-    }
-    MetalShaderParams params = impl_->Params(brush, 0);
-    impl_->Draw(vertices, impl_->shapePipeline, params);
+    std::vector<Contour> outlines;
+    const auto t = impl_->DeviceTransform();
+    const float scale = MaxScaleFromMatrix(t.m11, t.m12, t.m21, t.m22);
+    ExpandStrokePath(vertices, indices, points, pointCount, strokeWidth,
+        static_cast<ImpellerJoin>(std::clamp(lineJoin, 0, 2)), miterLimit,
+        ImpellerCap::Butt, closed, 1, 1, 1, 1, &outlines, 1 / std::max(scale, 0.01f));
+    impl_->FillContours(outlines, brush, FillRule::NonZero);
 }
 
 void MetalRenderTarget::FillPath(float startX, float startY,
     const float* commands, uint32_t commandLength, Brush* brush,
     int32_t fillRule, int32_t edgeMode)
 {
-    if (!commands || commandLength == 0 || !brush) return;
-    if(impl_->activeEngine==JALIUM_ENGINE_VELLO&&impl_->vello&&impl_->vello->IsReady()){
-        impl_->velloEncoder.EncodeFillPath(startX,startY,commands,commandLength,
-            impl_->EngineBrush(brush),fillRule==0?FillRule::EvenOdd:FillRule::NonZero,
-            impl_->VelloTransform(),impl_->opacity);return;
+    if (!impl_->drawing || !commands || commandLength == 0 || !brush) return;
+    auto geometry = impl_->PathContours(startX, startY, commands, commandLength);
+    if (!geometry) return;
+    if (edgeMode != 1 && edgeMode != 2 && !geometry->contours.empty())
+        edgeMode = geometry->contours.front().edgeMode;
+    if (edgeMode != 1 && edgeMode != 2 && impl_->activeEngine == JALIUM_ENGINE_VELLO &&
+        impl_->vello && impl_->vello->IsReady() && dynamic_cast<MetalSolidBrush*>(brush)) {
+        impl_->velloEncoder.EncodeFillPath(startX, startY, commands, commandLength,
+            impl_->EngineBrush(brush), fillRule == 0 ? FillRule::EvenOdd : FillRule::NonZero,
+            impl_->VelloTransform(), impl_->opacity);
+        return;
     }
-    float scale = std::max(std::abs(impl_->DeviceTransform().m11),
-        std::abs(impl_->DeviceTransform().m22));
-    auto contours = FlattenPathToContours(startX, startY, commands,
-        commandLength, std::max(0.1f, 0.35f / std::max(scale, 0.01f)));
-    std::vector<float> triangles;
-    if (!TriangulateCompoundPath(contours, fillRule, triangles)) return;
-    Matrix3x2 transform = impl_->DeviceTransform();
-    std::vector<MetalVertex> vertices(triangles.size() / 2);
-    for (size_t i = 0; i < vertices.size(); ++i)
-        Transform(transform, triangles[i*2], triangles[i*2+1],
-            vertices[i].x, vertices[i].y);
-    MetalShaderParams params = impl_->Params(brush, 0);
-    impl_->Draw(vertices, impl_->shapePipeline, params);
-    (void)edgeMode;
+    impl_->FillContours(geometry->contours, brush,
+        fillRule == 0 ? FillRule::EvenOdd : FillRule::NonZero, edgeMode);
 }
 
 void MetalRenderTarget::StrokePath(float startX, float startY,
@@ -1504,56 +2298,18 @@ void MetalRenderTarget::StrokePath(float startX, float startY,
     int32_t lineCap, const float* dashPattern, uint32_t dashCount,
     float dashOffset, int32_t edgeMode)
 {
-    if (!commands || commandLength == 0 || !brush || !(strokeWidth > 0)) return;
-    if(impl_->activeEngine==JALIUM_ENGINE_VELLO&&impl_->vello&&impl_->vello->IsReady()){
-        impl_->velloEncoder.EncodeStrokePath(startX,startY,commands,commandLength,
-            impl_->EngineBrush(brush),strokeWidth,closed,lineJoin,miterLimit,lineCap,
-            dashPattern,dashCount,dashOffset,impl_->VelloTransform(),impl_->opacity);return;
-    }
-    float scale = std::max(std::abs(impl_->DeviceTransform().m11),
-        std::abs(impl_->DeviceTransform().m22));
-    auto contours = FlattenPathToContours(startX, startY, commands,
-        commandLength, std::max(0.1f, 0.25f / std::max(scale, 0.01f)));
-    std::vector<StrokeVertex> allVertices;
-    std::vector<uint32_t> allIndices;
-    auto emit = [&](const float* points, uint32_t count, bool subClosed,
-                    ImpellerCap cap) {
-        std::vector<StrokeVertex> vertices;
-        std::vector<uint32_t> indices;
-        if (!ExpandStrokePath(vertices, indices, points, count, strokeWidth,
-            static_cast<ImpellerJoin>(std::clamp(lineJoin, 0, 2)), miterLimit,
-            cap, subClosed, 1, 1, 1, 1)) return;
-        uint32_t base = static_cast<uint32_t>(allVertices.size());
-        allVertices.insert(allVertices.end(), vertices.begin(), vertices.end());
-        for (uint32_t index : indices) allIndices.push_back(base + index);
-    };
-    ImpellerCap cap = static_cast<ImpellerCap>(std::clamp(lineCap, 0, 2));
-    for (const Contour& contour : contours) {
-        uint32_t count = contour.VertexCount();
-        if (count < 2) continue;
-        if (dashPattern && dashCount > 0) {
-            WalkDashPattern(contour.points.data(), count, dashPattern, dashCount,
-                dashOffset, [&](const float* sub, uint32_t subCount,
-                                bool, bool) {
-                    emit(sub, subCount, false, cap);
-                });
-        } else {
-            emit(contour.points.data(), count, closed, cap);
-        }
-    }
-    Matrix3x2 transform = impl_->DeviceTransform();
-    std::vector<MetalVertex> vertices;
-    vertices.reserve(allIndices.size());
-    for (uint32_t index : allIndices) {
-        if (index >= allVertices.size()) continue;
-        MetalVertex vertex{};
-        Transform(transform, allVertices[index].x, allVertices[index].y,
-            vertex.x, vertex.y);
-        vertices.push_back(vertex);
-    }
-    MetalShaderParams params = impl_->Params(brush, 0);
-    impl_->Draw(vertices, impl_->shapePipeline, params);
-    (void)edgeMode;
+    if (!impl_->drawing || !commands || commandLength == 0 || !brush ||
+        !(strokeWidth > 0) || !std::isfinite(strokeWidth)) return;
+    auto geometry = impl_->PathContours(startX, startY, commands, commandLength);
+    if (!geometry) return;
+    const auto transform = impl_->DeviceTransform();
+    const float scale = MaxScaleFromMatrix(transform.m11, transform.m12,
+        transform.m21, transform.m22);
+    auto outlines = BuildStrokeContours(geometry->contours, strokeWidth, closed, lineJoin,
+        miterLimit, lineCap, dashPattern, dashCount, dashOffset, scale);
+    // Joining and crossing primitives are unioned before brush opacity is
+    // applied. A translucent stroke has one alpha everywhere in its interior.
+    impl_->FillContours(outlines, brush, FillRule::NonZero, edgeMode);
 }
 
 void MetalRenderTarget::DrawContentBorder(float x, float y, float w, float h,
@@ -1602,16 +2358,15 @@ void MetalRenderTarget::RenderText(const wchar_t* text, uint32_t textLength,
     auto mix=[&](const void* value,size_t bytes){cacheKey=Fnv1a64(value,bytes,cacheKey);};
     uint64_t formatIdentity=metalFormat->CacheIdentity();mix(&formatIdentity,sizeof(formatIdentity));
     float layout[]={x,y,w,h,r,g,b,a};mix(layout,sizeof(layout));mix(matrix,sizeof(matrix));
-    NSUInteger clipValues[]={scissor.x,scissor.y,scissor.width,scissor.height};
-    mix(clipValues,sizeof(clipValues));
+    uint32_t viewport[]={impl_->pixelWidth,impl_->pixelHeight};
+    mix(viewport,sizeof(viewport));
     if(auto cached=impl_->textCache.find(cacheKey);cached!=impl_->textCache.end()){
         cached->second.lastUse=++impl_->textCacheClock;
         impl_->DrawDeviceTexture(cached->second.texture,cached->second.x,cached->second.y,
             cached->second.width,cached->second.height,1.0f);return;
     }
     if (!metalFormat->Rasterize(text, textLength, x, y, w, h, matrix,
-        static_cast<float>(scissor.x), static_cast<float>(scissor.y),
-        static_cast<float>(scissor.width), static_cast<float>(scissor.height),
+        0, 0, static_cast<float>(impl_->pixelWidth), static_cast<float>(impl_->pixelHeight),
         r, g, b, a, pixels, pixelWidth, pixelHeight, deviceX, deviceY)) return;
     MTLTextureDescriptor* descriptor=[MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -1628,6 +2383,43 @@ void MetalRenderTarget::RenderText(const wchar_t* text, uint32_t textLength,
         static_cast<float>(pixelWidth), static_cast<float>(pixelHeight), 1.0f);
 }
 
+void MetalRenderTarget::RenderParagraphLine(TextParagraph* paragraph, uint32_t line,
+    float x, float y, float opacity)
+{
+    auto* metal = dynamic_cast<MetalTextParagraph*>(paragraph);
+    if (!metal || !impl_->encoder || opacity <= 0) return;
+    Matrix3x2 transform = impl_->DeviceTransform();
+    float matrix[] = {transform.m11, transform.m12, transform.m21,
+        transform.m22, transform.dx, transform.dy};
+    uint64_t identity = metal->CacheIdentity();
+    // A separate cache namespace cannot alias legacy TextFormat identities.
+    const uint64_t tag = 0x7061726167726170ull;
+    uint64_t cacheKey = Fnv1a64(&tag, sizeof(tag));
+    auto mix = [&](const void* value, size_t bytes) { cacheKey = Fnv1a64(value, bytes, cacheKey); };
+    mix(&identity, sizeof(identity)); mix(&line, sizeof(line));
+    float placement[] = {x, y, opacity}; mix(placement, sizeof(placement)); mix(matrix, sizeof(matrix));
+    uint32_t viewport[] = {impl_->pixelWidth, impl_->pixelHeight}; mix(viewport, sizeof(viewport));
+    if (auto cached = impl_->textCache.find(cacheKey); cached != impl_->textCache.end()) {
+        cached->second.lastUse = ++impl_->textCacheClock;
+        impl_->DrawDeviceTexture(cached->second.texture, cached->second.x, cached->second.y,
+            cached->second.width, cached->second.height, 1.0f);
+        return;
+    }
+    std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float deviceX = 0, deviceY = 0;
+    if (!metal->RasterizeLine(line, x, y, opacity, matrix, impl_->pixelWidth, impl_->pixelHeight,
+        pixels, width, height, deviceX, deviceY)) return;
+    MTLTextureDescriptor* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+        width:width height:height mipmapped:NO];
+    descriptor.storageMode = MTLStorageModeShared; descriptor.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> texture = [impl_->device newTextureWithDescriptor:descriptor];
+    if (!texture) return;
+    [texture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:width * 4];
+    Impl::TextCacheEntry entry{texture, deviceX, deviceY, static_cast<float>(width), static_cast<float>(height),
+        ++impl_->textCacheClock, pixels.size()};
+    impl_->textCacheBytes += entry.bytes; impl_->textCache[cacheKey] = entry; impl_->TrimTextCache();
+    impl_->DrawDeviceTexture(texture, deviceX, deviceY, width, height, 1.0f);
+}
+
 void MetalRenderTarget::PushTransform(const float* matrix)
 {
     if (!matrix) return;
@@ -1637,37 +2429,65 @@ void MetalRenderTarget::PushTransform(const float* matrix)
 void MetalRenderTarget::PopTransform()
 { if (impl_->transforms.size() > 1) impl_->transforms.pop_back(); }
 
+JaliumResult MetalRenderTarget::PushPathClip(float startX, float startY,
+    const float* commands, uint32_t length, int32_t fillRule)
+{
+    if (!commands || !length) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto geometry = impl_->PathContours(startX, startY, commands, length);
+    if (!geometry) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return impl_->PushContourClip(geometry->contours,
+        fillRule == 0 ? FillRule::EvenOdd : FillRule::NonZero,
+        geometry->contours.empty() ? -1 : geometry->contours.front().edgeMode);
+}
+
+JaliumResult MetalRenderTarget::PushStrokePathClip(float startX, float startY,
+    const float* commands, uint32_t length, float width, bool closed,
+    int32_t join, float miter, int32_t cap, const float* dash, uint32_t dashCount,
+    float phase, int32_t edgeMode)
+{
+    auto geometry = impl_->PathContours(startX, startY, commands, length);
+    if (!geometry || !(width > 0) || !std::isfinite(width)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    const auto transform = impl_->DeviceTransform();
+    const float scale = MaxScaleFromMatrix(transform.m11, transform.m12, transform.m21, transform.m22);
+    auto contours = BuildStrokeContours(geometry->contours, width, closed, join, miter, cap, dash, dashCount, phase, scale);
+    return impl_->PushContourClip(contours, FillRule::NonZero, edgeMode);
+}
+
 void MetalRenderTarget::PushClip(float x, float y, float w, float h)
 {
-    impl_->FlushVello();
-    impl_->EndEncoder();
+    impl_->WillChangeClip();
     ClipState clip;
     Matrix3x2 transform = impl_->DeviceTransform();
     clip.localRect = {x,y,w,h};
     clip.deviceRect = TransformBounds(transform, x, y, w, h);
     if (!Invert(transform, clip.deviceToLocal)) clip.deviceToLocal = {};
     impl_->clips.push_back(clip);
-    MTLScissorRect velloScissor=impl_->CurrentScissor();
-    impl_->velloEncoder.SetScissor((float)velloScissor.x,(float)velloScissor.y,
-        (float)(velloScissor.x+velloScissor.width),(float)(velloScissor.y+velloScissor.height));
-    if (impl_->encoder) {
-        MTLScissorRect scissor = impl_->CurrentScissor();
-        if (scissor.width && scissor.height) [impl_->encoder setScissorRect:scissor];
-    }
+    impl_->UpdateClipScissor();
 }
 void MetalRenderTarget::PushClipAliased(float x, float y, float w, float h)
 { PushClip(x,y,w,h); impl_->clips.back().aliased = true; }
 void MetalRenderTarget::PushRoundedRectClip(float x, float y, float w, float h,
     float rx, float ry)
 {
-    PushPerCornerRoundedRectClip(x,y,w,h,std::min(rx,ry),std::min(rx,ry),
-        std::min(rx,ry),std::min(rx,ry));
+    auto c=RoundedContour(x,y,w,h,rx,rx,rx,rx);
+    for(float& radius:c.radiusY)radius=std::max(ry,0.0f);
+    (void)PushEllipticalRectClip(c);
+}
+JaliumResult MetalRenderTarget::PushEllipticalRectClip(const JaliumEllipticalRectClip& c)
+{
+    impl_->WillChangeClip();ClipState clip;
+    auto transform=impl_->DeviceTransform();clip.localRect={c.x,c.y,c.width,c.height};
+    clip.deviceRect=c.edges==15?TransformBounds(transform,c.x,c.y,c.width,c.height):
+        RectF{0,0,static_cast<float>(impl_->pixelWidth),static_cast<float>(impl_->pixelHeight)};
+    if(!Invert(transform,clip.deviceToLocal)){clip.localRect.width=clip.localRect.height=0;clip.deviceRect={};}
+    for(size_t i=0;i<4;++i){clip.radii[i]=c.radiusX[i];clip.radiiY[i]=c.radiusY[i];}
+    clip.edges=c.edges;clip.rounded=true;
+    impl_->clips.push_back(clip);impl_->UpdateClipScissor();return JALIUM_OK;
 }
 void MetalRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float w,
     float h, float tl, float tr, float br, float bl)
 {
-    impl_->FlushVello();
-    impl_->EndEncoder();
+    impl_->WillChangeClip();
     ClipState clip;
     Matrix3x2 transform = impl_->DeviceTransform();
     clip.localRect = {x,y,w,h};
@@ -1676,31 +2496,17 @@ void MetalRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float w,
     clip.radii[0]=tl; clip.radii[1]=tr;
     clip.radii[2]=br; clip.radii[3]=bl; clip.rounded=true;
     impl_->clips.push_back(clip);
-    MTLScissorRect velloScissor=impl_->CurrentScissor();
-    impl_->velloEncoder.SetScissor((float)velloScissor.x,(float)velloScissor.y,
-        (float)(velloScissor.x+velloScissor.width),(float)(velloScissor.y+velloScissor.height));
-    if (impl_->encoder) {
-        MTLScissorRect scissor=impl_->CurrentScissor();
-        if(scissor.width&&scissor.height)[impl_->encoder setScissorRect:scissor];
-    }
+    impl_->UpdateClipScissor();
 }
 void MetalRenderTarget::PushRoundedRectClipExclude(float x, float y, float w,
     float h, float rx, float ry)
-{ PushRoundedRectClip(x,y,w,h,rx,ry); impl_->clips.back().exclude=true; }
+{ PushRoundedRectClip(x,y,w,h,rx,ry); impl_->clips.back().exclude=true; impl_->UpdateClipScissor(); }
 void MetalRenderTarget::PopClip()
 {
     if (impl_->clips.empty()) return;
-    impl_->FlushVello();
-    impl_->EndEncoder();
+    impl_->WillChangeClip();
     impl_->clips.pop_back();
-    if(impl_->clips.empty())impl_->velloEncoder.ClearScissor();
-    else{MTLScissorRect velloScissor=impl_->CurrentScissor();impl_->velloEncoder.SetScissor(
-        (float)velloScissor.x,(float)velloScissor.y,(float)(velloScissor.x+velloScissor.width),
-        (float)(velloScissor.y+velloScissor.height));}
-    if (impl_->encoder) {
-        MTLScissorRect scissor=impl_->CurrentScissor();
-        if(scissor.width&&scissor.height)[impl_->encoder setScissorRect:scissor];
-    }
+    impl_->UpdateClipScissor();
 }
 void MetalRenderTarget::PunchTransparentRect(float x,float y,float w,float h)
 {
@@ -1764,8 +2570,10 @@ void MetalRenderTarget::DrawVideoSurface(VideoSurface* surface,float x,float y,
         auto quad=impl_->Quad(x,y,w,h);id<MTLRenderCommandEncoder> encoder=impl_->EnsureEncoder();
         NSUInteger offset=0;if(!encoder||!impl_->UploadVertices(quad.data(),quad.size(),offset))return;
         [encoder setRenderPipelineState:impl_->yuvPipeline];
+        impl_->BindPathClip(encoder);
+        impl_->ApplyContentStencil(encoder);
         [encoder setVertexBuffer:impl_->frame->vertices offset:offset atIndex:0];
-        [encoder setVertexBytes:p.data() length:p.size()*sizeof(float) atIndex:1];
+        [encoder setVertexBytes:p.data() length:2 * sizeof(float) atIndex:1];
         [encoder setFragmentBytes:p.data() length:p.size()*sizeof(float) atIndex:0];
         [encoder setFragmentTexture:texture atIndex:0];[encoder setFragmentTexture:chroma atIndex:1];
         id<MTLSamplerState> sampler=scalingMode==3?impl_->nearestSampler:
@@ -1805,7 +2613,12 @@ void* MetalRenderTarget::RealizeLayerBegin(void* existingLayer, float x,
     CapturedTexture capture{layer->texture,
         TransformBounds(impl_->DeviceTransform(), x, y, w, h)};
     impl_->captureStack.push_back({impl_->currentTarget, capture});
+    // A reusable layer must contain its complete subtree. Ancestor clips,
+    // including this frame's damage clip, are applied when it is composited.
+    impl_->retainedClipStack.push_back(std::move(impl_->clips));
+    impl_->clips.clear();
     impl_->currentTarget = layer->texture;
+    impl_->UpdateClipScissor();
     layer->bounds = capture.bounds;
     impl_->EnsureEncoder(true, MTLClearColorMake(0,0,0,0));
     return layer;
@@ -1814,9 +2627,15 @@ void* MetalRenderTarget::RealizeLayerBegin(void* existingLayer, float x,
 void MetalRenderTarget::RealizeLayerEnd(void* layerHandle)
 {
     if (!layerHandle || impl_->captureStack.empty()) return;
+    impl_->FlushVello();
     impl_->EndEncoder();
     impl_->currentTarget = impl_->captureStack.back().first;
     impl_->captureStack.pop_back();
+    if (!impl_->retainedClipStack.empty()) {
+        impl_->clips = std::move(impl_->retainedClipStack.back());
+        impl_->retainedClipStack.pop_back();
+    }
+    impl_->UpdateClipScissor();
 }
 
 void MetalRenderTarget::CompositeLayer(void* layerHandle, float x, float y,
@@ -1890,8 +2709,9 @@ void MetalRenderTarget::DrawBackdropMaterial(const JaliumBackdropMaterialDesc& d
     RectF bounds=TransformBounds(impl_->DeviceTransform(),d.x,d.y,d.width,d.height);
     CapturedTexture snapshot=impl_->Snapshot(bounds);
     float scale=std::max(impl_->dpiX,impl_->dpiY)/96.0f;
-    id<MTLTexture> blurred=impl_->Blur(snapshot.texture,d.blurRadius*scale,
-        d.blurSigma*scale,d.blurType);
+    auto blur=impl_->Blur(snapshot.texture,d.blurRadius*scale,
+        d.blurSigma*scale,d.blurType,false,&bounds);
+    auto blurred=blur.texture;
     PushPerCornerRoundedRectClip(d.x,d.y,d.width,d.height,d.cornerRadiusTL,
         d.cornerRadiusTR,d.cornerRadiusBR,d.cornerRadiusBL);
 
@@ -1909,9 +2729,9 @@ void MetalRenderTarget::DrawBackdropMaterial(const JaliumBackdropMaterialDesc& d
     p[332]=std::max(d.noiseIntensity,0.0f);
     p[333]=std::clamp(d.opacity,0.0f,1.0f);
     impl_->Draw(impl_->Quad(d.x,d.y,d.width,d.height,
-        bounds.x/blurred.width,bounds.y/blurred.height,
-        (bounds.x+bounds.width)/blurred.width,
-        (bounds.y+bounds.height)/blurred.height),impl_->effectPipeline,p,
+        (bounds.x-blur.originX)/blurred.width,(bounds.y-blur.originY)/blurred.height,
+        (bounds.x+bounds.width-blur.originX)/blurred.width,
+        (bounds.y+bounds.height-blur.originY)/blurred.height),impl_->effectPipeline,p,
         blurred,impl_->linearSampler);
     PopClip();
 }
@@ -1920,15 +2740,10 @@ void MetalRenderTarget::DrawGlowingBorderHighlight(float x,float y,float w,
     float h,float phase,float r,float g,float b,float stroke,float trail,
     float dim,float screenW,float screenH)
 {
-    MetalSolidBrush shade(0,0,0,dim*impl_->opacity);
-    if(y>0)FillRectangle(0,0,screenW,y,&shade);
-    if(y+h<screenH)FillRectangle(0,y+h,screenW,screenH-y-h,&shade);
-    if(x>0)FillRectangle(0,y,x,h,&shade);
-    if(x+w<screenW)FillRectangle(x+w,y,screenW-x-w,h,&shade);
-    float alpha=0.45f+0.55f*std::sin(phase*2*kPi);
-    MetalSolidBrush glow(r,g,b,std::clamp(alpha,0.0f,1.0f));
-    DrawRoundedRectangle(x,y,w,h,4,4,&glow,stroke);
-    (void)trail;
+    if(!impl_->drawing||w<=0||h<=0)return;
+    auto p=impl_->Params(nullptr,0);p[180]=0;p[181]=x;p[182]=y;p[183]=w;p[184]=h;
+    p[185]=r;p[186]=g;p[187]=b;p[188]=stroke;p[189]=trail;p[190]=phase;p[191]=dim;
+    impl_->Draw(impl_->Quad(0,0,screenW,screenH),impl_->highlightPipeline,p);
 }
 
 void MetalRenderTarget::DrawGlowingBorderTransition(float fx,float fy,float fw,
@@ -1936,20 +2751,21 @@ void MetalRenderTarget::DrawGlowingBorderTransition(float fx,float fy,float fw,
     float r,float g,float b,float stroke,float trail,float dim,float screenW,
     float screenH)
 {
-    float t=std::clamp((head+tail)*0.5f,0.0f,1.0f);
-    DrawGlowingBorderHighlight(fx+(tx-fx)*t,fy+(ty-fy)*t,fw+(tw-fw)*t,
-        fh+(th-fh)*t,phase,r,g,b,stroke,trail,dim,screenW,screenH);
+    if(!impl_->drawing||fw<=0||fh<=0||tw<=0||th<=0)return;
+    auto p=impl_->Params(nullptr,0);p[180]=1;p[181]=fx;p[182]=fy;p[183]=fw;p[184]=fh;
+    p[185]=r;p[186]=g;p[187]=b;p[188]=stroke;p[189]=trail;p[190]=phase;p[191]=dim;
+    p[192]=head;p[193]=tail;p[194]=tx;p[195]=ty;p[196]=tw;p[197]=th;
+    impl_->Draw(impl_->Quad(0,0,screenW,screenH),impl_->highlightPipeline,p);
 }
 
 void MetalRenderTarget::DrawRippleEffect(float x,float y,float w,float h,
     float progress,float r,float g,float b,float stroke,float dim,float screenW,
     float screenH)
 {
-    float expand=progress*20.0f;
-    MetalSolidBrush glow(r,g,b,1.0f-std::clamp(progress,0.0f,1.0f));
-    DrawRoundedRectangle(x-expand,y-expand,w+expand*2,h+expand*2,4+expand,
-        4+expand,&glow,std::max(0.5f,stroke*(1-progress*0.5f)));
-    (void)dim;(void)screenW;(void)screenH;
+    if(!impl_->drawing||w<=0||h<=0)return;
+    auto p=impl_->Params(nullptr,0);p[180]=2;p[181]=x;p[182]=y;p[183]=w;p[184]=h;
+    p[185]=r;p[186]=g;p[187]=b;p[188]=stroke;p[191]=dim;p[192]=progress;
+    impl_->Draw(impl_->Quad(0,0,screenW,screenH),impl_->highlightPipeline,p);
 }
 
 void MetalRenderTarget::CaptureDesktopArea(int32_t screenX,int32_t screenY,
@@ -2002,7 +2818,8 @@ void MetalRenderTarget::DrawDesktopBackdrop(float x,float y,float w,float h,
 {
     CapturedTexture source=impl_->desktopCapture.texture?impl_->desktopCapture:
         impl_->Snapshot(TransformBounds(impl_->DeviceTransform(),x,y,w,h));
-    id<MTLTexture> blurred=impl_->Blur(source.texture,blur);
+    auto result=impl_->Blur(source.texture,blur,0,JALIUM_BACKDROP_BLUR_GAUSSIAN,false,&source.bounds);
+    auto blurred=result.texture;
     if(!blurred)return;
     MetalShaderParams p=impl_->Params(nullptr,0);p[180]=3;
     p[320]=1;p[321]=1;p[322]=std::max(saturation,0.0f);p[323]=0;
@@ -2010,8 +2827,8 @@ void MetalRenderTarget::DrawDesktopBackdrop(float x,float y,float w,float h,
     p[328]=r;p[329]=g;p[330]=b;p[331]=std::clamp(tint,0.0f,1.0f);
     p[332]=std::max(noise,0.0f);p[333]=1;
     RectF s=source.bounds;
-    impl_->Draw(impl_->Quad(x,y,w,h,s.x/blurred.width,s.y/blurred.height,
-        (s.x+s.width)/blurred.width,(s.y+s.height)/blurred.height),
+    impl_->Draw(impl_->Quad(x,y,w,h,(s.x-result.originX)/blurred.width,(s.y-result.originY)/blurred.height,
+        (s.x+s.width-result.originX)/blurred.width,(s.y+s.height-result.originY)/blurred.height),
         impl_->effectPipeline,p,blurred,impl_->linearSampler);
 }
 
@@ -2023,6 +2840,9 @@ void MetalRenderTarget::BeginTransitionCapture(int slot,float x,float y,float w,
     CapturedTexture capture{impl_->NewTransientTexture(impl_->pixelWidth,impl_->pixelHeight),
         TransformBounds(impl_->DeviceTransform(),x,y,w,h)};
     if(!capture.texture)return;
+    impl_->transitionCaptureStyles.push_back({std::move(impl_->clips),impl_->opacity});
+    impl_->clips.clear();impl_->opacity=1;
+    impl_->activeTransitionSlots.push_back(slot);
     impl_->captureStack.push_back({impl_->currentTarget,capture});
     impl_->currentTarget=capture.texture;
     impl_->transitionSlots[slot]=capture;
@@ -2030,9 +2850,13 @@ void MetalRenderTarget::BeginTransitionCapture(int slot,float x,float y,float w,
 }
 void MetalRenderTarget::EndTransitionCapture(int slot)
 {
-    if(slot<0||slot>1||impl_->captureStack.empty())return;
-    impl_->EndEncoder();impl_->currentTarget=impl_->captureStack.back().first;
+    if(slot<0||slot>1||impl_->captureStack.empty()||impl_->activeTransitionSlots.empty()||
+        impl_->activeTransitionSlots.back()!=slot)return;
+    impl_->FlushVello();impl_->EndEncoder();impl_->currentTarget=impl_->captureStack.back().first;
     impl_->captureStack.pop_back();
+    auto style=std::move(impl_->transitionCaptureStyles.back());impl_->transitionCaptureStyles.pop_back();
+    impl_->clips=std::move(style.clips);impl_->opacity=style.opacity;
+    impl_->activeTransitionSlots.pop_back();impl_->UpdateClipScissor();
 }
 void MetalRenderTarget::DrawTransitionShader(float x,float y,float w,float h,
     float progress,int mode,float cornerRadius)
@@ -2047,13 +2871,15 @@ void MetalRenderTarget::DrawTransitionShader(float x,float y,float w,float h,
     p[406]=from.bounds.width/from.texture.width;p[407]=from.bounds.height/from.texture.height;
     p[408]=to.bounds.x/to.texture.width;p[409]=to.bounds.y/to.texture.height;
     p[410]=to.bounds.width/to.texture.width;p[411]=to.bounds.height/to.texture.height;
+    auto bounds=TransformBounds(impl_->DeviceTransform(),x,y,w,h);
+    p[412]=bounds.width;p[413]=bounds.height;
     auto vertices=impl_->Quad(x,y,w,h);id<MTLRenderCommandEncoder> encoder=impl_->EnsureEncoder();
     NSUInteger offset=0;if(encoder&&impl_->UploadVertices(vertices.data(),vertices.size(),offset)){
         [encoder setRenderPipelineState:impl_->transitionPipeline];
-        [encoder setDepthStencilState:impl_->contentStencilState];
-        [encoder setStencilReferenceValue:static_cast<uint32_t>(std::min<size_t>(impl_->clips.size(),255))];
+        impl_->BindPathClip(encoder);
+        impl_->ApplyContentStencil(encoder);
         [encoder setVertexBuffer:impl_->frame->vertices offset:offset atIndex:0];
-        [encoder setVertexBytes:p.data() length:p.size()*sizeof(float) atIndex:1];
+        [encoder setVertexBytes:p.data() length:2 * sizeof(float) atIndex:1];
         [encoder setFragmentBytes:p.data() length:p.size()*sizeof(float) atIndex:0];
         [encoder setFragmentTexture:from.texture atIndex:0];
         [encoder setFragmentTexture:to.texture atIndex:1];
@@ -2071,82 +2897,162 @@ void MetalRenderTarget::DrawCapturedTransition(int slot,float x,float y,float w,
 void MetalRenderTarget::BeginEffectCapture(float x,float y,float w,float h)
 {
     if(!impl_->drawing)return;impl_->FlushVello();impl_->EndEncoder();
+    impl_->effectCaptureAttempts.push_back(false);
     CapturedTexture capture{impl_->NewTransientTexture(impl_->pixelWidth,impl_->pixelHeight),
         TransformBounds(impl_->DeviceTransform(),x,y,w,h)};
     if(!capture.texture)return;
+    impl_->effectCaptureAttempts.back()=true;
+    impl_->effectCaptureStyles.push_back({std::move(impl_->clips),impl_->opacity});
+    impl_->clips.clear();impl_->opacity=1;
     impl_->captureStack.push_back({impl_->currentTarget,capture});
     impl_->currentTarget=capture.texture;impl_->activeEffectCaptures.push_back(capture);
     impl_->inEffectCapture=true;impl_->EnsureEncoder(true,MTLClearColorMake(0,0,0,0));
+    PushClip(x,y,w,h);
 }
 void MetalRenderTarget::EndEffectCapture()
 {
+    if(impl_->effectCaptureAttempts.empty())return;
+    bool captured=impl_->effectCaptureAttempts.back();impl_->effectCaptureAttempts.pop_back();
+    if(!captured){impl_->effectCapture={};return;}
     if(!impl_->inEffectCapture||impl_->captureStack.empty()||
         impl_->activeEffectCaptures.empty())return;
-    impl_->EndEncoder();impl_->currentTarget=impl_->captureStack.back().first;
+    impl_->FlushVello();impl_->EndEncoder();impl_->currentTarget=impl_->captureStack.back().first;
     impl_->captureStack.pop_back();impl_->effectCapture=impl_->activeEffectCaptures.back();
     impl_->activeEffectCaptures.pop_back();
     impl_->inEffectCapture=!impl_->activeEffectCaptures.empty();
+    auto style=std::move(impl_->effectCaptureStyles.back());impl_->effectCaptureStyles.pop_back();
+    impl_->clips=std::move(style.clips);impl_->opacity=style.opacity;impl_->UpdateClipScissor();
 }
 void MetalRenderTarget::DrawBlurEffect(float x,float y,float w,float h,
     float radius,float uvOffsetX,float uvOffsetY)
 {
-    id<MTLTexture> blurred=impl_->Blur(impl_->effectCapture.texture,radius);
-    impl_->DrawTexture(blurred,x,y,w,h,1,0,
-        impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY));
+    (void)DrawBlurEffectWithKernel(x,y,w,h,radius,0,uvOffsetX,uvOffsetY);
+}
+JaliumResult MetalRenderTarget::DrawBlurEffectWithKernel(float x,float y,float w,float h,
+    float radius,int32_t kernelType,float uvOffsetX,float uvOffsetY)
+{
+    if(!impl_->drawing||!impl_->effectCapture.texture)return JALIUM_ERROR_INVALID_STATE;
+    if(kernelType<0||kernelType>1)return JALIUM_ERROR_INVALID_ARGUMENT;
+    RectF sampled=impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
+    auto result=impl_->Blur(impl_->effectCapture.texture,radius*impl_->EffectScale(),
+        0,kernelType==1?JALIUM_BACKDROP_BLUR_BOX:JALIUM_BACKDROP_BLUR_GAUSSIAN,true,&sampled);
+    auto blurred=result.texture;
+    if(!blurred)return JALIUM_ERROR_OUT_OF_MEMORY;auto p=impl_->Params(nullptr,0);
+    return impl_->Draw(impl_->EffectQuad(x,y,w,h,blurred,
+        sampled,result.originX,result.originY),impl_->texturePipeline,p,blurred,impl_->linearSampler)
+        ?JALIUM_OK:JALIUM_ERROR_OUT_OF_MEMORY;
 }
 
 void MetalRenderTarget::DrawDropShadowEffect(float x,float y,float w,float h,
     float radius,float ox,float oy,float r,float g,float b,float a,float uvOffsetX,
-    float uvOffsetY,float,float,float,float)
+    float uvOffsetY,float tl,float tr,float br,float bl)
 {
-    id<MTLTexture> blurred=impl_->Blur(impl_->effectCapture.texture,radius);
-    float tint[4]={r,g,b,a};
-    RectF source=impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
-    RectF shadowSource=source;shadowSource.x-=radius*impl_->dpiX/96.0f;
-    shadowSource.y-=radius*impl_->dpiY/96.0f;
-    shadowSource.width+=radius*2*impl_->dpiX/96.0f;
-    shadowSource.height+=radius*2*impl_->dpiY/96.0f;
-    impl_->DrawTexture(blurred,x+ox-radius,y+oy-radius,w+radius*2,h+radius*2,1,0,shadowSource,
-        false,true,tint);
-    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,source);
+    if(!impl_->drawing||!impl_->effectCapture.texture)return;
+    if(tl>0||tr>0||br>0||bl>0)impl_->PaintShadow(RoundedContour(x,y,w,h,tl,tr,br,bl),radius,ox,oy,r,g,b,a);
+    else impl_->PaintAlphaShadow(radius,ox,oy,r,g,b,a);
+    impl_->CompositeEffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
 }
 void MetalRenderTarget::DrawOuterGlowEffect(float x,float y,float w,float h,
     float size,float r,float g,float b,float a,float intensity,float uvOffsetX,
-    float uvOffsetY,float,float,float,float)
+    float uvOffsetY,float tl,float tr,float br,float bl)
 {
-    id<MTLTexture> blurred=impl_->Blur(impl_->effectCapture.texture,size);
-    float tint[4]={r,g,b,std::clamp(a*intensity,0.0f,1.0f)};
-    RectF source=impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
-    RectF glowSource=source;glowSource.x-=size*impl_->dpiX/96.0f;
-    glowSource.y-=size*impl_->dpiY/96.0f;
-    glowSource.width+=size*2*impl_->dpiX/96.0f;
-    glowSource.height+=size*2*impl_->dpiY/96.0f;
-    impl_->DrawTexture(blurred,x-size,y-size,w+size*2,h+size*2,1,0,glowSource,
-        false,true,tint);
-    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,source);
+    if(!impl_->drawing||!impl_->effectCapture.texture)return;
+    if(tl>0||tr>0||br>0||bl>0)impl_->PaintShadow(RoundedContour(x,y,w,h,tl,tr,br,bl),size,0,0,r,g,b,a*intensity);
+    else impl_->PaintAlphaShadow(size,0,0,r,g,b,a*intensity);
+    impl_->CompositeEffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
 }
 void MetalRenderTarget::DrawInnerShadowEffect(float x,float y,float w,float h,
     float radius,float ox,float oy,float r,float g,float b,float a,float uvOffsetX,
     float uvOffsetY,
     float tl,float tr,float br,float bl)
 {
-    RectF source=impl_->EffectSource(x,y,w,h,uvOffsetX,uvOffsetY);
-    impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,source);
-    if(a<=0.004f||w<=1||h<=1)return;
-    PushPerCornerRoundedRectClip(x,y,w,h,tl,tr,br,bl);
-    constexpr int layers=5;float blur=std::max(radius,1.0f);
-    float strokeWidth=std::max(1.5f,blur*0.7f);
-    MetalSolidBrush shadow(r,g,b,1);
-    for(int i=1;i<=layers;++i){float t=static_cast<float>(i)/layers;
-        float inset=blur*(t-1.0f/layers);float alpha=a*(1-t)*0.65f;
-        float sw=w-inset*2,sh=h-inset*2;if(sw<=1||sh<=1)break;
-        if(alpha<=0.004f)continue;shadow.a=alpha;
-        DrawPerCornerRoundedRectangle(x+ox+inset,y+oy+inset,sw,sh,
-            std::max(0.0f,tl-inset),std::max(0.0f,tr-inset),
-            std::max(0.0f,br-inset),std::max(0.0f,bl-inset),
-            &shadow,strokeWidth);
+    (void)DrawInnerShadowEffectElliptical(x,y,w,h,radius,ox,oy,0,r,g,b,a,
+        uvOffsetX,uvOffsetY,RoundedContour(x,y,w,h,tl,tr,br,bl));
+}
+
+JaliumResult MetalRenderTarget::DrawDropShadowEffectElliptical(float x,float y,float w,float h,
+    float blur,float ox,float oy,float r,float g,float b,float a,float uvX,float uvY,
+    const JaliumEllipticalRectClip& contour)
+{
+    if(!impl_->drawing||!impl_->effectCapture.texture)return JALIUM_ERROR_INVALID_STATE;
+    impl_->PaintShadow(contour,blur,ox,oy,r,g,b,a);impl_->CompositeEffectSource(x,y,w,h,uvX,uvY);
+    return JALIUM_OK;
+}
+JaliumResult MetalRenderTarget::DrawDropShadowEffectSpreadElliptical(float x,float y,float w,float h,
+    float blur,float ox,float oy,float r,float g,float b,float a,float uvX,float uvY,
+    const JaliumEllipticalRectClip& contour)
+{return DrawDropShadowEffectElliptical(x,y,w,h,blur,ox,oy,r,g,b,a,uvX,uvY,contour);}
+JaliumResult MetalRenderTarget::DrawCssBoxShadowEffectElliptical(float x,float y,float w,float h,
+    float blur,float ox,float oy,float r,float g,float b,float a,float uvX,float uvY,
+    const JaliumEllipticalRectClip& original,const JaliumEllipticalRectClip& spread)
+{
+    if(!impl_->drawing||!impl_->effectCapture.texture)return JALIUM_ERROR_INVALID_STATE;
+    impl_->PaintShadow(spread,blur,ox,oy,r,g,b,a,&original);
+    impl_->CompositeEffectSource(x,y,w,h,uvX,uvY);return JALIUM_OK;
+}
+JaliumResult MetalRenderTarget::PaintCssOuterShadowLayerElliptical(float,float,float,float,
+    float blur,float ox,float oy,float r,float g,float b,float a,
+    const JaliumEllipticalRectClip& original,const JaliumEllipticalRectClip& spread)
+{
+    if(!impl_->drawing)return JALIUM_ERROR_INVALID_STATE;
+    impl_->PaintShadow(spread,blur,ox,oy,r,g,b,a,&original);return JALIUM_OK;
+}
+JaliumResult MetalRenderTarget::PaintCssInnerShadowLayerElliptical(float,float,float,float,
+    float blur,float ox,float oy,float spread,float r,float g,float b,float a,
+    const JaliumEllipticalRectClip& contour)
+{
+    if(!impl_->drawing)return JALIUM_ERROR_INVALID_STATE;
+    impl_->PaintShadow(InsetContour(contour,spread),blur,ox,oy,r,g,b,a,&contour,true);return JALIUM_OK;
+}
+JaliumResult MetalRenderTarget::DrawInnerShadowEffectElliptical(float x,float y,float w,float h,
+    float blur,float ox,float oy,float spread,float r,float g,float b,float a,float uvX,float uvY,
+    const JaliumEllipticalRectClip& contour)
+{
+    if(!impl_->drawing||!impl_->effectCapture.texture)return JALIUM_ERROR_INVALID_STATE;
+    impl_->CompositeEffectSource(x,y,w,h,uvX,uvY);
+    return DrawInnerShadowLayerElliptical(x,y,w,h,blur,ox,oy,spread,r,g,b,a,uvX,uvY,contour);
+}
+JaliumResult MetalRenderTarget::DrawInnerShadowLayerElliptical(float x,float y,float w,float h,
+    float blur,float ox,float oy,float spread,float r,float g,float b,float a,float,float,
+    const JaliumEllipticalRectClip& contour)
+{return PaintCssInnerShadowLayerElliptical(x,y,w,h,blur,ox,oy,spread,r,g,b,a,contour);}
+JaliumResult MetalRenderTarget::DrawFilterDropShadowEffect(float,float,float,float,
+    float captureX,float captureY,float captureW,float captureH,
+    float blur,float ox,float oy,float r,float g,float b,float a)
+{
+    if(!impl_->drawing||!impl_->effectCapture.texture)return JALIUM_ERROR_INVALID_STATE;
+    impl_->PaintAlphaShadow(blur,ox,oy,r,g,b,a);
+    impl_->CompositeEffectSource(captureX,captureY,captureW,captureH);return JALIUM_OK;
+}
+JaliumResult MetalRenderTarget::DrawCssTextShadows(float,float,float,float,
+    float captureX,float captureY,float captureW,float captureH,
+    const float* layers,uint32_t layerCount,bool compositeSource)
+{
+    if(!impl_->drawing||!impl_->effectCapture.texture)return JALIUM_ERROR_INVALID_STATE;
+    if(!layers&&layerCount)return JALIUM_ERROR_INVALID_ARGUMENT;
+    for(uint32_t i=layerCount;i>0;--i){const float* l=layers+(i-1)*7;
+        impl_->PaintAlphaShadow(l[0],l[1],l[2],l[3],l[4],l[5],l[6]);}
+    if(compositeSource)impl_->CompositeEffectSource(captureX,captureY,captureW,captureH);
+    return JALIUM_OK;
+}
+JaliumResult MetalRenderTarget::DrawColorMatrixChainEffect(float x,float y,float w,float h,
+    const float* matrices,uint32_t matrixCount)
+{
+    if(!impl_->drawing||!impl_->effectCapture.texture)return JALIUM_ERROR_INVALID_STATE;
+    if(!matrices||!matrixCount)return JALIUM_ERROR_INVALID_ARGUMENT;
+    if(matrixCount>64)return JALIUM_ERROR_NOT_SUPPORTED;
+    id<MTLTexture> source=impl_->effectCapture.texture;RectF bounds=impl_->effectCapture.bounds;
+    for(uint32_t i=0;i<matrixCount;++i){auto p=impl_->Params(nullptr,0);p[180]=1;
+        const float* m=matrices+i*20;
+        for(size_t row=0;row<4;++row){for(size_t col=0;col<4;++col)p[181+row*5+col]=m[row*4+col];
+            p[185+row*5]=m[16+row];}
+        source=impl_->EffectPass(source,p,impl_->effectPipeline,impl_->EffectQuad(x,y,w,h,source,bounds));
+        if(!source)return JALIUM_ERROR_OUT_OF_MEMORY;
+        bounds=TransformBounds(impl_->DeviceTransform(),x,y,w,h);
     }
-    PopClip();
+    auto p=impl_->Params(nullptr,0);
+    impl_->Draw(impl_->EffectQuad(x,y,w,h,source,bounds),impl_->texturePipeline,p,source,impl_->linearSampler);
+    return JALIUM_OK;
 }
 
 void MetalRenderTarget::DrawColorMatrixEffect(float x,float y,float w,float h,
@@ -2156,9 +3062,7 @@ void MetalRenderTarget::DrawColorMatrixEffect(float x,float y,float w,float h,
     MetalShaderParams p=impl_->Params(nullptr,0);p[180]=1;
     for(int i=0;i<20;++i)p[181+i]=matrix[i];
     RectF s=impl_->effectCapture.bounds;
-    impl_->Draw(impl_->Quad(x,y,w,h,s.x/impl_->effectCapture.texture.width,
-        s.y/impl_->effectCapture.texture.height,(s.x+s.width)/impl_->effectCapture.texture.width,
-        (s.y+s.height)/impl_->effectCapture.texture.height),impl_->effectPipeline,p,
+    impl_->Draw(impl_->EffectQuad(x,y,w,h,impl_->effectCapture.texture,s),impl_->effectPipeline,p,
         impl_->effectCapture.texture,impl_->linearSampler);
 }
 void MetalRenderTarget::DrawEmbossEffect(float x,float y,float w,float h,
@@ -2166,57 +3070,76 @@ void MetalRenderTarget::DrawEmbossEffect(float x,float y,float w,float h,
 {
     if(!impl_->effectCapture.texture)return;
     MetalShaderParams p=impl_->Params(nullptr,0);p[180]=2;
-    p[181]=lightX*relief/std::max<float>(impl_->effectCapture.texture.width,1);
-    p[182]=lightY*relief/std::max<float>(impl_->effectCapture.texture.height,1);
+    float length=std::hypot(lightX,lightY);if(length<1e-6f){lightX=1;lightY=0;length=1;}
+    float distance=std::max(1.0f,std::round(relief*impl_->EffectScale()));
+    p[181]=std::round(lightX/length*distance)/impl_->effectCapture.texture.width;
+    p[182]=std::round(lightY/length*distance)/impl_->effectCapture.texture.height;
     p[183]=amount;
     RectF s=impl_->effectCapture.bounds;
-    impl_->Draw(impl_->Quad(x,y,w,h,s.x/impl_->effectCapture.texture.width,
-        s.y/impl_->effectCapture.texture.height,(s.x+s.width)/impl_->effectCapture.texture.width,
-        (s.y+s.height)/impl_->effectCapture.texture.height),impl_->effectPipeline,p,
+    p[184]=(s.x+0.5f)/impl_->effectCapture.texture.width;p[185]=(s.y+0.5f)/impl_->effectCapture.texture.height;
+    p[186]=(s.x+s.width-0.5f)/impl_->effectCapture.texture.width;
+    p[187]=(s.y+s.height-0.5f)/impl_->effectCapture.texture.height;
+    impl_->Draw(impl_->EffectQuad(x,y,w,h,impl_->effectCapture.texture,s),impl_->effectPipeline,p,
         impl_->effectCapture.texture,impl_->linearSampler);
 }
 void MetalRenderTarget::DrawShaderEffect(float x,float y,float w,float h,
     const uint8_t*,uint32_t,const float*,uint32_t)
 {
-    // DXBC is a Windows-specific legacy payload. Preserve captured content and
-    // let the managed PixelShader raise its established invalid-shader signal.
-    if(impl_->effectCapture.texture)impl_->DrawTexture(impl_->effectCapture.texture,
-        x,y,w,h,1,0,impl_->effectCapture.bounds);
+    impl_->lastShaderResult=JALIUM_ERROR_NOT_SUPPORTED;
+    impl_->CompositeEffectSource(x,y,w,h);
 }
 void MetalRenderTarget::DrawShaderEffectFromSource(float x,float y,float w,float h,
     const char* hlsl,const float* constants,uint32_t constantCount)
 {
-    if(!impl_->effectCapture.texture)return;
-    id<MTLRenderPipelineState> pipeline=impl_->CustomPipeline(hlsl);
-    if(!pipeline){impl_->DrawTexture(impl_->effectCapture.texture,x,y,w,h,1,0,
-        impl_->effectCapture.bounds);return;}
-    RectF s=impl_->effectCapture.bounds;
-    auto vertices=impl_->Quad(x,y,w,h,s.x/impl_->effectCapture.texture.width,
-        s.y/impl_->effectCapture.texture.height,(s.x+s.width)/impl_->effectCapture.texture.width,
-        (s.y+s.height)/impl_->effectCapture.texture.height);
-    id<MTLRenderCommandEncoder> encoder=impl_->EnsureEncoder();NSUInteger offset=0;
-    if(!encoder||!impl_->UploadVertices(vertices.data(),vertices.size(),offset))return;
+    if(!impl_->drawing||!impl_->effectCapture.texture){impl_->lastShaderResult=JALIUM_ERROR_INVALID_STATE;return;}
+    uint32_t requiredBytes=0;
+    id<MTLRenderPipelineState> pipeline=impl_->CustomPipeline(hlsl,requiredBytes);
+    if(!pipeline){impl_->CompositeEffectSource(x,y,w,h);return;}
+    impl_->FlushVello();auto input=impl_->CropEffectInput();
+    auto output=impl_->NewTransientTexture(impl_->pixelWidth,impl_->pixelHeight);
+    if(!input||!output){impl_->lastShaderResult=JALIUM_ERROR_OUT_OF_MEMORY;impl_->CompositeEffectSource(x,y,w,h);return;}
+    auto previous=impl_->currentTarget;auto clips=std::move(impl_->clips);impl_->clips.clear();
+    impl_->currentTarget=output;
+    id<MTLRenderCommandEncoder> encoder=impl_->EnsureEncoder(true,MTLClearColorMake(0,0,0,0));
+    auto vertices=impl_->Quad(x,y,w,h);
+    // The input is a tight screen-space crop, including fractional padding.
+    // Derive each UV from its device position; local 0..1 UVs rotate the
+    // already transformed capture twice and shrink padded input into the box.
+    const auto capture=impl_->effectCapture.bounds;
+    const float inputX=std::floor(capture.x),inputY=std::floor(capture.y);
+    for(auto& vertex:vertices){vertex.u=(vertex.x-inputX)/input.width;
+        vertex.v=(vertex.y-inputY)/input.height;}
+    NSUInteger offset=0;
+    if(!encoder||!impl_->UploadVertices(vertices.data(),vertices.size(),offset)){
+        impl_->EndEncoder();impl_->currentTarget=previous;impl_->clips=std::move(clips);
+        impl_->UpdateClipScissor();impl_->lastShaderResult=JALIUM_ERROR_OUT_OF_MEMORY;return;}
     MetalShaderParams vertexParams=impl_->Params(nullptr,0);
-    uint32_t valueCount=std::max<uint32_t>(constantCount,4);
-    std::vector<float> zeroConstants(valueCount,0);
-    const float* values=constants?constants:zeroConstants.data();
+    uint32_t valueCount=(std::max<uint32_t>(std::max(constantCount,4u),
+        (requiredBytes+3)/4)+3)&~3u;
+    std::vector<float> values(valueCount,0);
+    if(constants)std::copy_n(constants,constantCount,values.data());
     [encoder setRenderPipelineState:pipeline];
-    [encoder setDepthStencilState:impl_->contentStencilState];
-    [encoder setStencilReferenceValue:static_cast<uint32_t>(
-        std::min<size_t>(impl_->clips.size(),255))];
+    [encoder setDepthStencilState:impl_->defaultDepthStencilState];
     [encoder setVertexBuffer:impl_->frame->vertices offset:offset atIndex:0];
-    [encoder setVertexBytes:vertexParams.data() length:vertexParams.size()*sizeof(float) atIndex:1];
+    [encoder setVertexBytes:vertexParams.data() length:2 * sizeof(float) atIndex:1];
     NSUInteger constantBytes=static_cast<NSUInteger>(valueCount)*sizeof(float);
-    if(constantBytes<=4096)[encoder setFragmentBytes:values length:constantBytes atIndex:0];
-    else{id<MTLBuffer> constantBuffer=[impl_->device newBufferWithBytes:values
+    if(constantBytes<=4096)[encoder setFragmentBytes:values.data() length:constantBytes atIndex:0];
+    else{id<MTLBuffer> constantBuffer=[impl_->device newBufferWithBytes:values.data()
             length:constantBytes options:MTLResourceStorageModeShared];
-        if(!constantBuffer)return;[impl_->frame->gpuRetainedObjects addObject:constantBuffer];
+        if(!constantBuffer){impl_->EndEncoder();impl_->currentTarget=previous;impl_->clips=std::move(clips);
+            impl_->UpdateClipScissor();impl_->lastShaderResult=JALIUM_ERROR_OUT_OF_MEMORY;return;}
+        [impl_->frame->gpuRetainedObjects addObject:constantBuffer];
         [encoder setFragmentBuffer:constantBuffer offset:0 atIndex:0];}
-    [encoder setFragmentTexture:impl_->effectCapture.texture atIndex:0];
-    [impl_->frame->gpuRetainedObjects addObject:impl_->effectCapture.texture];
+    [encoder setFragmentTexture:input atIndex:0];
+    [impl_->frame->gpuRetainedObjects addObject:input];
     [encoder setFragmentSamplerState:impl_->linearSampler atIndex:0];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+    impl_->EndEncoder();impl_->currentTarget=previous;impl_->clips=std::move(clips);impl_->UpdateClipScissor();
+    auto p=impl_->Params(nullptr,0);
+    auto bounds=TransformBounds(impl_->DeviceTransform(),x,y,w,h);
+    impl_->Draw(impl_->EffectQuad(x,y,w,h,output,bounds),impl_->texturePipeline,p,output,impl_->linearSampler);
 }
+JaliumResult MetalRenderTarget::GetLastShaderEffectResult() const {return impl_->lastShaderResult;}
 void MetalRenderTarget::DrawLiquidGlass(float x,float y,float w,float h,
     float corner,float blur,float refraction,float chromatic,float r,float g,
     float b,float tint,float lightX,float lightY,float highlight,int shape,
@@ -2227,7 +3150,15 @@ void MetalRenderTarget::DrawLiquidGlass(float x,float y,float w,float h,
     RectF captureBounds=TransformBounds(impl_->DeviceTransform(),x-padding,
         y-padding,w+padding*2,h+padding*2);
     CapturedTexture snap=impl_->Snapshot(captureBounds);
-    id<MTLTexture> blurred=impl_->Blur(snap.texture,blur);
+    const float scale=impl_->EffectScale();
+    // Refraction and the outer dispersion samples can reach beyond the
+    // glass outline. Bound them using the entire padded quad, including
+    // fusion bridges, rather than cropping to the un-refracted element.
+    float dispersionExtent=(w+padding*2)*(h+padding*2)/std::max(w*h,1.0f);
+    RectF sampled=Impl::Inflate(captureBounds,std::max(refraction,0.0f)*scale*
+        (1+std::max(chromatic,0.0f)*dispersionExtent));
+    auto result=impl_->Blur(snap.texture,blur*scale,0,JALIUM_BACKDROP_BLUR_GAUSSIAN,false,&sampled);
+    auto blurred=result.texture;
     if(!blurred)return;
     MetalShaderParams p=impl_->Params(nullptr,0);p[180]=4;
     p[340]=std::max(refraction,0.0f);p[341]=std::max(chromatic,0.0f);
@@ -2237,14 +3168,16 @@ void MetalRenderTarget::DrawLiquidGlass(float x,float y,float w,float h,
     p[351]=x;p[352]=y;p[353]=w;p[354]=h;p[355]=std::max(corner,0.0f);
     p[356]=static_cast<float>(blurred.width);p[357]=static_cast<float>(blurred.height);
     p[358]=impl_->dpiX/96.0f;p[359]=impl_->dpiY/96.0f;
-    int count=std::clamp(neighbors,0,4);p[360]=static_cast<float>(count);
+    int count=neighborData?std::clamp(neighbors,0,4):0;p[360]=static_cast<float>(count);
     p[361]=std::max(fusion,0.0f);
     if(neighborData)for(int i=0;i<count;++i)for(int j=0;j<5;++j)
         p[365+i*5+j]=neighborData[i*5+j];
+    p[385]=scale;p[386]=(p[358]+p[359])*0.5f;
+    Transform(impl_->DeviceTransform(),x+w*0.5f,y+h*0.5f,p[387],p[388]);
 
     auto vertices=impl_->Quad(x-padding,y-padding,w+padding*2,h+padding*2);
-    for(auto& vertex:vertices){vertex.u=vertex.x/std::max<float>(blurred.width,1);
-        vertex.v=vertex.y/std::max<float>(blurred.height,1);}
+    for(auto& vertex:vertices){vertex.u=(vertex.x-result.originX)/std::max<float>(blurred.width,1);
+        vertex.v=(vertex.y-result.originY)/std::max<float>(blurred.height,1);}
     impl_->Draw(vertices,impl_->effectPipeline,p,blurred,impl_->linearSampler);
 }
 
@@ -2341,6 +3274,17 @@ JaliumResult MetalRenderTarget::QueryGpuTiming(JaliumGpuTimingStats* out) const
     out->timingValid=impl_->framesSubmitted.load(std::memory_order_acquire)>0?1:0;
     return JALIUM_OK;
 }
+JaliumResult MetalRenderTarget::WaitForCompletion()
+{
+    if(impl_->drawing)return JALIUM_ERROR_INVALID_STATE;
+    // Diagnostic callers need completed GPU timestamps, not just submitted
+    // work. Normal frames remain asynchronous and never use this barrier.
+    for(uint32_t i=0;i<kFrameCount;++i)
+        dispatch_semaphore_wait(impl_->inFlight,DISPATCH_TIME_FOREVER);
+    for(uint32_t i=0;i<kFrameCount;++i)
+        dispatch_semaphore_signal(impl_->inFlight);
+    return impl_->backend->CheckDeviceStatus();
+}
 JaliumResult MetalRenderTarget::GetPresentInfo(JaliumPresentInfo* out) const
 {
     if(!out)return JALIUM_ERROR_INVALID_ARGUMENT;*out={};
@@ -2375,10 +3319,15 @@ JaliumResult MetalRenderTarget::ReclaimIdleResources()
     [impl_->retirementCommands removeAllObjects];
     impl_->effectCapture={};impl_->desktopCapture={};
     impl_->activeEffectCaptures.clear();
+    impl_->effectCaptureStyles.clear();impl_->effectCaptureAttempts.clear();
+    impl_->transitionCaptureStyles.clear();impl_->activeTransitionSlots.clear();
     impl_->textCache.clear();impl_->textCacheBytes=0;
+    impl_->pathCache.Clear();
+    impl_->gradientCache.clear();impl_->gradientCacheBytes=0;
     impl_->transitionSlots[0]={};impl_->transitionSlots[1]={};
     if(impl_->vello)impl_->vello->ReclaimIdleResources();
     for(auto& frame:impl_->frames){
+        frame.pathMask = nil; frame.pathMaskMsaa = nil; frame.pathStencil = nil;
         [frame.retiredBuffers removeAllObjects];
         [frame.transientResources removeAllObjects];
         [frame.gpuRetainedObjects removeAllObjects];
@@ -2408,6 +3357,12 @@ JaliumResult MetalRenderTarget::FetchReadback(uint8_t* buffer,uint32_t stride,
     if(stride<impl_->readbackWidth*4)return JALIUM_ERROR_INVALID_ARGUMENT;
     id<MTLCommandBuffer> command=impl_->readbackCommand;
     lock.unlock();[command waitUntilCompleted];lock.lock();
+    // Another fetch can consume this capture while the GPU fence is pending.
+    // Never report success for that consumed frame or read a newer capture.
+    if(impl_->readbackCommand!=command){
+        *outWidth=*outHeight=0;
+        return JALIUM_ERROR_INVALID_STATE;
+    }
     if(command.status==MTLCommandBufferStatusError)return JALIUM_ERROR_DEVICE_LOST;
     const uint8_t* source=static_cast<const uint8_t*>(impl_->readbackBuffer.contents);
     for(uint32_t y=0;y<impl_->readbackHeight;++y)

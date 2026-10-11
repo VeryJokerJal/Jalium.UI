@@ -1080,6 +1080,12 @@ public sealed class RenderTarget : IDisposable
         }
     }
 
+    internal bool DrawParagraphLine(NativeTextParagraph.Line line, float x, float y)
+    {
+        ThrowIfDisposed();
+        return line.DrawLine(_handle, x, y);
+    }
+
     /// <summary>
     /// Draws text while temporarily applying <paramref name="inverseMatrix"/> as
     /// a transient transform that is popped automatically. Bundles the
@@ -1245,6 +1251,27 @@ public sealed class RenderTarget : IDisposable
         }
         if (result == JaliumResult.NotSupported) return false;
         if (result != JaliumResult.Ok) throw new InvalidOperationException($"Path clip failed: {result}");
+        return true;
+    }
+
+    internal unsafe bool TryPushStrokePathClip(float[] commands, int length, Jalium.UI.Media.Pen pen,
+        float[]? dash, float phase, int edgeMode)
+    {
+        ThrowIfDisposed();
+        JaliumResult result;
+        fixed (float* commandPtr = commands)
+        fixed (float* dashPtr = dash)
+        {
+            try
+            {
+                result = NativeMethods.PushStrokePathClip(_handle, 0, 0, commandPtr, (uint)length,
+                    (float)pen.Thickness, 0, (int)pen.LineJoin, (float)pen.MiterLimit,
+                    (int)pen.DashCap, dashPtr, (uint)(dash?.Length ?? 0), phase, edgeMode);
+            }
+            catch (EntryPointNotFoundException) { return false; }
+        }
+        if (result == JaliumResult.NotSupported) return false;
+        if (result != JaliumResult.Ok) throw new InvalidOperationException($"Stroke path clip failed: {result}");
         return true;
     }
 
@@ -1943,6 +1970,22 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Tries to apply an element blur with an explicit kernel (0 Gaussian, 1 Box).
+    /// Older native payloads or backends without the extension return false.
+    /// </summary>
+    public bool TryDrawBlurEffectWithKernel(float x, float y, float w, float h,
+        float radius, int kernelType, float uvOffsetX = 0, float uvOffsetY = 0)
+    {
+        ThrowIfDisposed();
+        try
+        {
+            return NativeMethods.DrawBlurEffectWithKernel(_handle, x, y, w, h,
+                radius, kernelType, uvOffsetX, uvOffsetY) == 0;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    /// <summary>
     /// Applies a drop shadow effect to the captured element content and draws it.
     /// </summary>
     public void DrawDropShadowEffect(float x, float y, float w, float h,
@@ -2279,6 +2322,25 @@ public sealed class RenderTarget : IDisposable
         NativeMethods.DrawShaderEffectFromSource(_handle, x, y, w, h,
             hlslSource, constants, (uint)constants.Length);
         ApiEnd("DrawShaderEffectFromSource", t0);
+    }
+
+    private bool _shaderStatusAvailable = true;
+
+    internal bool LastShaderEffectSucceeded
+    {
+        get
+        {
+            if (_backend != RenderBackend.Metal || !_shaderStatusAvailable) return true;
+            try
+            {
+                return NativeMethods.GetLastShaderEffectResult(_handle) == JaliumResult.Ok;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                _shaderStatusAvailable = false;
+                return true;
+            }
+        }
     }
 
     /// <summary>
