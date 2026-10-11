@@ -1798,7 +1798,8 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         NSPoint point = NSEvent.mouseLocation;
         NSPoint local = [self convertPoint:[window convertPointFromScreen:point] fromView:nil];
         if (!NSPointInRect(local, self.visibleRect) ||
-            [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] != window.windowNumber) {
+            [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] != window.windowNumber ||
+            [self hitTest:[self convertPoint:local toView:self.superview]] != self) {
             [self restoreCursor];
             return;
         }
