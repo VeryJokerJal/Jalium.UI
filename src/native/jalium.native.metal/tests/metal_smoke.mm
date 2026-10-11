@@ -297,6 +297,7 @@ static void TestWindow()
 
     struct InputEvents {
         int starts = 0, updates = 0, ends = 0, characters = 0, backspaces = 0, pastes = 0;
+        int wheelPackets = 0;
         float wheelX = 0, wheelY = 0;
         std::string committed;
     } input;
@@ -309,6 +310,7 @@ static void TestWindow()
                 ++input.ends; input.committed = event->composition.utf8Text; break;
             case JALIUM_EVENT_CHAR_INPUT: ++input.characters; break;
             case JALIUM_EVENT_MOUSE_WHEEL:
+                ++input.wheelPackets;
                 input.wheelX = event->wheel.deltaX; input.wheelY = event->wheel.deltaY; break;
             case JALIUM_EVENT_KEY_DOWN:
                 if (event->key.keyCode == 0x08) ++input.backspaces;
@@ -333,17 +335,24 @@ static void TestWindow()
     Check(input.backspaces == 1, "Backspace was dispatched more than once");
     Check([view tryToPerform:@selector(paste:) with:nil] && input.pastes == 1,
         "AppKit Paste responder action did not dispatch the managed editing command");
+    // Queued pointer input is rejected while the native or logical window is
+    // hidden. Establish the visible state for these positive scroll packets,
+    // after the hidden-window geometry checks above have completed.
+    jalium_apple_window_show(window.get(), 0);
+    Check(view.window.visible, "AppKit scroll fixture did not become visible");
     JaliumSmokeScrollEvent* scroll = [JaliumSmokeScrollEvent new];
     scroll.precise = YES;
     scroll.scrollX = 24; scroll.scrollY = -48;
     [view scrollWheel:scroll];
-    Check(std::abs(input.wheelX + 0.5f) < 0.001f && std::abs(input.wheelY + 1) < 0.001f,
+    Check(input.wheelPackets == 1 && std::abs(input.wheelX + 0.5f) < 0.001f && std::abs(input.wheelY + 1) < 0.001f,
         "Precise AppKit scroll points were interpreted as wheel notches");
     scroll.precise = NO;
     scroll.scrollX = 1; scroll.scrollY = -3;
     [view scrollWheel:scroll];
-    Check(std::abs(input.wheelX + 1.0f / 3) < 0.001f && std::abs(input.wheelY + 1) < 0.001f,
+    Check(input.wheelPackets == 2 && std::abs(input.wheelX + 1.0f / 3) < 0.001f && std::abs(input.wheelY + 1) < 0.001f,
         "AppKit mouse-wheel lines were interpreted as wheel notches");
+    jalium_window_hide(window.get());
+    Check(!view.window.visible, "AppKit scroll fixture did not restore hidden state");
     jalium_window_set_event_callback(window.get(), nullptr, nullptr);
 
     int wakes = 0;
