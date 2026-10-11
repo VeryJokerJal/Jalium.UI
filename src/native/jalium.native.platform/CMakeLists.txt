@@ -446,6 +446,14 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
             "$<TARGET_BUNDLE_DIR:jalium.native.platform.window.app.tests>"
         VERBATIM)
     add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.app.tests)
+    add_executable(jalium.native.platform.window.validation-loop.tests
+        tests/platform_apple_window_validation_loop_tests.mm)
+    target_compile_options(jalium.native.platform.window.validation-loop.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.validation-loop.tests PRIVATE "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.validation-loop.tests)
+    add_test(NAME jalium.native.platform.macos.window.validation-loop
+        COMMAND jalium.native.platform.window.validation-loop.tests)
+    set_tests_properties(jalium.native.platform.macos.window.validation-loop PROPERTIES TIMEOUT 5)
     add_test(NAME jalium.native.platform.macos.window COMMAND "${CMAKE_COMMAND}"
         "-DHOST_APP=$<TARGET_BUNDLE_DIR:jalium.native.platform.window.app.tests>"
         "-DHOST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/window-app-runs"

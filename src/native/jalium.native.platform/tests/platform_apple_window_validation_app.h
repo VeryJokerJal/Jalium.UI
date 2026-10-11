@@ -12,6 +12,14 @@ static bool UsesAutomatedWindowValidationHost()
     return [[[NSBundle mainBundle] objectForInfoDictionaryKey:@"JaliumAutomatedWindowHost"] boolValue];
 }
 
+static void ScheduleWindowValidationContracts(dispatch_block_t contracts)
+{
+    // A main-queue block cannot drain further main-queue work while a contract
+    // spins a nested AppKit run loop. A timer keeps transition completions and
+    // their queued state/selection requests able to run during those waits.
+    [NSTimer scheduledTimerWithTimeInterval:0 repeats:NO block:^(NSTimer*) { contracts(); }];
+}
+
 static int RunAutomatedWindowValidation(int argc, char** argv, int (*contracts)(int, char**))
 {
     NSString* directory = nil;
@@ -49,7 +57,7 @@ static int RunAutomatedWindowValidation(int argc, char** argv, int (*contracts)(
         if (name && std::strstr(name, "libjalium.native.")) std::printf("HOST_LOADED %s\n", name);
     }
     __block int result = 5;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    ScheduleWindowValidationContracts(^{
         result = contracts(1, argv);
         std::printf("HOST_FINISHED pid=%d result=%d\n", getpid(), result);
         [NSApp stop:nil];
