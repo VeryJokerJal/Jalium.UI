@@ -121,6 +121,11 @@ static void DelegateEvent(SEL selector)
 - (NSInteger)draggingSequenceNumber { return 171; }
 - (id)draggingSource { return nil; }
 @end
+@interface JaliumCursorPassThroughView : NSView
+@end
+@implementation JaliumCursorPassThroughView
+- (NSView*)hitTest:(NSPoint)point { return nil; }
+@end
 static void Gesture(int button, int phase)
 {
     auto* event = [JaliumCursorGestureEvent new];
@@ -184,6 +189,41 @@ static void Probe(uint32_t style, const char* name)
     ResetCalls(); jalium_window_set_cursor(window, JALIUM_CURSOR_HIDDEN);
     Check(NoCursorChange() && balance == 0, "inactive application cannot add a hide request");
     ResetShape(window); active = true;
+
+    Inside();
+    NSTextField* nativeChild = [[NSTextField alloc] initWithFrame:NSInsetRect(controlledView.bounds,
+        NSWidth(controlledView.bounds) / 4, NSHeight(controlledView.bounds) / 4)];
+    [controlledView addSubview:nativeChild];
+    NSPoint childPoint = [controlledView convertPoint:
+        NSMakePoint(NSMidX(controlledView.bounds), NSMidY(controlledView.bounds)) toView:controlledView.superview];
+    Check([controlledView hitTest:childPoint] == nativeChild, "SDK hit testing reaches the embedded native text field");
+    ResetCalls(); jalium_window_set_cursor(window, JALIUM_CURSOR_HAND);
+    Check(NoCursorChange(), "native child cursor is not replaced by its platform parent");
+    ResetCalls(); jalium_window_set_cursor(window, JALIUM_CURSOR_HIDDEN);
+    Check(NoCursorChange() && balance == 0, "native child cursor is not hidden by its platform parent");
+    nativeChild.hidden = YES; ResetCalls(); UpdateCursor();
+    Check(hides == 1 && balance == 1, "hidden native child no longer blocks the parent's configured cursor");
+    nativeChild.hidden = NO; ResetCalls(); UpdateCursor();
+    Check(unhides == 1 && !sets && balance == 0, "revealing a native child releases its parent's hide");
+    ResetShape(window);
+    NSPoint edge = NSMakePoint(NSMinX(controlledView.bounds) + 5, NSMinY(controlledView.bounds) + 5);
+    pointer = [controlledWindow convertPointToScreen:[controlledView convertPoint:edge toView:nil]];
+    Check([controlledView hitTest:[controlledView convertPoint:edge toView:controlledView.superview]] == controlledView,
+        "captured gesture starts on the platform view outside the native child");
+    pressedButtons = 1; jalium_window_set_cursor(window, JALIUM_CURSOR_HIDDEN); Gesture(0, 0);
+    Inside(); ResetCalls(); Gesture(0, 1);
+    Check(NoCursorChange() && balance == 1, "captured parent gesture keeps its cursor over a native child");
+    pressedButtons = 0; ResetCalls(); Gesture(0, 2);
+    Check(unhides == 1 && !sets && balance == 0, "release over a native child immediately returns cursor ownership");
+    ResetShape(window); jalium_window_set_cursor(window, JALIUM_CURSOR_HAND);
+    [nativeChild removeFromSuperview]; ResetCalls(); UpdateCursor();
+    Check(sets == 1 && !hides && !unhides, "removing the native child applies the parent's deferred shape");
+    NSView* overlay = [[JaliumCursorPassThroughView alloc] initWithFrame:controlledView.bounds];
+    [controlledView addSubview:overlay];
+    Check([controlledView hitTest:childPoint] == controlledView, "SDK hit testing skips a pass-through overlay");
+    ResetCalls(); UpdateCursor();
+    Check(sets == 1 && !hides && !unhides, "pass-through native overlay preserves platform cursor ownership");
+    [overlay removeFromSuperview]; ResetShape(window);
 
     Outside();
     jalium_window_set_cursor(window, JALIUM_CURSOR_HAND);

@@ -464,6 +464,32 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.platform.macos.window.cursor-ownership
         COMMAND jalium.native.platform.window.cursor.tests)
     set_tests_properties(jalium.native.platform.macos.window.cursor-ownership PROPERTIES TIMEOUT 10)
+    # Build and launch explicitly for physical pointer acceptance. Never run
+    # this interactive host in CTest or include it in the production payload.
+    add_executable(jalium.native.platform.cursor.live MACOSX_BUNDLE EXCLUDE_FROM_ALL
+        tests/platform_apple_cursor_live.mm)
+    target_include_directories(jalium.native.platform.cursor.live PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.cursor.live PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.cursor.live PRIVATE ${PROJECT_NAME}
+        "-framework AppKit" "-framework ApplicationServices")
+    set_target_properties(jalium.native.platform.cursor.live PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_apple_cursor_live_Info.plist.in"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cursor-live-apps/$<CONFIG>"
+        INSTALL_RPATH "@executable_path/../Frameworks")
+    foreach(_cursor_configuration DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        set_property(TARGET jalium.native.platform.cursor.live PROPERTY
+            RUNTIME_OUTPUT_DIRECTORY_${_cursor_configuration} "${CMAKE_CURRENT_BINARY_DIR}/cursor-live-apps/$<CONFIG>")
+    endforeach()
+    add_custom_command(TARGET jalium.native.platform.cursor.live POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_BUNDLE_CONTENT_DIR:jalium.native.platform.cursor.live>/Frameworks"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:${PROJECT_NAME}>" "$<TARGET_FILE:jalium.native.core>"
+            "$<TARGET_BUNDLE_CONTENT_DIR:jalium.native.platform.cursor.live>/Frameworks"
+        COMMAND /usr/bin/codesign --force --deep --sign -
+            "$<TARGET_BUNDLE_DIR:jalium.native.platform.cursor.live>"
+        VERBATIM)
     add_executable(jalium.native.platform.window.fullscreen-restore.tests
         tests/platform_apple_fullscreen_restore_tests.mm)
     target_include_directories(jalium.native.platform.window.fullscreen-restore.tests PRIVATE
