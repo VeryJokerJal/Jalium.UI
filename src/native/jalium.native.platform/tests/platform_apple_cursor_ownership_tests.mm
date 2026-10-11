@@ -433,12 +433,18 @@ static void ProbeReentrant(uint32_t style, const char* name)
         "reentrant SDK hit tests keep the real native window hidden");
     JaliumCursorReentrantView* child = [[JaliumCursorReentrantView alloc] initWithFrame:controlledView.bounds];
     [controlledView addSubview:child];
+    NSRect clientFrame = controlledView.frame;
+    NSRect ancestorFrame = controlledView.superview.frame;
     SEL restore = @selector(restoreCursor);
     auto reset = [&] {
         // Isolate cases even if the baseline issued an invalid hide. This is
         // private cursor-call cleanup, never evidence that the product passed.
         reinterpret_cast<void(*)(id, SEL)>([controlledView methodForSelector:restore])(controlledView, restore);
         controlledView.hidden = NO; controlledView.superview.hidden = NO;
+        controlledView.superview.frame = ancestorFrame;
+        controlledView.frame = clientFrame;
+        for (NSView* view in controlledView.subviews.copy)
+            if (view != child) [view removeFromSuperview];
         active = visible = true; miniaturized = sheet = false;
         jalium_window_set_enabled(window, 1); jalium_apple_window_show(window, 0);
         Inside(); ResetShape(window);
@@ -457,6 +463,19 @@ static void ProbeReentrant(uint32_t style, const char* name)
     check(^{ Outside(); }, "hit-test pointer departure cannot apply an obsolete hit");
     check(^{ hitWindow += 1000; }, "hit-test occlusion cannot apply an obsolete hit");
     check(^{ jalium_window_move(window, 1000, 1000); }, "hit-test window movement cannot apply obsolete client coordinates");
+    check(^{
+        NSRect frame = controlledView.frame; frame.size.width /= 4;
+        controlledView.frame = frame;
+    }, "hit-test client contraction cannot apply a now-clipped point");
+    check(^{
+        NSRect frame = controlledView.superview.frame; frame.size.width /= 4;
+        controlledView.superview.frame = frame;
+    }, "hit-test ancestor contraction cannot apply a now-clipped point");
+    check(^{
+        NSTextField* nativeChild = [[NSTextField alloc] initWithFrame:NSInsetRect(controlledView.bounds,
+            NSWidth(controlledView.bounds) / 4, NSHeight(controlledView.bounds) / 4)];
+        [controlledView addSubview:nativeChild positioned:NSWindowAbove relativeTo:child];
+    }, "hit-test native child insertion cannot retain the parent's cursor");
     reset(); child.onHit = ^{ jalium_window_destroy(window); }; ResetCalls();
     jalium_window_set_cursor(window, JALIUM_CURSOR_HIDDEN);
     Check(NoCursorChange() && balance == 0, "hit-test destruction cannot revive the retained view's cursor");

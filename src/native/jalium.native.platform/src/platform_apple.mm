@@ -1808,23 +1808,30 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         NSPoint point = NSEvent.mouseLocation;
         NSPoint local = [self convertPoint:[window convertPointFromScreen:point] fromView:nil];
         if (!NSPointInRect(local, self.visibleRect) ||
-            [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] != window.windowNumber ||
-            [self hitTest:[self convertPoint:local toView:self.superview]] != self) {
+            [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] != window.windowNumber) {
             [self restoreCursor];
             return;
         }
-        // An embedded hitTest can hide/close/disable the window or move its
-        // geometry/pointer. Do not apply the old hit after that callback.
-        if (![self canApplyCursorForWindow:window]) {
-            [self cancelCursorTracking];
-            return;
-        }
-        NSPoint currentPoint = NSEvent.mouseLocation;
-        NSPoint currentLocal = [self convertPoint:[window convertPointFromScreen:currentPoint] fromView:nil];
-        if (!NSEqualPoints(point, currentPoint) || !NSEqualPoints(local, currentLocal) ||
-            [NSWindow windowNumberAtPoint:currentPoint belowWindowWithWindowNumber:0] != window.windowNumber) {
-            [self restoreCursor];
-            return;
+        // Recheck once: a callback can insert a native child while the first
+        // SDK traversal still returns this parent. Revalidate lifecycle and
+        // visible geometry after each call without an unbounded retry loop.
+        for (int pass = 0; pass < 2; ++pass) {
+            if ([self hitTest:[self convertPoint:local toView:self.superview]] != self) {
+                [self restoreCursor];
+                return;
+            }
+            if (![self canApplyCursorForWindow:window]) {
+                [self cancelCursorTracking];
+                return;
+            }
+            NSPoint currentPoint = NSEvent.mouseLocation;
+            NSPoint currentLocal = [self convertPoint:[window convertPointFromScreen:currentPoint] fromView:nil];
+            if (!NSEqualPoints(point, currentPoint) || !NSEqualPoints(local, currentLocal) ||
+                !NSPointInRect(currentLocal, self.visibleRect) ||
+                [NSWindow windowNumberAtPoint:currentPoint belowWindowWithWindowNumber:0] != window.windowNumber) {
+                [self restoreCursor];
+                return;
+            }
         }
     }
     if (![self canApplyCursorForWindow:window]) {
