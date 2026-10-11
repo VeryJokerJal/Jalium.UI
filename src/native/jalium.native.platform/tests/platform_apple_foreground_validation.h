@@ -13,7 +13,7 @@ static bool UsesForegroundValidationHost()
     bool enabled = [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumForegroundValidation"] boolValue];
     if (enabled) {
         NSString* path = [NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumForegroundValidationLog"];
-        if (path.length && (!std::freopen(path.fileSystemRepresentation, "w", stdout)
+        if (path.length && (!std::freopen(path.fileSystemRepresentation, "a", stdout)
             || dup2(fileno(stdout), fileno(stderr)) < 0)) std::exit(4);
         std::setvbuf(stdout, nullptr, _IOLBF, 0);
     }

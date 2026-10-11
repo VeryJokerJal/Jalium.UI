@@ -1479,6 +1479,13 @@ static int RunWindowContracts(int argc, char** argv)
         Check(minimized, "queue minimize during fullscreen transition");
         jalium_window_set_state(window, JALIUM_WINDOW_STATE_NORMAL);
         Check(WaitUntil([&] { return jalium_window_get_state(window) == JALIUM_WINDOW_STATE_NORMAL; }), "restore queued transition");
+        Check(NSEqualRects(native.frame, normal), "queued fullscreen minimize retains normal frame");
+        jalium_window_set_state(window, JALIUM_WINDOW_STATE_FULLSCREEN);
+        Check(WaitUntil([&] { return jalium_window_get_state(window) == JALIUM_WINDOW_STATE_FULLSCREEN; }),
+            "enter fullscreen before direct normal restore");
+        jalium_window_set_state(window, JALIUM_WINDOW_STATE_NORMAL);
+        Check(WaitUntil([&] { return jalium_window_get_state(window) == JALIUM_WINDOW_STATE_NORMAL; }) &&
+            NSEqualRects(native.frame, normal), "direct fullscreen exit retains normal frame");
 
         CheckAccessibilityActivationWrites(regular);
         CheckAccessibilityActivationWrites((regular & ~JALIUM_WINDOW_STYLE_TITLEBAR) | JALIUM_WINDOW_STYLE_BORDERLESS);
