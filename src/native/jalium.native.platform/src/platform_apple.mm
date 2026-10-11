@@ -1945,97 +1945,144 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     _cursorTrackingArea = area;
     [self addTrackingArea:area];
 }
-- (void)dispatchMouse:(NSEvent*)native type:(JaliumEventType)type button:(int32_t)button {
-    if (!_jaliumOwner || !_jaliumOwner->enabled) return;
-    NSInteger nativeButton = native.buttonNumber;
-    if (nativeButton >= 0 && nativeButton <= 4) {
-        NSUInteger bit = NSUInteger(1) << nativeButton;
-        bool available = NSApp.active && self.window.visible && !self.window.miniaturized &&
-            !self.window.attachedSheet && !self.hiddenOrHasHiddenAncestor && !_jaliumOwner->miniaturizing;
-        if (available && (type == JALIUM_EVENT_MOUSE_DOWN || native.type == NSEventTypeLeftMouseDragged ||
-            native.type == NSEventTypeRightMouseDragged || native.type == NSEventTypeOtherMouseDragged))
-            _cursorMouseButtons |= bit;
-        else if (type == JALIUM_EVENT_MOUSE_UP) _cursorMouseButtons &= ~bit;
+- (BOOL)canDispatchPointerForWindow:(NSWindow*)window owner:(JaliumPlatformWindow*)owner {
+    // Native queries can hide, detach or destroy an embedded surface. Recheck
+    // the original registration before reading its owner, and read readiness
+    // twice so a query returning its pre-callback value cannot revive input.
+    for (int pass = 0; pass < 2; ++pass) {
+        if (!owner || !window || _jaliumOwner != owner || !IsLiveWindow(owner, window)) return NO;
+        BOOL ready = self.window == window && window.visible && !window.miniaturized &&
+            !window.attachedSheet && !self.hiddenOrHasHiddenAncestor;
+        if (!ready || self.window != window || _jaliumOwner != owner ||
+            !IsLiveWindow(owner, window) || owner->destroying || !owner->enabled ||
+            !owner->visible || owner->miniaturizing) return NO;
     }
-    NSPoint point=[self convertPoint:native.locationInWindow fromView:nil];
-    JaliumPlatformEvent event{}; event.type=type;
-    event.mouse.x=point.x*_jaliumOwner->scale;event.mouse.y=point.y*_jaliumOwner->scale;
-    event.mouse.button=button;event.mouse.modifiers=ModifiersFromFlags(native.modifierFlags);
-    event.mouse.clickCount=static_cast<int32_t>(native.clickCount);
-    NSUInteger buttons = NSEvent.pressedMouseButtons;
-    if (native.type == NSEventTypeLeftMouseDown || native.type == NSEventTypeLeftMouseDragged) buttons |= 1;
-    else if (native.type == NSEventTypeLeftMouseUp) buttons &= ~NSUInteger(1);
-    if (native.type == NSEventTypeRightMouseDown || native.type == NSEventTypeRightMouseDragged) buttons |= 2;
-    else if (native.type == NSEventTypeRightMouseUp) buttons &= ~NSUInteger(2);
-    if (native.type == NSEventTypeOtherMouseDown || native.type == NSEventTypeOtherMouseDragged) buttons |= NSUInteger(1) << native.buttonNumber;
-    else if (native.type == NSEventTypeOtherMouseUp) buttons &= ~(NSUInteger(1) << native.buttonNumber);
-    event.mouse.buttonStates = 0x80000000 | (static_cast<uint32_t>(buttons) & 0x1f);
-    DispatchWindowEvent(_jaliumOwner,event);
+    return YES;
 }
-- (void)mouseMoved:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_MOVE button:0];[self applyCursor];}
+- (void)dispatchMouse:(NSEvent*)native type:(JaliumEventType)type button:(int32_t)button {
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) client = self;
+    JaliumPlatformWindow* owner = client.jaliumOwner;
+    NSWindow* __attribute__((objc_precise_lifetime)) window = client.window;
+    if (![client canDispatchPointerForWindow:window owner:owner]) {
+        [client cancelCursorTracking];
+        return;
+    }
+    // Snapshot SDK values before using the owner. Any event/view getter can
+    // run embedding code, including the other-button query formerly made by
+    // an unretained wrapper before this method entered.
+    NSInteger nativeButton = native.buttonNumber;
+    NSEventType nativeType = native.type;
+    if (button < 0) {
+        if (nativeButton < 2 || nativeButton > 4) {
+            if (![client canDispatchPointerForWindow:window owner:owner]) [client cancelCursorTracking];
+            return;
+        }
+        button = static_cast<int32_t>(nativeButton);
+    }
+    NSPoint location = native.locationInWindow;
+    NSEventModifierFlags modifiers = native.modifierFlags;
+    int32_t clickCount = static_cast<int32_t>(native.clickCount);
+    NSUInteger buttons = NSEvent.pressedMouseButtons;
+    BOOL active = NSApp.active;
+    NSPoint point = [client convertPoint:location fromView:nil];
+    if (![client canDispatchPointerForWindow:window owner:owner]) {
+        [client cancelCursorTracking];
+        return;
+    }
+    bool knownButton = nativeButton >= 0 && nativeButton <= 4;
+    if (knownButton) {
+        NSUInteger bit = NSUInteger(1) << nativeButton;
+        if (active && (type == JALIUM_EVENT_MOUSE_DOWN || nativeType == NSEventTypeLeftMouseDragged ||
+            nativeType == NSEventTypeRightMouseDragged || nativeType == NSEventTypeOtherMouseDragged))
+            client->_cursorMouseButtons |= bit;
+        else if (type == JALIUM_EVENT_MOUSE_UP) client->_cursorMouseButtons &= ~bit;
+    }
+    JaliumPlatformEvent event{}; event.type=type;
+    event.mouse.x=point.x*owner->scale;event.mouse.y=point.y*owner->scale;
+    event.mouse.button=button;event.mouse.modifiers=ModifiersFromFlags(modifiers);
+    event.mouse.clickCount=clickCount;
+    if (nativeType == NSEventTypeLeftMouseDown || nativeType == NSEventTypeLeftMouseDragged) buttons |= 1;
+    else if (nativeType == NSEventTypeLeftMouseUp) buttons &= ~NSUInteger(1);
+    if (nativeType == NSEventTypeRightMouseDown || nativeType == NSEventTypeRightMouseDragged) buttons |= 2;
+    else if (nativeType == NSEventTypeRightMouseUp) buttons &= ~NSUInteger(2);
+    if (knownButton && (nativeType == NSEventTypeOtherMouseDown || nativeType == NSEventTypeOtherMouseDragged))
+        buttons |= NSUInteger(1) << nativeButton;
+    else if (knownButton && nativeType == NSEventTypeOtherMouseUp) buttons &= ~(NSUInteger(1) << nativeButton);
+    event.mouse.buttonStates = 0x80000000 | (static_cast<uint32_t>(buttons) & 0x1f);
+    DispatchWindowEvent(owner,event);
+    // The callback can destroy the owner and release its content view. Cursor
+    // work must finish while this method still retains the original client.
+    if (type == JALIUM_EVENT_MOUSE_MOVE || type == JALIUM_EVENT_MOUSE_UP) [client applyCursor];
+}
+- (void)mouseMoved:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_MOVE button:0];}
 - (void)mouseDragged:(NSEvent*)e {[self mouseMoved:e];}
 - (void)rightMouseDragged:(NSEvent*)e {[self mouseMoved:e];}
 - (void)otherMouseDragged:(NSEvent*)e {[self mouseMoved:e];}
 - (void)mouseDown:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_DOWN button:JALIUM_MOUSE_BUTTON_LEFT];}
-- (void)mouseUp:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:JALIUM_MOUSE_BUTTON_LEFT];[self applyCursor];}
+- (void)mouseUp:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:JALIUM_MOUSE_BUTTON_LEFT];}
 - (void)rightMouseDown:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_DOWN button:JALIUM_MOUSE_BUTTON_RIGHT];}
-- (void)rightMouseUp:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:JALIUM_MOUSE_BUTTON_RIGHT];[self applyCursor];}
+- (void)rightMouseUp:(NSEvent*)e {[self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:JALIUM_MOUSE_BUTTON_RIGHT];}
 - (void)otherMouseDown:(NSEvent*)e {
-    if (e.buttonNumber >= 2 && e.buttonNumber <= 4)
-        [self dispatchMouse:e type:JALIUM_EVENT_MOUSE_DOWN button:static_cast<int32_t>(e.buttonNumber)];
+    [self dispatchMouse:e type:JALIUM_EVENT_MOUSE_DOWN button:-1];
 }
 - (void)otherMouseUp:(NSEvent*)e {
-    if (e.buttonNumber >= 2 && e.buttonNumber <= 4) {
-        [self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:static_cast<int32_t>(e.buttonNumber)];
-        [self applyCursor];
-    }
+    [self dispatchMouse:e type:JALIUM_EVENT_MOUSE_UP button:-1];
 }
 - (void)mouseEntered:(NSEvent*)e {
     // AppKit can deliver an already-queued tracking entry after Hide, detach
     // or minimization. It must not revive hover on an unavailable surface.
     JaliumAppleView* __attribute__((objc_precise_lifetime)) client = self;
-    NSWindow* __attribute__((objc_precise_lifetime)) window = client.window;
     JaliumPlatformWindow* owner = client.jaliumOwner;
-    if (!owner || !window || !IsLiveWindow(owner, window)) {
-        [client cancelCursorTracking];
-        return;
-    }
-    BOOL visible = window.visible && !window.miniaturized && !client.hiddenOrHasHiddenAncestor;
-    // Native queries can close the window or replace its view. Revalidate
-    // identity before reading the managed owner or dispatching its event.
-    if (!visible || client.window != window || client.jaliumOwner != owner ||
-        !IsLiveWindow(owner, window) || owner->destroying || !owner->enabled ||
-        !owner->visible || owner->miniaturizing) {
+    NSWindow* __attribute__((objc_precise_lifetime)) window = client.window;
+    if (![client canDispatchPointerForWindow:window owner:owner]) {
         [client cancelCursorTracking];
         return;
     }
     DispatchSimple(owner,JALIUM_EVENT_MOUSE_ENTER);[client applyCursor];
 }
 - (void)mouseExited:(NSEvent*)e {
-    if (!_jaliumOwner || !_jaliumOwner->enabled) return;
-    DispatchSimple(_jaliumOwner,JALIUM_EVENT_MOUSE_LEAVE);[self applyCursor];
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) client = self;
+    JaliumPlatformWindow* owner = client.jaliumOwner;
+    if (!owner || !IsLiveWindow(owner) || !owner->enabled) return;
+    DispatchSimple(owner,JALIUM_EVENT_MOUSE_LEAVE);[client applyCursor];
 }
 - (void)scrollWheel:(NSEvent*)native {
-    if (!_jaliumOwner || !_jaliumOwner->enabled) return;
-    NSPoint point=[self convertPoint:native.locationInWindow fromView:nil];
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) client = self;
+    JaliumPlatformWindow* owner = client.jaliumOwner;
+    NSWindow* __attribute__((objc_precise_lifetime)) window = client.window;
+    if (![client canDispatchPointerForWindow:window owner:owner]) {
+        [client cancelCursorTracking];
+        return;
+    }
+    NSPoint location = native.locationInWindow;
+    BOOL precise = native.hasPreciseScrollingDeltas;
+    CGFloat deltaX = native.scrollingDeltaX, deltaY = native.scrollingDeltaY;
+    NSEventModifierFlags modifiers = native.modifierFlags;
+    NSEventPhase phase = native.phase, momentum = native.momentumPhase;
+    NSUInteger buttons = NSEvent.pressedMouseButtons;
+    NSPoint point=[client convertPoint:location fromView:nil];
+    if (![client canDispatchPointerForWindow:window owner:owner]) {
+        [client cancelCursorTracking];
+        return;
+    }
     JaliumPlatformEvent event{};event.type=JALIUM_EVENT_MOUSE_WHEEL;
-    event.wheel.x=point.x*_jaliumOwner->scale;event.wheel.y=point.y*_jaliumOwner->scale;
+    event.wheel.x=point.x*owner->scale;event.wheel.y=point.y*owner->scale;
     // The platform ABI carries wheel notches. Managed scrolling expands one
     // notch to three 16-point lines; AppKit instead supplies points for precise
     // devices and individual lines for a conventional mouse wheel.
-    const CGFloat unitsPerNotch = native.hasPreciseScrollingDeltas ? 48.0 : 3.0;
+    const CGFloat unitsPerNotch = precise ? 48.0 : 3.0;
     // AppKit's positive X moves toward the start; the shared ABI uses rightward X.
     // AppKit has already applied the user's natural-scrolling preference.
-    event.wheel.deltaX=-native.scrollingDeltaX/unitsPerNotch;
-    event.wheel.deltaY=native.scrollingDeltaY/unitsPerNotch;
-    event.wheel.modifiers=ModifiersFromFlags(native.modifierFlags);
-    event.wheel.isPrecise=native.hasPreciseScrollingDeltas;
-    event.wheel.phase=static_cast<int32_t>(native.phase);
-    event.wheel.momentumPhase=static_cast<int32_t>(native.momentumPhase);
+    event.wheel.deltaX=-deltaX/unitsPerNotch;
+    event.wheel.deltaY=deltaY/unitsPerNotch;
+    event.wheel.modifiers=ModifiersFromFlags(modifiers);
+    event.wheel.isPrecise=precise;
+    event.wheel.phase=static_cast<int32_t>(phase);
+    event.wheel.momentumPhase=static_cast<int32_t>(momentum);
     // Wheel and momentum packets can arrive while a button is held, or after
     // its release outside this view. Publish the current system snapshot.
-    event.wheel.buttonStates=0x80000000 | (static_cast<uint32_t>(NSEvent.pressedMouseButtons) & 0x1f);
-    DispatchWindowEvent(_jaliumOwner,event);
+    event.wheel.buttonStates=0x80000000 | (static_cast<uint32_t>(buttons) & 0x1f);
+    DispatchWindowEvent(owner,event);
 }
 - (void)keyDown:(NSEvent*)native {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;

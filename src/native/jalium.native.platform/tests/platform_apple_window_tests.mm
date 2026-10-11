@@ -1295,6 +1295,8 @@ static int RunWindowContracts(int argc, char** argv)
         Check(events.size() == 2 && events[0].type == JALIUM_EVENT_KEY_DOWN && events[0].key.keyCode == 0xa0 &&
             events[1].type == JALIUM_EVENT_KEY_UP && (events[1].key.modifiers & JALIUM_MOD_SHIFT),
             "releasing left Shift while right Shift stays down produces the correct key-up");
+        jalium_apple_window_show(window, 0);
+        Check(native.visible, "show the side-button fixture without activation");
         auto* mouseButtons = [JaliumWindowTestMouseEvent new];
         for (int button = 2; button <= 4; ++button) {
             mouseButtons.testButton = button;
@@ -1305,6 +1307,8 @@ static int RunWindowContracts(int argc, char** argv)
         mouseButtons.testButton = 5;
         events.clear(); [view otherMouseDown:mouseButtons];
         Check(events.empty(), "unsupported extra mouse buttons are ignored");
+        jalium_window_hide(window);
+        Check(!native.visible, "restore the hidden property fixture after side-button input");
         jalium_window_update_ime_context(window, 1, nullptr, 0, 0, 80, 120, 4, 36);
 
         NSRect beforeTransition = native.frame;

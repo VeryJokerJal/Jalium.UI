@@ -202,6 +202,12 @@ static void Probe(uint32_t style, const char* name)
     Check(NoCursorChange() && balance == 0, "inactive application cannot add a hide request");
     ResetShape(window); active = true;
 
+    // Establish logical Show while covered. The interposed orderFront keeps
+    // the actual SDK window hidden; positive gestures still require Show.
+    hitWindow += 1000;
+    jalium_apple_window_show(window, 0);
+    Check(!reinterpret_cast<BOOL(*)(id, SEL)>(originalVisible)(controlledWindow, @selector(isVisible)),
+        "logical hover setup leaves the actual native window hidden");
     Inside();
     NSTextField* nativeChild = [[NSTextField alloc] initWithFrame:NSInsetRect(controlledView.bounds,
         NSWidth(controlledView.bounds) / 4, NSHeight(controlledView.bounds) / 4)];
@@ -306,11 +312,6 @@ static void Probe(uint32_t style, const char* name)
     hitWindow += 1000; ResetCalls(); [controlledView mouseExited:controlledEvent];
     Check(unhides == 1 && !sets && !hides && !clears && balance == 0,
         "mouse exit releases its hide without forcing an arrow over another view");
-    // Establish the logical Show prerequisite while the pointer is still
-    // covered. orderFront is interposed, so the native window stays hidden.
-    jalium_apple_window_show(window, 0);
-    Check(!reinterpret_cast<BOOL(*)(id, SEL)>(originalVisible)(controlledWindow, @selector(isVisible)),
-        "logical hover setup leaves the actual native window hidden");
     Inside(); ResetCalls(); [controlledView mouseEntered:controlledEvent];
     Check(hides == 1 && balance == 1, "mouse entry reapplies the configured hidden cursor");
     sheet = true; ResetCalls(); UpdateCursor();
@@ -337,6 +338,11 @@ static void Probe(uint32_t style, const char* name)
     hitWindow += 1000; ResetCalls(); DelegateEvent(@selector(windowDidBecomeKey:));
     Check(NoCursorChange(), "activation does not replace another window's cursor");
 
+    // The previous Hide retired logical input. Restore it while covered before
+    // the positive capture cases; the SDK window still stays hidden.
+    jalium_apple_window_show(window, 0);
+    Check(!reinterpret_cast<BOOL(*)(id, SEL)>(originalVisible)(controlledWindow, @selector(isVisible)),
+        "restored gesture setup leaves the actual native window hidden");
     for (int button = 0; button < 5; ++button) {
         Inside(); ResetShape(window); pressedButtons = NSUInteger(1) << button;
         jalium_window_set_cursor(window, JALIUM_CURSOR_HIDDEN); Gesture(button, 0);
