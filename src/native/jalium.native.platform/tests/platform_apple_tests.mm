@@ -153,6 +153,10 @@ int main()
         auto* window = jalium_window_create(&params);
         Check(window != nullptr, "create hidden test window");
         NSView* view = (__bridge NSView*)reinterpret_cast<void*>(jalium_window_get_native_handle(window));
+        // Positive wheel payload checks target a displayed responder. Hidden
+        // and retired responders are covered by the Window lifecycle suite.
+        jalium_apple_window_show(window, 0);
+        Check(view.window.visible, "show wheel fixture without activation");
         std::vector<JaliumPlatformEvent> events;
         jalium_window_set_event_callback(window, CaptureEvent, &events);
 

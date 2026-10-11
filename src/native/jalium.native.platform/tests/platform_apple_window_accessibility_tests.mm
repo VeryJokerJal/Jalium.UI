@@ -330,10 +330,87 @@ static BOOL ReadTrackingVisibility(id object, SEL selector)
     auto* probe = g_trackingVisibility;
     BOOL result = reinterpret_cast<BOOL (*)(id, SEL)>(probe->original)(object, selector);
     if (object == probe->window && probe->onRead) {
-        auto callback = std::move(probe->onRead);
+        std::function<void()> callback;
+        callback.swap(probe->onRead);
         callback();
     }
     return result;
+}
+
+// Target an owned responder directly to model a packet AppKit queued before
+// that responder's availability changed. No system input is posted.
+@interface JaliumWindowPointerPacket : NSEvent
+@property NSEventType packetType;
+@property NSInteger packetButton;
+@property NSPoint packetLocation;
+@property BOOL packetPrecise;
+@property CGFloat packetDeltaX;
+@property CGFloat packetDeltaY;
+@property NSEventPhase packetPhase;
+@property NSEventPhase packetMomentum;
+@property SEL callbackSelector;
+@property int callbackCount;
+@property(copy) void (^onQuery)(void);
+@end
+@implementation JaliumWindowPointerPacket
+- (void)query:(SEL)selector {
+    if (selector != self.callbackSelector || !self.onQuery) return;
+    void (^callback)(void) = self.onQuery;
+    self.onQuery = nil;
+    ++self.callbackCount;
+    callback();
+}
+- (NSEventType)type { [self query:_cmd]; return self.packetType; }
+- (NSInteger)buttonNumber { [self query:_cmd]; return self.packetButton; }
+- (NSPoint)locationInWindow { [self query:_cmd]; return self.packetLocation; }
+- (NSEventModifierFlags)modifierFlags { [self query:_cmd]; return NSEventModifierFlagShift; }
+- (NSInteger)clickCount { [self query:_cmd]; return 2; }
+- (BOOL)hasPreciseScrollingDeltas { [self query:_cmd]; return self.packetPrecise; }
+- (CGFloat)scrollingDeltaX { [self query:_cmd]; return self.packetDeltaX; }
+- (CGFloat)scrollingDeltaY { [self query:_cmd]; return self.packetDeltaY; }
+- (NSEventPhase)phase { [self query:_cmd]; return self.packetPhase; }
+- (NSEventPhase)momentumPhase { [self query:_cmd]; return self.packetMomentum; }
+@end
+
+static JaliumWindowPointerPacket* PointerPacket(int route)
+{
+    auto* packet = [JaliumWindowPointerPacket new];
+    packet.packetLocation = NSMakePoint(20, 35);
+    packet.packetButton = route < 4 ? 0 : route < 7 ? 1 : 3;
+    const NSEventType types[] = {NSEventTypeMouseMoved, NSEventTypeLeftMouseDown,
+        NSEventTypeLeftMouseDragged, NSEventTypeLeftMouseUp, NSEventTypeRightMouseDown,
+        NSEventTypeRightMouseDragged, NSEventTypeRightMouseUp, NSEventTypeOtherMouseDown,
+        NSEventTypeOtherMouseDragged, NSEventTypeOtherMouseUp, NSEventTypeScrollWheel};
+    packet.packetType = types[route];
+    packet.packetPrecise = YES;
+    packet.packetDeltaX = -12;
+    packet.packetDeltaY = 24;
+    packet.packetPhase = NSEventPhaseChanged;
+    packet.packetMomentum = NSEventPhaseBegan;
+    return packet;
+}
+
+static void DeliverPointerPacket(NSView* view, JaliumWindowPointerPacket* packet, int route)
+{
+    switch (route) {
+        case 0: [view mouseMoved:packet]; break;
+        case 1: [view mouseDown:packet]; break;
+        case 2: [view mouseDragged:packet]; break;
+        case 3: [view mouseUp:packet]; break;
+        case 4: [view rightMouseDown:packet]; break;
+        case 5: [view rightMouseDragged:packet]; break;
+        case 6: [view rightMouseUp:packet]; break;
+        case 7: [view otherMouseDown:packet]; break;
+        case 8: [view otherMouseDragged:packet]; break;
+        case 9: [view otherMouseUp:packet]; break;
+        case 10: [view scrollWheel:packet]; break;
+    }
+}
+
+static bool IsPointerPacket(const JaliumPlatformEvent& event)
+{
+    return event.type == JALIUM_EVENT_MOUSE_MOVE || event.type == JALIUM_EVENT_MOUSE_DOWN ||
+        event.type == JALIUM_EVENT_MOUSE_UP || event.type == JALIUM_EVENT_MOUSE_WHEEL;
 }
 
 // Retain transition evidence in memory, emitting it only when an assertion
@@ -1605,6 +1682,170 @@ int main(int argc, char** argv)
                     }), "tracking query revived a retired surface");
                 });
             }
+            const char* pointerModes[] = {"visible", "hidden", "ordered out", "hidden view", "hidden ancestor",
+                "detached view", "disabled", "closed", "minimizing", "hidden but ordered front"};
+            for (int mode = 0; mode < 10; ++mode) {
+                std::string name = std::string("pointer packets revalidate ") + pointerModes[mode];
+                run(name.c_str(), [=](Fixture& f) {
+                    NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    auto deliverAll = [&] {
+                        for (int route = 0; route < 11; ++route)
+                            DeliverPointerPacket(view, PointerPacket(route), route);
+                    };
+                    if (mode == 1 || mode == 9) jalium_window_hide(f.window);
+                    if (mode == 9) {
+                        [f.native orderFront:nil];
+                        Require(f.native.visible, "logical-hidden control did not order front");
+                    } else if (mode == 2) [f.native orderOut:nil];
+                    else if (mode == 3) view.hidden = YES;
+                    else if (mode == 4) {
+                        Require(view.superview != nil, "pointer view has no ancestor");
+                        view.superview.hidden = YES;
+                    } else if (mode == 5) f.native.contentView = [NSView new];
+                    else if (mode == 6) jalium_window_set_enabled(f.window, 0);
+                    else if (mode == 7) f.Destroy();
+                    f.events.clear();
+                    if (mode == 8) {
+                        bool started = false, leaked = false;
+                        WindowNotification began(f, NSWindowWillMiniaturizeNotification, [&] {
+                            started = true;
+                            deliverAll();
+                            leaked = std::any_of(f.events.begin(), f.events.end(), IsPointerPacket);
+                        });
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                        Require(Pump([&] { return f.native.miniaturized; }) && started,
+                            "pointer fixture did not minimize");
+                        Require(!leaked, "pointer packet reached a minimizing surface");
+                        f.events.clear();
+                    }
+                    deliverAll();
+                    auto count = std::count_if(f.events.begin(), f.events.end(), IsPointerPacket);
+                    Require(count == (mode == 0 ? 11 : 0), "pointer packet reached an excluded surface");
+                });
+            }
+            run("pointer packets exclude an attached native sheet", [](Fixture& f) {
+                NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                NSPanel* sheet = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+                    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+                struct SheetCleanup {
+                    NSWindow* parent;
+                    NSPanel* sheet;
+                    ~SheetCleanup() { if (parent.attachedSheet == sheet) [parent endSheet:sheet]; [sheet close]; }
+                } cleanup{f.native, sheet};
+                [f.native beginSheet:sheet completionHandler:nil];
+                Require(Pump([&] { return f.native.attachedSheet == sheet; }), "native sheet did not attach");
+                f.events.clear();
+                for (int route = 0; route < 11; ++route) DeliverPointerPacket(view, PointerPacket(route), route);
+                Require(std::none_of(f.events.begin(), f.events.end(), IsPointerPacket),
+                    "parent pointer input bypassed the attached native sheet");
+            });
+            const char* pointerChanges[] = {"hide", "order out", "hide view", "detach", "disable", "close"};
+            for (int route : {0, 10}) for (int change = 0; change < 6; ++change) {
+                std::string name = std::string("pointer visibility callback ") + (route ? "wheel " : "mouse ") + pointerChanges[change];
+                run(name.c_str(), [=](Fixture& f) {
+                    NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    int callbacks = 0;
+                    TrackingVisibilityProbe query(f.native, [&] {
+                        ++callbacks;
+                        if (change == 0) jalium_window_hide(f.window);
+                        else if (change == 1) [f.native orderOut:nil];
+                        else if (change == 2) view.hidden = YES;
+                        else if (change == 3) f.native.contentView = [NSView new];
+                        else if (change == 4) jalium_window_set_enabled(f.window, 0);
+                        else f.Destroy();
+                    });
+                    f.events.clear();
+                    DeliverPointerPacket(view, PointerPacket(route), route);
+                    Require(callbacks == 1, "pointer visibility callback was not consumed exactly once");
+                    Require(std::none_of(f.events.begin(), f.events.end(), IsPointerPacket),
+                        "visibility query revived unavailable pointer input");
+                });
+            }
+            for (int route : {1, 7, 10}) for (SEL query : {@selector(buttonNumber), @selector(type),
+                @selector(locationInWindow), @selector(modifierFlags)})
+                for (int change = 0; change < 6; ++change) {
+                if (route == 10 && (query == @selector(buttonNumber) || query == @selector(type))) continue;
+                std::string name = std::string("pointer packet getter ") + (route == 10 ? "wheel " :
+                    route == 7 ? "other mouse " : "mouse ") +
+                    sel_getName(query) + " " + pointerChanges[change];
+                run(name.c_str(), [=](Fixture& f) {
+                    NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    auto* packet = PointerPacket(route);
+                    packet.callbackSelector = query;
+                    auto* fixture = &f;
+                    packet.onQuery = ^{
+                        if (change == 0) jalium_window_hide(fixture->window);
+                        else if (change == 1) [fixture->native orderOut:nil];
+                        else if (change == 2) view.hidden = YES;
+                        else if (change == 3) fixture->native.contentView = [NSView new];
+                        else if (change == 4) jalium_window_set_enabled(fixture->window, 0);
+                        else fixture->Destroy();
+                    };
+                    f.events.clear();
+                    DeliverPointerPacket(view, packet, route);
+                    Require(packet.callbackCount == 1, "pointer event getter callback did not run exactly once");
+                    Require(std::none_of(f.events.begin(), f.events.end(), IsPointerPacket),
+                        "event getter revived unavailable pointer input");
+                });
+            }
+            for (int route : {0, 3, 6, 9, 10}) {
+                std::string name = "pointer delivery retains its client route " + std::to_string(route);
+                run(name.c_str(), [=](Fixture& f) {
+                    __unsafe_unretained NSView* target = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    struct Context {
+                        Fixture* fixture;
+                        __weak NSView* view;
+                        bool retained = false;
+                        int calls = 0;
+                    } context{&f, target};
+                    jalium_window_set_event_callback(f.window, [](const JaliumPlatformEvent* event, void* data) {
+                        auto& context = *static_cast<Context*>(data);
+                        if (!IsPointerPacket(*event)) return;
+                        ++context.calls;
+                        jalium_window_set_event_callback(context.fixture->window, nullptr, nullptr);
+                        context.fixture->native.contentView = [NSView new];
+                        context.fixture->Destroy();
+                        context.retained = context.view != nil;
+                    }, &context);
+                    DeliverPointerPacket(target, PointerPacket(route), route);
+                    Require(context.calls == 1 && context.retained && !f.window,
+                        "pointer delivery released its client during owner destruction");
+                });
+            }
+            run("pointer packets retain outside coordinates and wheel metadata", [](Fixture& f) {
+                NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                for (int route = 0; route < 11; ++route) {
+                    auto* packet = PointerPacket(route);
+                    packet.packetLocation = NSMakePoint(-30, NSHeight(view.bounds) + 40);
+                    NSPoint expected = [view convertPoint:packet.packetLocation fromView:nil];
+                    double scale = jalium_window_get_dpi_scale(f.window);
+                    f.events.clear();
+                    DeliverPointerPacket(view, packet, route);
+                    Require(std::count_if(f.events.begin(), f.events.end(), IsPointerPacket) == 1,
+                        "outside pointer packet was dropped or duplicated");
+                    const auto& event = *std::find_if(f.events.begin(), f.events.end(), IsPointerPacket);
+                    if (route == 10) {
+                        Require(event.wheel.x == expected.x * scale && event.wheel.y == expected.y * scale &&
+                            event.wheel.deltaX == .25f && event.wheel.deltaY == .5f &&
+                            event.wheel.isPrecise && event.wheel.phase == NSEventPhaseChanged &&
+                            event.wheel.momentumPhase == NSEventPhaseBegan && event.wheel.modifiers == 1 &&
+                            (event.wheel.buttonStates & 0xffffffe0) == 0x80000000,
+                            "pointer validation changed precise wheel payload");
+                    } else Require(event.mouse.x == expected.x * scale && event.mouse.y == expected.y * scale &&
+                        event.mouse.modifiers == 1 && event.mouse.clickCount == 2 &&
+                        (event.mouse.buttonStates & 0xffffffe0) == 0x80000000,
+                        "pointer validation changed mouse payload");
+                }
+            });
+            run("hidden pointer exit retains leave cleanup", [](Fixture& f) {
+                NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                jalium_window_hide(f.window);
+                f.events.clear();
+                [view mouseExited:PointerPacket(0)];
+                Require(std::count_if(f.events.begin(), f.events.end(), [](const auto& e) {
+                    return e.type == JALIUM_EVENT_MOUSE_LEAVE;
+                }) == 1, "hidden pointer exit lost its leave cleanup");
+            });
             run("queued focus and main writes revalidate their window", [](Fixture& f) {
                 for (int phase = 0; phase < 3; ++phase) {
                     [f.native setAccessibilityFocused:YES]; [f.native setAccessibilityMain:YES];
