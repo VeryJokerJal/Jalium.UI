@@ -366,7 +366,9 @@ static void CheckImeTextGeometry(uint32_t style)
 @implementation JaliumWindowTestKeyEvent
 - (NSString*)charactersIgnoringModifiers { return self.shiftedCharacters ?: self.unmodifiedCharacters; }
 - (NSString*)charactersByApplyingModifiers:(NSEventModifierFlags)modifiers {
-    Check(modifiers == 0, "virtual-key translation removes all text modifiers");
+    Check((modifiers & ~NSEventModifierFlagCommand) == 0 &&
+        (!(self.testFlags & NSEventModifierFlagCommand) || modifiers == NSEventModifierFlagCommand),
+        "virtual-key translation removes text modifiers and retains the Command identity layer");
     return self.unmodifiedCharacters;
 }
 - (unsigned short)keyCode { return self.testKeyCode; }
