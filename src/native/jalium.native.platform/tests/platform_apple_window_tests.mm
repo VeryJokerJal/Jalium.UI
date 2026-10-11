@@ -1451,7 +1451,20 @@ static int RunWindowContracts(int argc, char** argv)
         }
         Check(maximized, "fullscreen to maximized");
         Check(native.firstResponder == view, "real fullscreen exit preserves the input responder");
+        int32_t savedX = 0, savedY = 0, savedWidth = 0, savedHeight = 0;
+        int32_t restoreResult = jalium_apple_window_get_restore_bounds(window,
+            &savedX, &savedY, &savedWidth, &savedHeight);
+        NSRect maximizedAfterFullScreen = native.frame;
         jalium_window_set_state(window, JALIUM_WINDOW_STATE_NORMAL);
+        if (!NSEqualRects(native.frame, normal)) {
+            std::fprintf(stderr, "Fullscreen restore: expected=%s actual=%s maximized=%s "
+                "savedResult=%d savedBounds=%d,%d,%d,%d client=%s state=%d mask=%lu scale=%g screen=%s work=%s\n",
+                NSStringFromRect(normal).UTF8String, NSStringFromRect(native.frame).UTF8String,
+                NSStringFromRect(maximizedAfterFullScreen).UTF8String, restoreResult,
+                savedX, savedY, savedWidth, savedHeight, NSStringFromSize(view.bounds.size).UTF8String,
+                jalium_window_get_state(window), (unsigned long)native.styleMask, native.backingScaleFactor,
+                NSStringFromRect(native.screen.frame).UTF8String, NSStringFromRect(native.screen.visibleFrame).UTF8String);
+        }
         Check(NSEqualRects(native.frame, normal), "fullscreen transition retains restore frame");
         jalium_window_set_state(window, JALIUM_WINDOW_STATE_FULLSCREEN);
         jalium_window_set_state(window, JALIUM_WINDOW_STATE_MINIMIZED);
