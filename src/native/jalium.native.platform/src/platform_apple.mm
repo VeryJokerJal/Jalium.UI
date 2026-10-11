@@ -386,7 +386,7 @@ void AlignAppleTitleBarButtons(JaliumPlatformWindow* window)
 }
 
 NSRect MaximizedFrameForScreen(NSWindow* nativeWindow, NSScreen* screen);
-void CaptureNormalFrame(JaliumPlatformWindow* window);
+bool CaptureNormalFrame(JaliumPlatformWindow* window);
 void ApplyQueuedWindowState(JaliumPlatformWindow* window);
 
 void SynchronizeRestoreStyle(JaliumPlatformWindow* window)
@@ -415,7 +415,10 @@ void ApplyAppleStyle(JaliumPlatformWindow* window)
         (window->window.styleMask & NSWindowStyleMaskFullScreen)) return;
     if (registered && window->state == JALIUM_WINDOW_STATE_NORMAL &&
         !window->applyingWindowState && !window->appKitZooming && !window->miniaturizing &&
-        !window->deminiaturizing && !window->pendingStartupPlacement) CaptureNormalFrame(window);
+        !window->deminiaturizing && !window->pendingStartupPlacement) {
+        CaptureNormalFrame(window);
+        if (!IsLiveWindow(window, nativeWindow)) return;
+    }
     NSSize contentSize = ((NSView*)window->view).bounds.size;
     NSPoint topLeft = NSMakePoint(NSMinX(window->window.frame), NSMaxY(window->window.frame));
     bool wasApplyingState = window->applyingState;
@@ -472,12 +475,30 @@ void ApplyAppleStyle(JaliumPlatformWindow* window)
     } else if (registered && !wasApplyingWindowState) ApplyQueuedWindowState(window);
 }
 
-void CaptureNormalFrame(JaliumPlatformWindow* window)
+bool CaptureNormalFrame(JaliumPlatformWindow* window)
 {
-    window->restoreFrame = window->window.frame;
-    window->restoreContentSize = ((NSView*)window->view).bounds.size;
-    window->restoreStyleMask = window->window.styleMask;
+    if (!IsLiveWindow(window) || window->destroying) return false;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
+    auto state = window->state;
+    auto current = [&] {
+        return IsLiveWindow(window, nativeWindow) && !window->destroying &&
+            (NSView*)window->view == view && window->state == state;
+    };
+    // SDK getters can close their Window or start another state request.
+    // Commit the complete normal snapshot only while its original owner and
+    // state still survive, keeping both native objects alive across each read.
+    NSRect frame = nativeWindow.frame;
+    if (!current()) return false;
+    NSSize content = view.bounds.size;
+    if (!current()) return false;
+    NSUInteger style = nativeWindow.styleMask;
+    if (!current()) return false;
+    window->restoreFrame = frame;
+    window->restoreContentSize = content;
+    window->restoreStyleMask = style;
     window->hasRestoreFrame = true;
+    return true;
 }
 
 bool ApplyPendingStartupPlacement(JaliumPlatformWindow* window)
@@ -493,17 +514,22 @@ bool ApplyPendingStartupPlacement(JaliumPlatformWindow* window)
     // Retain a newer placement made by a move/resize callback. Otherwise
     // save AppKit's actual aligned frame before publishing Normal.
     if (!window->pendingStartupPlacement) CaptureNormalFrame(window);
-    return true;
+    return IsLiveWindow(window, nativeWindow);
 }
 
 void ApplyWindowState(JaliumPlatformWindow* window, JaliumWindowState state);
 void ApplyQueuedWindowState(JaliumPlatformWindow* window);
 
-void BeginFullScreenTransition(JaliumPlatformWindow* window)
+bool BeginFullScreenTransition(JaliumPlatformWindow* window)
 {
-    window->fullScreenHadContentFocus = window->window.firstResponder == (NSView*)window->view;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
     window->fullScreenRequestSequence = window->stateRequestSequence;
     window->fullScreenTransition = true;
+    NSResponder* responder = nativeWindow.firstResponder;
+    if (!IsLiveWindow(window, nativeWindow)) return false;
+    window->fullScreenHadContentFocus = responder == view;
+    return true;
 }
 
 void RestoreFullScreenContentFocus(JaliumPlatformWindow* window, bool hadContentFocus)
@@ -558,16 +584,24 @@ void RequestWindowSelection(JaliumPlatformWindow* window, bool activate)
     if (IsLiveWindow(window, nativeWindow)) ApplyPendingWindowSelection(window);
 }
 
-void BeginWindowMinimize(JaliumPlatformWindow* window)
+bool BeginWindowMinimize(JaliumPlatformWindow* window)
 {
-    ++window->stateRequestSequence;
-    window->pendingMiniaturizationRequest = window->stateRequestSequence;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    uint64_t request = ++window->stateRequestSequence;
+    window->pendingMiniaturizationRequest = request;
     CancelPendingWindowSelection(window);
-    if (window->state == JALIUM_WINDOW_STATE_NORMAL) CaptureNormalFrame(window);
+    bool captured = window->state != JALIUM_WINDOW_STATE_NORMAL || CaptureNormalFrame(window);
+    if (!IsLiveWindow(window, nativeWindow)) return false;
+    if (!captured || window->stateRequestSequence != request) {
+        if (window->pendingMiniaturizationRequest == request)
+            window->pendingMiniaturizationRequest = 0;
+        return false;
+    }
     window->beforeMinimize = window->state;
     window->requestedState = JALIUM_WINDOW_STATE_MINIMIZED;
     window->requestedNativeZoom = false;
     window->miniaturizing = true;
+    return true;
 }
 
 NSRect MaximizedFrameForScreen(NSWindow* nativeWindow, NSScreen* screen)
@@ -586,15 +620,24 @@ NSRect MaximizedFrameForScreen(NSWindow* nativeWindow, NSScreen* screen)
 void SetWindowZoomed(JaliumPlatformWindow* window, bool zoomed)
 {
     if (zoomed == (window->state == JALIUM_WINDOW_STATE_MAXIMIZED)) return;
-    NSWindow* nativeWindow = window->window;
-    NSRect frame = window->window.frame;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    uint64_t request = window->stateRequestSequence;
+    auto current = [&] {
+        return IsLiveWindow(window, nativeWindow) && window->stateRequestSequence == request;
+    };
+    NSRect frame = NSZeroRect;
     if (zoomed) {
-        CaptureNormalFrame(window);
-        NSScreen* screen = window->window.screen ?: NSScreen.mainScreen;
-        frame = MaximizedFrameForScreen(window->window, screen);
+        if (!CaptureNormalFrame(window) || !current()) return;
+        NSScreen* screen = nativeWindow.screen ?: NSScreen.mainScreen;
+        if (!current()) return;
+        frame = MaximizedFrameForScreen(nativeWindow, screen);
+        if (!current()) return;
         window->maximizedFrame = frame;
     } else if (window->hasRestoreFrame) {
         frame = window->restoreFrame;
+    } else {
+        frame = nativeWindow.frame;
+        if (!current()) return;
     }
     // Queue state requests made by callbacks until this frame change completes.
     // The restore query also uses the saved normal frame during a restore's
@@ -614,22 +657,30 @@ void SetWindowZoomed(JaliumPlatformWindow* window, bool zoomed)
 
 void ApplyWindowState(JaliumPlatformWindow* window, JaliumWindowState state)
 {
-    ++window->stateRequestSequence;
+    if (!IsLiveWindow(window) || window->destroying) return;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    uint64_t request = ++window->stateRequestSequence;
+    auto current = [&] {
+        return IsLiveWindow(window, nativeWindow) && window->stateRequestSequence == request;
+    };
     if (state == JALIUM_WINDOW_STATE_MINIMIZED) CancelPendingWindowSelection(window);
     // An explicit framework request replaces any earlier native Zoom action.
     window->requestedNativeZoom = false;
     window->requestedState = state;
     if (window->fullScreenTransition || window->appKitZooming || window->applyingWindowState ||
         window->miniaturizing || window->deminiaturizing) return;
-    bool fullScreen = (window->window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+    bool fullScreen = (nativeWindow.styleMask & NSWindowStyleMaskFullScreen) != 0;
+    if (!current()) return;
     if (fullScreen) {
         if (state != JALIUM_WINDOW_STATE_FULLSCREEN) {
-            BeginFullScreenTransition(window);
-            [window->window toggleFullScreen:nil];
+            if (!BeginFullScreenTransition(window)) return;
+            [nativeWindow toggleFullScreen:nil];
         }
         return;
     }
-    if (state != JALIUM_WINDOW_STATE_MINIMIZED && window->window.miniaturized) {
+    bool minimized = nativeWindow.miniaturized;
+    if (!current()) return;
+    if (state != JALIUM_WINDOW_STATE_MINIMIZED && minimized) {
         // AppKit may reject deminiaturizing an ordered-out window without a
         // completion notification. Retain the state request until Show makes
         // the surface available again instead of entering a permanent wait.
@@ -638,17 +689,17 @@ void ApplyWindowState(JaliumPlatformWindow* window, JaliumWindowState state)
         // before that acknowledgement mistakes the maximized frame for a new
         // normal frame and destroys RestoreBounds.
         window->deminiaturizing = true;
-        [window->window deminiaturize:nil];
+        [nativeWindow deminiaturize:nil];
         return;
     }
     if (state == JALIUM_WINDOW_STATE_FULLSCREEN) {
         window->beforeFullScreen = window->state;
-        BeginFullScreenTransition(window);
-        [window->window toggleFullScreen:nil];
+        if (!BeginFullScreenTransition(window)) return;
+        [nativeWindow toggleFullScreen:nil];
     } else if (state == JALIUM_WINDOW_STATE_MINIMIZED) {
-        if (!window->window.miniaturized) {
+        if (!minimized) {
             window->beforeMinimize = window->state;
-            [window->window miniaturize:nil];
+            [nativeWindow miniaturize:nil];
         }
     } else {
         SetWindowZoomed(window, state == JALIUM_WINDOW_STATE_MAXIMIZED);
@@ -1582,7 +1633,7 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     if (!IsLiveWindow(owner, nativeWindow) || owner->miniaturizing || minimized) return;
     // Cover native chrome/menu actions as well as the platform API. Begin
     // before AppKit's will-miniaturize observers can request a newer state.
-    BeginWindowMinimize(owner);
+    if (!BeginWindowMinimize(owner)) return;
     uint64_t sequence = owner->miniaturizationSequence;
     uint64_t request = owner->pendingMiniaturizationRequest;
     [super miniaturize:sender];
@@ -1635,10 +1686,18 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
      _jaliumOwner->beforeMinimize == JALIUM_WINDOW_STATE_MAXIMIZED));
 }
 - (void)zoom:(id)sender {
-    if (!_jaliumOwner || !_jaliumOwner->enabled ||
-        !(_jaliumOwner->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE) ||
-        _jaliumOwner->fullScreenTransition || _jaliumOwner->appKitZooming ||
-        (self.styleMask & NSWindowStyleMaskFullScreen)) return;
+    auto* owner = _jaliumOwner;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = self;
+    if (!owner || !IsLiveWindow(owner, nativeWindow) || !owner->enabled ||
+        !(owner->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE) ||
+        owner->fullScreenTransition || owner->appKitZooming) return;
+    uint64_t request = owner->stateRequestSequence;
+    NSUInteger mask = nativeWindow.styleMask;
+    if (!IsLiveWindow(owner, nativeWindow) || owner->stateRequestSequence != request ||
+        (mask & NSWindowStyleMaskFullScreen)) return;
+    // A native action accepted by a getter is newer than the framework
+    // request that is still validating that getter's returned value.
+    request = ++owner->stateRequestSequence;
     if (_jaliumOwner->applyingWindowState || _jaliumOwner->miniaturizing || _jaliumOwner->deminiaturizing) {
         // Preserve AppKit's best-fit Zoom, rather than turning the deferred
         // action into the framework's work-area Fill. A later state request
@@ -1656,17 +1715,20 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     }
     // AppKit's Zoom uses its standard frame and any delegate best-fit frame.
     // Fill / WindowState.Maximized use our exact work-area frame separately.
-    CaptureNormalFrame(_jaliumOwner);
-    _jaliumOwner->applyingState = true;
-    _jaliumOwner->appKitZooming = true;
-    _jaliumOwner->requestedState = JALIUM_WINDOW_STATE_MAXIMIZED;
+    if (!CaptureNormalFrame(owner) || !IsLiveWindow(owner, nativeWindow) ||
+        owner->stateRequestSequence != request) return;
+    owner->applyingState = true;
+    owner->appKitZooming = true;
+    owner->requestedState = JALIUM_WINDOW_STATE_MAXIMIZED;
     [super zoom:sender];
-    if (!_jaliumOwner) return;
-    _jaliumOwner->applyingState = false;
-    _jaliumOwner->appKitZooming = false;
-    _jaliumOwner->maximizedFrame = self.frame;
-    PublishWindowState(_jaliumOwner, JALIUM_WINDOW_STATE_MAXIMIZED);
-    if (_jaliumOwner) ApplyQueuedWindowState(_jaliumOwner);
+    if (!IsLiveWindow(owner, nativeWindow)) return;
+    NSRect frame = nativeWindow.frame;
+    if (!IsLiveWindow(owner, nativeWindow)) return;
+    owner->maximizedFrame = frame;
+    owner->applyingState = false;
+    owner->appKitZooming = false;
+    PublishWindowState(owner, JALIUM_WINDOW_STATE_MAXIMIZED);
+    if (IsLiveWindow(owner, nativeWindow)) ApplyQueuedWindowState(owner);
 }
 - (void)sendEvent:(NSEvent*)event {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
@@ -2723,7 +2785,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
             if (!_owner) return;
             _owner->beforeMinimize = _owner->state;
             _owner->miniaturizing = true;
-        } else BeginWindowMinimize(_owner);
+        } else if (!BeginWindowMinimize(_owner)) return;
     }
     if (!_owner) return;
     _owner->pendingMiniaturizationRequest = 0;
@@ -2775,13 +2837,13 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 }
 - (void)windowWillEnterFullScreen:(NSNotification*)note {
     if (!_owner) return;
-    if (_owner->state == JALIUM_WINDOW_STATE_NORMAL) CaptureNormalFrame(_owner);
     _owner->beforeFullScreen = _owner->state;
     if (!_owner->fullScreenTransition) {
         _owner->requestedState = JALIUM_WINDOW_STATE_FULLSCREEN;
         ++_owner->stateRequestSequence;
-        BeginFullScreenTransition(_owner);
+        if (!BeginFullScreenTransition(_owner)) return;
     }
+    if (_owner->state == JALIUM_WINDOW_STATE_NORMAL) CaptureNormalFrame(_owner);
 }
 - (void)windowWillExitFullScreen:(NSNotification*)note {
     if (!_owner) return;
