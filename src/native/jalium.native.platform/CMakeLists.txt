@@ -465,6 +465,27 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.platform.macos.window.fullscreen-restore
         COMMAND jalium.native.platform.window.fullscreen-restore.tests)
     set_tests_properties(jalium.native.platform.macos.window.fullscreen-restore PROPERTIES TIMEOUT 30)
+    add_library(jalium.native.platform.input-state.double SHARED tests/platform_apple_input_state_double.mm)
+    set_target_properties(jalium.native.platform.input-state.double PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/input-state-doubles/$<CONFIG>")
+    foreach(_input_configuration DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        set_property(TARGET jalium.native.platform.input-state.double PROPERTY
+            LIBRARY_OUTPUT_DIRECTORY_${_input_configuration} "${CMAKE_CURRENT_BINARY_DIR}/input-state-doubles/$<CONFIG>")
+    endforeach()
+    target_compile_options(jalium.native.platform.input-state.double PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.input-state.double PRIVATE "-framework ApplicationServices")
+    add_executable(jalium.native.platform.input-state.tests tests/platform_apple_input_state_tests.mm)
+    set_target_properties(jalium.native.platform.input-state.tests PROPERTIES
+        BUILD_WITH_INSTALL_RPATH FALSE
+        BUILD_RPATH "$<TARGET_FILE_DIR:jalium.native.platform.input-state.double>;$<TARGET_FILE_DIR:${PROJECT_NAME}>")
+    target_include_directories(jalium.native.platform.input-state.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.input-state.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.input-state.tests PRIVATE ${PROJECT_NAME}
+        jalium.native.platform.input-state.double "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.input-state.tests)
+    add_test(NAME jalium.native.platform.macos.window.input-state COMMAND jalium.native.platform.input-state.tests)
+    set_tests_properties(jalium.native.platform.macos.window.input-state PROPERTIES TIMEOUT 10)
     add_test(NAME jalium.native.platform.macos.window COMMAND "${CMAKE_COMMAND}"
         "-DHOST_APP=$<TARGET_BUNDLE_DIR:jalium.native.platform.window.app.tests>"
         "-DHOST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/window-app-runs"

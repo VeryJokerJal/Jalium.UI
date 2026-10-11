@@ -673,6 +673,22 @@ int32_t VirtualKeyForAppleEvent(NSEvent* event)
     // Removing Function/NumericPad during character translation changes arrow,
     // Home and End characters into ASCII control codes on AppKit.
     switch (event.keyCode) {
+        case 0x12: return '1'; // Number-row identity survives AZERTY/IME text.
+        case 0x13: return '2';
+        case 0x14: return '3';
+        case 0x15: return '4';
+        case 0x17: return '5';
+        case 0x16: return '6';
+        case 0x1a: return '7';
+        case 0x1c: return '8';
+        case 0x19: return '9';
+        case 0x1d: return '0';
+        case 0x24: return 0x0d;
+        case 0x30: return 0x09;
+        case 0x31: return 0x20;
+        case 0x33: return 0x08;
+        case 0x35: return 0x1b;
+        case 0x0a: return 0xe2; // ISO extra key.
         case 0x7a: return 0x70; // F1-F20 (HIToolbox physical key codes).
         case 0x78: return 0x71;
         case 0x63: return 0x72;
@@ -724,7 +740,28 @@ int32_t VirtualKeyForAppleEvent(NSEvent* event)
     // charactersIgnoringModifiers still preserves Shift. Re-translate with
     // no modifiers so Shift+1 cannot masquerade as the PageUp virtual key.
     NSString* chars = [event charactersByApplyingModifiers:0] ?: event.charactersIgnoringModifiers ?: @"";
-    return VirtualKeyFromCharacter(chars.length ? [chars characterAtIndex:0] : 0);
+    unichar character = chars.length ? [chars characterAtIndex:0] : 0;
+    // Full-width text remains in the text-input path. Only normalize the key
+    // identity; Chinese/Japanese punctuation can otherwise become a Unicode
+    // value outside the framework's VK namespace. Keep layout-translated
+    // Latin letters and ASCII punctuation, including letters on Dvorak OEM keys.
+    if (character >= 0xff01 && character <= 0xff5e) character -= 0xfee0;
+    if (character > 0x7f) {
+        switch (event.keyCode) {
+            case 0x18: return 0xbb;
+            case 0x1b: return 0xbd;
+            case 0x21: return 0xdb;
+            case 0x1e: return 0xdd;
+            case 0x2a: return 0xdc;
+            case 0x27: return 0xde;
+            case 0x29: return 0xba;
+            case 0x2b: return 0xbc;
+            case 0x2f: return 0xbe;
+            case 0x2c: return 0xbf;
+            case 0x32: return 0xc0;
+        }
+    }
+    return VirtualKeyFromCharacter(character);
 }
 
 uint32_t EffectsFromOperation(NSDragOperation operation)
@@ -3563,6 +3600,12 @@ int32_t jalium_window_update_ime_context(JaliumPlatformWindow* w,int32_t enabled
     return JALIUM_OK;}
 int16_t jalium_input_get_key_state(int32_t keyCode){
 #if TARGET_OS_OSX
+    if (keyCode <= 0 || keyCode > 0xfe) return 0;
+    // Mouse buttons share the normalized VK namespace with keyboard queries.
+    int button = keyCode == 0x01 ? 0 : keyCode == 0x02 ? 1 : keyCode == 0x04 ? 2 :
+        keyCode == 0x05 ? 3 : keyCode == 0x06 ? 4 : -1;
+    if (button >= 0)
+        return (NSEvent.pressedMouseButtons & (NSUInteger(1) << button)) ? static_cast<int16_t>(0x8000) : 0;
     NSEventModifierFlags flags=NSEvent.modifierFlags;
     bool down=(keyCode==0x10&&(flags&NSEventModifierFlagShift))||
         (keyCode==0x11&&(flags&NSEventModifierFlagControl))||
@@ -3575,8 +3618,27 @@ int16_t jalium_input_get_key_state(int32_t keyCode){
         (keyCode==0xa5&&(flags&NX_DEVICERALTKEYMASK))||
         (keyCode==0x5b&&(flags&NX_DEVICELCMDKEYMASK))||
         (keyCode==0x5c&&(flags&NX_DEVICERCMDKEYMASK));
-    if(keyCode==0x14)return (flags&NSEventModifierFlagCapsLock)?1:0;
-    return down?static_cast<int16_t>(0x8000):0;
+    if(keyCode==0x14)return static_cast<int16_t>(
+        (CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, 0x39) ? 0x8000 : 0) |
+        ((flags&NSEventModifierFlagCapsLock)?1:0));
+    if (keyCode == 0x10 || keyCode == 0x11 || keyCode == 0x12 ||
+        (keyCode >= 0xa0 && keyCode <= 0xa5) || keyCode == 0x5b || keyCode == 0x5c)
+        return down?static_cast<int16_t>(0x8000):0;
+    @autoreleasepool {
+        // Read the login session's current snapshot rather than latching key
+        // events: Command shortcuts, IME and focus changes can consume key-up.
+        // AppKit translates only held physical keys through the same current
+        // layout as delivered events, including navigation/function/keypad
+        // identities and unshifted punctuation. No event is posted here.
+        for (CGKeyCode scan = 0; scan < 128; ++scan) {
+            if (!CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, scan)) continue;
+            NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@""
+                charactersIgnoringModifiers:@"" isARepeat:NO keyCode:scan];
+            if (event && VirtualKeyForAppleEvent(event) == keyCode) return static_cast<int16_t>(0x8000);
+        }
+    }
+    return 0;
 #else
     (void)keyCode;return 0;
 #endif
