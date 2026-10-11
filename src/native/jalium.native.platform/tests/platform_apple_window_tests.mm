@@ -12,6 +12,7 @@
 #include <functional>
 #include <vector>
 #include "platform_apple_foreground_validation.h"
+#include "platform_apple_window_validation_app.h"
 
 static void Check(bool condition, const char* message)
 {
@@ -962,7 +963,7 @@ static bool CheckSheetKeyboardRouting(uint32_t style)
     return passed;
 }
 
-int main(int argc, char** argv)
+static int RunWindowContracts(int argc, char** argv)
 {
     bool propertiesOnly = argc == 2 && std::strcmp(argv[1], "--properties-only") == 0;
     bool menuTrackingOnly = argc == 2 && std::strcmp(argv[1], "--menu-tracking-only") == 0;
@@ -972,8 +973,15 @@ int main(int argc, char** argv)
     @autoreleasepool {
         Check(jalium_platform_init() == JALIUM_OK, "initialize platform");
         bool foregroundHost = UsesForegroundValidationHost();
-        [NSApp setActivationPolicy:foregroundHost ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
-        [NSApp finishLaunching];
+        bool automatedHost = UsesAutomatedWindowValidationHost();
+        [NSApp setActivationPolicy:(foregroundHost || automatedHost) ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
+        if (!NSApp.running) [NSApp finishLaunching];
+        if (automatedHost) {
+            LogActivationState("automated-host-entry", nil);
+            Check(NSApp.running && NSApp.active &&
+                NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == getpid(),
+                "automated host requires actual foreground and AppKit main loop");
+        }
         if (!documentMenuOnly && !sheetKeyboardOnly && foregroundHost && !AwaitForegroundValidation(@"Window 生命周期 · 前台回归")) {
             jalium_platform_shutdown();
             return 3;
@@ -1344,7 +1352,7 @@ int main(int argc, char** argv)
         int32_t ownerActivation = jalium_window_activate(owner);
         if (ownerActivation != JALIUM_OK) LogActivationState("owner-request-rejected", ownerNative);
         Check(ownerActivation == JALIUM_OK, "activate owner");
-        bool ownerActivated = WaitUntil([&] { return NSApp.active && View(owner).window.keyWindow; });
+        bool ownerActivated = WaitUntil([&] { return NSApp.active && NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == getpid() && View(owner).window.keyWindow; });
         if (!ownerActivated) LogActivationState("owner-activation-timeout", ownerNative);
         Check(ownerActivated,
             "nonactivating show checks require actual owner activation");
@@ -1494,4 +1502,12 @@ int main(int argc, char** argv)
         std::puts("macOS Window platform tests passed");
     }
     return 0;
+}
+
+int main(int argc, char** argv)
+{
+    @autoreleasepool {
+        return UsesAutomatedWindowValidationHost() ?
+            RunAutomatedWindowValidation(argc, argv, RunWindowContracts) : RunWindowContracts(argc, argv);
+    }
 }

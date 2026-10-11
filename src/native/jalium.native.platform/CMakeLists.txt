@@ -419,7 +419,45 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
         ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
     target_compile_options(jalium.native.platform.window.tests PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.platform.window.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
-    add_test(NAME jalium.native.platform.macos.window COMMAND jalium.native.platform.window.tests)
+    # Foreground lifecycle contracts run as a real AppKit application. Keep the
+    # plain executable for the property/input/menu modes below.
+    add_executable(jalium.native.platform.window.app.tests MACOSX_BUNDLE
+        tests/platform_apple_window_tests.mm)
+    target_include_directories(jalium.native.platform.window.app.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.app.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.app.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    set_target_properties(jalium.native.platform.window.app.tests PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_apple_window_validation_Info.plist.in"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/validation-apps/$<CONFIG>"
+        INSTALL_RPATH "@executable_path/../Frameworks")
+    foreach(_window_configuration DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        set_property(TARGET jalium.native.platform.window.app.tests PROPERTY
+            RUNTIME_OUTPUT_DIRECTORY_${_window_configuration} "${CMAKE_CURRENT_BINARY_DIR}/validation-apps/$<CONFIG>")
+    endforeach()
+    add_custom_command(TARGET jalium.native.platform.window.app.tests POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_BUNDLE_CONTENT_DIR:jalium.native.platform.window.app.tests>/Frameworks"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:${PROJECT_NAME}>" "$<TARGET_FILE:jalium.native.core>"
+            "$<TARGET_BUNDLE_CONTENT_DIR:jalium.native.platform.window.app.tests>/Frameworks"
+        COMMAND /usr/bin/codesign --force --deep --sign -
+            "$<TARGET_BUNDLE_DIR:jalium.native.platform.window.app.tests>"
+        VERBATIM)
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.app.tests)
+    add_test(NAME jalium.native.platform.macos.window COMMAND "${CMAKE_COMMAND}"
+        "-DHOST_APP=$<TARGET_BUNDLE_DIR:jalium.native.platform.window.app.tests>"
+        "-DHOST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/window-app-runs"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_apple_window_validation.cmake")
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME jalium.native.platform.macos.window.validation-protocol
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_apple_window_validation.py"
+                "${CMAKE_COMMAND}" "$<TARGET_BUNDLE_DIR:jalium.native.platform.window.app.tests>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_apple_window_validation.cmake")
+        set_tests_properties(jalium.native.platform.macos.window.validation-protocol PROPERTIES TIMEOUT 30)
+    endif()
     add_test(NAME jalium.native.platform.macos.window.properties
         COMMAND jalium.native.platform.window.tests --properties-only)
     add_test(NAME jalium.native.platform.macos.window.menu-tracking
