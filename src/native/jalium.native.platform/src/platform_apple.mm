@@ -2,6 +2,7 @@
 #include "jalium_apple_font.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -19,6 +20,7 @@
 #import <QuartzCore/QuartzCore.h>
 #if TARGET_OS_OSX
 #import <AppKit/AppKit.h>
+#import <Carbon/Carbon.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "platform_apple_window_startup_geometry.h"
 #include "platform_apple_screen_coordinates.h"
@@ -667,7 +669,51 @@ int32_t VirtualKeyFromCharacter(unichar c)
 }
 
 #if TARGET_OS_OSX
-int32_t VirtualKeyForAppleEvent(NSEvent* event)
+int32_t AppleVirtualKeyFromLayoutText(NSString* text)
+{
+    unichar character = text.length ? [text characterAtIndex:0] : 0;
+    if (character >= 0xff01 && character <= 0xff5e) character -= 0xfee0;
+    if ((character >= 'a' && character <= 'z') ||
+        (character >= 'A' && character <= 'Z') ||
+        (character >= '0' && character <= '9')) return VirtualKeyFromCharacter(character);
+    if (character >= NSF1FunctionKey && character <= NSF24FunctionKey) return VirtualKeyFromCharacter(character);
+    switch (character) {
+        case ';': case ':': case '=': case '+': case ',': case '<':
+        case '-': case '_': case '.': case '>': case '/': case '?':
+        case '`': case '~': case '[': case '{': case '\\': case '|':
+        case ']': case '}': case '\'': case '"': return VirtualKeyFromCharacter(character);
+        case NSLeftArrowFunctionKey: case NSUpArrowFunctionKey: case NSRightArrowFunctionKey: case NSDownArrowFunctionKey:
+        case NSHomeFunctionKey: case NSEndFunctionKey: case NSPageUpFunctionKey: case NSPageDownFunctionKey:
+        case NSDeleteFunctionKey: case NSInsertFunctionKey: case NSHelpFunctionKey: return VirtualKeyFromCharacter(character);
+        default: return 0;
+    }
+}
+
+int32_t AppleVirtualKeyFromPhysicalKey(unsigned short key)
+{
+    // A layout can expose dead, accented or non-Roman text without a VK
+    // identity. Fall back only for known keyboard positions; Unicode values
+    // must never become navigation, mouse or modifier key numbers.
+    switch (key) {
+        case 0x00: return 'A'; case 0x01: return 'S'; case 0x02: return 'D';
+        case 0x03: return 'F'; case 0x04: return 'H'; case 0x05: return 'G';
+        case 0x06: return 'Z'; case 0x07: return 'X'; case 0x08: return 'C';
+        case 0x09: return 'V'; case 0x0b: return 'B'; case 0x0c: return 'Q';
+        case 0x0d: return 'W'; case 0x0e: return 'E'; case 0x0f: return 'R';
+        case 0x10: return 'Y'; case 0x11: return 'T'; case 0x1f: return 'O';
+        case 0x20: return 'U'; case 0x22: return 'I'; case 0x23: return 'P';
+        case 0x25: return 'L'; case 0x26: return 'J'; case 0x28: return 'K';
+        case 0x2d: return 'N'; case 0x2e: return 'M';
+        case 0x18: return 0xbb; case 0x1b: return 0xbd;
+        case 0x21: return 0xdb; case 0x1e: return 0xdd;
+        case 0x2a: return 0xdc; case 0x27: return 0xde;
+        case 0x29: return 0xba; case 0x2b: return 0xbc;
+        case 0x2f: return 0xbe; case 0x2c: return 0xbf; case 0x32: return 0xc0;
+        default: return 0;
+    }
+}
+
+int32_t AppleVirtualKeyForEvent(NSEvent* event, bool asciiLayout)
 {
     // Navigation, function and numeric-pad identities are independent of text layout.
     // Removing Function/NumericPad during character translation changes arrow,
@@ -689,6 +735,12 @@ int32_t VirtualKeyForAppleEvent(NSEvent* event)
         case 0x33: return 0x08;
         case 0x35: return 0x1b;
         case 0x0a: return 0xe2; // ISO extra key.
+        case 0x5d: return 0xdc; // JIS Yen: OEM backslash, never RightAlt.
+        case 0x5e: return 0xe2; // JIS Ro/underscore extra key.
+        case 0x5f: return 0x6c; // JIS keypad separator.
+        case 0x66: return 0xf0; // Eisu: DbeAlphanumeric.
+        case 0x68: return 0x15; // KanaMode.
+        case 0x72: return 0x2f; // Help.
         case 0x7a: return 0x70; // F1-F20 (HIToolbox physical key codes).
         case 0x78: return 0x71;
         case 0x63: return 0x72;
@@ -737,31 +789,91 @@ int32_t VirtualKeyForAppleEvent(NSEvent* event)
         case 0x5b: return 0x68;
         case 0x5c: return 0x69;
     }
-    // charactersIgnoringModifiers still preserves Shift. Re-translate with
-    // no modifiers so Shift+1 cannot masquerade as the PageUp virtual key.
-    NSString* chars = [event charactersByApplyingModifiers:0] ?: event.charactersIgnoringModifiers ?: @"";
-    unichar character = chars.length ? [chars characterAtIndex:0] : 0;
-    // Full-width text remains in the text-input path. Only normalize the key
-    // identity; Chinese/Japanese punctuation can otherwise become a Unicode
-    // value outside the framework's VK namespace. Keep layout-translated
-    // Latin letters and ASCII punctuation, including letters on Dvorak OEM keys.
-    if (character >= 0xff01 && character <= 0xff5e) character -= 0xfee0;
-    if (character > 0x7f) {
-        switch (event.keyCode) {
-            case 0x18: return 0xbb;
-            case 0x1b: return 0xbd;
-            case 0x21: return 0xdb;
-            case 0x1e: return 0xdd;
-            case 0x2a: return 0xdc;
-            case 0x27: return 0xde;
-            case 0x29: return 0xba;
-            case 0x2b: return 0xbc;
-            case 0x2f: return 0xbe;
-            case 0x2c: return 0xbf;
-            case 0x32: return 0xc0;
+    // The Command layer supplies AppKit's Roman key equivalents for a
+    // non-ASCII layout, including Greek Q which otherwise produces ';'.
+    // ASCII layouts retain their ordinary layer until Command is held (for
+    // example Dvorak-QWERTY Command). Shift/Option/Caps affect text, not VKs.
+    NSEventModifierFlags modifiers = event.modifierFlags & NSEventModifierFlagCommand;
+    if (!asciiLayout) modifiers |= NSEventModifierFlagCommand;
+    NSString* chars = [event charactersByApplyingModifiers:modifiers] ?: event.charactersIgnoringModifiers;
+    int32_t key = AppleVirtualKeyFromLayoutText(chars);
+    if (!key && !modifiers) key = AppleVirtualKeyFromLayoutText([event charactersByApplyingModifiers:NSEventModifierFlagCommand]);
+    return key ? key : AppleVirtualKeyFromPhysicalKey(event.keyCode);
+}
+
+struct AppleKeyboardSource {
+    bool ascii = true;
+    std::string id;
+};
+struct AppleKeyboardMap {
+    AppleKeyboardSource source;
+    std::array<int32_t, 128> plain{}, command{};
+};
+static std::shared_ptr<const AppleKeyboardMap> g_appleKeyboardMap;
+static bool g_appleKeyboardObserver = false;
+static char g_appleKeyboardObserverToken;
+
+AppleKeyboardSource CurrentAppleKeyboardSource()
+{
+    AppleKeyboardSource result;
+    TISInputSourceRef source = TISCopyCurrentKeyboardLayoutInputSource();
+    if (!source) return result;
+    CFTypeRef ascii = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsASCIICapable);
+    if (ascii && CFGetTypeID(ascii) == CFBooleanGetTypeID()) result.ascii = CFBooleanGetValue(static_cast<CFBooleanRef>(ascii));
+    CFTypeRef id = TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+    if (id && CFGetTypeID(id) == CFStringGetTypeID()) result.id = [(__bridge NSString*)id UTF8String] ?: "";
+    CFRelease(source);
+    return result;
+}
+
+void RebuildAppleKeyboardMap(const AppleKeyboardSource& source)
+{
+    // TIS and AppKit layout translation belong to the UI thread. Publish an
+    // immutable complete map so background state queries never call them.
+    if (!pthread_main_np()) return;
+    @autoreleasepool {
+        auto map = std::make_shared<AppleKeyboardMap>();
+        map->source = source;
+        for (unsigned short scan = 0; scan < map->plain.size(); ++scan) {
+            for (bool command : {false, true}) {
+                NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                    modifierFlags:command ? NSEventModifierFlagCommand : 0 timestamp:0 windowNumber:0 context:nil
+                    characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:scan];
+                (command ? map->command : map->plain)[scan] = event ? AppleVirtualKeyForEvent(event, source.ascii) : 0;
+            }
         }
+        std::atomic_store(&g_appleKeyboardMap, std::shared_ptr<const AppleKeyboardMap>(std::move(map)));
     }
-    return VirtualKeyFromCharacter(character);
+}
+
+void AppleKeyboardSourceChanged(CFNotificationCenterRef, void*, CFStringRef, const void*, CFDictionaryRef)
+{
+    if (pthread_main_np()) RebuildAppleKeyboardMap(CurrentAppleKeyboardSource());
+    else dispatch_async(dispatch_get_main_queue(), ^{ RebuildAppleKeyboardMap(CurrentAppleKeyboardSource()); });
+}
+
+std::shared_ptr<const AppleKeyboardMap> AppleKeyboardMapSnapshot()
+{
+    auto map = std::atomic_load(&g_appleKeyboardMap);
+    if (!pthread_main_np()) return map;
+    if (!g_appleKeyboardObserver) {
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDistributedCenter(), &g_appleKeyboardObserverToken,
+            AppleKeyboardSourceChanged, kTISNotifySelectedKeyboardInputSourceChanged, nullptr,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+        g_appleKeyboardObserver = true;
+    }
+    AppleKeyboardSource source = CurrentAppleKeyboardSource();
+    if (!map || map->source.ascii != source.ascii || map->source.id != source.id) {
+        RebuildAppleKeyboardMap(source);
+        map = std::atomic_load(&g_appleKeyboardMap);
+    }
+    return map;
+}
+
+int32_t VirtualKeyForAppleEvent(NSEvent* event)
+{
+    auto map = AppleKeyboardMapSnapshot();
+    return AppleVirtualKeyForEvent(event, map ? map->source.ascii : true);
 }
 
 uint32_t EffectsFromOperation(NSDragOperation operation)
@@ -2547,6 +2659,7 @@ JaliumResult jalium_platform_init_impl()
 #if TARGET_OS_OSX
     [NSApplication sharedApplication];
     ObserveNativeMenuTracking();
+    AppleKeyboardMapSnapshot();
 #endif
     g_quit.store(false);return JALIUM_OK;
 }
@@ -2559,6 +2672,12 @@ void jalium_platform_shutdown_impl()
     g_menuTrackingBeginObserver = nil;
     g_menuTrackingEndObserver = nil;
     g_trackingMenus = nil;
+    if (g_appleKeyboardObserver) {
+        CFNotificationCenterRemoveObserver(CFNotificationCenterGetDistributedCenter(), &g_appleKeyboardObserverToken,
+            kTISNotifySelectedKeyboardInputSourceChanged, nullptr);
+        g_appleKeyboardObserver = false;
+    }
+    std::atomic_store(&g_appleKeyboardMap, std::shared_ptr<const AppleKeyboardMap>{});
 #endif
 }
 JaliumPlatform jalium_platform_get_current_impl()
@@ -2777,6 +2896,7 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     result->width=params->width;result->height=params->height;
     result->x=params->x;result->y=params->y;result->style=params->style;
 #if TARGET_OS_OSX
+    AppleKeyboardMapSnapshot();
     NSUInteger mask = AppleStyleMask(params->style);
     CGFloat scale = NSScreen.mainScreen.backingScaleFactor ?: 1.0;
     NSRect rect=NSMakeRect(0, 0, params->width / scale, params->height / scale);
@@ -3627,15 +3747,15 @@ int16_t jalium_input_get_key_state(int32_t keyCode){
     @autoreleasepool {
         // Read the login session's current snapshot rather than latching key
         // events: Command shortcuts, IME and focus changes can consume key-up.
-        // AppKit translates only held physical keys through the same current
-        // layout as delivered events, including navigation/function/keypad
-        // identities and unshifted punctuation. No event is posted here.
+        // The UI thread publishes the same normalized layout used by delivered
+        // events. Worker queries read that complete immutable map; they never
+        // invoke AppKit translation or TextInputSources. No event is posted.
+        std::shared_ptr<const AppleKeyboardMap> map;
         for (CGKeyCode scan = 0; scan < 128; ++scan) {
             if (!CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, scan)) continue;
-            NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
-                modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@""
-                charactersIgnoringModifiers:@"" isARepeat:NO keyCode:scan];
-            if (event && VirtualKeyForAppleEvent(event) == keyCode) return static_cast<int16_t>(0x8000);
+            if (!map) map = AppleKeyboardMapSnapshot();
+            if (map && ((flags & NSEventModifierFlagCommand) ? map->command : map->plain)[scan] == keyCode)
+                return static_cast<int16_t>(0x8000);
         }
     }
     return 0;

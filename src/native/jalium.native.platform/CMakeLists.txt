@@ -337,8 +337,9 @@ elseif(APPLE)
     )
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
+        find_library(CARBON_FRAMEWORK Carbon REQUIRED)
         find_library(UTTYPE_FRAMEWORK UniformTypeIdentifiers REQUIRED)
-        target_link_libraries(${PROJECT_NAME} PRIVATE ${APPKIT_FRAMEWORK} ${UTTYPE_FRAMEWORK})
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${APPKIT_FRAMEWORK} ${CARBON_FRAMEWORK} ${UTTYPE_FRAMEWORK})
     else()
         find_library(UIKIT_FRAMEWORK UIKit REQUIRED)
         target_link_libraries(${PROJECT_NAME} PRIVATE ${UIKIT_FRAMEWORK})
@@ -473,7 +474,7 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
             LIBRARY_OUTPUT_DIRECTORY_${_input_configuration} "${CMAKE_CURRENT_BINARY_DIR}/input-state-doubles/$<CONFIG>")
     endforeach()
     target_compile_options(jalium.native.platform.input-state.double PRIVATE -fobjc-arc)
-    target_link_libraries(jalium.native.platform.input-state.double PRIVATE "-framework ApplicationServices")
+    target_link_libraries(jalium.native.platform.input-state.double PRIVATE "-framework ApplicationServices" "-framework Carbon")
     add_executable(jalium.native.platform.input-state.tests tests/platform_apple_input_state_tests.mm)
     set_target_properties(jalium.native.platform.input-state.tests PROPERTIES
         BUILD_WITH_INSTALL_RPATH FALSE
@@ -482,7 +483,7 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
         ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
     target_compile_options(jalium.native.platform.input-state.tests PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.platform.input-state.tests PRIVATE ${PROJECT_NAME}
-        jalium.native.platform.input-state.double "-framework AppKit")
+        jalium.native.platform.input-state.double "-framework AppKit" "-framework Carbon")
     add_dependencies(jalium.native.platform.window.tests jalium.native.platform.input-state.tests)
     add_test(NAME jalium.native.platform.macos.window.input-state COMMAND jalium.native.platform.input-state.tests)
     set_tests_properties(jalium.native.platform.macos.window.input-state PROPERTIES TIMEOUT 10)
