@@ -1519,6 +1519,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
+        if (OperatingSystem.IsMacOS() && !_updatingMacOSModalEnabled &&
+            _macOSModalEnabledStates.ContainsKey(this))
+        {
+            _macOSModalEnabledStates[this] = newValue;
+            ApplyMacOSModalEnabled(this);
+            if (IsEnabled != newValue) return;
+        }
         base.OnIsEnabledChanged(oldValue, newValue);
         if (!newValue && !PlatformFactory.IsWindows) NativeDropTarget.RevokeWindow(this);
         if (IsEnabled != newValue) return;
@@ -1658,8 +1665,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (!IsLoaded || _platformWindow == null) Show();
                 else
                 {
+                    TrackMacOSModalWindow(this);
                     var shownPlatform = _platformWindow;
                     ApplyMacOSWindowOwner(shownPlatform);
+                    if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
+                    TrackMacOSModalWindow(this);
                     if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
                     shownPlatform.Show(ShowActivated);
                     if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
@@ -3089,6 +3099,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (OperatingSystem.IsMacOS())
         {
+            TrackMacOSModalWindow(this);
             CancelPendingMacOSVisibilityShow();
             SetMacOSVisibilityForDisplay(Visibility.Visible);
             if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted) return;
@@ -3223,7 +3234,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 ApplyMacOSWindowOwner(platformWindow);
                 if (!CanContinueShow(showGeneration)) return;
-                if (OperatingSystem.IsMacOS()) _hasShownMacOSWindow = true;
+                if (OperatingSystem.IsMacOS())
+                {
+                    TrackMacOSModalWindow(this);
+                    if (!CanContinueShow(showGeneration)) return;
+                    _hasShownMacOSWindow = true;
+                }
                 platformWindow.Show(ShowActivated);
                 if (!CanContinueShow(showGeneration)) return;
                 RefreshMacOSShowStateRequest(ref desiredState, ref desiredStateRequestVersion);
@@ -3678,7 +3694,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
                 throw new InvalidOperationException("A closing or closed window cannot be shown as a dialog.");
-            if (_isModal)
+            if (_isModal || _macOSModalSessions.Any(session => ReferenceEquals(session.Dialog, this)))
                 throw new InvalidOperationException("The window is already shown as a dialog.");
             if (Handle != nint.Zero && !_nativeWindowHidden)
                 throw new InvalidOperationException("A visible window cannot be shown as a dialog.");
@@ -3699,18 +3715,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ownerHandle = nint.Zero;
 
         bool restorePlatformOwnerEnabled = false;
-        List<Window> macOSWindowsToEnable = [];
+        MacOSModalSession? macOSSession = null;
         Window? previouslyActiveWindow = OperatingSystem.IsMacOS()
             ? _windows.Values.FirstOrDefault(window => !ReferenceEquals(window, this) && window.IsActive)
             : null;
         _modalOwner = ownerWindow;
         _isModal = true;
-        Styling.CssPresentationState.NotifyModalChange(this);
         try
         {
             if (OperatingSystem.IsMacOS())
             {
-                DisableMacOSDialogWindows(ownerWindow, macOSWindowsToEnable);
+                macOSSession = new MacOSModalSession(this);
+                _macOSModalSessions.Add(macOSSession);
+                foreach (var window in _windows.Values.ToList()) TrackMacOSModalWindow(window);
+                if (ownerWindow != null) TrackMacOSModalWindow(ownerWindow);
+                TrackMacOSModalWindow(this);
+                RefreshMacOSModalWindows();
             }
             else if (platformDialog && ownerWindow != null)
             {
@@ -3722,6 +3742,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 _ = EnableWindow(ownerHandle, false);
             }
+
+            Styling.CssPresentationState.NotifyModalChange(this);
 
             // Show creates _platformWindow. Platform selection above deliberately
             // uses PlatformFactory rather than testing that not-yet-created field.
@@ -3736,13 +3758,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         finally
         {
             _isModal = false;
-            Styling.CssPresentationState.NotifyModalChange(this);
-
             try
             {
                 if (OperatingSystem.IsMacOS())
                 {
-                    RestoreMacOSDialogWindows(macOSWindowsToEnable, previouslyActiveWindow, ownerWindow);
+                    if (macOSSession != null) _macOSModalSessions.Remove(macOSSession);
+                    RefreshMacOSModalWindows();
+                    var activate = _macOSModalSessions.LastOrDefault()?.Dialog ??
+                        (previouslyActiveWindow is { IsEnabled: true, IsCloseRequestedForPlatformTermination: false } &&
+                         !previouslyActiveWindow._managedTeardownStarted ? previouslyActiveWindow : ownerWindow);
+                    if (activate is { IsEnabled: true, IsCloseRequestedForPlatformTermination: false } &&
+                        !activate._managedTeardownStarted) _ = activate.Activate();
                 }
                 else if (platformDialog && ownerWindow != null)
                 {
@@ -3761,46 +3787,56 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             finally
             {
                 _modalOwner = null;
+                Styling.CssPresentationState.NotifyModalChange(this);
             }
         }
 
         return DialogResult;
     }
 
-    private void DisableMacOSDialogWindows(Window? owner, List<Window> windowsToEnable)
+    // The top session owns input. Baselines belong to the whole stack, so an
+    // inner session cannot restore a window still blocked by its outer session.
+    private sealed class MacOSModalSession(Window dialog)
     {
-        var candidates = _windows.Values.ToList();
-        if (owner != null && !candidates.Contains(owner)) candidates.Add(owner);
-        foreach (var window in candidates)
-        {
-            if (ReferenceEquals(window, this) || !window.IsEnabled || window.IsCloseRequestedForPlatformTermination)
-                continue;
-            // Record before invoking callbacks so a failed disable still gets
-            // restored. Nested dialogs only record windows still enabled by
-            // the outer session, preserving all earlier disabled states.
-            windowsToEnable.Add(window);
-            window.IsEnabled = false;
-        }
+        public Window Dialog { get; } = dialog;
+    }
+    private static readonly List<MacOSModalSession> _macOSModalSessions = [];
+    private static readonly Dictionary<Window, bool> _macOSModalEnabledStates = [];
+    private bool _updatingMacOSModalEnabled;
+
+    private static void TrackMacOSModalWindow(Window window)
+    {
+        if (_macOSModalSessions.Count == 0 || window.IsCloseRequestedForPlatformTermination ||
+            window._managedTeardownStarted) return;
+        _macOSModalEnabledStates.TryAdd(window, window.IsEnabled);
+        ApplyMacOSModalEnabled(window);
     }
 
-    private static void RestoreMacOSDialogWindows(List<Window> windowsToEnable, Window? previouslyActive, Window? owner)
+    private static void ApplyMacOSModalEnabled(Window window)
+    {
+        if (!_macOSModalEnabledStates.TryGetValue(window, out bool enabled)) return;
+        if (window.IsCloseRequestedForPlatformTermination || window._managedTeardownStarted)
+        {
+            _macOSModalEnabledStates.Remove(window);
+            return;
+        }
+        var session = _macOSModalSessions.LastOrDefault();
+        if (session == null) _macOSModalEnabledStates.Remove(window);
+        else enabled &= ReferenceEquals(session.Dialog, window);
+        bool updating = window._updatingMacOSModalEnabled;
+        window._updatingMacOSModalEnabled = true;
+        try { window.IsEnabled = enabled; }
+        finally { window._updatingMacOSModalEnabled = updating; }
+    }
+
+    private static void RefreshMacOSModalWindows()
     {
         Exception? failure = null;
-        foreach (var window in windowsToEnable)
+        foreach (var window in _macOSModalEnabledStates.Keys.ToList())
         {
-            if (window.IsCloseRequestedForPlatformTermination) continue;
-            try { window.IsEnabled = true; }
+            try { ApplyMacOSModalEnabled(window); }
             catch (Exception ex) { failure ??= ex; }
         }
-        // Re-enable every surviving window even if an application's property
-        // callback fails. Restore the original active window, with the owner
-        // as a fallback when that window has gone away.
-        var activate = previouslyActive is { IsEnabled: true, IsCloseRequestedForPlatformTermination: false }
-            ? previouslyActive
-            : owner != null && windowsToEnable.Contains(owner) && owner.IsEnabled && !owner.IsCloseRequestedForPlatformTermination
-                ? owner : null;
-        try { _ = activate?.Activate(); }
-        catch (Exception ex) { failure ??= ex; }
         if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
@@ -4111,6 +4147,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _macOSAccessibility?.Dispose();
         _macOSAccessibility = null;
+        _macOSModalEnabledStates.Remove(this);
         var managedHandle = Handle;
         Handle = nint.Zero;
 
@@ -4663,6 +4700,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _platformWindow.SetEventHandler(OnPlatformEvent);
         if (PlatformFactory.IsMacOS && _platformWindow is NativePlatformWindow nativeEditingWindow)
             nativeEditingWindow.SetMacOSEditingCommandQuery(CanExecuteMacOSEditingCommand);
+        if (OperatingSystem.IsMacOS()) TrackMacOSModalWindow(this);
         _ = _platformWindow.SetEnabled(IsEnabled);
         _ = _platformWindow.SetShowInTaskbar(ShowInTaskbar);
         if (platformOwnerHandle != nint.Zero)

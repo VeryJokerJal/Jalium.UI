@@ -1216,6 +1216,73 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         }
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void MacOSDialog_DynamicallyShownWindowsRespectTheWholeSession(bool disabled, bool fail)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var dialog = new CallbackShowWindow();
+        using var dialogFixture = new PlatformFixture(dialog);
+        using var dynamicWindow = new PlatformFixture();
+        SetField(dynamicWindow.Window, "<Handle>k__BackingField", (nint)0x2210);
+        dynamicWindow.Window.IsEnabled = !disabled;
+        dynamicWindow.Platform.ShowAction = () => Assert.False(dynamicWindow.Window.IsEnabled);
+        dialog.ShowAction = () =>
+        {
+            dynamicWindow.Window.Show();
+            Assert.False(dynamicWindow.Window.IsEnabled);
+            dynamicWindow.Window.Hide();
+            dynamicWindow.Window.Show();
+            Assert.False(dynamicWindow.Window.IsEnabled);
+            // Explicit enable requests cannot bypass the active modal restriction.
+            if (!disabled) dynamicWindow.Window.IsEnabled = true;
+            Assert.False(dynamicWindow.Window.IsEnabled);
+            if (fail) throw new InvalidOperationException("dynamic show failure");
+            SetField(dialog, "<Handle>k__BackingField", (nint)0x2211);
+            dialog.Hide();
+        };
+        if (fail) Assert.Throws<InvalidOperationException>(() => dialog.ShowDialog());
+        else Assert.False(dialog.ShowDialog());
+        Assert.Equal(!disabled, dynamicWindow.Window.IsEnabled);
+    }
+
+    [Fact]
+    public void MacOSDialog_InnerCreatedWindowStaysBlockedUntilOuterExits()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var outer = new CallbackShowWindow();
+        var inner = new CallbackShowWindow { Owner = outer };
+        using var outerFixture = new PlatformFixture(outer);
+        using var innerFixture = new PlatformFixture(inner);
+        using var dynamicWindow = new PlatformFixture();
+        SetField(dynamicWindow.Window, "<Handle>k__BackingField", (nint)0x2212);
+        outer.ShowAction = () =>
+        {
+            SetField(outer, "<Handle>k__BackingField", (nint)0x2213);
+            inner.ShowAction = () =>
+            {
+                dynamicWindow.Window.Show();
+                Assert.False(dynamicWindow.Window.IsEnabled);
+                Assert.False(outer.IsEnabled);
+                Assert.True(inner.IsEnabled);
+                SetField(inner, "<Handle>k__BackingField", (nint)0x2214);
+                inner.Hide();
+            };
+            Assert.False(inner.ShowDialog());
+            Assert.False(dynamicWindow.Window.IsEnabled);
+            Assert.True(outer.IsEnabled);
+            dynamicWindow.Window.Close();
+            Assert.False(dynamicWindow.Window.IsEnabled);
+            outer.Hide();
+        };
+        Assert.False(outer.ShowDialog());
+        Assert.False(dynamicWindow.Window.IsEnabled);
+        Assert.Empty((System.Collections.IDictionary)typeof(Window).GetField("_macOSModalEnabledStates",
+            BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!);
+    }
+
     [Fact]
     public void MacOSDialog_NestedModalRestoresOnlyThePreviousDialog()
     {
