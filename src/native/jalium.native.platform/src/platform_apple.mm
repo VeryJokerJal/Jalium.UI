@@ -1991,8 +1991,25 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     }
 }
 - (void)mouseEntered:(NSEvent*)e {
-    if (!_jaliumOwner || !_jaliumOwner->enabled) return;
-    DispatchSimple(_jaliumOwner,JALIUM_EVENT_MOUSE_ENTER);[self applyCursor];
+    // AppKit can deliver an already-queued tracking entry after Hide, detach
+    // or minimization. It must not revive hover on an unavailable surface.
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) client = self;
+    NSWindow* __attribute__((objc_precise_lifetime)) window = client.window;
+    JaliumPlatformWindow* owner = client.jaliumOwner;
+    if (!owner || !window || !IsLiveWindow(owner, window)) {
+        [client cancelCursorTracking];
+        return;
+    }
+    BOOL visible = window.visible && !window.miniaturized && !client.hiddenOrHasHiddenAncestor;
+    // Native queries can close the window or replace its view. Revalidate
+    // identity before reading the managed owner or dispatching its event.
+    if (!visible || client.window != window || client.jaliumOwner != owner ||
+        !IsLiveWindow(owner, window) || owner->destroying || !owner->enabled ||
+        !owner->visible || owner->miniaturizing) {
+        [client cancelCursorTracking];
+        return;
+    }
+    DispatchSimple(owner,JALIUM_EVENT_MOUSE_ENTER);[client applyCursor];
 }
 - (void)mouseExited:(NSEvent*)e {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
