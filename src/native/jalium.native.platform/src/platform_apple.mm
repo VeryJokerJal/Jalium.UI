@@ -2761,6 +2761,11 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         current->fullScreenTransition = false;
         current->applyingWindowState = true;
         current->state = actualState;
+        // Entry failure returns to an ordinary frame. Apply any style deferred
+        // by the transition before observers receive the recovered state.
+        // A failed exit still has the native fullscreen mask and keeps deferring.
+        ApplyAppleStyle(current);
+        if (weakView.jaliumOwner != current || !IsLiveWindow(current)) return;
         JaliumPlatformEvent e{}; e.type = JALIUM_EVENT_STATE_CHANGED;
         e.stateChanged.newState = actualState; DispatchWindowEvent(current, e);
         if (weakView.jaliumOwner != current || !IsLiveWindow(current)) return;
