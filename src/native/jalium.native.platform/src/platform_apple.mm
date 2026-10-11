@@ -1705,6 +1705,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 @property(nonatomic) NSUInteger cursorMouseButtons;
 @property(nonatomic, strong) NSTrackingArea* cursorTrackingArea;
 - (void)applyCursor;
+- (BOOL)canApplyCursorForWindow:(NSWindow*)window;
 - (void)restoreCursor;
 - (void)cancelCursorTracking;
 - (void)cancelMarkedText;
@@ -1778,15 +1779,24 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     _cursorMouseButtons = 0;
     [self restoreCursor];
 }
+- (BOOL)canApplyCursorForWindow:(NSWindow*)window {
+    JaliumPlatformWindow* owner = _jaliumOwner;
+    if (!owner || !window || !IsLiveWindow(owner, window)) return NO;
+    BOOL nativeReady = NSApp.active && window.visible && !window.miniaturized &&
+        !window.attachedSheet && !self.hiddenOrHasHiddenAncestor;
+    // Native view/window methods can run embedding code. Check registration
+    // and identity again before dereferencing the owner after those calls.
+    return nativeReady && self.window == window && _jaliumOwner == owner &&
+        IsLiveWindow(owner, window) && owner->enabled && !owner->destroying &&
+        !owner->miniaturizing && !owner->dragSource && !owner->dragTargetActive;
+}
 - (void)applyCursor {
-    NSWindow* window = self.window;
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) client = self;
+    NSWindow* __attribute__((objc_precise_lifetime)) window = client.window;
     // Cursor setters and retained view callbacks can run after focus, sheet or
     // visibility changes. Only the active client under the physical pointer may
     // replace/hide the cursor; losing ownership balances this view's hide only.
-    if (!_jaliumOwner || !_jaliumOwner->enabled || _jaliumOwner->destroying ||
-        _jaliumOwner->miniaturizing || !NSApp.active || !window.visible ||
-        window.miniaturized || window.attachedSheet || self.hiddenOrHasHiddenAncestor ||
-        _jaliumOwner->dragSource || _jaliumOwner->dragTargetActive) {
+    if (![self canApplyCursorForWindow:window]) {
         [self cancelCursorTracking];
         return;
     }
@@ -1803,6 +1813,23 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
             [self restoreCursor];
             return;
         }
+        // An embedded hitTest can hide/close/disable the window or move its
+        // geometry/pointer. Do not apply the old hit after that callback.
+        if (![self canApplyCursorForWindow:window]) {
+            [self cancelCursorTracking];
+            return;
+        }
+        NSPoint currentPoint = NSEvent.mouseLocation;
+        NSPoint currentLocal = [self convertPoint:[window convertPointFromScreen:currentPoint] fromView:nil];
+        if (!NSEqualPoints(point, currentPoint) || !NSEqualPoints(local, currentLocal) ||
+            [NSWindow windowNumberAtPoint:currentPoint belowWindowWithWindowNumber:0] != window.windowNumber) {
+            [self restoreCursor];
+            return;
+        }
+    }
+    if (![self canApplyCursorForWindow:window]) {
+        [self cancelCursorTracking];
+        return;
     }
     if (_cursorShape == JALIUM_CURSOR_HIDDEN) {
         if (!_cursorHidden) { [NSCursor hide]; _cursorHidden = YES; }

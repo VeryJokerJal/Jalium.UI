@@ -126,6 +126,18 @@ static void DelegateEvent(SEL selector)
 @implementation JaliumCursorPassThroughView
 - (NSView*)hitTest:(NSPoint)point { return nil; }
 @end
+@interface JaliumCursorReentrantView : NSView
+@property(nonatomic, copy) void (^onHit)(void);
+@end
+@implementation JaliumCursorReentrantView
+- (NSView*)hitTest:(NSPoint)point
+{
+    void (^action)(void) = self.onHit;
+    self.onHit = nil;
+    if (action) action();
+    return nil;
+}
+@end
 static void Gesture(int button, int phase)
 {
     auto* event = [JaliumCursorGestureEvent new];
@@ -404,6 +416,55 @@ static void Probe(uint32_t style, const char* name)
     controlledView = nil; controlledWindow = nil; controlledEvent = nil;
 }
 
+static void ProbeReentrant(uint32_t style, const char* name)
+{
+    chrome = name;
+    JaliumWindowParams params{};
+    params.title = reinterpret_cast<const JaliumUtf16Char*>(u"Hidden reentrant cursor contract");
+    params.width = 320; params.height = 240; params.style = style;
+    JaliumPlatformWindow* window = jalium_window_create(&params);
+    Check(window != nullptr, "create hidden reentrant cursor window");
+    if (!window) return;
+    controlledView = (__bridge NSView*)reinterpret_cast<void*>(jalium_window_get_native_handle(window));
+    controlledWindow = controlledView.window;
+    visible = active = true; miniaturized = sheet = false; pressedButtons = 0;
+    jalium_apple_window_show(window, 0);
+    Check(!reinterpret_cast<BOOL(*)(id, SEL)>(originalVisible)(controlledWindow, @selector(isVisible)),
+        "reentrant SDK hit tests keep the real native window hidden");
+    JaliumCursorReentrantView* child = [[JaliumCursorReentrantView alloc] initWithFrame:controlledView.bounds];
+    [controlledView addSubview:child];
+    SEL restore = @selector(restoreCursor);
+    auto reset = [&] {
+        // Isolate cases even if the baseline issued an invalid hide. This is
+        // private cursor-call cleanup, never evidence that the product passed.
+        reinterpret_cast<void(*)(id, SEL)>([controlledView methodForSelector:restore])(controlledView, restore);
+        controlledView.hidden = NO; controlledView.superview.hidden = NO;
+        active = visible = true; miniaturized = sheet = false;
+        jalium_window_set_enabled(window, 1); jalium_apple_window_show(window, 0);
+        Inside(); ResetShape(window);
+    };
+    auto check = [&](void (^action)(void), const char* label) {
+        reset(); child.onHit = action; ResetCalls();
+        jalium_window_set_cursor(window, JALIUM_CURSOR_HIDDEN);
+        Check(NoCursorChange() && balance == 0, label);
+    };
+    check(^{ jalium_window_set_enabled(window, 0); }, "hit-test disabling cannot add a new hide");
+    check(^{ controlledView.hidden = YES; }, "hit-test hiding the client cannot add a new hide");
+    check(^{ controlledView.superview.hidden = YES; }, "hit-test hiding an ancestor cannot add a new hide");
+    check(^{ visible = false; jalium_window_hide(window); }, "hit-test hiding the window cannot add a new hide");
+    check(^{ active = false; }, "hit-test application deactivation cannot add a new hide");
+    check(^{ sheet = true; }, "hit-test attaching a sheet cannot add a new hide");
+    check(^{ Outside(); }, "hit-test pointer departure cannot apply an obsolete hit");
+    check(^{ hitWindow += 1000; }, "hit-test occlusion cannot apply an obsolete hit");
+    check(^{ jalium_window_move(window, 1000, 1000); }, "hit-test window movement cannot apply obsolete client coordinates");
+    reset(); child.onHit = ^{ jalium_window_destroy(window); }; ResetCalls();
+    jalium_window_set_cursor(window, JALIUM_CURSOR_HIDDEN);
+    Check(NoCursorChange() && balance == 0, "hit-test destruction cannot revive the retained view's cursor");
+    reinterpret_cast<void(*)(id, SEL)>([controlledView methodForSelector:restore])(controlledView, restore);
+    Check(balance == 0, "reentrant private cleanup balances every hide");
+    controlledView = nil; controlledWindow = nil; controlledEvent = nil;
+}
+
 int main()
 {
     @autoreleasepool {
@@ -432,6 +493,8 @@ int main()
         Replacement rects(class_getInstanceMethod(NSWindow.class, @selector(invalidateCursorRectsForView:)), reinterpret_cast<IMP>(Invalidate)); originalInvalidate = rects.original;
         Probe(JALIUM_WINDOW_STYLE_DEFAULT, "native");
         Probe(JALIUM_WINDOW_STYLE_RESIZABLE, "custom");
+        ProbeReentrant(JALIUM_WINDOW_STYLE_DEFAULT, "reentrant native");
+        ProbeReentrant(JALIUM_WINDOW_STYLE_RESIZABLE, "reentrant custom");
         chrome = "final";
         Check(balance == 0, "all private hide requests are balanced");
         std::printf("macOS cursor ownership checks: %d/%d passed\n", passed, total);
