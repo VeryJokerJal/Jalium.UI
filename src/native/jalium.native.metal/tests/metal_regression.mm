@@ -401,6 +401,30 @@ static void TestRetainedDamage(float scale, uint32_t msaa)
 static int hideCalls = 0, unhideCalls = 0;
 static void CountHide(id, SEL) { ++hideCalls; }
 static void CountUnhide(id, SEL) { ++unhideCalls; }
+static NSWindow* cursorWindow;
+static NSView* cursorView;
+static NSCursor* appliedCursor;
+static bool cursorVisible = false, cursorInside = true;
+static IMP cursorOriginalVisible;
+static void CountCursorSet(id cursor, SEL) { appliedCursor = cursor; }
+static void CountCursorClear(id, SEL, BOOL) {}
+static NSCursor* AppliedCursor(id, SEL) { return appliedCursor; }
+static BOOL CursorAppActive(id, SEL) { return YES; }
+static BOOL CursorWindowVisible(id window, SEL selector)
+{
+    return window == cursorWindow ? cursorVisible :
+        reinterpret_cast<BOOL(*)(id, SEL)>(cursorOriginalVisible)(window, selector);
+}
+static NSPoint CursorMouseLocation(id, SEL)
+{
+    NSPoint local = NSMakePoint(cursorInside ? NSMidX(cursorView.bounds) : NSMaxX(cursorView.bounds) + 100,
+        NSMidY(cursorView.bounds));
+    return [cursorWindow convertPointToScreen:[cursorView convertPoint:local toView:nil]];
+}
+static NSInteger CursorHitWindow(id, SEL, NSPoint, NSInteger)
+{
+    return cursorInside ? cursorWindow.windowNumber : 0;
+}
 
 static void TestCursor()
 {
@@ -410,21 +434,55 @@ static void TestCursor()
     params.x = params.y = JALIUM_DEFAULT_POS;
     params.width = 320; params.height = 200;
     params.style = JALIUM_WINDOW_STYLE_BORDERLESS;
-    // Count hide/unhide calls without changing the user's system cursor.
+    // Keep the native window hidden and control ownership metadata only inside
+    // this process. Record all cursor calls without changing the system cursor.
     struct CursorMethods {
         Method hide = class_getClassMethod(NSCursor.class, @selector(hide));
         Method unhide = class_getClassMethod(NSCursor.class, @selector(unhide));
+        Method set = class_getInstanceMethod(NSCursor.class, @selector(set));
+        Method current = class_getClassMethod(NSCursor.class, @selector(currentCursor));
+        Method clear = class_getClassMethod(NSCursor.class, @selector(setHiddenUntilMouseMoves:));
+        Method active = class_getInstanceMethod(NSApplication.class, @selector(isActive));
+        Method visible = class_getInstanceMethod(NSWindow.class, @selector(isVisible));
+        Method mouse = class_getClassMethod(NSEvent.class, @selector(mouseLocation));
+        Method hit = class_getClassMethod(NSWindow.class, @selector(windowNumberAtPoint:belowWindowWithWindowNumber:));
         IMP originalHide = method_setImplementation(hide, reinterpret_cast<IMP>(CountHide));
         IMP originalUnhide = method_setImplementation(unhide, reinterpret_cast<IMP>(CountUnhide));
+        IMP originalSet = method_setImplementation(set, reinterpret_cast<IMP>(CountCursorSet));
+        IMP originalCurrent = method_setImplementation(current, reinterpret_cast<IMP>(AppliedCursor));
+        IMP originalClear = method_setImplementation(clear, reinterpret_cast<IMP>(CountCursorClear));
+        IMP originalActive = method_setImplementation(active, reinterpret_cast<IMP>(CursorAppActive));
+        IMP originalVisible = method_setImplementation(visible, reinterpret_cast<IMP>(CursorWindowVisible));
+        IMP originalMouse = method_setImplementation(mouse, reinterpret_cast<IMP>(CursorMouseLocation));
+        IMP originalHit = method_setImplementation(hit, reinterpret_cast<IMP>(CursorHitWindow));
+        CursorMethods() { cursorOriginalVisible = originalVisible; }
         ~CursorMethods() {
             method_setImplementation(hide, originalHide);
             method_setImplementation(unhide, originalUnhide);
+            method_setImplementation(set, originalSet);
+            method_setImplementation(current, originalCurrent);
+            method_setImplementation(clear, originalClear);
+            method_setImplementation(active, originalActive);
+            method_setImplementation(visible, originalVisible);
+            method_setImplementation(mouse, originalMouse);
+            method_setImplementation(hit, originalHit);
+            cursorWindow = nil; cursorView = nil; appliedCursor = nil;
         }
     } methods;
     std::unique_ptr<JaliumPlatformWindow, decltype(&jalium_window_destroy)> window(
         jalium_window_create(&params), jalium_window_destroy);
     Check(window != nullptr, "Cursor test window creation failed");
+    cursorView = (__bridge NSView*)(void*)jalium_window_get_native_handle(window.get());
+    cursorWindow = cursorView.window;
+    cursorVisible = false; cursorInside = true; appliedCursor = NSCursor.arrowCursor;
+    Check(!reinterpret_cast<BOOL(*)(id, SEL)>(cursorOriginalVisible)(cursorWindow, @selector(isVisible)),
+        "Cursor fixture unexpectedly showed a native window");
     hideCalls = unhideCalls = 0;
+    for (int i = 0; i < 5; ++i) jalium_window_set_cursor(window.get(), JALIUM_CURSOR_HIDDEN);
+    jalium_window_set_cursor(window.get(), JALIUM_CURSOR_HAND);
+    Check(hideCalls == 0 && unhideCalls == 0 && appliedCursor == NSCursor.arrowCursor,
+        "Hidden window changed the cursor before gaining pointer ownership");
+    cursorVisible = true;
     for (int i = 0; i < 5; ++i) jalium_window_set_cursor(window.get(), JALIUM_CURSOR_HIDDEN);
     jalium_window_set_cursor(window.get(), JALIUM_CURSOR_ARROW);
     Check(hideCalls == 1 && unhideCalls == 1, "Repeated hidden cursor requests leaked AppKit hide counts");
@@ -437,11 +495,14 @@ static void TestCursor()
         location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:view.window.windowNumber
         context:nil subtype:0 data1:0 data2:0];
     jalium_window_set_cursor(window.get(), JALIUM_CURSOR_HIDDEN);
+    cursorInside = false;
     [view mouseExited:event];
     Check(hideCalls == unhideCalls, "Leaving a window kept its cursor hidden");
+    cursorInside = true;
     jalium_window_set_cursor(window.get(), JALIUM_CURSOR_HIDDEN);
     window.reset();
     Check(hideCalls == unhideCalls, "Destroying a window kept its cursor hidden");
+    Check(hideCalls == 3 && unhideCalls == 3, "Cursor ownership scenarios did not balance each hide exactly once");
     jalium_platform_shutdown();
 }
 
@@ -527,6 +588,10 @@ int main(int argc, char** argv)
 {
     @autoreleasepool {
         [NSApplication sharedApplication];
+        if (argc > 1 && std::strcmp(argv[1], "--cursor") == 0) {
+            try { TestCursor(); std::printf("PASS AppKit cursor balance\n"); return 0; }
+            catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
+        }
         jalium_metal_init();
         if (argc > 1 && std::strcmp(argv[1], "--text-line-height") == 0) {
             try {
