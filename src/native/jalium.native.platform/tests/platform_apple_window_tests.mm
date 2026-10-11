@@ -1295,27 +1295,39 @@ static int RunWindowContracts(int argc, char** argv)
         Check(events.size() == 2 && events[0].type == JALIUM_EVENT_KEY_DOWN && events[0].key.keyCode == 0xa0 &&
             events[1].type == JALIUM_EVENT_KEY_UP && (events[1].key.modifiers & JALIUM_MOD_SHIFT),
             "releasing left Shift while right Shift stays down produces the correct key-up");
-        jalium_apple_window_show(window, 0);
-        Check(native.visible, "show the side-button fixture without activation");
+        // Showing a window can let AppKit constrain its geometry. Keep the
+        // positive pointer fixture separate from the hidden geometry fixture.
+        auto* pointerWindow = Create(regular);
+        NSView* pointerView = View(pointerWindow);
+        std::vector<JaliumPlatformEvent> pointerEvents;
+        jalium_window_set_event_callback(pointerWindow, Capture, &pointerEvents);
+        jalium_apple_window_show(pointerWindow, 0);
+        Check(pointerView.window.visible, "show the side-button fixture without activation");
         auto* mouseButtons = [JaliumWindowTestMouseEvent new];
         for (int button = 2; button <= 4; ++button) {
             mouseButtons.testButton = button;
-            events.clear(); [view otherMouseDown:mouseButtons]; [view otherMouseUp:mouseButtons];
-            Check(events.size() == 2 && events[0].mouse.button == button && events[1].mouse.button == button,
+            pointerEvents.clear(); [pointerView otherMouseDown:mouseButtons]; [pointerView otherMouseUp:mouseButtons];
+            Check(pointerEvents.size() == 2 && pointerEvents[0].mouse.button == button && pointerEvents[1].mouse.button == button,
                 "middle and side mouse buttons retain their identity");
         }
         mouseButtons.testButton = 5;
-        events.clear(); [view otherMouseDown:mouseButtons];
-        Check(events.empty(), "unsupported extra mouse buttons are ignored");
-        jalium_window_hide(window);
-        Check(!native.visible, "restore the hidden property fixture after side-button input");
+        pointerEvents.clear(); [pointerView otherMouseDown:mouseButtons];
+        Check(pointerEvents.empty(), "unsupported extra mouse buttons are ignored");
+        jalium_window_destroy(pointerWindow);
+        Check(!native.visible, "side-button input leaves the original property fixture hidden");
         jalium_window_update_ime_context(window, 1, nullptr, 0, 0, 80, 120, 4, 36);
 
         NSRect beforeTransition = native.frame;
         [native.delegate windowWillEnterFullScreen:[NSNotification notificationWithName:
             NSWindowWillEnterFullScreenNotification object:native]];
         [native setContentSize:NSMakeSize(view.bounds.size.width + 100, view.bounds.size.height + 80)];
-        Check(jalium_apple_window_get_restore_bounds(window, &x, &y, &width, &height) == 0 &&
+        int transitionRestoreResult = jalium_apple_window_get_restore_bounds(window, &x, &y, &width, &height);
+        if (transitionRestoreResult != 0 || x != 140 || y != 180 || width != 720 || height != 520)
+            std::fprintf(stderr, "FULLSCREEN_RESTORE result=%d actual=%d,%d,%d,%d expected=140,180,720,520 scale=%.1f native=%s client=%s before=%s\n",
+                transitionRestoreResult, x, y, width, height, native.backingScaleFactor,
+                NSStringFromRect(native.frame).UTF8String, NSStringFromRect(view.frame).UTF8String,
+                NSStringFromRect(beforeTransition).UTF8String);
+        Check(transitionRestoreResult == 0 &&
             x == 140 && y == 180 && width == 720 && height == 520,
             "fullscreen transition keeps normal geometry after native resize");
         [native.delegate windowDidFailToEnterFullScreen:native];
