@@ -297,6 +297,45 @@ struct DeferredDeminiaturize {
     }
 };
 
+struct TrackingVisibilityProbe;
+static TrackingVisibilityProbe* g_trackingVisibility = nullptr;
+static BOOL ReadTrackingVisibility(id object, SEL selector);
+
+// Execute one owned-window callback during a native visibility query. Keep
+// the original getter and restore it before this fixture leaves its scope.
+struct TrackingVisibilityProbe {
+    NSWindow* window;
+    Method method;
+    IMP original;
+    std::function<void()> onRead;
+    TrackingVisibilityProbe(NSWindow* native, std::function<void()> callback)
+        : window(native), onRead(std::move(callback))
+    {
+        Class cls = object_getClass(native);
+        Method inherited = class_getInstanceMethod(cls, @selector(isVisible));
+        original = method_getImplementation(inherited);
+        class_addMethod(cls, @selector(isVisible), original, method_getTypeEncoding(inherited));
+        method = class_getInstanceMethod(cls, @selector(isVisible));
+        g_trackingVisibility = this;
+        method_setImplementation(method, reinterpret_cast<IMP>(ReadTrackingVisibility));
+    }
+    ~TrackingVisibilityProbe()
+    {
+        method_setImplementation(method, original);
+        g_trackingVisibility = nullptr;
+    }
+};
+static BOOL ReadTrackingVisibility(id object, SEL selector)
+{
+    auto* probe = g_trackingVisibility;
+    BOOL result = reinterpret_cast<BOOL (*)(id, SEL)>(probe->original)(object, selector);
+    if (object == probe->window && probe->onRead) {
+        auto callback = std::move(probe->onRead);
+        callback();
+    }
+    return result;
+}
+
 // Retain transition evidence in memory, emitting it only when an assertion
 // fails. Observers and callbacks belong exclusively to this fixture window.
 static bool g_traceSuccessfulRestores = false;
@@ -309,6 +348,7 @@ struct RestoreTrace {
         float scale;
         NSRect frame, restore;
         NSSize content;
+        std::string origin;
     };
     Fixture& fixture;
     std::vector<Sample> samples;
@@ -338,10 +378,32 @@ struct RestoreTrace {
     }
     void Record(const char* label)
     {
-        samples.push_back({NSProcessInfo.processInfo.systemUptime, label,
-            jalium_window_get_state(fixture.window), requested, fixture.native.miniaturized != NO,
+        double time = NSProcessInfo.processInfo.systemUptime;
+        int state = jalium_window_get_state(fixture.window);
+        std::string origin;
+        if (std::strcmp(label, "state") == 0 && requested == JALIUM_WINDOW_STATE_MAXIMIZED &&
+            state == JALIUM_WINDOW_STATE_NORMAL) {
+            // Retain the actual callback origin only for a return to Normal
+            // while the trace still expects Maximize. Emit it only on failure.
+            NSEvent* event = NSApp.currentEvent;
+            NSMutableString* context = [NSMutableString stringWithFormat:
+                @"Restore origin target=%ld event=%ld eventOnTarget=%d active=%d foreground=%d visible=%d key=%d main=%d liveResize=%d\n",
+                static_cast<long>(fixture.native.windowNumber), static_cast<long>(event.type),
+                event.window == fixture.native, NSApp.active,
+                NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
+                fixture.native.visible, fixture.native.keyWindow, fixture.native.mainWindow,
+                fixture.native.inLiveResize];
+            NSUInteger count = 0;
+            for (NSString* frame in NSThread.callStackSymbols) {
+                if (count++ == 32) break;
+                [context appendFormat:@"  %@\n", frame];
+            }
+            origin = context.UTF8String;
+        }
+        samples.push_back({time, label,
+            state, requested, fixture.native.miniaturized != NO,
             jalium_window_get_dpi_scale(fixture.window),
-            fixture.native.frame, RestoreBounds(fixture), fixture.native.contentView.bounds.size});
+            fixture.native.frame, RestoreBounds(fixture), fixture.native.contentView.bounds.size, origin});
     }
     void Request(JaliumWindowState state)
     {
@@ -352,12 +414,14 @@ struct RestoreTrace {
         for (id observer : observers) [NSNotificationCenter.defaultCenter removeObserver:observer];
         jalium_window_set_event_callback(fixture.window, Capture, &fixture.events);
         if (std::uncaught_exceptions() <= exceptions && !g_traceSuccessfulRestores) return;
-        for (const auto& s : samples)
+        for (const auto& s : samples) {
             std::fprintf(stderr, "Restore trace %.6f %s request=%d state=%d mini=%d scale=%.1f frame=(%.0f,%.0f,%.0f,%.0f) content=(%.0f,%.0f) restore=(%.0f,%.0f,%.0f,%.0f)\n",
                 s.time, s.label, s.requested, s.state, s.minimized, s.scale,
                 s.frame.origin.x, s.frame.origin.y, s.frame.size.width, s.frame.size.height,
                 s.content.width, s.content.height, s.restore.origin.x, s.restore.origin.y,
                 s.restore.size.width, s.restore.size.height);
+            if (!s.origin.empty()) std::fputs(s.origin.c_str(), stderr);
+        }
     }
 };
 
@@ -1466,6 +1530,81 @@ int main(int argc, char** argv)
                     !Settable(f.native, NSAccessibilityMainAttribute) &&
                     NSApp.keyWindow == key && NSApp.mainWindow == main, "destroyed AX reference activated its window");
             });
+            const char* trackingModes[] = {"visible", "hidden", "ordered out", "hidden view", "hidden ancestor",
+                "detached view", "disabled", "closed", "minimizing"};
+            for (int mode = 0; mode < 9; ++mode) {
+                std::string name = std::string("tracking entry revalidates ") + trackingModes[mode];
+                run(name.c_str(), [=](Fixture& f) {
+                    NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    NSEvent* enter = [NSEvent enterExitEventWithType:NSEventTypeMouseEntered
+                        location:NSMakePoint(10, 10) modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                        windowNumber:f.native.windowNumber context:nil eventNumber:1 trackingNumber:0 userData:nullptr];
+                    Require(enter != nil, "tracking event creation failed");
+                    if (mode == 1) jalium_window_hide(f.window);
+                    else if (mode == 2) [f.native orderOut:nil];
+                    else if (mode == 3) view.hidden = YES;
+                    else if (mode == 4) {
+                        Require(view.superview != nil, "tracking view has no ancestor");
+                        view.superview.hidden = YES;
+                    } else if (mode == 5) f.native.contentView = [NSView new];
+                    else if (mode == 6) jalium_window_set_enabled(f.window, 0);
+                    else if (mode == 7) f.Destroy();
+                    f.events.clear();
+                    auto entries = [&] {
+                        return std::count_if(f.events.begin(), f.events.end(), [](const auto& event) {
+                            return event.type == JALIUM_EVENT_MOUSE_ENTER;
+                        });
+                    };
+                    if (mode == 8) {
+                        bool started = false, enteredDuringMinimize = false;
+                        WindowNotification began(f, NSWindowWillMiniaturizeNotification, [&] {
+                            started = true;
+                            [view mouseEntered:enter];
+                            enteredDuringMinimize = entries() != 0;
+                        });
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                        Require(Pump([&] { return f.native.miniaturized; }) && started,
+                            "tracking fixture did not minimize");
+                        Require(!enteredDuringMinimize, "tracking entry reached a minimizing surface");
+                    }
+                    [view mouseEntered:enter];
+                    Require(entries() == (mode == 0 ? 1 : 0), "tracking entry reached an excluded surface");
+                    if (mode == 0) {
+                        NSEvent* exit = [NSEvent enterExitEventWithType:NSEventTypeMouseExited
+                            location:NSMakePoint(10, 10) modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                            windowNumber:f.native.windowNumber context:nil eventNumber:2 trackingNumber:0 userData:nullptr];
+                        [view mouseExited:exit];
+                        Require(std::count_if(f.events.begin(), f.events.end(), [](const auto& event) {
+                            return event.type == JALIUM_EVENT_MOUSE_LEAVE;
+                        }) == 1, "visible tracking exit was lost");
+                    }
+                });
+            }
+            const char* trackingCallbacks[] = {"hide", "detach", "disable", "close"};
+            for (int mode = 0; mode < 4; ++mode) {
+                std::string name = std::string("tracking entry revalidates visibility callback ") + trackingCallbacks[mode];
+                run(name.c_str(), [=](Fixture& f) {
+                    NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    NSEvent* enter = [NSEvent enterExitEventWithType:NSEventTypeMouseEntered
+                        location:NSMakePoint(10, 10) modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                        windowNumber:f.native.windowNumber context:nil eventNumber:1 trackingNumber:0 userData:nullptr];
+                    Require(enter != nil, "tracking callback event creation failed");
+                    bool changed = false;
+                    TrackingVisibilityProbe query(f.native, [&] {
+                        changed = true;
+                        if (mode == 0) jalium_window_hide(f.window);
+                        else if (mode == 1) f.native.contentView = [NSView new];
+                        else if (mode == 2) jalium_window_set_enabled(f.window, 0);
+                        else f.Destroy();
+                    });
+                    f.events.clear();
+                    [view mouseEntered:enter];
+                    Require(changed, "tracking visibility callback did not run");
+                    Require(std::none_of(f.events.begin(), f.events.end(), [](const auto& event) {
+                        return event.type == JALIUM_EVENT_MOUSE_ENTER;
+                    }), "tracking query revived a retired surface");
+                });
+            }
             run("queued focus and main writes revalidate their window", [](Fixture& f) {
                 for (int phase = 0; phase < 3; ++phase) {
                     [f.native setAccessibilityFocused:YES]; [f.native setAccessibilityMain:YES];

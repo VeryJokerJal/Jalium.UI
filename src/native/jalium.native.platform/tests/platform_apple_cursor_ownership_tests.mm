@@ -306,6 +306,11 @@ static void Probe(uint32_t style, const char* name)
     hitWindow += 1000; ResetCalls(); [controlledView mouseExited:controlledEvent];
     Check(unhides == 1 && !sets && !hides && !clears && balance == 0,
         "mouse exit releases its hide without forcing an arrow over another view");
+    // Establish the logical Show prerequisite while the pointer is still
+    // covered. orderFront is interposed, so the native window stays hidden.
+    jalium_apple_window_show(window, 0);
+    Check(!reinterpret_cast<BOOL(*)(id, SEL)>(originalVisible)(controlledWindow, @selector(isVisible)),
+        "logical hover setup leaves the actual native window hidden");
     Inside(); ResetCalls(); [controlledView mouseEntered:controlledEvent];
     Check(hides == 1 && balance == 1, "mouse entry reapplies the configured hidden cursor");
     sheet = true; ResetCalls(); UpdateCursor();
