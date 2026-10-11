@@ -543,10 +543,15 @@ int main(int argc, char** argv)
         }
         int failures = 0;
         auto run = [&](const char* name, auto test) {
+            // Keep the last entered case even if the GPU stalls and CTest
+            // terminates this process before stdout's buffer is flushed.
+            std::fprintf(stderr, "RUN %s\n", name);
             try { test(); std::printf("PASS %s\n", name); }
             catch (const std::exception& error) { ++failures; std::fprintf(stderr, "FAIL %s: %s\n", name, error.what()); }
+            std::fflush(stdout);
         };
         for (float scale : {1.0f, 2.0f}) for (uint32_t msaa : {1u, 4u}) {
+            std::fprintf(stderr, "METAL_REGRESSION_CONTEXT scale=%g msaa=%u\n", scale, msaa);
             run("bitmap orientation/alpha", [&] { TestBitmap(scale, msaa); });
             run("hollow maximize/restore glyphs", [&] { TestCaptionGlyphs(scale, msaa); });
             run("compound fill rules/winding/islands", [&] { TestCompoundPathWinding(scale, msaa); });
