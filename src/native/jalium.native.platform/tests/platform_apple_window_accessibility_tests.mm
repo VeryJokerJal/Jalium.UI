@@ -306,6 +306,8 @@ static CGFloat ReadRestoreSnapshotScale(id object, SEL selector);
 static BOOL ReadRestoreSnapshotLiveResize(id object, SEL selector);
 static id ReadRestoreSnapshotObject(id object, SEL selector);
 static id ReadRestoreSnapshotButton(id object, SEL selector, NSWindowButton kind);
+static NSPoint ReadRestoreSnapshotPoint(id object, SEL selector, NSPoint point);
+static NSPoint ReadRestoreSnapshotViewPoint(id object, SEL selector, NSPoint point, NSView* view);
 
 // A native getter may execute embedding code before returning its original
 // value. Intercept only this fixture's object and restore the actual getter.
@@ -340,6 +342,8 @@ struct RestoreSnapshotProbe {
         else if (selector == @selector(inLiveResize) || selector == @selector(isFlipped)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotLiveResize);
         else if (selector == @selector(screen) || selector == @selector(contentView) || selector == @selector(superview)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
         else if (selector == @selector(standardWindowButton:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotButton);
+        else if (selector == @selector(convertPointToScreen:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotPoint);
+        else if (selector == @selector(convertPoint:toView:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotViewPoint);
         method_setImplementation(method, replacement);
     }
     ~RestoreSnapshotProbe() {
@@ -396,6 +400,20 @@ static id ReadRestoreSnapshotButton(id object, SEL selector, NSWindowButton kind
 {
     auto* probe = g_restoreSnapshot;
     id value = reinterpret_cast<id (*)(id, SEL, NSWindowButton)>(probe->original)(object, selector, kind);
+    probe->Invoke(object);
+    return value;
+}
+static NSPoint ReadRestoreSnapshotPoint(id object, SEL selector, NSPoint point)
+{
+    auto* probe = g_restoreSnapshot;
+    NSPoint value = reinterpret_cast<NSPoint (*)(id, SEL, NSPoint)>(probe->original)(object, selector, point);
+    probe->Invoke(object);
+    return value;
+}
+static NSPoint ReadRestoreSnapshotViewPoint(id object, SEL selector, NSPoint point, NSView* view)
+{
+    auto* probe = g_restoreSnapshot;
+    NSPoint value = reinterpret_cast<NSPoint (*)(id, SEL, NSPoint, NSView*)>(probe->original)(object, selector, point, view);
     probe->Invoke(object);
     return value;
 }
@@ -855,6 +873,7 @@ int main(int argc, char** argv)
     bool workAreaOnly = argc == 2 && std::strcmp(argv[1], "--work-area-only") == 0;
     bool geometryLifecycleOnly = argc == 2 && std::strcmp(argv[1], "--geometry-lifecycle-only") == 0;
     bool titlebarLifecycleOnly = argc == 2 && std::strcmp(argv[1], "--titlebar-lifecycle-only") == 0;
+    bool geometryQueryOnly = argc == 2 && std::strcmp(argv[1], "--geometry-query-only") == 0;
     bool minimizeTransitionOnly = argc == 2 && std::strcmp(argv[1], "--minimize-transition-only") == 0;
     bool minimizeStartOnly = argc == 2 && std::strcmp(argv[1], "--minimize-start-only") == 0;
     bool activationTransitionOnly = argc == 2 && std::strcmp(argv[1], "--activation-transition-only") == 0;
@@ -865,7 +884,7 @@ int main(int argc, char** argv)
     bool frameOnly = (argc == 2 && std::strcmp(argv[1], "--frame-only") == 0) ||
         [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumValidationFrameOnly"] boolValue];
     const char* caseName = argc == 2 && std::strncmp(argv[1], "--case-name=", 12) == 0 ? argv[1] + 12 : nullptr;
-    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
+    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !geometryQueryOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
     @autoreleasepool {
         Require(jalium_platform_init() == 0, "platform initialization failed");
         bool foregroundHost = UsesForegroundValidationHost();
@@ -897,6 +916,8 @@ int main(int argc, char** argv)
                     std::strstr(name, "legacy") == nullptr && std::strstr(name, "resize callback") == nullptr &&
                     std::strstr(name, "foreign-thread") == nullptr) return;
                 if (caseName && std::strcmp(caseName, name) != 0) return;
+                if (geometryQueryOnly && std::strstr(name, "geometry query") == nullptr) return;
+                if (!geometryQueryOnly && !caseName && std::strstr(name, "geometry query") != nullptr) return;
                 if (titlebarLifecycleOnly && std::strstr(name, "titlebar alignment") == nullptr) return;
                 if (!titlebarLifecycleOnly && !caseName && std::strstr(name, "titlebar alignment") != nullptr) return;
                 if (geometryLifecycleOnly && std::strstr(name, "geometry callback") == nullptr) return;
@@ -930,6 +951,164 @@ int main(int argc, char** argv)
                 }
             };
             const char* captureGetters[] = {"frame", "bounds", "style"};
+            auto frameworkPoint = [](Fixture& f, NSPoint point) {
+                NSScreen* primary = NSScreen.screens.firstObject;
+                NSScreen* screen = f.native.screen ?: primary;
+                NSRect frame = screen.frame;
+                double top = NSMaxY(primary.frame), baseScale = primary.backingScaleFactor, scale = screen.backingScaleFactor;
+                return NSMakePoint(NSMinX(frame) * baseScale + (point.x - NSMinX(frame)) * scale,
+                    (top - NSMaxY(frame)) * baseScale + (NSMaxY(frame) - point.y) * scale);
+            };
+            const char* queryNames[] = {"restore frame", "restore bounds", "restore screen", "client view point", "client screen point", "client screen"};
+            SEL querySelectors[] = {@selector(frame), @selector(bounds), @selector(screen), @selector(convertPoint:toView:),
+                @selector(convertPointToScreen:), @selector(screen)};
+            for (int getter = 0; getter < 6; ++getter) for (int firstRead : {1, 2}) for (int action = 0; action < 6; ++action) {
+                const char* actions[] = {"keeps live output", "closes original", "preserves replacement", "retains newer frame", "retains newer state", "retains changed bounds"};
+                std::string name = std::string("geometry query ") + queryNames[getter] + " read " + std::to_string(firstRead) + " " + actions[action];
+                run(name.c_str(), [=](Fixture& f) {
+                    NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    NSRect expectedFrame = f.native.frame; NSSize expectedContent = view.bounds.size;
+                    int x = 71, y = 72, width = 73, height = 74;
+                    std::unique_ptr<Fixture> replacement; NSRect replacementFrame = NSZeroRect; size_t expectedEvents = 0;
+                    id target = getter == 1 || getter == 3 ? (id)view : (id)f.native;
+                    RestoreSnapshotProbe probe(target, querySelectors[getter], [&] {
+                        if (action == 1 || action == 2) {
+                            f.Destroy();
+                            if (action == 2) {
+                                replacement = std::make_unique<Fixture>(style, 500, 300, 560, 360);
+                                replacementFrame = replacement->native.frame; replacement->events.clear();
+                            }
+                        } else if (action == 3) {
+                            [f.native setFrame:f.ChangedFrame() display:NO]; expectedFrame = f.native.frame; expectedContent = view.bounds.size;
+                        } else if (action == 4) jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                        else if (action == 5) {
+                            NSRect bounds = view.bounds; bounds.origin.x += 5; bounds.origin.y += 7;
+                            bounds.size.width += 11; bounds.size.height += 13; view.bounds = bounds; expectedContent = view.bounds.size;
+                        }
+                        expectedEvents = f.events.size();
+                    }, firstRead);
+                    f.events.clear();
+                    int result = getter < 3 ? jalium_apple_window_get_restore_bounds(f.window, &x, &y, &width, &height)
+                        : jalium_apple_window_get_client_origin(f.window, &x, &y);
+                    Require(probe.called, "geometry query did not reach its target read");
+                    Require(f.events.size() == expectedEvents, "pure geometry query published a window event");
+                    if (action == 1 || action == 2) {
+                        Require(!f.window && result == JALIUM_ERROR_INVALID_STATE, "retired query returned success");
+                        Require(x == 71 && y == 72 && width == 73 && height == 74, "retired query changed caller output");
+                    } else {
+                        Require(result == 0, "live or newer geometry query was rejected");
+                        probe.remainingActions = 0;
+                        if (getter < 3) {
+                            NSPoint expected = frameworkPoint(f, NSMakePoint(NSMinX(expectedFrame), NSMaxY(expectedFrame)));
+                            float scale = jalium_window_get_dpi_scale(f.window);
+                            Require(x == lround(expected.x) && y == lround(expected.y) && width == lround(expectedContent.width * scale) &&
+                                height == lround(expectedContent.height * scale), "restore query returned incoherent geometry");
+                        } else {
+                            NSPoint expected = frameworkPoint(f, [f.native convertPointToScreen:[view convertPoint:NSZeroPoint toView:nil]]);
+                            Require(x == lround(expected.x) && y == lround(expected.y) && width == 73 && height == 74,
+                                "client origin query returned incoherent geometry or changed unused output");
+                        }
+                    }
+                    if (replacement) Require(NSEqualRects(replacement->native.frame, replacementFrame) && replacement->events.empty(),
+                        "retired query altered replacement window");
+                });
+            }
+            const char* viewSetters[] = {"frame", "frame origin", "frame size", "bounds", "bounds origin", "bounds size", "frame rotation", "bounds rotation"};
+            for (int getter = 0; getter < 6; ++getter) for (int setter = 0; setter < 8; ++setter) for (bool noop : {false, true}) {
+                std::string name = std::string("geometry query ") + queryNames[getter] + " second read " + viewSetters[setter] +
+                    (noop ? " accepts unchanged geometry" : " tracks late view geometry");
+                run(name.c_str(), [=](Fixture& f) {
+                    NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    id target = getter == 1 || getter == 3 ? (id)view : (id)f.native;
+                    RestoreSnapshotProbe probe(target, querySelectors[getter], [&] {
+                        NSRect frame = view.frame, bounds = view.bounds;
+                        if (!noop) { frame.origin.x += 5; frame.origin.y += 7; frame.size.width += 11; frame.size.height += 13;
+                            bounds.origin.x += 5; bounds.origin.y += 7; bounds.size.width += 11; bounds.size.height += 13; }
+                        switch (setter) {
+                            case 0: view.frame = frame; break;
+                            case 1: [view setFrameOrigin:frame.origin]; break;
+                            case 2: [view setFrameSize:frame.size]; break;
+                            case 3: view.bounds = bounds; break;
+                            case 4: [view setBoundsOrigin:bounds.origin]; break;
+                            case 5: [view setBoundsSize:bounds.size]; break;
+                            case 6: view.frameRotation += noop ? 0 : 9; break;
+                            case 7: view.boundsRotation += noop ? 0 : 9; break;
+                        }
+                    }, 2, noop ? 100000 : 1);
+                    int x = 71, y = 72, width = 73, height = 74;
+                    int result = getter < 3 ? jalium_apple_window_get_restore_bounds(f.window, &x, &y, &width, &height)
+                        : jalium_apple_window_get_client_origin(f.window, &x, &y);
+                    Require(probe.called && result == 0, "late or unchanged view geometry query was rejected");
+                    probe.remainingActions = 0;
+                    if (getter < 3) {
+                        NSRect frame = f.native.frame; NSPoint expected = frameworkPoint(f, NSMakePoint(NSMinX(frame), NSMaxY(frame)));
+                        NSSize content = view.bounds.size; float scale = jalium_window_get_dpi_scale(f.window);
+                        Require(x == lround(expected.x) && y == lround(expected.y) && width == lround(content.width * scale) &&
+                            height == lround(content.height * scale), "query returned bounds from before its late view change");
+                    } else {
+                        NSPoint expected = frameworkPoint(f, [f.native convertPointToScreen:[view convertPoint:NSZeroPoint toView:nil]]);
+                        Require(x == lround(expected.x) && y == lround(expected.y), "query returned a point from before its late view change");
+                    }
+                    Require(f.events.empty(), "view-only query changes published a Window event");
+                });
+            }
+            run("geometry query saved restore bounds ignore current view changes", [&](Fixture& f) {
+                NSRect expectedFrame = f.native.frame;
+                NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                NSSize expectedContent = view.bounds.size; float scale = jalium_window_get_dpi_scale(f.window);
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED); f.events.clear();
+                RestoreSnapshotProbe probe(f, @selector(screen), [&] {
+                    NSRect bounds = view.bounds; bounds.origin.x += 1; bounds.size.width += 1; view.bounds = bounds;
+                }, 1, 100000);
+                int x = 71, y = 72, width = 73, height = 74;
+                Require(jalium_apple_window_get_restore_bounds(f.window, &x, &y, &width, &height) == 0 && probe.called,
+                    "current maximized view changes invalidated saved normal geometry");
+                probe.remainingActions = 0;
+                NSPoint expected = frameworkPoint(f, NSMakePoint(NSMinX(expectedFrame), NSMaxY(expectedFrame)));
+                Require(x == lround(expected.x) && y == lround(expected.y) && width == lround(expectedContent.width * scale) &&
+                    height == lround(expectedContent.height * scale) && f.events.empty(), "saved query changed normal geometry or Window events");
+            });
+            run("geometry query hidden window remains readable", [&](Fixture& f) {
+                jalium_window_hide(f.window); f.events.clear(); int x, y, width, height;
+                Require(jalium_apple_window_get_restore_bounds(f.window, &x, &y, &width, &height) == 0 &&
+                    jalium_apple_window_get_client_origin(f.window, &x, &y) == 0 && f.events.empty(), "hidden geometry query failed or published events");
+            });
+            for (bool client : {false, true}) run(client ? "geometry query client instability is bounded and recovers" :
+                "geometry query restore instability is bounded and recovers", [&](Fixture& f) {
+                NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                NSRect original = view.bounds; int x = 71, y = 72, width = 73, height = 74;
+                RestoreSnapshotProbe probe(client ? (id)f.native : (id)view, client ? @selector(convertPointToScreen:) : @selector(bounds), [&] {
+                    NSRect bounds = view.bounds; bounds.origin.x += 1; bounds.size.width += 1; view.bounds = bounds;
+                }, 1, 100000);
+                int result = client ? jalium_apple_window_get_client_origin(f.window, &x, &y)
+                    : jalium_apple_window_get_restore_bounds(f.window, &x, &y, &width, &height);
+                Require(result == JALIUM_ERROR_INVALID_STATE && probe.targetReads < 1000, "unstable query was not rejected within its bound");
+                Require(x == 71 && y == 72 && width == 73 && height == 74 && f.events.empty(), "unstable query changed output or events");
+                probe.remainingActions = 0; view.bounds = original;
+                result = client ? jalium_apple_window_get_client_origin(f.window, &x, &y)
+                    : jalium_apple_window_get_restore_bounds(f.window, &x, &y, &width, &height);
+                Require(result == 0, "query could not recover after instability ended");
+            });
+            run("geometry query foreign thread rejects native reads and preserves outputs", [](Fixture& f) {
+                int x = 71, y = 72, width = 73, height = 74, restoreResult = 0, clientResult = 0;
+                RestoreSnapshotProbe probe(f, @selector(frame), [] {});
+                std::thread worker([&] {
+                    restoreResult = jalium_apple_window_get_restore_bounds(f.window, &x, &y, &width, &height);
+                    clientResult = jalium_apple_window_get_client_origin(f.window, &x, &y);
+                }); worker.join();
+                Require(restoreResult == JALIUM_ERROR_INVALID_STATE && clientResult == JALIUM_ERROR_INVALID_STATE && !probe.called,
+                    "foreign geometry query reached AppKit or succeeded");
+                Require(x == 71 && y == 72 && width == 73 && height == 74, "foreign query changed output");
+            });
+            run("geometry query retired handles and invalid pointers preserve output", [](Fixture& f) {
+                int x = 71, y = 72, width = 73, height = 74; auto* retired = f.window; f.Destroy();
+                Require(jalium_apple_window_get_restore_bounds(retired, &x, &y, &width, &height) == JALIUM_ERROR_INVALID_STATE &&
+                    jalium_apple_window_get_client_origin(retired, &x, &y) == JALIUM_ERROR_INVALID_STATE, "retired query reached released owner");
+                Require(jalium_apple_window_get_restore_bounds(nullptr, &x, &y, &width, &height) == JALIUM_ERROR_INVALID_ARGUMENT &&
+                    jalium_apple_window_get_client_origin(nullptr, &x, &y) == JALIUM_ERROR_INVALID_ARGUMENT,
+                    "null handle query used the wrong error");
+                Require(x == 71 && y == 72 && width == 73 && height == 74, "rejected query changed output");
+            });
             auto checkTitlebar = [](Fixture& f, double height) {
                 NSView* content = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
                 for (NSWindowButton kind : {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
