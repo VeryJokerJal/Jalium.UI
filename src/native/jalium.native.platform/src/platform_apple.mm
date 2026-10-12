@@ -1809,25 +1809,37 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
         !(owner->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE) ||
         owner->fullScreenTransition || owner->appKitZooming) return;
     uint64_t request = owner->stateRequestSequence;
+    bool wasVisible = owner->visible;
     NSUInteger mask = nativeWindow.styleMask;
     if (!IsLiveWindow(owner, nativeWindow) || owner->stateRequestSequence != request ||
+        owner->visible != wasVisible || !owner->enabled ||
+        !(owner->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE) ||
         (mask & NSWindowStyleMaskFullScreen)) return;
     // A native action accepted by a getter is newer than the framework
     // request that is still validating that getter's returned value.
     request = ++owner->stateRequestSequence;
-    if (_jaliumOwner->applyingWindowState || _jaliumOwner->miniaturizing || _jaliumOwner->deminiaturizing) {
+    auto current = [&] {
+        return IsLiveWindow(owner, nativeWindow) && !owner->destroying &&
+            owner->stateRequestSequence == request && owner->enabled && owner->visible == wasVisible &&
+            (owner->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE) &&
+            !owner->fullScreenTransition && !owner->appKitZooming;
+    };
+    if (owner->applyingWindowState || owner->miniaturizing || owner->deminiaturizing) {
         // Preserve AppKit's best-fit Zoom, rather than turning the deferred
         // action into the framework's work-area Fill. A later state request
         // replaces it, and two pending Zoom actions cancel each other.
-        bool zoomed = _jaliumOwner->requestedNativeZoom
-            ? _jaliumOwner->requestedState == JALIUM_WINDOW_STATE_MAXIMIZED : self.zoomed;
-        _jaliumOwner->requestedState = zoomed ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_MAXIMIZED;
-        _jaliumOwner->requestedNativeZoom = true;
+        bool zoomed = owner->requestedNativeZoom
+            ? owner->requestedState == JALIUM_WINDOW_STATE_MAXIMIZED : nativeWindow.zoomed;
+        if (!current()) return;
+        owner->requestedState = zoomed ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_MAXIMIZED;
+        owner->requestedNativeZoom = true;
         return;
     }
-    _jaliumOwner->requestedNativeZoom = false;
-    if (self.zoomed) {
-        ApplyWindowState(_jaliumOwner, JALIUM_WINDOW_STATE_NORMAL);
+    owner->requestedNativeZoom = false;
+    bool zoomed = nativeWindow.zoomed;
+    if (!current()) return;
+    if (zoomed) {
+        ApplyWindowState(owner, JALIUM_WINDOW_STATE_NORMAL);
         return;
     }
     // AppKit's Zoom uses its standard frame and any delegate best-fit frame.
@@ -3810,12 +3822,26 @@ int32_t jalium_apple_window_titlebar_double_click(JaliumPlatformWindow* w)
 {
     if (!w) return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
+    if (!NSThread.isMainThread || !IsLiveWindow(w) || w->destroying) return JALIUM_ERROR_INVALID_STATE;
     if (!w->enabled) return JALIUM_ERROR_INVALID_STATE;
-    if (w->fullScreenTransition || w->appKitZooming || w->window.miniaturized ||
-        (w->window.styleMask & NSWindowStyleMaskFullScreen)) return JALIUM_OK;
+    if (w->fullScreenTransition || w->appKitZooming) return JALIUM_OK;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
+    uint64_t request = w->stateRequestSequence;
+    bool wasVisible = w->visible;
+    auto live = [&] { return IsLiveWindow(w, nativeWindow) && !w->destroying; };
+    auto current = [&] { return live() && w->stateRequestSequence == request &&
+        w->enabled && w->visible == wasVisible && !w->fullScreenTransition && !w->appKitZooming; };
+    bool minimized = nativeWindow.miniaturized;
+    if (!live()) return JALIUM_ERROR_INVALID_STATE;
+    if (!current() || minimized) return JALIUM_OK;
+    NSUInteger mask = nativeWindow.styleMask;
+    if (!live()) return JALIUM_ERROR_INVALID_STATE;
+    if (!current() || (mask & NSWindowStyleMaskFullScreen)) return JALIUM_OK;
     // Read on each gesture so changing Desktop & Dock preferences takes effect
     // without restarting the application. Never write the user's preference.
     id action = [NSUserDefaults.standardUserDefaults objectForKey:@"AppleActionOnDoubleClick"];
+    if (!live()) return JALIUM_ERROR_INVALID_STATE;
+    if (!current()) return JALIUM_OK;
     if (action && ![action isKindOfClass:NSString.class]) return JALIUM_OK;
     if ([action isEqualToString:@"Minimize"]) {
         if (w->style & JALIUM_WINDOW_STYLE_MINIMIZABLE)
@@ -3825,10 +3851,10 @@ int32_t jalium_apple_window_titlebar_double_click(JaliumPlatformWindow* w)
             ApplyWindowState(w, w->state == JALIUM_WINDOW_STATE_MAXIMIZED
                 ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_MAXIMIZED);
     } else if (!action || [action isEqualToString:@"Maximize"]) {
-        [w->window zoom:nil];
+        [nativeWindow zoom:nil];
     }
     // "None" and unknown future settings deliberately do not resize the window.
-    return JALIUM_OK;
+    return live() ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
 #else
     return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
