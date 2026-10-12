@@ -314,6 +314,9 @@ struct RestoreSnapshotProbe;
 static RestoreSnapshotProbe* g_restoreSnapshot = nullptr;
 static NSRect ReadRestoreSnapshotRect(id object, SEL selector);
 static NSUInteger ReadRestoreSnapshotMask(id object, SEL selector);
+static CGFloat ReadRestoreSnapshotScale(id object, SEL selector);
+static BOOL ReadRestoreSnapshotLiveResize(id object, SEL selector);
+static id ReadRestoreSnapshotObject(id object, SEL selector);
 
 // A native getter may execute embedding code before returning its original
 // value. Intercept only this fixture's object and restore the actual getter.
@@ -339,8 +342,12 @@ struct RestoreSnapshotProbe {
         class_addMethod(cls, selector, original, method_getTypeEncoding(inherited));
         method = class_getInstanceMethod(cls, selector);
         g_restoreSnapshot = this;
-        method_setImplementation(method, selector == @selector(styleMask)
-            ? reinterpret_cast<IMP>(ReadRestoreSnapshotMask) : reinterpret_cast<IMP>(ReadRestoreSnapshotRect));
+        IMP replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotRect);
+        if (selector == @selector(styleMask)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotMask);
+        else if (selector == @selector(backingScaleFactor)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotScale);
+        else if (selector == @selector(inLiveResize)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotLiveResize);
+        else if (selector == @selector(screen)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
+        method_setImplementation(method, replacement);
     }
     ~RestoreSnapshotProbe() {
         method_setImplementation(method, original);
@@ -368,6 +375,27 @@ static NSUInteger ReadRestoreSnapshotMask(id object, SEL selector)
 {
     auto* probe = g_restoreSnapshot;
     NSUInteger value = reinterpret_cast<NSUInteger (*)(id, SEL)>(probe->original)(object, selector);
+    probe->Invoke(object);
+    return value;
+}
+static CGFloat ReadRestoreSnapshotScale(id object, SEL selector)
+{
+    auto* probe = g_restoreSnapshot;
+    CGFloat value = reinterpret_cast<CGFloat (*)(id, SEL)>(probe->original)(object, selector);
+    probe->Invoke(object);
+    return value;
+}
+static BOOL ReadRestoreSnapshotLiveResize(id object, SEL selector)
+{
+    auto* probe = g_restoreSnapshot;
+    BOOL value = reinterpret_cast<BOOL (*)(id, SEL)>(probe->original)(object, selector);
+    probe->Invoke(object);
+    return value;
+}
+static id ReadRestoreSnapshotObject(id object, SEL selector)
+{
+    auto* probe = g_restoreSnapshot;
+    id value = reinterpret_cast<id (*)(id, SEL)>(probe->original)(object, selector);
     probe->Invoke(object);
     return value;
 }
@@ -825,6 +853,7 @@ int main(int argc, char** argv)
     bool restoreCaptureOnly = argc == 2 && std::strcmp(argv[1], "--restore-capture-only") == 0;
     bool restoreGeometryOnly = argc == 2 && std::strcmp(argv[1], "--restore-geometry-only") == 0;
     bool workAreaOnly = argc == 2 && std::strcmp(argv[1], "--work-area-only") == 0;
+    bool geometryLifecycleOnly = argc == 2 && std::strcmp(argv[1], "--geometry-lifecycle-only") == 0;
     bool minimizeTransitionOnly = argc == 2 && std::strcmp(argv[1], "--minimize-transition-only") == 0;
     bool minimizeStartOnly = argc == 2 && std::strcmp(argv[1], "--minimize-start-only") == 0;
     bool activationTransitionOnly = argc == 2 && std::strcmp(argv[1], "--activation-transition-only") == 0;
@@ -835,7 +864,7 @@ int main(int argc, char** argv)
     bool frameOnly = (argc == 2 && std::strcmp(argv[1], "--frame-only") == 0) ||
         [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumValidationFrameOnly"] boolValue];
     const char* caseName = argc == 2 && std::strncmp(argv[1], "--case-name=", 12) == 0 ? argv[1] + 12 : nullptr;
-    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
+    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
     @autoreleasepool {
         Require(jalium_platform_init() == 0, "platform initialization failed");
         bool foregroundHost = UsesForegroundValidationHost();
@@ -867,6 +896,8 @@ int main(int argc, char** argv)
                     std::strstr(name, "legacy") == nullptr && std::strstr(name, "resize callback") == nullptr &&
                     std::strstr(name, "foreign-thread") == nullptr) return;
                 if (caseName && std::strcmp(caseName, name) != 0) return;
+                if (geometryLifecycleOnly && std::strstr(name, "geometry callback") == nullptr) return;
+                if (!geometryLifecycleOnly && !caseName && std::strstr(name, "geometry callback") != nullptr) return;
                 if (delayedRestoreOnly &&
                     std::strcmp(name, "delayed deminiaturization drains the latest state request") != 0) return;
                 if (replacementOnly && std::strstr(name, "replacement window") == nullptr) return;
@@ -896,6 +927,137 @@ int main(int argc, char** argv)
                 }
             };
             const char* captureGetters[] = {"frame", "bounds", "style"};
+            auto notifyGeometry = [](Fixture& f, int event, id<NSWindowDelegate> delegate) {
+                NSNotification* note = [NSNotification notificationWithName:event == 0 ? NSWindowDidResizeNotification :
+                    event == 1 ? NSWindowDidMoveNotification : NSWindowDidChangeBackingPropertiesNotification object:f.native];
+                if (event == 0) [delegate windowDidResize:note];
+                else if (event == 1) [delegate windowDidMove:note];
+                else [delegate windowDidChangeBackingProperties:note];
+            };
+            const char* geometryEvents[] = {"resize", "move", "DPI"};
+            const char* geometryGetters[] = {"frame", "bounds", "screen", "backing scale", "live resize"};
+            SEL geometrySelectors[] = {@selector(frame), @selector(bounds), @selector(screen),
+                @selector(backingScaleFactor), @selector(inLiveResize)};
+            for (int event = 0; event < 3; ++event) for (int getter = 0; getter < 5; ++getter) {
+                if ((getter == 3 && event != 2) || (getter == 4 && event != 0)) continue;
+                for (int action = 0; action < 4; ++action) {
+                    const char* actions[] = {"keeps live geometry", "closes its original", "preserves a replacement", "retains newer geometry"};
+                    std::string name = std::string("geometry callback ") + geometryEvents[event] + " " +
+                        geometryGetters[getter] + " " + actions[action];
+                    run(name.c_str(), [=](Fixture& f) {
+                        id<NSWindowDelegate> delegate = f.native.delegate;
+                        std::unique_ptr<Fixture> replacement;
+                        NSRect replacementFrame = NSZeroRect, changedFrame = NSZeroRect;
+                        RestoreSnapshotProbe probe(f, geometrySelectors[getter], [&] {
+                            if (!action) return;
+                            if (action == 3) {
+                                changedFrame = f.ChangedFrame();
+                                [f.native setFrame:changedFrame display:NO];
+                                changedFrame = f.native.frame;
+                                return;
+                            }
+                            f.Destroy();
+                            if (action == 2) {
+                                replacement = std::make_unique<Fixture>(style, 500, 300, 560, 360);
+                                replacementFrame = replacement->native.frame;
+                                replacement->events.clear();
+                            }
+                        });
+                        notifyGeometry(f, event, delegate);
+                        Require(probe.called, "geometry callback did not read its probed getter");
+                        if (action == 1 || action == 2) {
+                            Require(!f.window, "geometry getter did not retire its original owner");
+                            for (const auto& value : f.events)
+                                Require(value.type != JALIUM_EVENT_MOVE && value.type != JALIUM_EVENT_RESIZE &&
+                                    value.type != JALIUM_EVENT_DPI_CHANGED, "retired geometry callback published an event");
+                        }
+                        if (replacement) {
+                            Require(NSEqualRects(replacement->native.frame, replacementFrame) &&
+                                jalium_window_get_state(replacement->window) == JALIUM_WINDOW_STATE_NORMAL,
+                                "retired geometry callback changed replacement frame or state");
+                            Require(replacement->events.empty(), "retired geometry callback published to replacement");
+                        }
+                        if (!action || action == 3) {
+                            NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                            NSSize actualSize = view.bounds.size;
+                            float scale = jalium_window_get_dpi_scale(f.window);
+                            int width, height; jalium_window_get_client_size(f.window, &width, &height);
+                            NSRect position = RestoreBounds(f);
+                            Require(width == lround(actualSize.width * scale) && height == lround(actualSize.height * scale),
+                                "geometry callback left stale cached client dimensions");
+                            if (action == 3) Require(NSEqualRects(f.native.frame, changedFrame), "older geometry callback replaced the new frame");
+                            for (const auto& value : f.events) {
+                                if (value.type == JALIUM_EVENT_MOVE) Require(value.move.x == lround(position.origin.x) &&
+                                    value.move.y == lround(position.origin.y), "older geometry callback published stale position");
+                                if (value.type == JALIUM_EVENT_RESIZE) Require(value.resize.width == width && value.resize.height == height,
+                                    "older geometry callback published stale dimensions");
+                                if (value.type == JALIUM_EVENT_DPI_CHANGED) Require(value.dpiChanged.suggestedWidth == width &&
+                                    value.dpiChanged.suggestedHeight == height, "older DPI callback published stale dimensions");
+                            }
+                        }
+                    });
+                }
+            }
+            for (int event = 0; event < 3; ++event) {
+                for (int getter = 0; getter < 2; ++getter) {
+                    std::string name = std::string("geometry callback ") + geometryEvents[event] + " " +
+                        geometryGetters[getter] + " retires during reread";
+                    run(name.c_str(), [=](Fixture& f) {
+                        id<NSWindowDelegate> delegate = f.native.delegate;
+                        RestoreSnapshotProbe probe(f, geometrySelectors[getter], [&] { f.Destroy(); }, 2);
+                        notifyGeometry(f, event, delegate);
+                        Require(probe.called && !f.window, "geometry reread did not retire the original owner");
+                        for (const auto& value : f.events)
+                            Require(value.type != JALIUM_EVENT_MOVE && value.type != JALIUM_EVENT_RESIZE &&
+                                value.type != JALIUM_EVENT_DPI_CHANGED, "retired reread published geometry");
+                    });
+                }
+                std::string name = std::string("geometry callback ") + geometryEvents[event] + " bounds rejects an unstable snapshot";
+                run(name.c_str(), [=](Fixture& f) {
+                    id<NSWindowDelegate> delegate = f.native.delegate;
+                    NSView* view = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    NSRect originalBounds = view.bounds;
+                    int width, height; jalium_window_get_client_size(f.window, &width, &height);
+                    RestoreSnapshotProbe probe(f, @selector(bounds), [&] {
+                        NSRect bounds = view.bounds; bounds.size.width += 1; view.bounds = bounds;
+                    }, 1, 100000);
+                    notifyGeometry(f, event, delegate);
+                    Require(probe.called && probe.targetReads < 1000, "geometry read loop did not remain bounded");
+                    for (const auto& value : f.events)
+                        Require(value.type != JALIUM_EVENT_MOVE && value.type != JALIUM_EVENT_RESIZE &&
+                            value.type != JALIUM_EVENT_DPI_CHANGED, "unstable snapshot published partial geometry");
+                    int cachedWidth, cachedHeight; jalium_window_get_client_size(f.window, &cachedWidth, &cachedHeight);
+                    Require(cachedWidth == width && cachedHeight == height, "unstable snapshot replaced the previous cache");
+                    probe.remainingActions = 0; view.bounds = originalBounds;
+                    notifyGeometry(f, event, delegate);
+                    Require(!f.events.empty(), "unstable getter blocked later stable geometry");
+                });
+            }
+            for (bool replace : {false, true}) {
+                std::string name = std::string("geometry callback DPI delivery ") + (replace ? "preserves replacement" : "closes original");
+                run(name.c_str(), [=](Fixture& f) {
+                    id<NSWindowDelegate> delegate = f.native.delegate;
+                    struct Context { Fixture* fixture; uint32_t style; bool replace, called = false;
+                        std::unique_ptr<Fixture> replacement; NSRect frame; } context{&f, style, replace};
+                    jalium_window_set_event_callback(f.window, [](const JaliumPlatformEvent* value, void* data) {
+                        auto& c = *static_cast<Context*>(data); c.fixture->events.push_back(*value);
+                        if (value->type != JALIUM_EVENT_DPI_CHANGED || c.called) return;
+                        c.called = true; c.fixture->Destroy();
+                        if (c.replace) {
+                            c.replacement = std::make_unique<Fixture>(c.style, 500, 300, 560, 360);
+                            c.frame = c.replacement->native.frame; c.replacement->events.clear();
+                        }
+                    }, &context);
+                    notifyGeometry(f, 2, delegate);
+                    Require(context.called && !f.window, "DPI delivery did not close the original");
+                    Require(!f.events.empty() && f.events.front().type == JALIUM_EVENT_DPI_CHANGED,
+                        "DPI delivery lost its original event");
+                    for (const auto& value : f.events) Require(value.type == JALIUM_EVENT_DPI_CHANGED ||
+                        value.type == JALIUM_EVENT_DESTROYED, "DPI delivery continued into a retired resize");
+                    if (context.replacement) Require(context.replacement->events.empty() &&
+                        NSEqualRects(context.replacement->native.frame, context.frame), "retired DPI delivery changed replacement");
+                });
+            }
             const SEL captureSelectors[] = {@selector(frame), @selector(bounds), @selector(styleMask)};
             const char* captureOperations[] = {"maximize", "native Zoom", "native minimize", "fullscreen will"};
             for (int shift : {-1, 1, 20}) {
