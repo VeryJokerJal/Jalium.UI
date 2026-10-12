@@ -317,6 +317,7 @@ static NSUInteger ReadRestoreSnapshotMask(id object, SEL selector);
 static CGFloat ReadRestoreSnapshotScale(id object, SEL selector);
 static BOOL ReadRestoreSnapshotLiveResize(id object, SEL selector);
 static id ReadRestoreSnapshotObject(id object, SEL selector);
+static id ReadRestoreSnapshotButton(id object, SEL selector, NSWindowButton kind);
 
 // A native getter may execute embedding code before returning its original
 // value. Intercept only this fixture's object and restore the actual getter.
@@ -330,9 +331,12 @@ struct RestoreSnapshotProbe {
     int targetReads = 0, invokeOnRead, remainingActions;
     RestoreSnapshotProbe(Fixture& fixture, SEL selector, std::function<void()> action,
         int firstRead = 1, int actionCount = 1)
-        : target(selector == @selector(bounds)
-            ? (__bridge id)(void*)jalium_window_get_native_handle(fixture.window) : fixture.native),
-          onRead(std::move(action)), invokeOnRead(firstRead), remainingActions(actionCount)
+        : RestoreSnapshotProbe(selector == @selector(bounds)
+            ? (__bridge id)(void*)jalium_window_get_native_handle(fixture.window) : fixture.native,
+          selector, std::move(action), firstRead, actionCount) {}
+    RestoreSnapshotProbe(id object, SEL selector, std::function<void()> action,
+        int firstRead = 1, int actionCount = 1)
+        : target(object), onRead(std::move(action)), invokeOnRead(firstRead), remainingActions(actionCount)
     {
         Class cls = object_getClass(target);
         Method inherited = class_getInstanceMethod(cls, selector);
@@ -345,8 +349,9 @@ struct RestoreSnapshotProbe {
         IMP replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotRect);
         if (selector == @selector(styleMask)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotMask);
         else if (selector == @selector(backingScaleFactor)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotScale);
-        else if (selector == @selector(inLiveResize)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotLiveResize);
-        else if (selector == @selector(screen)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
+        else if (selector == @selector(inLiveResize) || selector == @selector(isFlipped)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotLiveResize);
+        else if (selector == @selector(screen) || selector == @selector(contentView) || selector == @selector(superview)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
+        else if (selector == @selector(standardWindowButton:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotButton);
         method_setImplementation(method, replacement);
     }
     ~RestoreSnapshotProbe() {
@@ -396,6 +401,13 @@ static id ReadRestoreSnapshotObject(id object, SEL selector)
 {
     auto* probe = g_restoreSnapshot;
     id value = reinterpret_cast<id (*)(id, SEL)>(probe->original)(object, selector);
+    probe->Invoke(object);
+    return value;
+}
+static id ReadRestoreSnapshotButton(id object, SEL selector, NSWindowButton kind)
+{
+    auto* probe = g_restoreSnapshot;
+    id value = reinterpret_cast<id (*)(id, SEL, NSWindowButton)>(probe->original)(object, selector, kind);
     probe->Invoke(object);
     return value;
 }
@@ -854,6 +866,7 @@ int main(int argc, char** argv)
     bool restoreGeometryOnly = argc == 2 && std::strcmp(argv[1], "--restore-geometry-only") == 0;
     bool workAreaOnly = argc == 2 && std::strcmp(argv[1], "--work-area-only") == 0;
     bool geometryLifecycleOnly = argc == 2 && std::strcmp(argv[1], "--geometry-lifecycle-only") == 0;
+    bool titlebarLifecycleOnly = argc == 2 && std::strcmp(argv[1], "--titlebar-lifecycle-only") == 0;
     bool minimizeTransitionOnly = argc == 2 && std::strcmp(argv[1], "--minimize-transition-only") == 0;
     bool minimizeStartOnly = argc == 2 && std::strcmp(argv[1], "--minimize-start-only") == 0;
     bool activationTransitionOnly = argc == 2 && std::strcmp(argv[1], "--activation-transition-only") == 0;
@@ -864,7 +877,7 @@ int main(int argc, char** argv)
     bool frameOnly = (argc == 2 && std::strcmp(argv[1], "--frame-only") == 0) ||
         [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumValidationFrameOnly"] boolValue];
     const char* caseName = argc == 2 && std::strncmp(argv[1], "--case-name=", 12) == 0 ? argv[1] + 12 : nullptr;
-    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
+    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
     @autoreleasepool {
         Require(jalium_platform_init() == 0, "platform initialization failed");
         bool foregroundHost = UsesForegroundValidationHost();
@@ -896,6 +909,8 @@ int main(int argc, char** argv)
                     std::strstr(name, "legacy") == nullptr && std::strstr(name, "resize callback") == nullptr &&
                     std::strstr(name, "foreign-thread") == nullptr) return;
                 if (caseName && std::strcmp(caseName, name) != 0) return;
+                if (titlebarLifecycleOnly && std::strstr(name, "titlebar alignment") == nullptr) return;
+                if (!titlebarLifecycleOnly && !caseName && std::strstr(name, "titlebar alignment") != nullptr) return;
                 if (geometryLifecycleOnly && std::strstr(name, "geometry callback") == nullptr) return;
                 if (!geometryLifecycleOnly && !caseName && std::strstr(name, "geometry callback") != nullptr) return;
                 if (delayedRestoreOnly &&
@@ -927,6 +942,105 @@ int main(int argc, char** argv)
                 }
             };
             const char* captureGetters[] = {"frame", "bounds", "style"};
+            auto checkTitlebar = [](Fixture& f, double height) {
+                NSView* content = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                for (NSWindowButton kind : {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
+                    NSButton* button = [f.native standardWindowButton:kind];
+                    Require(button != nil, "extended titlebar lost a system button");
+                    NSPoint center = [button convertPoint:NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds)) toView:content];
+                    double top = content.isFlipped ? center.y : NSHeight(content.bounds) - center.y;
+                    Require(std::abs(top - height / 2) <= 0.01, "system button did not use the latest toolbar height");
+                    NSView* root = button;
+                    while (root.superview) root = root.superview;
+                    NSPoint hitPoint = [button convertPoint:NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds)) toView:root.superview];
+                    NSView* hit = [root hitTest:hitPoint];
+                    Require(hit == button || [hit isDescendantOf:button], "aligned system button lost its native hit area");
+                    id exposed = kind == NSWindowCloseButton ? f.native.accessibilityCloseButton :
+                        kind == NSWindowMiniaturizeButton ? f.native.accessibilityMinimizeButton : f.native.accessibilityZoomButton;
+                    Require([exposed isAccessibilityElement] && [[exposed accessibilityRole] isEqualToString:NSAccessibilityButtonRole],
+                        "window lost its exposed native accessibility button");
+                }
+            };
+            if (style == regular) {
+                const char* routes[] = {"resize", "layout", "height setter"};
+                const char* getters[] = {"style", "system button", "content", "content bounds", "content flipped",
+                    "button parent", "button bounds", "button frame", "container parent", "container bounds", "container flipped"};
+                SEL selectors[] = {@selector(styleMask), @selector(standardWindowButton:), @selector(contentView),
+                    @selector(bounds), @selector(isFlipped), @selector(superview), @selector(bounds), @selector(frame),
+                    @selector(superview), @selector(bounds), @selector(isFlipped)};
+                for (int route = 0; route < 3; ++route) for (int getter = 0; getter < 11; ++getter)
+                    for (int action = 0; action < 6; ++action) {
+                        const char* actions[] = {"keeps live buttons", "closes original", "preserves replacement", "retains newer height", "retains newer frame", "retains disabled extension"};
+                        std::string name = std::string("titlebar alignment ") + routes[route] + " " + getters[getter] + " " + actions[action];
+                        run(name.c_str(), [=](Fixture& f) {
+                            Require(jalium_apple_window_set_titlebar_extended(f.window, 1) == 0 &&
+                                jalium_apple_window_set_titlebar_content_height(f.window, 48) == 0, "titlebar fixture setup failed");
+                            NSView* content = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                            NSButton* button = [f.native standardWindowButton:NSWindowCloseButton];
+                            id target = getter < 3 ? (id)f.native : getter < 5 ? (id)content : getter < 8 ? (id)button : (id)button.superview;
+                            id<NSWindowDelegate> delegate = f.native.delegate;
+                            std::unique_ptr<Fixture> replacement; NSRect replacementFrame = NSZeroRect, changedFrame = NSZeroRect;
+                            RestoreSnapshotProbe probe(target, selectors[getter], [&] {
+                                if (action == 1 || action == 2) {
+                                    f.Destroy();
+                                    if (action == 2) {
+                                        replacement = std::make_unique<Fixture>(style, 500, 300, 560, 360);
+                                        replacementFrame = replacement->native.frame; replacement->events.clear();
+                                    }
+                                } else if (action == 3) Require(jalium_apple_window_set_titlebar_content_height(f.window, 72) == 0, "nested height failed");
+                                else if (action == 4) { changedFrame = f.ChangedFrame(); [f.native setFrame:changedFrame display:NO]; changedFrame = f.native.frame; }
+                                else if (action == 5) Require(jalium_apple_window_set_titlebar_extended(f.window, 0) == 0, "nested extension disable failed");
+                            });
+                            f.events.clear(); int result = 0;
+                            if (route == 0) [delegate windowDidResize:[NSNotification notificationWithName:NSWindowDidResizeNotification object:f.native]];
+                            else if (route == 1) [f.native layoutIfNeeded];
+                            else result = jalium_apple_window_set_titlebar_content_height(f.window, 64);
+                            Require(probe.called, "titlebar route did not read its probed getter");
+                            if (action == 1 || action == 2) {
+                                Require(!f.window, "titlebar callback did not retire original");
+                                if (route == 2) Require(result == JALIUM_ERROR_INVALID_STATE, "closed height request reported success");
+                                for (const auto& value : f.events) Require(value.type != JALIUM_EVENT_MOVE && value.type != JALIUM_EVENT_RESIZE,
+                                    "retired titlebar callback published geometry");
+                            } else {
+                                Require(result == 0, "live height request failed");
+                                probe.remainingActions = 0;
+                                if (action == 5) {
+                                    Require(!(f.native.styleMask & NSWindowStyleMaskFullSizeContentView), "older alignment restored disabled extension");
+                                    Require(jalium_apple_window_set_titlebar_extended(f.window, 1) == 0, "extension could not be reenabled");
+                                }
+                                if (action == 4) Require(NSEqualRects(f.native.frame, changedFrame), "older alignment changed the new window frame");
+                                checkTitlebar(f, action == 3 ? 72 : route == 2 ? 64 : 48);
+                            }
+                            if (replacement) Require(NSEqualRects(replacement->native.frame, replacementFrame) && replacement->events.empty(),
+                                "retired titlebar alignment touched replacement");
+                        });
+                    }
+                run("titlebar alignment unstable height remains bounded and recovers", [&](Fixture& f) {
+                    Require(jalium_apple_window_set_titlebar_extended(f.window, 1) == 0, "extension failed");
+                    int height = 48;
+                    RestoreSnapshotProbe probe(f.native, @selector(styleMask), [&] {
+                        Require(jalium_apple_window_set_titlebar_content_height(f.window, ++height) == 0, "nested height failed");
+                    }, 1, 100000);
+                    [f.native layoutIfNeeded];
+                    Require(probe.called && probe.targetReads < 1000, "unstable alignment did not remain bounded");
+                    probe.remainingActions = 0;
+                    Require(jalium_apple_window_set_titlebar_content_height(f.window, 48) == 0, "stable height could not recover");
+                    checkTitlebar(f, 48);
+                });
+                for (double height : {24.0, 48.0, 72.0}) run((std::string("titlebar alignment stable height ") + std::to_string((int)height)).c_str(), [&](Fixture& f) {
+                    Require(jalium_apple_window_set_titlebar_extended(f.window, 1) == 0, "extension failed");
+                    NSRect frame = f.native.frame;
+                    Require(jalium_apple_window_set_titlebar_content_height(f.window, height) == 0, "height failed");
+                    Require(NSEqualRects(frame, f.native.frame), "toolbar height changed the outer window frame");
+                    checkTitlebar(f, height);
+                });
+            }
+            run("titlebar alignment ordinary caption remains unchanged", [](Fixture& f) {
+                NSRect frame = f.native.frame;
+                Require(jalium_apple_window_set_titlebar_content_height(f.window, 72) == 0, "plain caption height failed");
+                Require(NSEqualRects(frame, f.native.frame) && !(f.native.styleMask & NSWindowStyleMaskFullSizeContentView),
+                    "plain caption became extended or changed geometry");
+            });
             auto notifyGeometry = [](Fixture& f, int event, id<NSWindowDelegate> delegate) {
                 NSNotification* note = [NSNotification notificationWithName:event == 0 ? NSWindowDidResizeNotification :
                     event == 1 ? NSWindowDidMoveNotification : NSWindowDidChangeBackingPropertiesNotification object:f.native];
