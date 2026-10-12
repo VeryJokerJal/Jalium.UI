@@ -379,41 +379,99 @@ void ApplyAppleWindowParticipation(JaliumPlatformWindow* window)
 
 void AlignAppleTitleBarButtons(JaliumPlatformWindow* window)
 {
-    if (!window || !window->extendedTitleBar || window->aligningTitleBarButtons ||
-        window->fullScreenTransition || !window->window ||
-        !(window->window.styleMask & NSWindowStyleMaskTitled) ||
-        (window->window.styleMask & NSWindowStyleMaskFullScreen)) return;
+    if (!window || !IsLiveWindow(window) || !window->extendedTitleBar ||
+        window->aligningTitleBarButtons || window->fullScreenTransition) return;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    NSView* __attribute__((objc_precise_lifetime)) content = (NSView*)window->view;
+    if (!nativeWindow || !content) return;
     window->aligningTitleBarButtons = true;
-    NSView* content = (NSView*)window->view;
-    CGFloat height = window->titleBarContentHeight;
-    for (NSNumber* number in @[@(NSWindowCloseButton), @(NSWindowMiniaturizeButton), @(NSWindowZoomButton)]) {
-        NSButton* button = [window->window standardWindowButton:static_cast<NSWindowButton>(number.unsignedIntegerValue)];
-        if (!button || !button.superview) continue;
-        // Keep the native hit-test containers tall enough for the moved buttons.
-        // Anchor their top edge; the application's client view remains unchanged.
-        NSRect targetBounds = [button convertRect:button.bounds toView:content];
-        targetBounds.origin.y = (content.isFlipped ? height / 2 : NSHeight(content.bounds) - height / 2)
-            - NSHeight(targetBounds) / 2;
-        for (NSView* container = button.superview;
-             container && container.superview && container != window->window.contentView.superview;
-             container = container.superview) {
-            NSRect local = [content convertRect:targetBounds toView:container];
-            CGFloat overflow = container.isFlipped ? NSMaxY(local) - NSMaxY(container.bounds)
-                : NSMinY(container.bounds) - NSMinY(local);
-            if (overflow <= 0.01) continue;
-            NSRect frame = container.frame;
-            if (!container.superview.isFlipped) frame.origin.y -= overflow;
-            frame.size.height += overflow;
-            container.frame = frame;
+    struct ResetAlignment {
+        JaliumPlatformWindow* owner; NSWindow* native;
+        ~ResetAlignment() {
+            if (IsLiveWindow(owner, native)) owner->aligningTitleBarButtons = false;
         }
-        NSPoint center = [button convertPoint:NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds)) toView:content];
-        center.y = content.isFlipped ? height / 2 : NSHeight(content.bounds) - height / 2;
-        NSPoint target = [content convertPoint:center toView:button.superview];
-        NSPoint origin = button.frame.origin;
-        CGFloat y = target.y - NSHeight(button.frame) / 2;
-        if (std::abs(origin.y - y) > 0.01) [button setFrameOrigin:NSMakePoint(origin.x, y)];
+    } reset{window, nativeWindow};
+    // A getter or layout write can retire the owner or request new geometry.
+    // Retry a newer request without recursively aligning AppKit's containers.
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+            !window->extendedTitleBar || window->fullScreenTransition) return;
+        CGFloat height = window->titleBarContentHeight;
+        uint64_t geometry = window->geometrySequence, state = window->stateRequestSequence;
+        auto current = [&] {
+            return IsLiveWindow(window, nativeWindow) && !window->destroying &&
+                (NSView*)window->view == content && window->extendedTitleBar &&
+                !window->fullScreenTransition && window->titleBarContentHeight == height &&
+                window->geometrySequence == geometry && window->stateRequestSequence == state;
+        };
+        bool aligned = [&] {
+            NSUInteger mask = nativeWindow.styleMask;
+            if (!current()) return false;
+            if (!(mask & NSWindowStyleMaskTitled) || (mask & NSWindowStyleMaskFullScreen)) return true;
+            NSView* root = nativeWindow.contentView;
+            if (!current()) return false;
+            NSView* rootParent = root.superview;
+            if (!current()) return false;
+            for (NSNumber* number in @[@(NSWindowCloseButton), @(NSWindowMiniaturizeButton), @(NSWindowZoomButton)]) {
+                NSButton* button = [nativeWindow standardWindowButton:static_cast<NSWindowButton>(number.unsignedIntegerValue)];
+                if (!current()) return false;
+                if (!button) continue;
+                NSView* buttonParent = button.superview;
+                if (!current()) return false;
+                if (!buttonParent) continue;
+                NSRect buttonBounds = button.bounds;
+                if (!current()) return false;
+                NSRect targetBounds = [button convertRect:buttonBounds toView:content];
+                if (!current()) return false;
+                BOOL flipped = content.isFlipped;
+                if (!current()) return false;
+                NSRect contentBounds = content.bounds;
+                if (!current()) return false;
+                targetBounds.origin.y = (flipped ? height / 2 : NSHeight(contentBounds) - height / 2)
+                    - NSHeight(targetBounds) / 2;
+                // Keep native hit-test containers tall enough, anchored at the
+                // top edge, without changing the application's client view.
+                for (NSView* container = buttonParent; container && container != rootParent;) {
+                    NSView* parent = container.superview;
+                    if (!current()) return false;
+                    if (!parent) break;
+                    NSRect local = [content convertRect:targetBounds toView:container];
+                    if (!current()) return false;
+                    BOOL containerFlipped = container.isFlipped;
+                    if (!current()) return false;
+                    NSRect bounds = container.bounds;
+                    if (!current()) return false;
+                    CGFloat overflow = containerFlipped ? NSMaxY(local) - NSMaxY(bounds)
+                        : NSMinY(bounds) - NSMinY(local);
+                    if (overflow > 0.01) {
+                        NSRect frame = container.frame;
+                        if (!current()) return false;
+                        BOOL parentFlipped = parent.isFlipped;
+                        if (!current()) return false;
+                        if (!parentFlipped) frame.origin.y -= overflow;
+                        frame.size.height += overflow;
+                        container.frame = frame;
+                        if (!current()) return false;
+                    }
+                    container = parent;
+                }
+                NSPoint center = [button convertPoint:NSMakePoint(NSMidX(buttonBounds), NSMidY(buttonBounds)) toView:content];
+                if (!current()) return false;
+                center.y = flipped ? height / 2 : NSHeight(contentBounds) - height / 2;
+                NSPoint target = [content convertPoint:center toView:buttonParent];
+                if (!current()) return false;
+                NSRect frame = button.frame;
+                if (!current()) return false;
+                CGFloat y = target.y - NSHeight(frame) / 2;
+                if (std::abs(frame.origin.y - y) > 0.01) {
+                    [button setFrameOrigin:NSMakePoint(frame.origin.x, y)];
+                    if (!current()) return false;
+                }
+            }
+            return true;
+        }();
+        if (aligned) return;
     }
-    window->aligningTitleBarButtons = false;
 }
 
 NSRect MaximizedFrameForScreen(NSWindow* nativeWindow, NSScreen* screen);
@@ -1433,6 +1491,14 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
 @end
 @implementation JaliumAppleWindow
 - (void)layoutIfNeeded {
+    JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    (void)keepAlive;
+    auto* owner = _jaliumOwner;
+    bool registered = owner && IsLiveWindow(owner, self);
+    // Resolve embedding callbacks before AppKit enters its atomic layout.
+    // A retired original must not continue through that SDK layout pass.
+    AlignAppleTitleBarButtons(owner);
+    if (registered && (_jaliumOwner != owner || !IsLiveWindow(owner, self))) return;
     [super layoutIfNeeded];
     AlignAppleTitleBarButtons(_jaliumOwner);
 }
@@ -3540,9 +3606,11 @@ int32_t jalium_apple_window_set_titlebar_content_height(JaliumPlatformWindow* w,
 {
     if (!w || !std::isfinite(height) || height <= 0) return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
+    if (!IsLiveWindow(w) || w->destroying) return JALIUM_ERROR_INVALID_STATE;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
     w->titleBarContentHeight = height;
-    [w->window layoutIfNeeded];
-    return JALIUM_OK;
+    [nativeWindow layoutIfNeeded];
+    return IsLiveWindow(w, nativeWindow) && !w->destroying ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
 #else
     return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
