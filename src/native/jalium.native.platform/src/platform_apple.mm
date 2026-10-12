@@ -94,6 +94,7 @@ struct JaliumPlatformWindow {
     bool fullScreenTransition = false;
     bool fullScreenHadContentFocus = false;
     uint64_t stateRequestSequence = 0;
+    uint64_t geometrySequence = 0;
     uint64_t fullScreenRequestSequence = 0;
     bool miniaturizing = false;
     uint64_t miniaturizationSequence = 0;
@@ -281,15 +282,45 @@ void PublishWindowState(JaliumPlatformWindow* window, JaliumWindowState state)
     DispatchWindowEvent(window, event);
 }
 
-void UpdateWindowGeometry(JaliumPlatformWindow* window)
+bool UpdateWindowGeometry(JaliumPlatformWindow* window)
 {
-    NSRect frame = window->window.frame;
-    NSSize size = ((NSView*)window->view).bounds.size;
-    window->width = lround(size.width * window->scale);
-    window->height = lround(size.height * window->scale);
-    NSPoint origin = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), window->window.screen);
-    window->x = lround(origin.x);
-    window->y = lround(origin.y);
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
+    // Creation also measures its privately held owner before registration.
+    bool registered = IsLiveWindow(window, nativeWindow);
+    uint64_t sequence = window->geometrySequence;
+    float scale = window->scale;
+    auto current = [&] {
+        return (!registered || IsLiveWindow(window, nativeWindow)) && !window->destroying &&
+            window->window == nativeWindow && (NSView*)window->view == view &&
+            window->geometrySequence == sequence;
+    };
+    struct Snapshot { NSRect frame; NSSize size; NSPoint origin; };
+    auto read = [&](Snapshot& snapshot) {
+        snapshot.frame = nativeWindow.frame;
+        if (!current()) return false;
+        snapshot.size = view.bounds.size;
+        if (!current()) return false;
+        NSScreen* screen = nativeWindow.screen;
+        if (!current()) return false;
+        snapshot.origin = FrameworkScreenPoint(NSMakePoint(NSMinX(snapshot.frame), NSMaxY(snapshot.frame)), screen);
+        return current();
+    };
+    Snapshot snapshot, next;
+    if (!read(snapshot)) return false;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        if (!read(next)) return false;
+        if (NSEqualRects(snapshot.frame, next.frame) && NSEqualSizes(snapshot.size, next.size) &&
+            NSEqualPoints(snapshot.origin, next.origin)) {
+            window->width = lround(next.size.width * scale);
+            window->height = lround(next.size.height * scale);
+            window->x = lround(next.origin.x);
+            window->y = lround(next.origin.y);
+            return true;
+        }
+        snapshot = next;
+    }
+    return false;
 }
 
 NSUInteger AppleStyleMask(uint32_t style)
@@ -2721,17 +2752,31 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 }
 - (void)windowDidResize:(NSNotification*)note {
     if (!_owner) return;
+    JaliumAppleWindowDelegate* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    (void)keepAlive;
+    auto* owner = _owner;
+    NSWindow* __attribute__((objc_precise_lifetime)) originalWindow = owner->window;
+    NSView* __attribute__((objc_precise_lifetime)) originalView = (NSView*)owner->view;
+    uint64_t sequence = ++owner->geometrySequence;
+    auto current = [&] {
+        return _owner == owner && IsLiveWindow(owner, originalWindow) && !owner->destroying &&
+            (NSView*)owner->view == originalView && owner->geometrySequence == sequence;
+    };
     AlignAppleTitleBarButtons(_owner);
-    NSSize content = ((NSView*)_owner->view).bounds.size;
+    if (!current()) return;
+    NSSize content = originalView.bounds.size;
+    if (!current()) return;
     bool sizeChanged = lround(content.width * _owner->scale) != _owner->width ||
         lround(content.height * _owner->scale) != _owner->height;
     // System Fill / Move & Resize changes the frame without live resizing.
     // Framework setters, style updates, Zoom and fullscreen transitions mark
     // their own changes, so only external sizing disables managed SizeToContent.
+    bool liveResize = originalWindow.inLiveResize;
+    if (!current()) return;
     bool userResize = !_owner->applyingState && !_owner->appKitZooming && !_owner->applyingWindowState &&
         !_owner->miniaturizing && !_owner->deminiaturizing &&
         !_owner->fullScreenTransition &&
-        (sizeChanged || _owner->window.inLiveResize || _owner->interactiveResize);
+        (sizeChanged || liveResize || _owner->interactiveResize);
     bool normalizesMaximized = false;
     if (userResize && _owner->state == JALIUM_WINDOW_STATE_MAXIMIZED) {
         auto* window = _owner;
@@ -2739,7 +2784,8 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         uint64_t request = window->stateRequestSequence;
         auto current = [&] {
             return _owner == window && IsLiveWindow(window, nativeWindow) && !window->destroying &&
-                window->state == JALIUM_WINDOW_STATE_MAXIMIZED && window->stateRequestSequence == request;
+                window->state == JALIUM_WINDOW_STATE_MAXIMIZED && window->stateRequestSequence == request &&
+                window->geometrySequence == sequence;
         };
         NSRect actual = nativeWindow.frame;
         if (!current()) return;
@@ -2765,6 +2811,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
             }
         }
     }
+    if (!current()) return;
     // A newer native geometry change retires deferred startup positioning
     // before its state callback can request another placement.
     if (userResize && _owner->state != JALIUM_WINDOW_STATE_MINIMIZED)
@@ -2773,15 +2820,15 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     // it sees the new size. The normal frame was saved before entering AppKit.
     if (_owner->appKitZooming && _owner->state == JALIUM_WINDOW_STATE_NORMAL) {
         PublishWindowState(_owner, JALIUM_WINDOW_STATE_MAXIMIZED);
-        if (!_owner) return;
+        if (!current()) return;
     }
     if (normalizesMaximized && _owner->state == JALIUM_WINDOW_STATE_MAXIMIZED) {
         _owner->requestedState = JALIUM_WINDOW_STATE_NORMAL;
         PublishWindowState(_owner, JALIUM_WINDOW_STATE_NORMAL);
-        if (!_owner) return;
+        if (!current()) return;
     }
     int previousX = _owner->x, previousY = _owner->y;
-    UpdateWindowGeometry(_owner);
+    if (!UpdateWindowGeometry(_owner) || !current()) return;
     // setFrame: can resize and relocate a window without windowDidMove:.
     // Publish the actual position before size callbacks so managed Left/Top
     // and subsequent moves agree with the restored frame.
@@ -2789,7 +2836,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
         JaliumPlatformEvent moved{}; moved.type = JALIUM_EVENT_MOVE;
         moved.move.x = _owner->x; moved.move.y = _owner->y;
         DispatchWindowEvent(_owner, moved);
-        if (!_owner) return;
+        if (!current()) return;
     }
     JaliumPlatformEvent e{}; e.type = JALIUM_EVENT_RESIZE;
     e.resize.width = _owner->width; e.resize.height = _owner->height;
@@ -2798,19 +2845,41 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 }
 - (void)windowDidMove:(NSNotification*)note {
     if (!_owner) return;
+    JaliumAppleWindowDelegate* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    (void)keepAlive;
+    auto* owner = _owner;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = owner->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)owner->view;
+    uint64_t sequence = ++owner->geometrySequence;
+    auto current = [&] {
+        return _owner == owner && IsLiveWindow(owner, nativeWindow) && !owner->destroying &&
+            (NSView*)owner->view == view && owner->geometrySequence == sequence;
+    };
     if (_owner->appKitZooming && _owner->state == JALIUM_WINDOW_STATE_NORMAL) {
         PublishWindowState(_owner, JALIUM_WINDOW_STATE_MAXIMIZED);
-        if (!_owner) return;
+        if (!current()) return;
     }
-    UpdateWindowGeometry(_owner);
+    if (!UpdateWindowGeometry(_owner) || !current()) return;
     JaliumPlatformEvent e{}; e.type = JALIUM_EVENT_MOVE;
     e.move.x = _owner->x; e.move.y = _owner->y;
     DispatchWindowEvent(_owner, e);
 }
 - (void)windowDidChangeBackingProperties:(NSNotification*)note {
     if (!_owner) return;
-    _owner->scale = _owner->window.backingScaleFactor;
-    UpdateWindowGeometry(_owner);
+    JaliumAppleWindowDelegate* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    (void)keepAlive;
+    auto* owner = _owner;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = owner->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)owner->view;
+    uint64_t sequence = ++owner->geometrySequence;
+    auto current = [&] {
+        return _owner == owner && IsLiveWindow(owner, nativeWindow) && !owner->destroying &&
+            (NSView*)owner->view == view && owner->geometrySequence == sequence;
+    };
+    float scale = nativeWindow.backingScaleFactor;
+    if (!current()) return;
+    _owner->scale = scale;
+    if (!UpdateWindowGeometry(_owner) || !current()) return;
     JaliumPlatformEvent e{}; e.type = JALIUM_EVENT_DPI_CHANGED;
     e.dpiChanged.dpiX = e.dpiChanged.dpiY = lround(96 * _owner->scale);
     e.dpiChanged.suggestedX = _owner->x;
@@ -2818,6 +2887,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     e.dpiChanged.suggestedWidth = _owner->width;
     e.dpiChanged.suggestedHeight = _owner->height;
     DispatchWindowEvent(_owner, e);
+    if (!current()) return;
     [self windowDidResize:note];
 }
 - (void)windowDidBecomeKey:(NSNotification*)note {
@@ -3579,8 +3649,7 @@ int32_t jalium_apple_window_apply_startup_location(JaliumPlatformWindow* w, int3
     if (!IsLiveWindow(w, nativeWindow)) return JALIUM_ERROR_INVALID_STATE;
     w->applyingState = wasApplyingState;
     if (useRestore) w->maximizedFrame = nativeWindow.frame;
-    UpdateWindowGeometry(w);
-    return JALIUM_OK;
+    return UpdateWindowGeometry(w) ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
 #else
     (void)owner;
     return JALIUM_ERROR_NOT_SUPPORTED;
