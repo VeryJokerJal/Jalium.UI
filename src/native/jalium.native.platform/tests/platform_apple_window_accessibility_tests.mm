@@ -104,6 +104,23 @@ struct BestFitZoom {
     ~BestFitZoom() { window.delegate = delegate.originalDelegate; }
 };
 
+// Override only this test process's argument domain, never Desktop & Dock.
+struct DoubleClickPreference {
+    NSDictionary* previous;
+    explicit DoubleClickPreference(NSString* action)
+    {
+        auto* defaults = NSUserDefaults.standardUserDefaults;
+        previous = [defaults volatileDomainForName:NSArgumentDomain];
+        NSMutableDictionary* domain = [previous mutableCopy] ?: [NSMutableDictionary new];
+        domain[@"AppleActionOnDoubleClick"] = action;
+        [defaults setVolatileDomain:domain forName:NSArgumentDomain];
+    }
+    ~DoubleClickPreference()
+    {
+        [NSUserDefaults.standardUserDefaults setVolatileDomain:previous ?: @{} forName:NSArgumentDomain];
+    }
+};
+
 struct Fixture {
     JaliumPlatformWindow* window;
     NSWindow* native;
@@ -351,7 +368,9 @@ struct RestoreSnapshotProbe {
         IMP replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotRect);
         if (selector == @selector(styleMask)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotMask);
         else if (selector == @selector(backingScaleFactor)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotScale);
-        else if (selector == @selector(inLiveResize) || selector == @selector(isFlipped)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotLiveResize);
+        else if (selector == @selector(inLiveResize) || selector == @selector(isFlipped) ||
+            selector == @selector(isMiniaturized) || selector == @selector(isZoomed))
+            replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotLiveResize);
         else if (selector == @selector(screen) || selector == @selector(contentView) || selector == @selector(superview)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
         else if (selector == @selector(standardWindowButton:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotButton);
         else if (selector == @selector(convertPointToScreen:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotPoint);
@@ -886,6 +905,7 @@ int main(int argc, char** argv)
     bool geometryLifecycleOnly = argc == 2 && std::strcmp(argv[1], "--geometry-lifecycle-only") == 0;
     bool titlebarLifecycleOnly = argc == 2 && std::strcmp(argv[1], "--titlebar-lifecycle-only") == 0;
     bool geometryQueryOnly = argc == 2 && std::strcmp(argv[1], "--geometry-query-only") == 0;
+    bool titlebarActionOnly = argc == 2 && std::strcmp(argv[1], "--titlebar-action-lifecycle-only") == 0;
     bool minimizeTransitionOnly = argc == 2 && std::strcmp(argv[1], "--minimize-transition-only") == 0;
     bool minimizeStartOnly = argc == 2 && std::strcmp(argv[1], "--minimize-start-only") == 0;
     bool activationTransitionOnly = argc == 2 && std::strcmp(argv[1], "--activation-transition-only") == 0;
@@ -896,7 +916,7 @@ int main(int argc, char** argv)
     bool frameOnly = (argc == 2 && std::strcmp(argv[1], "--frame-only") == 0) ||
         [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumValidationFrameOnly"] boolValue];
     const char* caseName = argc == 2 && std::strncmp(argv[1], "--case-name=", 12) == 0 ? argv[1] + 12 : nullptr;
-    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !geometryQueryOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
+    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !geometryQueryOnly && !titlebarActionOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
     @autoreleasepool {
         Require(jalium_platform_init() == 0, "platform initialization failed");
         bool foregroundHost = UsesForegroundValidationHost();
@@ -928,6 +948,8 @@ int main(int argc, char** argv)
                     std::strstr(name, "legacy") == nullptr && std::strstr(name, "resize callback") == nullptr &&
                     std::strstr(name, "foreign-thread") == nullptr) return;
                 if (caseName && std::strcmp(caseName, name) != 0) return;
+                if (titlebarActionOnly && std::strstr(name, "titlebar action") == nullptr) return;
+                if (!titlebarActionOnly && !caseName && std::strstr(name, "titlebar action") != nullptr) return;
                 if (geometryQueryOnly && std::strstr(name, "geometry query") == nullptr) return;
                 if (!geometryQueryOnly && !caseName && std::strstr(name, "geometry query") != nullptr) return;
                 if (titlebarLifecycleOnly && std::strstr(name, "titlebar alignment") == nullptr) return;
@@ -962,6 +984,99 @@ int main(int argc, char** argv)
                     std::fprintf(stderr, "FAIL %s: %s: %s\n", style == regular ? "Native" : "Custom", name, error.what());
                 }
             };
+            const char* actionRoutes[] = {"native Zoom", "queued Zoom", "double click minimized", "double click style"};
+            run("titlebar action double click rejects foreign thread", [](Fixture& f) {
+                NSRect frame = f.native.frame;
+                int result = JALIUM_OK;
+                std::thread worker([&] { result = jalium_apple_window_titlebar_double_click(f.window); });
+                worker.join();
+                Require(result == JALIUM_ERROR_INVALID_STATE && NSEqualRects(frame, f.native.frame) && f.events.empty(),
+                    "foreign thread titlebar action changed its target");
+            });
+            run("titlebar action double click rejects retired target", [](Fixture& f) {
+                auto* retired = f.window;
+                f.Destroy();
+                size_t count = f.events.size();
+                Require(jalium_apple_window_titlebar_double_click(retired) == JALIUM_ERROR_INVALID_STATE &&
+                    jalium_apple_window_titlebar_double_click(nullptr) == JALIUM_ERROR_INVALID_ARGUMENT && f.events.size() == count,
+                    "invalid target titlebar action accessed a retired window");
+            });
+            SEL actionGetters[] = {@selector(isZoomed), @selector(isZoomed), @selector(isMiniaturized), @selector(styleMask)};
+            const char* actionChanges[] = {"keeps live action", "closes original", "preserves replacement",
+                "hides", "disables", "removes Zoom capability", "preserves newer state"};
+            for (int route = 0; route < 4; ++route) for (int action = 0; action < 7; ++action) {
+                std::string name = std::string("titlebar action ") + actionRoutes[route] + " " + actionChanges[action];
+                run(name.c_str(), [=](Fixture& f) {
+                    DoubleClickPreference preference(@"Fill");
+                    BestFitZoom bestFit(f.native);
+                    NSRect originalFrame = f.native.frame, originalRestore = RestoreBounds(f);
+                    std::unique_ptr<Fixture> replacement;
+                    NSRect replacementFrame = NSZeroRect;
+                    bool exercised = false, entered = false;
+                    size_t eventsAfterRetirement = 0;
+                    auto duringRead = [&] {
+                        if (action == 1 || action == 2) {
+                            f.Destroy();
+                            eventsAfterRetirement = f.events.size();
+                            if (action == 2) {
+                                replacement = std::make_unique<Fixture>(style, 500, 300, 560, 360);
+                                replacementFrame = replacement->native.frame;
+                                replacement->events.clear();
+                            }
+                        } else if (action == 3) jalium_window_hide(f.window);
+                        else if (action == 4) jalium_window_set_enabled(f.window, 0);
+                        else if (action == 5) jalium_apple_window_set_style(f.window, style & ~JALIUM_WINDOW_STYLE_MAXIMIZABLE);
+                        else if (action == 6) jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                    };
+                    auto perform = [&] {
+                        RestoreSnapshotProbe probe(f, actionGetters[route], duringRead);
+                        if (route < 2) [f.native zoom:nil];
+                        else {
+                            int result = jalium_apple_window_titlebar_double_click(f.window);
+                            Require(result == (action == 1 || action == 2 ? JALIUM_ERROR_INVALID_STATE : JALIUM_OK),
+                                "double click did not report its actual live target");
+                        }
+                        exercised = probe.called;
+                    };
+                    std::function<void(const JaliumPlatformEvent*)> capture = [&](const JaliumPlatformEvent* event) {
+                        f.events.push_back(*event);
+                        if (event->type == JALIUM_EVENT_STATE_CHANGED &&
+                            event->stateChanged.newState == JALIUM_WINDOW_STATE_MAXIMIZED && !entered) {
+                            entered = true;
+                            perform();
+                        }
+                    };
+                    struct RestoreCallback {
+                        Fixture& fixture;
+                        ~RestoreCallback() { if (fixture.window) jalium_window_set_event_callback(fixture.window, Capture, &fixture.events); }
+                    } restoreCallback{f};
+                    if (route == 1) {
+                        jalium_window_set_event_callback(f.window, [](const JaliumPlatformEvent* event, void* data) {
+                            (*static_cast<std::function<void(const JaliumPlatformEvent*)>*>(data))(event);
+                        }, &capture);
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                    } else perform();
+                    Require(exercised, "titlebar action did not exercise the intended native getter");
+                    if (action == 1 || action == 2) {
+                        Require(!f.window && f.events.size() == eventsAfterRetirement,
+                            "retired titlebar action published another event");
+                        if (replacement) Require(NSEqualRects(replacement->native.frame, replacementFrame) &&
+                            jalium_window_get_state(replacement->window) == JALIUM_WINDOW_STATE_NORMAL && replacement->events.empty(),
+                            "retired titlebar action changed its replacement");
+                        return;
+                    }
+                    int expectedState = action == 6 || (route == 1 && action != 0) || (route != 1 && action == 0)
+                        ? JALIUM_WINDOW_STATE_MAXIMIZED : JALIUM_WINDOW_STATE_NORMAL;
+                    Require(jalium_window_get_state(f.window) == expectedState, "titlebar action replaced the newer or excluded state");
+                    Require(NSEqualRects(RestoreBounds(f), originalRestore), "titlebar action changed normal restore bounds");
+                    if (action == 0 && route == 0) Require(NSEqualRects(f.native.frame, bestFit.delegate.standardFrame),
+                        "native Zoom lost AppKit best-fit geometry");
+                    if ((action == 0 && route == 1) || (action >= 3 && action <= 5 && route != 1))
+                        Require(NSEqualRects(f.native.frame, originalFrame), "excluded or paired titlebar action changed its frame");
+                    if (action == 3) Require(!f.native.visible, "titlebar action showed its hidden target");
+                    if (action == 4) Require(!f.native.canBecomeKeyWindow, "titlebar action enabled its excluded target");
+                });
+            }
             const char* captureGetters[] = {"frame", "bounds", "style"};
             auto frameworkPoint = [](Fixture& f, NSPoint point) {
                 NSScreen* primary = NSScreen.screens.firstObject;
