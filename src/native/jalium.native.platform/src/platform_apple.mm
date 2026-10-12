@@ -1994,6 +1994,7 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 }
 
 @interface JaliumAppleView : NSView <NSTextInputClient,NSDraggingDestination,NSDraggingSource,NSUserInterfaceValidations>
+@property(nonatomic, readonly) uint64_t geometryRevision;
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
 @property(nonatomic, strong) NSMutableAttributedString* markedText;
 @property(nonatomic, copy) NSString* surroundingText;
@@ -2019,6 +2020,25 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 #include "platform_apple_accessibility.inc"
 
 @implementation JaliumAppleView
+// NSView geometry can change without an NSWindow notification. Track those
+// writes so a getter returning its old value cannot validate an obsolete query.
+#define JALIUM_TRACK_VIEW_GEOMETRY(setter, valueType, sameValue) \
+- (void)setter:(valueType)value { \
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) keepAlive = self; \
+    (void)keepAlive; bool changed = !(sameValue); \
+    if (changed) ++_geometryRevision; \
+    [super setter:value]; \
+    if (changed) ++_geometryRevision; \
+}
+JALIUM_TRACK_VIEW_GEOMETRY(setFrame, NSRect, NSEqualRects([super frame], value))
+JALIUM_TRACK_VIEW_GEOMETRY(setFrameOrigin, NSPoint, NSEqualPoints([super frame].origin, value))
+JALIUM_TRACK_VIEW_GEOMETRY(setFrameSize, NSSize, NSEqualSizes([super frame].size, value))
+JALIUM_TRACK_VIEW_GEOMETRY(setBounds, NSRect, NSEqualRects([super bounds], value))
+JALIUM_TRACK_VIEW_GEOMETRY(setBoundsOrigin, NSPoint, NSEqualPoints([super bounds].origin, value))
+JALIUM_TRACK_VIEW_GEOMETRY(setBoundsSize, NSSize, NSEqualSizes([super bounds].size, value))
+JALIUM_TRACK_VIEW_GEOMETRY(setFrameRotation, CGFloat, [super frameRotation] == value)
+JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] == value)
+#undef JALIUM_TRACK_VIEW_GEOMETRY
 + (Class)layerClass { return [CAMetalLayer class]; }
 - (instancetype)initWithFrame:(NSRect)frame {self=[super initWithFrame:frame];if(self){
     _imeEnabled = YES;
@@ -3621,17 +3641,52 @@ int32_t jalium_apple_window_get_restore_bounds(JaliumPlatformWindow* w,
 {
     if (!w || !x || !y || !width || !height) return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
-    bool currentFrame = w->state == JALIUM_WINDOW_STATE_NORMAL &&
-        !w->fullScreenTransition && !w->applyingWindowState && !w->miniaturizing && !w->deminiaturizing;
-    if (!currentFrame && !w->hasRestoreFrame) return JALIUM_ERROR_INVALID_STATE;
-    NSRect frame = currentFrame ? w->window.frame : w->restoreFrame;
-    NSSize content = currentFrame ? ((NSView*)w->view).bounds.size : w->restoreContentSize;
-    NSPoint origin = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), w->window.screen);
-    *x = lround(origin.x);
-    *y = lround(origin.y);
-    *width = lround(content.width * w->scale);
-    *height = lround(content.height * w->scale);
-    return JALIUM_OK;
+    if (!NSThread.isMainThread || !IsLiveWindow(w) || w->destroying) return JALIUM_ERROR_INVALID_STATE;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)w->view;
+    struct Snapshot {
+        NSRect frame; NSSize content; NSPoint origin; NSScreen* screen;
+        JaliumWindowState state; uint64_t geometry, request, viewRevision; float scale; bool currentFrame;
+    };
+    auto live = [&] { return IsLiveWindow(w, nativeWindow) && !w->destroying && (NSView*)w->view == view; };
+    auto usesCurrentFrame = [&] { return w->state == JALIUM_WINDOW_STATE_NORMAL &&
+        !w->fullScreenTransition && !w->applyingWindowState && !w->miniaturizing && !w->deminiaturizing; };
+    auto read = [&](Snapshot& snapshot) {
+        if (!live()) return false;
+        snapshot.state = w->state; snapshot.geometry = w->geometrySequence;
+        snapshot.request = w->stateRequestSequence; snapshot.scale = w->scale;
+        snapshot.currentFrame = usesCurrentFrame();
+        snapshot.viewRevision = snapshot.currentFrame ? w->view.geometryRevision : 0;
+        NSRect savedFrame = w->restoreFrame; NSSize savedContent = w->restoreContentSize;
+        if (!snapshot.currentFrame && !w->hasRestoreFrame) return false;
+        auto current = [&] { return live() && w->state == snapshot.state &&
+            w->geometrySequence == snapshot.geometry && w->stateRequestSequence == snapshot.request &&
+            w->scale == snapshot.scale && usesCurrentFrame() == snapshot.currentFrame &&
+            (!snapshot.currentFrame || w->view.geometryRevision == snapshot.viewRevision) &&
+            (snapshot.currentFrame || (w->hasRestoreFrame && NSEqualRects(w->restoreFrame, savedFrame) &&
+                NSEqualSizes(w->restoreContentSize, savedContent))); };
+        snapshot.frame = snapshot.currentFrame ? nativeWindow.frame : savedFrame;
+        if (!current()) return false;
+        snapshot.content = snapshot.currentFrame ? view.bounds.size : savedContent;
+        if (!current()) return false;
+        snapshot.screen = nativeWindow.screen;
+        if (!current()) return false;
+        snapshot.origin = FrameworkScreenPoint(NSMakePoint(NSMinX(snapshot.frame), NSMaxY(snapshot.frame)), snapshot.screen);
+        return current();
+    };
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        Snapshot first{}, second{};
+        if (!live()) break;
+        if (!read(first) || !read(second)) continue;
+        if (!NSEqualRects(first.frame, second.frame) || !NSEqualSizes(first.content, second.content) ||
+            !NSEqualPoints(first.origin, second.origin) || first.screen != second.screen ||
+            first.state != second.state || first.geometry != second.geometry || first.request != second.request ||
+            first.scale != second.scale || first.currentFrame != second.currentFrame || first.viewRevision != second.viewRevision) continue;
+        *x = lround(second.origin.x); *y = lround(second.origin.y);
+        *width = lround(second.content.width * second.scale); *height = lround(second.content.height * second.scale);
+        return JALIUM_OK;
+    }
+    return JALIUM_ERROR_INVALID_STATE;
 #else
     return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
@@ -3640,12 +3695,39 @@ int32_t jalium_apple_window_get_client_origin(JaliumPlatformWindow* w, int32_t* 
 {
     if (!w || !x || !y) return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
-    if (!NSThread.isMainThread || !IsLiveWindow(w)) return JALIUM_ERROR_INVALID_STATE;
-    NSPoint point = [w->window convertPointToScreen:[w->view convertPoint:NSZeroPoint toView:nil]];
-    NSPoint converted = FrameworkScreenPoint(point, w->window.screen);
-    *x = lround(converted.x);
-    *y = lround(converted.y);
-    return JALIUM_OK;
+    if (!NSThread.isMainThread || !IsLiveWindow(w) || w->destroying) return JALIUM_ERROR_INVALID_STATE;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)w->view;
+    struct Snapshot { NSPoint local, screenPoint, origin; NSScreen* screen; uint64_t geometry, request, viewRevision; float scale; };
+    auto live = [&] { return IsLiveWindow(w, nativeWindow) && !w->destroying && (NSView*)w->view == view; };
+    auto read = [&](Snapshot& snapshot) {
+        if (!live()) return false;
+        snapshot.geometry = w->geometrySequence; snapshot.request = w->stateRequestSequence; snapshot.scale = w->scale;
+        snapshot.viewRevision = w->view.geometryRevision;
+        auto current = [&] { return live() && w->geometrySequence == snapshot.geometry &&
+            w->stateRequestSequence == snapshot.request && w->scale == snapshot.scale &&
+            w->view.geometryRevision == snapshot.viewRevision; };
+        snapshot.local = [view convertPoint:NSZeroPoint toView:nil];
+        if (!current()) return false;
+        snapshot.screenPoint = [nativeWindow convertPointToScreen:snapshot.local];
+        if (!current()) return false;
+        snapshot.screen = nativeWindow.screen;
+        if (!current()) return false;
+        snapshot.origin = FrameworkScreenPoint(snapshot.screenPoint, snapshot.screen);
+        return current();
+    };
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        Snapshot first{}, second{};
+        if (!live()) break;
+        if (!read(first) || !read(second)) continue;
+        if (!NSEqualPoints(first.local, second.local) || !NSEqualPoints(first.screenPoint, second.screenPoint) ||
+            !NSEqualPoints(first.origin, second.origin) || first.screen != second.screen ||
+            first.geometry != second.geometry || first.request != second.request || first.scale != second.scale ||
+            first.viewRevision != second.viewRevision) continue;
+        *x = lround(second.origin.x); *y = lround(second.origin.y);
+        return JALIUM_OK;
+    }
+    return JALIUM_ERROR_INVALID_STATE;
 #else
     return JALIUM_ERROR_NOT_SUPPORTED;
 #endif

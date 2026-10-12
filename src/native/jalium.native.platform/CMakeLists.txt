@@ -580,6 +580,9 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.platform.macos.window.titlebar-lifecycle
         COMMAND jalium.native.platform.window.accessibility.tests --titlebar-lifecycle-only)
     set_tests_properties(jalium.native.platform.macos.window.titlebar-lifecycle PROPERTIES TIMEOUT 90)
+    add_test(NAME jalium.native.platform.macos.window.geometry-query
+        COMMAND jalium.native.platform.window.accessibility.tests --geometry-query-only)
+    set_tests_properties(jalium.native.platform.macos.window.geometry-query PROPERTIES TIMEOUT 90)
     add_executable(jalium.native.platform.window.resize.tests tests/platform_apple_resize_drag_tests.mm)
     target_include_directories(jalium.native.platform.window.resize.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
