@@ -4,6 +4,45 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+### v194：Apple 静态 shader 编译器的配置与宿主工具
+
+2026-10-13 针对完整 Apple job 在 iOS DXC 的 BUNDLE DESTINATION 失败，冻结
+DXC **4c7c497b** 及其三个锁定子模块到隔离目录，仅在该副本应用现有静态目标
+补丁，常规依赖源码／归档与本机 native payload 保留。
+原 Xcode iOS 配置 **退出 1、211.65 秒**，复现 **17** 处 install 目标没有
+BUNDLE DESTINATION。CMake 对 iOS／tvOS／visionOS 默认开启 MACOSX_BUNDLE，
+上游 DXC 的 CLI install 只声明 RUNTIME；shader 编译器切片只需要静态库。
+参考 [CMake 默认值](https://cmake.org/cmake/help/latest/variable/CMAKE_MACOSX_BUNDLE.html)。
+
+显式关闭 bundle 后，**17** 处错误消失，但相同 Xcode 配置在生成阶段
+**退出 1、204.38 秒**：SPIRV-Tools 的 shared／static 目标重复拥有生成文件，
+与 Xcode 新构建系统冲突。最终 DXC 切片使用 Ninja；SPIRV-Cross 保留既有
+生成器选择。设备切片采用新的 dxc-ninja 构建目录，保留原 Xcode 缓存；macOS
+继续使用其原 Ninja 目录与优化编译器配置。静态运行时指纹更新为 **v4**，
+防止旧完整标记跳过新配置。
+
+交叉编译显式使用 Mac 宿主的 LLVM 与 Clang TableGen，宿主缺少任一工具时
+补建 dxc／llvm-tblgen／clang-tblgen。首次独立 Ninja 构建因测试环境的 PATH
+不包含现有 Ninja，使内部 NATIVE LLVM 失败；随后为本轮环境补入现有
+.tools/bin 并传入宿主 clang-tblgen。该环境错误不计为成功，也没有安装新工具。
+
+最终 iOS Ninja 配置退出 0，重配置 **0.98 秒**；dxcompiler、
+LLVMDxilCompression、LLVMDxilPIXPasses、LLVMPassPrinters 的全部依赖实际构建
+**退出 0、275.25 秒**。按脚本规则合并 **53** 个目标归档，**2.79 秒**，
+结果 **63,591,224 字节**，仅 arm64；DxcCreateInstance 和 Unix DllMain
+初始化导出均存在。实际 dxcapi 对象的 LC_BUILD_VERSION 为 **IOS**、最低
+**18.0**、SDK **27.0**，没有把 Mac 宿主归档混入设备库。
+
+tvOS 与 visionOS 独立 Ninja 配置分别 **退出 0、19.59 秒**；它们只验证配置，
+没有宣称完成这两个系统或模拟器的全量编译。Shell 语法与本轮差异检查通过。
+没有新增测试替代实际配置／归档检查，没有改动产品 Window 或 UI 流程。
+
+前一 **ae32950d** 的 Window、GPU/readback、图像 CI 已通过，完整 Apple job
+已终止并仍在 iOS DXC BUNDLE DESTINATION 失败。新脚本需要通过后续完整 CI
+确认所有切片、XCFramework 与入口包；本机 iOS compiler archive 不代替完整
+打包、签名或设备运行验收。macOS／Window 的真实 IME、VoiceOver、混合 DPI／
+Spaces、Intel／最低系统及历史激活／Zoom 等边界继续开放。
+
 ### v193：定位完整 Metal smoke 超时阶段
 
 2026-10-12 使用同一测试矩阵定位 v192 记录的 CI smoke 超时。本机普通 Debug
