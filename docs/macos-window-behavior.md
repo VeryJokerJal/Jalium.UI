@@ -4,6 +4,55 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+### v196：标题栏切换恢复原生输入控件与 UTF-16 选区
+
+2026-10-13 冻结 PR **8d374e63**，在真实 NSTextField／field editor 上直接切换
+窗口样式。原生→自定义、自定义→原生均从 NSTextView 变为 JaliumAppleWindow，
+控件 currentEditor 变为 nil；相同独立探针 **0/2、退出 1**。它没有把模拟
+键盘事件当作物理输入。修复后同一探针 **2/2**，保留 **{2,2}** UTF-16 选区。
+
+AppKit field editor 属于窗口并为多个控件共享，delegate 指向正在编辑的控件。
+参考 [Apple Cocoa 文本架构](https://developer.apple.com/library/archive/documentation/TextFonts/Conceptual/CocoaTextArchitecture/TextFieldsAndViews/TextFieldsAndViews.html)
+与 [field editor 委托](https://developer.apple.com/library/archive/documentation/TextFonts/Conceptual/CocoaTextArchitecture/TextEditing/TextEditing.html)。
+现在保存实际输入视图；对于共享 field editor，保存逻辑 NSControl／NSCell
+控制视图、文本与 selectedRanges。以真实 NSWindow.contentView 为输入树范围，
+覆盖绘制视图内的子控件，也覆盖与绘制视图并列的原生控件。
+
+更换框架后，仅当 AppKit 清除了原 firstResponder、原控件仍在同一有效窗口中、
+窗口与控件仍允许输入且可见性未改变时恢复。较晚的新 responder 优先；隐藏、
+禁用、移除、关闭及替换后不恢复旧目标。文本已被回调更改时不覆盖它的新选区。
+原 NSWindow／输入视图／控件保留强引用，新增读取后检查原 owner 存活与身份；
+恢复控件后再确认实际 editor 与 firstResponder 后才写选区。没有激活窗口的
+新请求，也没有改变产品界面主题。
+
+独立 CTest 的 **74** 项覆盖两种标题栏、普通／密码／搜索输入框、两类父视图、
+重复样式／扩展标题栏／缩放能力切换、继续编辑、普通 NSTextView 和绘制视图，
+以及更晚焦点／文本、隐藏／禁用／移除／关闭／替换及 getter 关闭。最终 Debug
+ASAN **74/74，4.46 秒**；包含既有偏好、AX、字体、几何／标题栏生命周期、几何
+查询和标题栏动作的注册回归 **8/8，38.66 秒**，无跳过、无 ASAN 错误。普通
+Release 全部平台组：**26/26、365.59 秒，全部进程退出 0，无失败／跳过**；完整 LaunchServices 入口由新 CI
+继续独立验收，未用本机 CLI 组替代。
+
+最终 Release 库与临时应用内两份库逐字节核对。实际截图及 AX 操作中，输入框
+在两种标题栏间往返后，不重新点输入框即可输入 **1／2**；选中 emoji 后切换
+仍按 **{7,2}** 选区替换为 X；Zoom／还原后继续输入 **3**；实际拖到客户区
+**524×364** 后四个按钮完整可见，再切换可继续输入 **4**。各阶段真实
+firstResponder 为 NSTextView，currentEditor 一致。**Window-native-editor-style-focus**
+的原生控件缺项已修复。工具事件的系统前台 PID **27755** 与验收 PID **63356**
+不同，仍不宣称物理键盘、输入法候选或 VoiceOver 验收。两次自有应用实例均已
+退出；第二次因关闭后工具自动刷新而重开，随后明确关闭，未保留宿主。
+
+构建冻结完整 PR 原生源码，保留 child snapshot 协议及其 **12** 行 provider
+差异；新增文件以新时间戳写入并确认 platform_apple.mm 实际重编译。测试前后
+核对 **522** 个输入哈希，公开导出名保持 **94/94**。没有修改普通 native
+payload、依赖缓存或其他任务的源码与产物。
+
+前一 **8d374e63** 的 Window CI **21/21，430.32 秒**，包含完整 LaunchServices
+Window、**610/610** AX 和 **60/60** 标题栏动作；图像与 readback 作业也通过。
+其完整 Apple 包仍需最终状态。ASAN 全 AX 的历史进程超时、物理 IME／VoiceOver、
+混合 DPI／Spaces、Intel／最低系统及全量平台／发布包继续开放。现有 master
+及现有 PR 分支保留，整个 macOS 目标继续进行。
+
 ### v195：标题栏动作的 getter 重入与 Apple 构建入口
 
 2026-10-13 冻结本地 **2ff833a9** 的原生窗口代码，复现两个错误：标题栏双击的
