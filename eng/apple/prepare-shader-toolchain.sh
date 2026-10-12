@@ -32,7 +32,7 @@ lock_file="$repo_root/eng/apple/dependencies.lock.json"
 
 dxc_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependencies"]["DirectXShaderCompiler"]["revision"])' "$lock_file")"
 spirv_cross_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependencies"]["SPIRV-Cross"]["revision"])' "$lock_file")"
-fingerprint="static-runtime-v3:$dxc_revision:$spirv_cross_revision:$sdk:$deployment:$configuration:$(xcodebuild -version | tr '\n' ' ')"
+fingerprint="static-runtime-v4:$dxc_revision:$spirv_cross_revision:$sdk:$deployment:$configuration:$(xcodebuild -version | tr '\n' ' ')"
 
 if [[ -f "$slice_root/.complete" ]] && [[ "$(cat "$slice_root/.complete")" == "$fingerprint" ]] && [[ -f "$env_file" ]]; then
   echo "$env_file"
@@ -82,7 +82,7 @@ PY
 # Build the host compiler once. It is used by the offline shader pipeline; the
 # target slice below is linked into Jalium for dynamic SourceHlsl compilation.
 host_dxc_build="$host_root/dxc"
-if [[ "$target" != macos && ! -x "$host_dxc_build/bin/llvm-tblgen" ]]; then
+if [[ "$target" != macos && ( ! -x "$host_dxc_build/bin/llvm-tblgen" || ! -x "$host_dxc_build/bin/clang-tblgen" ) ]]; then
   cmake -S "$dxc_source" -B "$host_dxc_build" -G Ninja \
     -C "$dxc_source/cmake/caches/PredefinedParams.cmake" \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
@@ -90,11 +90,11 @@ if [[ "$target" != macos && ! -x "$host_dxc_build/bin/llvm-tblgen" ]]; then
     -DLLVM_INCLUDE_TESTS=OFF -DCLANG_INCLUDE_TESTS=OFF \
     -DHLSL_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
     -DLLVM_BUILD_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF
-  cmake --build "$host_dxc_build" --target dxc llvm-tblgen --parallel "${JALIUM_BUILD_JOBS:-4}"
+  cmake --build "$host_dxc_build" --target dxc llvm-tblgen clang-tblgen --parallel "${JALIUM_BUILD_JOBS:-4}"
 fi
 
+apple_generator=Xcode
 common_apple_args=(
-  -G Xcode
   -DCMAKE_OSX_ARCHITECTURES=arm64
   -DCMAKE_OSX_SYSROOT="$sdk"
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment"
@@ -105,7 +105,8 @@ if [[ "$target" == macos ]]; then
   # Native desktop builds need no separate host LLVM build. Keep the compiler
   # optimized even in a Debug Gallery; shader compilation otherwise dominates
   # the first frame and duplicates several gigabytes of dependency objects.
-  common_apple_args=( -G Ninja -DCMAKE_BUILD_TYPE=Release
+  apple_generator=Ninja
+  common_apple_args=( -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT="$sdk"
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment" )
   compiler_configuration=Release
@@ -115,7 +116,7 @@ if [[ "$system_name" != Darwin ]]; then
 fi
 
 spirv_cross_build="$build_root/spirv-cross"
-cmake -S "$spirv_cross_source" -B "$spirv_cross_build" "${common_apple_args[@]}" \
+cmake -S "$spirv_cross_source" -B "$spirv_cross_build" -G "$apple_generator" "${common_apple_args[@]}" \
   -DBUILD_SHARED_LIBS=OFF -DSPIRV_CROSS_STATIC=ON \
   -DSPIRV_CROSS_CLI=OFF -DSPIRV_CROSS_ENABLE_TESTS=OFF \
   -DSPIRV_CROSS_ENABLE_C_API=ON -DSPIRV_CROSS_ENABLE_MSL=ON \
@@ -127,10 +128,19 @@ cmake --build "$spirv_cross_build" --config "$configuration" \
 dxc_build="$build_root/dxc"
 tablegen_args=(-DLLVM_OPTIMIZED_TABLEGEN=OFF)
 if [[ "$target" != macos ]]; then
-  tablegen_args=( -DLLVM_TABLEGEN="$host_dxc_build/bin/llvm-tblgen" )
+  tablegen_args=( -DLLVM_TABLEGEN="$host_dxc_build/bin/llvm-tblgen"
+    -DCLANG_TABLEGEN="$host_dxc_build/bin/clang-tblgen" )
+  # Preserve any prior Xcode cache when switching device slices to Ninja.
+  dxc_build="$build_root/dxc-ninja"
 fi
-cmake -S "$dxc_source" -B "$dxc_build" "${common_apple_args[@]}" \
+# Device toolchains default executables to app bundles. DXC's installed CLI
+# targets remain ordinary tools; the target slice builds only static libraries.
+# Ninja also supports SPIRV-Tools' shared/static generated files, which Xcode's
+# new build system rejects when the same output belongs to several targets.
+cmake -S "$dxc_source" -B "$dxc_build" -G Ninja "${common_apple_args[@]}" \
+  -DCMAKE_BUILD_TYPE="$compiler_configuration" \
   -C "$dxc_source/cmake/caches/PredefinedParams.cmake" \
+  -DCMAKE_MACOSX_BUNDLE=OFF \
   -DBUILD_SHARED_LIBS=OFF -DENABLE_SPIRV_CODEGEN=ON \
   -DSPIRV_BUILD_TESTS=OFF -DLLVM_INCLUDE_TESTS=OFF \
   -DCLANG_INCLUDE_TESTS=OFF -DHLSL_INCLUDE_TESTS=OFF \
