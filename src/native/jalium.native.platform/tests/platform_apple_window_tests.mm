@@ -768,9 +768,10 @@ static void CheckAccessibilityActivationWrites(uint32_t style)
     jalium_window_set_event_callback(first, Capture, &events);
     jalium_apple_window_show(first, 1);
     jalium_window_activate(first);
-    Check(WaitUntil([&] { return NSApp.active && selected.keyWindow && selected.mainWindow &&
-        NSApp.keyWindow == selected && NSApp.mainWindow == selected; }),
-        "AX selection checks require an active desktop window");
+    bool selectionReady = WaitUntil([&] { return NSApp.active && selected.keyWindow && selected.mainWindow &&
+        NSApp.keyWindow == selected && NSApp.mainWindow == selected; });
+    if (!selectionReady) LogActivationState("AX-selection-entry", selected);
+    Check(selectionReady, "AX selection checks require an active desktop window");
     events.clear();
     [selected setAccessibilityFocused:NO];
     [selected setAccessibilityMain:NO];
