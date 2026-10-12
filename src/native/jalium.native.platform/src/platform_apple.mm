@@ -489,14 +489,112 @@ void SynchronizeRestoreStyle(JaliumPlatformWindow* window)
     window->restoreStyleMask = window->window.styleMask;
 }
 
+struct AppleContentFocus {
+    NSView* target = nil;
+    NSString* text = nil;
+    NSArray<NSValue*>* ranges = nil;
+    bool fieldEditor = false;
+    bool visible = false;
+
+    template<typename Live>
+    bool Capture(NSWindow* nativeWindow, NSView* content, bool wasVisible, Live live)
+    {
+        visible = wasVisible;
+        NSResponder* responder = nativeWindow.firstResponder;
+        if (!live()) return false;
+        if (![responder isKindOfClass:NSView.class]) return true;
+        target = (NSView*)responder;
+        if ([responder isKindOfClass:NSTextView.class]) {
+            fieldEditor = ((NSTextView*)responder).fieldEditor;
+            if (!live()) return false;
+            if (fieldEditor) {
+                id delegate = ((NSTextView*)responder).delegate;
+                if (!live()) return false;
+                target = [delegate isKindOfClass:NSControl.class] ? (NSView*)delegate : nil;
+                if ([delegate isKindOfClass:NSCell.class]) {
+                    target = ((NSCell*)delegate).controlView;
+                    if (!live()) return false;
+                }
+                if (![target isKindOfClass:NSControl.class]) { target = nil; return true; }
+                NSText* editor = ((NSControl*)target).currentEditor;
+                if (!live()) return false;
+                if (editor != responder) { target = nil; return true; }
+                text = [editor.string copy];
+                if (!live()) return false;
+                ranges = [((NSTextView*)editor).selectedRanges copy];
+                if (!live()) return false;
+            }
+        }
+        NSWindow* owner = target.window;
+        if (!live()) return false;
+        bool inside = target == content || [target isDescendantOf:content];
+        if (!live()) return false;
+        if (owner != nativeWindow || !inside) target = nil;
+        return true;
+    }
+
+    template<typename Live>
+    bool Restore(NSWindow* nativeWindow, NSView* content, bool enabled, bool isVisible, Live live)
+    {
+        if (!target || !enabled || isVisible != visible) return live();
+        NSResponder* responder = nativeWindow.firstResponder;
+        if (!live()) return false;
+        // Preserve a newer responder chosen by an application callback.
+        if (responder && responder != nativeWindow) return true;
+        NSWindow* owner = target.window;
+        if (!live()) return false;
+        bool inside = target == content || [target isDescendantOf:content];
+        if (!live()) return false;
+        if (owner != nativeWindow || !inside) return true;
+        bool hidden = target.hiddenOrHasHiddenAncestor;
+        if (!live()) return false;
+        if (hidden) return true;
+        if ([target isKindOfClass:NSControl.class]) {
+            bool acceptsInput = ((NSControl*)target).enabled;
+            if (!live()) return false;
+            if (!acceptsInput) return true;
+        }
+        responder = nativeWindow.firstResponder;
+        if (!live()) return false;
+        if (responder && responder != nativeWindow) return true;
+        bool accepted = [nativeWindow makeFirstResponder:target];
+        if (!live()) return false;
+        if (!accepted || !fieldEditor) return true;
+        NSText* editor = ((NSControl*)target).currentEditor;
+        if (!live()) return false;
+        responder = nativeWindow.firstResponder;
+        if (!live()) return false;
+        if (editor != responder || ![editor isKindOfClass:NSTextView.class]) return true;
+        NSString* currentText = editor.string;
+        if (!live()) return false;
+        if (![currentText isEqualToString:text] || ranges.count == 0) return true;
+        for (NSValue* value in ranges) {
+            NSRange range = value.rangeValue;
+            if (range.location > currentText.length || range.length > currentText.length - range.location) return true;
+        }
+        NSText* activeEditor = ((NSControl*)target).currentEditor;
+        if (!live()) return false;
+        responder = nativeWindow.firstResponder;
+        if (!live()) return false;
+        if (activeEditor != editor || responder != editor) return true;
+        ((NSTextView*)editor).selectedRanges = ranges;
+        return live();
+    }
+};
+
 void ApplyAppleStyle(JaliumPlatformWindow* window)
 {
     if (window->applyingAppleStyle) { window->pendingAppleStyle = true; return; }
     window->pendingAppleStyle = false;
     bool registered = IsLiveWindow(window);
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
-    NSView* contentView = (NSView*)window->view;
-    bool hadContentFocus = window->window.firstResponder == contentView;
+    NSView* __attribute__((objc_precise_lifetime)) contentView = (NSView*)window->view;
+    auto live = [&] { return !registered || (IsLiveWindow(window, nativeWindow) &&
+        !window->destroying && (NSView*)window->view == contentView); };
+    NSView* __attribute__((objc_precise_lifetime)) inputRoot = nativeWindow.contentView;
+    if (!live()) return;
+    AppleContentFocus focus;
+    if (!focus.Capture(nativeWindow, inputRoot, window->visible, live)) return;
     ApplyAppleSurfaceAppearance(window);
     window->window.level = (window->style & JALIUM_WINDOW_STYLE_TOPMOST)
         ? NSFloatingWindowLevel : NSNormalWindowLevel;
@@ -545,12 +643,12 @@ void ApplyAppleStyle(JaliumPlatformWindow* window)
         window->enabled && (window->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE);
     [window->window layoutIfNeeded];
     if (registered && !IsLiveWindow(window, nativeWindow)) return;
-    // AppKit resets firstResponder when replacing the native frame. The
-    // managed focused control survives this change, so retain its input view
-    // without activating an unfocused or disabled window.
-    if (hadContentFocus && window->enabled &&
-        (!nativeWindow.firstResponder || nativeWindow.firstResponder == nativeWindow))
-        [window->window makeFirstResponder:contentView];
+    // A field editor is shared by its window and can be detached by a frame
+    // replacement. Restore its logical control, retaining the selection,
+    // rather than selecting the managed root or a detached NSTextView.
+    inputRoot = nativeWindow.contentView;
+    if (!live()) return;
+    if (!focus.Restore(nativeWindow, inputRoot, window->enabled, window->visible, live)) return;
     if (registered && !IsLiveWindow(window, nativeWindow)) return;
     window->applyingState = wasApplyingState;
     window->applyingWindowState = wasApplyingWindowState;

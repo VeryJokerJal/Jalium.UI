@@ -121,6 +121,36 @@ struct DoubleClickPreference {
     }
 };
 
+struct StyleFrameProbe;
+static StyleFrameProbe* g_styleFrame = nullptr;
+static void ApplyStyleFrame(id object, SEL selector, NSUInteger mask);
+
+// Invoke application code after AppKit has replaced this owned frame.
+struct StyleFrameProbe {
+    NSWindow* window;
+    Method method;
+    IMP original;
+    bool called = false;
+    std::function<void()> onApply;
+    StyleFrameProbe(NSWindow* target, std::function<void()> callback) : window(target), onApply(std::move(callback))
+    {
+        Class cls = object_getClass(window);
+        Method inherited = class_getInstanceMethod(cls, @selector(setStyleMask:));
+        original = method_getImplementation(inherited);
+        class_addMethod(cls, @selector(setStyleMask:), original, method_getTypeEncoding(inherited));
+        method = class_getInstanceMethod(cls, @selector(setStyleMask:));
+        g_styleFrame = this;
+        method_setImplementation(method, reinterpret_cast<IMP>(ApplyStyleFrame));
+    }
+    ~StyleFrameProbe() { method_setImplementation(method, original); g_styleFrame = nullptr; }
+};
+static void ApplyStyleFrame(id object, SEL selector, NSUInteger mask)
+{
+    auto* probe = g_styleFrame;
+    reinterpret_cast<void (*)(id, SEL, NSUInteger)>(probe->original)(object, selector, mask);
+    if (object == probe->window && !probe->called) { probe->called = true; probe->onApply(); }
+}
+
 struct Fixture {
     JaliumPlatformWindow* window;
     NSWindow* native;
@@ -359,7 +389,8 @@ struct RestoreSnapshotProbe {
         else if (selector == @selector(inLiveResize) || selector == @selector(isFlipped) ||
             selector == @selector(isMiniaturized) || selector == @selector(isZoomed))
             replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotLiveResize);
-        else if (selector == @selector(screen) || selector == @selector(contentView) || selector == @selector(superview)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
+        else if (selector == @selector(screen) || selector == @selector(contentView) || selector == @selector(superview) ||
+            selector == @selector(delegate) || selector == @selector(currentEditor)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
         else if (selector == @selector(standardWindowButton:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotButton);
         else if (selector == @selector(convertPointToScreen:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotPoint);
         else if (selector == @selector(convertPoint:toView:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotViewPoint);
@@ -894,6 +925,7 @@ int main(int argc, char** argv)
     bool titlebarLifecycleOnly = argc == 2 && std::strcmp(argv[1], "--titlebar-lifecycle-only") == 0;
     bool geometryQueryOnly = argc == 2 && std::strcmp(argv[1], "--geometry-query-only") == 0;
     bool titlebarActionOnly = argc == 2 && std::strcmp(argv[1], "--titlebar-action-lifecycle-only") == 0;
+    bool styleInputFocusOnly = argc == 2 && std::strcmp(argv[1], "--style-input-focus-only") == 0;
     bool minimizeTransitionOnly = argc == 2 && std::strcmp(argv[1], "--minimize-transition-only") == 0;
     bool minimizeStartOnly = argc == 2 && std::strcmp(argv[1], "--minimize-start-only") == 0;
     bool activationTransitionOnly = argc == 2 && std::strcmp(argv[1], "--activation-transition-only") == 0;
@@ -904,7 +936,7 @@ int main(int argc, char** argv)
     bool frameOnly = (argc == 2 && std::strcmp(argv[1], "--frame-only") == 0) ||
         [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumValidationFrameOnly"] boolValue];
     const char* caseName = argc == 2 && std::strncmp(argv[1], "--case-name=", 12) == 0 ? argv[1] + 12 : nullptr;
-    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !geometryQueryOnly && !titlebarActionOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
+    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !geometryQueryOnly && !titlebarActionOnly && !styleInputFocusOnly && !minimizeTransitionOnly && !minimizeStartOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
     @autoreleasepool {
         Require(jalium_platform_init() == 0, "platform initialization failed");
         bool foregroundHost = UsesForegroundValidationHost();
@@ -936,6 +968,8 @@ int main(int argc, char** argv)
                     std::strstr(name, "legacy") == nullptr && std::strstr(name, "resize callback") == nullptr &&
                     std::strstr(name, "foreign-thread") == nullptr) return;
                 if (caseName && std::strcmp(caseName, name) != 0) return;
+                if (styleInputFocusOnly && std::strstr(name, "style input focus") == nullptr) return;
+                if (!styleInputFocusOnly && !caseName && std::strstr(name, "style input focus") != nullptr) return;
                 if (titlebarActionOnly && std::strstr(name, "titlebar action") == nullptr) return;
                 if (!titlebarActionOnly && !caseName && std::strstr(name, "titlebar action") != nullptr) return;
                 if (geometryQueryOnly && std::strstr(name, "geometry query") == nullptr) return;
@@ -972,6 +1006,134 @@ int main(int argc, char** argv)
                     std::fprintf(stderr, "FAIL %s: %s: %s\n", style == regular ? "Native" : "Custom", name, error.what());
                 }
             };
+            auto addControl = [](Fixture& f, int kind, bool renderingChild) {
+                NSTextField* control = kind == 1 ? [NSSecureTextField new] :
+                    kind == 2 ? [NSSearchField new] : [NSTextField new];
+                control.frame = NSMakeRect(20, 50, 320, 32);
+                control.stringValue = @"中文🙂 e\u0301 Native";
+                NSView* parent = renderingChild ? (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window) : f.native.contentView;
+                [parent addSubview:control];
+                [f.native makeKeyWindow];
+                Require([f.native makeFirstResponder:control], "native control rejected initial focus");
+                Require(control.currentEditor && f.native.firstResponder == control.currentEditor, "native control has no active field editor");
+                return control;
+            };
+            auto changeInputStyle = [regular, custom](Fixture& f, uint32_t initial, int operation) {
+                if (operation == 0) {
+                    jalium_apple_window_set_style(f.window, initial == regular ? custom : regular);
+                    jalium_apple_window_set_style(f.window, initial);
+                } else if (operation == 1) {
+                    jalium_apple_window_set_titlebar_extended(f.window, 1);
+                    jalium_apple_window_set_titlebar_extended(f.window, 0);
+                } else {
+                    jalium_apple_window_set_style(f.window, initial & ~JALIUM_WINDOW_STYLE_RESIZABLE);
+                    jalium_apple_window_set_style(f.window, initial);
+                }
+            };
+            for (int kind = 0; kind < 3; ++kind) for (int operation = 0; operation < 3; ++operation)
+                for (bool renderingChild : {false, true}) {
+                    std::string name = "style input focus control " + std::to_string(kind) + " operation " +
+                        std::to_string(operation) + (renderingChild ? " rendering child" : " content child");
+                    run(name.c_str(), [=](Fixture& f) {
+                        NSTextField* control = addControl(f, kind, renderingChild);
+                        NSString* text = control.stringValue;
+                        NSRange selection = NSMakeRange(2, 2);
+                        for (int pass = 0; pass < 2; ++pass) {
+                            control.currentEditor.selectedRange = selection;
+                            changeInputStyle(f, style, operation);
+                            Require(control.currentEditor && f.native.firstResponder == control.currentEditor,
+                                "style round trip lost its logical native control");
+                            Require([control.stringValue isEqualToString:text] && NSEqualRanges(control.currentEditor.selectedRange, selection),
+                                "style round trip changed native text or UTF-16 selection");
+                        }
+                        NSTextView* editor = (NSTextView*)control.currentEditor;
+                        [editor insertText:@"A" replacementRange:selection];
+                        Require([control.stringValue isEqualToString:[text stringByReplacingCharactersInRange:selection withString:@"A"]],
+                            "restored field editor could not continue native editing");
+                    });
+                }
+            for (bool managedRoot : {false, true}) for (int operation = 0; operation < 3; ++operation) {
+                std::string name = std::string("style input focus ") + (managedRoot ? "managed root" : "native text view") +
+                    " operation " + std::to_string(operation);
+                run(name.c_str(), [=](Fixture& f) {
+                    NSView* input = (__bridge NSView*)(void*)jalium_window_get_native_handle(f.window);
+                    NSTextView* text = nil;
+                    if (!managedRoot) {
+                        text = [[NSTextView alloc] initWithFrame:NSMakeRect(20, 30, 240, 80)];
+                        text.string = @"中文🙂 e\u0301 Native";
+                        [f.native.contentView addSubview:text];
+                        input = text;
+                    }
+                    [f.native makeKeyWindow];
+                    Require([f.native makeFirstResponder:input], "input view rejected initial focus");
+                    if (text) text.selectedRange = NSMakeRange(2, 2);
+                    changeInputStyle(f, style, operation);
+                    Require(f.native.firstResponder == input, "style round trip replaced the original input view");
+                    if (text) Require([text.string isEqualToString:@"中文🙂 e\u0301 Native"] &&
+                        NSEqualRanges(text.selectedRange, NSMakeRange(2, 2)), "style round trip changed native text view selection");
+                });
+            }
+            for (int action = 0; action < 9; ++action) {
+                std::string name = "style input focus post-frame action " + std::to_string(action);
+                run(name.c_str(), [=](Fixture& f) {
+                    NSTextField* control = addControl(f, 0, false);
+                    control.currentEditor.selectedRange = NSMakeRange(2, 2);
+                    NSTextField* newer = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 100, 300, 32)];
+                    newer.stringValue = @"newer"; [f.native.contentView addSubview:newer];
+                    std::unique_ptr<Fixture> replacement;
+                    NSRect replacementFrame = NSZeroRect;
+                    StyleFrameProbe probe(f.native, [&] {
+                        if (action == 0) jalium_window_hide(f.window);
+                        else if (action == 1) jalium_window_set_enabled(f.window, 0);
+                        else if (action == 2) [control removeFromSuperview];
+                        else if (action == 3) control.hidden = YES;
+                        else if (action == 4) control.enabled = NO;
+                        else if (action == 5) Require([f.native makeFirstResponder:newer], "newer control rejected focus");
+                        else if (action == 6) control.stringValue = @"changed";
+                        else {
+                            f.Destroy();
+                            if (action == 8) {
+                                replacement = std::make_unique<Fixture>(style, 500, 300, 560, 360);
+                                replacementFrame = replacement->native.frame; replacement->events.clear();
+                            }
+                        }
+                    });
+                    jalium_apple_window_set_style(f.window, style == regular ? custom : regular);
+                    Require(probe.called, "style input callback did not run after the native frame changed");
+                    if (action >= 7) {
+                        Require(!f.window, "closed input style retained its owner");
+                        if (replacement) Require(NSEqualRects(replacement->native.frame, replacementFrame) && replacement->events.empty(),
+                            "old input style changed its replacement");
+                    } else if (action == 5) Require(newer.currentEditor && f.native.firstResponder == newer.currentEditor,
+                        "style input restoration stole a newer native focus");
+                    else if (action == 6) Require(control.currentEditor && f.native.firstResponder == control.currentEditor &&
+                        [control.stringValue isEqualToString:@"changed"] && !NSEqualRanges(control.currentEditor.selectedRange, NSMakeRange(2, 2)),
+                        "style input restoration replaced new text or reused its old selection");
+                    else Require(!control.currentEditor || f.native.firstResponder != control.currentEditor,
+                        "style input restoration focused an excluded control");
+                });
+            }
+            for (bool delegateRead : {false, true}) for (bool replace : {false, true}) {
+                std::string name = std::string("style input focus capture ") + (delegateRead ? "delegate" : "editor") +
+                    (replace ? " replacement" : " closes");
+                run(name.c_str(), [=](Fixture& f) {
+                    NSTextField* control = addControl(f, 0, false);
+                    id target = delegateRead ? (id)control.currentEditor : (id)control;
+                    std::unique_ptr<Fixture> replacement;
+                    NSRect replacementFrame = NSZeroRect;
+                    RestoreSnapshotProbe probe(target, delegateRead ? @selector(delegate) : @selector(currentEditor), [&] {
+                        f.Destroy();
+                        if (replace) {
+                            replacement = std::make_unique<Fixture>(style, 500, 300, 560, 360);
+                            replacementFrame = replacement->native.frame; replacement->events.clear();
+                        }
+                    });
+                    jalium_apple_window_set_style(f.window, style == regular ? custom : regular);
+                    Require(probe.called && !f.window, "style input getter did not retire its original owner");
+                    if (replacement) Require(NSEqualRects(replacement->native.frame, replacementFrame) && replacement->events.empty(),
+                        "retired input capture changed its replacement");
+                });
+            }
             const char* actionRoutes[] = {"native Zoom", "queued Zoom", "double click minimized", "double click style"};
             run("titlebar action double click rejects foreign thread", [](Fixture& f) {
                 NSRect frame = f.native.frame;
