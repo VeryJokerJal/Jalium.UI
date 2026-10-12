@@ -1,6 +1,7 @@
 #include "jalium_api.h"
 #include "jalium_platform.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -416,19 +417,39 @@ static void TestClipboard()
         "AppKit clipboard HTML did not round-trip");
 }
 
+template<typename Action>
+static void RunSmokeStage(const char* name, Action action)
+{
+    const auto start = std::chrono::steady_clock::now();
+    std::printf("SMOKE_STAGE begin=%s\n", name);
+    try {
+        action();
+    } catch (...) {
+        const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        std::fprintf(stderr, "SMOKE_STAGE failed=%s seconds=%.6f\n", name, seconds);
+        throw;
+    }
+    const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    std::printf("SMOKE_STAGE passed=%s seconds=%.6f\n", name, seconds);
+}
+
 int main()
 {
     @autoreleasepool {
+        setvbuf(stdout, nullptr, _IONBF, 0);
+        setvbuf(stderr, nullptr, _IONBF, 0);
         try {
-            [NSApplication sharedApplication];
-            [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
-            TestPixels(1);
-            TestPixels(2);
-            TestStyledParagraph(1);
-            TestStyledParagraph(2);
-            TestWordNavigation();
-            TestWindow();
-            TestClipboard();
+            RunSmokeStage("appkit-startup", [] {
+                [NSApplication sharedApplication];
+                [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+            });
+            RunSmokeStage("pixels-1x", [] { TestPixels(1); });
+            RunSmokeStage("pixels-2x", [] { TestPixels(2); });
+            RunSmokeStage("paragraph-1x", [] { TestStyledParagraph(1); });
+            RunSmokeStage("paragraph-2x", [] { TestStyledParagraph(2); });
+            RunSmokeStage("word-navigation", [] { TestWordNavigation(); });
+            RunSmokeStage("window-input-dispatcher", [] { TestWindow(); });
+            RunSmokeStage("clipboard", [] { TestClipboard(); });
             std::puts("Metal pixels, CoreText, Retina window, input, clipboard and dispatcher passed");
             return 0;
         } catch (const std::exception& error) {
