@@ -4,6 +4,38 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+### v197：Apple SDK 编译阻塞与当前 Window 验收状态
+
+2026-10-14 核对现有 PR **18807c8f** 的终态：Window CI **22/22，409.04 秒**，
+包括完整 LaunchServices 宿主、**610/610** AX 和新增的原生编辑焦点组。
+图像与 Metal readback 作业通过；完整 Apple native/packages 在 iOS 编译失败，
+错误为 `UIPasteboard.types` 不存在。该结果不能称为完整 Apple 打包通过。
+
+UIKit 的 Objective-C 属性是 `pasteboardTypes`，与 Swift 的 `types` 命名不同。
+修复使用实际 SDK 属性；tvOS 排除不可用的输入辅助、键盘框架通知、旋转和剪贴板
+API，剪贴板入口按已有 ABI 返回 NOT_SUPPORTED，并保留输出参数的初始空值。
+visionOS 从场景根视图的 displayScale 获取窗口比例，不使用不可用的 UIScreen；
+没有全局桌面屏幕时，系统比例为中性 1、监视器枚举为 0、刷新率为未知 0。
+这些分支没有把空间场景伪装成物理桌面显示器。
+
+使用本机 Xcode 27 SDK 对完整 platform_apple.mm 生成实际 arm64 对象：iOS／
+iOS 模拟器、tvOS／tvOS 模拟器、visionOS／visionOS 模拟器 **6/6 编译退出 0**。
+六组 UIKit 平台对象的 **88** 个 jalium 导出一致；macOS 重编译退出 0，公开
+导出保持 **94/94**。macOS 预处理后的 **1,960,347** 个编译 token 与冻结基线
+完全一致；私有剪贴板注册 CTest **1/1、63/63 检查，1.19 秒**。这些是平台
+源文件编译和 macOS 专项回归，并非完整设备构建、XCFramework、入口包或设备验收。
+
+Window Lab 显式引用同仓库的统一托管实现，修复源构建缺少 Jalium.UI.Managed
+引用而出现的类型转发错误；冻结宿主构建退出 0。验收 payload 仅 Core／Platform
+来自冻结 PR，其他渲染库沿用普通开发 payload，原 dirty stamp 已保留，不称为
+完整干净发布包。打包后原生库的 Mach-O section 哈希与输入一致。
+
+实际编辑宿主持续记录 active=false、无 keyWindow，未收到启动完成通知；桌面
+读取连续超时。因此本轮没有截图、选区、输入法候选、真实按键或 VoiceOver
+通过结论；没有凭这些现象认定 Mac 已锁定。宿主启动与物理交互仍需后续验证。
+现有分支、cloud **e93bc755** 历史、并行任务的未提交改动继续保留。整个 macOS
+目标仍未完成。
+
 ### v196：标题栏切换恢复原生输入控件与 UTF-16 选区
 
 2026-10-13 冻结 PR **8d374e63**，在真实 NSTextField／field editor 上直接切换

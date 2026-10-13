@@ -3288,13 +3288,16 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 @interface JaliumAppleView : UIView <UIKeyInput,UIDropInteractionDelegate>
 #endif
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
+#if !TARGET_OS_TV
 @property(nonatomic, strong) UITextInputAssistantItem* jaliumAssistant;
 @property(nonatomic) NSInteger lastOrientation;
+#endif
 @end
 @implementation JaliumAppleView
 + (Class)layerClass{return [CAMetalLayer class];}
-- (instancetype)initWithFrame:(CGRect)frame {self=[super initWithFrame:frame];if(self){_lastOrientation=-1;NSNotificationCenter* center=NSNotificationCenter.defaultCenter;[center addObserver:self selector:@selector(keyboardFrameChanged:) name:UIKeyboardWillChangeFrameNotification object:nil];[center addObserver:self selector:@selector(keyboardHidden:) name:UIKeyboardWillHideNotification object:nil];
+- (instancetype)initWithFrame:(CGRect)frame {self=[super initWithFrame:frame];if(self){
 #if !TARGET_OS_TV
+    _lastOrientation=-1;NSNotificationCenter* center=NSNotificationCenter.defaultCenter;[center addObserver:self selector:@selector(keyboardFrameChanged:) name:UIKeyboardWillChangeFrameNotification object:nil];[center addObserver:self selector:@selector(keyboardHidden:) name:UIKeyboardWillHideNotification object:nil];
     [self addInteraction:[[UIDropInteraction alloc]initWithDelegate:self]];
 #endif
     }return self;}
@@ -3303,10 +3306,16 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 - (BOOL)hasText{return YES;}
 - (void)insertText:(NSString*)text {for(NSUInteger i=0;i<text.length;){unichar hi=[text characterAtIndex:i++];uint32_t cp=hi;if(hi>=0xd800&&hi<=0xdbff&&i<text.length){unichar lo=[text characterAtIndex:i];if(lo>=0xdc00&&lo<=0xdfff){++i;cp=0x10000+((hi-0xd800)<<10)+(lo-0xdc00);}}JaliumPlatformEvent e{};e.type=JALIUM_EVENT_CHAR_INPUT;e.character.codepoint=cp;DispatchWindowEvent(_jaliumOwner,e);}}
 - (void)deleteBackward {JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEY_DOWN;e.key.keyCode=0x08;DispatchWindowEvent(_jaliumOwner,e);}
-- (void)layoutSubviews {[super layoutSubviews];if(!_jaliumOwner)return;CGFloat scale=self.contentScaleFactor;_jaliumOwner->scale=scale;_jaliumOwner->width=lround(self.bounds.size.width*scale);_jaliumOwner->height=lround(self.bounds.size.height*scale);JaliumPlatformEvent e{};e.type=JALIUM_EVENT_RESIZE;e.resize.width=_jaliumOwner->width;e.resize.height=_jaliumOwner->height;DispatchWindowEvent(_jaliumOwner,e);UIInterfaceOrientation native=self.window.windowScene.interfaceOrientation;NSInteger orientation=(native==UIInterfaceOrientationLandscapeLeft?1:native==UIInterfaceOrientationPortraitUpsideDown?2:native==UIInterfaceOrientationLandscapeRight?3:0);if(orientation!=self.lastOrientation){self.lastOrientation=orientation;JaliumPlatformEvent changed{};changed.type=JALIUM_EVENT_ORIENTATION_CHANGED;changed.orientationChanged.orientation=(int32_t)orientation;DispatchWindowEvent(_jaliumOwner,changed);}}
+- (void)layoutSubviews {[super layoutSubviews];if(!_jaliumOwner)return;CGFloat scale=self.contentScaleFactor;_jaliumOwner->scale=scale;_jaliumOwner->width=lround(self.bounds.size.width*scale);_jaliumOwner->height=lround(self.bounds.size.height*scale);JaliumPlatformEvent e{};e.type=JALIUM_EVENT_RESIZE;e.resize.width=_jaliumOwner->width;e.resize.height=_jaliumOwner->height;DispatchWindowEvent(_jaliumOwner,e);
+#if !TARGET_OS_TV
+    UIInterfaceOrientation native=self.window.windowScene.interfaceOrientation;NSInteger orientation=(native==UIInterfaceOrientationLandscapeLeft?1:native==UIInterfaceOrientationPortraitUpsideDown?2:native==UIInterfaceOrientationLandscapeRight?3:0);if(orientation!=self.lastOrientation){self.lastOrientation=orientation;JaliumPlatformEvent changed{};changed.type=JALIUM_EVENT_ORIENTATION_CHANGED;changed.orientationChanged.orientation=(int32_t)orientation;DispatchWindowEvent(_jaliumOwner,changed);}
+#endif
+}
 - (void)safeAreaInsetsDidChange {[super safeAreaInsetsDidChange];if(!_jaliumOwner)return;UIEdgeInsets i=self.safeAreaInsets;CGFloat scale=self.contentScaleFactor;JaliumPlatformEvent e{};e.type=JALIUM_EVENT_SAFE_AREA_CHANGED;e.safeArea.top=i.top*scale;e.safeArea.bottom=i.bottom*scale;e.safeArea.left=i.left*scale;e.safeArea.right=i.right*scale;DispatchWindowEvent(_jaliumOwner,e);}
+#if !TARGET_OS_TV
 - (void)keyboardFrameChanged:(NSNotification*)notification {if(!_jaliumOwner||!self.window)return;CGRect screen=[notification.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];CGRect local=[self convertRect:screen fromView:nil];CGRect overlap=CGRectIntersection(self.bounds,local);JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEYBOARD_CHANGED;e.keyboard.visible=!CGRectIsNull(overlap)&&overlap.size.height>0.5;e.keyboard.heightPx=e.keyboard.visible?(int32_t)lround(overlap.size.height*self.contentScaleFactor):0;DispatchWindowEvent(_jaliumOwner,e);}
 - (void)keyboardHidden:(NSNotification*)notification {if(!_jaliumOwner)return;JaliumPlatformEvent e{};e.type=JALIUM_EVENT_KEYBOARD_CHANGED;e.keyboard.visible=0;e.keyboard.heightPx=0;DispatchWindowEvent(_jaliumOwner,e);(void)notification;}
+#endif
 - (void)dispatchTouchSample:(UITouch*)touch type:(JaliumEventType)type flags:(uint32_t)sampleFlags primary:(BOOL)primary {CGPoint p=[touch locationInView:self];JaliumPlatformEvent e{};e.type=type;e.pointer.pointerId=(uint32_t)((uintptr_t)(__bridge void*)touch&0xffffffffu);e.pointer.x=p.x*self.contentScaleFactor;e.pointer.y=p.y*self.contentScaleFactor;e.pointer.pressure=touch.maximumPossibleForce>0?touch.force/touch.maximumPossibleForce:1;e.pointer.pointerType=touch.type==UITouchTypePencil?JALIUM_POINTER_PEN:JALIUM_POINTER_TOUCH;e.pointer.flags=JALIUM_POINTER_FLAG_IN_RANGE|sampleFlags|(primary?JALIUM_POINTER_FLAG_PRIMARY:0)|(type==JALIUM_EVENT_POINTER_UP||type==JALIUM_EVENT_POINTER_CANCEL?0:JALIUM_POINTER_FLAG_IN_CONTACT);e.pointer.toolType=touch.type==UITouchTypePencil?JALIUM_POINTER_TOOL_PENCIL:JALIUM_POINTER_TOOL_UNKNOWN;e.pointer.buttons=type==JALIUM_EVENT_POINTER_UP?0:JALIUM_POINTER_BUTTON_PRIMARY;e.pointer.timestampMillis=(int64_t)llround(touch.timestamp*1000.0);if(touch.type==UITouchTypePencil){CGFloat azimuth=[touch azimuthAngleInView:self];CGFloat tilt=(M_PI_2-touch.altitudeAngle)*180.0/M_PI;e.pointer.tiltX=cos(azimuth)*tilt;e.pointer.tiltY=sin(azimuth)*tilt;e.pointer.twist=azimuth*180.0/M_PI;}DispatchWindowEvent(_jaliumOwner,e);}
 - (void)dispatchTouches:(NSSet<UITouch*>*)touches event:(UIEvent*)event type:(JaliumEventType)type {UITouch* primary=event.allTouches.anyObject;for(UITouch* touch in touches){BOOL isPrimary=touch==primary;if(type==JALIUM_EVENT_POINTER_MOVE){NSArray<UITouch*>* coalesced=[event coalescedTouchesForTouch:touch];for(UITouch* sample in coalesced)[self dispatchTouchSample:sample type:type flags:JALIUM_POINTER_FLAG_COALESCED primary:isPrimary];NSArray<UITouch*>* predicted=[event predictedTouchesForTouch:touch];for(UITouch* sample in predicted)[self dispatchTouchSample:sample type:type flags:JALIUM_POINTER_FLAG_PREDICTED primary:isPrimary];if(coalesced.count==0)[self dispatchTouchSample:touch type:type flags:0 primary:isPrimary];}else [self dispatchTouchSample:touch type:type flags:0 primary:isPrimary];}}
 - (void)touchesBegan:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {[self dispatchTouches:t event:e type:JALIUM_EVENT_POINTER_DOWN];}
@@ -3611,7 +3620,14 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     result->sceneRoot=root;
     result->view=[[JaliumAppleView alloc]initWithFrame:root.bounds];
     result->view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    result->view.jaliumOwner=result.get();result->view.contentScaleFactor=UIScreen.mainScreen.scale;
+    result->view.jaliumOwner=result.get();
+#if TARGET_OS_VISION
+    // Spatial scenes have a view-specific scale, not a global UIScreen.
+    CGFloat sceneScale=root.traitCollection.displayScale;
+    result->view.contentScaleFactor=sceneScale>0?sceneScale:root.contentScaleFactor;
+#else
+    result->view.contentScaleFactor=UIScreen.mainScreen.scale;
+#endif
     result->scale=result->view.contentScaleFactor;[root addSubview:result->view];
     result->width=lround(root.bounds.size.width*result->scale);
     result->height=lround(root.bounds.size.height*result->scale);
@@ -4172,6 +4188,8 @@ int32_t jalium_timer_wait(JaliumTimer* t,uint32_t ms){if(!t)return 0;dispatch_ti
 float jalium_platform_get_system_dpi_scale(void){
 #if TARGET_OS_OSX
     return NSScreen.mainScreen.backingScaleFactor;
+#elif TARGET_OS_VISION
+    return 1.0f; // No system-wide display scale; windows use their scene scale.
 #else
     return UIScreen.mainScreen.scale;
 #endif
@@ -4184,6 +4202,8 @@ int32_t jalium_window_get_monitor_refresh_rate(JaliumPlatformWindow* w){
     CGDisplayModeRef mode=number?CGDisplayCopyDisplayMode(number.unsignedIntValue):nullptr;
     double hz=mode?CGDisplayModeGetRefreshRate(mode):0;if(mode)CGDisplayModeRelease(mode);
     return hz>1?(int32_t)llround(hz):60;
+#elif TARGET_OS_VISION
+    return 0; // Unknown: retain the managed scheduling fallback.
 #else
     return (int32_t)UIScreen.mainScreen.maximumFramesPerSecond;
 #endif
@@ -4191,6 +4211,8 @@ int32_t jalium_window_get_monitor_refresh_rate(JaliumPlatformWindow* w){
 int32_t jalium_platform_get_monitor_count(void){
 #if TARGET_OS_OSX
     return (int32_t)NSScreen.screens.count;
+#elif TARGET_OS_VISION
+    return 0; // Spatial windows have no enumerable desktop monitors.
 #else
     return 1;
 #endif
@@ -4198,6 +4220,8 @@ int32_t jalium_platform_get_monitor_count(void){
 int32_t jalium_platform_get_monitor_info(int32_t index,JaliumMonitorInfo* info){if(!info||index<0||index>=jalium_platform_get_monitor_count())return JALIUM_ERROR_INVALID_ARGUMENT;*info={};
 #if TARGET_OS_OSX
     NSScreen* s=NSScreen.screens[index];NSRect f=s.frame,v=s.visibleFrame;CGFloat scale=s.backingScaleFactor;NSPoint origin=FrameworkScreenPoint(NSMakePoint(NSMinX(f),NSMaxY(f)),s);info->x=lround(origin.x);info->y=lround(origin.y);info->width=lround(f.size.width*scale);info->height=lround(f.size.height*scale);NSPoint work=FrameworkScreenPoint(NSMakePoint(NSMinX(v),NSMaxY(v)),s);info->workX=lround(work.x);info->workY=lround(work.y);info->workWidth=lround(v.size.width*scale);info->workHeight=lround(v.size.height*scale);info->scale=scale;NSNumber* number=s.deviceDescription[@"NSScreenNumber"];CGDisplayModeRef mode=number?CGDisplayCopyDisplayMode(number.unsignedIntValue):nullptr;double hz=mode?CGDisplayModeGetRefreshRate(mode):0;if(mode)CGDisplayModeRelease(mode);info->refreshRate=hz>1?(int32_t)llround(hz):60;info->isPrimary=index==0;
+#elif TARGET_OS_VISION
+    return JALIUM_ERROR_INVALID_ARGUMENT; // Every index is outside the empty monitor set.
 #else
     UIScreen* s=UIScreen.mainScreen;CGFloat scale=s.scale;CGRect f=s.bounds;info->width=lround(f.size.width*scale);info->height=lround(f.size.height*scale);info->workWidth=info->width;info->workHeight=info->height;info->scale=scale;info->refreshRate=(int32_t)s.maximumFramesPerSecond;info->isPrimary=1;
 #endif
@@ -4754,15 +4778,22 @@ JaliumResult jalium_clipboard_get_formats(char** out){if(!out)return JALIUM_ERRO
 #if TARGET_OS_OSX
     std::string formats=PasteboardTypesUtf8(NSPasteboard.generalPasteboard);
     const char* utf8=formats.c_str();
+#elif TARGET_OS_TV
+    return JALIUM_ERROR_NOT_SUPPORTED;
 #else
-    NSArray<NSString*>* types=UIPasteboard.generalPasteboard.types;
+    NSArray<NSString*>* types=UIPasteboard.generalPasteboard.pasteboardTypes;
     NSMutableString* joined=[NSMutableString string];for(NSString* type in types){if(joined.length)[joined appendString:@"\n"];[joined appendString:type];}
     const char* utf8=joined.UTF8String?:"";
 #endif
-    size_t n=strlen(utf8)+1;*out=(char*)malloc(n);if(!*out)return JALIUM_ERROR_OUT_OF_MEMORY;memcpy(*out,utf8,n);return JALIUM_OK;}
+#if !TARGET_OS_TV
+    size_t n=strlen(utf8)+1;*out=(char*)malloc(n);if(!*out)return JALIUM_ERROR_OUT_OF_MEMORY;memcpy(*out,utf8,n);return JALIUM_OK;
+#endif
+}
 JaliumResult jalium_clipboard_get_data(const char* mime,uint8_t** out,uint32_t* size){if(!mime||!out||!size)return JALIUM_ERROR_INVALID_ARGUMENT;*out=nullptr;*size=0;
 #if TARGET_OS_OSX
     return CopyApplePasteboardData(ReadApplePasteboardData(NSPasteboard.generalPasteboard,mime), out, size);
+#elif TARGET_OS_TV
+    return JALIUM_ERROR_NOT_SUPPORTED;
 #else
     NSString* type=[NSString stringWithUTF8String:mime];
     NSData* data=[UIPasteboard.generalPasteboard dataForPasteboardType:type];
@@ -4772,6 +4803,8 @@ JaliumResult jalium_clipboard_get_data(const char* mime,uint8_t** out,uint32_t* 
 JaliumResult jalium_clipboard_set_data(const JaliumClipboardDataItem* items,uint32_t count){
 #if TARGET_OS_OSX
     return jalium::platform::apple::WritePasteboardData(NSPasteboard.generalPasteboard, items, count, PasteboardTypeFromMime);
+#elif TARGET_OS_TV
+    return JALIUM_ERROR_NOT_SUPPORTED;
 #else
     UIPasteboard* pb=UIPasteboard.generalPasteboard;NSMutableDictionary* entry=[NSMutableDictionary dictionary];for(uint32_t i=0;i<count;++i){if(!items[i].mimeType)continue;entry[[NSString stringWithUTF8String:items[i].mimeType]]=[NSData dataWithBytes:items[i].data length:items[i].dataSize];}pb.items=count?@[entry]:@[];return JALIUM_OK;
 #endif
@@ -4780,13 +4813,20 @@ JaliumResult jalium_clipboard_clear(void){return jalium_clipboard_set_data(nullp
 JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** out){if(!out)return JALIUM_ERROR_INVALID_ARGUMENT;*out=nullptr;
 #if TARGET_OS_OSX
     NSString* text=[NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
+#elif TARGET_OS_TV
+    return JALIUM_ERROR_NOT_SUPPORTED;
 #else
     NSString* text=UIPasteboard.generalPasteboard.string;
 #endif
-    if(!text)return JALIUM_OK;NSUInteger length=text.length;auto* result=(JaliumUtf16Char*)malloc((length+1)*sizeof(JaliumUtf16Char));if(!result)return JALIUM_ERROR_OUT_OF_MEMORY;[text getCharacters:(unichar*)result range:NSMakeRange(0,length)];result[length]=0;*out=result;return JALIUM_OK;}
+#if !TARGET_OS_TV
+    if(!text)return JALIUM_OK;NSUInteger length=text.length;auto* result=(JaliumUtf16Char*)malloc((length+1)*sizeof(JaliumUtf16Char));if(!result)return JALIUM_ERROR_OUT_OF_MEMORY;[text getCharacters:(unichar*)result range:NSMakeRange(0,length)];result[length]=0;*out=result;return JALIUM_OK;
+#endif
+}
 JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text){if(!text)return jalium_clipboard_clear();NSString* value=StringFromUtf16(text);
 #if TARGET_OS_OSX
     NSPasteboard* pb=NSPasteboard.generalPasteboard;[pb clearContents];return [pb setString:value forType:NSPasteboardTypeString]?JALIUM_OK:JALIUM_ERROR_INVALID_STATE;
+#elif TARGET_OS_TV
+    return JALIUM_ERROR_NOT_SUPPORTED;
 #else
     UIPasteboard.generalPasteboard.string=value;return JALIUM_OK;
 #endif
