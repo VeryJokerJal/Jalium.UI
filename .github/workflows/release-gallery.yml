@@ -245,8 +245,13 @@ jobs:
             sha256sum --check "$asset.sha256"
           done
           cat *.sha256 > SHA256SUMS.txt
-          if ! gh release view v26.11.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if gh release view v26.11.0 --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft > release-state.txt 2>/dev/null; then
+            test "$(cat release-state.txt)" = true || { echo '26.11.0 is already published; refusing to replace its assets.' >&2; exit 1; }
+          else
             gh release create v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title 'Jalium.UI 26.11.0' --notes-file ../eng/release/26.11.0.md
           fi
           gh release upload v26.11.0 --repo "$GITHUB_REPOSITORY" Jalium.Gallery-* SHA256SUMS.txt --clobber
+          mkdir downloaded
+          gh release download v26.11.0 --repo "$GITHUB_REPOSITORY" --pattern 'Jalium.Gallery-*' --dir downloaded
+          (cd downloaded && sha256sum --check ../SHA256SUMS.txt)
           gh release edit v26.11.0 --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes-file ../eng/release/26.11.0.md

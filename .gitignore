@@ -426,3 +426,8 @@ src/native/out/
 Library/
 .idea/
 .DS_Store
+
+!/eng/release/
+!/eng/release/*.sh
+!/eng/release/*.py
+!/eng/release/*.md
