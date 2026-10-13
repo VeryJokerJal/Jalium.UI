@@ -30,11 +30,19 @@ if(APPLE)
     # Keep symbols in development builds, but optimize the frame encoder and
     # inline analytic rasterizer. Unoptimized per-pixel C++ loops can consume
     # an entire frame budget when scrolling introduces a fresh subpixel phase.
-    set_property(SOURCE src/metal_render_target.cpp APPEND PROPERTY
-        COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O1>")
+    if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
+        set_property(SOURCE src/metal_render_target.cpp APPEND PROPERTY
+            COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O1>")
+    endif()
 endif()
 
 add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})
+
+# Xcode supports configuration-dependent options at target scope only.
+# Keep Release optimization intact while retaining the Debug render profile.
+if(APPLE AND CMAKE_GENERATOR STREQUAL "Xcode")
+    target_compile_options(${PROJECT_NAME} PRIVATE "$<$<CONFIG:Debug>:-O1>")
+endif()
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC

@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GALLERY_COMMIT: e2bfd9ac0a4db8072bf8b5d7ba908bbec214fda1
+  GALLERY_COMMIT: 75c3cef73e0814690133e92716cd444f741075d0
   DOTNET_NOLOGO: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
 
@@ -75,7 +75,8 @@ jobs:
         run: |
           sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           dotnet workload install macos --version 10.0.300.2
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: apple-toolchain
         with:
           path: Jalium.UI/src/native/out/apple-deps
           key: gallery-macos-compiler-${{ hashFiles('Jalium.UI/eng/apple/dependencies.lock.json') }}-Release
@@ -84,6 +85,11 @@ jobs:
         env:
           JALIUM_RELEASE_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.0
         run: bash eng/release/build-gallery.sh macos
+      - uses: actions/cache/save@v4
+        if: always() && steps.apple-toolchain.outputs.cache-hit != 'true'
+        with:
+          path: Jalium.UI/src/native/out/apple-deps
+          key: ${{ steps.apple-toolchain.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
           name: gallery-macos
@@ -191,6 +197,7 @@ jobs:
         shell: bash
         run: |
           export ANDROID_SDK_ROOT="$(cygpath -u "$ANDROID_HOME")"
+          export ANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
           bash Jalium.UI/src/native/build-android.sh all
       - name: Bootstrap source build tools
         shell: bash
@@ -250,6 +257,7 @@ jobs:
           else
             gh release create v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title 'Jalium.UI 26.11.0' --notes-file ../eng/release/26.11.0.md
           fi
+          gh release edit v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --notes-file ../eng/release/26.11.0.md
           gh release upload v26.11.0 --repo "$GITHUB_REPOSITORY" Jalium.Gallery-* SHA256SUMS.txt --clobber
           mkdir downloaded
           gh release download v26.11.0 --repo "$GITHUB_REPOSITORY" --pattern 'Jalium.Gallery-*' --dir downloaded

@@ -95,6 +95,7 @@
     <ClCompile Include="src\platform_common.cpp" />
     <ClCompile Include="src\platform_win32.cpp" />
     <ClCompile Include="src\platform_notification_stubs_win32.cpp" />
+    <ClCompile Include="src\platform_accessibility_stubs_apple.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\jalium.native.core\jalium.native.core.vcxproj">

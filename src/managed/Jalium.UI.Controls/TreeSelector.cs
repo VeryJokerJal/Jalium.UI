@@ -986,6 +986,7 @@ public class TreeSelector : ItemsControl
         AttachTriggerHandlers();
         UpdateTriggerDisplay();
         SetDropDownArrowAngle(IsDropDownOpen ? 180 : 0);
+        SyncPopupOpenState(IsDropDownOpen);
     }
 
     /// <inheritdoc />
@@ -1010,6 +1011,10 @@ public class TreeSelector : ItemsControl
 
     private void AttachTriggerHandlers()
     {
+        if (_popup != null)
+        {
+            _popup.Closed += OnPopupClosed;
+        }
         if (_triggerBorder != null)
         {
             _triggerBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnTriggerMouseDown), true);
@@ -1027,6 +1032,10 @@ public class TreeSelector : ItemsControl
 
     private void DetachTriggerHandlers()
     {
+        if (_popup != null)
+        {
+            _popup.Closed -= OnPopupClosed;
+        }
         if (_triggerBorder != null)
         {
             _triggerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnTriggerMouseDown));
@@ -1076,6 +1085,25 @@ public class TreeSelector : ItemsControl
             _searchTextBox.Focus();
         }
         e.Handled = true;
+    }
+
+    private void OnPopupClosed(object? sender, EventArgs e)
+    {
+        if (IsDropDownOpen)
+            SetCurrentValue(IsDropDownOpenProperty, false);
+    }
+
+    private void SyncPopupOpenState(bool open)
+    {
+        if (_popup is not { } popup) return;
+        if (open)
+        {
+            // Match the trigger before Popup measures its detached content.
+            var width = ActualWidth > 0 ? ActualWidth : Width;
+            if (double.IsFinite(width) && width > 0)
+                popup.SetCurrentValue(FrameworkElement.MinWidthProperty, width);
+        }
+        popup.SetCurrentValue(Popup.IsOpenProperty, open);
     }
 
     private void OnClearButtonClick(object sender, RoutedEventArgs e)
@@ -1374,6 +1402,7 @@ public class TreeSelector : ItemsControl
         if (d is TreeSelector selector)
         {
             bool open = (bool)(e.NewValue ?? false);
+            selector.SyncPopupOpenState(open);
             selector.SetDropDownArrowAngle(open ? 180 : 0);
             if (open)
             {

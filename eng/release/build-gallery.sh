@@ -19,6 +19,8 @@ case "$platform" in
     bash "$ui_root/eng/linux/check-native-exports.sh" "$native"
     bash "$ui_root/eng/linux/check-symbol-versions.sh" "$native" 2.31 3.4.28
     export LD_LIBRARY_PATH="$native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export JALIUM_WINDOW_SYSTEM=x11
+    test_command=(xvfb-run -a dotnet test)
     published="$release_root/publish/$rid"
     dotnet publish "$gallery_root/Jalium.UI.Gallery.Linux/Jalium.UI.Gallery.Linux.csproj" \
       -c Release -r "$rid" --self-contained true -m:1 \
@@ -34,6 +36,7 @@ case "$platform" in
     native="$ui_root/src/native/bin/native/$rid/Release"
     python3 "$ui_root/eng/apple/check-native-exports.py" "$native" --configuration Release
     export DYLD_LIBRARY_PATH="$native${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+    test_command=(dotnet test)
     if [[ "${JALIUM_RELEASE_ALLOW_NEWER_XCODE:-0}" == 1 ]]; then
       properties+=(-p:ValidateXcodeVersion=false)
     fi
@@ -44,10 +47,10 @@ case "$platform" in
     ;;
   *) echo "Unsupported release platform: $platform" >&2; exit 2 ;;
 esac
-dotnet test "$gallery_root/Tests/Jalium.UI.Gallery.Headless.Tests/Jalium.UI.Gallery.Headless.Tests.csproj" \
+"${test_command[@]}" "$gallery_root/Tests/Jalium.UI.Gallery.Headless.Tests/Jalium.UI.Gallery.Headless.Tests.csproj" \
   -c Release -m:1 "-p:JaliumBuildRoot=$JALIUM_RELEASE_BUILD_ROOT/headless-tests" "${properties[@]}" \
   --results-directory "$release_root/test-results" --logger "trx;LogFileName=$rid-headless.trx"
-dotnet test "$gallery_root/Tests/Jalium.UI.Gallery.Modules.Main.Tests/Jalium.UI.Gallery.Modules.Main.Tests.csproj" \
+"${test_command[@]}" "$gallery_root/Tests/Jalium.UI.Gallery.Modules.Main.Tests/Jalium.UI.Gallery.Modules.Main.Tests.csproj" \
   -c Release -m:1 "-p:JaliumBuildRoot=$JALIUM_RELEASE_BUILD_ROOT/gallery-tests" "${properties[@]}" \
   --results-directory "$release_root/test-results" --logger "trx;LogFileName=$rid-gallery.trx"
 python3 "$ui_root/eng/release/package-gallery.py" "$platform" \

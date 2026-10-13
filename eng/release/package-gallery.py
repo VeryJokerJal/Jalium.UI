@@ -96,7 +96,11 @@ def main():
             subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(stage), str(asset)], check=True)
         else:
             asset = pathlib.Path(shutil.make_archive(str(output / name), "zip", stage.parent, stage.name))
-    digest = hashlib.file_digest(asset.open("rb"), "sha256").hexdigest()
+    hasher = hashlib.sha256()
+    with asset.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
     asset.with_name(asset.name + ".sha256").write_text(f"{digest}  {asset.name}\n")
     print(json.dumps({"asset": str(asset), "bytes": asset.stat().st_size, "sha256": digest, **manifest}, indent=2))
 
