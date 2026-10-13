@@ -1,0 +1,252 @@
+name: Release Gallery 26.11.0
+
+on:
+  push:
+    branches: [codex/release-26.11.0]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gallery-release-26.11.0
+  cancel-in-progress: false
+
+env:
+  GALLERY_COMMIT: e2bfd9ac0a4db8072bf8b5d7ba908bbec214fda1
+  DOTNET_NOLOGO: '1'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jalium.UI
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: VeryJokerJal/Jalium-UI-Gallery
+          ref: ${{ env.GALLERY_COMMIT }}
+          path: Jalium.UI.Gallery
+      - name: Build Ubuntu 20.04 release image
+        working-directory: Jalium.UI
+        run: >-
+          docker build --build-arg JALIUM_INSTALL_DOTNET=1
+          --build-arg JALIUM_DOTNET_SDK_VERSION=10.0.300
+          -t jalium-gallery-release:26.11.0 -f eng/linux/ubuntu20.04-glibc.Dockerfile .
+      - name: Build and validate Linux x64 Gallery
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work/Jalium.UI \
+            -e JALIUM_GALLERY_ROOT=/work/Jalium.UI.Gallery \
+            -e JALIUM_RELEASE_ROOT=/work/artifacts/gallery-26.11.0 \
+            jalium-gallery-release:26.11.0 \
+            bash eng/release/build-gallery.sh linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gallery-linux
+          path: artifacts/gallery-26.11.0/assets/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gallery-linux-test-results
+          path: artifacts/gallery-26.11.0/test-results/*
+
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jalium.UI
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: VeryJokerJal/Jalium-UI-Gallery
+          ref: ${{ env.GALLERY_COMMIT }}
+          path: Jalium.UI.Gallery
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - name: Select pinned Xcode and workload
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          dotnet workload install macos --version 10.0.300.2
+      - uses: actions/cache@v4
+        with:
+          path: Jalium.UI/src/native/out/apple-deps
+          key: gallery-macos-compiler-${{ hashFiles('Jalium.UI/eng/apple/dependencies.lock.json') }}-Release
+      - name: Build and validate macOS arm64 Gallery
+        working-directory: Jalium.UI
+        env:
+          JALIUM_RELEASE_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.0
+        run: bash eng/release/build-gallery.sh macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gallery-macos
+          path: artifacts/gallery-26.11.0/assets/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gallery-macos-test-results
+          path: artifacts/gallery-26.11.0/test-results/*
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jalium.UI
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: VeryJokerJal/Jalium-UI-Gallery
+          ref: ${{ env.GALLERY_COMMIT }}
+          path: Jalium.UI.Gallery
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - uses: microsoft/setup-msbuild@v2
+      - name: Install pinned Vulkan SDK
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkansdk.exe'
+          Invoke-WebRequest 'https://sdk.lunarg.com/sdk/download/1.4.341.1/windows/vulkansdk-windows-X64-1.4.341.1.exe' -OutFile $installer
+          $process = Start-Process $installer -ArgumentList '--root C:\VulkanSDK\1.4.341.1 --accept-licenses --default-answer --confirm-command install' -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Vulkan SDK install failed: $($process.ExitCode)" }
+          'VULKAN_SDK=C:\VulkanSDK\1.4.341.1' | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build Windows NativeAOT libraries
+        shell: pwsh
+        run: ./Jalium.UI/samples/build-native-static.ps1 -Configuration Release
+      - name: Bootstrap source build tools
+        shell: bash
+        env:
+          JALIUM_RELEASE_BUILD_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.0/build/windows
+        run: bash Jalium.UI/eng/release/bootstrap-tools.sh
+      - name: Publish and smoke-test Windows Gallery
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE 'artifacts/gallery-26.11.0'
+          $published = Join-Path $root 'publish/win-x64'
+          dotnet publish Jalium.UI.Gallery/Jalium.UI.Gallery.Desktop/Jalium.UI.Gallery.Desktop.csproj -c Release -r win-x64 -m:1 -p:JaliumBuildRoot="$root/build/windows/app" -p:RestoreConfigFile="$env:GITHUB_WORKSPACE/Jalium.UI/nuget.config" -p:GeneratePackageOnBuild=false -p:BuildJaliumNativeProjects=false -p:BuildJaliumNativeStaticProjects=false -o $published
+          if ($LASTEXITCODE -ne 0) { throw 'Windows publish failed' }
+          $app = Start-Process (Join-Path $published 'Jalium.UI.Gallery.Desktop.exe') -PassThru
+          try {
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              Start-Sleep -Seconds 1
+              $app.Refresh()
+              if ($app.HasExited) { throw "Gallery exited during startup: $($app.ExitCode)" }
+              if ($app.MainWindowHandle -ne 0) { break }
+            }
+            if ($app.MainWindowHandle -eq 0) { throw 'Gallery did not create a window' }
+            if (-not $app.Responding) { throw 'Gallery window is not responding' }
+            $app.CloseMainWindow() | Out-Null
+            if (-not $app.WaitForExit(15000)) { throw 'Gallery did not close normally' }
+            if ($app.ExitCode -ne 0) { throw "Gallery exit code: $($app.ExitCode)" }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id }
+          }
+          python Jalium.UI/eng/release/package-gallery.py windows --rid win-x64 --publish $published --output "$root/assets" --framework-root Jalium.UI --gallery-root Jalium.UI.Gallery
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gallery-windows
+          path: artifacts/gallery-26.11.0/assets/*
+          if-no-files-found: error
+
+  android:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jalium.UI
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: VeryJokerJal/Jalium-UI-Gallery
+          ref: ${{ env.GALLERY_COMMIT }}
+          path: Jalium.UI.Gallery
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Android workload and pinned NDK
+        shell: pwsh
+        run: |
+          dotnet workload install android --version 10.0.300.2
+          if ($LASTEXITCODE -ne 0) { throw 'Android workload installation failed' }
+          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools/latest/bin/sdkmanager.bat'
+          & $sdkmanager 'ndk;27.2.12479018' 'platforms;android-36' 'build-tools;36.0.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Android dependencies installation failed' }
+      - name: Build both Android native ABIs
+        shell: bash
+        run: |
+          export ANDROID_SDK_ROOT="$(cygpath -u "$ANDROID_HOME")"
+          bash Jalium.UI/src/native/build-android.sh all
+      - name: Bootstrap source build tools
+        shell: bash
+        env:
+          JALIUM_RELEASE_BUILD_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.0/build/android
+        run: bash Jalium.UI/eng/release/bootstrap-tools.sh
+      - name: Publish and verify signed APKs
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE 'artifacts/gallery-26.11.0'
+          $apksigner = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/apksigner.bat'
+          $zipalign = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/zipalign.exe'
+          foreach ($rid in @('android-arm64', 'android-x64')) {
+            $published = Join-Path $root "publish/$rid"
+            dotnet publish Jalium.UI.Gallery/Jalium.UI.Gallery.Android/Jalium.UI.Gallery.Android.csproj -c Release -r $rid -m:1 -p:JaliumBuildRoot="$root/build/$rid" -p:RestoreConfigFile="$env:GITHUB_WORKSPACE/Jalium.UI/nuget.config" -p:AndroidSdkDirectory="$env:ANDROID_HOME" -p:JavaSdkDirectory="$env:JAVA_HOME" -p:AndroidPackageFormats=apk -p:AndroidKeyStore=false -p:GeneratePackageOnBuild=false -p:BuildJaliumNativeProjects=false -p:BuildJaliumNativeStaticProjects=false -o $published
+            if ($LASTEXITCODE -ne 0) { throw "Android publish failed: $rid" }
+            $apks = @(Get-ChildItem $published -Filter '*-Signed.apk')
+            if ($apks.Count -ne 1) { throw "Expected one signed APK for $rid, found $($apks.Count)" }
+            & $apksigner verify --verbose $apks[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "APK signature validation failed: $rid" }
+            & $zipalign -c -P 16 -v 4 $apks[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "APK alignment validation failed: $rid" }
+            python Jalium.UI/eng/release/package-gallery.py android --rid $rid --publish $apks[0].FullName --output "$root/assets" --framework-root Jalium.UI --gallery-root Jalium.UI.Gallery
+            if ($LASTEXITCODE -ne 0) { throw "APK packaging failed: $rid" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gallery-android
+          path: artifacts/gallery-26.11.0/assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: [linux, macos, windows, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gallery-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify asset set and publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          for asset in Jalium.Gallery-26.11.0-linux-x64.tar.gz Jalium.Gallery-26.11.0-macos-arm64.zip Jalium.Gallery-26.11.0-win-x64.zip Jalium.Gallery-26.11.0-android-arm64.apk Jalium.Gallery-26.11.0-android-x64.apk; do
+            test -s "$asset"
+            sha256sum --check "$asset.sha256"
+          done
+          cat *.sha256 > SHA256SUMS.txt
+          if ! gh release view v26.11.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title 'Jalium.UI 26.11.0' --notes-file ../eng/release/26.11.0.md
+          fi
+          gh release upload v26.11.0 --repo "$GITHUB_REPOSITORY" Jalium.Gallery-* SHA256SUMS.txt --clobber
+          gh release edit v26.11.0 --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes-file ../eng/release/26.11.0.md
