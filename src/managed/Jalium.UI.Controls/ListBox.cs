@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -197,7 +198,10 @@ public class ListBox : Selector
             // Set selection state based on current selection mode
             if (SelectionMode == SelectionMode.Single)
             {
-                listBoxItem.IsSelected = Equals(logicalValue, SelectedItem);
+                // Selecting through SelectedIndex stores the item itself, selecting through input stores
+                // its selection value (the content of an explicit ListBoxItem). UpdateContainerSelection
+                // accepts both; a row generated after the selection was made must accept both too.
+                listBoxItem.IsSelected = Equals(logicalValue, SelectedItem) || ReferenceEquals(item, SelectedItem);
             }
             else
             {
@@ -218,6 +222,49 @@ public class ListBox : Selector
         {
             listBoxItem.ClearValue(ListBoxItem.IsSelectedProperty);
             listBoxItem.ParentListBox = null;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
+    {
+        base.OnItemsChanged(e);
+
+        if (e.Action is NotifyCollectionChangedAction.Add or NotifyCollectionChangedAction.Replace)
+        {
+            if (e.NewItems != null)
+            {
+                foreach (var newItem in e.NewItems)
+                {
+                    if (newItem is ListBoxItem lbi)
+                    {
+                        lbi.ParentListBox = this;
+                    }
+                }
+            }
+        }
+        else if (e.Action is NotifyCollectionChangedAction.Remove)
+        {
+            if (e.OldItems != null)
+            {
+                foreach (var oldItem in e.OldItems)
+                {
+                    if (oldItem is ListBoxItem lbi && ReferenceEquals(lbi.ParentListBox, this))
+                    {
+                        lbi.ParentListBox = null;
+                    }
+                }
+            }
+        }
+        else if (e.Action is NotifyCollectionChangedAction.Reset)
+        {
+            foreach (var item in Items)
+            {
+                if (item is ListBoxItem lbi)
+                {
+                    lbi.ParentListBox = this;
+                }
+            }
         }
     }
 
@@ -522,6 +569,12 @@ public class ListBox : Selector
             return indexFromGenerator;
         }
 
+        var indexOfItem = Items.IndexOf(item);
+        if (indexOfItem >= 0)
+        {
+            return indexOfItem;
+        }
+
         if (ItemsHost == null) return -1;
 
         for (var i = 0; i < ItemsHost.Children.Count; i++)
@@ -549,16 +602,27 @@ public class ListBox : Selector
 
     private IEnumerable<ListBoxItem> EnumerateRealizedContainers()
     {
-        if (ItemsHost == null)
+        var visited = new HashSet<ListBoxItem>(ReferenceEqualityComparer.Instance);
+        if (ItemsHost != null)
         {
-            yield break;
+            foreach (UIElement child in ItemsHost.Children)
+            {
+                if (child is ListBoxItem item && visited.Add(item))
+                {
+                    yield return item;
+                }
+            }
         }
 
-        foreach (UIElement child in ItemsHost.Children)
+        foreach (var item in Items)
         {
-            if (child is ListBoxItem item)
+            if (item is ListBoxItem lbi && visited.Add(lbi))
             {
-                yield return item;
+                yield return lbi;
+            }
+            else if (item is not null && ItemContainerGenerator.ContainerFromItem(item) is ListBoxItem gen && visited.Add(gen))
+            {
+                yield return gen;
             }
         }
     }
@@ -573,6 +637,11 @@ public class ListBox : Selector
     {
         if (item is ListBoxItem listBoxItem)
         {
+            if (listBoxItem.Content is UIElement || listBoxItem.Tag is not null)
+            {
+                return listBoxItem;
+            }
+
             return listBoxItem.Content ?? listBoxItem;
         }
 
@@ -717,13 +786,22 @@ public class ListBox : Selector
     /// <inheritdoc />
     protected override void UpdateContainerSelection()
     {
+        if (!_isApplyingSelectedItems)
+        {
+            _selectedItems.Clear();
+            if (SelectedItem != null)
+            {
+                _selectedItems.Add(SelectedItem);
+            }
+        }
+
         if (SelectionMode == SelectionMode.Single)
         {
             foreach (var child in EnumerateRealizedContainers())
             {
                 var index = GetItemIndex(child);
                 var value = GetSelectionValueAtIndex(index);
-                child.IsSelected = (index == SelectedIndex) || Equals(value, SelectedItem);
+                child.IsSelected = (index >= 0 && index == SelectedIndex) || Equals(value, SelectedItem) || Equals(child, SelectedItem);
             }
         }
         else
@@ -732,7 +810,7 @@ public class ListBox : Selector
             {
                 var index = GetItemIndex(child);
                 var value = GetSelectionValueAtIndex(index);
-                child.IsSelected = value != null && _selectedItems.Contains(value);
+                child.IsSelected = (value != null && _selectedItems.Contains(value)) || _selectedItems.Contains(child);
             }
         }
     }

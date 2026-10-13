@@ -1928,7 +1928,10 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         Rect start = editor.Support.GetImeCaretRectangle();
         editor.Support.OnImeCompositionUpdate("pin", 2);
         Rect updated = editor.Support.GetImeCaretRectangle();
-        Assert.True(updated.X > start.X);
+        Assert.True(updated.X > start.X,
+            $"Composition caret did not advance: editor={editorKind}, start={start}, updated={updated}, " +
+            $"fontSize={(editor.Element as Control)?.FontSize}, contextValid={RenderContext.Current?.IsValid}, " +
+            $"backend={RenderContext.Current?.Backend}");
         Assert.Equal(start.Y, updated.Y);
         editor.Support.OnImeCompositionEnd(null);
     }

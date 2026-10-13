@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using Jalium.UI.Automation;
 using Jalium.UI.Automation.Provider;
 using Jalium.UI.Controls;
@@ -13,6 +14,15 @@ public abstract class ItemsControlAutomationPeer : FrameworkElementAutomationPee
     protected ItemsControlAutomationPeer(ItemsControl owner)
         : base(owner)
     {
+        ((INotifyCollectionChanged)owner.Items).CollectionChanged += OnItemsCollectionChanged;
+    }
+
+    private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        // A generated panel/container can be the nearest visual peer. Its structure event
+        // does not invalidate this owner's cached logical item peers.
+        ResetChildrenCache();
+        RaiseAutomationEvent(AutomationEvents.StructureChanged);
     }
 
     protected internal ItemsControl ItemsOwner => (ItemsControl)Owner;
@@ -35,10 +45,15 @@ public abstract class ItemsControlAutomationPeer : FrameworkElementAutomationPee
     protected override List<AutomationPeer> GetChildrenCore()
     {
         List<AutomationPeer> children = [];
+        var liveItems = new HashSet<object>(ReferenceEqualityComparer.Instance);
         foreach (object item in ItemsOwner.Items)
         {
+            liveItems.Add(item);
             children.Add(FindOrCreateItemAutomationPeer(item));
         }
+
+        foreach (var removed in _itemPeers.Keys.Where(item => !liveItems.Contains(item)).ToArray())
+            _itemPeers.Remove(removed);
 
         return children;
     }
@@ -109,7 +124,65 @@ public class ItemAutomationPeer : AutomationPeer
     protected override DependencyObject? GetAutomationOwnerCore() => ItemContainer;
     protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.DataItem;
     protected override string GetClassNameCore() => ItemContainer?.GetType().Name ?? Item.GetType().Name;
-    protected override string GetNameCore() => Item.ToString() ?? string.Empty;
+    internal static string GetAccessibleItemText(ItemsControl? owner, object? item, DependencyObject? container)
+    {
+        if (container is not null)
+        {
+            var name = AutomationProperties.GetName(container);
+            if (!string.IsNullOrEmpty(name))
+                return name;
+
+            var text = TextSearch.GetText(container);
+            if (!string.IsNullOrEmpty(text))
+                return text;
+        }
+
+        if (item is DependencyObject itemDo)
+        {
+            var name = AutomationProperties.GetName(itemDo);
+            if (!string.IsNullOrEmpty(name))
+                return name;
+
+            var text = TextSearch.GetText(itemDo);
+            if (!string.IsNullOrEmpty(text))
+                return text;
+        }
+
+        if (item is not null && owner is not null && !string.IsNullOrWhiteSpace(owner.DisplayMemberPath))
+        {
+            var prop = item.GetType().GetProperty(owner.DisplayMemberPath);
+            if (prop != null)
+            {
+                var val = prop.GetValue(item);
+                if (val != null)
+                    return val.ToString() ?? string.Empty;
+            }
+        }
+
+        if (container is ContentControl cc && cc.Content is not null)
+        {
+            if (cc.Content is string s)
+                return s;
+            if (cc.Content is not UIElement)
+                return cc.Content.ToString() ?? string.Empty;
+        }
+
+        if (item is ContentControl itemCc && itemCc.Content is not null)
+        {
+            if (itemCc.Content is string s)
+                return s;
+            if (itemCc.Content is not UIElement)
+                return itemCc.Content.ToString() ?? string.Empty;
+        }
+
+        if (item is string itemStr)
+            return itemStr;
+
+        return item?.ToString() ?? string.Empty;
+    }
+
+    protected override string GetNameCore() =>
+        GetAccessibleItemText(ItemsControlAutomationPeer?.ItemsOwner, Item, ItemContainer);
     protected override string GetAutomationIdCore() => string.Empty;
     protected override string GetHelpTextCore() => string.Empty;
     protected override string GetAcceleratorKeyCore() => string.Empty;
@@ -185,7 +258,21 @@ public class SelectorItemAutomationPeer : ItemAutomationPeer,
     }
 
     protected SelectorAutomationPeer? SelectorAutomationPeer { get; }
-    public virtual bool IsSelected => ItemContainer is DependencyObject container && Selector.GetIsSelected(container);
+    public virtual bool IsSelected
+    {
+        get
+        {
+            if (ItemContainer is ComboBoxItem cbi)
+                return cbi.IsSelected;
+            if (ItemContainer is ListBoxItem lbi)
+                return lbi.IsSelected;
+            if (ItemContainer is DependencyObject container && Selector.GetIsSelected(container))
+                return true;
+            if (ItemsControlAutomationPeer?.ItemsOwner is Selector selector)
+                return Equals(selector.SelectedItem, Item);
+            return false;
+        }
+    }
     public virtual AutomationPeer SelectionContainer => SelectorAutomationPeer ?? ItemsControlAutomationPeer!;
     public virtual void Select() => SetSelected(true);
     public virtual void AddToSelection() => SetSelected(true);
@@ -219,6 +306,31 @@ public class SelectorItemAutomationPeer : ItemAutomationPeer,
         if (ItemContainer is DependencyObject container)
         {
             Selector.SetIsSelected(container, value);
+            if (container is ComboBoxItem cbi)
+            {
+                cbi.IsSelected = value;
+            }
+            else if (container is ListBoxItem lbi)
+            {
+                lbi.IsSelected = value;
+            }
+        }
+
+        var selector = ItemsControlAutomationPeer?.ItemsOwner as Selector
+            ?? (ItemContainer is ListBoxItem lbiOwner ? lbiOwner.ParentListBox : null)
+            ?? (Item is ListBoxItem lbiItem ? lbiItem.ParentListBox : null)
+            ?? (ItemContainer != null ? ItemsControl.ItemsControlFromItemContainer(ItemContainer) as Selector : null);
+
+        if (selector != null)
+        {
+            if (value)
+            {
+                selector.SelectedItem = Item;
+            }
+            else if (Equals(selector.SelectedItem, Item))
+            {
+                selector.SelectedItem = null;
+            }
         }
     }
 

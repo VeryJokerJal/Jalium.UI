@@ -1,10 +1,28 @@
 #pragma once
+#include "jalium_backend.h"
 #include <vector>
 namespace jalium { struct FontCascadeEntry { const void* font; const void* canonical; }; }
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
 namespace jalium {
+inline void ConfigureFontPositioning(CGContextRef context, bool fractional)
+{
+    // Bitmap contexts otherwise quantize glyph positions, including whole-pixel
+    // vertical placement. Keep the caller's fractional origin inside the cropped
+    // texture; its integer allocation/composite bounds must not snap the glyphs.
+    CGContextSetAllowsFontSubpixelPositioning(context, fractional);
+    CGContextSetShouldSubpixelPositionFonts(context, fractional);
+    CGContextSetAllowsFontSubpixelQuantization(context, false);
+    CGContextSetShouldSubpixelQuantizeFonts(context, false);
+}
+
+inline bool UsesFractionalFontPositioning(const TextFormat& format)
+{
+    return format.GetTextFormattingMode() == 0 || format.GetSubpixelPositioning() ||
+        format.GetTextHintingMode() == 2;
+}
+
 inline bool FontContainsString(CTFontRef font, CFStringRef text)
 {
     CFCharacterSetRef set = CTFontCopyCharacterSet(font);

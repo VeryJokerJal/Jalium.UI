@@ -823,6 +823,29 @@ public class Control : FrameworkElement
         t_templatedParentVisitedPool = visited;
     }
 
+    // 模板成员快照，供 TemplatedParent 赋值和 DataTemplate 值提升复用。
+    [ThreadStatic]
+    private static List<FrameworkElement>? t_templateInstanceMembersPool;
+
+    private static List<FrameworkElement> RentTemplateInstanceMembers()
+    {
+        var members = t_templateInstanceMembersPool;
+        if (members is null)
+        {
+            return new List<FrameworkElement>();
+        }
+
+        t_templateInstanceMembersPool = null;
+        return members;
+    }
+
+    private static void ReturnTemplateInstanceMembers(List<FrameworkElement> members)
+    {
+        // 必须清空：池子活得比模板实例长，留着引用会把已丢弃的模板树钉在内存里。
+        members.Clear();
+        t_templateInstanceMembersPool = members;
+    }
+
     internal static void SetTemplatedParentRecursive(FrameworkElement element, FrameworkElement parent) =>
         SetTemplatedParentRecursive(element, parent, reactivateBindings: true);
 
@@ -837,61 +860,90 @@ public class Control : FrameworkElement
         bool reactivateBindings)
     {
         var visited = RentTemplateWalkVisitedSet();
+        var members = RentTemplateInstanceMembers();
         try
         {
-            // The first element of the walk is the root of this expanded template instance; every
-            // ItemsPresenter reached from here is stamped with it so a discarded presenter can be
-            // told apart from the live one (see ItemsPresenter.AttachToOwner).
-            SetTemplatedParentRecursive(element, parent, element, visited, reactivateBindings);
+            // 先收集、再赋值：只有本次 LoadContent 生成的元素才属于这个模板实例。
+            // 设 TemplatedParent 不是无副作用的——ContentPresenter 在 OnTemplatedParentChanged
+            // 里当场挂上隐式的 {TemplateBinding Content}，把宿主的 Content 收成自己的可视子节点
+            // （reactivateBindings 为 true 时，任何写在 Content / Child 上的 TemplateBinding 也一样）。
+            // 边赋值边往下走，就会走进应用自己提供的内容并把它盖章成模板部件：页面 CSS 不再匹配它
+            // （CssMatcher.IsCssMatchable）、FindName 在它身上停在模板边界、
+            // PromoteTemplateLocalValuesRecursive 把它的 local 值搬进模板层。
+            // 在任何赋值之前收集，冻结的正是 LoadContent 产出的那棵树。
+            CollectTemplateInstanceMembers(element, visited, members);
+
+            for (var i = 0; i < members.Count; i++)
+            {
+                var member = members[i];
+                member.SetTemplatedParent(parent, reactivateBindings);
+
+                // Stamp the presenter with its template instance root so a stray measure of a discarded
+                // presenter cannot hijack the owner's live registration. The first element of the walk
+                // is the root of this expanded template instance (see ItemsPresenter.AttachToOwner).
+                if (member is ItemsPresenter itemsPresenter)
+                {
+                    itemsPresenter.TemplateInstanceRoot = element;
+                }
+
+                // Register name if set
+                if (!string.IsNullOrEmpty(member.Name))
+                {
+                    if (parent is Control controlParent)
+                    {
+                        controlParent.RegisterTemplateName(member.Name, member);
+                    }
+                    else
+                    {
+                        parent.RegisterName(member.Name, member);
+                    }
+                }
+            }
         }
         finally
         {
+            ReturnTemplateInstanceMembers(members);
             ReturnTemplateWalkVisitedSet(visited);
         }
     }
 
-    private static void SetTemplatedParentRecursive(
+    /// <summary>
+    /// Collects authored elements in pre-order, excluding content generated or projected by
+    /// presenters and bindings. Capture before assigning templated parents can add more content.
+    /// </summary>
+    private static void CollectTemplateInstanceMembers(
         FrameworkElement element,
-        FrameworkElement parent,
-        FrameworkElement templateRoot,
         HashSet<FrameworkElement> visited,
-        bool reactivateBindings)
+        List<FrameworkElement> members)
     {
         if (!visited.Add(element))
         {
             return;
         }
 
-        element.SetTemplatedParent(parent, reactivateBindings);
-
-        // Stamp the presenter with its template instance root so a stray measure of a discarded
-        // presenter cannot hijack the owner's live registration.
-        if (element is ItemsPresenter itemsPresenter)
-        {
-            itemsPresenter.TemplateInstanceRoot = templateRoot;
-        }
-
-        // Register name if set
-        if (!string.IsNullOrEmpty(element.Name))
-        {
-            if (parent is Control controlParent)
-            {
-                controlParent.RegisterTemplateName(element.Name, element);
-            }
-            else
-            {
-                parent.RegisterName(element.Name, element);
-            }
-        }
+        members.Add(element);
 
         // A nested Control is a boundary for its implementation visuals, but
         // content authored by the outer template remains part of the outer
         // template namescope and must still receive that templated parent.
         if (element is Control)
         {
-            if (element is ContentControl nestedContentControl && nestedContentControl.Content is FrameworkElement nestedContentChild)
+            if (element is ContentControl nestedContentControl &&
+                GetTemplateAuthoredContent(nestedContentControl, ContentControl.ContentProperty) is FrameworkElement nestedContentChild)
             {
-                SetTemplatedParentRecursive(nestedContentChild, parent, templateRoot, visited, reactivateBindings);
+                CollectTemplateInstanceMembers(nestedContentChild, visited, members);
+            }
+
+            return;
+        }
+
+        // A presenter may have already loaded a separate DataTemplate, or resolved a binding
+        // with an explicit source. Only literal element content belongs to this instance.
+        if (element is ContentPresenter presenter)
+        {
+            if (GetTemplateAuthoredContent(presenter, ContentPresenter.ContentProperty) is FrameworkElement contentChild)
+            {
+                CollectTemplateInstanceMembers(contentChild, visited, members);
             }
 
             return;
@@ -903,26 +955,20 @@ public class Control : FrameworkElement
         {
             if (element.InternalGetVisualChild(i) is FrameworkElement child)
             {
-                SetTemplatedParentRecursive(child, parent, templateRoot, visited, reactivateBindings);
+                CollectTemplateInstanceMembers(child, visited, members);
             }
         }
 
         // Special handling for Popup - its Child is not a visual child but needs TemplatedParent
         if (element is Popup popup && popup.Child is FrameworkElement popupChild)
         {
-            SetTemplatedParentRecursive(popupChild, parent, templateRoot, visited, reactivateBindings);
+            CollectTemplateInstanceMembers(popupChild, visited, members);
         }
 
         // Special handling for Border - its Child might not be in visual tree yet
         if (element is Border border && border.Child is FrameworkElement borderChild)
         {
-            SetTemplatedParentRecursive(borderChild, parent, templateRoot, visited, reactivateBindings);
-        }
-
-        // Special handling for ContentControl - its content might not be in visual tree yet
-        if (element is ContentControl contentControl && contentControl.Content is FrameworkElement contentChild)
-        {
-            SetTemplatedParentRecursive(contentChild, parent, templateRoot, visited, reactivateBindings);
+            CollectTemplateInstanceMembers(borderChild, visited, members);
         }
 
         // Special handling for Panel - ensure all children are processed
@@ -932,21 +978,92 @@ public class Control : FrameworkElement
             {
                 if (panelChild is FrameworkElement panelChildElement)
                 {
-                    SetTemplatedParentRecursive(panelChildElement, parent, templateRoot, visited, reactivateBindings);
+                    CollectTemplateInstanceMembers(panelChildElement, visited, members);
                 }
             }
         }
     }
 
-    internal static void PromoteTemplateLocalValuesRecursive(FrameworkElement element)
+    private static FrameworkElement? GetTemplateAuthoredContent(
+        FrameworkElement element,
+        DependencyProperty contentProperty)
     {
-        // visited 为 null 表示关闭环检测（仅基准对照用），此时行为与优化前逐字一致。
+        if (element.GetBindingExpression(contentProperty) is not null ||
+            DynamicResourceBindingOperations.TryGetLocalDynamicResourceKey(element, contentProperty, out _))
+        {
+            return null;
+        }
+
+        return element.ReadLocalValue(contentProperty) as FrameworkElement;
+    }
+
+    /// <summary>
+    /// Moves the literal values of an expanded ControlTemplate instance from the local layer to
+    /// the ParentTemplate layer, so the template's triggers can override them.
+    /// </summary>
+    /// <remarks>
+    /// Only elements the template instance created are moved — the ones
+    /// <see cref="SetTemplatedParentRecursive(FrameworkElement, FrameworkElement, bool)"/> stamped
+    /// with <paramref name="templateRoot"/>'s templated parent. By the time this runs a
+    /// ContentPresenter has already pulled the templated parent's Content into the tree; that
+    /// content belongs to the application and keeps its local values (WPF semantics).
+    /// </remarks>
+    internal static void PromoteTemplateLocalValuesRecursive(FrameworkElement templateRoot)
+    {
+        if (templateRoot.TemplatedParent is FrameworkElement owner)
+        {
+            PromoteTemplateInstanceLocalValues(templateRoot, owner);
+        }
+    }
+
+    /// <summary>
+    /// Moves the literal values of a freshly loaded DataTemplate instance to the ParentTemplate
+    /// layer, so the DataTemplate's triggers (ParentTemplateTrigger) can override them.
+    /// </summary>
+    /// <remarks>
+    /// Capture the authored members before promotion can activate a trigger or project more
+    /// content. Presenters and nested controls are boundaries for generated or bound content,
+    /// even when a binding with an explicit source has already resolved during LoadContent.
+    /// Call before assigning the data item's DataContext; parts of nested ControlTemplates
+    /// already have their own templated parent and are left alone.
+    /// </remarks>
+    internal static void PromoteDataTemplateLocalValuesRecursive(FrameworkElement contentRoot)
+    {
+        var visited = RentTemplateWalkVisitedSet();
+        var members = RentTemplateInstanceMembers();
+        try
+        {
+            CollectTemplateInstanceMembers(contentRoot, visited, members);
+            for (var i = 0; i < members.Count; i++)
+            {
+                var member = members[i];
+                if (member.TemplatedParent is not null)
+                {
+                    continue;
+                }
+
+                member.PromoteLocalValuesToLayer(DependencyObject.LayerValueSource.ParentTemplate);
+                DynamicResourceBindingOperations.PromoteDynamicResourcesToLayer(
+                    member,
+                    DependencyObject.LayerValueSource.ParentTemplate);
+            }
+        }
+        finally
+        {
+            ReturnTemplateInstanceMembers(members);
+            ReturnTemplateWalkVisitedSet(visited);
+        }
+    }
+
+    private static void PromoteTemplateInstanceLocalValues(FrameworkElement root, FrameworkElement owner)
+    {
+        // The benchmark switch disables deduplication only; ownership boundaries stay enforced.
         var visited = DependencyObject.TemplateExpansionDedupEnabled
             ? RentTemplateWalkVisitedSet()
             : null;
         try
         {
-            PromoteTemplateLocalValuesRecursive(element, visited);
+            PromoteTemplateLocalValuesRecursive(root, owner, visited);
         }
         finally
         {
@@ -959,6 +1076,7 @@ public class Control : FrameworkElement
 
     private static void PromoteTemplateLocalValuesRecursive(
         FrameworkElement element,
+        FrameworkElement owner,
         HashSet<FrameworkElement>? visited)
     {
         // 环检测不是可选的正确性防线，而是复杂度防线：这两趟递归在遍历可视子节点之外，
@@ -971,6 +1089,15 @@ public class Control : FrameworkElement
             return;
         }
 
+        // Not part of this template instance: content projected into it (the templated parent's
+        // Content shown by a ContentPresenter) or a part of another template. Its local values stay
+        // local, and its subtree is skipped too — anything below it this template did author (a
+        // nested control's Content) is reached through that nested control instead.
+        if (!ReferenceEquals(element.TemplatedParent, owner))
+        {
+            return;
+        }
+
         element.PromoteLocalValuesToLayer(DependencyObject.LayerValueSource.ParentTemplate);
         DynamicResourceBindingOperations.PromoteDynamicResourcesToLayer(
             element,
@@ -979,7 +1106,18 @@ public class Control : FrameworkElement
         // If this element is a Control that has already applied its own template,
         // do NOT descend into its template children.
         if (element is Control control && control._templateApplied)
+        {
+            // 但外层模板写在它身上的 Content 属于外层模板——与 SetTemplatedParentRecursive /
+            // ReactivateBindingsRecursive 在 Control 边界上的处理一致。少了这一条，这类内容的字面值
+            // 是否进模板层取决于内层控件的模板是否恰好已经展开。
+            if (element is ContentControl nestedContentControl &&
+                nestedContentControl.Content is FrameworkElement nestedContentChild)
+            {
+                PromoteTemplateLocalValuesRecursive(nestedContentChild, owner, visited);
+            }
+
             return;
+        }
 
         // Process visual children
         var childCount = element.InternalVisualChildrenCount;
@@ -987,26 +1125,26 @@ public class Control : FrameworkElement
         {
             if (element.InternalGetVisualChild(i) is FrameworkElement child)
             {
-                PromoteTemplateLocalValuesRecursive(child, visited);
+                PromoteTemplateLocalValuesRecursive(child, owner, visited);
             }
         }
 
         // Special handling for Popup - its Child is not a visual child but needs template layering
         if (element is Popup popup && popup.Child is FrameworkElement popupChild)
         {
-            PromoteTemplateLocalValuesRecursive(popupChild, visited);
+            PromoteTemplateLocalValuesRecursive(popupChild, owner, visited);
         }
 
         // Special handling for Border - its Child might not be in visual tree yet
         if (element is Border border && border.Child is FrameworkElement borderChild)
         {
-            PromoteTemplateLocalValuesRecursive(borderChild, visited);
+            PromoteTemplateLocalValuesRecursive(borderChild, owner, visited);
         }
 
         // Special handling for ContentControl - its content might not be in visual tree yet
         if (element is ContentControl contentControl && contentControl.Content is FrameworkElement contentChild)
         {
-            PromoteTemplateLocalValuesRecursive(contentChild, visited);
+            PromoteTemplateLocalValuesRecursive(contentChild, owner, visited);
         }
 
         // Special handling for Panel - ensure all children are processed
@@ -1016,7 +1154,7 @@ public class Control : FrameworkElement
             {
                 if (panelChild is FrameworkElement panelChildElement)
                 {
-                    PromoteTemplateLocalValuesRecursive(panelChildElement, visited);
+                    PromoteTemplateLocalValuesRecursive(panelChildElement, owner, visited);
                 }
             }
         }

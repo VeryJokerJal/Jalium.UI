@@ -27,6 +27,11 @@ if(APPLE)
         src/metal_init.cpp
         PROPERTIES LANGUAGE OBJCXX
     )
+    # Keep symbols in development builds, but optimize the frame encoder and
+    # inline analytic rasterizer. Unoptimized per-pixel C++ loops can consume
+    # an entire frame budget when scrolling introduces a fresh subpixel phase.
+    set_property(SOURCE src/metal_render_target.cpp APPEND PROPERTY
+        COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O1>")
 endif()
 
 add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})

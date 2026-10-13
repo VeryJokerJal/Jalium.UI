@@ -213,6 +213,26 @@ public sealed class ListBoxParityTests
         Assert.False(second.IsSelected);
     }
 
+    [Fact]
+    public void ExplicitContainerSelectedByIndexBeforeGenerationIsSelectedWhenGenerated()
+    {
+        var listBox = new TestListBox();
+        var rows = Enumerable.Range(0, 3)
+            .Select(index => new ListBoxItem { Content = new TextBlock { Text = "row " + index } })
+            .ToArray();
+        foreach (var row in rows) listBox.Items.Add(row);
+
+        // The selection is made before any container exists, as a tool window does when it fills a list.
+        listBox.SelectedIndex = 2;
+        listBox.Measure(new Size(240, 120));
+        listBox.Arrange(new Rect(0, 0, 240, 120));
+
+        Assert.Same(rows[2], listBox.SelectedItem);
+        Assert.True(rows[2].IsSelected);
+        Assert.False(rows[0].IsSelected);
+        Assert.False(rows[1].IsSelected);
+    }
+
     private static TestListBox CreateSelectionListBox(SelectionMode mode)
     {
         var listBox = new TestListBox { SelectionMode = mode };

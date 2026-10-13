@@ -146,6 +146,14 @@ public class ContentDialog : ContentControl
     private ContentDialogPlacement _activePlacement;
     private Size _layoutViewport;
     private readonly List<(UIElement Element, bool WasEnabled)> _disabledSiblings = new();
+    private IEffect? _forwardedCardShadow;
+
+    // ContentDialog covers the viewport to block input. Its material belongs to
+    // PART_DialogCard, not to that full-window overlay. Keep custom templates
+    // without the card part on the ordinary element backdrop path.
+    internal override bool RendersBackdropEffectInTemplate => _dialogCard != null;
+    internal override bool RendersEffectInTemplate => _forwardedCardShadow != null &&
+        ReferenceEquals(_dialogCard?.Effect, _forwardedCardShadow);
 
     public ContentDialog()
     {
@@ -449,6 +457,7 @@ public class ContentDialog : ContentControl
 
     public override void OnApplyTemplate()
     {
+        ClearForwardedCardShadow();
         DetachButtonHandlers();
         base.OnApplyTemplate();
 
@@ -469,6 +478,9 @@ public class ContentDialog : ContentControl
     {
         base.OnPropertyChanged(e);
 
+        if (e.Property == EffectProperty)
+            UpdateCardShadowState();
+
         if (e.Property == WidthProperty ||
             e.Property == HeightProperty ||
             e.Property == MinWidthProperty ||
@@ -478,6 +490,12 @@ public class ContentDialog : ContentControl
         {
             UpdateCardLayout();
         }
+    }
+
+    protected override void OnBackdropEffectChanged(IBackdropEffect? oldValue, IBackdropEffect? newValue)
+    {
+        base.OnBackdropEffectChanged(oldValue, newValue);
+        UpdateBackdropState();
     }
 
     private static void OnDialogVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -819,6 +837,7 @@ public class ContentDialog : ContentControl
         UpdateTitleState();
         UpdateButtonState();
         UpdateBackdropState();
+        UpdateCardShadowState();
         UpdateCardLayout();
     }
 
@@ -830,6 +849,32 @@ public class ContentDialog : ContentControl
         }
 
         _dialogCard.BackdropEffect = BackdropEffect;
+    }
+
+    private void ClearForwardedCardShadow()
+    {
+        if (_forwardedCardShadow != null && ReferenceEquals(_dialogCard?.Effect, _forwardedCardShadow))
+            _dialogCard!.ClearValue(EffectProperty);
+        _forwardedCardShadow = null;
+    }
+
+    private void UpdateCardShadowState()
+    {
+        if (_dialogCard == null) return;
+
+        // CSS box-shadow describes the dialog's visible box, not the input-blocking
+        // viewport. Capture only the card. Filters and authored element effects
+        // retain their subtree semantics, and a custom card effect keeps ownership.
+        var shadow = Effect is Jalium.UI.Media.Effects.Effect { CssBoxShadowLayer: true } &&
+            Effect is not Jalium.UI.Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true }
+            ? Effect : null;
+        if (!ReferenceEquals(shadow, _forwardedCardShadow))
+            ClearForwardedCardShadow();
+        if (shadow != null && (_dialogCard.Effect == null || ReferenceEquals(_dialogCard.Effect, _forwardedCardShadow)))
+        {
+            _forwardedCardShadow = shadow;
+            _dialogCard.Effect = shadow;
+        }
     }
 
     private void UpdateTitleState()

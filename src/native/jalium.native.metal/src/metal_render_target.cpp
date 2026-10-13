@@ -21,6 +21,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <list>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -470,6 +471,65 @@ struct MetalRenderTarget::Impl {
     std::unordered_map<uint64_t,TextCacheEntry> textCache;
     size_t textCacheBytes=0;
     uint64_t textCacheClock=0;
+
+    // A geometric shadow mask depends on its contour, device transform and blur,
+    // never on the changing content inside the card or the backdrop behind it.
+    // Keep exact GPU results instead of running every separable blur on every frame.
+    using ShadowMaskKey = std::array<uint32_t, 27>;
+    struct ShadowMaskHash {
+        size_t operator()(const ShadowMaskKey& key) const {
+            return static_cast<size_t>(Fnv1a64(key.data(), sizeof(key)));
+        }
+    };
+    struct ShadowMaskEntry {
+        id<MTLTexture> texture=nil;
+        int originX=0,originY=0;
+        uint64_t lastUse=0;
+        size_t bytes=0;
+    };
+    std::unordered_map<ShadowMaskKey,ShadowMaskEntry,ShadowMaskHash> shadowMaskCache;
+    size_t shadowMaskCacheBytes=0;
+    uint64_t shadowMaskCacheClock=0;
+    uint64_t shadowHits=0,shadowMisses=0,alphaShadows=0,blurCalls=0;
+
+    void TrimShadowMaskCache(size_t incomingBytes)
+    {
+        constexpr size_t maxEntries=64,maxBytes=32u*1024u*1024u;
+        while(!shadowMaskCache.empty() &&
+            (shadowMaskCache.size()>=maxEntries || shadowMaskCacheBytes+incomingBytes>maxBytes)){
+            auto oldest=std::min_element(shadowMaskCache.begin(),shadowMaskCache.end(),
+                [](const auto& a,const auto& b){return a.second.lastUse<b.second.lastUse;});
+            shadowMaskCacheBytes-=oldest->second.bytes;
+            shadowMaskCache.erase(oldest);
+        }
+    }
+
+    struct FillCoverageEntry {
+        std::vector<MetalVertex> vertices;
+        size_t bytes = 0;
+    };
+    using FillCoverageList = std::list<std::pair<uint64_t, FillCoverageEntry>>;
+    FillCoverageList fillCoverageLru;
+    std::unordered_map<uint64_t, FillCoverageList::iterator> fillCoverageCache;
+    size_t fillCoverageBytes = 0;
+
+    void CacheFillCoverage(uint64_t key, std::vector<MetalVertex> vertices)
+    {
+        constexpr size_t maxEntries = 512;
+        constexpr size_t maxBytes = 16u * 1024u * 1024u;
+        const size_t bytes = vertices.capacity() * sizeof(MetalVertex);
+        if (bytes > maxBytes / 4) return;
+        while (!fillCoverageLru.empty() &&
+            (fillCoverageLru.size() >= maxEntries || fillCoverageBytes + bytes > maxBytes)) {
+            auto victim = std::prev(fillCoverageLru.end());
+            fillCoverageBytes -= victim->second.bytes;
+            fillCoverageCache.erase(victim->first);
+            fillCoverageLru.erase(victim);
+        }
+        fillCoverageLru.emplace_front(key, FillCoverageEntry{std::move(vertices), bytes});
+        fillCoverageCache.emplace(key, fillCoverageLru.begin());
+        fillCoverageBytes += bytes;
+    }
 
     void TrimTextCache()
     {
@@ -1348,7 +1408,43 @@ struct MetalRenderTarget::Impl {
         FlushVello();
         const MTLScissorRect scissor = CurrentScissor();
         if (!scissor.width || !scissor.height) return;
-        const auto transform = DeviceTransform();
+        auto transform = DeviceTransform();
+        // Analytic icon coverage is expensive to rebuild on every redraw. Keep
+        // its exact fractional pixel phase, but factor out integral translation
+        // so scrolling can reuse it. Color, opacity and clipping remain dynamic
+        // GPU state, and must never be baked into these coverage vertices.
+        float offsetX = 0, offsetY = 0;
+        const bool cacheableTransform = std::isfinite(transform.dx) && std::isfinite(transform.dy) &&
+            std::abs(transform.dx) < 1e7f && std::abs(transform.dy) < 1e7f;
+        if (cacheableTransform) {
+            offsetX = std::floor(transform.dx); offsetY = std::floor(transform.dy);
+            transform.dx -= offsetX; transform.dy -= offsetY;
+        }
+        uint64_t coverageKey = Fnv1a64(&rule, sizeof(rule));
+        const bool aliased = edgeMode == 1;
+        coverageKey = Fnv1a64(&aliased, sizeof(aliased), coverageKey);
+        coverageKey = Fnv1a64(&pathMsaa, sizeof(pathMsaa), coverageKey);
+        coverageKey = Fnv1a64(&transform, sizeof(transform), coverageKey);
+        for (const auto& contour : source) {
+            const size_t count = contour.points.size();
+            coverageKey = Fnv1a64(&count, sizeof(count), coverageKey);
+            coverageKey = Fnv1a64(contour.points.data(), count * sizeof(float), coverageKey);
+        }
+        auto drawCoverage = [&](const std::vector<MetalVertex>& cached) {
+            auto vertices = cached;
+            for (auto& vertex : vertices) { vertex.x += offsetX; vertex.y += offsetY; }
+            auto params = Params(brush, 0);
+            params[26] = 1;
+            Draw(vertices, shapePipeline, params);
+        };
+        if (cacheableTransform) {
+            auto found = fillCoverageCache.find(coverageKey);
+            if (found != fillCoverageCache.end()) {
+                fillCoverageLru.splice(fillCoverageLru.begin(), fillCoverageLru, found->second);
+                drawCoverage(found->second->second.vertices);
+                return;
+            }
+        }
         std::vector<Contour> contours = source;
         float minX = INFINITY, minY = INFINITY, maxX = -INFINITY, maxY = -INFINITY;
         for (auto& contour : contours) {
@@ -1361,31 +1457,53 @@ struct MetalRenderTarget::Impl {
                 maxX = std::max(maxX, x); maxY = std::max(maxY, y);
             }
         }
-        const PixelRect bounds{static_cast<int>(scissor.x), static_cast<int>(scissor.y),
+        PixelRect bounds{static_cast<int>(scissor.x - offsetX), static_cast<int>(scissor.y - offsetY),
             static_cast<int>(scissor.width), static_cast<int>(scissor.height), 1};
+        // Bound the cache to UI-sized paths. Large artwork retains the clipped
+        // stencil/scanline route and cannot allocate a giant offscreen payload.
+        const bool cacheCoverage = cacheableTransform && minX < maxX && minY < maxY &&
+            maxX - minX <= 2048 && maxY - minY <= 2048 &&
+            std::abs(minX) < 1e7f && std::abs(minY) < 1e7f &&
+            std::abs(maxX) < 1e7f && std::abs(maxY) < 1e7f;
+        if (cacheCoverage) {
+            const int left = static_cast<int>(std::floor(minX));
+            const int top = static_cast<int>(std::floor(minY));
+            bounds = {left, top, int(std::ceil(maxX)) - left, int(std::ceil(maxY)) - top, 1};
+        }
         minX = std::max(minX, float(bounds.x)); minY = std::max(minY, float(bounds.y));
         maxX = std::min(maxX, float(bounds.x + bounds.w)); maxY = std::min(maxY, float(bounds.y + bounds.h));
         if (!(minX < maxX) || !(minY < maxY)) return;
         if (edgeMode != 1 && edgeMode != 2 && pathMsaa > 1 &&
             !PreferAnalyticFill(maxX - minX, maxY - minY) &&
             (rule == FillRule::EvenOdd || StencilWindingFits(contours))) {
+            // Stencil rendering consumes absolute device coordinates.
+            for (auto& contour : contours) for (size_t i = 0; i + 1 < contour.points.size(); i += 2) {
+                contour.points[i] += offsetX; contour.points[i + 1] += offsetY;
+            }
+            minX += offsetX; maxX += offsetX; minY += offsetY; maxY += offsetY;
             const int left = static_cast<int>(std::floor(minX));
             const int top = static_cast<int>(std::floor(minY));
             PixelRect maskBounds{left, top, int(std::ceil(maxX)) - left, int(std::ceil(maxY)) - top, 1};
             if (FillStencilContours(contours, brush, rule, maskBounds)) return;
+            for (auto& contour : contours) for (size_t i = 0; i + 1 < contour.points.size(); i += 2) {
+                contour.points[i] -= offsetX; contour.points[i + 1] -= offsetY;
+            }
         }
         std::vector<PixelRect> coverage;
         RasterizePathToRects(contours, rule, coverage, &bounds, edgeMode == 1);
         std::vector<MetalVertex> vertices;
         vertices.reserve(coverage.size() * 6);
         for (const auto& rect : coverage) {
-            auto quad = DeviceQuad(rect.x, rect.y, rect.w, rect.h,
-                rect.alpha, 0, rect.alpha, 0);
-            vertices.insert(vertices.end(), quad.begin(), quad.end());
+            const float x = rect.x, y = rect.y, right = x + rect.w, bottom = y + rect.h;
+            vertices.push_back({x, y, rect.alpha, 0});
+            vertices.push_back({right, y, rect.alpha, 0});
+            vertices.push_back({right, bottom, rect.alpha, 0});
+            vertices.push_back({x, y, rect.alpha, 0});
+            vertices.push_back({right, bottom, rect.alpha, 0});
+            vertices.push_back({x, bottom, rect.alpha, 0});
         }
-        auto params = Params(brush, 0);
-        params[26] = 1;
-        Draw(vertices, shapePipeline, params);
+        drawCoverage(vertices);
+        if (cacheCoverage) CacheFillCoverage(coverageKey, std::move(vertices));
     }
 
     JaliumResult PushContourClip(const std::vector<Contour>& source, FillRule rule, int32_t edgeMode)
@@ -1572,6 +1690,7 @@ struct MetalRenderTarget::Impl {
         bool transparentBorder = false,const RectF* sampledBounds = nullptr)
     {
         if (!source || radius <= 0.01f || !commandBuffer) return {source};
+        ++blurCalls;
         EndEncoder();
         float sigma = requestedSigma > 0.0f ? requestedSigma :
             (blurType == JALIUM_BACKDROP_BLUR_BOX
@@ -1778,15 +1897,58 @@ struct MetalRenderTarget::Impl {
     {
         if(a<=0||(!inner&&(contour.width<=0||contour.height<=0)))return true;
         auto shifted=contour;shifted.x+=ox;shifted.y+=oy;
-        id<MTLTexture> mask=ContourMask(shifted,inner);
-        if(!mask)return false;
         float radius=blur*EffectScale();
         RectF sampled=inner&&constraint?
             TransformBounds(DeviceTransform(),constraint->x,constraint->y,constraint->width,constraint->height):
             Inflate(TransformBounds(DeviceTransform(),shifted.x,shifted.y,shifted.width,shifted.height),
                 BlurSupport(radius)+2);
-        auto blurred=Blur(mask,radius,0,JALIUM_BACKDROP_BLUR_GAUSSIAN,!inner,&sampled);
-        mask=blurred.texture;
+        ShadowMaskKey key{};size_t index=0;
+        auto append=[&](float value){std::memcpy(&key[index++],&value,sizeof(value));};
+        append(shifted.x);append(shifted.y);append(shifted.width);append(shifted.height);
+        for(float value:shifted.radiusX)append(value);
+        for(float value:shifted.radiusY)append(value);
+        key[index++]=shifted.edges;
+        auto m=DeviceTransform();
+        append(m.m11);append(m.m12);append(m.m21);append(m.m22);append(m.dx);append(m.dy);
+        append(sampled.x);append(sampled.y);append(sampled.width);append(sampled.height);
+        append(radius);key[index++]=pixelWidth;key[index++]=pixelHeight;key[index++]=inner?1u:0u;
+        BlurredTexture blurred{};
+        if(auto found=shadowMaskCache.find(key);found!=shadowMaskCache.end()){
+            ++shadowHits;
+            found->second.lastUse=++shadowMaskCacheClock;
+            blurred={found->second.texture,found->second.originX,found->second.originY};
+        }else{
+            ++shadowMisses;
+            id<MTLTexture> source=ContourMask(shifted,inner);
+            if(!source)return false;
+            blurred=Blur(source,radius,0,JALIUM_BACKDROP_BLUR_GAUSSIAN,!inner,&sampled);
+            // Never pin a transient heap in this cache: copy into an independently
+            // owned texture so the byte limit also bounds retained GPU storage.
+            const size_t bytes=blurred.texture.width*blurred.texture.height*4u;
+            if(bytes<=16u*1024u*1024u && (radius<=0.01f || blurred.texture!=source)){
+                auto retained=CreateTexture(device,blurred.texture.width,blurred.texture.height);
+                if(retained){
+                    EndEncoder();auto blit=[commandBuffer blitCommandEncoder];
+                    [blit copyFromTexture:blurred.texture sourceSlice:0 sourceLevel:0
+                        sourceOrigin:MTLOriginMake(0,0,0)
+                        sourceSize:MTLSizeMake(blurred.texture.width,blurred.texture.height,1)
+                        toTexture:retained destinationSlice:0 destinationLevel:0
+                        destinationOrigin:MTLOriginMake(0,0,0)];[blit endEncoding];
+                    const size_t allocated=retained.allocatedSize;
+                    if(allocated<=16u*1024u*1024u){
+                        TrimShadowMaskCache(allocated);
+                        shadowMaskCache.emplace(key,ShadowMaskEntry{retained,blurred.originX,
+                            blurred.originY,++shadowMaskCacheClock,allocated});
+                        shadowMaskCacheBytes+=allocated;
+                        blurred.texture=retained;
+                    }
+                }
+            }
+        }
+        id<MTLTexture> mask=blurred.texture;
+        // Cache eviction and resize may happen before an earlier frame completes.
+        // Each submitted frame independently retains the texture it sampled.
+        if(frame&&frame->gpuRetainedObjects)[frame->gpuRetainedObjects addObject:mask];
         auto p=Params(nullptr,0);p[180]=5;p[181]=r;p[182]=g;p[183]=b;p[184]=a;
         if(constraint){SetContour(p,*constraint);p[185]=inner?1:2;}
         return Draw(DeviceQuad(0,0,static_cast<float>(pixelWidth),static_cast<float>(pixelHeight),
@@ -1797,6 +1959,7 @@ struct MetalRenderTarget::Impl {
 
     bool PaintAlphaShadow(float blur,float ox,float oy,float r,float g,float b,float a)
     {
+        ++alphaShadows;
         if(!effectCapture.texture)return false;
         if(a<=0)return true;
         float radius=blur*EffectScale();
@@ -1928,6 +2091,7 @@ JaliumResult MetalRenderTarget::Resize(int32_t width, int32_t height)
 {
     if (width <= 0 || height <= 0) return JALIUM_ERROR_INVALID_ARGUMENT;
     if (impl_->drawing) return JALIUM_ERROR_INVALID_STATE;
+    impl_->shadowMaskCache.clear();impl_->shadowMaskCacheBytes=0;
     width_ = width; height_ = height;
     // The render-target ABI takes physical pixels. DPI scales drawing
     // coordinates in DeviceTransform, never the swap-chain dimensions.
@@ -1949,6 +2113,11 @@ JaliumResult MetalRenderTarget::Resize(int32_t width, int32_t height)
 JaliumResult MetalRenderTarget::BeginDraw()
 {
     if (impl_->drawing) return JALIUM_ERROR_INVALID_STATE;
+    if(impl_->commandDiagnostics && impl_->framesSubmitted.load()%30==0)
+        std::fprintf(stderr,"[Metal effects] hits=%llu misses=%llu alpha=%llu blur=%llu entries=%zu bytes=%zu\n",
+            (unsigned long long)impl_->shadowHits,(unsigned long long)impl_->shadowMisses,
+            (unsigned long long)impl_->alphaShadows,(unsigned long long)impl_->blurCalls,
+            impl_->shadowMaskCache.size(),impl_->shadowMaskCacheBytes);
     if (impl_->simulatedDeviceLost || impl_->backend->CheckDeviceStatus() != JALIUM_OK)
         return JALIUM_ERROR_DEVICE_LOST;
     uint32_t supportedMsaa=impl_->pendingPathMsaa;
@@ -2355,6 +2524,8 @@ void MetalRenderTarget::RenderText(const wchar_t* text, uint32_t textLength,
     uint64_t cacheKey=Fnv1a64(text,static_cast<size_t>(textLength)*sizeof(wchar_t));
     auto mix=[&](const void* value,size_t bytes){cacheKey=Fnv1a64(value,bytes,cacheKey);};
     uint64_t formatIdentity=metalFormat->CacheIdentity();mix(&formatIdentity,sizeof(formatIdentity));
+    const bool fractionalPositioning = UsesFractionalFontPositioning(*metalFormat);
+    mix(&fractionalPositioning, sizeof(fractionalPositioning));
     float layout[]={x,y,w,h,r,g,b,a};mix(layout,sizeof(layout));mix(matrix,sizeof(matrix));
     uint32_t viewport[]={impl_->pixelWidth,impl_->pixelHeight};
     mix(viewport,sizeof(viewport));
@@ -3250,7 +3421,7 @@ JaliumResult MetalRenderTarget::QueryGpuStats(JaliumGpuStats* out) const
         heapBytes+=static_cast<int64_t>(((id<MTLHeap>)value).currentAllocatedSize);
     for(const auto& slot:impl_->transitionSlots)if(slot.texture)++textures;
     if(impl_->effectCapture.texture)++textures;if(impl_->desktopCapture.texture)++textures;
-    out->textureCount=textures;
+    out->textureCount=textures+static_cast<int>(impl_->shadowMaskCache.size());
     const int64_t sceneBytes=impl_->sceneTexture?
         static_cast<int64_t>(impl_->pixelWidth)*impl_->pixelHeight*4:0;
     int64_t attachmentBytes=sceneBytes;
@@ -3258,7 +3429,7 @@ JaliumResult MetalRenderTarget::QueryGpuStats(JaliumGpuStats* out) const
     if(impl_->msaaBaselineTexture)attachmentBytes+=sceneBytes;
     if(impl_->stencilTexture)attachmentBytes+=
         static_cast<int64_t>(impl_->pixelWidth)*impl_->pixelHeight*impl_->pathMsaa;
-    out->textureBytes=attachmentBytes+heapBytes;
+    out->textureBytes=attachmentBytes+heapBytes+static_cast<int64_t>(impl_->shadowMaskCacheBytes);
     out->swapBufferCount=kFrameCount;
     out->lastFramePresentToReadyNs=impl_->lastGpuNs.load(std::memory_order_acquire);
     out->presentBlockNs=0;out->frameGpuWaitNs=0;out->frameWaitableWaitNs=0;
@@ -3326,6 +3497,7 @@ JaliumResult MetalRenderTarget::ReclaimIdleResources()
     impl_->effectCaptureStyles.clear();impl_->effectCaptureAttempts.clear();
     impl_->transitionCaptureStyles.clear();impl_->activeTransitionSlots.clear();
     impl_->textCache.clear();impl_->textCacheBytes=0;
+    impl_->shadowMaskCache.clear();impl_->shadowMaskCacheBytes=0;
     impl_->pathCache.Clear();
     impl_->gradientCache.clear();impl_->gradientCacheBytes=0;
     impl_->transitionSlots[0]={};impl_->transitionSlots[1]={};

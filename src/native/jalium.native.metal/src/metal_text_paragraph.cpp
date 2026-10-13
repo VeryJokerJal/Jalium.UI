@@ -145,6 +145,9 @@ MetalTextParagraph::MetalTextParagraph(const uint16_t* text, uint32_t length, vo
         const auto& span = spans[i];
         CFRange range = CFRangeMake(span.textPosition, span.length);
         CFAttributedStringSetAttribute(impl_->attributed, range, kCTFontAttributeName, fonts[i]);
+        const auto* format = reinterpret_cast<const TextFormat*>(span.format);
+        CFAttributedStringSetAttribute(impl_->attributed, range, CFSTR("JaliumFractionalFontPositioning"),
+            format && UsesFractionalFontPositioning(*format) ? kCFBooleanTrue : kCFBooleanFalse);
         // Color-font glyphs ignore the foreground color's alpha. Store the
         // opacity separately and apply it to each already shaped CTRun.
         CFHandle<CGColorRef> color(CGColorCreateGenericRGB(span.r, span.g, span.b, 1));
@@ -403,6 +406,8 @@ bool MetalTextParagraph::RasterizeLine(uint32_t line, float x, float y, float op
         float alpha = 1;
         if (number) CFNumberGetValue(number, kCFNumberFloat32Type, &alpha);
         CGContextSaveGState(context.value);
+        ConfigureFontPositioning(context.value,
+            CFDictionaryGetValue(CTRunGetAttributes(run), CFSTR("JaliumFractionalFontPositioning")) == kCFBooleanTrue);
         CGContextSetAlpha(context.value, std::clamp(opacity, 0.0f, 1.0f) * alpha);
         DrawFontRun(run, context.value, CGPointZero);
         CGContextRestoreGState(context.value);

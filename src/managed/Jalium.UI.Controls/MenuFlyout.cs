@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -12,6 +13,15 @@ namespace Jalium.UI.Controls;
 public sealed class MenuFlyout : FlyoutBase
 {
     private readonly ObservableCollection<Control> _items = new();
+    private MenuFlyoutPresenter? _presenter;
+
+    public MenuFlyout()
+    {
+        Opened += (_, _) => Dispatcher.BeginInvokeCritical(() =>
+        {
+            if (IsOpen) _presenter?.FocusFirstItem();
+        });
+    }
 
     /// <summary>
     /// Gets the collection of items in the MenuFlyout.
@@ -28,7 +38,7 @@ public sealed class MenuFlyout : FlyoutBase
     /// <inheritdoc />
     protected override Control CreatePresenter()
     {
-        return new MenuFlyoutPresenter(this) { Style = MenuFlyoutPresenterStyle };
+        return _presenter = new MenuFlyoutPresenter(this) { Style = MenuFlyoutPresenterStyle };
     }
 }
 
@@ -49,6 +59,7 @@ internal sealed class MenuFlyoutPresenter : Control
     public MenuFlyoutPresenter(MenuFlyout flyout)
     {
         _flyout = flyout;
+        Focusable = true;
         UseLayoutRounding = true;
         BorderThickness = s_defaultBorderThickness;
         Padding = s_defaultPadding;
@@ -58,6 +69,23 @@ internal sealed class MenuFlyoutPresenter : Control
         RefreshItems();
 
         AddVisualChild(_scrollHost);
+        KeyDown += (_, args) =>
+        {
+            if (args.Key != Key.Escape) return;
+            UIElement? target = null;
+            for (Visual? ancestor = this; ancestor != null; ancestor = ancestor.VisualParent)
+                if (ancestor is PopupRoot root) { target = root.OwnerPopup.PlacementTarget; break; }
+            _flyout.Hide();
+            args.Handled = true;
+            Dispatcher.BeginInvokeCritical(() => target?.Focus());
+        };
+    }
+
+    internal void FocusFirstItem()
+    {
+        foreach (var item in _flyout.Items)
+            if (item.IsEnabled && item.Visibility == Visibility.Visible && item.Focusable && item.Focus()) return;
+        Focus();
     }
 
     protected override Size MeasureOverride(Size availableSize)

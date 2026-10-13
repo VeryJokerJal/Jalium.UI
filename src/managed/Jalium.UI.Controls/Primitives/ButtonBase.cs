@@ -10,6 +10,15 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public abstract class ButtonBase : ContentControl, ICommandSource
 {
+    private bool _commandCanExecute = true;
+
+    static ButtonBase()
+    {
+        IsEnabledProperty.OverrideMetadata(typeof(ButtonBase),
+            new PropertyMetadata(true, null, static (d, value) =>
+                value is true && ((ButtonBase)d)._commandCanExecute));
+    }
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -45,7 +54,7 @@ public abstract class ButtonBase : ContentControl, ICommandSource
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandTargetProperty =
         DependencyProperty.Register(nameof(CommandTarget), typeof(IInputElement), typeof(ButtonBase),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnCommandParameterChanged));
 
     /// <summary>
     /// Identifies the ClickMode dependency property.
@@ -493,31 +502,10 @@ public abstract class ButtonBase : ContentControl, ICommandSource
     /// </summary>
     internal bool CanRespondToInput()
     {
-        // Effectively enabled (own value AND every ancestor enabled): the common path, no work.
-        if (IsEnabled) return true;
-
-        // Effectively disabled. The only state we override is a transient, command-driven disable.
-        var command = Command;
-        if (command == null) return false; // disabled by the app with no command to re-query: honor it.
-
-        // A disabled ancestor is a real disable, never a command flap — never override it.
-        if (VisualParent is UIElement parent && !parent.IsEnabled) return false;
-
-        // The local IsEnabled is the only thing keeping us disabled. Ask the command whether it can
-        // run at this instant: an async command genuinely mid-flight (or one whose CanExecute is
-        // legitimately false) still reports false and stays blocked; a just-finished command reports
-        // true, revealing the disabled state as a stale async flap.
-        bool canExecuteNow = command is RoutedCommand routedCommand
-            ? routedCommand.CanExecute(CommandParameter, CommandTarget ?? this)
-            : command.CanExecute(CommandParameter);
-        if (!canExecuteNow) return false;
-
-        // Stale flap: heal the local IsEnabled value so the IsEnabled=False style trigger reverts at
-        // once and OnIsEnabledChanged stops clearing IsMouseOver/IsPressed (which ClickMode.Release
-        // depends on). SetCurrentValue keeps any IsEnabled binding intact; the next CanExecuteChanged
-        // writes true as well, so this is idempotent.
-        SetCurrentValue(UIElement.IsEnabledProperty, true);
-        return true;
+        // Refresh only the command constraint. A delayed notification must never heal an
+        // application's explicit disable, a binding value, or a disabled ancestor.
+        if (Command != null) UpdateCanExecute();
+        return IsEnabled;
     }
 
     #endregion
@@ -557,23 +545,26 @@ public abstract class ButtonBase : ContentControl, ICommandSource
     private void UpdateCanExecute()
     {
         var command = Command;
-        if (command == null)
-        {
-            return;
-        }
-
-        bool canExecute;
+        bool canExecute = true;
         if (command is RoutedCommand routedCommand)
         {
             var target = CommandTarget ?? this;
             canExecute = routedCommand.CanExecute(CommandParameter, target);
         }
-        else
+        else if (command != null)
         {
             canExecute = command.CanExecute(CommandParameter);
         }
 
-        IsEnabled = canExecute;
+        if (_commandCanExecute == canExecute) return;
+
+        // Coercion is evaluated on every read. Capture the previous value before changing
+        // its constraint, then publish the transition without writing a local value.
+        var oldValue = GetValue(IsEnabledProperty);
+        _commandCanExecute = canExecute;
+        var newValue = GetValue(IsEnabledProperty);
+        if (!Equals(oldValue, newValue))
+            OnPropertyChanged(new DependencyPropertyChangedEventArgs(IsEnabledProperty, oldValue, newValue));
     }
 
     #endregion

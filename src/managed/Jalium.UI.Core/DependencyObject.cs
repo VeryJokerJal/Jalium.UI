@@ -618,35 +618,35 @@ public class DependencyObject : DispatcherObject
                 MutateValue(
                     dp,
                     ValueMutation.ForSetLocalDirect(value),
-                    notifyBinding: false,
+                    notifyBinding: true,
                     allowAutoTransition);
                 return;
             case BaseValueSource.ParentTemplate:
                 MutateValue(
                     dp,
                     ValueMutation.ForSetLayer(value, LayerValueSource.ParentTemplate),
-                    notifyBinding: false,
+                    notifyBinding: true,
                     allowAutoTransition);
                 return;
             case BaseValueSource.StyleTrigger:
                 MutateValue(
                     dp,
                     ValueMutation.ForSetLayer(value, LayerValueSource.StyleTrigger),
-                    notifyBinding: false,
+                    notifyBinding: true,
                     allowAutoTransition);
                 return;
             case BaseValueSource.TemplateTrigger:
                 MutateValue(
                     dp,
                     ValueMutation.ForSetLayer(value, LayerValueSource.TemplateTrigger),
-                    notifyBinding: false,
+                    notifyBinding: true,
                     allowAutoTransition);
                 return;
             case BaseValueSource.ParentTemplateTrigger:
                 MutateValue(
                     dp,
                     ValueMutation.ForSetLayer(value, LayerValueSource.ParentTemplateTrigger),
-                    notifyBinding: false,
+                    notifyBinding: true,
                     allowAutoTransition);
                 return;
             case BaseValueSource.Style:
@@ -654,7 +654,7 @@ public class DependencyObject : DispatcherObject
                 MutateValue(
                     dp,
                     ValueMutation.ForSetLayer(value, LayerValueSource.StyleSetter),
-                    notifyBinding: false,
+                    notifyBinding: true,
                     allowAutoTransition);
                 return;
             case BaseValueSource.Default:
@@ -665,14 +665,14 @@ public class DependencyObject : DispatcherObject
                 MutateValue(
                     dp,
                     ValueMutation.ForSetCurrent(value, keepSource),
-                    notifyBinding: false,
+                    notifyBinding: true,
                     allowAutoTransition);
                 return;
             default:
                 MutateValue(
                     dp,
                     ValueMutation.ForSetLocalDirect(value),
-                    notifyBinding: false,
+                    notifyBinding: true,
                     allowAutoTransition);
                 return;
         }

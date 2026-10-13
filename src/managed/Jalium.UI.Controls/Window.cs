@@ -54,8 +54,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // UIElement's composition metadata and forward the effective value.
         OpacityProperty.OverrideMetadata(typeof(Window), new FrameworkPropertyMetadata(OnWindowOpacityChanged));
         if (PlatformFactory.IsMacOS)
+        {
             VisibilityProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(
                 Visibility.Collapsed, OnMacOSWindowVisibilityChanged, CoerceMacOSWindowVisibility));
+            System.ComponentModel.DesignerProperties.IsInDesignModeProperty.OverrideMetadata(typeof(Window),
+                new FrameworkPropertyMetadata(OnMacOSWindowDesignModeChanged));
+        }
     }
 
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
@@ -1617,6 +1621,32 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private Visibility? _macOSVisibilityBeingUpdated;
     private DispatcherOperation? _pendingMacOSVisibilityShow;
+    private bool _macOSDesignDefaultVisibility;
+
+    private static void OnMacOSWindowDesignModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var window = (Window)d;
+        window.CancelPendingMacOSVisibilityShow();
+        if (window._managedTeardownStarted || window._managedTeardownCompleted) return;
+        var source = DependencyPropertyHelper.GetValueSource(window, VisibilityProperty);
+        if (e.NewValue is true)
+        {
+            // A designer's logical Window is part of its canvas, rather than an unshown
+            // AppKit surface. Keep explicitly authored visibility and its value source.
+            if (source.BaseValueSource == BaseValueSource.Default && window.Visibility == Visibility.Collapsed)
+            {
+                window._macOSDesignDefaultVisibility = true;
+                window.SetCurrentValue(VisibilityProperty, Visibility.Visible);
+            }
+        }
+        else
+        {
+            if (window._macOSDesignDefaultVisibility && source.BaseValueSource == BaseValueSource.Default)
+                window.SetCurrentValue(VisibilityProperty, Visibility.Collapsed);
+            window._macOSDesignDefaultVisibility = false;
+            window.ApplyMacOSWindowVisibility(window.Visibility);
+        }
+    }
 
     private static object? CoerceMacOSWindowVisibility(DependencyObject d, object? value)
     {
@@ -1652,6 +1682,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void ApplyMacOSWindowVisibility(Visibility visibility)
     {
         CancelPendingMacOSVisibilityShow();
+        if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
         if (visibility != Visibility.Visible) NativeDropTarget.RevokeWindow(this);
         if (base.Visibility != visibility) return;
         if (_managedTeardownStarted || _managedTeardownCompleted) return;
@@ -1683,6 +1714,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 _pendingMacOSVisibilityShow = null;
                 if (!_isClosing && !_managedTeardownStarted && !_managedTeardownCompleted &&
+                    !System.ComponentModel.DesignerProperties.GetIsInDesignMode(this) &&
                     base.Visibility == Visibility.Visible)
                     Show();
             });
@@ -4941,10 +4973,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // publishing effective changes through the binding's normal mode/trigger.
     private void SetCurrentWindowGeometryValue(DependencyProperty property, object value)
     {
-        var previous = GetValue(property);
         SetCurrentValue(property, value);
-        if (!Equals(previous, GetValue(property)))
-            Jalium.UI.Data.BindingOperations.GetBindingExpressionBase(this, property)?.OnTargetValueChanged();
     }
 
     private bool _isSyncingPlatformSize;

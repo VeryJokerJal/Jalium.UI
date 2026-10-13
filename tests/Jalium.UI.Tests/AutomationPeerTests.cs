@@ -679,3 +679,61 @@ public class AutomationPeerTests
 
     #endregion
 }
+
+
+[Collection("Application")]
+public sealed class ComboBoxItemAutomationSelectionTests
+{
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ContainerSelectionActionsSynchronizeTheComboBox(bool ownContainers)
+    {
+        ResetApplication();
+        _ = new Application();
+        try
+        {
+            var combo = new ComboBox { Width = 220 };
+            object firstItem = ownContainers ? new ComboBoxItem { Content = "Alpha" } : "Alpha";
+            object secondItem = ownContainers ? new ComboBoxItem { Content = "Beta" } : "Beta";
+            combo.Items.Add(firstItem);
+            combo.Items.Add(secondItem);
+            var host = new StackPanel { Width = 400, Height = 300 };
+            host.Children.Add(combo);
+            host.Measure(new Size(400, 300));
+            host.Arrange(new Rect(0, 0, 400, 300));
+            combo.IsDropDownOpen = true;
+            var first = Assert.IsType<ComboBoxItem>(combo.ItemContainerGenerator.ContainerFromIndex(0));
+            var second = Assert.IsType<ComboBoxItem>(combo.ItemContainerGenerator.ContainerFromIndex(1));
+            var firstPeer = Assert.IsAssignableFrom<Jalium.UI.Automation.Peers.SelectorItemAutomationPeer>(first.GetAutomationPeer());
+            var secondPeer = Assert.IsAssignableFrom<Jalium.UI.Automation.Peers.SelectorItemAutomationPeer>(second.GetAutomationPeer());
+            var firstProvider = Assert.IsAssignableFrom<ISelectionItemProvider>(firstPeer.GetPattern(PatternInterface.SelectionItem));
+            var secondProvider = Assert.IsAssignableFrom<ISelectionItemProvider>(secondPeer.GetPattern(PatternInterface.SelectionItem));
+            int changes = 0;
+            combo.SelectionChanged += (_, _) => changes++;
+            firstProvider.Select();
+            Assert.Same(firstItem, combo.SelectedItem);
+            Assert.Equal(0, combo.SelectedIndex);
+            Assert.Same(combo.GetAutomationPeer(), firstPeer.SelectionContainer);
+            secondProvider.AddToSelection();
+            Assert.Same(secondItem, combo.SelectedItem);
+            Assert.Equal(1, combo.SelectedIndex);
+            Assert.Equal("Beta", combo.SelectionBoxItem);
+            Assert.False(first.IsSelected);
+            Assert.True(second.IsSelected);
+            Assert.Equal(2, changes);
+            secondProvider.RemoveFromSelection();
+            Assert.Null(combo.SelectedItem);
+            Assert.Equal(-1, combo.SelectedIndex);
+            Assert.False(second.IsSelected);
+            Assert.Equal(3, changes);
+        }
+        finally { ResetApplication(); }
+    }
+
+    private static void ResetApplication()
+    {
+        typeof(Application).GetField("_current", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.SetValue(null, null);
+        typeof(Jalium.UI.Controls.Themes.ThemeManager).GetMethod("Reset", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.Invoke(null, null);
+    }
+}

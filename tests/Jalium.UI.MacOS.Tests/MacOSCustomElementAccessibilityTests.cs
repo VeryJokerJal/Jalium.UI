@@ -3,12 +3,42 @@ using Jalium.UI.Automation.Peers;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Automation.MacOS;
 using Jalium.UI.Input;
+using Jalium.UI.Data;
 
 namespace Jalium.UI.Tests;
 
 [Collection("macOS Window globals")]
 public sealed unsafe class MacOSCustomElementAccessibilityTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TreeRowsExposeRealizedContainerBoundsAcrossVirtualizationModes(bool virtualizing)
+    {
+        using var fixture = new Fixture();
+        // Geometry contracts use local templates, without creating a process-wide AppKit
+        // application or leaving theme resources owned by this test's worker thread.
+        var treeTemplate = new ControlTemplate(typeof(TreeView));
+        treeTemplate.SetVisualTree(static () => new ItemsPresenter());
+        var rowTemplate = new ControlTemplate(typeof(TreeViewItem));
+        rowTemplate.SetVisualTree(static () =>
+        {
+            var presenter = new ContentPresenter();
+            presenter.SetTemplateBinding(ContentPresenter.ContentProperty, HeaderedItemsControl.HeaderProperty);
+            return presenter;
+        });
+        var tree = new TreeView { Template = treeTemplate };
+        VirtualizingPanel.SetIsVirtualizing(tree, virtualizing);
+        tree.Items.Add(new TreeViewItem { Header = "Visible row", Template = rowTemplate });
+        fixture.SetContent(tree);
+        var treeId = Assert.Single(fixture.Children(1));
+        var rowId = Assert.Single(fixture.Children(treeId));
+        var info = fixture.Request(rowId, MacOSAXOperation.Info);
+        Assert.Equal((int)AutomationControlType.TreeItem, info.Role);
+        Assert.True(info.Width > 0 && info.Height > 0);
+        Assert.True(info.Flags.HasFlag(MacOSAXFlags.Selectable));
+    }
+
     [Fact]
     public void NamedFocusableSourceHasItsOwnFocusAndGroupIdentity()
     {

@@ -20,6 +20,7 @@ internal static class CssEvaluationScheduler
     }
 
     private const int MaxChainDepth = 4096;
+    private static readonly bool s_profile = Environment.GetEnvironmentVariable("JALIUM_MODAL_LAYOUT_PROFILE") == "1";
 
     private static readonly ConditionalWeakTable<Dispatcher, DispatcherState> s_states = new();
 
@@ -89,7 +90,10 @@ internal static class CssEvaluationScheduler
                 continue; // Covered by an enqueued ancestor's subtree pass.
             }
 
+            long start = s_profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             EvaluateSubtree(root);
+            if (s_profile)
+                Console.WriteLine($"CSS_SUBTREE {root.Target.GetType().Name} {(System.Diagnostics.Stopwatch.GetTimestamp()-start)*1000d/System.Diagnostics.Stopwatch.Frequency:F2}ms");
         }
 
         foreach (var element in selfElements)

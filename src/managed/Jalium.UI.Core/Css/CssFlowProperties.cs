@@ -368,13 +368,26 @@ internal static class CssFlowProperties
         return float.IsFinite(xHeight) && xHeight > 0 ? xHeight : fontSize * 0.5;
     }
 
+    /// <summary>
+    /// True when the native alignment set on the element itself — locally, by its style, or by the
+    /// template that generated it — must win over the CSS property. CSS text-align is inherited, so a
+    /// value merely inherited from an ancestor's stylesheet ranks like property-value inheritance and
+    /// never outranks an explicit value on the element; a CSS value matched on the element still does.
+    /// </summary>
+    private static bool NativeAlignmentWins(FrameworkElement element, DependencyProperty native, DependencyProperty css)
+    {
+        if (element.HasLocalOrAnimatedValue(native)) return true;
+        var cssSource = element.GetValueSourceInternal(css).BaseValueSource;
+        var nativeSource = element.GetValueSourceInternal(native).BaseValueSource;
+        return cssSource is BaseValueSource.Default or BaseValueSource.Inherited &&
+            nativeSource is not (BaseValueSource.Default or BaseValueSource.Inherited);
+    }
+
     internal static CssFlowTextAlignment TextAlignment(FrameworkElement element,
         DependencyProperty? nativeProperty = null)
     {
         var native = nativeProperty ?? TextBlock.TextAlignmentProperty;
-        var cssSource = element.GetValueSourceInternal(TextAlignProperty).BaseValueSource;
-        if (element.HasLocalOrAnimatedValue(native) || cssSource == BaseValueSource.Default &&
-            element.GetValueSourceInternal(native).BaseValueSource != BaseValueSource.Default)
+        if (NativeAlignmentWins(element, native, TextAlignProperty))
             return (TextAlignment)element.GetValue(native)! switch
             {
                 Jalium.UI.TextAlignment.Right => CssFlowTextAlignment.Right,

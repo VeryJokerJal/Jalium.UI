@@ -12,10 +12,10 @@
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="10,7,10,7" />
+        <Setter Property="Padding" Value="12,8,12,8" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-        <Setter Property="CornerRadius" Value="10" />
-        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="CornerRadius" Value="12" />
+        <Setter Property="MinHeight" Value="38" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextWrapping" Value="NoWrap" />
@@ -25,24 +25,31 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="TextBox">
                 <Border Name="OuterBorder"
-                        TransitionProperty="BorderBrush"
-                        TransitionDuration="0:0:0.12"
+                        TransitionProperty="Background, BorderBrush"
+                        TransitionDuration="0:0:0.14"
                         TransitionTimingFunction="Recommended"
                         Shape="RoundedRectangle"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}">
-                    <!-- PART_ContentHost: The control will insert TextBoxContentHost here -->
-                    <Grid Name="PART_ContentHost"
-                          Margin="{TemplateBinding Padding}" />
+                    <Border Name="InnerBorder"
+                            BorderBrush="#14FFFFFF"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="11">
+                        <!-- PART_ContentHost: The control will insert TextBoxContentHost here -->
+                        <Grid Name="PART_ContentHost"
+                              Margin="{TemplateBinding Padding}" />
+                    </Border>
                 </Border>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
                         <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                        <Setter TargetName="InnerBorder" Property="BorderBrush" Value="#267CA8FF" />
                     </Trigger>
                     <Trigger Property="IsFocused" Value="True">
                         <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                        <Setter TargetName="InnerBorder" Property="BorderBrush" Value="#4D7CA8FF" />
                     </Trigger>
                     <Trigger Property="IsEnabled" Value="False">
                         <Setter TargetName="OuterBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
@@ -76,10 +83,10 @@
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="10,7,10,7" />
+        <Setter Property="Padding" Value="12,8,12,8" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-        <Setter Property="CornerRadius" Value="10" />
-        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="CornerRadius" Value="12" />
+        <Setter Property="MinHeight" Value="38" />
         <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
         <Setter Property="TransitionDuration" Value="0:0:0.12" />
         <Setter Property="TransitionTimingFunction" Value="Recommended" />
@@ -113,84 +120,102 @@
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="10,7,10,7" />
+        <Setter Property="Padding" Value="12,8,8,8" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-        <Setter Property="CornerRadius" Value="10" />
-        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="CornerRadius" Value="12" />
+        <Setter Property="MinHeight" Value="38" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Setter Property="Template">
             <ControlTemplate TargetType="NumberBox">
                 <Border Name="OuterBorder"
-                        TransitionProperty="BorderBrush"
-                        TransitionDuration="0:0:0.12"
+                        TransitionProperty="Background, BorderBrush"
+                        TransitionDuration="0:0:0.14"
                         TransitionTimingFunction="Recommended"
                         Shape="RoundedRectangle"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}">
-                    <Grid Name="PART_LayoutRoot">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="36" />
-                        </Grid.ColumnDefinitions>
-                        <!-- Text content area -->
-                        <Grid Name="PART_ContentHost"
-                              Grid.Column="0"
-                              Margin="{TemplateBinding Padding}" />
-                        <!-- Spin buttons stacked vertically -->
-                        <Grid Grid.Column="1">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-                            <RepeatButton Name="PART_UpSpinButton"
-                                          Grid.Row="0"
-                                          Background="{ThemeResource ControlBackground}"
-                                          BorderThickness="0"
-                                          CornerRadius="0"
-                                          Padding="0"
-                                          VerticalAlignment="Stretch"
-                                          HorizontalAlignment="Stretch">
-                                <Path Data="M 0,5 L 5,0 L 10,5"
-                                      Stroke="{ThemeResource TextSecondary}"
-                                      StrokeThickness="1.5"
-                                      StrokeLineJoin="Round"
-                                      Stretch="Uniform"
-                                      Width="12"
-                                      Height="8"
-                                      HorizontalAlignment="Center"
-                                      VerticalAlignment="Center" />
-                            </RepeatButton>
-                            <RepeatButton Name="PART_DownSpinButton"
-                                          Grid.Row="1"
-                                          Background="{ThemeResource ControlBackground}"
-                                          BorderThickness="0"
-                                          CornerRadius="0"
-                                          Padding="0"
-                                          VerticalAlignment="Stretch"
-                                          HorizontalAlignment="Stretch">
-                                <Path Data="M 0,0 L 5,5 L 10,0"
-                                      Stroke="{ThemeResource TextSecondary}"
-                                      StrokeThickness="1.5"
-                                      StrokeLineJoin="Round"
-                                      Stretch="Uniform"
-                                      Width="12"
-                                      Height="8"
-                                      HorizontalAlignment="Center"
-                                      VerticalAlignment="Center" />
-                            </RepeatButton>
+                    <Border Name="InnerBorder"
+                            BorderBrush="#14FFFFFF"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="11">
+                        <Grid Name="PART_LayoutRoot">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="32" />
+                            </Grid.ColumnDefinitions>
+                            <!-- Text content area -->
+                            <Grid Name="PART_ContentHost"
+                                  Grid.Column="0"
+                                  Margin="{TemplateBinding Padding}" />
+                            <!-- Recessed stepper capsule -->
+                            <Border Grid.Column="1"
+                                    Margin="0,3,3,3"
+                                    Background="#121F36"
+                                    BorderBrush="#267CA8FF"
+                                    BorderThickness="1"
+                                    CornerRadius="8">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="1" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <RepeatButton Name="PART_UpSpinButton"
+                                                  Grid.Row="0"
+                                                  Background="Transparent"
+                                                  BorderThickness="0"
+                                                  CornerRadius="7,7,0,0"
+                                                  Padding="0"
+                                                  VerticalAlignment="Stretch"
+                                                  HorizontalAlignment="Stretch">
+                                        <Path Data="M 1.5,5.2 L 5.0,1.6 L 8.5,5.2"
+                                              Stroke="#A8C4F8"
+                                              StrokeThickness="1.5"
+                                              StrokeLineJoin="Round"
+                                              Stretch="None"
+                                              Width="10"
+                                              Height="7"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                                    </RepeatButton>
+                                    <Border Grid.Row="1"
+                                            Background="#1F7CA8FF"
+                                            Height="1" />
+                                    <RepeatButton Name="PART_DownSpinButton"
+                                                  Grid.Row="2"
+                                                  Background="Transparent"
+                                                  BorderThickness="0"
+                                                  CornerRadius="0,0,7,7"
+                                                  Padding="0"
+                                                  VerticalAlignment="Stretch"
+                                                  HorizontalAlignment="Stretch">
+                                        <Path Data="M 1.5,1.8 L 5.0,5.4 L 8.5,1.8"
+                                              Stroke="#A8C4F8"
+                                              StrokeThickness="1.5"
+                                              StrokeLineJoin="Round"
+                                              Stretch="None"
+                                              Width="10"
+                                              Height="7"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                                    </RepeatButton>
+                                </Grid>
+                            </Border>
                         </Grid>
-                    </Grid>
+                    </Border>
                 </Border>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
                         <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                        <Setter TargetName="InnerBorder" Property="BorderBrush" Value="#267CA8FF" />
                     </Trigger>
                     <Trigger Property="IsFocused" Value="True">
                         <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                        <Setter TargetName="InnerBorder" Property="BorderBrush" Value="#4D7CA8FF" />
                     </Trigger>
                     <Trigger Property="IsEnabled" Value="False">
                         <Setter TargetName="OuterBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
@@ -215,11 +240,11 @@
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="10,7,10,7" />
+        <Setter Property="Padding" Value="12,8,8,8" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-        <Setter Property="CornerRadius" Value="10" />
-        <Setter Property="MinHeight" Value="36" />
-        <Setter Property="MaxDropDownHeight" Value="200" />
+        <Setter Property="CornerRadius" Value="12" />
+        <Setter Property="MinHeight" Value="38" />
+        <Setter Property="MaxDropDownHeight" Value="220" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
@@ -227,16 +252,46 @@
             <ControlTemplate TargetType="AutoCompleteBox">
                 <Grid>
                     <Border Name="OuterBorder"
-                            TransitionProperty="BorderBrush"
-                            TransitionDuration="0:0:0.12"
+                            TransitionProperty="Background, BorderBrush"
+                            TransitionDuration="0:0:0.14"
                             TransitionTimingFunction="Recommended"
                             Shape="RoundedRectangle"
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}">
-                        <Grid Name="PART_ContentHost"
-                              Margin="{TemplateBinding Padding}" />
+                        <Border Name="InnerBorder"
+                                BorderBrush="#14FFFFFF"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="11">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Grid Name="PART_ContentHost"
+                                      Grid.Column="0"
+                                      Margin="{TemplateBinding Padding}" />
+                                <Border Grid.Column="1"
+                                        Width="24"
+                                        Height="24"
+                                        Margin="0,0,7,0"
+                                        CornerRadius="7"
+                                        Background="#121F36"
+                                        BorderBrush="#267CA8FF"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Center"
+                                        IsHitTestVisible="False">
+                                    <Path Data="M 1.6,3.2 L 6.0,7.6 L 10.4,3.2 L 9.1,1.9 L 6.0,5.0 L 2.9,1.9 Z"
+                                          Fill="#A8C4F8"
+                                          Stretch="None"
+                                          Width="12"
+                                          Height="9"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                        </Border>
                     </Border>
 
                     <Popup Name="PART_Popup"
@@ -244,29 +299,36 @@
                            StaysOpen="False"
                            Placement="Bottom"
                            PlacementTarget="{Binding RelativeSource={RelativeSource AncestorType=AutoCompleteBox}}">
-                        <Grid Name="PART_DropDownBorder"
-                              Margin="0,6,0,0">
-                            <Rectangle Fill="{ThemeResource SurfaceBackground}"
-                                       Stroke="{ThemeResource ControlBorder}"
-                                       StrokeThickness="1"
-                                       RadiusX="14"
-                                       RadiusY="14" />
-                            <ScrollViewer Name="PART_DropDownScrollViewer"
-                                          Margin="1"
-                                          MaxHeight="{TemplateBinding MaxDropDownHeight}"
-                                          VerticalScrollBarVisibility="Auto"
-                                          HorizontalScrollBarVisibility="Disabled">
-                                <StackPanel Name="PART_DropDownItemsHost" />
-                            </ScrollViewer>
-                        </Grid>
+                        <Border Name="PART_DropDownBorder"
+                                Margin="0,6,0,0"
+                                Background="{ThemeResource SurfaceBackground}"
+                                BorderBrush="{ThemeResource ControlBorderHover}"
+                                BorderThickness="1"
+                                CornerRadius="14"
+                                Padding="1">
+                            <Border Background="#0B1526"
+                                    BorderBrush="#22FFFFFF"
+                                    BorderThickness="1"
+                                    CornerRadius="13"
+                                    Padding="5">
+                                <ScrollViewer Name="PART_DropDownScrollViewer"
+                                              MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                              VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled">
+                                    <StackPanel Name="PART_DropDownItemsHost" />
+                                </ScrollViewer>
+                            </Border>
+                        </Border>
                     </Popup>
                 </Grid>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
                         <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                        <Setter TargetName="InnerBorder" Property="BorderBrush" Value="#267CA8FF" />
                     </Trigger>
                     <Trigger Property="IsFocused" Value="True">
                         <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                        <Setter TargetName="InnerBorder" Property="BorderBrush" Value="#4D7CA8FF" />
                     </Trigger>
                     <Trigger Property="IsEnabled" Value="False">
                         <Setter TargetName="OuterBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />

@@ -1341,6 +1341,16 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         resultWidth = Math.Clamp(resultWidth, minWidth, maxWidth);
         resultHeight = Math.Clamp(resultHeight, minHeight, maxHeight);
 
+        if (double.IsPositiveInfinity(resultWidth))
+        {
+            resultWidth = double.IsFinite(availableSize.Width) ? Math.Max(minWidth, availableSize.Width - marginWidth) : minWidth;
+        }
+
+        if (double.IsPositiveInfinity(resultHeight))
+        {
+            resultHeight = double.IsFinite(availableSize.Height) ? Math.Max(minHeight, availableSize.Height - marginHeight) : minHeight;
+        }
+
         var transformedSize = ApplyLayoutTransformToDesiredSize(new Size(resultWidth, resultHeight));
         return new Size(
             Math.Max(0, transformedSize.Width + marginWidth),

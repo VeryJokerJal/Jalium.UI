@@ -103,7 +103,7 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
     /// Identifies the Placeholder dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    internal static readonly DependencyProperty PlaceholderTextProperty =
+    public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(PasswordBox),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
 
@@ -316,7 +316,7 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
     /// Gets or sets the placeholder text shown when the password is empty.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    internal string PlaceholderText
+    public string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? string.Empty);
         set => SetValue(PlaceholderTextProperty, value);
@@ -718,9 +718,29 @@ public sealed class PasswordBox : Control, IImeSupport, ICssCaretAnimationHost
 
         var desiredHeight = lineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom;
 
+        double desiredWidth;
+        if (double.IsPositiveInfinity(availableSize.Width))
+        {
+            var textWidth = 0.0;
+            if (!string.IsNullOrEmpty(PlaceholderText) && FontSize > 0)
+            {
+                var ft = new FormattedText(PlaceholderText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
+                textWidth = ft.Width;
+            }
+            else if (!string.IsNullOrEmpty(_password))
+            {
+                textWidth = _password.Length * (FontSize * 0.6);
+            }
+            desiredWidth = Math.Max(120.0, textWidth + padding.Left + padding.Right + border.Left + border.Right);
+        }
+        else
+        {
+            desiredWidth = availableSize.Width;
+        }
+
         return new Size(
-            availableSize.Width,
-            Math.Min(desiredHeight, availableSize.Height));
+            desiredWidth,
+            double.IsPositiveInfinity(availableSize.Height) ? desiredHeight : Math.Min(desiredHeight, availableSize.Height));
     }
 
     #endregion

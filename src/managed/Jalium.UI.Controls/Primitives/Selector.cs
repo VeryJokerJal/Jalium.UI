@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Specialized;
 using Jalium.UI.Controls;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -380,6 +381,92 @@ public abstract class Selector : ItemsControl
     protected virtual void UpdateContainerSelection()
     {
         // Override in derived classes to update container selection state
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
+    {
+        base.OnItemsChanged(e);
+
+        if (_isUpdatingSelection)
+        {
+            return;
+        }
+
+        switch (e.Action)
+        {
+            case NotifyCollectionChangedAction.Reset:
+                if (Items.Count == 0 || (SelectedItem != null && GetIndexOf(SelectedItem) == -1))
+                {
+                    ClearSelectionOnReset();
+                }
+                else if (SelectedIndex >= Items.Count)
+                {
+                    SelectedIndex = Items.Count - 1;
+                }
+                break;
+
+            case NotifyCollectionChangedAction.Remove:
+                if (Items.Count == 0)
+                {
+                    ClearSelectionOnReset();
+                }
+                else if (e.OldItems != null && SelectedItem != null && e.OldItems.Contains(SelectedItem))
+                {
+                    ClearSelectionOnReset();
+                }
+                else if (e.OldStartingIndex >= 0 && e.OldStartingIndex <= SelectedIndex)
+                {
+                    var removedCount = e.OldItems?.Count ?? 1;
+                    var newIndex = Math.Max(0, SelectedIndex - removedCount);
+                    SelectedIndex = newIndex;
+                }
+                break;
+
+            case NotifyCollectionChangedAction.Add:
+                if (e.NewStartingIndex >= 0 && e.NewStartingIndex <= SelectedIndex)
+                {
+                    var addedCount = e.NewItems?.Count ?? 1;
+                    SelectedIndex += addedCount;
+                }
+                break;
+
+            case NotifyCollectionChangedAction.Replace:
+                if (e.OldItems != null && SelectedItem != null && e.OldItems.Contains(SelectedItem))
+                {
+                    if (e.NewStartingIndex >= 0 && e.NewStartingIndex < Items.Count)
+                    {
+                        SelectedItem = GetItemAt(e.NewStartingIndex);
+                    }
+                    else
+                    {
+                        ClearSelectionOnReset();
+                    }
+                }
+                break;
+        }
+    }
+
+    private void ClearSelectionOnReset()
+    {
+        _isUpdatingSelection = true;
+        var oldItem = SelectedItem;
+        try
+        {
+            SetCurrentValue(SelectedIndexProperty, -1);
+            SetCurrentValue(SelectedItemProperty, null);
+            UpdateSelectedValueFromSelection(null);
+            UpdateContainerSelection();
+        }
+        finally
+        {
+            _isUpdatingSelection = false;
+        }
+
+        if (oldItem != null)
+        {
+            RaiseSelectionChanged(oldItem, null);
+        }
     }
 
     #endregion

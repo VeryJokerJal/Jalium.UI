@@ -6,7 +6,7 @@ namespace Jalium.UI.Styling;
 /// <c>Css.Class</c> — space-separated class names for style-sheet selectors,
 /// <c>Css.StyleSheet</c> — style-sheet text scoped to the element's subtree (the markup
 /// equivalent of HTML's &lt;style&gt;), <c>Css.StyleSheets</c> — the same scope as a collection
-/// of pre-parsed sheets.
+/// of pre-parsed sheets, <c>Css.StyleSheetSource</c> — a CSS resource in that scope.
 /// </summary>
 public static partial class Css
 {

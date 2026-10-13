@@ -338,6 +338,7 @@ public class ContentPresenter : FrameworkElement
             var templateContent = template.LoadContent();
             if (templateContent != null)
             {
+                PromoteDataTemplateLiteralsForTriggers(template, templateContent);
                 templateContent.DataContext = content;
                 if (ReferenceEquals(template, ContentTemplate))
                 {
@@ -365,6 +366,21 @@ public class ContentPresenter : FrameworkElement
         var otherTb = new TextBlock { Text = formattedText };
         ApplyTextBlockFormatting(otherTb, foreground);
         return otherTb;
+    }
+
+    /// <summary>
+    /// Moves the literal values of a freshly loaded DataTemplate instance to the ParentTemplate
+    /// layer when the template declares triggers: those triggers write the ParentTemplateTrigger
+    /// layer, which a local literal would outrank. Call it before the instance gets its
+    /// DataContext, so nothing a binding projects into it is reached. Instances of trigger-less
+    /// templates keep plain local values.
+    /// </summary>
+    internal static void PromoteDataTemplateLiteralsForTriggers(DataTemplate template, FrameworkElement templateContent)
+    {
+        if (template.Triggers.Count > 0)
+        {
+            Control.PromoteDataTemplateLocalValuesRecursive(templateContent);
+        }
     }
 
     /// <summary>Chooses the explicit, selected, or implicit template for the current content.</summary>

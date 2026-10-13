@@ -100,7 +100,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(TextBox),
-            new PropertyMetadata(string.Empty, OnTextChanged));
+            new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnTextChanged));
 
     /// <summary>
     /// Identifies the MaxLength dependency property.
@@ -135,7 +135,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Identifies the PlaceholderText dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    internal static readonly DependencyProperty PlaceholderTextProperty =
+    public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(TextBox),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
 
@@ -287,7 +287,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Gets or sets the placeholder text shown when the text box is empty.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    internal string PlaceholderText
+    public string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? string.Empty);
         set => SetValue(PlaceholderTextProperty, value);
@@ -1518,8 +1518,12 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         var minHeight = lineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom;
         desiredHeight = Math.Max(desiredHeight, minHeight);
 
+        var desiredWidth = double.IsPositiveInfinity(availableSize.Width)
+            ? Math.Max(120.0, padding.Left + padding.Right + border.Left + border.Right)
+            : availableSize.Width;
+
         return ApplyLineLimits(
-            new Size(availableSize.Width, Math.Min(desiredHeight, availableSize.Height)),
+            new Size(desiredWidth, double.IsPositiveInfinity(availableSize.Height) ? desiredHeight : Math.Min(desiredHeight, availableSize.Height)),
             availableSize);
     }
 

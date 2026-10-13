@@ -11,9 +11,9 @@
 		<Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
 		<Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
 		<Setter Property="BorderThickness" Value="1" />
-		<Setter Property="Padding" Value="10,6,10,6" />
-		<Setter Property="CornerRadius" Value="10" />
-		<Setter Property="MinHeight" Value="36" />
+		<Setter Property="Padding" Value="10,5,6,5" />
+		<Setter Property="CornerRadius" Value="11" />
+		<Setter Property="MinHeight" Value="38" />
 		<Setter Property="Template">
 			<ControlTemplate TargetType="ComboBox">
 				<Grid>
@@ -25,119 +25,158 @@
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            Padding="{Binding Padding, RelativeSource={RelativeSource AncestorType=ComboBox}}"
                             CornerRadius="{TemplateBinding CornerRadius}">
-						<Grid Margin="4,0">
-							<Grid.ColumnDefinitions>
-								<ColumnDefinition Width="*" />
-								<ColumnDefinition Width="28" />
-							</Grid.ColumnDefinitions>
+						<Border Name="PART_InnerBorder"
+                                CornerRadius="10"
+                                BorderBrush="#18FFFFFF"
+                                BorderThickness="1"
+                                Padding="{Binding Padding, RelativeSource={RelativeSource AncestorType=ComboBox}}">
+							<Grid Margin="2,0">
+								<Grid.ColumnDefinitions>
+									<ColumnDefinition Width="Auto" />
+									<ColumnDefinition Width="*" />
+									<ColumnDefinition Width="30" />
+								</Grid.ColumnDefinitions>
 
-							<Grid Grid.Column="0">
-								<ContentPresenter Name="PART_SelectionPresenter"
-                                                  Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType=ComboBox}}"
-                                                  ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType=ComboBox}}"
-                                                  ContentTemplateSelector="{Binding ItemTemplateSelector, RelativeSource={RelativeSource AncestorType=ComboBox}}"
-                                                  ContentStringFormat="{Binding SelectionBoxItemStringFormat, RelativeSource={RelativeSource AncestorType=ComboBox}}"
-                                                  HorizontalAlignment="Left"
-                                                  VerticalAlignment="Center">
-									<ContentPresenter.Resources>
-										<Style TargetType="TextBlock">
-											<Setter Property="TextTrimming" Value="CharacterEllipsis" />
-											<Setter Property="TextWrapping" Value="NoWrap" />
-										</Style>
-										<Style TargetType="AccessText">
-											<Setter Property="TextTrimming" Value="CharacterEllipsis" />
-											<Setter Property="TextWrapping" Value="NoWrap" />
-										</Style>
-									</ContentPresenter.Resources>
-								</ContentPresenter>
+								<Border Name="PART_AccentPip"
+                                        Grid.Column="0"
+                                        Width="3"
+                                        Height="14"
+                                        CornerRadius="1.5"
+                                        Margin="0,0,9,0"
+                                        VerticalAlignment="Center"
+                                        Background="#667CA8FF" />
 
-								<TextBox Name="PART_EditableTextBox"
-                                         Text="{Binding Text, RelativeSource={RelativeSource AncestorType=ComboBox}}"
-                                         IsReadOnly="{TemplateBinding IsReadOnly}"
-                                         PlaceholderText="{Binding PlaceholderText, RelativeSource={RelativeSource AncestorType=ComboBox}}"
-                                         Background="Transparent"
-                                         BorderThickness="0"
-                                         MinHeight="0"
-                                         Padding="0"
-                                         Visibility="Collapsed"
-                                         HorizontalAlignment="Stretch"
-                                         VerticalAlignment="Stretch" />
+								<Grid Grid.Column="1">
+									<ContentPresenter Name="PART_SelectionPresenter"
+                                                      Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                      ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                      ContentTemplateSelector="{Binding ItemTemplateSelector, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                      ContentStringFormat="{Binding SelectionBoxItemStringFormat, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                      HorizontalAlignment="Left"
+                                                      VerticalAlignment="Center">
+										<ContentPresenter.Resources>
+											<Style TargetType="TextBlock">
+												<Setter Property="TextTrimming" Value="CharacterEllipsis" />
+												<Setter Property="TextWrapping" Value="NoWrap" />
+											</Style>
+											<Style TargetType="AccessText">
+												<Setter Property="TextTrimming" Value="CharacterEllipsis" />
+												<Setter Property="TextWrapping" Value="NoWrap" />
+											</Style>
+										</ContentPresenter.Resources>
+									</ContentPresenter>
+
+									<TextBox Name="PART_EditableTextBox"
+                                             Text="{Binding Text, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                             IsReadOnly="{TemplateBinding IsReadOnly}"
+                                             PlaceholderText="{Binding PlaceholderText, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             MinHeight="0"
+                                             Padding="0"
+                                             Visibility="Collapsed"
+                                             HorizontalAlignment="Stretch"
+                                             VerticalAlignment="Stretch" />
+								</Grid>
+
+								<Grid Name="PART_DropDownArea"
+                                      Grid.Column="2"
+                                      Background="Transparent">
+									<Rectangle Name="PART_DropDownDivider"
+                                               Width="1"
+                                               Margin="0,1,0,1"
+                                               HorizontalAlignment="Left"
+                                               VerticalAlignment="Stretch"
+                                               Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+									<ToggleButton Name="PART_ToggleButton"
+                                                  Margin="2,0,0,0"
+                                                  Background="Transparent"
+                                                  BorderThickness="0"
+                                                  Padding="0"
+                                                  MinWidth="26"
+                                                  MinHeight="26"
+                                                  HorizontalAlignment="Stretch"
+                                                  VerticalAlignment="Stretch"
+                                                  IsChecked="{TemplateBinding IsDropDownOpen}">
+										<ToggleButton.Template>
+											<ControlTemplate TargetType="ToggleButton">
+												<Border Name="ToggleSurface"
+                                                        Width="24"
+                                                        Height="24"
+                                                        CornerRadius="7"
+                                                        TransitionProperty="None"
+                                                        Background="#12FFFFFF"
+                                                        BorderBrush="#24FFFFFF"
+                                                        BorderThickness="1"
+                                                        HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center">
+													<Path Name="PART_DropDownGlyph"
+                                                          Data="M 1.6,3.2 L 6.0,7.6 L 10.4,3.2 L 9.1,1.9 L 6.0,5.0 L 2.9,1.9 Z"
+                                                          Fill="{ThemeResource TextSecondary}"
+                                                          Width="9"
+                                                          Height="9"
+                                                          Stretch="Uniform"
+                                                          HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center" />
+												</Border>
+												<ControlTemplate.Triggers>
+													<Trigger Property="IsMouseOver" Value="True">
+														<Setter TargetName="ToggleSurface" Property="Background" Value="#247CA8FF" />
+														<Setter TargetName="ToggleSurface" Property="BorderBrush" Value="#527CA8FF" />
+													</Trigger>
+													<Trigger Property="IsChecked" Value="True">
+														<Setter TargetName="ToggleSurface" Property="Background" Value="#335A8BF3" />
+														<Setter TargetName="ToggleSurface" Property="BorderBrush" Value="#7CA8FF" />
+														<Setter TargetName="PART_DropDownGlyph" Property="Fill" Value="#96B9FF" />
+													</Trigger>
+													<Trigger Property="IsPressed" Value="True">
+														<Setter TargetName="ToggleSurface" Property="Background" Value="#335A8BF3" />
+													</Trigger>
+													<Trigger Property="IsEnabled" Value="False">
+														<Setter TargetName="ToggleSurface" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+														<Setter TargetName="PART_DropDownGlyph" Property="Fill" Value="{ThemeResource TextDisabled}" />
+													</Trigger>
+												</ControlTemplate.Triggers>
+											</ControlTemplate>
+										</ToggleButton.Template>
+									</ToggleButton>
+								</Grid>
 							</Grid>
-
-							<Grid Name="PART_DropDownArea"
-                                  Grid.Column="1"
-                                  Background="Transparent">
-								<Rectangle Name="PART_DropDownDivider"
-                                           Width="1"
-                                           Margin="0,1,0,1"
-                                           HorizontalAlignment="Left"
-                                           VerticalAlignment="Stretch"
-                                           Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
-								<ToggleButton Name="PART_ToggleButton"
-                                              Margin="1,0,0,0"
-                                              Background="Transparent"
-                                              BorderThickness="0"
-                                              Padding="0"
-                                              MinWidth="27"
-                                              MinHeight="0"
-                                              HorizontalAlignment="Stretch"
-                                              VerticalAlignment="Stretch"
-                                              IsChecked="{TemplateBinding IsDropDownOpen}">
-									<ToggleButton.Template>
-										<ControlTemplate TargetType="ToggleButton">
-                                            <Grid Name="ToggleSurface"
-                                                  TransitionProperty="None"
-                                                  Background="Transparent">
-                                                <Path Name="PART_DropDownGlyph"
-                                                      Data="M 733.87,841.90 L 1160.54,273.07 A 170.67,170.67,0,0,0,1024.00,0 H 170.67 A 170.67,170.67,0,0,0,34.14,273.07 L 460.80,841.90 A 170.67,170.67,0,0,0,733.87,841.90 Z"
-                                                      Fill="{ThemeResource TextSecondary}"
-                                                      Width="8"
-                                                      Height="8"
-                                                      Stretch="Uniform"
-                                                      HorizontalAlignment="Center"
-                                                      VerticalAlignment="Center" />
-                                            </Grid>
-                                            <ControlTemplate.Triggers>
-                                                <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="ToggleSurface" Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
-                                                </Trigger>
-                                                <Trigger Property="IsPressed" Value="True">
-                                                    <Setter TargetName="ToggleSurface" Property="Background" Value="{ThemeResource ControlBackgroundPressed}" />
-                                                </Trigger>
-                                                <Trigger Property="IsEnabled" Value="False">
-                                                    <Setter TargetName="ToggleSurface" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
-                                                    <Setter TargetName="PART_DropDownGlyph" Property="Fill" Value="{ThemeResource TextDisabled}" />
-                                                </Trigger>
-                                            </ControlTemplate.Triggers>
-										</ControlTemplate>
-									</ToggleButton.Template>
-								</ToggleButton>
-							</Grid>
-						</Grid>
+						</Border>
 					</Border>
 					<Popup Name="PART_Popup"
                            IsOpen="{TemplateBinding IsDropDownOpen}"
                            StaysOpen="False"
                            Placement="Bottom"
                            PlacementTarget="{Binding RelativeSource={RelativeSource AncestorType=ComboBox}}">
-						<Grid Name="PART_PopupBorder"
-                              Margin="0,6,0,0">
-                            <Rectangle Fill="{ThemeResource SurfaceBackground}"
-                                       Stroke="{ThemeResource ControlBorder}"
-                                       StrokeThickness="1"
-                                       RadiusX="14"
-                                       RadiusY="14" />
-							<ScrollViewer Margin="4"
-                                          CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
-                                          MaxHeight="{TemplateBinding MaxDropDownHeight}"
-                                          IsOverlayScrollBarEnabled="True"
-                                          VerticalScrollBarVisibility="Auto"
-                                          HorizontalScrollBarVisibility="Disabled">
-								<ItemsPresenter />
-							</ScrollViewer>
-						</Grid>
+						<Border Name="PART_PopupBorder"
+                                Margin="0,6,0,0"
+                                Background="{ThemeResource SurfaceBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
+                                BorderThickness="1"
+                                CornerRadius="13"
+                                Shape="RoundedRectangle">
+							<Border CornerRadius="12"
+                                    BorderBrush="#1FFFFFFF"
+                                    BorderThickness="1"
+                                    Padding="5">
+								<Grid>
+									<Border Height="1"
+                                            Margin="14,0,14,0"
+                                            VerticalAlignment="Top"
+                                            Background="#557CA8FF" />
+									<ScrollViewer Margin="0,2,0,0"
+                                                  CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
+                                                  MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                                  IsOverlayScrollBarEnabled="True"
+                                                  VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled">
+										<ItemsPresenter />
+									</ScrollViewer>
+								</Grid>
+							</Border>
+						</Border>
 					</Popup>
 				</Grid>
                 <ControlTemplate.Triggers>
@@ -146,13 +185,17 @@
                     </Trigger>
                     <Trigger Property="IsMouseOver" Value="True">
                         <Setter TargetName="PART_MainBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                        <Setter TargetName="PART_AccentPip" Property="Background" Value="#997CA8FF" />
                     </Trigger>
                     <Trigger Property="IsKeyboardFocusWithin" Value="True">
                         <Setter TargetName="PART_MainBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                        <Setter TargetName="PART_AccentPip" Property="Background" Value="#7CA8FF" />
                     </Trigger>
                     <Trigger Property="IsDropDownOpen" Value="True">
                         <Setter TargetName="PART_MainBorder" Property="Background" Value="{ThemeResource ControlBackgroundPressed}" />
                         <Setter TargetName="PART_MainBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                        <Setter TargetName="PART_AccentPip" Property="Background" Value="#7CA8FF" />
+                        <Setter TargetName="PART_AccentPip" Property="Height" Value="16" />
                     </Trigger>
                     <Trigger Property="IsEnabled" Value="False">
                         <Setter TargetName="PART_MainBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
@@ -177,40 +220,84 @@
 		<Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
 		<Setter Property="BorderBrush" Value="Transparent" />
 		<Setter Property="BorderThickness" Value="1" />
-		<Setter Property="Padding" Value="10,5,10,5" />
-		<Setter Property="MinHeight" Value="30" />
+		<Setter Property="Padding" Value="10,6,10,6" />
+		<Setter Property="MinHeight" Value="34" />
 		<Setter Property="Template">
 			<ControlTemplate TargetType="ComboBoxItem">
 				<Border Name="PART_BackgroundBorder"
+                        Margin="0,1,0,1"
                         TransitionProperty="None"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="7"
+                        CornerRadius="9"
                         Shape="RoundedRectangle"
                         Padding="{TemplateBinding Padding}">
-					<ContentPresenter VerticalAlignment="Center">
-						<ContentPresenter.Resources>
-							<Style TargetType="TextBlock">
-								<Setter Property="TextTrimming" Value="CharacterEllipsis" />
-								<Setter Property="TextWrapping" Value="NoWrap" />
-							</Style>
-							<Style TargetType="AccessText">
-								<Setter Property="TextTrimming" Value="CharacterEllipsis" />
-								<Setter Property="TextWrapping" Value="NoWrap" />
-							</Style>
-						</ContentPresenter.Resources>
-					</ContentPresenter>
+					<Grid>
+						<Grid.ColumnDefinitions>
+							<ColumnDefinition Width="Auto" />
+							<ColumnDefinition Width="*" />
+							<ColumnDefinition Width="Auto" />
+						</Grid.ColumnDefinitions>
+						<Border Name="PART_SelectBar"
+                                Grid.Column="0"
+                                Width="3"
+                                Height="14"
+                                CornerRadius="1.5"
+                                Margin="0,0,9,0"
+                                VerticalAlignment="Center"
+                                Background="{ThemeResource ControlBorderFocused}"
+                                Opacity="0.22" />
+						<ContentPresenter Grid.Column="1" VerticalAlignment="Center">
+							<ContentPresenter.Resources>
+								<Style TargetType="TextBlock">
+									<Setter Property="TextTrimming" Value="CharacterEllipsis" />
+									<Setter Property="TextWrapping" Value="NoWrap" />
+								</Style>
+								<Style TargetType="AccessText">
+									<Setter Property="TextTrimming" Value="CharacterEllipsis" />
+									<Setter Property="TextWrapping" Value="NoWrap" />
+								</Style>
+							</ContentPresenter.Resources>
+						</ContentPresenter>
+						<Border Name="PART_CheckBadge"
+                                Grid.Column="2"
+                                Width="20"
+                                Height="20"
+                                CornerRadius="6"
+                                Margin="10,0,0,0"
+                                VerticalAlignment="Center"
+                                Background="#2E5A8BF3"
+                                BorderBrush="#667CA8FF"
+                                BorderThickness="1"
+                                Opacity="0">
+							<Path Data="M 1.5,5.2 L 4.2,7.9 L 9.5,2.2 L 8.4,1.1 L 4.2,5.6 L 2.6,4.0 Z"
+                                  Fill="{ThemeResource ControlBorderFocused}"
+                                  Width="9"
+                                  Height="9"
+                                  Stretch="Uniform"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center" />
+						</Border>
+					</Grid>
 				</Border>
 				<ControlTemplate.Triggers>
 					<Trigger Property="IsMouseOver" Value="True">
 						<Setter TargetName="PART_BackgroundBorder" Property="Background" Value="{ThemeResource HighlightBackground}" />
+						<Setter TargetName="PART_BackgroundBorder" Property="BorderBrush" Value="#387CA8FF" />
+						<Setter TargetName="PART_SelectBar" Property="Opacity" Value="0.68" />
 					</Trigger>
 					<Trigger Property="IsHighlighted" Value="True">
 						<Setter TargetName="PART_BackgroundBorder" Property="Background" Value="{ThemeResource HighlightBackground}" />
+						<Setter TargetName="PART_BackgroundBorder" Property="BorderBrush" Value="#387CA8FF" />
+						<Setter TargetName="PART_SelectBar" Property="Opacity" Value="0.68" />
 					</Trigger>
 					<Trigger Property="IsSelected" Value="True">
 						<Setter TargetName="PART_BackgroundBorder" Property="Background" Value="{ThemeResource SelectionBackground}" />
+						<Setter TargetName="PART_BackgroundBorder" Property="BorderBrush" Value="#667CA8FF" />
+						<Setter TargetName="PART_SelectBar" Property="Opacity" Value="1" />
+						<Setter TargetName="PART_SelectBar" Property="Height" Value="16" />
+						<Setter TargetName="PART_CheckBadge" Property="Opacity" Value="1" />
 					</Trigger>
 					<Trigger Property="IsKeyboardFocused" Value="True">
 						<Setter TargetName="PART_BackgroundBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />

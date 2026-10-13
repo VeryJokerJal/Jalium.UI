@@ -1617,7 +1617,7 @@ public sealed class MenuFlyoutItemAutomationPeer : FrameworkElementAutomationPee
     protected override object? GetPatternCore(PatternInterface patternInterface)
         => patternInterface == PatternInterface.Invoke ? this : base.GetPatternCore(patternInterface);
 
-    public void Invoke() => MenuFlyoutItemOwner.Command?.Execute(MenuFlyoutItemOwner.CommandParameter);
+    public void Invoke() => MenuFlyoutItemOwner.InvokeFromAutomation();
 }
 
 #endregion

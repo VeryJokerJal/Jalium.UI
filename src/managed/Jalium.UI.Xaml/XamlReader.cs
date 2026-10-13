@@ -88,6 +88,30 @@ public partial class XamlReader
     }
 
     /// <summary>
+    /// Builds a designer tree without opening native windows while applying XAML properties.
+    /// </summary>
+    public static object ParseForDesigner(string xaml)
+        => ParseForDesigner(xaml, new XamlDesignerOptions());
+
+    public static object ParseForDesigner(string xaml, XamlDesignerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(xaml);
+        ArgumentNullException.ThrowIfNull(options);
+
+        using var xmlReader = JalxamlParser.CreateReader(xaml);
+        var parsed = LoadInternal(xmlReader, null, null, null, designerOptions: options);
+        if (parsed is DependencyObject dependencyObject)
+        {
+            DesignerProperties.SetIsInDesignMode(dependencyObject, true);
+        }
+        if (parsed is Window window && window.Visibility == Visibility.Hidden && !xaml.Contains("Hidden", StringComparison.OrdinalIgnoreCase))
+        {
+            window.Visibility = Visibility.Visible;
+        }
+        return parsed;
+    }
+
+    /// <summary>
     /// Hot-reload variant of <see cref="Parse(string)"/>: builds a standalone object tree (no existing
     /// root) but wires inline event handlers to <paramref name="codeBehindForEvents"/> — the live
     /// instance being patched — so a grafted new element's Click/KeyDown/etc. handlers work without a
@@ -100,6 +124,7 @@ public partial class XamlReader
         using var xmlReader = JalxamlParser.CreateReader(xaml);
         return LoadInternal(xmlReader, null, null, null, codeBehindForEvents: codeBehindForEvents);
     }
+
 
     /// <summary>
     /// Reads XAML from a stream and creates an object tree.
@@ -687,7 +712,7 @@ public partial class XamlReader
 
     private static object LoadInternal(XmlReader reader, object? existingInstance, Uri? baseUri, Assembly? sourceAssembly,
         ResourceDictionary? parentResourceDictionary = null, Dictionary<string, object>? namedElementsOut = null,
-        object? codeBehindForEvents = null, bool restrictive = false)
+        object? codeBehindForEvents = null, bool restrictive = false, XamlDesignerOptions? designerOptions = null)
     {
 
         var context = new XamlParserContext
@@ -696,6 +721,7 @@ public partial class XamlReader
             SourceAssembly = sourceAssembly,
             ParentResourceDictionary = parentResourceDictionary,
             IsRestrictive = restrictive,
+            DesignerOptions = designerOptions,
             // Hot reload parses a STANDALONE source tree (existingInstance == null) yet still needs its
             // inline event handlers (Click=…) to bind to the LIVE instance's code-behind so grafted new
             // elements stay interactive. codeBehindForEvents carries that target and affects ONLY event
@@ -834,6 +860,15 @@ public partial class XamlReader
         }
 
         XamlBuilder.SetXmlIdentity(instance,namespaceUri,elementName,resetAttributes:true);
+        Jalium.UI.Styling.CssXmlIdentity.RecordSourceAssembly(instance, context.SourceAssembly);
+        if (context.DesignerOptions is { } designerOptions)
+        {
+            Jalium.UI.Styling.CssXmlIdentity.RecordDesignerContext(instance, designerOptions.EnableCss, designerOptions.CssResourceBaseUri);
+            if (instance is FrameworkTemplate frameworkTemplate)
+                Jalium.UI.Styling.CssXmlIdentity.RecordDesignerContext(frameworkTemplate.Resources, designerOptions.EnableCss, designerOptions.CssResourceBaseUri);
+            if (instance is DependencyObject designObject)
+                DesignerProperties.SetIsInDesignMode(designObject, true);
+        }
 
         // Parse attributes before pushing the current element so ResourceDictionary Source
         // can replace the placeholder instance with an x:Class-derived dictionary.
@@ -1006,6 +1041,9 @@ public partial class XamlReader
         {
             throw new XamlParseException($"Cannot resolve attached property owner type: {ownerTypeName}");
         }
+
+        if (ownerType == typeof(Jalium.UI.Styling.Css) && context.DesignerOptions is { EnableCss: false })
+            return;
 
         var attachedProperty = instance is DependencyObject
             ? DependencyProperty.FromName(ownerType, propertyName)
@@ -1571,6 +1609,11 @@ public partial class XamlReader
                 ownerTypeName);
             if (attachedOwnerType != null && attachedOwnerType != type)
             {
+                if (attachedOwnerType == typeof(Jalium.UI.Styling.Css) && context.DesignerOptions is { EnableCss: false })
+                {
+                    SkipElement(reader);
+                    return;
+                }
                 ParseAttachedPropertyElement(reader, instance, attachedOwnerType, propertyName, depth, isEmpty, context);
                 return;
             }
@@ -2285,6 +2328,16 @@ public partial class XamlReader
         var inheritedAmbient = TemplateAmbientResourceContext.Current;
         if (inheritedAmbient != null && inheritedAmbient.Count > 0)
         {
+            foreach (var parent in inheritedAmbient)
+                if (Jalium.UI.Styling.CssXmlIdentity.DesignerContext(parent) is { } designerContext)
+                {
+                    context.DesignerOptions = new XamlDesignerOptions
+                    {
+                        EnableCss = designerContext.EnableCss,
+                        CssResourceBaseUri = designerContext.BaseUri,
+                    };
+                    break;
+                }
             // 反向 push 让最外层资源在栈底，模板自身资源（首次 push 进栈的）保持在上方优先匹配。
             for (int i = inheritedAmbient.Count - 1; i >= 0; i--)
             {
@@ -2315,6 +2368,8 @@ public partial class XamlReader
         resourceDict.Source = sourceUri;
         resourceDict.BaseUri = context.BaseUri;
         resourceDict.SourceAssembly = context.SourceAssembly;
+        if (context.DesignerOptions is { } designerOptions)
+            Jalium.UI.Styling.CssXmlIdentity.RecordDesignerContext(resourceDict, designerOptions.EnableCss, designerOptions.CssResourceBaseUri);
 
         // Find the parent ResourceDictionary (the one that will contain this in MergedDictionaries)
         // The parent is needed so child XAML can reference resources from sibling dictionaries
@@ -4199,6 +4254,8 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     /// </summary>
     public Assembly? SourceAssembly { get; set; }
 
+    internal XamlDesignerOptions? DesignerOptions { get; set; }
+
     /// <summary>
     /// Gets or sets the parent ResourceDictionary for ambient resource lookup.
     /// This is used when loading child ResourceDictionaries (via Source) to allow
@@ -4462,7 +4519,11 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     /// <summary>
     /// Pushes an object onto the parent stack.
     /// </summary>
-    public void PushParent(object parent) => _parentStack.Push(parent);
+    public void PushParent(object parent)
+    {
+        Jalium.UI.Styling.CssXmlIdentity.RecordSourceAssembly(parent, SourceAssembly);
+        _parentStack.Push(parent);
+    }
 
     /// <summary>
     /// Pops an object from the parent stack.
@@ -5121,6 +5182,7 @@ public static class XamlTypeRegistry
         "MenuBarItem" => typeof(global::Jalium.UI.Controls.MenuBarItem),
         "MenuFlyout" => typeof(global::Jalium.UI.Controls.MenuFlyout),
         "MenuFlyoutItem" => typeof(global::Jalium.UI.Controls.MenuFlyoutItem),
+        "MenuFlyoutPresenter" => typeof(global::Jalium.UI.Controls.MenuFlyoutPresenter),
         "MenuFlyoutSeparator" => typeof(global::Jalium.UI.Controls.MenuFlyoutSeparator),
         "MenuFlyoutSubItem" => typeof(global::Jalium.UI.Controls.MenuFlyoutSubItem),
         "MenuItem" => typeof(global::Jalium.UI.Controls.MenuItem),

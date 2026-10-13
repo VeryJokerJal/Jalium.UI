@@ -156,14 +156,18 @@ public:
     JaliumResult HitTestPoint(
         const wchar_t*, uint32_t, float, float, float, float,
         JaliumTextHitTestResult* result) override {
-        if (result) memset(result, 0, sizeof(*result));
-        return JALIUM_OK;
+        if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
+        memset(result, 0, sizeof(*result));
+        // This fallback format has no native caret layout. Let the caller use its
+        // measured-text fallback instead of treating an all-zero position as a hit.
+        return JALIUM_ERROR_NOT_SUPPORTED;
     }
     JaliumResult HitTestTextPosition(
         const wchar_t*, uint32_t, float, float, uint32_t, int32_t,
         JaliumTextHitTestResult* result) override {
-        if (result) memset(result, 0, sizeof(*result));
-        return JALIUM_OK;
+        if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
+        memset(result, 0, sizeof(*result));
+        return JALIUM_ERROR_NOT_SUPPORTED;
     }
 };
 

@@ -118,6 +118,35 @@ static void Save(const std::vector<uint8_t>& pixels, int width, int height, cons
 }
 
 static unsigned checks = 0;
+
+static void CachedCoverage(Surface& s) {
+    Path icon;
+    icon.Move(8, 40); icon.Cubic(8, 8, 76, 8, 76, 40);
+    icon.Line(76, 88); icon.Line(8, 88); icon.Close();
+    icon.Rect(24, 40, 28, true);
+    auto warmBrush = std::unique_ptr<JaliumBrush, decltype(&jalium_brush_destroy)>(
+        jalium_brush_create_solid(s.context.get(), 1, 0, 0, .5f), jalium_brush_destroy);
+    // The first draw exposes only a sliver. The cached geometry must still
+    // contain the rest when clipping, color and opacity change on the next draw.
+    s.Begin();
+    jalium_push_clip(s.target.get(), 0, 0, 12, 128);
+    jalium_fill_path(s.target.get(), 0, 0, icon.commands.data(), icon.commands.size(),
+        warmBrush.get(), 0, -1);
+    jalium_pop_clip(s.target.get());
+    s.End();
+    auto blue = std::unique_ptr<JaliumBrush, decltype(&jalium_brush_destroy)>(
+        jalium_brush_create_solid(s.context.get(), 0, 0, 1, 1), jalium_brush_destroy);
+    s.Begin();
+    jalium_push_opacity(s.target.get(), .25f);
+    jalium_fill_path(s.target.get(), 0, 0, icon.commands.data(), icon.commands.size(), blue.get(), 0, -1);
+    jalium_pop_opacity(s.target.get());
+    auto pixels = s.End();
+    const size_t interior = (std::lround(80 * s.scale) * s.width + std::lround(64 * s.scale)) * 4;
+    Check(pixels[interior] >= 63 && pixels[interior] <= 65 &&
+        pixels[interior + 2] == 0 && pixels[interior + 3] >= 63 && pixels[interior + 3] <= 65,
+        "cached coverage must use the current clip, brush and opacity");
+    ++checks;
+}
 static void Compare(Surface& s, Path& path, const char* name, bool stroke = false,
     int rule = 0, int cap = 0, int join = 0, const std::vector<float>& dash = {}, float phase = 0,
     const float* transform = nullptr, int edgeMode = -1, float thickness = 8,
@@ -469,6 +498,14 @@ int main() {
             for (float scale : {1.0f, 1.5f, 2.0f}) for (uint32_t samples : {1u, 4u}) {
                 Surface surface(scale, samples); Matrix(surface); EllipticalArcs(surface); SpecialStyles(surface);
                 GradientColors(surface); GradientColors(surface,-1); DamageAndCaptures(surface);
+                CachedCoverage(surface);
+                Path moving; moving.Move(8, 52); moving.Cubic(8, 4, 104, 4, 104, 52);
+                moving.Line(104, 108); moving.Line(8, 108); moving.Close(); moving.Rect(30, 45, 35, true);
+                for (int edge : {-1, 1, 2}) for (int rule : {0, 1})
+                    for (float offset : {0.25f, 8.25f, -3.75f, 0.5f, 8.5f, 0.25f}) {
+                        const float translation[]{1, 0, 0, 1, offset, offset};
+                        Compare(surface, moving, "cached-moving-path", false, rule, 0, 0, {}, 0, translation, edge);
+                    }
                 surface.Begin();
                 Check(jalium_render_target_set_engine(surface.target.get(),JALIUM_ENGINE_VELLO)==JALIUM_OK,"Vello engine");
                 Check(jalium_render_target_get_engine(surface.target.get())==JALIUM_ENGINE_IMPELLER,

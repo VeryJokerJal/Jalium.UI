@@ -205,6 +205,17 @@ internal static class CssPropertyRegistry
         };
     }
 
+    internal static CssAuthoringProperty[] GetAuthoringProperties()
+    {
+        EnsureInitialized();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in s_table.Keys) names.Add(key);
+        foreach (var key in s_userTable.Keys) names.Add(key);
+        foreach (var key in s_builtinAliases.Keys) names.Add(key);
+        foreach (var key in s_aliases.Keys) names.Add(key);
+        return names.Select(CssAuthoring.GetProperty).ToArray();
+    }
+
     internal static void ResetForTests()
     {
         lock (s_initLock)
@@ -220,3 +231,4 @@ internal static class CssPropertyRegistry
         CssEngine.OnMappingsChanged();
     }
 }
+

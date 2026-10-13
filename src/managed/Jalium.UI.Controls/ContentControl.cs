@@ -267,6 +267,7 @@ public partial class ContentControl : Control, IAddChild
             var templateContent = template.LoadContent();
             if (templateContent != null)
             {
+                ContentPresenter.PromoteDataTemplateLiteralsForTriggers(template, templateContent);
                 templateContent.DataContext = content;
                 return templateContent;
             }

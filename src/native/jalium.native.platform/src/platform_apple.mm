@@ -3577,6 +3577,9 @@ void jalium_apple_notify_lifecycle(int32_t eventType)
 JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
 {
     if(!params||params->width<=0||params->height<=0)return nullptr;
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread) return nullptr;
+#endif
     auto result=std::make_unique<JaliumPlatformWindow>();
     result->width=params->width;result->height=params->height;
     result->x=params->x;result->y=params->y;result->style=params->style;
@@ -4143,6 +4146,7 @@ int32_t jalium_platform_run_message_loop(void){
 }
 int32_t jalium_platform_poll_events(void){
 #if TARGET_OS_OSX
+    if (!NSThread.isMainThread) return JALIUM_ERROR_INVALID_STATE;
     int count=0;for(;;){NSEvent* e=[NSApp nextEventMatchingMask:NSEventMaskAny untilDate:NSDate.date inMode:NSDefaultRunLoopMode dequeue:YES];if(!e)break;[NSApp sendEvent:e];++count;}return count;
 #else
     return CFRunLoopRunInMode(kCFRunLoopDefaultMode,0,true)==kCFRunLoopRunHandledSource?1:0;

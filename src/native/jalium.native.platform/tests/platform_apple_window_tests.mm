@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <thread>
 #include <vector>
 #include "platform_apple_foreground_validation.h"
 #include "platform_apple_window_validation_app.h"
@@ -975,6 +976,17 @@ static int RunWindowContracts(int argc, char** argv)
     Check(argc == 1 || propertiesOnly || menuTrackingOnly || documentMenuOnly || sheetKeyboardOnly, "supported validation mode");
     @autoreleasepool {
         Check(jalium_platform_init() == JALIUM_OK, "initialize platform");
+        int32_t workerPollResult = JALIUM_OK;
+        bool workerCreateRejected = false;
+        std::thread worker([&] {
+            workerPollResult = jalium_platform_poll_events();
+            JaliumWindowParams params{};
+            params.width = 640; params.height = 480;
+            workerCreateRejected = jalium_window_create(&params) == nullptr;
+        });
+        worker.join();
+        Check(workerPollResult == JALIUM_ERROR_INVALID_STATE, "event polling rejects a non-main thread");
+        Check(workerCreateRejected, "window creation rejects a non-main thread");
         bool foregroundHost = UsesForegroundValidationHost();
         bool automatedHost = UsesAutomatedWindowValidationHost();
         [NSApp setActivationPolicy:(foregroundHost || automatedHost) ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];

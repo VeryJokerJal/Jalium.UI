@@ -239,6 +239,7 @@ public class ScrollBar : RangeBase
     private bool _hasOverlayThumbPaddingSnapshot;
     private bool _overlayThumbHadLocalPadding;
     private Thickness _overlayThumbLocalPadding;
+    private Thickness? _appliedOverlayThumbPadding;
     private bool _hasOverlayTrackPresentationSnapshot;
     private bool _overlayTrackHadLocalOpacity;
     private double _overlayTrackLocalOpacity;
@@ -1846,6 +1847,7 @@ public class ScrollBar : RangeBase
             ? new Thickness(leadingInset, 0, edgeInset, 0)
             : new Thickness(0, leadingInset, 0, edgeInset);
 
+        _appliedOverlayThumbPadding = padding;
         if (thumb.Padding != padding)
         {
             thumb.Padding = padding;
@@ -1868,11 +1870,19 @@ public class ScrollBar : RangeBase
         else
         {
             thumb.ClearValue(PaddingProperty);
+            // A containing control template can promote constructor-created
+            // visual children's local values into its parent-template layer.
+            // Remove only our calculated inset if it was promoted this way;
+            // a different padding supplied by the template must remain intact.
+            if (_appliedOverlayThumbPadding is { } applied && thumb.Padding == applied &&
+                thumb.GetEffectiveValueLayer(PaddingProperty) == DependencyValueStore.Layer.ParentTemplate)
+                thumb.ClearLayerValue(PaddingProperty, DependencyObject.LayerValueSource.ParentTemplate);
         }
 
         _hasOverlayThumbPaddingSnapshot = false;
         _overlayThumbHadLocalPadding = false;
         _overlayThumbLocalPadding = default;
+        _appliedOverlayThumbPadding = null;
     }
 
     private void ApplyAutoHideVisibilityState(double visibilityProgress)

@@ -103,6 +103,12 @@ void ComparePixels(JaliumTextFormat* format, CTFontRef reference, int dpi, bool 
     CGContextRef context = CGBitmapContextCreate(expected.data(), width, height, 8, width * 4, space,
         static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | static_cast<CGBitmapInfo>(kCGBitmapByteOrder32Little));
     Check(context != nullptr, "Width reference pixel context unavailable");
+    // Ideal metrics retain fractional glyph positions in both axes. Match that
+    // contract in the independent CTLineDraw reference, not CG's quantized default.
+    CGContextSetAllowsFontSubpixelPositioning(context, true);
+    CGContextSetShouldSubpixelPositionFonts(context, true);
+    CGContextSetAllowsFontSubpixelQuantization(context, false);
+    CGContextSetShouldSubpixelQuantizeFonts(context, false);
     const float baselineX = 12, baselineY = 12 + metrics.baseline;
     CGAffineTransform transform = CGAffineTransformMake(matrix[0], -matrix[1], -matrix[2], matrix[3],
         matrix[0] * baselineX + matrix[2] * baselineY + matrix[4] - left,

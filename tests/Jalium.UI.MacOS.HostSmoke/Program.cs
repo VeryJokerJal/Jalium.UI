@@ -118,6 +118,8 @@ if (args.Length == 1 && args[0].StartsWith("--text-accessibility-navigation-case
 
 if (args.Length == 1 && args[0] == "--path-rendering")
     return PathRenderingChecks.RunAll();
+if (args.Length == 1 && args[0] == "--subpixel-motion")
+    return SubpixelMotionChecks.RunAll();
 
 if (args.Length == 1 && args[0] == "--window-visibility")
     return WindowVisibilityChecks.RunAll();

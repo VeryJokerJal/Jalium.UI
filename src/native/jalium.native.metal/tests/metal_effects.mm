@@ -159,6 +159,39 @@ static void TestMatricesEmboss(float scale,uint32_t msaa){
     s.Begin();s.Capture(1,0,0,0.5);jalium_draw_emboss_effect(s.Rt(),16,16,96,64,0,4,3,2);
     data=s.End();c=s.Pixel(data,48,48);Check(std::abs(int(c[2])-64)<=2&&std::abs(int(c[3])-128)<=1,"emboss lost source alpha");
 }
+static void TestShadowCache(float scale,uint32_t msaa){
+    Surface s(scale,msaa);
+    auto paint=[&](int variant){
+        s.Begin();
+        auto contour=Contour(28+(variant%3)*0.375f,20,64+(variant%4),48);
+        contour.radiusX[0]=contour.radiusY[0]=6+(variant%5);
+        const float transform[]={1,0,0,1,(variant%7)*0.25f,(variant%3)*0.5f};
+        jalium_push_transform(s.Rt(),transform);
+        // Clip and colour are applied at composition time, not baked into the mask.
+        if(variant%2)jalium_push_clip(s.Rt(),12,8,100,80);
+        Check(jalium_paint_css_outer_shadow_layer_elliptical(s.Rt(),contour.x,contour.y,
+            contour.width,contour.height,8+(variant%4)*3,variant%5,variant%3,
+            variant%2?0.8f:0.1f,0.2f,0.4f,0.7f,&contour,&contour)==JALIUM_OK,
+            "cached shadow paint failed");
+        if(variant%2)jalium_pop_clip(s.Rt());
+        jalium_pop_transform(s.Rt());return s.End();
+    };
+    auto cold=paint(0);
+    for(int i=0;i<5;++i)Check(Differences(cold,paint(0))==0,
+        "warm shadow differs from its exact cold GPU result");
+    // Exercise key changes and bounded eviction, then compare each warmed result
+    // with a fresh calculation after reclaiming idle resources.
+    for(int variant=1;variant<8;++variant){
+        auto warmed=paint(variant);
+        Check(jalium_render_target_reclaim_idle_resources(s.Rt())==JALIUM_OK,
+            "shadow cache idle reclaim failed");
+        auto fresh=paint(variant);
+        Check(Differences(warmed,fresh)==0,"shadow cache reused stale geometry or transform");
+        for(int fill=0;fill<70;++fill)(void)paint(fill);
+    }
+    Check(Differences(cold,paint(0))==0,"shadow cache eviction changed output");
+}
+
 static void TestShadows(float scale,uint32_t msaa){
     Surface s(scale,msaa);s.Begin();s.Capture();jalium_draw_blur_effect(s.Rt(),16,16,96,64,12,0,0);
     auto data=s.End();Check(s.Pixel(data,29,48)[3]>10&&s.Pixel(data,48,48)[3]>230,"Gaussian blur does not spread alpha");
@@ -509,6 +542,7 @@ int main(int argc,char** argv){
             run("custom BrushMain/extra constants",TestBrushShader);
             run("rotated/fractional shader input",TestTransformedInput);
             run("color matrices/emboss",TestMatricesEmboss);run("shadow providers/blur/glow",TestShadows);
+            run("exact shadow cache/reclaim/eviction",TestShadowCache);
             run("nested capture/partial redraw",TestNestedAndDirty);run("ten transition modes",TestTransitions);
             run("highlight/comet/ripples",TestHighlights);
             run("liquid glass/backdrop materials",TestGlassBackdrop);

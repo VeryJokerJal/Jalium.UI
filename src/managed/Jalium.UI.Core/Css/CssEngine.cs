@@ -147,6 +147,19 @@ internal static class CssEngine
     /// <summary>Re-evaluates one element: match → cascade-sort → merge → apply diff.</summary>
     internal static void EvaluateElement(CssNode element)
     {
+        if (Environment.GetEnvironmentVariable("JALIUM_MODAL_LAYOUT_PROFILE") != "1")
+        {
+            EvaluateElementCore(element);
+            return;
+        }
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        EvaluateElementCore(element);
+        double ms = (System.Diagnostics.Stopwatch.GetTimestamp()-start)*1000d/System.Diagnostics.Stopwatch.Frequency;
+        if (ms > 2) Console.WriteLine($"CSS_ELEMENT {element.Target.GetType().Name} {ms:F2}ms");
+    }
+
+    private static void EvaluateElementCore(CssNode element)
+    {
         var state = element.CssRuntimeState;
         state?.ContainerDependent?.Reset();
         state?.FontDependency?.Reset();
@@ -590,6 +603,7 @@ internal static class CssEngine
     {
         state.SelfStates = scopeInfo.SelfStates;
         state.ScopeAncestorStates = scopeInfo.AncestorStates;
+        state.ScopeStates = scopeInfo.AnyStates;
         state.ScopeUsesId = scopeInfo.UsesId;
         state.StructuralDependencies = scopeInfo.Structural;
         state.NativeAttributeNames = scopeInfo.AttributeNames;
@@ -643,7 +657,12 @@ internal static class CssEngine
 
         if (state.StructuralDependencies)
         {
-            if (MapStateMask(dp) != CssStateMask.None || dp.Name == "Name") InvalidateSelectorDependents(element);
+            // Structural selectors require broad invalidation only for states
+            // actually used in this scope. A scrollbar's Value/Minimum/Maximum
+            // updates otherwise re-cascade the whole window on every scroll tick
+            // merely because an unrelated [attribute] selector exists.
+            if ((MapStateMask(dp) & state.ScopeStates) != CssStateMask.None ||
+                dp.Name == "Name") InvalidateSelectorDependents(element);
             else if (state.NativeAttributeNames?.Contains(dp.Name) == true)
             {
                 var current = element.HasLocalValue(dp) ? element.GetValue(dp) : DependencyProperty.UnsetValue;

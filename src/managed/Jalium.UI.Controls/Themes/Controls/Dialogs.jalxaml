@@ -65,7 +65,7 @@
                     <Border Name="PART_DialogCard"
                             HorizontalAlignment="Center"
                             VerticalAlignment="Center"
-                            MinWidth="340"
+                            MinWidth="360"
                             MaxWidth="600"
                             BackdropEffect="{TemplateBinding BackdropEffect}"
                             Background="{TemplateBinding Background}"
@@ -73,58 +73,124 @@
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Shape="RoundedRectangle">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
+                        <Border CornerRadius="19"
+                                BorderBrush="#1CFFFFFF"
+                                BorderThickness="1">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
 
-                            <ContentPresenter Name="PART_TitleHost"
-                                              Grid.Row="0"
-                                              Margin="24,22,24,0"
-                                              ContentSource="Title"
-                                              ContentTemplate="{TemplateBinding TitleTemplate}">
-                                <ContentPresenter.Resources>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-                                        <Setter Property="FontSize" Value="21" />
-                                        <Setter Property="FontWeight" Value="SemiBold" />
-                                        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
-                                        <Setter Property="TextWrapping" Value="Wrap" />
-                                    </Style>
-                                </ContentPresenter.Resources>
-                            </ContentPresenter>
+                                <Border Grid.Row="0"
+                                        Background="#121F36"
+                                        BorderBrush="#1AFFFFFF"
+                                        BorderThickness="0,0,0,1"
+                                        CornerRadius="18,18,0,0"
+                                        Padding="24,18,24,15">
+                                    <ContentPresenter Name="PART_TitleHost"
+                                                      ContentSource="Title"
+                                                      ContentTemplate="{TemplateBinding TitleTemplate}">
+                                        <ContentPresenter.Resources>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
+                                                <Setter Property="FontSize" Value="19" />
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                                <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+                                                <Setter Property="TextWrapping" Value="Wrap" />
+                                            </Style>
+                                        </ContentPresenter.Resources>
+                                    </ContentPresenter>
+                                </Border>
 
-                            <ScrollViewer Name="PART_ContentScrollViewer"
-                                          Grid.Row="1"
-                                          Margin="24,16,24,0"
-                                          VerticalScrollBarVisibility="Auto"
-                                          HorizontalScrollBarVisibility="Disabled">
-                                <ContentPresenter />
-                            </ScrollViewer>
+                                <Border Grid.Row="0"
+                                        Height="1"
+                                        Margin="28,0,28,0"
+                                        VerticalAlignment="Top"
+                                        Background="#667CA8FF" />
 
-                            <StackPanel Name="PART_ButtonPanel"
-                                        Grid.Row="2"
-                                        Margin="24,20,24,22"
-                                        Orientation="Horizontal"
-                                        HorizontalAlignment="Right">
-                                <Button Name="PART_CloseButton"
-                                        Content="{TemplateBinding CloseButtonText}"
-                                        MinWidth="96" />
-                                <Button Name="PART_SecondaryButton"
-                                        Margin="10,0,0,0"
-                                        Content="{TemplateBinding SecondaryButtonText}"
-                                        MinWidth="96" />
-                                <Button Name="PART_PrimaryButton"
-                                        Margin="10,0,0,0"
-                                        Content="{TemplateBinding PrimaryButtonText}"
-                                        MinWidth="96" />
-                            </StackPanel>
-                        </Grid>
+                                <ScrollViewer Name="PART_ContentScrollViewer"
+                                              Grid.Row="1"
+                                              Margin="24,16,24,16"
+                                              VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled">
+                                    <ContentPresenter />
+                                </ScrollViewer>
+
+                                <Border Grid.Row="2"
+                                        Background="#080F1D"
+                                        BorderBrush="#1AFFFFFF"
+                                        BorderThickness="0,1,0,0"
+                                        CornerRadius="0,0,18,18"
+                                        Padding="24,13,24,15">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel Grid.Column="0"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center">
+                                            <Border Padding="5,2"
+                                                    CornerRadius="5"
+                                                    Background="#12FFFFFF"
+                                                    BorderBrush="#24FFFFFF"
+                                                    BorderThickness="1"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="ESC"
+                                                           FontSize="10"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="#8A98AF" />
+                                            </Border>
+                                            <TextBlock Text="关闭"
+                                                       Margin="6,0,12,0"
+                                                       FontSize="11.5"
+                                                       Foreground="#62728C"
+                                                       VerticalAlignment="Center" />
+                                            <Border Padding="5,2"
+                                                    CornerRadius="5"
+                                                    Background="#12FFFFFF"
+                                                    BorderBrush="#24FFFFFF"
+                                                    BorderThickness="1"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="ENTER"
+                                                           FontSize="10"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="#8A98AF" />
+                                            </Border>
+                                            <TextBlock Text="默认执行"
+                                                       Margin="6,0,0,0"
+                                                       FontSize="11.5"
+                                                       Foreground="#62728C"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+
+                                        <StackPanel Name="PART_ButtonPanel"
+                                                    Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Center">
+                                            <Button Name="PART_CloseButton"
+                                                    Content="{TemplateBinding CloseButtonText}"
+                                                    MinWidth="98" />
+                                            <Button Name="PART_SecondaryButton"
+                                                    Margin="10,0,0,0"
+                                                    Content="{TemplateBinding SecondaryButtonText}"
+                                                    MinWidth="98" />
+                                            <Button Name="PART_PrimaryButton"
+                                                    Margin="10,0,0,0"
+                                                    Content="{TemplateBinding PrimaryButtonText}"
+                                                    MinWidth="106" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </Border>
                     </Border>
                 </Grid>
             </ControlTemplate>

@@ -289,6 +289,52 @@ public class ScrollViewerOverlayScrollBarTests
         Assert.False(track.IsHitTestVisible);
     }
 
+    [Theory]
+    [InlineData(Orientation.Vertical)]
+    [InlineData(Orientation.Horizontal)]
+    public void LeavingOverlayStyle_RemovesPromotedCalculatedPadding(Orientation orientation)
+    {
+        var bar = new ScrollBar
+        {
+            IsOverlayStyle = false, UseMacOSScrollBarBehavior = true, Orientation = orientation,
+            Maximum = 100, ViewportSize = 20,
+        };
+        var thumb = Assert.IsType<Thumb>(bar.Track.Thumb);
+        var stylePadding = new Thickness(1);
+        thumb.Style = new Style(typeof(Thumb)) { Setters = { new Setter(Control.PaddingProperty, stylePadding) } };
+        bar.IsOverlayStyle = true;
+        var size = orientation == Orientation.Vertical ? new Size(16, 220) : new Size(220, 16);
+        bar.Measure(size);
+        bar.Arrange(new Rect(new Point(), size));
+        var calculatedPadding = thumb.Padding;
+        Assert.NotEqual(stylePadding, calculatedPadding);
+
+        // Reproduce a containing template's promotion of visual-child values.
+        thumb.SetLayerValue(Control.PaddingProperty, calculatedPadding, DependencyObject.LayerValueSource.ParentTemplate);
+        thumb.ClearValue(Control.PaddingProperty);
+        Assert.Equal(calculatedPadding, thumb.Padding);
+        bar.IsOverlayStyle = false;
+
+        Assert.Equal(stylePadding, thumb.Padding);
+    }
+
+    [Fact]
+    public void LeavingOverlayStyle_PreservesDifferentTemplatePadding()
+    {
+        var bar = new ScrollBar { IsOverlayStyle = false, UseMacOSScrollBarBehavior = true };
+        var thumb = Assert.IsType<Thumb>(bar.Track.Thumb);
+        bar.IsOverlayStyle = true;
+        bar.Measure(new Size(16, 220));
+        bar.Arrange(new Rect(0, 0, 16, 220));
+        var templatePadding = new Thickness(3, 4, 5, 6);
+        thumb.SetLayerValue(Control.PaddingProperty, templatePadding, DependencyObject.LayerValueSource.ParentTemplate);
+        thumb.ClearValue(Control.PaddingProperty);
+
+        bar.IsOverlayStyle = false;
+
+        Assert.Equal(templatePadding, thumb.Padding);
+    }
+
     [Fact]
     public void OverlayThumb_LongPressExpandsFromTwoToEightDips_UntilTouchUp()
     {

@@ -1172,6 +1172,7 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
         pixelHeight - (m12 * x + m22 * (y + frameHeight) + dy - rasterTop));
     CGContextConcatCTM(context, textToBitmap);
     CGContextSetTextMatrix(context, CGAffineTransformIdentity);
+    ConfigureFontPositioning(context, UsesFractionalFontPositioning(*this));
     for(CFIndex index=0;index<lineCount;++index){
         CTLineRef line=static_cast<CTLineRef>(const_cast<void*>(
             CFArrayGetValueAtIndex(lines,index)));

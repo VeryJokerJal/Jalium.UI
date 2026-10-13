@@ -49,6 +49,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="TestAssets\**\*.jalxaml" />
+    <EmbeddedResource Include="TestAssets\CssSource\*.css" />
     <EmbeddedResource Include="TestAssets\ApplicationResource.txt" />
     <EmbeddedResource Include="TestAssets\SplashScreen.bmp" />
   </ItemGroup>

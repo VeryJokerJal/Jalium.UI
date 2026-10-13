@@ -191,7 +191,11 @@ public sealed class ItemsControlTemplateLifecycleThemedRegressionTests
                 listBox.Items.Add($"item {i}");
             }
 
-            var window = new Window { Content = new DockPanel { Children = { listBox } } };
+            // The themed virtualizing panel needs a displayed logical viewport to realize rows.
+            // An unshown macOS Window is Collapsed and deliberately does not measure its content.
+            var window = new DisplayedTestWindow { Content = new DockPanel { Children = { listBox } } };
+            Assert.True(window.IsVisible);
+            Assert.True(listBox.IsVisible);
             RunLayout(window);
 
             var themedPanel = listBox.ItemsHostInternal;

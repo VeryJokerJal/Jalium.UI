@@ -420,3 +420,9 @@ src/native/out/
 /vsd.spv
 /vsd.txt
 /1
+
+# Local generated caches
+**/.nuget/
+Library/
+.idea/
+.DS_Store

@@ -2208,7 +2208,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (geometry is Jalium.UI.Styling.CssRoundedRectangleGeometry cssRounded)
         {
-            if (_renderTarget.Backend == RenderBackend.Metal)
+            if (_renderTarget.Backend == RenderBackend.Metal && brush is not null &&
+                brush is not ImageBrush && _pathEdgeMode != 1 &&
+                TryFillCssRoundedRectangle(brush, cssRounded))
+            {
+                if (pen is not null) DrawPathGeometry(null, pen, cssRounded.Path);
+            }
+            else if (_renderTarget.Backend == RenderBackend.Metal)
                 DrawPathGeometry(brush, pen, cssRounded.Path);
             else if (brush is ImageBrush imageBrush)
             {
@@ -2287,6 +2293,29 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             DrawPathGeometry(brush, pen, pathGeom);
         }
+    }
+
+    private bool TryFillCssRoundedRectangle(Brush brush, CssRoundedRectangleGeometry geometry)
+    {
+        // Circular CSS corners can use the existing GPU primitive. Routing a
+        // moving card background through FillPath would scan its entire area
+        // again for every new fractional scroll position. Keep elliptical,
+        // oversized and explicitly aliased corners on the general path route.
+        var rect = geometry.Rect;
+        var radii = geometry.Radii;
+        double limit = Math.Min(rect.Width, rect.Height) / 2;
+        bool Circular(Size radius) => radius.Width == radius.Height &&
+            radius.Width >= 0 && radius.Width <= limit;
+        if (!(rect.Width > 0 && rect.Height > 0) ||
+            !Circular(radii.TopLeft) || !Circular(radii.TopRight) ||
+            !Circular(radii.BottomRight) || !Circular(radii.BottomLeft)) return false;
+        float x = (float)(rect.X + Offset.X), y = (float)(rect.Y + Offset.Y);
+        var nativeBrush = GetNativeBrush(brush, x, y, (float)rect.Width, (float)rect.Height);
+        if (nativeBrush is null) return false;
+        _renderTarget.FillPerCornerRoundedRectangle(x, y, (float)rect.Width, (float)rect.Height,
+            (float)radii.TopLeft.Width, (float)radii.TopRight.Width,
+            (float)radii.BottomRight.Width, (float)radii.BottomLeft.Width, nativeBrush);
+        return true;
     }
 
     private static bool FigureHasCurves(PathFigure figure)
@@ -2536,20 +2565,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         commands.Clear();
         foreach (var figure in geometry.Figures)
         {
-            double dx = 0, dy = 0;
-            if (!FigureHasCurves(figure))
-            {
-                _polygonPointBuffer ??= new List<Point>();
-                _polygonPointBuffer.Clear();
-                _polygonPointBuffer.Add(figure.StartPoint);
-                foreach (var segment in figure.Segments)
-                    if (segment is LineSegment line) _polygonPointBuffer.Add(line.Point);
-                    else if (segment is PolyLineSegment poly) _polygonPointBuffer.AddRange(poly.Points);
-                if (IsAxisAlignedPath(_polygonPointBuffer))
-                    TryComputeAxisAlignedSnap(figure.StartPoint.X + Offset.X, figure.StartPoint.Y + Offset.Y,
-                        pen.Thickness, true, out dx, out dy);
-            }
-            var ox = Offset.X + dx; var oy = Offset.Y + dy;
+            // Preserve fractional placement just like the other Metal primitives.
+            // Snapping a straight figure's origin to the stroke phase also cancels
+            // fractional offsets/translations on every animation frame.
+            var ox = Offset.X; var oy = Offset.Y;
             commands.Add(2f); commands.Add((float)(figure.StartPoint.X + ox)); commands.Add((float)(figure.StartPoint.Y + oy));
             commands.Add(7f); commands.Add((int)pen.StartLineCap); commands.Add((int)pen.EndLineCap); commands.Add((int)pen.DashCap);
             AppendFigureSegments(commands, figure, figure.StartPoint, ox, oy, strokeMetadata: true, nativeArcs: true);

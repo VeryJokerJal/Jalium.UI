@@ -25,7 +25,7 @@ public partial class Window
             {
                 if (element.Visibility != Visibility.Visible || element.Opacity <= 0)
                     continue;
-                if (element.BackdropEffect is { HasEffect: true })
+                if (!visual.RendersBackdropEffectInTemplate && element.BackdropEffect is { HasEffect: true })
                     return true;
                 if (element is Border { LiquidGlass: true })
                     return true;

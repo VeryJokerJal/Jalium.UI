@@ -736,22 +736,45 @@ public class ComboBox : Selector
 
     private void SyncItemContainerSelection()
     {
-        var host = ItemsHost;
-        if (host == null) return;
-
         var selectedItem = SelectedItem;
-        foreach (UIElement child in host.Children)
+        var host = ItemsHost;
+        if (host != null)
         {
-            if (child is ComboBoxItem container)
+            foreach (UIElement child in host.Children)
             {
-                int index = ItemContainerGenerator.IndexFromContainer(container);
-                var logicalItem = index >= 0 && index < GetItemCount()
-                    ? GetItemAt(index)
-                    : container.Content;
-                var shouldBeSelected = Equals(logicalItem, selectedItem);
-                if (container.IsSelected != shouldBeSelected)
+                if (child is ComboBoxItem container)
                 {
-                    container.IsSelected = shouldBeSelected;
+                    int index = ItemContainerGenerator.IndexFromContainer(container);
+                    var logicalItem = index >= 0 && index < GetItemCount()
+                        ? GetItemAt(index)
+                        : container.Content;
+                    var shouldBeSelected = Equals(logicalItem, selectedItem) || Equals(container, selectedItem);
+                    if (container.IsSelected != shouldBeSelected)
+                    {
+                        container.IsSelected = shouldBeSelected;
+                    }
+                }
+            }
+        }
+        else
+        {
+            foreach (var item in Items)
+            {
+                if (item is ComboBoxItem directContainer)
+                {
+                    var shouldBeSelected = Equals(directContainer, selectedItem) || Equals(directContainer.Content, selectedItem);
+                    if (directContainer.IsSelected != shouldBeSelected)
+                    {
+                        directContainer.IsSelected = shouldBeSelected;
+                    }
+                }
+                else if (ItemContainerGenerator.ContainerFromItem(item) is ComboBoxItem generatedContainer)
+                {
+                    var shouldBeSelected = Equals(item, selectedItem);
+                    if (generatedContainer.IsSelected != shouldBeSelected)
+                    {
+                        generatedContainer.IsSelected = shouldBeSelected;
+                    }
                 }
             }
         }
@@ -838,6 +861,7 @@ public class ComboBox : Selector
             else
             {
                 SelectionBoxItem = PlaceholderText;
+                if (!string.IsNullOrEmpty(Text)) SetCurrentValue(TextProperty, string.Empty);
             }
         }
 
@@ -1696,6 +1720,20 @@ public class ComboBox : Selector
         }
 
         IsDropDownOpen = false;
+    }
+
+    internal void SetAutomationSelection(ComboBoxItem container, bool selected)
+    {
+        if (!IsEnabled || !container.IsEnabled)
+            throw new InvalidOperationException("Cannot select a disabled ComboBox item.");
+
+        var index = ItemContainerGenerator.IndexFromContainer(container);
+        if (index < 0) return;
+
+        if (selected)
+            SelectedIndex = index;
+        else if (SelectedIndex == index)
+            SelectedIndex = -1;
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(

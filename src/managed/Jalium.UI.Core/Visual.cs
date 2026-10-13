@@ -800,6 +800,12 @@ public abstract class Visual : DependencyObject
     /// <summary>Controls that paint their backdrop in OnRender opt out of the shared paint step.</summary>
     internal virtual bool RendersBackdropEffectInOnRender => false;
 
+    /// <summary>A template part owns the backdrop; the control must not also sample its own bounds.</summary>
+    internal virtual bool RendersBackdropEffectInTemplate => false;
+
+    /// <summary>A template part owns the element effect and its capture bounds.</summary>
+    internal virtual bool RendersEffectInTemplate => false;
+
     /// <summary>Returns retained vector content for VisualTreeHelper.GetDrawing.</summary>
     internal virtual DrawingGroup? DrawingCore => null;
 
@@ -882,7 +888,7 @@ public abstract class Visual : DependencyObject
         bool pushedCssClip = false;
         Geometry? cssClipGeometry = null;
 
-        if (this is UIElement effectElement &&
+        if (!RendersEffectInTemplate && this is UIElement effectElement &&
             effectElement.Effect is IEffect eff &&
             eff.HasEffect &&
             !(suppressOwnPaint && eff is Media.Effects.Effect { CssBoxShadowLayer: true } &&
@@ -891,7 +897,16 @@ public abstract class Visual : DependencyObject
             edc.IsElementEffectCaptureEnabled &&
             drawingContext is IOffsetDrawingContext offsetDc)
         {
-            if (eff is Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true } combined &&
+            if (eff is Media.Effects.Effect { CssBoxShadowLayer: true } &&
+                eff is not Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true } &&
+                edc.SupportsCssShadowLayers)
+            {
+                // CSS box shadows use the box contour, not captured content alpha.
+                // Native layer providers can paint them directly; avoid allocating
+                // and compositing a full offscreen surface for every styled input.
+                combinedCssShadows = eff;
+            }
+            else if (eff is Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true } combined &&
                 combined.Children.Count == 2 && (suppressOwnPaint ||
                     edc.SupportsCssShadowLayers && CanCompositeCssBoxShadowBeforeChildren))
             {
@@ -936,8 +951,11 @@ public abstract class Visual : DependencyObject
             captureW = (float)Math.Max(0.0, snappedRight - snappedLeft);
             captureH = (float)Math.Max(0.0, snappedBottom - snappedTop);
 
-            effectDc.BeginEffectCapture(captureX, captureY, captureW, captureH);
-            effectCaptureOpen = true;
+            if (activeEffect != null)
+            {
+                effectDc.BeginEffectCapture(captureX, captureY, captureW, captureH);
+                effectCaptureOpen = true;
+            }
         }
 
         try
@@ -956,7 +974,7 @@ public abstract class Visual : DependencyObject
             // A backdrop belongs beneath the element's own background, template,
             // and children. Paint it at the border-box edge before overflow clips
             // are pushed; Border and ScrollBar use their own backdrop placement.
-            if (!suppressOwnPaint && !RendersBackdropEffectInOnRender &&
+            if (!suppressOwnPaint && !RendersBackdropEffectInOnRender && !RendersBackdropEffectInTemplate &&
                 this is UIElement backdropElement &&
                 backdropElement.BackdropEffect is { HasEffect: true } backdrop &&
                 backdropElement.RenderSize is { Width: > 0, Height: > 0 } backdropSize)
@@ -1063,7 +1081,8 @@ public abstract class Visual : DependencyObject
         }
 
         if ((activeEffect is Media.Effects.Effect { CssBoxShadowLayer: true } &&
-             CanCompositeCssBoxShadowBeforeChildren) || combinedCssShadows != null)
+             CanCompositeCssBoxShadowBeforeChildren) ||
+            (combinedCssShadows != null && CanCompositeCssBoxShadowBeforeChildren))
         {
             // A CSS box shadow is part of the box decoration. Finish the
             // background capture now, leaving descendants and the later border
@@ -1153,6 +1172,11 @@ public abstract class Visual : DependencyObject
         }
 
         if (!suppressOwnPaint) OnPostRender(drawingContext);
+
+        // Self-drawing/templated controls historically composite their inset
+        // shadow after their painted group. Preserve that order without a capture.
+        if (combinedCssShadows != null && !CanCompositeCssBoxShadowBeforeChildren)
+            PaintCombinedCssShadowLayer(inset: true);
 
         // CSS filters consume the completed painted group, including its
         // outline. Native XAML effects keep the established sharp outline

@@ -8,6 +8,50 @@ namespace Jalium.UI.Tests;
 public sealed class MacOSWindowVisibilityTests : MacOSGeometryTestBase
 {
     [Fact]
+    public void DesignWindowUsesCanvasVisibilityWithoutDispatchingNativeShow()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var window = new DisplayRequestWindow { Width = 320, Height = 200, Content = new Border() };
+        try
+        {
+            DesignerProperties.SetIsInDesignMode(window, true);
+            Assert.Equal(Visibility.Visible, window.Visibility);
+            window.Measure(new Size(320, 200));
+            window.Arrange(new Rect(0, 0, 320, 200));
+            Dispatcher.CurrentDispatcher.ProcessQueue();
+            Assert.Equal(320, window.ActualWidth);
+            Assert.Equal(200, window.ActualHeight);
+            Assert.Equal(0, window.ShowRequests);
+            Assert.Equal(nint.Zero, window.Handle);
+            Assert.Equal(BaseValueSource.Default, DependencyPropertyHelper.GetValueSource(window, UIElement.VisibilityProperty).BaseValueSource);
+            DesignerProperties.SetIsInDesignMode(window, false);
+            Dispatcher.CurrentDispatcher.ProcessQueue();
+            Assert.Equal(Visibility.Collapsed, window.Visibility);
+            Assert.Equal(0, window.ShowRequests);
+        }
+        finally { window.Close(); }
+    }
+
+    [Theory]
+    [InlineData(Visibility.Hidden)]
+    [InlineData(Visibility.Collapsed)]
+    [InlineData(Visibility.Visible)]
+    public void EnteringDesignModeRetainsAuthoredVisibilityAndCancelsQueuedShow(Visibility visibility)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var window = new DisplayRequestWindow { Visibility = visibility };
+        try
+        {
+            DesignerProperties.SetIsInDesignMode(window, true);
+            Dispatcher.CurrentDispatcher.ProcessQueue();
+            Assert.Equal(visibility, window.Visibility);
+            Assert.Equal(visibility, window.ReadLocalValue(UIElement.VisibilityProperty));
+            Assert.Equal(0, window.ShowRequests);
+        }
+        finally { window.Close(); }
+    }
+
+    [Fact]
     public void UnshownWindow_IsCollapsedAndItsContentIsNotVisible()
     {
         if (!OperatingSystem.IsMacOS()) return;

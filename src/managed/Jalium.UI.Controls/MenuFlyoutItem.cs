@@ -362,6 +362,13 @@ public class MenuFlyoutItem : Control
         }
     }
 
+    internal void InvokeFromAutomation()
+    {
+        if (!IsEnabled)
+            throw new InvalidOperationException("The menu item is disabled.");
+        InvokeItem();
+    }
+
     protected virtual void InvokeItem()
     {
         OnItemInvoking();
