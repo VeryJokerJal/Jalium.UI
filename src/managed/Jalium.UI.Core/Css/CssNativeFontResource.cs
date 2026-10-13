@@ -12,7 +12,11 @@ internal sealed class CssNativeFontResource : SafeHandleZeroOrMinusOneIsInvalid
     internal static unsafe CssNativeFontResource? Create(byte[] bytes, string? postScriptName = null)
     {
         var family = "JaliumCss" + Interlocked.Increment(ref s_nextFamily).ToString("x16");
-        if (!CssFontData.TryPrepare(bytes, family, out var prepared, postScriptName)) return null;
+        // CoreText formats retain private data directly and resolve this alias
+        // through our registry. Renaming is unnecessary and can discard large
+        // variable-font name tables or the other faces of a font collection.
+        if (!CssFontData.TryPrepare(bytes, family, out var prepared, postScriptName,
+                preserveNames: OperatingSystem.IsMacOS())) return null;
         fixed (byte* data = prepared)
         {
             var pointer = NativeMethods.FontResourceRegister(family, (nint)data, (uint)prepared.Length);

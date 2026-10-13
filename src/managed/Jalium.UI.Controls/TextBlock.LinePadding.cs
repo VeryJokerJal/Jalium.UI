@@ -18,8 +18,7 @@ public partial class TextBlock
     private bool HasAuthoredLinePaddingOnInlines()
     {
         foreach (var range in GetInlineTextRanges())
-            if (range.Run.GetValueSourceInternal(CssFlowProperties.LinePaddingProperty)
-                    .BaseValueSource != BaseValueSource.Default)
+            if (HasAuthoredFlowValue(range.Run, CssFlowProperties.LinePaddingProperty))
                 return true;
         return false;
     }

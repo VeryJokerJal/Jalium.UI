@@ -93,8 +93,7 @@ public partial class TextBlock
     private bool HasAuthoredWordSpacingOnInlines()
     {
         foreach (var range in GetInlineTextRanges())
-            if (range.Run.GetValueSourceInternal(CssFlowProperties.WordSpacingProperty)
-                    .BaseValueSource != BaseValueSource.Default)
+            if (HasAuthoredFlowValue(range.Run, CssFlowProperties.WordSpacingProperty))
                 return true;
         return false;
     }

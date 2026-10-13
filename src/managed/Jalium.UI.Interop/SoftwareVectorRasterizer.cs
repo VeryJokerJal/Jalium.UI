@@ -136,6 +136,23 @@ internal static class SoftwareVectorRasterizer
         if (drawing.Geometry.Transform != null && !drawing.Geometry.Transform.Value.IsIdentity)
             geoCtx = ctx.WithTransform(drawing.Geometry.Transform.Value);
 
+        // Match the native drawing context: one compound fill, followed by
+        // child strokes with their complete local transforms still in scope.
+        if (drawing.Geometry is GeometryGroup group)
+        {
+            double scale = Math.Max(geoCtx.ScaleX, geoCtx.ScaleY);
+            double groupTolerance = scale > 1e-6 ? 0.3 / scale : 0.3;
+            if (drawing.Brush != null)
+                RenderGeometryDrawing(new GeometryDrawing(drawing.Brush, null,
+                    RenderTargetDrawingContext.FlattenGeometryGroup(group, groupTolerance)), geoCtx);
+            if (drawing.Pen != null)
+            {
+                foreach (var child in group.Children)
+                    RenderGeometryDrawing(new GeometryDrawing(null, drawing.Pen, child), geoCtx);
+            }
+            return;
+        }
+
         // Flatten curves to line segments. Tolerance is expressed in device pixels
         // (~0.3px chord error) then converted to source units by the effective scale,
         // so high zoom keeps curves smooth instead of faceting.

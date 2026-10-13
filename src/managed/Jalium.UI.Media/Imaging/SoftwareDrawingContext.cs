@@ -248,6 +248,10 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     public SoftwareDrawingContext(RenderTargetBitmap target)
     {
         _target = target;
+        // Layout and drawing use DIP; the bitmap dimensions and raster loops
+        // use pixels. Keep DPI in the base matrix so nested transforms and
+        // their Pop restore it without scaling offsets or masks twice.
+        _matrix = new Matrix(target.DpiX / 96.0, 0, 0, target.DpiY / 96.0, 0, 0);
         _clipBounds = new Rect(0, 0, target.PixelWidth, target.PixelHeight);
     }
 

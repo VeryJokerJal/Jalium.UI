@@ -24,6 +24,14 @@ public abstract class TextElement : FrameworkContentElement
         TextContentChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        // Formatting such as paragraph alignment and inline baseline position
+        // has no typography callback, but still changes editable flow content.
+        NotifyTextContentChanged();
+    }
+
     #region Shared Typography Properties
 
     // These properties are registered as attached+inheritable so that Control, TextBlock,
@@ -423,4 +431,3 @@ public abstract class TextElement : FrameworkContentElement
 
     #endregion
 }
-

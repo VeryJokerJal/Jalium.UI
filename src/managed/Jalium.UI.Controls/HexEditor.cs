@@ -470,6 +470,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
 
     // Scroll state
     private long _scrollOffset; // first visible byte offset (row-aligned)
+    private double _wheelRowRemainder;
     private int _visibleRowCount;
 
     // Interaction state
@@ -543,6 +544,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         if (_isUpdatingScrollBar) return;
         var bytesPerRow = Math.Max(1, BytesPerRow);
         long newRow = (long)Math.Round(_verticalScrollBar.Value);
+        _wheelRowRemainder = 0;
         _scrollOffset = newRow * bytesPerRow;
 
         var data = Data;
@@ -576,6 +578,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         var editor = (HexEditor)d;
         editor._modifiedBytes.Clear();
         editor._scrollOffset = 0;
+        editor._wheelRowRemainder = 0;
         editor.CaretOffset = 0;
         editor.SelectionStart = -1;
         editor.SelectionLength = 0;
@@ -1448,18 +1451,33 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         if (data == null || data.Length == 0) return;
 
         var bytesPerRow = Math.Max(1, BytesPerRow);
-        int scrollRows = e.Delta > 0 ? -3 : 3;
-        long newOffset = _scrollOffset + scrollRows * bytesPerRow;
+        var input = new MouseWheelScrollInput(e, 0, 3 * Math.Max(1, _rowHeight));
+        if (input.Vertical == 0) return;
+        long totalRows = ((long)data.Length - 1) / bytesPerRow + 1;
+        long maxRow = Math.Max(0, totalRows - Math.Max(1, _visibleRowCount));
+        long currentRow = _scrollOffset / bytesPerRow;
+        if (maxRow == 0 || (input.Vertical < 0 && currentRow <= 0) ||
+            (input.Vertical > 0 && currentRow >= maxRow))
+        {
+            _wheelRowRemainder = 0;
+            return;
+        }
 
-        long maxOffset = Math.Max(0, ((long)data.Length - 1) / bytesPerRow * bytesPerRow - (_visibleRowCount - 2) * bytesPerRow);
-        _scrollOffset = Math.Clamp(newOffset, 0, maxOffset);
-
-        // Align to row boundary
-        _scrollOffset = (_scrollOffset / bytesPerRow) * bytesPerRow;
-
-        UpdateScrollBar();
-        InvalidateVisual();
-        e.Handled = true;
+        double rows = _wheelRowRemainder + input.Vertical / Math.Max(1, _rowHeight);
+        double wholeRows = Math.Truncate(rows);
+        _wheelRowRemainder = rows - wholeRows;
+        long newRow = (long)Math.Clamp(currentRow + wholeRows, 0, maxRow);
+        if ((wholeRows < 0 && newRow == 0) || (wholeRows > 0 && newRow == maxRow))
+            _wheelRowRemainder = 0;
+        if (newRow != currentRow)
+        {
+            _scrollOffset = newRow * bytesPerRow;
+            UpdateScrollBar();
+            InvalidateVisual();
+        }
+        // Row-based rendering accumulates sub-row movement instead of turning every
+        // fine touchpad packet into three rows or losing it before the next packet.
+        input.MarkHandled(e, horizontal: false, vertical: true);
     }
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)

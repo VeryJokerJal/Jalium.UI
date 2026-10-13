@@ -12,6 +12,7 @@ public static partial class TextMeasurement
     {
         if (fontSize == 0) return FontUnitMetrics.Fallback(0);
         fontFamily ??= string.Empty;
+        fontFamily = Jalium.UI.Styling.CssFontFaces.MaterializeSource(fontFamily, "0水");
         var captured = Volatile.Read(ref _fontUnitMetricsCache);
         var context = RenderContext.Current;
         if (context is null || !context.IsValid) return FontUnitMetrics.Fallback(fontSize);

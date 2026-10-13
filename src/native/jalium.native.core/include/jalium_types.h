@@ -15,6 +15,7 @@ typedef struct JaliumContext JaliumContext;
 typedef struct JaliumRenderTarget JaliumRenderTarget;
 typedef struct JaliumBrush JaliumBrush;
 typedef struct JaliumTextFormat JaliumTextFormat;
+typedef struct JaliumTextParagraph JaliumTextParagraph;
 typedef struct JaliumFontResource JaliumFontResource;
 typedef struct JaliumGeometry JaliumGeometry;
 typedef struct JaliumImage JaliumImage;
@@ -233,6 +234,71 @@ typedef struct JaliumTextHitTestResult {
     float    caretY;         ///< Y position of the caret
     float    caretHeight;    ///< Height of the caret
 } JaliumTextHitTestResult;
+
+/// Bounds of the first visual line fragment in a requested text range.
+typedef struct JaliumTextRangeMetrics {
+    uint32_t textPosition;
+    uint32_t length;
+    float x;
+    float y;
+    float width;
+    float height;
+} JaliumTextRangeMetrics;
+
+/// A shaped visual row and its physical left/right insertion carets. Offsets
+/// use UTF-16 at the C API; backward affinity selects the preceding glyph edge.
+typedef struct JaliumTextLineMetrics {
+    uint32_t textPosition;
+    uint32_t length;
+    uint32_t leftCaretPosition;
+    uint32_t rightCaretPosition;
+    int32_t leftBackwardAffinity;
+    int32_t rightBackwardAffinity;
+    float x;
+    float y;
+    float width;
+    float height;
+} JaliumTextLineMetrics;
+
+/// Immutable paragraph input; all offsets are UTF-16 code units, including on
+/// platforms with 32-bit wchar_t. Fonts and colors are retained by the layout.
+typedef struct JaliumTextSpan {
+    JaliumTextFormat* format;
+    uint32_t textPosition;
+    uint32_t length;
+    float r, g, b, a;
+} JaliumTextSpan;
+
+/// Inclusive Unicode scalar interval for optional font-character capabilities.
+typedef struct JaliumUnicodeRange { uint32_t first; uint32_t last; } JaliumUnicodeRange;
+
+/// Ready faces carry format. Waiting faces have null format and flag 1;
+/// flag 2 also makes their fallback glyphs invisible during the block period.
+typedef struct JaliumFontDisplayEntry {
+    JaliumTextFormat* format;
+    const JaliumUnicodeRange* ranges;
+    uint32_t rangeCount;
+    uint32_t flags;
+} JaliumFontDisplayEntry;
+
+typedef struct JaliumParagraphLineMetrics {
+    JaliumTextLineMetrics line;
+    float baseline;
+} JaliumParagraphLineMetrics;
+
+typedef struct JaliumTextFragmentMetrics {
+    uint32_t textPosition;
+    uint32_t length;
+    uint32_t spanIndex;
+    float x;
+    float width;
+} JaliumTextFragmentMetrics;
+
+typedef struct JaliumParagraphCaret {
+    uint32_t textPosition;
+    int32_t backwardAffinity;
+    float x;
+} JaliumParagraphCaret;
 
 // ============================================================================
 // Structures

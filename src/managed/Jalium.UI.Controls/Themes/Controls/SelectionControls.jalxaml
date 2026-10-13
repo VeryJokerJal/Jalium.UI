@@ -6,6 +6,7 @@
 	<!-- ComboBox Style -->
 	<!-- ============================================== -->
 	<Style TargetType="ComboBox">
+		<Setter Property="ScrollViewer.CanContentScroll" Value="True" />
 		<Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
 		<Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
 		<Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
@@ -129,6 +130,7 @@
                                        RadiusX="14"
                                        RadiusY="14" />
 							<ScrollViewer Margin="4"
+                                          CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
                                           MaxHeight="{TemplateBinding MaxDropDownHeight}"
                                           IsOverlayScrollBarEnabled="True"
                                           VerticalScrollBarVisibility="Auto"
@@ -232,6 +234,7 @@
 	<!-- ListBox Style -->
 	<!-- ============================================== -->
 	<Style TargetType="ListBox">
+		<Setter Property="ScrollViewer.CanContentScroll" Value="True" />
 		<Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
 		<Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
 		<Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
@@ -251,7 +254,8 @@
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Padding="{TemplateBinding Padding}">
-						<ScrollViewer VerticalScrollBarVisibility="Auto"
+						<ScrollViewer CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
+                                      VerticalScrollBarVisibility="Auto"
                                       HorizontalScrollBarVisibility="Disabled">
 							<ItemsPresenter />
 						</ScrollViewer>
@@ -332,6 +336,7 @@
 	<!-- ListView Style -->
 	<!-- ============================================== -->
 	<Style TargetType="ListView">
+		<Setter Property="ScrollViewer.CanContentScroll" Value="True" />
 		<Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
 		<Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
 		<Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
@@ -367,6 +372,7 @@
 							</Grid>
 							<!-- Items area -->
 							<ScrollViewer Grid.Row="1"
+                                          CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
                                           VerticalScrollBarVisibility="Auto"
                                           HorizontalScrollBarVisibility="Disabled">
 								<ItemsPresenter />

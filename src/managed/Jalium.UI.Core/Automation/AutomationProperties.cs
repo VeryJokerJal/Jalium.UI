@@ -340,7 +340,7 @@ public static class AutomationProperties
             "LabeledBy",
             typeof(UIElement),
             typeof(AutomationProperties),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnLabeledByChanged));
 
     /// <summary>
     /// Gets the LabeledBy attached property value.
@@ -360,6 +360,12 @@ public static class AutomationProperties
     {
         ArgumentNullException.ThrowIfNull(element);
         element.SetValue(LabeledByProperty, value);
+    }
+
+    private static void OnLabeledByChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element && element.GetExistingAutomationPeer() is Peers.MacOSFallbackAutomationPeer peer)
+            peer.RaiseAutomationEvent(Peers.AutomationEvents.StructureChanged);
     }
 
     #endregion

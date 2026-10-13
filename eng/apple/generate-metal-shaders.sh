@@ -30,16 +30,20 @@ spirv_cross_build="$deps_root/build/host/spirv-cross-cli"
 if [[ ! -d "$spirv_cross_src/.git" ]]; then
   git clone --filter=blob:none https://github.com/KhronosGroup/SPIRV-Cross.git "$spirv_cross_src"
 fi
-git -C "$spirv_cross_src" fetch --depth 1 origin "$spirv_cross_rev"
-git -C "$spirv_cross_src" checkout --detach "$spirv_cross_rev"
+if [[ "$(git -C "$spirv_cross_src" rev-parse HEAD)" != "$spirv_cross_rev" ]]; then
+  git -C "$spirv_cross_src" fetch --depth 1 origin "$spirv_cross_rev"
+  git -C "$spirv_cross_src" checkout --detach "$spirv_cross_rev"
+fi
 cmake -S "$spirv_cross_src" -B "$spirv_cross_build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DSPIRV_CROSS_CLI=ON -DSPIRV_CROSS_ENABLE_TESTS=OFF
-cmake --build "$spirv_cross_build" --target spirv-cross
+cmake --build "$spirv_cross_build" --target spirv-cross --parallel "${JALIUM_BUILD_JOBS:-4}"
 spirv_cross="$spirv_cross_build/spirv-cross"
 
 rm -rf "$work"
 mkdir -p "$work" "$out"
-spv_root="$repo_root/src/native/jalium.native.vulkan/shaders/vello_spv"
+spv_root="$work/spirv"
+python3 "$repo_root/tools/extract_vello_spirv.py" \
+  "$repo_root/src/native/jalium.native.vulkan/include/vulkan_vello_shaders.h" "$spv_root"
 reflection_root="$work/reflection"
 mkdir -p "$reflection_root"
 stages=(pathtag_reduce pathtag_reduce2 pathtag_scan1 pathtag_scan pathtag_scan_small bbox_clear \
@@ -53,6 +57,7 @@ for stage in "${stages[@]}"; do
   [[ -f "$input" ]] || { echo "missing $input" >&2; exit 3; }
   "$spirv_cross" "$input" --reflect --output "$reflection_root/vello_${stage}.json"
   "$spirv_cross" "$input" --msl --msl-version 30000 --msl-argument-buffers \
+    --msl-decoration-binding \
     --msl-force-active-argument-buffer-resources \
     --rename-entry-point main "vello_${stage}" comp --output "$metal"
   xcrun -sdk "$sdk" metal -std=metal3.0 -c "$metal" -o "$air"

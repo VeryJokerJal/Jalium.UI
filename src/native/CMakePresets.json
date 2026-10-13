@@ -130,6 +130,15 @@
       }
     },
     {
+      "name": "apple-macos-dev-arm64",
+      "displayName": "Apple macOS arm64 development (dynamic Metal payload)",
+      "inherits": "apple-macos-arm64",
+      "generator": "Ninja Multi-Config",
+      "cacheVariables": {
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": null
+      }
+    },
+    {
       "name": "apple-embedded-base",
       "hidden": true,
       "inherits": "apple-base",

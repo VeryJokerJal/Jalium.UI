@@ -79,7 +79,7 @@ public class TextBoxBaseAutomationPeer : FrameworkElementAutomationPeer, IValueP
 /// <summary>
 /// Exposes TextBox types to UI Automation.
 /// </summary>
-public class TextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProviderSource, IValueProvider
+public class TextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProviderSource, IAutomationTextViewSource, IAutomationTextStyleSource, IValueProvider
 {
     private readonly Jalium.UI.Automation.Provider.ITextProvider _textProvider;
 
@@ -99,6 +99,8 @@ public class TextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProvider
     /// Gets the TextBox owner.
     /// </summary>
     private TextBox TextBoxOwner => (TextBox)Owner;
+
+    IReadOnlyList<AutomationTextStyleSpan> IAutomationTextStyleSource.GetTextStyles() => TextBoxOwner.GetAutomationTextStyles();
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Edit;
@@ -150,6 +152,9 @@ public class TextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProvider
 
     // Use the same caret hit-testing as rendering, grouped into one rectangle per visual line.
     IReadOnlyList<Rect> IAutomationTextProviderSource.GetBoundingRectangles(int start, int length)
+        => AutomationVisibility.ClipRectangles(TextBoxOwner, GetTextBounds(start, length));
+
+    private IReadOnlyList<Rect> GetTextBounds(int start, int length)
     {
         string text = TextBoxOwner.Text ?? string.Empty;
         start = Math.Clamp(start, 0, text.Length);
@@ -158,7 +163,8 @@ public class TextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProvider
         if (length == 0)
         {
             Rect caret = TextBoxOwner.GetRectFromCharacterIndex(start);
-            return [new Rect(caret.X, caret.Y, Math.Max(1, caret.Width), Math.Max(1, caret.Height))];
+            var clipped = Rect.Intersect(new Rect(caret.X, caret.Y, Math.Max(1, caret.Width), Math.Max(1, caret.Height)), TextBoxOwner.AutomationTextViewport);
+            return !clipped.IsEmpty && clipped.Width > 0 && clipped.Height > 0 ? [clipped] : [];
         }
 
         var rectangles = new List<Rect>();
@@ -182,17 +188,32 @@ public class TextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProvider
             }
             else
             {
-                rectangles.Add(currentLine);
+                AddVisible(currentLine);
                 currentLine = character;
             }
         }
 
         if (!currentLine.IsEmpty)
-            rectangles.Add(currentLine);
+            AddVisible(currentLine);
         return rectangles;
+
+        void AddVisible(Rect rectangle)
+        {
+            var clipped = Rect.Intersect(rectangle, TextBoxOwner.AutomationTextViewport);
+            if (!clipped.IsEmpty && clipped.Width > 0 && clipped.Height > 0) rectangles.Add(clipped);
+        }
     }
 
-    void IAutomationTextProviderSource.ScrollIntoView(int start, int length) => TextBoxOwner.ScrollToCaretPosition();
+    void IAutomationTextProviderSource.ScrollIntoView(int start, int length) => TextBoxOwner.ScrollToAutomationOffset(start);
+
+    int IAutomationTextViewSource.CaretIndex => TextBoxOwner.CaretIndex;
+    bool IAutomationTextViewSource.CaretHasBackwardAffinity => TextBoxOwner.AutomationCaretHasBackwardAffinity;
+    Rect IAutomationTextViewSource.TextViewport => TextBoxOwner.AutomationTextViewport;
+    IReadOnlyList<AutomationTextLine> IAutomationTextViewSource.GetTextLines() => TextBoxOwner.GetAutomationTextLines();
+    bool IAutomationTextViewSource.TryGetInsertionIndex(Point localPoint, out int index)
+    { index = ImeTextEncoding.SnapToGraphemeBoundary(TextBoxOwner.Text, TextBoxOwner.GetCharacterIndexFromPoint(localPoint, true), false); return index >= 0; }
+    bool IAutomationTextViewSource.ReplaceSelection(string text) => IsEnabled() && !IsReadOnly
+        && TextBoxOwner.TryReplaceImeTextCore(TextBoxOwner.SelectionStart, TextBoxOwner.SelectionLength, text);
 
     #endregion
 

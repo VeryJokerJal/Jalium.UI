@@ -10,6 +10,8 @@ namespace Jalium.UI.Input;
 /// </summary>
 public sealed class TextCompositionEventArgs : InputEventArgs
 {
+    /// <summary>Native AppKit replacement range, in document UTF-16 offsets.</summary>
+    internal (int Start, int Length)? ImeReplacementRange { get; init; }
     private readonly string? _text;
 
     /// <summary>

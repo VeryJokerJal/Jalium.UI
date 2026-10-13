@@ -164,6 +164,15 @@ public sealed class AdornerLayer : FrameworkElement
         InvalidateVisual();
     }
 
+    internal void InvalidateAdornerPositions(UIElement ancestor)
+    {
+        if (_adorners.Any(info => IsAncestorOrSelf(ancestor, info.Adorner.AdornedElement)))
+        {
+            InvalidateArrange();
+            InvalidateVisual();
+        }
+    }
+
     /// <summary>
     /// Gets the number of visual children.
     /// </summary>
@@ -298,26 +307,7 @@ public sealed class AdornerLayer : FrameworkElement
 
     private Point GetAdornedElementPosition(UIElement element)
     {
-        // Walk up the visual tree to accumulate offsets
-        double x = 0, y = 0;
-        Visual? current = element;
-
-        while (current != null && current != this && current.VisualParent != null)
-        {
-            if (current is UIElement uiElement)
-            {
-                var bounds = uiElement.VisualBounds;
-                x += bounds.X;
-                y += bounds.Y;
-            }
-
-            if (current.VisualParent == this.VisualParent)
-                break;
-
-            current = current.VisualParent;
-        }
-
-        return new Point(x, y);
+        return element.TranslatePoint(new Point(0, 0), this);
     }
 
     private sealed class AdornerInfo

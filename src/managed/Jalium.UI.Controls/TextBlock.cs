@@ -1417,7 +1417,7 @@ public partial class TextBlock : FrameworkElement, IAddChild, IServiceProvider, 
             if (_usesInlineFontLayout)
             {
                 var sourceMetrics = TextMeasurement.GetFontMetrics(
-                    range.Source.FontFamily.GetRenderingSource(this), sourceFontSize,
+                    range.Source.FontFamily.GetRenderingSource(range.Source), sourceFontSize,
                     range.Source.FontWeight.ToOpenTypeWeight(),
                     range.Source.FontStyle.ToOpenTypeStyle());
                 sourceLineTop = baseline - (sourceMetrics.Ascent > 0
@@ -2943,27 +2943,37 @@ public partial class TextBlock : FrameworkElement, IAddChild, IServiceProvider, 
         if (HasLocalOrAnimatedValue(TextWrappingProperty)) return false;
         return GetEffectiveValueLayer(TextWrappingProperty) is
             DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-            GetValueSourceInternal(CssFlowProperties.OverflowWrapProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.WordBreakProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.LineBreakProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.LinePaddingProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredFlowValue(this, CssFlowProperties.OverflowWrapProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.WordBreakProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.LineBreakProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.LinePaddingProperty) ||
             HasAuthoredLinePaddingOnInlines() ||
-            GetValueSourceInternal(CssFlowProperties.WordSpacingProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredFlowValue(this, CssFlowProperties.WordSpacingProperty) ||
             HasAuthoredWordSpacingOnInlines() ||
-            GetValueSourceInternal(CssFlowProperties.WordSpaceTransformProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredFlowValue(this, CssFlowProperties.WordSpaceTransformProperty) ||
             HasAuthoredWordSpaceTransformOnInlines() ||
-            GetValueSourceInternal(CssFlowProperties.LetterSpacingProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.TextAutospaceProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.HangingPunctuationProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredFlowValue(this, CssFlowProperties.LetterSpacingProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.TextAutospaceProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.HangingPunctuationProperty) ||
             HasAuthoredHangingPunctuationOnInlines() ||
-            GetValueSourceInternal(CssFlowProperties.HyphensProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.HyphenateCharacterProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.HyphenateLimitLinesProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.HyphenateLimitLastProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.HyphenateLimitZoneProperty).BaseValueSource != BaseValueSource.Default ||
-            GetValueSourceInternal(CssFlowProperties.HyphenateLimitCharsProperty).BaseValueSource != BaseValueSource.Default ||
+            HasAuthoredFlowValue(this, CssFlowProperties.HyphensProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.HyphenateCharacterProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.HyphenateLimitLinesProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.HyphenateLimitLastProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.HyphenateLimitZoneProperty) ||
+            HasAuthoredFlowValue(this, CssFlowProperties.HyphenateLimitCharsProperty) ||
             HasAuthoredLetterSpacingOnInlines() ||
             HasAuthoredWhiteSpace();
+    }
+
+    private static bool HasAuthoredFlowValue(DependencyObject owner, DependencyProperty property)
+    {
+        // The diagnostic value source reports Inherited whenever an inheritable
+        // property has a parent, even if the entire chain only has metadata defaults.
+        // Resolve the actual provider before enabling CSS's default wrapping rules.
+        // An explicitly authored initial value still counts, including on an ancestor.
+        return owner.HasAnimatedValue(property) || owner.HasCssAnimatedValue(property) ||
+            owner.GetUncoercedBaseValueInternal(property).source != BaseValueSource.Default;
     }
 
     private TextWrapping EffectiveTextWrapping()

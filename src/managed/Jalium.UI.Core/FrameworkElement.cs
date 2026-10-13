@@ -3190,8 +3190,11 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         {
             RoutedEvent = UIElement.QueryCursorEvent,
             Source = element,
-            Cursor = forced ?? nearest,
         };
+        // Assigning null to QueryCursorEventArgs.Cursor explicitly selects None.
+        // Leave an unspecified cursor unset so callers can use the default arrow.
+        if ((forced ?? nearest) is { } cursor)
+            args.Cursor = cursor;
         element.RaiseEvent(args);
         return forced ?? args.Cursor;
     }

@@ -125,7 +125,9 @@ public class DependencyPropertyTests
         var value = (int)obj.GetValue(ReentrantCoerceDependencyObject.ReentrantValueProperty)!;
 
         Assert.Equal(42, value);
-        Assert.Equal(3, obj.CoerceInvocationCount);
+        Assert.True(obj.CoerceInvocationCount > 0);
+        Assert.Equal(1, obj.MaximumCoerceDepth);
+        Assert.True(obj.ReentrantValueMatchedBase);
     }
 
     private class TestDependencyObject : DependencyObject
@@ -166,18 +168,28 @@ public class DependencyPropertyTests
                 new PropertyMetadata(0, null, CoerceReentrantValue));
 
         public int CoerceInvocationCount { get; private set; }
+        public int MaximumCoerceDepth { get; private set; }
+        public bool ReentrantValueMatchedBase { get; private set; } = true;
+        private int _coerceDepth;
 
         private static object? CoerceReentrantValue(DependencyObject d, object? baseValue)
         {
             var obj = (ReentrantCoerceDependencyObject)d;
             obj.CoerceInvocationCount++;
-
-            if (obj.CoerceInvocationCount < 5)
+            obj._coerceDepth++;
+            obj.MaximumCoerceDepth = Math.Max(obj.MaximumCoerceDepth, obj._coerceDepth);
+            try
             {
-                _ = obj.GetValue(ReentrantValueProperty);
+                // Bound recursion so a broken guard fails the depth assertion
+                // instead of overflowing the test process's stack.
+                if (obj._coerceDepth < 5)
+                    obj.ReentrantValueMatchedBase &= Equals(baseValue, obj.GetValue(ReentrantValueProperty));
+                return baseValue;
             }
-
-            return baseValue;
+            finally
+            {
+                obj._coerceDepth--;
+            }
         }
     }
 }

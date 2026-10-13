@@ -63,7 +63,7 @@ public enum RazorVirtualizeUnbounded
 /// <para>
 /// The host implements <see cref="IScrollInfo"/> and forwards to the inner
 /// <see cref="ItemsPresenter"/>. That is what makes "reuse the outer scroll viewer" work with no
-/// extra plumbing: an enclosing <see cref="ScrollViewer"/> assigns
+/// extra plumbing when its <see cref="ScrollViewer.CanContentScroll"/> is enabled: an enclosing viewer assigns
 /// <see cref="IScrollInfo.ScrollOwner"/> when its content is set, which happens while the tree is
 /// being built and therefore before the first measure. By the time <see cref="MeasureOverride"/>
 /// runs, a non-null owner already means an outer viewport is driving this host.
@@ -79,6 +79,7 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
     {
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        CanContentScroll = true,
 
         // Must be the ScrollViewer's direct content: OnContentChanged does
         // "ScrollInfo = ContentElement as IScrollInfo", so any wrapper here breaks the chain and
@@ -90,6 +91,7 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
     {
         HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
         VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        CanContentScroll = true,
         Content = new ItemsPresenter(),
     });
 
@@ -117,6 +119,15 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
     private RazorIntRange? _range;
     private bool _unboundedReported;
     private bool _degraded;
+
+    static RazorItemsHost()
+    {
+        // A missing viewport is temporary. Coercion keeps the application's value, style,
+        // and binding intact, so a later bounded layout can resume virtualization.
+        VirtualizingPanel.IsVirtualizingProperty.OverrideMetadata(typeof(RazorItemsHost),
+            new PropertyMetadata(true, null, static (d, value) =>
+                !((RazorItemsHost)d)._degraded && (bool)(value ?? true)));
+    }
 
     #region Dependency properties
 
@@ -458,6 +469,12 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         var axis = Orientation == Orientation.Vertical ? availableSize.Height : availableSize.Width;
         if (!double.IsInfinity(axis))
         {
+            if (_degraded)
+            {
+                _degraded = false;
+                CoerceValue(VirtualizingPanel.IsVirtualizingProperty);
+                RefreshItems();
+            }
             return;
         }
 
@@ -466,7 +483,7 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
             $"@virtualize: host was measured with an infinite {axisName} constraint, so it has no " +
             "viewport and cannot virtualize. This usually means it sits inside a StackPanel, an " +
             "Auto-sized grid row, or another item template. Give it an explicit Height/MaxHeight, " +
-            "or make it the direct content of a ScrollViewer.");
+            "or make it the direct content of a ScrollViewer with CanContentScroll enabled.");
 
         switch (UnboundedBehavior)
         {
@@ -509,7 +526,7 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         }
 
         _degraded = true;
-        VirtualizingPanel.SetIsVirtualizing(this, false);
+        CoerceValue(VirtualizingPanel.IsVirtualizingProperty);
 
         // The attached-property callback only invalidates measure. Containers are rebuilt by
         // RefreshItems alone, so switching pipelines needs an explicit push.

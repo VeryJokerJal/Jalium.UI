@@ -320,6 +320,67 @@ public class FocusVisualStyleCustomizationTests
         }
     }
 
+    [Fact]
+    public void FocusRing_FollowsScrolling_AndIsClippedOutsideTheViewport()
+    {
+        ResetApplicationState();
+        var app = new Application();
+        try
+        {
+            var button = new Button { Width = 80, Height = 32, Content = "Go" };
+            var content = new Canvas { Width = 300, Height = 600 };
+            Canvas.SetTop(button, 60);
+            content.Children.Add(button);
+            var viewer = new ScrollViewer
+            {
+                Content = content, Width = 200, Height = 120,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                IsScrollInertiaEnabled = false,
+            };
+            var window = CreateWindow(viewer);
+            ArrangeWindow(window);
+            SetShowFocusCues(true);
+            Assert.True(button.Focus());
+            ArrangeWindow(window);
+            var ring = GetRing(window, button);
+            double originalTop = ring.VisualBounds.Y;
+
+            viewer.ScrollToVerticalOffset(40);
+            Assert.False(window.AdornerLayer!.IsArrangeValid);
+            window.UpdateLayout();
+            Assert.Equal(originalTop - 40, ring.VisualBounds.Y, 6);
+            Assert.Equal(button.TranslatePoint(new Point(0, 0), window.AdornerLayer).Y, ring.VisualBounds.Y, 6);
+
+            viewer.ScrollToVerticalOffset(80);
+            window.UpdateLayout();
+            var partialClip = Assert.IsAssignableFrom<Geometry>(ring.GetLayoutClip());
+            var visibleRing = Rect.Intersect(new Rect(ring.RenderSize), partialClip.Bounds);
+            Assert.InRange(visibleRing.Height, 0.001, ring.RenderSize.Height - 0.001);
+            Assert.True(partialClip.FillContains(new Point(visibleRing.X + visibleRing.Width / 2,
+                visibleRing.Y + visibleRing.Height / 2)));
+
+            viewer.ScrollToVerticalOffset(200);
+            window.UpdateLayout();
+            var clip = Assert.IsAssignableFrom<Geometry>(ring.GetLayoutClip());
+            Assert.True(Rect.Intersect(new Rect(ring.RenderSize), clip.Bounds).IsEmpty);
+            Assert.False(clip.FillContains(new Point(ring.RenderSize.Width / 2, ring.RenderSize.Height / 2)));
+            Assert.True(button.IsKeyboardFocused);
+
+            viewer.ScrollToVerticalOffset(0);
+            window.UpdateLayout();
+            Assert.Equal(originalTop, ring.VisualBounds.Y, 6);
+            var restoredClip = Assert.IsAssignableFrom<Geometry>(ring.GetLayoutClip());
+            Assert.Equal(new Rect(ring.RenderSize), Rect.Intersect(new Rect(ring.RenderSize), restoredClip.Bounds));
+            Assert.True(restoredClip.FillContains(new Point(ring.RenderSize.Width / 2, ring.RenderSize.Height / 2)));
+        }
+        finally
+        {
+            SetShowFocusCues(false);
+            ResetApplicationState();
+        }
+    }
+
     private static Style CreateRingStyle(Brush brush, double thickness)
     {
         var template = new ControlTemplate(typeof(Control));

@@ -1038,22 +1038,23 @@ public class DiffViewer : Control
 
     private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        if (e.KeyboardModifiers.HasFlag(ModifierKeys.Shift))
+        UpdateLayoutMetrics(RenderSize);
+        var input = new MouseWheelScrollInput(e, _charWidth * 3, _lineHeight * 3);
+        double oldX = _scrollOffsetX;
+        double oldY = _scrollOffsetY;
+        if (input.Horizontal != 0)
         {
-            // Horizontal scroll
-            _scrollOffsetX -= e.Delta / 120.0 * _charWidth * 3;
-            if (_scrollOffsetX < 0) _scrollOffsetX = 0;
+            double contentWidth = 0;
+            foreach (var line in _diffLines)
+                contentWidth = Math.Max(contentWidth, Math.Max(line.OriginalText.Length, line.ModifiedText.Length) * _charWidth);
+            _scrollOffsetX = Math.Clamp(oldX + input.Horizontal, 0, Math.Max(0, contentWidth - _contentAreaWidth));
         }
-        else
-        {
-            // Vertical scroll: 3 lines per notch
-            double delta = -e.Delta / 120.0 * _lineHeight * 3;
-            _scrollOffsetY += delta;
-            ClampScrollOffset();
-        }
-
-        InvalidateVisual();
-        e.Handled = true;
+        _scrollOffsetY += input.Vertical;
+        ClampScrollOffset();
+        bool horizontalMoved = _scrollOffsetX != oldX;
+        bool verticalMoved = _scrollOffsetY != oldY;
+        if (horizontalMoved || verticalMoved) InvalidateVisual();
+        input.MarkHandled(e, horizontalMoved, verticalMoved);
     }
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)

@@ -187,6 +187,32 @@ public sealed class ListBoxParityTests
         Assert.Equal(offset, host.VerticalOffset);
     }
 
+    [Theory]
+    [InlineData(SelectionMode.Single)]
+    [InlineData(SelectionMode.Extended)]
+    public void SetSelectedItems_WithExplicitContainersSynchronizesScalarAndVisualSelection(SelectionMode mode)
+    {
+        var listBox = new TestListBox { SelectionMode = mode };
+        var first = new ListBoxItem { Content = "a" };
+        var second = new ListBoxItem { Content = "b" };
+        listBox.Items.Add(first); listBox.Items.Add(second);
+        listBox.Measure(new Size(240, 120));
+        listBox.Arrange(new Rect(0, 0, 240, 120));
+
+        Assert.True(listBox.SetSelection(new[] { second }));
+        Assert.Equal("b", listBox.SelectedItem);
+        Assert.Equal(1, listBox.SelectedIndex);
+        Assert.Equal(new object[] { "b" }, listBox.SelectedItems.Cast<object>());
+        Assert.True(second.IsSelected);
+        Assert.False(first.IsSelected);
+
+        Assert.True(listBox.SetSelection(new[] { first }));
+        Assert.Equal("a", listBox.SelectedItem);
+        Assert.Equal(0, listBox.SelectedIndex);
+        Assert.True(first.IsSelected);
+        Assert.False(second.IsSelected);
+    }
+
     private static TestListBox CreateSelectionListBox(SelectionMode mode)
     {
         var listBox = new TestListBox { SelectionMode = mode };

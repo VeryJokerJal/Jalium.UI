@@ -437,6 +437,11 @@ public abstract class DrawingContext : DispatcherObject, IDisposable, IClipDrawi
     /// <param name="geometry">The geometry to draw.</param>
     public abstract void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry);
 
+    /// <summary>Draws geometry with an explicit edge mode. Recorders preserve
+    /// this hint so replay uses the same rasterization as the original draw.</summary>
+    public virtual void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry, EdgeMode edgeMode)
+        => DrawGeometry(brush, pen, geometry);
+
 
     /// <summary>
     /// Draws an image.
@@ -1072,7 +1077,14 @@ public abstract class Geometry : Animatable, IFormattable
     /// <summary>
     /// Gets an empty Geometry.
     /// </summary>
-    public static Geometry Empty { get; } = new GeometryGroup();
+    public static Geometry Empty { get; } = CreateEmptyGeometry();
+
+    private static Geometry CreateEmptyGeometry()
+    {
+        var geometry = new GeometryGroup();
+        geometry.Freeze();
+        return geometry;
+    }
 
     /// <summary>
     /// Returns true if this geometry contains no drawable content. Subclasses override
@@ -1882,16 +1894,16 @@ public sealed class RectangleGeometry : Geometry
         return dx * dx + dy * dy <= 1.0;
     }
 
-    /// <inheritdoc />
-    public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
+    internal PathGeometry GetPathGeometry()
     {
         var r = Rect;
-        if (r.Width <= 0 || r.Height <= 0) return new PathGeometry();
+        var geom = new PathGeometry { Transform = Transform };
+        if (r.Width <= 0 || r.Height <= 0) return geom;
 
-        var geom = new PathGeometry();
         var figure = new PathFigure { IsClosed = true, IsFilled = true };
-
-        if (RadiusX <= 0 && RadiusY <= 0)
+        var rx = double.IsFinite(RadiusX) ? Math.Min(Math.Abs(RadiusX), r.Width / 2) : 0;
+        var ry = double.IsFinite(RadiusY) ? Math.Min(Math.Abs(RadiusY), r.Height / 2) : 0;
+        if (rx <= 0 || ry <= 0)
         {
             figure.StartPoint = new Point(r.X, r.Y);
             figure.Segments.Add(new LineSegment(new Point(r.Right, r.Y)));
@@ -1900,71 +1912,28 @@ public sealed class RectangleGeometry : Geometry
         }
         else
         {
-            var rx = Math.Min(RadiusX, r.Width / 2);
-            var ry = Math.Min(RadiusY, r.Height / 2);
-            // Start at top-left after the corner arc
+            var radius = new Size(rx, ry);
+            void Line(Point point) => figure.Segments.Add(new LineSegment(point) { IsSmoothJoin = true });
+            void Arc(Point point) => figure.Segments.Add(
+                new ArcSegment(point, radius, 0, false, SweepDirection.Clockwise, true) { IsSmoothJoin = true });
             figure.StartPoint = new Point(r.X + rx, r.Y);
-            // Top edge
-            figure.Segments.Add(new LineSegment(new Point(r.Right - rx, r.Y)));
-            // Top-right corner
-            FlattenArcToSegments(figure, new Point(r.Right - rx, r.Y), new Point(r.Right, r.Y + ry),
-                new Point(r.Right - rx, r.Y + ry), rx, ry, tolerance);
-            // Right edge
-            figure.Segments.Add(new LineSegment(new Point(r.Right, r.Bottom - ry)));
-            // Bottom-right corner
-            FlattenArcToSegments(figure, new Point(r.Right, r.Bottom - ry), new Point(r.Right - rx, r.Bottom),
-                new Point(r.Right - rx, r.Bottom - ry), rx, ry, tolerance);
-            // Bottom edge
-            figure.Segments.Add(new LineSegment(new Point(r.X + rx, r.Bottom)));
-            // Bottom-left corner
-            FlattenArcToSegments(figure, new Point(r.X + rx, r.Bottom), new Point(r.X, r.Bottom - ry),
-                new Point(r.X + rx, r.Bottom - ry), rx, ry, tolerance);
-            // Left edge
-            figure.Segments.Add(new LineSegment(new Point(r.X, r.Y + ry)));
-            // Top-left corner
-            FlattenArcToSegments(figure, new Point(r.X, r.Y + ry), new Point(r.X + rx, r.Y),
-                new Point(r.X + rx, r.Y + ry), rx, ry, tolerance);
+            Line(new Point(r.Right - rx, r.Y));
+            Arc(new Point(r.Right, r.Y + ry));
+            Line(new Point(r.Right, r.Bottom - ry));
+            Arc(new Point(r.Right - rx, r.Bottom));
+            Line(new Point(r.X + rx, r.Bottom));
+            Arc(new Point(r.X, r.Bottom - ry));
+            Line(new Point(r.X, r.Y + ry));
+            Arc(figure.StartPoint);
         }
 
         geom.Figures.Add(figure);
         return geom;
     }
 
-    /// <summary>
-    /// Appends a quarter-corner elliptical arc from <paramref name="start"/> to
-    /// <paramref name="end"/> around the EXPLICIT <paramref name="center"/>.
-    /// </summary>
-    /// <remarks>
-    /// The center must be passed in, not derived: the old min/max guess picked the
-    /// rectangle's OUTER corner point for three of the four corners, which swept a
-    /// concave arc (a bite taken out of the corner) — and for the bottom-right corner
-    /// the guessed center coincided with the start point, so the arc did not even land
-    /// on <paramref name="end"/>, leaving the outline discontinuous. Fills mostly hid
-    /// this at icon radii; a stroke amplified every wrong corner into a visible spur.
-    /// </remarks>
-    private static void FlattenArcToSegments(PathFigure figure, Point start, Point end,
-        Point center, double rx, double ry, double tolerance)
-    {
-        var segments = Math.Max(4, (int)(Math.PI / 2 * Math.Max(rx, ry) / tolerance));
-        var cx = center.X;
-        var cy = center.Y;
-
-        // Determine start angle from the start point relative to the center
-        var startAngle = Math.Atan2((start.Y - cy) / ry, (start.X - cx) / rx);
-        var endAngle = Math.Atan2((end.Y - cy) / ry, (end.X - cx) / rx);
-        var delta = endAngle - startAngle;
-        if (delta > Math.PI) delta -= 2 * Math.PI;
-        if (delta < -Math.PI) delta += 2 * Math.PI;
-
-        for (int i = 1; i <= segments; i++)
-        {
-            var t = i / (double)segments;
-            var angle = startAngle + delta * t;
-            var px = cx + rx * Math.Cos(angle);
-            var py = cy + ry * Math.Sin(angle);
-            figure.Segments.Add(new LineSegment(new Point(px, py)));
-        }
-    }
+    /// <inheritdoc />
+    public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
+        => GetPathGeometry().GetFlattenedPathGeometry(tolerance, toleranceType);
 
     /// <inheritdoc />
     public override double GetArea(double tolerance, ToleranceType type)
@@ -2090,25 +2059,49 @@ public sealed class EllipseGeometry : Geometry
         return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1.0;
     }
 
+    internal PathGeometry GetPathGeometry()
+    {
+        var geom = new PathGeometry { Transform = Transform };
+        var rx = Math.Abs(RadiusX);
+        var ry = Math.Abs(RadiusY);
+        if (!double.IsFinite(rx) || !double.IsFinite(ry) || rx <= 0 || ry <= 0) return geom;
+        var radius = new Size(rx, ry);
+        var figure = new PathFigure
+        {
+            StartPoint = new Point(Center.X + rx, Center.Y), IsClosed = true, IsFilled = true
+        };
+        void Arc(Point point) => figure.Segments.Add(
+            new ArcSegment(point, radius, 0, false, SweepDirection.Clockwise, true) { IsSmoothJoin = true });
+        Arc(new Point(Center.X, Center.Y + ry));
+        Arc(new Point(Center.X - rx, Center.Y));
+        Arc(new Point(Center.X, Center.Y - ry));
+        Arc(figure.StartPoint);
+        geom.Figures.Add(figure);
+        return geom;
+    }
+
     /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
         var rx = Math.Abs(RadiusX);
         var ry = Math.Abs(RadiusY);
-        if (rx < 1e-10 || ry < 1e-10) return new PathGeometry();
+        if (!double.IsFinite(rx) || !double.IsFinite(ry) || rx < 1e-10 || ry < 1e-10) return new PathGeometry();
 
         var geom = new PathGeometry();
         var figure = new PathFigure { IsClosed = true, IsFilled = true };
 
-        var segments = Math.Max(16, (int)(2 * Math.PI * Math.Max(rx, ry) / tolerance));
+        var safeTolerance = double.IsFinite(tolerance) && tolerance > 0 ? tolerance : StandardFlatteningTolerance;
+        var errorRatio = Math.Clamp(safeTolerance / Math.Max(rx, ry), 1e-300, 2);
+        var step = errorRatio < 1e-4 ? 2*Math.Sqrt(2*errorRatio) : 2*Math.Acos(1-errorRatio);
+        var segments = (int)Math.Clamp(Math.Ceiling(2*Math.PI/step), 16, 65536);
         figure.StartPoint = new Point(Center.X + rx, Center.Y);
 
         for (int i = 1; i <= segments; i++)
         {
             var angle = 2 * Math.PI * i / segments;
-            figure.Segments.Add(new LineSegment(new Point(
+            figure.Segments.Add(new LineSegment(i == segments ? figure.StartPoint : new Point(
                 Center.X + rx * Math.Cos(angle),
-                Center.Y + ry * Math.Sin(angle))));
+                Center.Y + ry * Math.Sin(angle))) { IsSmoothJoin = true });
         }
 
         geom.Figures.Add(figure);
@@ -3268,7 +3261,7 @@ public sealed class PathGeometry : Geometry
         var ry = arc.Size.Height;
 
         // Degenerate: zero radii or coincident endpoints → linear fallback
-        if (rx == 0 || ry == 0 || (start.X == end.X && start.Y == end.Y))
+        if (rx == 0 || ry == 0 || start == end)
         {
             point = Lerp(start, end, progress);
             var diff = new Point(end.X - start.X, end.Y - start.Y);
@@ -3447,6 +3440,7 @@ public sealed class PathGeometry : Geometry
 
             foreach (var segment in figure.Segments)
             {
+                var countBefore = newFigure.Segments.Count;
                 switch (segment)
                 {
                     case LineSegment line:
@@ -3531,6 +3525,9 @@ public sealed class PathGeometry : Geometry
                         break;
                     }
                 }
+                for (int index = countBefore; index < newFigure.Segments.Count; ++index)
+                    newFigure.Segments[index].IsSmoothJoin = segment.IsSmoothJoin ||
+                        (index > countBefore && segment is not LineSegment and not PolyLineSegment);
             }
 
             result.Figures.Add(newFigure);
@@ -3590,7 +3587,8 @@ public sealed class PathGeometry : Geometry
         var rx = arc.Size.Width;
         var ry = arc.Size.Height;
 
-        if (rx == 0 || ry == 0 || (start.X == end.X && start.Y == end.Y))
+        if (start == end) return points;
+        if (rx == 0 || ry == 0)
         {
             points.Add(end);
             return points;
@@ -3630,15 +3628,17 @@ public sealed class PathGeometry : Geometry
         if (arc.SweepDirection == SweepDirection.Clockwise && deltaAngle < 0) deltaAngle += 2 * Math.PI;
         else if (arc.SweepDirection == SweepDirection.Counterclockwise && deltaAngle > 0) deltaAngle -= 2 * Math.PI;
 
-        var circumference = Math.Abs(deltaAngle) * Math.Max(rx, ry);
-        var segments = Math.Clamp((int)(circumference / tolerance), 4, 256);
+        var safeTolerance = double.IsFinite(tolerance) && tolerance > 0 ? tolerance : StandardFlatteningTolerance;
+        var errorRatio = Math.Clamp(safeTolerance / Math.Max(rx, ry), 1e-300, 2);
+        var step = errorRatio < 1e-4 ? 2*Math.Sqrt(2*errorRatio) : 2*Math.Acos(1-errorRatio);
+        var segments = (int)Math.Clamp(Math.Ceiling(Math.Abs(deltaAngle)/step), 1, 65536);
         for (int i = 1; i <= segments; i++)
         {
             var t = i / (double)segments;
             var angle = startAngle + deltaAngle * t;
             var px = rx * Math.Cos(angle);
             var py = ry * Math.Sin(angle);
-            points.Add(new Point(cosA * px - sinA * py + cx, sinA * px + cosA * py + cy));
+            points.Add(i == segments ? end : new Point(cosA * px - sinA * py + cx, sinA * px + cosA * py + cy));
         }
 
         return points;

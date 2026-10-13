@@ -16,6 +16,11 @@ namespace jalium {
 /// A single contour (sub-path) as a flat array of (x, y) pairs.
 struct Contour {
     std::vector<float> points; // x0,y0, x1,y1, ...
+    // Optional per-edge stroke metadata: bit 0 = stroked, bit 1 = smooth join
+    // at this edge's start. Filling always uses every geometric edge.
+    std::vector<uint8_t> segmentFlags;
+    int8_t startCap = -1, endCap = -1, dashCap = -1;
+    int8_t edgeMode = -1;
     bool closed = false;
     uint32_t VertexCount() const { return static_cast<uint32_t>(points.size() / 2); }
     float X(uint32_t i) const { return points[i * 2]; }
@@ -68,9 +73,8 @@ inline bool TriangulatePolygon(const float* points, uint32_t count, std::vector<
         // Use epsilon to treat on-edge / near-edge points as OUTSIDE.
         // This prevents near-collinear vertices from blocking valid ears.
         constexpr float kPitEps = 1e-3f;
-        bool hasNeg = (d1 < -kPitEps) || (d2 < -kPitEps) || (d3 < -kPitEps);
-        bool hasPos = (d1 >  kPitEps) || (d2 >  kPitEps) || (d3 >  kPitEps);
-        return hasNeg && !hasPos || hasPos && !hasNeg;
+        return (d1 < -kPitEps && d2 < -kPitEps && d3 < -kPitEps) ||
+               (d1 > kPitEps && d2 > kPitEps && d3 > kPitEps);
     };
 
     uint32_t n = count;
@@ -720,55 +724,87 @@ inline bool TriangulateCompoundPath(const std::vector<Contour>& contours,
         return true;
     }
 
-    // Classify contours as outer (CCW, positive area) or hole (CW, negative area).
-    // For EvenOdd, we use bridge edges to merge holes into outers.
-    // For NonZero, contour winding direction determines fill.
-
+    // Winding direction alone cannot identify an outer contour: SVG/Fluent
+    // glyphs may use clockwise outers, and EvenOdd ignores direction entirely.
+    // Build the containment hierarchy before classifying fill boundaries.
     struct ContourInfo {
-        uint32_t index;
-        float signedArea;
-        bool isOuter;   // positive signed area = CCW = outer
-        int32_t parentOuter; // index into outers array, or -1
+        float signedArea = 0;
+        float minX = std::numeric_limits<float>::max();
+        float minY = std::numeric_limits<float>::max();
+        float maxX = std::numeric_limits<float>::lowest();
+        float maxY = std::numeric_limits<float>::lowest();
+        int32_t parent = -1;
+        int32_t parentOuter = -1;
+        uint32_t depth = 0;
+        int32_t winding = 0;
+        bool isOuter = false;
+        bool isHole = false;
     };
     std::vector<ContourInfo> info(contours.size());
+    std::vector<uint32_t> order;
     for (uint32_t i = 0; i < (uint32_t)contours.size(); ++i) {
-        info[i].index = i;
         info[i].signedArea = ContourSignedArea(contours[i]);
-        info[i].isOuter = (info[i].signedArea >= 0);
-        info[i].parentOuter = -1;
+        if (contours[i].VertexCount() < 3) continue;
+        order.push_back(i);
+        for (uint32_t v = 0; v < contours[i].VertexCount(); ++v) {
+            info[i].minX = std::min(info[i].minX, contours[i].X(v));
+            info[i].minY = std::min(info[i].minY, contours[i].Y(v));
+            info[i].maxX = std::max(info[i].maxX, contours[i].X(v));
+            info[i].maxY = std::max(info[i].maxY, contours[i].Y(v));
+        }
     }
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+        return std::abs(info[a].signedArea) > std::abs(info[b].signedArea);
+    });
 
-    // Collect outer contours and assign holes to their parent outer contour
-    std::vector<uint32_t> outerIndices;
-    std::vector<uint32_t> holeIndices;
-    for (uint32_t i = 0; i < (uint32_t)contours.size(); ++i) {
-        if (info[i].isOuter) {
-            outerIndices.push_back(i);
+    for (uint32_t i : order) {
+        float parentArea = std::numeric_limits<float>::max();
+        for (uint32_t j : order) {
+            float area = std::abs(info[j].signedArea);
+            if (area <= std::abs(info[i].signedArea) || area >= parentArea ||
+                info[j].minX > info[i].minX || info[j].minY > info[i].minY ||
+                info[j].maxX < info[i].maxX || info[j].maxY < info[i].maxY) continue;
+            bool contained = true;
+            for (uint32_t v = 0; v < contours[i].VertexCount(); ++v) {
+                if (!PointInsideContour(contours[i].X(v), contours[i].Y(v), contours[j])) {
+                    contained = false;
+                    break;
+                }
+            }
+            if (contained) {
+                info[i].parent = static_cast<int32_t>(j);
+                parentArea = area;
+            }
+        }
+
+        int32_t outsideWinding = 0;
+        if (info[i].parent >= 0) {
+            const auto& parent = info[info[i].parent];
+            info[i].depth = parent.depth + 1;
+            outsideWinding = parent.winding;
+        }
+        info[i].winding = outsideWinding + (info[i].signedArea >= 0 ? 1 : -1);
+        if (fillRule == 0) {
+            info[i].isOuter = info[i].depth % 2 == 0;
+            info[i].isHole = !info[i].isOuter;
         } else {
-            holeIndices.push_back(i);
+            // Same-direction nested contours do not cut holes or repaint the
+            // interior. Only a zero/nonzero winding transition is a boundary.
+            info[i].isOuter = outsideWinding == 0 && info[i].winding != 0;
+            info[i].isHole = outsideWinding != 0 && info[i].winding == 0;
         }
     }
 
-    // If no outer contours, treat the first contour as outer (reverse it)
-    if (outerIndices.empty()) {
-        outerIndices.push_back(0);
-        info[0].isOuter = true;
-        // Remove from holes
-        holeIndices.erase(
-            std::remove(holeIndices.begin(), holeIndices.end(), 0u),
-            holeIndices.end());
-    }
-
-    // For each hole, find which outer contour contains it
-    for (uint32_t hi : holeIndices) {
-        auto& hole = contours[hi];
-        // Use first vertex of hole as test point
-        float tx = hole.X(0), ty = hole.Y(0);
-        for (uint32_t oi : outerIndices) {
-            if (PointInsideContour(tx, ty, contours[oi])) {
-                info[hi].parentOuter = static_cast<int32_t>(oi);
-                break;
-            }
+    std::vector<uint32_t> outerIndices;
+    std::vector<uint32_t> holeIndices;
+    for (uint32_t i : order) {
+        if (info[i].isOuter) outerIndices.push_back(i);
+        if (info[i].isHole) {
+            holeIndices.push_back(i);
+            int32_t ancestor = info[i].parent;
+            while (ancestor >= 0 && !info[ancestor].isOuter)
+                ancestor = info[ancestor].parent;
+            info[i].parentOuter = ancestor;
         }
     }
 
@@ -837,23 +873,6 @@ inline bool TriangulateCompoundPath(const std::vector<Contour>& contours,
             for (uint32_t idx : indices) {
                 outVertices.push_back(merged.X(idx));
                 outVertices.push_back(merged.Y(idx));
-            }
-        }
-    }
-
-    // Handle orphan holes (not inside any outer contour) - treat as standalone paths
-    for (uint32_t hi : holeIndices) {
-        if (info[hi].parentOuter < 0) {
-            const auto& orphanSrc = contours[hi];
-            Contour simplified = (orphanSrc.VertexCount() > 16)
-                ? SimplifyContour(orphanSrc) : orphanSrc;
-            uint32_t count = simplified.VertexCount();
-            if (count < 3) continue;
-            std::vector<uint32_t> indices;
-            if (!TriangulatePolygonRobust(simplified.points.data(), count, indices)) continue;
-            for (uint32_t idx : indices) {
-                outVertices.push_back(simplified.X(idx));
-                outVertices.push_back(simplified.Y(idx));
             }
         }
     }
@@ -1008,12 +1027,12 @@ inline float VectorAngle2D(float ux, float uy, float vx, float vy) {
 
 // Helper: compute adaptive step count for an arc.
 inline int ComputeArcStepCount(float radius, float sweepAngle, float tolerance) {
-    float r = std::max(radius, 1e-3f);
-    float tol = std::max(tolerance, 1e-3f);
-    float c = std::clamp(1.0f - tol / r, -1.0f, 1.0f);
-    float maxStep = 2.0f * std::acos(c);
-    if (!std::isfinite(maxStep) || maxStep < 0.05f) maxStep = 0.05f;
-    return std::max(1, static_cast<int>(std::ceil(std::abs(sweepAngle) / maxStep)));
+    if (!std::isfinite(radius) || !std::isfinite(sweepAngle)) return 1;
+    const double ratio = std::clamp(double(std::max(tolerance,1e-6f)) /
+        std::max(double(radius),1e-6), 1e-30, 2.0);
+    // The small-angle form avoids cancellation at large render scales.
+    const double step = ratio < 1e-4 ? 2*std::sqrt(2*ratio) : 2*std::acos(1-ratio);
+    return static_cast<int>(std::clamp(std::ceil(std::abs(double(sweepAngle))/step),1.0,65536.0));
 }
 
 // Flatten an SVG elliptical arc (endpoint parameterization) into line segments.
@@ -1023,63 +1042,64 @@ inline void FlattenSvgArc(float startX, float startY, float endX, float endY,
                            float rx, float ry, float xAxisRotationDegrees,
                            bool largeArc, bool sweep,
                            std::vector<float>& outPoints, float tolerance = 1.0f) {
-    constexpr float kPi = 3.14159265358979323846f;
-    constexpr float kEps = 1e-5f;
+    constexpr double kPi = 3.14159265358979323846;
 
-    // Degenerate cases
-    if ((std::abs(startX - endX) < kEps && std::abs(startY - endY) < kEps) ||
-        rx <= kEps || ry <= kEps) {
+    rx = std::abs(rx);
+    ry = std::abs(ry);
+
+    // SVG omits an arc with identical endpoints; it must not become a dotted
+    // zero-length line when a round stroke cap is requested.
+    if (startX == endX && startY == endY) return;
+    if (rx == 0 || ry == 0) {
         outPoints.push_back(endX);
         outPoints.push_back(endY);
         return;
     }
 
-    rx = std::abs(rx);
-    ry = std::abs(ry);
+    double radiusX = rx, radiusY = ry;
+    double phi = std::remainder(double(xAxisRotationDegrees),360.0) * kPi / 180.0;
+    double cosPhi = std::cos(phi);
+    double sinPhi = std::sin(phi);
 
-    float phi = xAxisRotationDegrees * kPi / 180.0f;
-    float cosPhi = std::cos(phi);
-    float sinPhi = std::sin(phi);
+    double dx = (double(startX) - endX) * 0.5;
+    double dy = (double(startY) - endY) * 0.5;
 
-    float dx = (startX - endX) * 0.5f;
-    float dy = (startY - endY) * 0.5f;
+    double x1p = cosPhi * dx + sinPhi * dy;
+    double y1p = -sinPhi * dx + cosPhi * dy;
 
-    float x1p = cosPhi * dx + sinPhi * dy;
-    float y1p = -sinPhi * dx + cosPhi * dy;
-
-    float rxSq = rx * rx;
-    float rySq = ry * ry;
-    float x1pSq = x1p * x1p;
-    float y1pSq = y1p * y1p;
+    double rxSq = radiusX * radiusX;
+    double rySq = radiusY * radiusY;
+    double x1pSq = x1p * x1p;
+    double y1pSq = y1p * y1p;
 
     // Ensure radii are large enough
-    float radiiCheck = x1pSq / rxSq + y1pSq / rySq;
+    double radiiCheck = x1pSq / rxSq + y1pSq / rySq;
     if (radiiCheck > 1.0f) {
-        float scale = std::sqrt(radiiCheck);
-        rx *= scale;
-        ry *= scale;
-        rxSq = rx * rx;
-        rySq = ry * ry;
+        double scale = std::sqrt(radiiCheck);
+        radiusX *= scale;
+        radiusY *= scale;
+        rxSq = radiusX * radiusX;
+        rySq = radiusY * radiusY;
     }
 
     // Compute center point
-    float numerator = rxSq * rySq - rxSq * y1pSq - rySq * x1pSq;
-    float denominator = rxSq * y1pSq + rySq * x1pSq;
-    float sign = (largeArc == sweep) ? -1.0f : 1.0f;
-    float factor = (denominator <= kEps) ? 0.0f : sign * std::sqrt(std::max(0.0f, numerator / denominator));
+    double numerator = rxSq * rySq - rxSq * y1pSq - rySq * x1pSq;
+    double denominator = rxSq * y1pSq + rySq * x1pSq;
+    double sign = (largeArc == sweep) ? -1.0f : 1.0f;
+    double factor = denominator <= 0 ? 0 : sign * std::sqrt(std::max(0.0, numerator / denominator));
 
-    float cxp = factor * (rx * y1p / ry);
-    float cyp = factor * (-ry * x1p / rx);
+    double cxp = factor * (radiusX * y1p / radiusY);
+    double cyp = factor * (-radiusY * x1p / radiusX);
 
-    float cx = cosPhi * cxp - sinPhi * cyp + (startX + endX) * 0.5f;
-    float cy = sinPhi * cxp + cosPhi * cyp + (startY + endY) * 0.5f;
+    double cx = cosPhi * cxp - sinPhi * cyp + (double(startX) + endX) * 0.5;
+    double cy = sinPhi * cxp + cosPhi * cyp + (double(startY) + endY) * 0.5;
 
     // Compute start and sweep angles
-    float v1x = (x1p - cxp) / rx, v1y = (y1p - cyp) / ry;
-    float v2x = (-x1p - cxp) / rx, v2y = (-y1p - cyp) / ry;
+    double v1x = (x1p - cxp) / radiusX, v1y = (y1p - cyp) / radiusY;
+    double v2x = (-x1p - cxp) / radiusX, v2y = (-y1p - cyp) / radiusY;
 
-    float startAngle = VectorAngle2D(1.0f, 0.0f, v1x, v1y);
-    float deltaAngle = VectorAngle2D(v1x, v1y, v2x, v2y);
+    double startAngle = std::atan2(v1y,v1x);
+    double deltaAngle = std::atan2(v1x*v2y-v1y*v2x,v1x*v2x+v1y*v2y);
 
     if (!sweep && deltaAngle > 0.0f) {
         deltaAngle -= 2.0f * kPi;
@@ -1088,14 +1108,14 @@ inline void FlattenSvgArc(float startX, float startY, float endX, float endY,
     }
 
     // Generate points along the arc
-    int steps = ComputeArcStepCount(std::max(rx, ry), deltaAngle, tolerance);
+    int steps = ComputeArcStepCount(std::max(radiusX, radiusY), deltaAngle, tolerance);
     for (int i = 1; i <= steps; ++i) {
-        float t = static_cast<float>(i) / static_cast<float>(steps);
-        float angle = startAngle + deltaAngle * t;
-        float x = cosPhi * (rx * std::cos(angle)) - sinPhi * (ry * std::sin(angle)) + cx;
-        float y = sinPhi * (rx * std::cos(angle)) + cosPhi * (ry * std::sin(angle)) + cy;
-        outPoints.push_back(x);
-        outPoints.push_back(y);
+        double t = static_cast<float>(i) / static_cast<float>(steps);
+        double angle = startAngle + deltaAngle * t;
+        double x = cosPhi * (radiusX * std::cos(angle)) - sinPhi * (radiusY * std::sin(angle)) + cx;
+        double y = sinPhi * (radiusX * std::cos(angle)) + cosPhi * (radiusY * std::sin(angle)) + cy;
+        outPoints.push_back(i == steps ? endX : static_cast<float>(x));
+        outPoints.push_back(i == steps ? endY : static_cast<float>(y));
     }
 }
 
@@ -1117,6 +1137,9 @@ constexpr int kTagMoveTo = 2;
 constexpr int kTagQuadTo = 3;
 constexpr int kTagArcTo = 4;
 constexpr int kTagClosePath = 5;
+constexpr int kTagStrokeFlags = 6;
+constexpr int kTagStrokeCaps = 7;
+constexpr int kTagEdgeMode = 8;
 
 // ============================================================================
 // Path command flattening
@@ -1130,6 +1153,11 @@ inline uint32_t DispatchPathCommand(const float* commands, uint32_t i, uint32_t 
                                      std::vector<float>& outPoints, float tolerance) {
     int tag = static_cast<int>(commands[i]);
     switch (tag) {
+    case kTagStrokeFlags:
+    case kTagEdgeMode:
+        return i + 1 < commandLength ? 2 : 0;
+    case kTagStrokeCaps:
+        return i + 3 < commandLength ? 4 : 0;
     case kTagLineTo:
         if (i + 2 < commandLength) {
             float x = commands[i + 1], y = commands[i + 2];
@@ -1226,25 +1254,41 @@ inline std::vector<Contour> FlattenPathToContours(float startX, float startY,
     float curX = startX, curY = startY;
     float subpathStartX = startX, subpathStartY = startY;
     uint32_t i = 0;
+    uint8_t strokeFlags = 1;
+    int8_t edgeMode = -1;
     while (i < commandLength) {
         int tag = static_cast<int>(commands[i]);
-        if (tag == kTagMoveTo && i + 2 < commandLength) {
+        if (tag == kTagEdgeMode && i + 1 < commandLength) {
+            edgeMode = current.edgeMode = static_cast<int8_t>(commands[i + 1]);
+            i += 2;
+        } else if (tag == kTagStrokeFlags && i + 1 < commandLength) {
+            strokeFlags = static_cast<uint8_t>(commands[i + 1]) & 3;
+            i += 2;
+        } else if (tag == kTagStrokeCaps && i + 3 < commandLength) {
+            current.startCap = static_cast<int8_t>(commands[i + 1]);
+            current.endCap = static_cast<int8_t>(commands[i + 2]);
+            current.dashCap = static_cast<int8_t>(commands[i + 3]);
+            i += 4;
+        } else if (tag == kTagMoveTo && i + 2 < commandLength) {
             // MoveTo: finish current contour and start a new one
             if (current.VertexCount() >= 2) {
                 contours.push_back(std::move(current));
             }
             current = Contour();
+            current.edgeMode = edgeMode;
             float x = commands[i + 1], y = commands[i + 2];
             current.points.push_back(x);
             current.points.push_back(y);
             curX = x; curY = y;
             subpathStartX = x; subpathStartY = y;
+            strokeFlags = 1;
             i += 3;
         } else if (tag == kTagClosePath) {
             // Close: add line back to subpath start
             if (std::abs(curX - subpathStartX) > 1e-4f || std::abs(curY - subpathStartY) > 1e-4f) {
                 current.points.push_back(subpathStartX);
                 current.points.push_back(subpathStartY);
+                current.segmentFlags.push_back(1);
             }
             curX = subpathStartX; curY = subpathStartY;
             current.closed = true;
@@ -1253,12 +1297,17 @@ inline std::vector<Contour> FlattenPathToContours(float startX, float startY,
                 contours.push_back(std::move(current));
             }
             current = Contour();
+            current.edgeMode = edgeMode;
             current.points.push_back(subpathStartX);
             current.points.push_back(subpathStartY);
             i += 1;
         } else {
+            const auto previousCount = current.VertexCount();
             uint32_t consumed = DispatchPathCommand(commands, i, commandLength, curX, curY, current.points, tolerance);
             if (consumed == 0) break;
+            for (uint32_t v = previousCount; v < current.VertexCount(); ++v)
+                current.segmentFlags.push_back(v == previousCount ? strokeFlags : (strokeFlags | 2));
+            strokeFlags = 1;
             i += consumed;
         }
     }

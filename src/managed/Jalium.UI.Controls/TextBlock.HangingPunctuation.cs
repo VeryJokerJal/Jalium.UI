@@ -25,9 +25,7 @@ public partial class TextBlock
     private bool HasAuthoredHangingPunctuationOnInlines()
     {
         foreach (var range in GetInlineTextRanges())
-            if (range.Run.GetValueSourceInternal(
-                    CssFlowProperties.HangingPunctuationProperty).BaseValueSource !=
-                BaseValueSource.Default)
+            if (HasAuthoredFlowValue(range.Run, CssFlowProperties.HangingPunctuationProperty))
                 return true;
         return false;
     }

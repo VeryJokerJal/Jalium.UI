@@ -29,7 +29,7 @@
 | Windows 10/11 | `Jalium.UI.Desktop` · `win-x64`、`win-arm64` 包布局 | Win32 | DirectX 12、软件渲染；可选 Vulkan | x64 是主要源码构建目标；已有 ARM64 打包路径，但尚无同等级 CI 验证 |
 | Linux 桌面 | `Jalium.UI.Linux` · glibc/musl x64/Arm64 布局 | X11、Wayland | Vulkan、软件渲染 | 已提供；各 RID 的验证程度见[状态矩阵](docs/linux-parity-status.md) |
 | Android 7.0+（API 24+） | `Jalium.UI.Android` · `arm64-v8a`、`x86_64` | Android 原生 Activity | Vulkan、软件渲染 | 已提供平台包 |
-| macOS | 暂无入口包 | 尚未实现 | 仅有 Metal 渲染器源码 | 尚非发行目标 |
+| macOS | `Jalium.UI.MacOS` | AppKit 开发宿主 | Metal + CoreText | Apple Silicon 开发阶段；[构建与验证](docs/macos-development.md) |
 
 ## 为什么选择 Jalium.UI
 
@@ -75,7 +75,7 @@
 | `jalium.native.core` | Windows、Linux、Android | 原生核心运行时、后端注册表、上下文管理 |
 | `jalium.native.d3d12` | Windows | DirectX 12 渲染目标与 Vello GPU 管线 |
 | `jalium.native.vulkan` | Windows（可选）、Linux、Android | Vulkan 渲染后端 |
-| `jalium.native.metal` | 仅源码 | Metal 渲染器实现；macOS 窗口/平台宿主尚未实现 |
+| `jalium.native.metal` | macOS 开发阶段 | Metal 渲染器和 CoreText；已接入 AppKit 宿主及 Gallery 入口 |
 | `jalium.native.software` | Windows、Linux、Android | 基于 CPU 的软件渲染回退 |
 | `jalium.native.platform` | Windows、Linux、Android | 窗口、输入与事件的平台抽象 |
 | `jalium.native.text` | Linux、Android | 自研文本引擎（sfnt/cmap/glyf/CFF + OT shaper；Linux 上仅用 fontconfig 做字体发现） |
@@ -445,7 +445,7 @@ Jalium.UI/
       jalium.native.core/      # 原生运行时核心、后端注册表
       jalium.native.d3d12/     # DirectX 12 + Vello GPU 后端
       jalium.native.vulkan/    # Vulkan 后端
-      jalium.native.metal/     # Metal 渲染器源码（尚无 macOS 宿主）
+      jalium.native.metal/     # Metal 渲染器和 CoreText（macOS 开发阶段）
       jalium.native.software/  # CPU 软件渲染器
       jalium.native.platform/  # 平台抽象层
       jalium.native.text/      # 自研文本引擎（非 Windows）

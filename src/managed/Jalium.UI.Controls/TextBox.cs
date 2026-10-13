@@ -14,9 +14,10 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// A control for editing plain text.
 /// </summary>
-public class TextBox : TextBoxBase, IImeSupport, IAddChild
+public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 {
     private InputMethodWeakSubscription<TextBox>? _imeSubscription;
+    private readonly MacOSWordNavigationLayout _macWordLayout = new();
     #region Automation
 
     /// <inheritdoc />
@@ -453,6 +454,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
     {
+        _macWordLayout.Dispose();
         _imeSubscription?.Detach();
         if (ReferenceEquals(InputMethod.CurrentTarget, this))
         {
@@ -492,14 +494,15 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     protected override string GetText() => Text;
 
     /// <inheritdoc />
-    protected override void SetText(string value) => Text = value;
+    protected override void SetText(string value) => SetCurrentValue(TextProperty, value);
 
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
         var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize;
-        var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
+        var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize,
+            FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle());
         return fontMetrics.LineHeight;
     }
 
@@ -696,6 +699,49 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         return GetCurrentTextContentHeight();
     }
 
+    protected override double GetHorizontalScrollExtentWidth() => TextWrapping == TextWrapping.NoWrap
+        ? base.GetHorizontalScrollExtentWidth()
+        : GetHorizontalScrollViewportWidth();
+
+    protected override double GetHorizontalScrollViewportWidth() => GetCurrentTextContentWidth();
+
+    protected override int GetMacOSWordBoundary(bool right, bool shift, out bool backwardAffinity)
+    {
+        if (_macWordLayout.TryNavigate(Text,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+            FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(),
+            TextWrapping == TextWrapping.NoWrap ? double.PositiveInfinity : Math.Max(1, GetCurrentTextContentWidth()),
+            GetLineHeight(), _caretIndex, _selectionStart, shift ? 0 : _selectionLength,
+            right, _caretHasBackwardAffinity, out var destination))
+        {
+            backwardAffinity = destination.BackwardAffinity != 0;
+            return (int)destination.TextPosition;
+        }
+        return base.GetMacOSWordBoundary(right, shift, out backwardAffinity);
+    }
+
+    protected override int GetMacOSLineBoundary(bool right, out bool backwardAffinity)
+    {
+        var (lineIndex, column) = GetLineColumnFromCharIndex(_caretIndex);
+        string text = GetLineTextInternal(lineIndex);
+        if (TextMeasurement.TryGetVisualLineMetrics(text,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+            FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(),
+            TextWrapping == TextWrapping.NoWrap ? float.PositiveInfinity : (float)Math.Max(1, GetCurrentTextContentWidth()),
+            (uint)Math.Clamp(column, 0, text.Length), _caretHasBackwardAffinity, out var row))
+        {
+            backwardAffinity = (right ? row.RightBackwardAffinity : row.LeftBackwardAffinity) != 0;
+            return GetLineStartIndex(lineIndex) + (int)(right ? row.RightCaretPosition : row.LeftCaretPosition);
+        }
+        return base.GetMacOSLineBoundary(right, out backwardAffinity);
+    }
+
+    private (uint position, bool trailing) GetActiveCaretEdge(string text, int column)
+    {
+        bool trailing = _caretHasBackwardAffinity && column > 0;
+        return ((uint)(trailing ? GraphemeClusters.PreviousBoundary(text, column) : column), trailing);
+    }
+
     private double GetCurrentTextContentWidth()
     {
         var border = BorderThickness;
@@ -758,18 +804,13 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// paragraph never overflows horizontally, so horizontalOffset must stay
     /// at 0. We only need vertical scrolling, and it has to be wrap-aware
     /// too — walk the cumulative visual-row offset to the caret's logical
-    /// line, then ask DirectWrite for the caret's wrapped y within that
-    /// line. In NoWrap mode the base path is already correct.
+    /// line, then query its shaped glyph edge. The same glyph query is needed
+    /// for NoWrap: a logical prefix width is not the caret x in RTL text.
     /// </summary>
     protected override void EnsureCaretVisible()
     {
-        if (TextWrapping == TextWrapping.NoWrap)
-        {
-            base.EnsureCaretVisible();
-            return;
-        }
-
-        _horizontalOffset = 0;
+        bool wraps = TextWrapping != TextWrapping.NoWrap;
+        if (wraps) _horizontalOffset = 0;
 
         var border = BorderThickness;
         var padding = Padding;
@@ -799,9 +840,12 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         var lineText = GetLineTextInternal(lineIndex);
         var clampedColumn = Math.Clamp(columnIndex, 0, lineText.Length);
 
+        var caretEdge = GetActiveCaretEdge(lineText, clampedColumn);
+
         double logicalTop = GetVisualRowsBeforeLogicalLine(lineIndex) * lineHeight;
         double caretTop = logicalTop;
         double caretHeight = lineHeight;
+        double caretX = GetCharacterXInLine(lineText, clampedColumn);
 
         if (lineText.Length > 0)
         {
@@ -812,8 +856,9 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
             if (TextMeasurement.HitTestTextPositionWrapped(
                     lineText, fontFamily, fontSize, fontWeight, fontStyle,
-                    (float)contentWidth, (uint)clampedColumn, false, out var hit))
+                    wraps ? (float)contentWidth : float.PositiveInfinity, caretEdge.position, caretEdge.trailing, out var hit))
             {
+                caretX = hit.CaretX;
                 caretTop = logicalTop + hit.CaretY;
                 if (hit.CaretHeight > 0) caretHeight = hit.CaretHeight;
             }
@@ -831,21 +876,31 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
             _verticalOffset = 0;
         }
 
-        _horizontalOffset = 0;
+        if (!wraps)
+        {
+            caretX = Math.Round(caretX);
+            if (caretX < _horizontalOffset) _horizontalOffset = caretX;
+            else if (caretX > _horizontalOffset + contentWidth - 2)
+                _horizontalOffset = caretX - contentWidth + 2;
+            double maximum = Math.Max(0, Math.Round(MeasureTextWidth(lineText)) - contentWidth + 2);
+            _horizontalOffset = Math.Round(Math.Clamp(_horizontalOffset, 0, maximum));
+        }
+        else _horizontalOffset = 0;
         _verticalOffset = Math.Round(Math.Max(0, _verticalOffset));
     }
 
     /// <summary>
-    /// Wrap-aware mouse-to-caret mapping. The base implementation treats
-    /// contentY / lineHeight as a logical-line index and does a single-line
-    /// hit-test, which is wrong whenever a logical line wraps to multiple
-    /// visual rows: clicking anywhere in rows 2+ snaps to the wrong logical
-    /// line and the x-axis hit-test runs against a single-line layout whose
-    /// character positions don't match the wrapped glyphs. We walk the same
-    /// accumulated-visual-row offset DrawText uses to find the clicked
-    /// logical line, then hit-test inside the wrapped layout at (x, localY)
-    /// so the resulting caret index matches the glyph the user clicked on.
+    /// Keeps a mouse hit on the preceding row at a shared soft-wrap insertion offset.
     /// </summary>
+    protected override bool GetCaretBackwardAffinityFromPosition(Point position, int index)
+    {
+        if (TextWrapping == TextWrapping.NoWrap || index <= 0 || index > Text.Length) return false;
+        Rect leading = GetRectFromCharacterIndex(index);
+        Rect trailing = GetRectFromCharacterIndex(GraphemeClusters.PreviousBoundary(Text, index), true);
+        return leading.Y > trailing.Y && position.Y < leading.Y;
+    }
+
+    /// <summary>Maps a mouse point through the same wrapped layout used to draw text.</summary>
     protected override int GetCaretIndexFromPosition(Point position)
     {
         var border = BorderThickness;
@@ -853,13 +908,11 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         var lineHeight = Math.Round(GetLineHeight());
 
         // Mouse event positions come from e.GetPosition(this) which is
-        // always relative to the TextBox itself — even when there's a
-        // PART_ContentHost in the template, that host is positioned inside
-        // the TextBox's border+padding, so we still have to subtract both
-        // to reach the content-area origin where DrawText paints (this
-        // matches the base class's GetCaretIndexFromPosition).
-        var contentX = position.X - border.Left - padding.Left + _horizontalOffset;
-        var contentY = position.Y - border.Top - padding.Top + _verticalOffset;
+        // relative to the TextBox itself. Use the actual template renderer's
+        // origin, which can differ from the control's border and padding.
+        Point contentOrigin = GetTextContentOrigin();
+        var contentX = position.X - contentOrigin.X + _horizontalOffset;
+        var contentY = position.Y - contentOrigin.Y + _verticalOffset;
 
         // The wrap width used during rendering is the content-area width.
         // In PART_ContentHost mode that's the size the host was arranged to
@@ -868,9 +921,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         // unconditionally (as an earlier revision did) overshoots in
         // content-host mode, and if it happens to be 0 during first layout
         // the hit-test degenerates, yanking _horizontalOffset off-screen.
-        double contentWidth = HasContentHost
-            ? _textContentSize.Width
-            : Math.Max(0, RenderSize.Width - border.Left - border.Right - padding.Left - padding.Right);
+        double contentWidth = GetTextViewportRect().Width;
         if (contentWidth <= 0) contentWidth = Math.Max(0, ActualWidth - border.Left - border.Right - padding.Left - padding.Right);
 
         EnsureLinesValid();
@@ -879,9 +930,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         // Mirror the render-side VerticalContentAlignment shift so clicks in
         // the empty space above vertically-centered text still map to the
         // first visible row rather than a non-existent row above the glyphs.
-        double contentHeightForShift = HasContentHost
-            ? _textContentSize.Height
-            : Math.Max(0, RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom);
+        double contentHeightForShift = GetTextViewportRect().Height;
         if (contentHeightForShift <= 0)
             contentHeightForShift = Math.Max(0, ActualHeight - border.Top - border.Bottom - padding.Top - padding.Bottom);
         var verticalContentShift = ComputeVerticalContentOffset(contentWidth, contentHeightForShift, lineHeight);
@@ -926,7 +975,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         // here: pass a very large maxWidth so DirectWrite doesn't wrap during
         // the hit-test either, keeping hit-test and glyph positions aligned.
         float hitMaxWidth = TextWrapping == TextWrapping.NoWrap
-            ? 100000f
+            ? float.PositiveInfinity
             : (float)Math.Max(1, contentWidth);
 
         // Row-boundary tolerance: DirectWrite assigns every pixel strictly by
@@ -1121,8 +1170,9 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         var (lineIndex, columnIndex) = GetLineColumnFromCharIndex(charIndex);
         var lineText = GetLineTextInternal(lineIndex);
         columnIndex = Math.Clamp(columnIndex, 0, lineText.Length);
-        var x = viewport.X - _horizontalOffset;
-        var y = viewport.Y + GetVisualRowsBeforeLogicalLine(lineIndex) * lineHeight - _verticalOffset;
+        var x = viewport.X - Math.Round(_horizontalOffset);
+        var y = viewport.Y + ComputeVerticalContentOffset(viewport.Width, viewport.Height, lineHeight) +
+            GetVisualRowsBeforeLogicalLine(lineIndex) * lineHeight - Math.Round(_verticalOffset);
         var height = lineHeight;
 
         if (lineText.Length > 0 && TextMeasurement.HitTestTextPositionWrapped(
@@ -1131,7 +1181,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
                 FontSize,
                 FontWeight.ToOpenTypeWeight(),
                 FontStyle.ToOpenTypeStyle(),
-                TextWrapping == TextWrapping.NoWrap ? 100000f : (float)Math.Max(1, viewport.Width),
+                TextWrapping == TextWrapping.NoWrap ? float.PositiveInfinity : (float)Math.Max(1, viewport.Width),
                 (uint)columnIndex,
                 trailingEdge,
                 out var hit))
@@ -1143,7 +1193,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         }
         else
         {
-            x += GetCharacterXInLine(lineText, columnIndex);
+            x += GetCharacterXInLine(lineText, trailingEdge ? GraphemeClusters.NextBoundary(lineText, columnIndex) : columnIndex);
         }
 
         return new Rect(Math.Round(x), Math.Round(y), 0, Math.Max(1, Math.Round(height)));
@@ -1216,11 +1266,13 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         var padding = Padding;
         var width = HasContentHost
             ? _textContentSize.Width
-            : Math.Max(0, RenderSize.Width - border.Left - border.Right - padding.Left - padding.Right);
+            : Math.Max(0, Math.Round(RenderSize.Width - border.Left - border.Right - padding.Left - padding.Right));
         var height = HasContentHost
             ? _textContentSize.Height
-            : Math.Max(0, RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom);
-        return new Rect(border.Left + padding.Left, border.Top + padding.Top, width, height);
+            : Math.Max(0, Math.Round(RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom));
+        Point origin = GetTextContentOrigin();
+        if (!HasContentHost) origin = new Point(Math.Round(origin.X), Math.Round(origin.Y));
+        return new Rect(origin.X, origin.Y, width, height);
     }
 
     /// <summary>
@@ -2190,52 +2242,47 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         if (string.IsNullOrEmpty(_imeCompositionString))
             return;
 
-        var text = Text;
-        var (lineIndex, columnIndex) = GetLineColumnFromCharIndex(_caretIndex);
+        Rect anchor = GetRectFromCharacterIndex(Math.Clamp(_imeCompositionStart, 0, Text.Length));
+        Point origin = HasContentHost ? GetTextContentOrigin() : Point.Zero;
+        var x = anchor.X - origin.X;
+        var y = anchor.Y - origin.Y;
+        float width = GetImeCompositionWidth(anchor);
 
-        // Ensure valid indices
-        if (lineIndex < 0) lineIndex = 0;
-        if (columnIndex < 0) columnIndex = 0;
-
-        var lineText = GetLineTextInternal(lineIndex);
-        var clampedColumn = Math.Clamp(columnIndex, 0, lineText.Length);
-
-        // Round scroll offsets to prevent sub-pixel jittering
-        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
-        var roundedVerticalOffset = Math.Round(_verticalOffset);
-
-        var x = Math.Round(contentRect.X + GetCharacterXInLine(lineText, clampedColumn) - roundedHorizontalOffset);
-        // Use wrap-aware visual row offset so IME overlay stays on the same
-        // line as the text it is composing in.
-        EnsureVisualLineCounts(Math.Max(0, contentRect.Width), lineHeight);
-        var visualRowOffset = GetVisualRowsBeforeLogicalLine(lineIndex);
-        var y = Math.Round(contentRect.Y + visualRowOffset * lineHeight - roundedVerticalOffset);
-
-        // Draw composition background
-        var compositionWidth = MeasureTextWidth(_imeCompositionString);
-        var compositionBgBrush = s_compositionBgBrush;
-        dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
+        // Decoration follows every visible row of the same shaped layout.
+        var fragments = new List<Rect>();
+        for (int offset = 0; offset < _imeCompositionString.Length;)
+        {
+            if (!((IImeSupport)this).TryGetImeTextRangeGeometry(offset, _imeCompositionString.Length - offset,
+                true, out var fragment) || fragment.Length <= 0) break;
+            Rect row = fragment.Rectangle;
+            fragments.Add(new Rect(row.X - origin.X, row.Y - origin.Y, row.Width, row.Height));
+            offset += fragment.Length;
+        }
+        foreach (Rect row in fragments)
+            dc.DrawRectangle(s_compositionBgBrush, null, row);
 
         // Draw composition text
         var compositionText = new FormattedText(_imeCompositionString, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
-            MaxTextWidth = contentRect.Width,
-            MaxTextHeight = lineHeight
+            FontWeight = FontWeight.ToOpenTypeWeight(),
+            FontStyle = FontStyle.ToOpenTypeStyle(),
+            MaxTextWidth = width
         };
         dc.DrawText(compositionText, new Point(x, y));
 
         // Draw underline for composition string
-        var underlinePen = s_compositionUnderlinePen;
-        dc.DrawLine(underlinePen, new Point(x, y + lineHeight - 2), new Point(x + compositionWidth, y + lineHeight - 2));
+        foreach (Rect row in fragments)
+            dc.DrawLine(s_compositionUnderlinePen, new Point(row.Left, row.Bottom - 2), new Point(row.Right, row.Bottom - 2));
 
         // Draw cursor within composition string
         if (_imeCompositionCursor >= 0 && _imeCompositionCursor <= _imeCompositionString.Length)
         {
-            var cursorTextWidth = MeasureTextWidth(_imeCompositionString.Substring(0, _imeCompositionCursor));
-            var cursorX = x + cursorTextWidth;
+            Rect cursor = GetImeCompositionCaret(ImeTextEncoding.SnapToGraphemeBoundary(_imeCompositionString,
+                _imeCompositionCursor, forward: false), false);
             var cursorPen = s_compositionCursorPen;
-            dc.DrawLine(cursorPen, new Point(cursorX, y + 2), new Point(cursorX, y + lineHeight - 2));
+            dc.DrawLine(cursorPen, new Point(cursor.X - origin.X, cursor.Y - origin.Y + 2),
+                new Point(cursor.X - origin.X, cursor.Bottom - origin.Y - 2));
         }
     }
 
@@ -2281,24 +2328,20 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         double caretY;
         double caretHeight = lineHeight;
 
-        int visualRowsForLine = lineIndex < _lineVisualCounts.Count ? _lineVisualCounts[lineIndex] : 1;
-        if (visualRowsForLine > 1 && lineText.Length > 0)
+        if (lineText.Length > 0)
         {
-            // Caret lives inside a wrapped paragraph — the base-class
-            // GetCharacterXInLine returns a single-line x that bears no
-            // relation to the wrapped glyph position, and anchoring y to the
-            // paragraph top makes the caret jump to the first wrapped row
-            // regardless of which wrap row the caret index actually belongs
-            // to. Use DirectWrite's wrapped hit-test to land on the exact
-            // (x, y) of the glyph the user clicked.
+            // Query the actual glyph edge, including a preceding-row caret at
+            // a soft break and secondary carets at bidi run boundaries.
             var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize;
             var fontWeight = FontWeight.ToOpenTypeWeight();
             var fontStyle = FontStyle.ToOpenTypeStyle();
+            var edge = GetActiveCaretEdge(lineText, clampedColumn);
 
             if (TextMeasurement.HitTestTextPositionWrapped(
                     lineText, fontFamily, fontSize, fontWeight, fontStyle,
-                    (float)wrapWidthForCaret, (uint)clampedColumn, false, out var caretHit))
+                    TextWrapping == TextWrapping.NoWrap ? float.PositiveInfinity : (float)Math.Max(1, wrapWidthForCaret),
+                    edge.position, edge.trailing, out var caretHit))
             {
                 caretX = Math.Round(contentRect.X + caretHit.CaretX - roundedHorizontalOffset);
                 caretY = Math.Round(paragraphTop + caretHit.CaretY);
@@ -2367,46 +2410,11 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     {
         if (IsReadOnly || string.IsNullOrEmpty(textToInsert))
             return;
-
-        // Apply CharacterCasing to every code path that funnels through
-        // InsertText — keyboard input, paste and IME commit — so the casing
-        // rule is enforced uniformly without intercepting each call site.
-        textToInsert = ApplyCharacterCasing(textToInsert);
-
-        PushUndo();
-
-        // Delete selection if any
-        if (_selectionLength > 0)
-        {
-            DeleteSelectionInternal();
-        }
-
-        var text = Text;
-        var maxLength = MaxLength;
-
-        // Ensure caret is within bounds
-        if (_caretIndex < 0) _caretIndex = 0;
-        if (_caretIndex > text.Length) _caretIndex = text.Length;
-
-        // Enforce max length
-        if (maxLength > 0)
-        {
-            var availableSpace = maxLength - text.Length;
-            if (availableSpace <= 0)
-                return;
-
-            if (textToInsert.Length > availableSpace)
-            {
-                textToInsert = textToInsert.Substring(0, availableSpace);
-            }
-        }
-
-        // Insert text
-        Text = text.Substring(0, _caretIndex) + textToInsert + text.Substring(_caretIndex);
-        _caretIndex += textToInsert.Length;
-
-        ResetCaretBlink();
-        EnsureCaretVisible();
+        int start = Math.Clamp(_selectionLength > 0 ? _selectionStart : _caretIndex, 0, Text.Length);
+        int length = Math.Clamp(_selectionLength, 0, Text.Length - start);
+        // Keyboard, paste and IME share casing, grapheme-safe length limits,
+        // one replacement notification and the final selection/caret state.
+        ((IImeSupport)this).TryReplaceImeText(start, length, textToInsert);
     }
 
     /// <inheritdoc />
@@ -2452,6 +2460,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     {
         if (d is TextBox textBox)
         {
+            textBox._caretHasBackwardAffinity = false;
             textBox._linesDirty = true;
             textBox.InvalidateMeasure();
             textBox.InvalidateTextContentMeasure();
@@ -2494,7 +2503,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
             TextChange change = CreateTextChange(oldText, newText);
             var eventArgs = new TextChangedEventArgs(
                 TextChangedEvent,
-                UndoAction.Create,
+                textBox.CurrentUndoAction,
                 new[] { change });
             textBox.OnTextChanged(eventArgs);
         }
@@ -2612,33 +2621,103 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// <inheritdoc />
     internal Rect GetImeCaretRectangle()
     {
-        Point bottom = GetCaretScreenPosition();
-        double height = Math.Max(1, Math.Round(GetLineHeight()));
-        return new Rect(bottom.X, bottom.Y - height, 1, height);
+        Rect caret = _isImeComposing ? GetImeCompositionCaret(
+            ImeTextEncoding.SnapToGraphemeBoundary(_imeCompositionString,
+                Math.Clamp(_imeCompositionCursor, 0, _imeCompositionString.Length), forward: false), false) :
+            GetActiveCaretRectangle();
+        return new Rect(caret.X, caret.Y, 1, caret.Height);
+    }
+
+    private Rect GetActiveCaretRectangle()
+    {
+        int index = Math.Clamp(_caretIndex, 0, Text.Length);
+        return _caretHasBackwardAffinity && index > 0 ?
+            GetRectFromCharacterIndex(GraphemeClusters.PreviousBoundary(Text, index), true) :
+            GetRectFromCharacterIndex(index);
     }
 
     private Point GetCaretScreenPosition()
     {
+        Rect caret = GetImeCaretRectangle();
+        return new Point(caret.X, caret.Bottom);
+    }
+
+    private float GetImeCompositionWidth(Rect anchor) => TextWrapping == TextWrapping.NoWrap ? float.PositiveInfinity :
+        (float)Math.Max(1, GetTextViewportRect().Right - anchor.X);
+
+    private Rect GetImeCompositionCaret(int index, bool trailing)
+    {
+        Rect anchor = GetRectFromCharacterIndex(Math.Clamp(_imeCompositionStart, 0, Text.Length));
+        return ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, new Point(anchor.X, anchor.Y),
+            anchor.Height, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+            FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), GetImeCompositionWidth(anchor), MeasureTextWidth);
+    }
+
+    bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
+    {
+        geometry = default;
+        if (composition && !_isImeComposing) return false;
+        if (!composition && length == 0 && start == _caretIndex && start >= 0 && start <= Text.Length)
+        {
+            geometry = new ImeTextRangeGeometry(GetImeCaretRectangle(), start, 0);
+            return true;
+        }
+        if (composition)
+        {
+            Rect anchor = GetRectFromCharacterIndex(Math.Clamp(_imeCompositionStart, 0, Text.Length));
+            if (ImeTextGeometry.TryGetFormattedRange(_imeCompositionString, start, length, new Point(anchor.X, anchor.Y),
+                FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize,
+                FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), GetImeCompositionWidth(anchor), out geometry)) return true;
+        }
+        else if (TryGetImeDocumentGeometry(start, length, out geometry)) return true;
+        return ImeTextGeometry.TryGetFirstLineRange(composition ? _imeCompositionString : Text, start, length,
+            composition ? GetImeCompositionCaret : GetRectFromCharacterIndex, out geometry);
+    }
+
+    private bool TryGetImeDocumentGeometry(int start, int length, out ImeTextRangeGeometry geometry)
+    {
+        geometry = default;
+        if (!ImeTextEncoding.TryNormalizeUtf16Range(Text, start, length, out start, out length)) return false;
         EnsureLinesValid();
+        Rect viewport = GetTextViewportRect();
+        double lineHeight = Math.Max(1, Math.Round(GetLineHeight()));
+        EnsureVisualLineCounts(Math.Max(0, viewport.Width), lineHeight);
+        var (lineIndex, column) = GetLineColumnFromCharIndex(start);
+        string text = GetLineTextInternal(lineIndex);
+        column = Math.Clamp(column, 0, text.Length);
+        var origin = new Point(viewport.X - Math.Round(_horizontalOffset), viewport.Y +
+            ComputeVerticalContentOffset(viewport.Width, viewport.Height, lineHeight) +
+            GetVisualRowsBeforeLogicalLine(lineIndex) * lineHeight - Math.Round(_verticalOffset));
+        if (!ImeTextGeometry.TryGetFormattedRange(text, column, Math.Min(length, text.Length - column), origin,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize,
+            FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), TextWrapping == TextWrapping.NoWrap ?
+            float.PositiveInfinity : (float)Math.Max(1, viewport.Width), out var fragment)) return false;
+        int actualLength = fragment.Length;
+        if (column + actualLength == text.Length && lineIndex + 1 < _lines.Count)
+            actualLength += Math.Min(length - actualLength,
+                _lines[lineIndex + 1].StartIndex - (_lines[lineIndex].StartIndex + text.Length));
+        Rect rect = fragment.Rectangle;
+        double x = Math.Round(rect.X), y = Math.Round(rect.Y);
+        geometry = new(new Rect(x, y, Math.Max(0, Math.Round(rect.Right) - x),
+            Math.Max(1, Math.Round(rect.Height))), start, actualLength);
+        return length == 0 || actualLength > 0;
+    }
 
-        // Round line height for consistent positioning
-        var lineHeight = Math.Round(GetLineHeight());
-        var (lineIndex, columnIndex) = GetLineColumnFromCharIndex(_caretIndex);
-
-        // Ensure valid indices
-        if (lineIndex < 0) lineIndex = 0;
-        if (columnIndex < 0) columnIndex = 0;
-
-        var lineText = GetLineTextInternal(lineIndex);
-        var clampedColumn = Math.Clamp(columnIndex, 0, lineText.Length);
-
-        // Calculate x position using native hit testing for accuracy
-        double x = Padding.Left - _horizontalOffset + GetCharacterXInLine(lineText, clampedColumn);
-
-        // Calculate y position
-        double y = Padding.Top + (lineIndex * lineHeight) - _verticalOffset;
-
-        return new Point(x, y + lineHeight); // Position below the text line
+    bool IImeSupport.TryGetImeCharacterIndex(Point point, bool composition, out int index)
+    {
+        index = -1;
+        if (!GetTextViewportRect().Contains(point)) return false;
+        if (!composition)
+        {
+            index = ImeTextEncoding.SnapToGraphemeBoundary(Text, GetCharacterIndexFromPoint(point, snapToText: true), false);
+            return true;
+        }
+        if (!_isImeComposing) return false;
+        Rect anchor = GetRectFromCharacterIndex(Math.Clamp(_imeCompositionStart, 0, Text.Length));
+        return ImeTextGeometry.TryHitTest(_imeCompositionString, point, new Point(anchor.X, anchor.Y), anchor.Height,
+            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
+            FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), GetImeCompositionWidth(anchor),
+            MeasureTextWidth, requireTextBounds: true, out index);
     }
 
     /// <inheritdoc />
@@ -2649,10 +2728,16 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
 
-        // Delete any selected text first
-        if (_selectionLength > 0)
+        // AppKit pre-edit is provisional: cancellation must preserve selected
+        // committed text and must not add a deletion to the undo history.
+        if (OperatingSystem.IsMacOS())
+        {
+            _imeCompositionStart = _selectionLength > 0 ? _selectionStart : _caretIndex;
+        }
+        else if (_selectionLength > 0)
         {
             DeleteSelection();
+            _imeCompositionStart = _caretIndex;
         }
 
         InvalidateVisual();
@@ -2684,6 +2769,22 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     bool IImeSupport.DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
         => DeleteImeSurroundingTextCore(beforeUtf8ByteCount, afterUtf8ByteCount);
+
+    bool IImeSupport.TrySetImeSelection(int start, int length) => TrySetImeSelectionCore(start, length);
+
+    bool IImeSupport.TryReplaceImeText(int start, int length, string text)
+    {
+        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(Text, start, length, out start, out length))
+            return false;
+        text = ApplyCharacterCasing(text);
+        if (MaxLength > 0)
+        {
+            int available = Math.Max(0, MaxLength - (Text.Length - length));
+            if (text.Length > available)
+                text = text[..ImeTextEncoding.SnapToGraphemeBoundary(text, available, forward: false)];
+        }
+        return TryReplaceImeTextCore(start, length, text);
+    }
 
     Point IImeSupport.GetImeCaretPosition() => GetImeCaretPosition();
 
@@ -2948,4 +3049,3 @@ public class TextChangedEventArgs : RoutedEventArgs
 /// Delegate for handling TextChanged events.
 /// </summary>
 public delegate void TextChangedEventHandler(object sender, TextChangedEventArgs e);
-

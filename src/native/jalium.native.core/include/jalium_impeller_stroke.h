@@ -45,10 +45,16 @@ namespace jalium {
 // API contract (passed in as int32_t lineCap / lineJoin).
 // ---------------------------------------------------------------------------
 
-enum class ImpellerCap  : int32_t { Butt = 0, Square = 1, Round = 2 };
+enum class ImpellerCap  : int32_t { Butt = 0, Square = 1, Round = 2, Triangle = 3 };
 enum class ImpellerJoin : int32_t { Miter = 0, Bevel = 1, Round = 2 };
 
 namespace stroke_detail {
+
+inline uint32_t ArcSegments(float radius, float sweep, float tolerance) {
+    const float error = std::clamp(tolerance / std::max(radius, 1e-6f), 1e-6f, 1.0f);
+    const float angle = 2 * std::acos(1 - error);
+    return std::clamp(static_cast<uint32_t>(std::ceil(std::abs(sweep) / angle)), 2u, 4096u);
+}
 
 // Arc fans are built once as a flat {hub, a0, a1, …, aN} point list, then
 // either triangulated into a vertex/index mesh (GPU binary raster) or pushed
@@ -58,10 +64,10 @@ namespace stroke_detail {
 inline void BuildRoundCapArc(
     std::vector<float>& outXY,
     float cx, float cy, float nx, float ny,
-    float halfWidth, bool isStart)
+    float halfWidth, bool isStart, float tolerance = 0.125f)
 {
-    constexpr uint32_t kSegments = 8;
     constexpr float kPi = (float)M_PI;
+    const uint32_t kSegments = ArcSegments(halfWidth, kPi, tolerance);
 
     float angle0 = std::atan2(ny, nx);
     // The segment normal already points to one edge of the stroke. Sweep
@@ -87,10 +93,16 @@ inline bool BuildRoundJoinArc(
     std::vector<float>& outXY,
     float cx, float cy,
     float n0x, float n0y, float n1x, float n1y,
-    float halfWidth)
+    float halfWidth, float tolerance = 0.125f)
 {
     float cr = n0x * n1y - n0y * n1x;
-    if (std::abs(cr) < 1e-5f) return false; // nearly collinear normals
+    if (std::abs(cr) < 1e-5f) {
+        if (n0x * n1x + n0y * n1y < -0.999f) {
+            BuildRoundCapArc(outXY, cx, cy, n0x, n0y, halfWidth, false, tolerance);
+            return true;
+        }
+        return false;
+    }
 
     float sign = (cr > 0.0f) ? -1.0f : 1.0f;
     float a0x = n0x * sign, a0y = n0y * sign;
@@ -102,8 +114,7 @@ inline bool BuildRoundJoinArc(
     while (diff >  (float)M_PI) diff -= 2.0f * (float)M_PI;
     while (diff < -(float)M_PI) diff += 2.0f * (float)M_PI;
 
-    uint32_t segments = std::max(2u,
-        (uint32_t)std::ceil(std::abs(diff) / (float)M_PI * 8.0f));
+    uint32_t segments = ArcSegments(halfWidth, diff, tolerance);
 
     outXY.clear();
     outXY.push_back(cx);
@@ -219,7 +230,10 @@ inline bool ExpandStrokePath(
     ImpellerCap cap, bool closed,
     float brushR, float brushG, float brushB, float brushA,
     std::vector<Contour>* collectContours = nullptr,
-    float featherScaleInSrc = 1.0f)
+    float featherScaleInSrc = 1.0f,
+    ImpellerCap startCap = static_cast<ImpellerCap>(-1),
+    ImpellerCap endCap = static_cast<ImpellerCap>(-1),
+    const uint8_t* edgeFlags = nullptr)
 {
     if (pointCount < 2 || flatPoints == nullptr) return false;
 
@@ -228,6 +242,7 @@ inline bool ExpandStrokePath(
     // next real corner. Keep the all-coincident case intact so an explicit
     // zero-length round-capped stroke can still paint a dot.
     std::vector<float> compactPoints;
+    std::vector<uint8_t> compactFlags;
     for (uint32_t i = 1; i < pointCount; ++i) {
         const float dx = flatPoints[i * 2] - flatPoints[(i - 1) * 2];
         const float dy = flatPoints[i * 2 + 1] - flatPoints[(i - 1) * 2 + 1];
@@ -242,17 +257,21 @@ inline bool ExpandStrokePath(
             if (sx * sx + sy * sy > 1e-12f) {
                 compactPoints.push_back(nextX);
                 compactPoints.push_back(nextY);
+                if (edgeFlags) compactFlags.push_back(edgeFlags[j - 1]);
             }
         }
         if (compactPoints.size() >= 4) {
             flatPoints = compactPoints.data();
             pointCount = static_cast<uint32_t>(compactPoints.size() / 2);
+            if (edgeFlags) edgeFlags = compactFlags.data();
         }
         break;
     }
 
     // featherScaleInSrc must be > 0; clamp NaN / negatives to 1 (pixel-space).
     if (!(featherScaleInSrc > 0.0f)) featherScaleInSrc = 1.0f;
+    if (static_cast<int32_t>(startCap) < 0) startCap = cap;
+    if (static_cast<int32_t>(endCap) < 0) endCap = cap;
 
     // 0.5 screen-pixel half-width, expressed in the caller's coordinate space.
     // All the geometry below uses this for both the AA feather skirt and the
@@ -313,6 +332,29 @@ inline bool ExpandStrokePath(
             }
         }
     };
+
+    bool hasLength = false;
+    for (uint32_t i = 1; i < pointCount; ++i)
+        hasLength |= flatPoints[i * 2] != flatPoints[0] || flatPoints[i * 2 + 1] != flatPoints[1];
+    if (!hasLength) {
+        const float x = flatPoints[0], y = flatPoints[1];
+        auto emitDot = [&](const std::vector<float>& shape) {
+            if (collect) pushContourCCW(shape.data(), uint32_t(shape.size() / 2));
+            else stroke_detail::FanToMesh<TVertex>(verts, indices, shape, r, g, b, a);
+        };
+        if (startCap == ImpellerCap::Round || endCap == ImpellerCap::Round) {
+            stroke_detail::BuildRoundCapArc(arcXY, x, y, 0, 1, halfWidth, true, 0.125f * featherScaleInSrc);
+            emitDot(arcXY);
+            stroke_detail::BuildRoundCapArc(arcXY, x, y, 0, 1, halfWidth, false, 0.125f * featherScaleInSrc);
+            emitDot(arcXY);
+        } else if (startCap == ImpellerCap::Square || endCap == ImpellerCap::Square) {
+            emitDot({x-halfWidth,y-halfWidth,x+halfWidth,y-halfWidth,
+                x+halfWidth,y+halfWidth,x-halfWidth,y+halfWidth});
+        } else if (startCap == ImpellerCap::Triangle || endCap == ImpellerCap::Triangle) {
+            emitDot({x,y-halfWidth,x+halfWidth,y,x,y+halfWidth,x-halfWidth,y});
+        }
+        return true;
+    }
 
     auto getX = [&](uint32_t i) { return flatPoints[i * 2]; };
     auto getY = [&](uint32_t i) { return flatPoints[i * 2 + 1]; };
@@ -434,14 +476,15 @@ inline bool ExpandStrokePath(
     }
 
     // ---- Joins between adjacent segments ----
-    auto emitJoin = [&](float n0x, float n0y, float n1x, float n1y, float cx, float cy) {
-        if (join == ImpellerJoin::Round) {
-            if (!stroke_detail::BuildRoundJoinArc(arcXY, cx, cy, n0x, n0y, n1x, n1y, halfWidth)) return;
+    auto emitJoin = [&](float n0x, float n0y, float n1x, float n1y, float cx, float cy, ImpellerJoin style) {
+        if (style == ImpellerJoin::Round) {
+            if (!stroke_detail::BuildRoundJoinArc(arcXY, cx, cy, n0x, n0y, n1x, n1y,
+                halfWidth, 0.125f * featherScaleInSrc)) return;
             if (collect) pushContourCCW(arcXY.data(), (uint32_t)(arcXY.size() / 2));
             else         stroke_detail::FanToMesh<TVertex>(verts, indices, arcXY, r, g, b, a);
             return;
         }
-        if (join == ImpellerJoin::Bevel) {
+        if (style == ImpellerJoin::Bevel) {
             // Two wedges, one per side of the corner.
             float t0[6] = { cx, cy, cx + n0x * halfWidth, cy + n0y * halfWidth,
                                     cx + n1x * halfWidth, cy + n1y * halfWidth };
@@ -514,7 +557,7 @@ inline bool ExpandStrokePath(
     for (uint32_t i = 1; i < segCount; ++i) {
         emitJoin(segNormals[i - 1].nx, segNormals[i - 1].ny,
                  segNormals[i].nx, segNormals[i].ny,
-                 getX(i), getY(i));
+                 getX(i), getY(i), edgeFlags && (edgeFlags[i] & 2) ? ImpellerJoin::Round : join);
     }
 
     // Closing-vertex join — needed for closed contours so the start point
@@ -523,7 +566,7 @@ inline bool ExpandStrokePath(
         uint32_t lastSeg = (uint32_t)segNormals.size() - 1;
         emitJoin(segNormals[lastSeg].nx, segNormals[lastSeg].ny,
                  segNormals[0].nx, segNormals[0].ny,
-                 getX(0), getY(0));
+                 getX(0), getY(0), edgeFlags && (edgeFlags[0] & 2) ? ImpellerJoin::Round : join);
     }
 
     // ---- Caps (open contours only) ----
@@ -541,16 +584,26 @@ inline bool ExpandStrokePath(
             quadXY[6] = cx + nx * halfWidth;      quadXY[7] = cy + ny * halfWidth;
             pushContourCCW(quadXY, 4);
         };
+        auto emitTriangleCap = [&](float cx, float cy, float nx, float ny, float direction) {
+            const std::vector<float> triangle{
+                cx + nx * halfWidth, cy + ny * halfWidth,
+                cx - nx * halfWidth, cy - ny * halfWidth,
+                cx + direction * ny * halfWidth, cy - direction * nx * halfWidth};
+            if (collect) pushContourCCW(triangle.data(), 3);
+            else stroke_detail::FanToMesh<TVertex>(verts, indices, triangle, r, g, b, a);
+        };
 
         // Start cap.
         float nx = segNormals[0].nx, ny = segNormals[0].ny;
         float cx = getX(0), cy = getY(0);
-        if (cap == ImpellerCap::Round) {
-            stroke_detail::BuildRoundCapArc(arcXY, cx, cy, nx, ny, halfWidth, true);
+        if (startCap == ImpellerCap::Triangle) emitTriangleCap(cx, cy, nx, ny, -1);
+        if (startCap == ImpellerCap::Round) {
+            stroke_detail::BuildRoundCapArc(arcXY, cx, cy, nx, ny, halfWidth, true,
+                0.125f * featherScaleInSrc);
             if (collect) pushContourCCW(arcXY.data(), (uint32_t)(arcXY.size() / 2));
             else         stroke_detail::FanToMesh<TVertex>(verts, indices, arcXY, r, g, b, a);
-        } else if (cap == ImpellerCap::Square) {
-            float dx = -segNormals[0].ny, dy = segNormals[0].nx;
+        } else if (startCap == ImpellerCap::Square) {
+            float dx = segNormals[0].ny, dy = -segNormals[0].nx;
             if (collect) {
                 emitSquareCapQuad(cx, cy, nx, ny, -dx * halfWidth, -dy * halfWidth);
             } else {
@@ -567,11 +620,13 @@ inline bool ExpandStrokePath(
         uint32_t lastSeg = (uint32_t)segNormals.size() - 1;
         nx = segNormals[lastSeg].nx; ny = segNormals[lastSeg].ny;
         cx = getX(pointCount - 1); cy = getY(pointCount - 1);
-        if (cap == ImpellerCap::Round) {
-            stroke_detail::BuildRoundCapArc(arcXY, cx, cy, nx, ny, halfWidth, false);
+        if (endCap == ImpellerCap::Triangle) emitTriangleCap(cx, cy, nx, ny, 1);
+        if (endCap == ImpellerCap::Round) {
+            stroke_detail::BuildRoundCapArc(arcXY, cx, cy, nx, ny, halfWidth, false,
+                0.125f * featherScaleInSrc);
             if (collect) pushContourCCW(arcXY.data(), (uint32_t)(arcXY.size() / 2));
             else         stroke_detail::FanToMesh<TVertex>(verts, indices, arcXY, r, g, b, a);
-        } else if (cap == ImpellerCap::Square) {
+        } else if (endCap == ImpellerCap::Square) {
             float dx = segNormals[lastSeg].ny, dy = -segNormals[lastSeg].nx;
             if (collect) {
                 emitSquareCapQuad(cx, cy, nx, ny, dx * halfWidth, dy * halfWidth);
@@ -611,90 +666,80 @@ inline void WalkDashPattern(
     const float* dashPattern, uint32_t dashCount, float dashOffset,
     Fn onSubContour)
 {
-    if (pointCount < 2 || dashPattern == nullptr || dashCount == 0) return;
-
-    // Total dash cycle length.
-    float totalLen = 0.0f;
-    for (uint32_t i = 0; i < dashCount; ++i) totalLen += dashPattern[i];
-    if (totalLen <= 0.0f) return;
-
-    // Normalize dashOffset into [0, totalLen).
-    float offset = std::fmod(dashOffset, totalLen);
-    if (offset < 0.0f) offset += totalLen;
-
-    // Find which dash entry the offset lands in, and how far into it.
-    uint32_t curDash = 0;
-    float accum = 0.0f;
-    while (curDash < dashCount) {
-        if (offset < accum + dashPattern[curDash]) break;
-        accum += dashPattern[curDash];
-        ++curDash;
+    if (pointCount < 2 || !flatPoints || !dashPattern || !dashCount ||
+        !std::isfinite(dashOffset)) return;
+    std::vector<float> pattern(dashPattern, dashPattern + dashCount);
+    double total = 0;
+    for (float length : pattern) {
+        if (!(length >= 0) || !std::isfinite(length)) return;
+        total += length;
     }
-    if (curDash >= dashCount) curDash = 0;
-    float distInCurDash = offset - accum;
-    float remainingInDash = dashPattern[curDash] - distInCurDash;
-    bool isOn = (curDash % 2 == 0);
-
+    if (!(total > 0)) return;
+    // Odd-length patterns repeat twice, alternating the starting on/off phase.
+    if (dashCount % 2) {
+        pattern.insert(pattern.end(), dashPattern, dashPattern + dashCount);
+        total *= 2;
+    }
+    double offset = std::fmod(double(dashOffset), total);
+    if (offset < 0) offset += total;
+    size_t phase = 0;
+    while (offset > 0 && offset >= pattern[phase]) {
+        offset -= pattern[phase];
+        phase = (phase + 1) % pattern.size();
+    }
+    double remaining = pattern[phase] - offset;
     std::vector<float> sub;
-    bool subActive = false;
-    auto pushSub = [&](float x, float y) {
-        sub.push_back(x);
-        sub.push_back(y);
-    };
-    auto flushSub = [&](bool isStart, bool isEnd) {
-        if (subActive && sub.size() >= 4) {
-            onSubContour(sub.data(), (uint32_t)(sub.size() / 2), isStart, isEnd);
-        }
+    bool subStart = false;
+    auto flush = [&](bool atEnd) {
+        if (sub.size() >= 4) onSubContour(sub.data(), uint32_t(sub.size() / 2), subStart, atEnd);
         sub.clear();
-        subActive = false;
     };
-
-    if (isOn) {
-        pushSub(flatPoints[0], flatPoints[1]);
-        subActive = true;
-    }
-
-    bool sourceStartConsumed = false;
-
+    uint32_t transitions = 0;
     for (uint32_t i = 0; i + 1 < pointCount; ++i) {
-        float x0 = flatPoints[i * 2],     y0 = flatPoints[i * 2 + 1];
-        float x1 = flatPoints[(i + 1) * 2], y1 = flatPoints[(i + 1) * 2 + 1];
-        float dx = x1 - x0, dy = y1 - y0;
-        float segLen = std::sqrt(dx * dx + dy * dy);
-        if (segLen <= 1e-6f) continue;
-
-        float consumed = 0.0f;
-        while (consumed < segLen) {
-            float remainSeg = segLen - consumed;
-            float step = std::min(remainSeg, remainingInDash);
-            float t1 = (consumed + step) / segLen;
-            float ex = x0 + dx * t1, ey = y0 + dy * t1;
-
-            if (isOn) {
-                if (!subActive) {
-                    float sx = x0 + dx * (consumed / segLen);
-                    float sy = y0 + dy * (consumed / segLen);
-                    pushSub(sx, sy);
-                    subActive = true;
+        const double x = flatPoints[i * 2], y = flatPoints[i * 2 + 1];
+        const double dx = double(flatPoints[i * 2 + 2]) - x;
+        const double dy = double(flatPoints[i * 2 + 3]) - y;
+        const double length = std::hypot(dx, dy);
+        if (!(length > 1e-12) || !std::isfinite(length)) continue;
+        double consumed = 0;
+        while (consumed < length) {
+            const bool atStart = i == 0 && consumed == 0;
+            if (remaining <= 0) {
+                if (!(phase % 2)) {
+                    // A zero on-length is a dot with Round/Square dash caps.
+                    const float px = float(x + dx * consumed / length);
+                    const float py = float(y + dy * consumed / length);
+                    const float dot[]{px, py, px, py};
+                    onSubContour(dot, 2, atStart, false);
                 }
-                pushSub(ex, ey);
+                phase = (phase + 1) % pattern.size();
+                remaining = pattern[phase];
+                if (++transitions > 1000000) return;
+                continue;
             }
-
-            consumed += step;
-            remainingInDash -= step;
-            if (remainingInDash <= 1e-6f) {
-                bool endsAtSourceEnd = (i + 1 == pointCount - 1) && (std::abs(consumed - segLen) < 1e-4f);
-                if (isOn) flushSub(!sourceStartConsumed, endsAtSourceEnd);
-                sourceStartConsumed = true;
-                curDash = (curDash + 1) % dashCount;
-                isOn = (curDash % 2 == 0);
-                remainingInDash = dashPattern[curDash];
+            const double step = std::min(length - consumed, remaining);
+            const double next = consumed + step;
+            if (!(next > consumed)) return;
+            const float sx = float(x + dx * consumed / length);
+            const float sy = float(y + dy * consumed / length);
+            const float ex = float(x + dx * next / length);
+            const float ey = float(y + dy * next / length);
+            if (!(phase % 2)) {
+                if (sub.empty()) { sub = {sx, sy}; subStart = atStart; }
+                sub.push_back(ex); sub.push_back(ey);
+            }
+            consumed = next;
+            remaining -= step;
+            if (remaining <= 1e-12) {
+                if (!(phase % 2)) flush(i + 2 == pointCount && consumed >= length);
+                phase = (phase + 1) % pattern.size();
+                remaining = pattern[phase];
+                if (++transitions > 1000000) return;
             }
         }
     }
+    flush(true);
 
-    // Flush a trailing on-sub-contour that reached the polyline end.
-    if (isOn) flushSub(!sourceStartConsumed, true);
 }
 
 } // namespace jalium

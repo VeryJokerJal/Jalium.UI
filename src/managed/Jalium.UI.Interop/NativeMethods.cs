@@ -129,9 +129,37 @@ public struct TextHitTestResult
     public float CaretHeight;
 }
 
+/// <summary>Bounds and UTF-16 offsets of the first visual fragment of a text range.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct TextRangeMetrics
+{
+    public uint TextPosition;
+    public uint Length;
+    public float X;
+    public float Y;
+    public float Width;
+    public float Height;
+}
+
 /// <summary>
-/// Native method imports for the Jalium rendering engine.
+/// A shaped visual row with UTF-16 insertion offsets and glyph-edge affinities.
 /// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct TextLineMetrics
+{
+    public uint TextPosition;
+    public uint Length;
+    public uint LeftCaretPosition;
+    public uint RightCaretPosition;
+    public int LeftBackwardAffinity;
+    public int RightBackwardAffinity;
+    public float X;
+    public float Y;
+    public float Width;
+    public float Height;
+}
+
+/// <summary>Native method imports for the Jalium rendering engine.</summary>
 internal static partial class NativeMethods
 {
     private const string CoreLib = JaliumNativeLibraryNames.Core;
@@ -150,6 +178,13 @@ internal static partial class NativeMethods
         int index,
         byte* buffer,
         int bufferSize);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_font_family_is_available", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int FontFamilyIsAvailable(string family);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_font_get_system_family_count")]
+    internal static partial int FontGetSystemFamilyCount();
+    [LibraryImport(CoreLib, EntryPoint = "jalium_font_copy_system_family")]
+    internal static unsafe partial int FontCopySystemFamily(int index, byte* buffer, int capacity);
 
     // Per-backend "init attempted" flags. 0 = not yet, 1 = init() has been
     // invoked once (whether it succeeded or threw). Interlocked CAS so the
@@ -887,7 +922,7 @@ internal static partial class NativeMethods
     //  the main render target.
     //
     //  All five functions below are implemented with a full GPU brush-shader
-    //  pipeline on BOTH backends (D3D12 and Vulkan). A zero/negative return
+    //  pipeline on D3D12, Vulkan and Metal. A zero/negative return
     //  only signals an exceptional failure — device lost, the runtime shader
     //  compiler (DXC) unavailable, or extreme out-of-memory — not a missing
     //  backend implementation.
@@ -921,7 +956,7 @@ internal static partial class NativeMethods
     /// <summary>
     /// Compiles an HLSL pixel shader for the brush pipeline. The framework
     /// concatenates the shared preamble with <paramref name="brushMainHlsl"/>
-    /// before feeding to D3DCompile. <paramref name="blendMode"/> selects
+    /// before compiling with the backend's HLSL compiler. <paramref name="blendMode"/> selects
     /// the PSO blend state (0=SourceOver, 1=Additive, 2=Erase).
     /// Returns 0 on failure (compilation error / out of memory).
     /// </summary>
@@ -1142,6 +1177,11 @@ internal static partial class NativeMethods
         float x, float y, float w, float h, float radius,
         float uvOffsetX, float uvOffsetY);
 
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_blur_effect_kernel")]
+    internal static partial int DrawBlurEffectWithKernel(nint renderTarget,
+        float x, float y, float w, float h, float radius, int kernelType,
+        float uvOffsetX, float uvOffsetY);
+
     /// <summary>
     /// Applies a drop shadow effect to the captured element content and draws it.
     /// </summary>
@@ -1267,6 +1307,9 @@ internal static partial class NativeMethods
         [In] byte[] shaderBytecode, uint shaderBytecodeSize,
         [In] float[] constants, uint constantFloatCount);
 
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_get_last_shader_effect_result")]
+    internal static partial JaliumResult GetLastShaderEffectResult(nint renderTarget);
+
     // HLSL-source custom shader effect — the cross-backend path. Both backends
     // compile the supplied SM6 HLSL at runtime (D3D12: D3DCompile, Vulkan:
     // DXC→SPIR-V), so an effect that carries HLSL source works on either backend
@@ -1338,6 +1381,12 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_push_path_clip")]
     internal static unsafe partial JaliumResult PushPathClip(nint renderTarget,
         float startX, float startY, float* commands, uint commandLength, int fillRule);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_push_stroke_path_clip")]
+    internal static unsafe partial JaliumResult PushStrokePathClip(nint target,
+        float startX, float startY, float* commands, uint length, float width,
+        int closed, int join, float miter, int cap, float* dash, uint dashCount,
+        float phase, int edgeMode);
 
     /// <summary>
     /// Pushes a per-corner rounded-rect clip with independent radii for each corner.
@@ -1433,6 +1482,33 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_create", StringMarshalling = StringMarshalling.Utf16)]
     internal static partial nint TextFormatCreate(nint context, string fontFamily, float fontSize, int fontWeight, int fontStyle);
 
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_create_with_width", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial nint TextFormatCreateWithWidth(nint context, string fontFamily, float fontSize,
+        int fontWeight, int fontStyle, float widthPercentage);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_fallbacks")]
+    internal static unsafe partial int TextFormatSetFontFallbacks(nint format, nint* fallbacks, uint count);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct UnicodeRange { internal uint First, Last; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct FontDisplayEntry
+    {
+        internal nint Format;
+        internal UnicodeRange* Ranges;
+        internal uint RangeCount, Flags;
+    }
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_unicode_ranges")]
+    internal static unsafe partial int TextFormatSetUnicodeRanges(nint format, UnicodeRange* ranges, uint count, int enabled);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_character_coverage")]
+    internal static unsafe partial int TextFormatGetCharacterCoverage(nint format, uint* characters, uint count, byte* supported);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_display")]
+    internal static unsafe partial int TextFormatSetFontDisplay(nint format, FontDisplayEntry* entries, uint count);
+
     /// <summary>
     /// Destroys a text format.
     /// </summary>
@@ -1526,9 +1602,74 @@ internal static partial class NativeMethods
     internal static partial int TextFormatHitTestTextPosition(nint textFormat, string text, int textLength,
         float maxWidth, float maxHeight, uint textPosition, int isTrailingHit, out TextHitTestResult result);
 
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_hit_test_text_range", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int TextFormatHitTestTextRange(nint textFormat, string text, int textLength,
+        float maxWidth, float maxHeight, uint textPosition, uint length, out TextRangeMetrics result);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_line_metrics", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int TextFormatGetLineMetrics(nint textFormat, string text, int textLength,
+        float maxWidth, float maxHeight, uint textPosition, int backwardAffinity, out TextLineMetrics result);
+
     /// <summary>
     /// Measures text and returns metrics.
     /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ParagraphSpan
+    {
+        internal nint Format;
+        internal uint TextPosition, Length;
+        internal float R, G, B, A;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ParagraphLineMetrics
+    {
+        internal TextLineMetrics Line;
+        internal float Baseline;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ParagraphFragment
+    {
+        internal uint TextPosition, Length, SpanIndex;
+        internal float X, Width;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ParagraphCaret
+    {
+        internal uint TextPosition;
+        internal int BackwardAffinity;
+        internal float X;
+    }
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreate(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, float width, float minLineHeight, int alignment, int direction);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_with_wrapping", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateWithWrapping(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, float width, float minLineHeight, int alignment, int direction, int wrapping);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_destroy")]
+    internal static partial void TextParagraphDestroy(nint paragraph);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_line_count")]
+    internal static partial uint TextParagraphLineCount(nint paragraph);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_get_line")]
+    internal static partial int TextParagraphGetLine(nint paragraph, uint line, out ParagraphLineMetrics result);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_get_fragments")]
+    internal static unsafe partial int TextParagraphGetFragments(nint paragraph, uint line,
+        ParagraphFragment* results, uint capacity, out uint count);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_get_caret")]
+    internal static partial int TextParagraphGetCaret(nint paragraph, uint line, uint position,
+        int backwardAffinity, out ParagraphCaret result);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_hit_test")]
+    internal static partial int TextParagraphHitTest(nint paragraph, uint line, float x, out ParagraphCaret result);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_get_selection")]
+    internal static unsafe partial int TextParagraphGetSelection(nint paragraph, uint line, uint start,
+        uint length, TextRangeMetrics* results, uint capacity, out uint count);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_navigate_word", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial int TextParagraphNavigateWord(nint* paragraphs, uint* offsets, uint count,
+        string text, uint length, uint position, uint selectionStart, uint selectionLength,
+        int direction, int backwardAffinity, out ParagraphCaret result);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_draw_paragraph_line")]
+    internal static partial int DrawParagraphLine(nint target, nint paragraph, uint line, float x, float y, float opacity);
+
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_measure_text", StringMarshalling = StringMarshalling.Utf16)]
     internal static partial int TextFormatMeasureText(nint textFormat, string text, int textLength, float maxWidth, float maxHeight, out TextMetrics metrics);
 
@@ -1913,6 +2054,12 @@ internal static partial class NativeMethods
         nint dragImage, out uint performedEffect);
 
     // --- Clipboard ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_apple_drag_get_data", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int AppleDragGetData(nint window, ulong sessionId, string mimeType, out nint data, out uint dataSize);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_apple_drag_get_source")]
+    internal static partial nint AppleDragGetSource(nint window, ulong sessionId);
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_get_text")]
     internal static partial int ClipboardGetText(out nint text);

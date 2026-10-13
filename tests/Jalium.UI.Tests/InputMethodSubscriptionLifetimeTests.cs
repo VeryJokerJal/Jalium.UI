@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Jalium.UI.Controls;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Tests;
 
@@ -62,6 +63,7 @@ public sealed class InputMethodSubscriptionLifetimeTests
         var control = factory();
         control.SetLoadedState(true);
         control.SetLoadedState(false);
+        FlushPendingCss(control);
         return new WeakReference<FrameworkElement>(control);
     }
 
@@ -70,7 +72,18 @@ public sealed class InputMethodSubscriptionLifetimeTests
     {
         var control = factory();
         control.SetLoadedState(true);
+        FlushPendingCss(control);
         return new WeakReference<FrameworkElement>(control);
+    }
+
+    private static void FlushPendingCss(FrameworkElement control)
+    {
+        // Tree setup queues CSS evaluation that retains its subtree until the
+        // next pass. Complete it before testing the input-method subscriptions.
+        var dispatcher = control.Dispatcher;
+        for (int attempt = 0; attempt < 32 && CssEvaluationScheduler.HasPending(dispatcher); attempt++)
+            CssEvaluationScheduler.FlushIfPending(dispatcher);
+        Assert.False(CssEvaluationScheduler.HasPending(dispatcher));
     }
 
     private static void ForceFullCollection()

@@ -103,6 +103,8 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         ? NativeMethods.WindowGetNativeHandle(_handle)
         : nint.Zero;
 
+    internal nint PlatformHandle => _handle;
+
     public NativeSurfaceDescriptor GetSurface()
     {
         if (_handle == nint.Zero) return default;
@@ -114,6 +116,74 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         if (_handle != nint.Zero)
             NativeMethods.WindowShow(_handle);
     }
+
+    public void Show(bool activate)
+    {
+        if (_handle == nint.Zero) return;
+        if (OperatingSystem.IsMacOS())
+            AppleWindowShow(_handle, activate ? 1 : 0);
+        else
+            Show();
+    }
+
+    public bool SetStyle(uint style) => OperatingSystem.IsMacOS() &&
+        _handle != nint.Zero && AppleWindowSetStyle(_handle, style) == 0;
+
+    public bool SetSystemBackdrop(int backdrop) => OperatingSystem.IsMacOS() &&
+        _handle != nint.Zero && AppleWindowSetSystemBackdrop(_handle, backdrop) == 0;
+
+    public bool TryGetRestoreBounds(out int x, out int y, out int width, out int height)
+    {
+        x = y = width = height = 0;
+        return OperatingSystem.IsMacOS() && _handle != nint.Zero &&
+            AppleWindowGetRestoreBounds(_handle, out x, out y, out width, out height) == 0;
+    }
+
+    public bool TryGetClientOrigin(out int x, out int y)
+    {
+        x = y = 0;
+        if (_handle == nint.Zero) return false;
+        if (OperatingSystem.IsMacOS()) return AppleWindowGetClientOrigin(_handle, out x, out y) == 0;
+        GetPosition(out x, out y);
+        return true;
+    }
+
+    public bool ApplyStartupLocation(WindowStartupLocation location, nint ownerNativeHandle) =>
+        OperatingSystem.IsMacOS() && _handle != nint.Zero &&
+        AppleWindowApplyStartupLocation(_handle, (int)location, ownerNativeHandle) == 0;
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_apply_startup_location")]
+    private static partial int AppleWindowApplyStartupLocation(nint window, int location, nint ownerNativeHandle);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_get_client_origin")]
+    private static partial int AppleWindowGetClientOrigin(nint window, out int x, out int y);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_show")]
+    private static partial void AppleWindowShow(nint window, int activate);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_set_style")]
+    private static partial int AppleWindowSetStyle(nint window, uint style);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_set_titlebar_extended")]
+    private static partial int AppleWindowSetTitlebarExtended(nint window, int extended);
+
+    public bool SetExtendedTitleBar(bool extended) => OperatingSystem.IsMacOS() &&
+        _handle != nint.Zero && AppleWindowSetTitlebarExtended(_handle, extended ? 1 : 0) == 0;
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_set_titlebar_content_height")]
+    private static partial int AppleWindowSetTitlebarContentHeight(nint window, double height);
+
+    public bool SetTitleBarContentHeight(double height) => OperatingSystem.IsMacOS() &&
+        _handle != nint.Zero && AppleWindowSetTitlebarContentHeight(_handle, height) == 0;
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_get_restore_bounds")]
+    private static partial int AppleWindowGetRestoreBounds(nint window, out int x, out int y, out int width, out int height);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_set_system_backdrop")]
+    private static partial int AppleWindowSetSystemBackdrop(nint window, int backdrop);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_titlebar_double_click")]
+    private static partial int AppleWindowTitlebarDoubleClick(nint window);
 
     public void Hide()
     {
@@ -185,6 +255,9 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     {
         return _handle != nint.Zero && NativeMethods.WindowBeginMoveDrag(_handle) == 0;
     }
+
+    public bool PerformTitleBarDoubleClick() => OperatingSystem.IsMacOS() &&
+        _handle != nint.Zero && AppleWindowTitlebarDoubleClick(_handle) == 0;
 
     public bool BeginResizeDrag(int edge)
     {
@@ -377,8 +450,8 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         unsafe
         {
             // Read union data based on event type using raw pointer arithmetic.
-            // The union starts at offset 8 (after type + window pointer on 64-bit) or
-            // at the position of Data0 in NativePlatformEvent.
+            // Use Data0 rather than a hard-coded offset; on 64-bit platforms
+            // the union starts at byte 16, after type padding and the pointer.
             float* data = &nativeEvt.Data0;
             int* idata = (int*)data;
 
@@ -387,6 +460,7 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                 case PlatformEventType.Resize:
                     evt.Width = idata[0];
                     evt.Height = idata[1];
+                    evt.IsUserInitiatedResize = idata[2] != 0;
                     break;
 
                 case PlatformEventType.Move:
@@ -415,6 +489,8 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     evt.Button = idata[2];
                     evt.Modifiers = idata[3];
                     evt.ClickCount = idata[4];
+                    evt.MouseButtons = (uint)idata[5] & 0x1f;
+                    evt.HasMouseButtonStates = ((uint)idata[5] & 0x80000000) != 0;
                     break;
 
                 case PlatformEventType.MouseWheel:
@@ -423,6 +499,11 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     evt.WheelDeltaX = data[2];
                     evt.WheelDeltaY = data[3];
                     evt.Modifiers = idata[4];
+                    evt.WheelHasPreciseScrollingDeltas = idata[5] != 0;
+                    evt.WheelPhase = (Input.MouseWheelPhase)idata[6];
+                    evt.WheelMomentumPhase = (Input.MouseWheelPhase)idata[7];
+                    evt.MouseButtons = (uint)idata[8] & 0x1f;
+                    evt.HasMouseButtonStates = ((uint)idata[8] & 0x80000000) != 0;
                     break;
 
                 case PlatformEventType.KeyDown:
@@ -453,6 +534,30 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     evt.ImeDeleteBeforeUtf8ByteCount = idata[0];
                     evt.ImeDeleteAfterUtf8ByteCount = idata[1];
                     break;
+
+                case PlatformEventType.ImeTextRequest:
+                {
+                    int resultOffset = nint.Size == 8 ? 24 : 16;
+                    nint applied = *(nint*)((byte*)data + resultOffset);
+                    // Once a managed callback recognizes the request, failure
+                    // must reject it instead of triggering the native legacy
+                    // character fallback, including when user handlers throw.
+                    if (applied != nint.Zero) Marshal.WriteInt32(applied, -1);
+                    nint textPointer = *(nint*)data;
+                    int* requestData = (int*)((byte*)data + nint.Size);
+                    evt.ImeTextRequest = new(requestData[0], requestData[1],
+                        textPointer == nint.Zero ? null : Marshal.PtrToStringUTF8(textPointer), requestData[2] != 0);
+                    break;
+                }
+
+                case PlatformEventType.ImeGeometryRequest:
+                {
+                    int resultOffset = nint.Size == 8 ? 24 : 20;
+                    nint result = *(nint*)((byte*)data + resultOffset);
+                    if (result != nint.Zero) Marshal.WriteInt32(result, -1);
+                    evt.ImeGeometryRequest = new(idata[0], idata[1], idata[2], new Point(data[3], data[4]));
+                    break;
+                }
 
                 case PlatformEventType.PointerDown:
                 case PlatformEventType.PointerUp:
@@ -528,7 +633,45 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
             }
         }
 
+            if (evt.Type == PlatformEventType.Destroyed)
+            {
+                // A native close has already released the platform window.
+                // Managed teardown still owns the delegate and its GCHandles.
+                window._handle = nint.Zero;
+            }
             window._eventHandler(evt);
+            if (evt.Type == PlatformEventType.ImeTextRequest && evt.ImeTextRequest is { } request)
+            {
+                // The native request lives on its caller's stack until this
+                // callback returns. A class reference carries the acknowledgement
+                // through the value-type PlatformEvent without changing delegates.
+                int unionOffset = Marshal.OffsetOf<NativePlatformEvent>(nameof(NativePlatformEvent.Data0)).ToInt32();
+                int resultOffset = nint.Size == 8 ? 24 : 16;
+                nint applied = Marshal.ReadIntPtr(eventPtr, unionOffset + resultOffset);
+                if (applied != nint.Zero) Marshal.WriteInt32(applied, request.Applied ? 1 : -1);
+            }
+            if (evt.Type == PlatformEventType.ImeGeometryRequest && evt.ImeGeometryRequest is { } geometry)
+            {
+                int unionOffset = Marshal.OffsetOf<NativePlatformEvent>(nameof(NativePlatformEvent.Data0)).ToInt32();
+                int resultOffset = nint.Size == 8 ? 24 : 20;
+                nint result = Marshal.ReadIntPtr(eventPtr, unionOffset + resultOffset);
+                if (result != nint.Zero && geometry.Handled)
+                {
+                    unsafe
+                    {
+                        int* values = (int*)result;
+                        values[1] = geometry.Geometry.Start;
+                        values[2] = geometry.Geometry.Length;
+                        values[3] = geometry.CharacterIndex;
+                        float* rectangle = (float*)((byte*)result + 16);
+                        rectangle[0] = (float)geometry.Geometry.Rectangle.X;
+                        rectangle[1] = (float)geometry.Geometry.Rectangle.Y;
+                        rectangle[2] = (float)geometry.Geometry.Rectangle.Width;
+                        rectangle[3] = (float)geometry.Geometry.Rectangle.Height;
+                        values[0] = 1;
+                    }
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -570,6 +713,28 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         if (_handle != nint.Zero)
             NativeMethods.DragSetEffect(_handle, sessionId, effect);
     }
+
+    internal byte[]? GetMacOSDragData(ulong sessionId, string mimeType, int maxBytes)
+    {
+        if (!OperatingSystem.IsMacOS() || _handle == 0) return null;
+        int result = NativeMethods.AppleDragGetData(_handle, sessionId, mimeType, out nint data, out uint size);
+        try
+        {
+            return result == 0 ? CopyMacOSDragData(data, size, maxBytes) : null;
+        }
+        finally { if (data != 0) NativeMethods.PlatformFree(data); }
+    }
+
+    internal static byte[]? CopyMacOSDragData(nint data, uint size, int maxBytes = ClipboardPlatform.MaxClipboardPayloadBytes)
+    {
+        if (data == 0 || maxBytes < 0 || size > maxBytes || size > ClipboardPlatform.MaxClipboardPayloadBytes) return null;
+        var bytes = new byte[(int)size];
+        if (bytes.Length != 0) Marshal.Copy(data, bytes, 0, bytes.Length);
+        return bytes;
+    }
+
+    internal nint GetMacOSDragSource(ulong sessionId) =>
+        OperatingSystem.IsMacOS() && _handle != 0 ? NativeMethods.AppleDragGetSource(_handle, sessionId) : 0;
 
     internal unsafe uint BeginDrag(ReadOnlySpan<NativeDragDataItem> items, uint allowedEffects)
     {

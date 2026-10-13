@@ -345,17 +345,23 @@ public class UIElementAutomationPeer : AutomationPeer
 
     protected override Point GetClickablePointCore()
     {
-        Rect bounds = GetBoundingRectangleCore();
-        return bounds.IsEmpty || IsOffscreenCore()
-            ? new Point(double.NaN, double.NaN)
-            : new Point(bounds.X + (bounds.Width / 2), bounds.Y + (bounds.Height / 2));
+        var bounds = new Rect(Owner.RenderSize);
+        var visibility = new AutomationVisibility(Owner);
+        var preferred = new Point(bounds.Width / 2, bounds.Height / 2);
+        return visibility.TryGetPoint(bounds, preferred, out Point point)
+            ? Owner.GetRenderMatrix().Transform(point) : new Point(double.NaN, double.NaN);
     }
 
     protected override AutomationOrientation GetOrientationCore() => AutomationOrientation.None;
     protected override bool IsEnabledCore() => Owner.IsEnabled;
     protected override bool IsKeyboardFocusableCore() => Owner.Focusable && Owner.IsEnabled && Owner.Visibility == Visibility.Visible;
     protected override bool HasKeyboardFocusCore() => Owner.IsKeyboardFocused;
-    protected override bool IsOffscreenCore() => Owner.Visibility != Visibility.Visible;
+    protected override bool IsOffscreenCore() => AutomationProperties.GetIsOffscreenBehavior(Owner) switch
+    {
+        IsOffscreenBehavior.Onscreen => false,
+        IsOffscreenBehavior.Offscreen => true,
+        _ => !new AutomationVisibility(Owner).TryClip(new Rect(Owner.RenderSize), out _)
+    };
     protected override bool IsContentElementCore() => true;
     protected override bool IsControlElementCore() => true;
     protected override bool IsPasswordCore() => false;
@@ -438,6 +444,21 @@ public class FrameworkElementAutomationPeer : UIElementAutomationPeer
         FrameworkElement owner = (FrameworkElement)Owner;
         return owner.Name ?? string.Empty;
     }
+}
+
+/// <summary>Preserves custom macOS elements while anonymous layout stays out of the native control tree.</summary>
+internal sealed class MacOSFallbackAutomationPeer(UIElement owner) : UIElementAutomationPeer(owner)
+{
+    // Keep a stable raw peer even before semantics are supplied. Native child
+    // discovery can then respond to names/focusability changing after caching.
+    protected override bool IsControlElementCore() => Owner.Focusable
+        || !string.IsNullOrEmpty(AutomationProperties.GetName(Owner))
+        || !string.IsNullOrEmpty(AutomationProperties.GetAutomationId(Owner))
+        || AutomationProperties.GetLabeledBy(Owner) != null;
+
+    protected override bool IsContentElementCore() => IsControlElementCore();
+    protected override string GetNameCore() => (Owner as FrameworkElement)?.Name ?? string.Empty;
+    protected override string GetAutomationIdCore() => (Owner as FrameworkElement)?.Name ?? string.Empty;
 }
 
 /// <summary>A root peer used for accessibility hit testing.</summary>

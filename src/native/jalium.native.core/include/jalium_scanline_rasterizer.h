@@ -155,7 +155,9 @@ inline void SortCrossings(Crossing* cr, uint32_t n) noexcept {
 inline void RasterizePathToRects(
     const std::vector<Contour>& contours,
     FillRule rule,
-    std::vector<PixelRect>& outRects)
+    std::vector<PixelRect>& outRects,
+    const PixelRect* clip = nullptr,
+    bool aliased = false)
 {
     using scanline_detail::RasterEdge;
     using scanline_detail::Crossing;
@@ -174,6 +176,8 @@ inline void RasterizePathToRects(
     float maxX = -std::numeric_limits<float>::infinity();
 
     auto addEdge = [&](float x0, float y0, float x1, float y1) {
+        if (!std::isfinite(x0) || !std::isfinite(y0) ||
+            !std::isfinite(x1) || !std::isfinite(y1)) return;
         if (x0 < minX) minX = x0;
         if (x1 < minX) minX = x1;
         if (x0 > maxX) maxX = x0;
@@ -221,8 +225,20 @@ inline void RasterizePathToRects(
 
     if (edges.empty()) return;
 
-    int pxX0 = (int)std::floor(minX) - 1;
-    int pxX1 = (int)std::ceil (maxX) + 1;
+    // Bound device-space work before converting to integers or allocating rows.
+    // Edges stay intact: clipping edges individually would change winding.
+    if (clip) {
+        minX = std::max(minX, static_cast<float>(clip->x));
+        maxX = std::min(maxX, static_cast<float>(clip->x) + clip->w);
+        minY = std::max(minY, static_cast<float>(clip->y));
+        maxY = std::min(maxY, static_cast<float>(clip->y) + clip->h);
+    }
+    if (!(minX < maxX) || !(minY < maxY)) return;
+    constexpr float kSafeCoordinate = static_cast<float>(INT32_MAX / 4);
+    if (minX < -kSafeCoordinate || maxX > kSafeCoordinate ||
+        minY < -kSafeCoordinate || maxY > kSafeCoordinate) return;
+    int pxX0 = (int)std::floor(minX) - (clip ? 0 : 1);
+    int pxX1 = (int)std::ceil (maxX) + (clip ? 0 : 1);
     int pxWidth = pxX1 - pxX0;
     if (pxWidth <= 0) return;
 
@@ -237,7 +253,7 @@ inline void RasterizePathToRects(
     constexpr uint64_t kHighQualityWorkBudget = 200000;
     const uint64_t rasterWork =
         (uint64_t)(yEnd - yStart) * (uint64_t)edges.size();
-    const int   kSub     = (rasterWork <= kHighQualityWorkBudget) ? 16 : 4;
+    const int   kSub     = aliased ? 1 : (rasterWork <= kHighQualityWorkBudget) ? 16 : 4;
     const float kSubStep = 1.0f / (float)kSub;
 
     const int    rowCount  = yEnd - yStart;
@@ -254,10 +270,8 @@ inline void RasterizePathToRects(
     size_t totalEntries = 0;
     for (size_t i = 0; i < edgeCount; ++i) {
         RasterEdge& e = edgeData[i];
-        int r0 = (int)std::floor(e.yMin) - yStart;
-        int r1 = (int)std::ceil (e.yMax) - yStart;
-        if (r0 < 0) r0 = 0;
-        if (r1 > rowCount) r1 = rowCount;
+        int r0 = (int)std::floor(std::clamp(e.yMin, float(yStart), float(yEnd))) - yStart;
+        int r1 = (int)std::ceil(std::clamp(e.yMax, float(yStart), float(yEnd))) - yStart;
         if (r1 < r0) r1 = r0;
         e.row0 = r0; e.row1 = r1;
         totalEntries += (size_t)(r1 - r0);
@@ -400,8 +414,15 @@ inline void RasterizePathToRects(
                     float fillTo = cr.x;
                     if (fillTo <= fillFrom) continue;
 
-                    int pxA = (int)std::floor(fillFrom) - pxX0;
-                    int pxB = (int)std::ceil (fillTo)   - pxX0;
+                    // Clamp spans before integer conversion (a visible path
+                    // can have control points far beyond the viewport).
+                    fillFrom = std::max(fillFrom, static_cast<float>(pxX0));
+                    fillTo = std::min(fillTo, static_cast<float>(pxX1));
+                    if (!(fillFrom < fillTo)) continue;
+                    int pxA = aliased ? (int)std::ceil(fillFrom - 0.5f) - pxX0
+                                      : (int)std::floor(fillFrom) - pxX0;
+                    int pxB = aliased ? (int)std::ceil(fillTo - 0.5f) - pxX0
+                                      : (int)std::ceil(fillTo) - pxX0;
                     if (pxA < 0) pxA = 0;
                     if (pxB > pxWidth) pxB = pxWidth;
                     if (pxA < touchedLo) touchedLo = pxA;
@@ -413,7 +434,7 @@ inline void RasterizePathToRects(
                         float l = pxLeft  > fillFrom ? pxLeft  : fillFrom;
                         float r = pxRight < fillTo   ? pxRight : fillTo;
                         if (r > l) {
-                            coverage[px] += (r - l) * kSubStep;
+                            coverage[px] += aliased ? 1.0f : (r - l) * kSubStep;
                         }
                     }
                 }

@@ -29,7 +29,8 @@ def main() -> int:
     if not source.endswith("\n"):
         source += "\n"
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(source, encoding="utf-8", newline="\n")
+    with args.output.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(source)
     return 0
 
 

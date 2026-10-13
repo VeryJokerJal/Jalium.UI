@@ -106,10 +106,18 @@ jalium_media_status_t DecodeImage(CGImageSourceRef source, size_t index,
         CGColorSpaceRelease(colorSpace); CGImageRelease(image);
         jalium_media_aligned_free(pixels); return JALIUM_MEDIA_E_DECODE_FAILED;
     }
-    CGContextTranslateCTM(context, 0, height);
-    CGContextScaleCTM(context, 1, -1);
+    // The image API returns top-down, straight-alpha pixels. CoreGraphics
+    // already writes its image's top row first; an AppKit CTM flip reverses it.
+    CGContextSetBlendMode(context, kCGBlendModeCopy);
     CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
     CGContextRelease(context); CGColorSpaceRelease(colorSpace); CGImageRelease(image);
+    for (size_t offset = 0; offset < static_cast<size_t>(stride) * height; offset += 4) {
+        uint32_t alpha = pixels[offset + 3];
+        if (alpha == 255) continue;
+        for (size_t channel = 0; channel < 3; ++channel)
+            pixels[offset + channel] = alpha == 0 ? 0 : static_cast<uint8_t>(std::min(
+                255u, (pixels[offset + channel] * 255u + alpha / 2) / alpha));
+    }
     if (format == JALIUM_PF_RGBA8)
         jalium_media_swap_rb_inplace(pixels, static_cast<uint32_t>(width),
             static_cast<uint32_t>(height), stride);
@@ -363,7 +371,7 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_enumerate(
     AVAudioEngine* probe=[AVAudioEngine new];AVAudioFormat* format=
         [probe.inputNode inputFormatForBus:0];
     if(!format||format.channelCount==0)return JALIUM_MEDIA_OK;
-    auto* result=(jalium_microphone_device_t*)calloc(1,sizeof(*result));
+    auto* result=(jalium_microphone_device_t*)calloc(1,sizeof(jalium_microphone_device_t));
     if(!result)return JALIUM_MEDIA_E_OUT_OF_MEMORY;
     result->id=strdup("default");
 #if TARGET_OS_OSX

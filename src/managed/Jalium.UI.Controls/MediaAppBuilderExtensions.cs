@@ -46,7 +46,7 @@ public static class MediaAppBuilderExtensions
             BitmapImage.SetDecoder(new NativeImageDecoder());
             var videoFactory = new NativeVideoDecoderFactory();
             MediaElement.SetVideoDecoderFactory(videoFactory);
-            MediaPlayer.SetVideoDecoderFactory(videoFactory);
+            global::Jalium.UI.Media.MediaPlayer.SetVideoDecoderFactory(videoFactory);
             CameraView.SetCameraFactory(new NativeCameraSourceFactory());
         });
 

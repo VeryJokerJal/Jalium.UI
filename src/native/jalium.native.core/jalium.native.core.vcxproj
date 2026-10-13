@@ -122,6 +122,7 @@
     <ClCompile Include="src\context.cpp" />
     <ClCompile Include="src\render_target.cpp" />
     <ClCompile Include="src\brush.cpp" />
+    <ClCompile Include="src\text_paragraph.cpp" />
     <ClCompile Include="src\font_resource.cpp" />
     <ClCompile Include="src\text_outline_win.cpp" />
     <ClCompile Include="src\bitmap.cpp" />

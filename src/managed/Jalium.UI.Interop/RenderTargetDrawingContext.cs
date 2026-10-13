@@ -25,12 +25,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             Bounds = geometry.Bounds;
             FillFigures = geometry.Figures.Where(static figure => figure.IsFilled).ToArray();
-            HasNestedFillFigures = FillFigures.Length > 1 && FiguresHaveNesting(FillFigures);
         }
 
         public Rect Bounds { get; }
         public PathFigure[] FillFigures { get; }
-        public bool HasNestedFillFigures { get; }
     }
 
     private const int MaxBrushCacheSize = 256;
@@ -205,7 +203,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         int TextRenderingMode,
         int TextFormattingMode,
         int TextHintingMode,
-        bool SubpixelPositioning);
+        bool SubpixelPositioning, bool NoWrap, long FontEpoch);
 
     private sealed class BitmapCacheEntry
     {
@@ -413,6 +411,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     private void DrawMaskedImageBrush(ImageBrush brush, PathGeometry geometry, Pen? strokePen = null)
     {
+        if (_renderTarget.Backend == RenderBackend.Metal && strokePen == null &&
+            TryDrawMetalImageBrushFill(brush, geometry)) return;
         if (brush.CssGradientLayout is { } layout &&
             geometry.Bounds.Width > 0 && geometry.Bounds.Height > 0)
         {
@@ -436,12 +436,51 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
     }
 
+    private bool TryDrawMetalImageBrushFill(ImageBrush brush, PathGeometry geometry)
+    {
+        _pathCommandBuffer ??= new List<float>(256);
+        var commands = _pathCommandBuffer;
+        commands.Clear();
+        if (_pathEdgeMode > 0) { commands.Add(8f); commands.Add(_pathEdgeMode); }
+        bool hasFigure = false;
+        foreach (var figure in geometry.Figures)
+        {
+            if (!figure.IsFilled) continue;
+            hasFigure = true;
+            commands.Add(2f); commands.Add((float)(figure.StartPoint.X + Offset.X)); commands.Add((float)(figure.StartPoint.Y + Offset.Y));
+            AppendFigureSegments(commands, figure, figure.StartPoint, Offset.X, Offset.Y, nativeArcs: true);
+            if (figure.IsClosed) commands.Add(5f);
+        }
+        if (!hasFigure) return true;
+        if (!_renderTarget.TryPushPathClip(0, 0, CopyPathCommands(commands), commands.Count, geometry.FillRule == FillRule.Nonzero ? 1 : 0))
+            return false;
+        var bounds = geometry.Bounds;
+        bounds = new Rect(bounds.X + Offset.X, bounds.Y + Offset.Y, bounds.Width, bounds.Height);
+        try { FillImageBrushTiles(brush, bounds, ImageBrushClipKind.None, 0, 0, 0, 0, 0, 0); }
+        finally { _renderTarget.PopClip(); }
+        return true;
+    }
+
     private bool TryDrawImageBrushStroke(Pen? pen, Geometry geometry)
     {
         if (pen?.Brush is not ImageBrush imageBrush ||
             !double.IsFinite(pen.Thickness) || pen.Thickness <= 0)
             return false;
 
+        if (_renderTarget.Backend == RenderBackend.Metal && geometry is PathGeometry metalPath)
+        {
+            if (!TryCreateNativeDash(pen, out var dash, out var phase)) return true;
+            var commands = BuildMetalStrokeCommands(pen, metalPath);
+            if (commands.Count == 0) return true;
+            if (_renderTarget.TryPushStrokePathClip(CopyPathCommands(commands), commands.Count, pen, dash, phase, _pathEdgeMode))
+            {
+                var paint = metalPath.GetRenderBounds(pen);
+                paint = new Rect(paint.X + Offset.X, paint.Y + Offset.Y, paint.Width, paint.Height);
+                try { FillImageBrushTiles(imageBrush, paint, ImageBrushClipKind.None, 0, 0, 0, 0, 0, 0); }
+                finally { _renderTarget.PopClip(); }
+                return true;
+            }
+        }
         var hasUnstrokedSegments = false;
         if (geometry is PathGeometry path)
         {
@@ -1841,8 +1880,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <inheritdoc />
     public override void DrawText(FormattedText formattedText, Point origin)
     {
+        if (!_closed && formattedText?.PlatformTextLine is NativeTextParagraph.Line line)
+        {
+            _renderTarget.DrawParagraphLine(line, (float)(origin.X + Offset.X), (float)(origin.Y + Offset.Y));
+            return;
+        }
         if (_closed || formattedText == null || formattedText.FontSize == 0 || string.IsNullOrEmpty(formattedText.Text)) return;
-        if (Jalium.UI.Styling.CssFontFaces.IsBlocked(formattedText.FontFamily)) return;
+        var renderingFamily = Jalium.UI.Styling.CssFontFaces.MaterializeSource(
+            FontWidthRenderingSource.ForFormattedText(formattedText.FontFamily, formattedText.FontStretch), formattedText.Text);
+        if (Jalium.UI.Styling.CssFontFaces.IsBlocked(renderingFamily)) return;
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_TEXT2);
 
         var mx = origin.X + Offset.X;
@@ -1873,6 +1919,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         var width = (float)formattedText.MaxTextWidth;
         var height = (float)formattedText.MaxTextHeight;
+        bool noWrap = OperatingSystem.IsMacOS() && (!float.IsFinite(width) || width <= 0);
         if (width <= 0 || float.IsInfinity(width) || float.IsNaN(width)) width = 10000;
         if (height <= 0 || float.IsInfinity(height) || float.IsNaN(height)) height = 10000;
 
@@ -1971,14 +2018,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             var identitySubpixel = !s_subpixelPositioningDisabled &&
                 formattedText.TextFormattingMode == (int)TextFormattingMode.Ideal;
             var format = GetTextFormat(
-                formattedText.FontFamily,
+                renderingFamily,
                 effectiveFontSize,
                 effectiveWeight,
                 formattedText.FontStyle,
                 formattedText.TextRenderingMode,
                 formattedText.TextFormattingMode,
                 formattedText.TextHintingMode,
-                subpixelPositioning: identitySubpixel);
+                subpixelPositioning: identitySubpixel, noWrap: noWrap);
             if (format == null) return;
 
             var x = (float)mx;
@@ -2002,14 +2049,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // branch it is requested regardless of TextFormattingMode: a Display-mode
         // label that zooms still has to stay still while it zooms.
         var scaledFormat = GetTextFormat(
-            formattedText.FontFamily,
+            renderingFamily,
             effectiveFontSize,
             effectiveWeight,
             formattedText.FontStyle,
             formattedText.TextRenderingMode,
             formattedText.TextFormattingMode,
             formattedText.TextHintingMode,
-            subpixelPositioning: !s_subpixelPositioningDisabled);
+            subpixelPositioning: !s_subpixelPositioningDisabled, noWrap: noWrap);
         if (scaledFormat == null) return;
 
         // Screen-space origin = current matrix applied to (mx, my). The origin
@@ -2116,12 +2163,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     /// <inheritdoc />
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
+        => DrawGeometry(brush, pen, geometry, EdgeMode.Unspecified);
+
+    private int _pathEdgeMode = -1;
+
+    public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry, EdgeMode edgeMode)
     {
         if (_closed || geometry == null) return;
         if (brush is CssLayeredBackgroundBrush layers)
         {
-            DrawGeometry(layers.Bottom, null, geometry);
-            DrawGeometry(layers.Top, pen, geometry);
+            DrawGeometry(layers.Bottom, null, geometry, edgeMode);
+            DrawGeometry(layers.Top, pen, geometry, edgeMode);
             return;
         }
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_GEO);
@@ -2138,12 +2190,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             pushedTransform = true;
         }
 
+        var previousEdgeMode = _pathEdgeMode;
+        if (edgeMode != EdgeMode.Unspecified) _pathEdgeMode = (int)edgeMode;
         try
         {
             DrawGeometryCore(brush, pen, geometry);
         }
         finally
         {
+            _pathEdgeMode = previousEdgeMode;
             if (pushedTransform)
                 Pop();
         }
@@ -2153,7 +2208,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (geometry is Jalium.UI.Styling.CssRoundedRectangleGeometry cssRounded)
         {
-            if (brush is ImageBrush imageBrush)
+            if (_renderTarget.Backend == RenderBackend.Metal)
+                DrawPathGeometry(brush, pen, cssRounded.Path);
+            else if (brush is ImageBrush imageBrush)
             {
                 var bounds = new Rect(cssRounded.Rect.X + Offset.X, cssRounded.Rect.Y + Offset.Y, cssRounded.Rect.Width, cssRounded.Rect.Height);
                 var contour = new NativeEllipticalClip(bounds, cssRounded.Radii, ClipEdges.All);
@@ -2163,6 +2220,23 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
             else DrawPathGeometry(brush, pen, cssRounded.Path);
             return;
+        }
+        // Geometry drawing uses the same EdgeMode, brush and full pen contract
+        // as PathGeometry. Shape-specific native entry points omit that metadata.
+        if (_renderTarget.Backend == RenderBackend.Metal)
+        {
+            var primitivePath = geometry switch
+            {
+                RectangleGeometry rectangle => rectangle.GetPathGeometry(),
+                EllipseGeometry ellipse => ellipse.GetPathGeometry(),
+                LineGeometry line => line.GetFlattenedPathGeometry(),
+                _ => null,
+            };
+            if (primitivePath is not null)
+            {
+                DrawPathGeometry(brush, pen, primitivePath);
+                return;
+            }
         }
         // Handle geometry types
         if (geometry is RectangleGeometry rectGeom)
@@ -2189,10 +2263,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
         else if (geometry is GeometryGroup group)
         {
-            foreach (var child in group.Children)
-            {
-                DrawGeometry(brush, pen, child);
-            }
+            DrawGeometryGroup(this, brush, pen, group, DevicePathTolerance());
         }
         else if (geometry is CombinedGeometry combined)
         {
@@ -2200,7 +2271,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // GetFlattenedPathGeometry) so the GPU path matches the software backend
             // instead of the old per-mode bounding-box approximations. The flattened
             // result carries FillRule.Nonzero and is filled by the standard path pipeline.
-            var flat = combined.GetFlattenedPathGeometry();
+            var flat = _renderTarget.Backend == RenderBackend.Metal
+                ? combined.GetFlattenedPathGeometry(DevicePathTolerance(), ToleranceType.Absolute)
+                : combined.GetFlattenedPathGeometry();
             if (!flat.IsEmpty())
                 DrawPathGeometry(brush, pen, flat);
         }
@@ -2213,6 +2286,21 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         else if (geometry is PathGeometry pathGeom)
         {
             DrawPathGeometry(brush, pen, pathGeom);
+        }
+    }
+
+    // The group's transform is already on the context stack. Only the fill may
+    // bake child centerlines: strokes must retain each child's local coordinate
+    // space so the entire pen (including dashes, caps and joins) is transformed.
+    internal static void DrawGeometryGroup(DrawingContext context, Brush? brush, Pen? pen,
+        GeometryGroup group, double tolerance = 0.125)
+    {
+        if (brush != null)
+            context.DrawGeometry(brush, null, FlattenGeometryGroup(group, tolerance));
+        if (pen != null)
+        {
+            foreach (var child in group.Children)
+                context.DrawGeometry(null, pen, child);
         }
     }
 
@@ -2230,38 +2318,55 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         return false;
     }
 
-    /// <summary>
-    /// Returns true if any fill figure's bounding box is contained within
-    /// another figure's bounding box — the necessary condition for one figure
-    /// to cut a hole in another. When no figure nests inside another, the
-    /// figures are disjoint or overlapping siblings with no hole relationship
-    /// and must each be filled independently (their union); routing them
-    /// through the compound-path triangulator would let its winding-direction
-    /// hole heuristic corrupt the fill. Bounding-box containment is a
-    /// conservative test: a genuine hole always has its bbox nested, so a real
-    /// hole is never mis-routed to separate fills.
-    /// </summary>
-    private static bool FiguresHaveNesting(IReadOnlyList<PathFigure> figures)
+    internal static PathGeometry FlattenGeometryGroup(GeometryGroup group, double tolerance = 0.125)
     {
-        int n = figures.Count;
-        if (n < 2) return false;
-
-        Span<Rect> bounds = n <= 32
-            ? stackalloc Rect[n]
-            : new Rect[n];
-        for (int i = 0; i < n; i++)
-            bounds[i] = PathGeometry.GetFigureBounds(figures[i]);
-
-        for (int i = 0; i < n; i++)
+        var result = new PathGeometry { FillRule = group.FillRule };
+        void Append(Geometry geometry, Matrix parent)
         {
-            if (bounds[i].IsEmpty) continue;
-            for (int j = 0; j < n; j++)
+            var matrix = geometry.Transform is { } transform
+                ? Matrix.Multiply(transform.Value, parent) : parent;
+            if (geometry is GeometryGroup nested)
             {
-                if (i != j && bounds[j].Contains(bounds[i]))
-                    return true;
+                foreach (var child in nested.Children) Append(child, matrix);
+                return;
+            }
+            var linearScale = Math.Sqrt(matrix.M11 * matrix.M11 + matrix.M12 * matrix.M12 +
+                matrix.M21 * matrix.M21 + matrix.M22 * matrix.M22);
+            var flat = geometry.GetFlattenedPathGeometry(tolerance / Math.Max(linearScale, 0.01), ToleranceType.Absolute);
+            foreach (var figure in flat.Figures)
+            {
+                var output = new PathFigure { StartPoint = matrix.Transform(figure.StartPoint),
+                    IsClosed = figure.IsClosed, IsFilled = figure.IsFilled };
+                foreach (var segment in figure.Segments)
+                {
+                    if (segment is LineSegment line)
+                        output.Segments.Add(new LineSegment(matrix.Transform(line.Point), line.IsStroked)
+                            { IsSmoothJoin = line.IsSmoothJoin });
+                    else if (segment is PolyLineSegment poly)
+                    {
+                        var transformed = new PolyLineSegment { IsStroked = poly.IsStroked, IsSmoothJoin = poly.IsSmoothJoin };
+                        foreach (var point in poly.Points) transformed.Points.Add(matrix.Transform(point));
+                        output.Segments.Add(transformed);
+                    }
+                }
+                result.Figures.Add(output);
             }
         }
-        return false;
+        // The caller already pushed the group's own transform. Child transforms
+        // belong inside the compound path so all winding is evaluated together.
+        foreach (var child in group.Children) Append(child, Matrix.Identity);
+        return result;
+    }
+
+    private double DevicePathTolerance()
+    {
+        var m = _currentNativeMatrix;
+        double xx = _renderTarget.DpiScaleX, yy = _renderTarget.DpiScaleY;
+        double scale = _nativeTransformDepth > 0
+            ? Math.Sqrt(Math.Pow(m[0]*xx,2)+Math.Pow(m[1]*yy,2)+
+                Math.Pow(m[2]*xx,2)+Math.Pow(m[3]*yy,2))
+            : Math.Max(xx,yy);
+        return 0.125 / Math.Max(double.IsFinite(scale) ? scale : 1, 0.01);
     }
 
     private void DrawPathGeometry(Brush? brush, Pen? pen, PathGeometry pathGeom)
@@ -2315,49 +2420,18 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
         }
 
-        if (fillFigures != null && fillFigures.Count > 1)
-        {
-            // The native compound-path triangulator classifies each contour as
-            // outer-vs-hole by its winding DIRECTION. That assumption only holds
-            // for the "outer CCW + holes CW" convention; two independent solid
-            // shapes that happen to wind the same way get one mis-classified as
-            // a hole of the other and bridge-subtracted — a corrupted fill.
-            //
-            // A hole can only exist when one figure NESTS inside another. When
-            // no figure nests, the figures are disjoint / overlapping siblings
-            // whose correct fill is simply their union — render each one as an
-            // independent single-figure fill, which has no cross-figure
-            // winding interaction.  Compound fill is reserved for genuinely
-            // nested figures (real holes), where it is needed and correct.
-            if (frozenInfo?.HasNestedFillFigures ?? FiguresHaveNesting(fillFigures))
-            {
-                // Send all figures as a single compound path with MoveTo separators
-                DrawCompoundPathFill(brush!, fillFigures, pathGeom.FillRule, geoBounds);
-            }
-            else
-            {
-                foreach (var figure in fillFigures)
-                {
-                    if (FigureHasCurves(figure))
-                        DrawPathFigureNative(brush, null, figure, pathGeom.FillRule, geoBounds);
-                    else
-                        DrawPathFigurePolygon(brush, null, figure, pathGeom.FillRule, geoBounds);
-                }
-            }
-        }
-        else if (fillFigures != null && fillFigures.Count == 1)
-        {
-            var figure = fillFigures[0];
-            if (FigureHasCurves(figure))
-                DrawPathFigureNative(brush, null, figure, pathGeom.FillRule, geoBounds);
-            else
-                DrawPathFigurePolygon(brush, null, figure, pathGeom.FillRule, geoBounds);
-        }
+        if (fillFigures is { Count: > 0 })
+            DrawCompoundPathFill(brush!, fillFigures, pathGeom.FillRule, geoBounds);
 
         // Stroke rendering: each figure stroked individually.
         if (pen?.Brush != null)
         {
             if (TryDrawImageBrushStroke(pen, pathGeom)) return;
+            if (_renderTarget.Backend == RenderBackend.Metal)
+            {
+                DrawMetalPathStroke(pen, pathGeom, geoBounds);
+                return;
+            }
             foreach (var figure in pathGeom.Figures)
             {
                 // Whether the route taken below already renders the pen's line caps.
@@ -2441,7 +2515,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         float startX = (float)(firstFigure.StartPoint.X + ox);
         float startY = (float)(firstFigure.StartPoint.Y + oy);
 
-        AppendFigureSegments(cmds, firstFigure, firstFigure.StartPoint, ox, oy);
+        AppendFigureSegments(cmds, firstFigure, firstFigure.StartPoint, ox, oy, nativeArcs: _renderTarget.Backend == RenderBackend.Metal);
         if (firstFigure.IsClosed) cmds.Add(5f); // ClosePath tag
 
         // Subsequent figures: use MoveTo (tag 2) to start new contours
@@ -2452,7 +2526,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             cmds.Add((float)(figure.StartPoint.X + ox));
             cmds.Add((float)(figure.StartPoint.Y + oy));
 
-            AppendFigureSegments(cmds, figure, figure.StartPoint, ox, oy);
+            AppendFigureSegments(cmds, figure, figure.StartPoint, ox, oy, nativeArcs: _renderTarget.Backend == RenderBackend.Metal);
             if (figure.IsClosed) cmds.Add(5f); // ClosePath tag
         }
 
@@ -2466,8 +2540,51 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             int rule = fillRule == FillRule.Nonzero ? 1 : 0;
             var commandArray = CopyPathCommands(cmds);
-            _renderTarget.FillPath(startX, startY, commandArray, cmds.Count, nativeBrush, rule);
+            _renderTarget.FillPath(startX, startY, commandArray, cmds.Count, nativeBrush, rule, _pathEdgeMode);
         }
+    }
+
+    private List<float> BuildMetalStrokeCommands(Pen pen, PathGeometry geometry)
+    {
+        _pathCommandBuffer ??= new List<float>(256);
+        var commands = _pathCommandBuffer;
+        commands.Clear();
+        foreach (var figure in geometry.Figures)
+        {
+            double dx = 0, dy = 0;
+            if (!FigureHasCurves(figure))
+            {
+                _polygonPointBuffer ??= new List<Point>();
+                _polygonPointBuffer.Clear();
+                _polygonPointBuffer.Add(figure.StartPoint);
+                foreach (var segment in figure.Segments)
+                    if (segment is LineSegment line) _polygonPointBuffer.Add(line.Point);
+                    else if (segment is PolyLineSegment poly) _polygonPointBuffer.AddRange(poly.Points);
+                if (IsAxisAlignedPath(_polygonPointBuffer))
+                    TryComputeAxisAlignedSnap(figure.StartPoint.X + Offset.X, figure.StartPoint.Y + Offset.Y,
+                        pen.Thickness, true, out dx, out dy);
+            }
+            var ox = Offset.X + dx; var oy = Offset.Y + dy;
+            commands.Add(2f); commands.Add((float)(figure.StartPoint.X + ox)); commands.Add((float)(figure.StartPoint.Y + oy));
+            commands.Add(7f); commands.Add((int)pen.StartLineCap); commands.Add((int)pen.EndLineCap); commands.Add((int)pen.DashCap);
+            AppendFigureSegments(commands, figure, figure.StartPoint, ox, oy, strokeMetadata: true, nativeArcs: true);
+            if (figure.IsClosed) commands.Add(5f);
+        }
+        return commands;
+    }
+
+    private void DrawMetalPathStroke(Pen pen, PathGeometry geometry, Rect bounds)
+    {
+        if (!double.IsFinite(pen.Thickness) || pen.Thickness <= 0 ||
+            !TryCreateNativeDash(pen, out var dashes, out var phase)) return;
+        var commands = BuildMetalStrokeCommands(pen, geometry);
+        if (commands.Count == 0) return;
+        var brush = GetNativeBrush(pen.Brush!, (float)(bounds.X + Offset.X), (float)(bounds.Y + Offset.Y),
+            (float)bounds.Width, (float)bounds.Height);
+        if (brush == null) return;
+        _renderTarget.StrokePath(0, 0, CopyPathCommands(commands), commands.Count, brush,
+            (float)pen.Thickness, false, (int)pen.LineJoin, (float)pen.MiterLimit,
+            (int)pen.DashCap, dashes, phase, _pathEdgeMode);
     }
 
     private void DrawWidenedStroke(Pen pen, PathFigure figure, FillRule fillRule)
@@ -2518,8 +2635,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var rx = arc.Size.Width;
         var ry = arc.Size.Height;
 
-        // Handle degenerate cases
-        if (rx == 0 || ry == 0 || (start.X == end.X && start.Y == end.Y))
+        // SVG omits coincident-endpoint arcs; zero radii become straight lines.
+        if (start == end) return;
+        if (rx == 0 || ry == 0)
         {
             cmds.Add(0f);
             cmds.Add((float)(end.X + ox));
@@ -2631,12 +2749,20 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// Appends all segments of a PathFigure to the command buffer.
     /// Used by both single-figure and compound-path rendering.
     /// </summary>
-    private static Point AppendFigureSegments(List<float> cmds, PathFigure figure, Point currentPoint, double ox, double oy)
+    private static Point AppendFigureSegments(List<float> cmds, PathFigure figure, Point currentPoint, double ox, double oy,
+        bool strokeMetadata = false, bool nativeArcs = false)
     {
         foreach (var segment in figure.Segments)
         {
+            void Flags()
+            {
+                if (!strokeMetadata) return;
+                cmds.Add(6f);
+                cmds.Add((segment.IsStroked ? 1 : 0) | (segment.IsSmoothJoin ? 2 : 0));
+            }
             if (segment is LineSegment lineSeg)
             {
+                Flags();
                 cmds.Add(0f);
                 cmds.Add((float)(lineSeg.Point.X + ox));
                 cmds.Add((float)(lineSeg.Point.Y + oy));
@@ -2646,6 +2772,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             {
                 foreach (var pt in polyLine.Points)
                 {
+                    Flags();
                     cmds.Add(0f);
                     cmds.Add((float)(pt.X + ox));
                     cmds.Add((float)(pt.Y + oy));
@@ -2654,6 +2781,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
             else if (segment is BezierSegment bezier)
             {
+                Flags();
                 cmds.Add(1f);
                 cmds.Add((float)(bezier.Point1.X + ox));
                 cmds.Add((float)(bezier.Point1.Y + oy));
@@ -2668,6 +2796,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 var pts = polyBezier.Points;
                 for (int i = 0; i + 2 < pts.Count; i += 3)
                 {
+                    Flags();
                     cmds.Add(1f);
                     cmds.Add((float)(pts[i].X + ox));
                     cmds.Add((float)(pts[i].Y + oy));
@@ -2681,6 +2810,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             else if (segment is QuadraticBezierSegment quad)
             {
                 // Native QuadTo tag 3: [3, cpx, cpy, ex, ey]
+                Flags();
                 cmds.Add(3f);
                 cmds.Add((float)(quad.Point1.X + ox));
                 cmds.Add((float)(quad.Point1.Y + oy));
@@ -2694,6 +2824,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 for (int i = 0; i + 1 < pts.Count; i += 2)
                 {
                     // Native QuadTo tag 3: [3, cpx, cpy, ex, ey]
+                    Flags();
                     cmds.Add(3f);
                     cmds.Add((float)(pts[i].X + ox));
                     cmds.Add((float)(pts[i].Y + oy));
@@ -2704,9 +2835,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
             else if (segment is ArcSegment arc)
             {
-                // Convert arc to cubic bezier curves that native can render (tag 1).
-                // Native backends don't support raw arc commands.
-                AppendArcAsCubicBeziers(cmds, currentPoint, arc, ox, oy);
+                // Metal preserves endpoint arcs; older backends use cubics.
+                Flags();
+                if (nativeArcs)
+                {
+                    cmds.Add(4f);
+                    cmds.Add((float)(arc.Point.X + ox)); cmds.Add((float)(arc.Point.Y + oy));
+                    cmds.Add((float)arc.Size.Width); cmds.Add((float)arc.Size.Height);
+                    cmds.Add((float)arc.RotationAngle); cmds.Add(arc.IsLargeArc ? 1 : 0);
+                    cmds.Add(arc.SweepDirection == SweepDirection.Clockwise ? 1 : 0);
+                }
+                else AppendArcAsCubicBeziers(cmds, currentPoint, arc, ox, oy);
                 currentPoint = arc.Point;
             }
         }
@@ -3812,35 +3951,23 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             return;
         }
 
+        // Bake geometry transforms into one compound path. A clip captures the
+        // transform at push time and must keep holes and child winding together.
+        if (_renderTarget.Backend == RenderBackend.Metal &&
+            (clipGeometry is not RectangleGeometry || clipGeometry.Transform is { Value.IsIdentity: false }))
+        {
+            var container = new GeometryGroup();
+            container.Children.Add(clipGeometry);
+            var flattened = FlattenGeometryGroup(container, DevicePathTolerance());
+            flattened.FillRule = clipGeometry is GeometryGroup group ? group.FillRule :
+                clipGeometry is PathGeometry pg ? pg.FillRule :
+                clipGeometry is StreamGeometry sg ? sg.FillRule : flattened.FillRule;
+            if (TryPushGeometryPathClip(flattened)) return;
+        }
+
         if (clipGeometry is PathGeometry path && path.Figures.Count > 0)
         {
-            _pathCommandBuffer ??= new List<float>(128);
-            _pathCommandBuffer.Clear();
-            var commands = _pathCommandBuffer;
-            var first = path.Figures[0];
-            var startX = (float)(first.StartPoint.X + Offset.X);
-            var startY = (float)(first.StartPoint.Y + Offset.Y);
-            for (var index = 0; index < path.Figures.Count; index++)
-            {
-                var figure = path.Figures[index];
-                if (index > 0)
-                {
-                    commands.Add(2f);
-                    commands.Add((float)(figure.StartPoint.X + Offset.X));
-                    commands.Add((float)(figure.StartPoint.Y + Offset.Y));
-                }
-                AppendFigureSegments(commands, figure, figure.StartPoint, Offset.X, Offset.Y);
-                if (figure.IsClosed) commands.Add(5f);
-            }
-            if (commands.Count > 0 && _renderTarget.TryPushPathClip(startX, startY,
-                    CopyPathCommands(commands), commands.Count, path.FillRule == FillRule.Nonzero ? 1 : 0))
-            {
-                var pathBounds = path.Bounds;
-                PushClipBounds(new Rect(pathBounds.X + Offset.X, pathBounds.Y + Offset.Y,
-                    pathBounds.Width, pathBounds.Height));
-                _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
-                return;
-            }
+            if (TryPushGeometryPathClip(path)) return;
         }
 
         var rectangleGeometry = clipGeometry as RectangleGeometry;
@@ -3925,6 +4052,37 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
 
         _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
+    }
+
+    private bool TryPushGeometryPathClip(PathGeometry path)
+    {
+        _pathCommandBuffer ??= new List<float>(128);
+        _pathCommandBuffer.Clear();
+        var commands = _pathCommandBuffer;
+        foreach (var figure in path.Figures)
+        {
+            if (!figure.IsFilled) continue;
+            commands.Add(2f);
+            commands.Add((float)(figure.StartPoint.X + Offset.X));
+            commands.Add((float)(figure.StartPoint.Y + Offset.Y));
+            AppendFigureSegments(commands, figure, figure.StartPoint, Offset.X, Offset.Y,
+                nativeArcs: _renderTarget.Backend == RenderBackend.Metal);
+            if (figure.IsClosed) commands.Add(5f);
+        }
+        if (commands.Count == 0)
+        {
+            _renderTarget.PushClip(0, 0, 0, 0);
+            PushClipBounds(new Rect(0, 0, 0, 0));
+        }
+        else
+        {
+            if (!_renderTarget.TryPushPathClip(0, 0, CopyPathCommands(commands), commands.Count,
+                path.FillRule == FillRule.Nonzero ? 1 : 0)) return false;
+            var b = path.Bounds;
+            PushClipBounds(new Rect(b.X + Offset.X, b.Y + Offset.Y, b.Width, b.Height));
+        }
+        _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
+        return true;
     }
 
     /// <summary>
@@ -4785,7 +4943,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                     float maxR = Math.Max(Math.Max(cornerTL, cornerTR), Math.Max(cornerBR, cornerBL));
                     _renderTarget.PushRoundedRectClip(x, y, w, h, maxR, maxR);
                 }
-                _renderTarget.DrawBlurEffect(x, y, w, h, nativeRadius, uvOffX, uvOffY);
+                if (blur.KernelType != Media.Effects.KernelType.Box ||
+                    !_renderTarget.TryDrawBlurEffectWithKernel(x, y, w, h, nativeRadius, 1, uvOffX, uvOffY))
+                    _renderTarget.DrawBlurEffect(x, y, w, h, nativeRadius, uvOffX, uvOffY);
                 if (hasCorners)
                 {
                     _renderTarget.PopClip();
@@ -4795,7 +4955,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         else if (effect is Media.Effects.ElementBlurEffect elementBlur)
         {
             if (elementBlur.Radius > 0)
-                _renderTarget.DrawBlurEffect(x, y, w, h, (float)(elementBlur.Radius * scale), uvOffX, uvOffY);
+            {
+                var radius = (float)(elementBlur.Radius * scale);
+                if (elementBlur.KernelType != Media.Effects.KernelType.Box ||
+                    !_renderTarget.TryDrawBlurEffectWithKernel(x, y, w, h, radius, 1, uvOffX, uvOffY))
+                    _renderTarget.DrawBlurEffect(x, y, w, h, radius, uvOffX, uvOffY);
+            }
         }
         else if (effect is Media.Effects.DropShadowEffect shadow)
         {
@@ -4994,11 +5159,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             if (!string.IsNullOrEmpty(sourceHlsl))
             {
                 // Cross-backend path: HLSL source compiled at runtime. Required
-                // for custom shaders to run on the Vulkan backend (it can't use
-                // the DXBC bytecode path); D3D12 also honours it via D3DCompile.
+                // for Vulkan and Metal (DirectX bytecode is not portable);
+                // D3D12 also honours it via D3DCompile.
                 _renderTarget.DrawShaderEffectFromSource(x, y, w, h,
                     sourceHlsl,
                     shaderEffect.BuildConstantBuffer());
+                pixelShader?.ReportRenderResult(_renderTarget.LastShaderEffectSucceeded);
             }
             else
             {
@@ -5008,6 +5174,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                     _renderTarget.DrawShaderEffect(x, y, w, h,
                         shaderBytecode,
                         shaderEffect.BuildConstantBuffer());
+                    pixelShader?.ReportRenderResult(_renderTarget.LastShaderEffectSucceeded);
                 }
                 else
                 {
@@ -5443,6 +5610,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// </summary>
     private enum ImageBrushClipKind
     {
+        None,
         /// <summary>Axis-aligned rectangular clip via <c>PushClip</c>.</summary>
         Rect,
         /// <summary>Rounded-rectangle clip via <c>PushRoundedRectClip</c>.</summary>
@@ -5579,8 +5747,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         bool perTileClipNeeded = !brushTransform.IsIdentity || placements.Count > 1 ||
             !RectsApproximatelyEqual(placements[0].ClipRect, shapeBounds);
 
+        var hasShapeClip = clipKind != ImageBrushClipKind.None;
         var usedContour = contour is { } nativeContour && _renderTarget.TryPushEllipticalRectClip(nativeContour);
-        if (!usedContour)
+        if (hasShapeClip && !usedContour)
         {
             if (contour is { } fallbackContour)
                 PushImageBrushContourFallback(fallbackContour, clipX, clipY, clipW, clipH);
@@ -5601,7 +5770,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         finally
         {
             if (transformed) _renderTarget.PopTransform();
-            _renderTarget.PopClip();
+            if (hasShapeClip) _renderTarget.PopClip();
         }
     }
 
@@ -5895,7 +6064,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         int textRenderingMode,
         int textFormattingMode,
         int textHintingMode,
-        bool subpixelPositioning = false)
+        bool subpixelPositioning = false, bool noWrap = false)
     {
         if (string.IsNullOrWhiteSpace(fontFamily))
         {
@@ -5921,7 +6090,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             textRenderingMode,
             textFormattingMode,
             textHintingMode,
-            subpixelPositioning);
+            subpixelPositioning, noWrap, TextMeasurement.FontCacheEpoch);
 
         if (_textFormatCache.TryGetValue(key, out var cached) && cached.IsValid)
         {
@@ -5944,6 +6113,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // DrawText (D3D12 glyph atlas keys off them; Vulkan maps to
             // LOGFONT.lfQuality). Calling the setter on Auto / Ideal / Auto
             // is harmless because the native side just stores the value.
+            if (noWrap) format.SetNoWrap(true);
             format.SetTextRenderingMode(textRenderingMode);
             format.SetTextFormattingMode(textFormattingMode);
             format.SetTextHintingMode(textHintingMode);
@@ -6265,6 +6435,25 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
                 // Same contract as the BitmapImage path above: the application learns about the
                 // failure through Image.ImageFailed, on the UI thread, once per failure episode.
+                BitmapDecodeNotifier.PostSourceFailure(imageSource, ex);
+            }
+        }
+
+        else if (imageSource is BitmapSource bitmapSource &&
+                 bitmapSource.PixelWidth > 0 && bitmapSource.PixelHeight > 0)
+        {
+            // ImageBrush also accepts CopyPixels-backed sources such as
+            // BitmapSource.Create. Use the shared pixel-format conversion so
+            // accelerated path masks do not silently turn these sources blank.
+            try
+            {
+                var snapshot = ImageBrushSampler.GetPixels(bitmapSource, hintPixelWidth, hintPixelHeight, hintCover);
+                if (snapshot is not null) nativeBitmap = UploadSnapshot(snapshot);
+            }
+            catch (Exception ex)
+            {
+                ImageDiagnostics.UploadFailed(DescribeImageSource(imageSource), "BitmapSource upload",
+                    bitmapSource.PixelWidth, bitmapSource.PixelHeight, ex);
                 BitmapDecodeNotifier.PostSourceFailure(imageSource, ex);
             }
         }

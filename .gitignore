@@ -3,6 +3,9 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Finder view metadata is not a source change.
+.DS_Store
+
 # User-specific files
 *.rsuser
 *.suo

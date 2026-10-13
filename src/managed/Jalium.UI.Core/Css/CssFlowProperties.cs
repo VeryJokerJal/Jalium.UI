@@ -211,6 +211,28 @@ internal static class CssFlowProperties
         if (element.VisualParent is UIElement parent) parent.InvalidateMeasure();
     }
 
+    internal static void OnWrappingSourceChanged(DependencyObject target, DependencyProperty property)
+    {
+        // Non-layout objects (including Control's default brushes) cannot have a
+        // wrapping origin. Do not initialize TextBlock while Control initializes.
+        if (target is not UIElement && target is not FrameworkContentElement) return;
+        // Declaring or clearing an initial value changes whether TextBlock uses
+        // CSS wrapping, even though the effective property value stays equal.
+        // Value-change callbacks alone cannot invalidate that layout.
+        if (property == TextBlock.TextWrappingProperty ||
+            property == OverflowWrapProperty || property == WordBreakProperty ||
+            property == LineBreakProperty || property == LinePaddingProperty ||
+            property == WordSpacingProperty || property == WordSpaceTransformProperty ||
+            property == LetterSpacingProperty || property == TextAutospaceProperty ||
+            property == HangingPunctuationProperty || property == HyphensProperty ||
+            property == HyphenateCharacterProperty || property == HyphenateLimitLinesProperty ||
+            property == HyphenateLimitLastProperty || property == HyphenateLimitZoneProperty ||
+            property == HyphenateLimitCharsProperty || property == WhiteSpaceProperty ||
+            property == TextWrapModeProperty || property == TextWrapStyleProperty ||
+            property == WhiteSpaceTrimProperty || property == TabSizeProperty)
+            InvalidateWhiteSpaceOrigin(target);
+    }
+
     internal static void InvalidateWhiteSpaceOrigin(DependencyObject target)
     {
         if (target is FrameworkContentElement content)

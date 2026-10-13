@@ -1,5 +1,6 @@
 using Jalium.UI.Automation.Peers;
 using Jalium.UI.Automation.Text;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Automation.Provider;
 
@@ -35,7 +36,10 @@ internal sealed class AutomationTextProvider : ITextProvider
         return [CreateRange(start, end)];
     }
 
-    public ITextRangeProvider[] GetVisibleRanges() => [DocumentRange];
+    public ITextRangeProvider[] GetVisibleRanges() => _source is IAutomationTextViewSource view
+        ? AutomationTextNavigation.VisibleRanges(_source, view).Select(range =>
+            (ITextRangeProvider)CreateRange(range.Start, range.Start + range.Length)).ToArray()
+        : [DocumentRange];
 
     public ITextRangeProvider? RangeFromChild(IRawElementProviderSimple childElement)
     {
@@ -48,9 +52,17 @@ internal sealed class AutomationTextProvider : ITextProvider
         if (!double.IsFinite(screenLocation.X) || !double.IsFinite(screenLocation.Y))
             throw new ArgumentException("The screen location must contain finite coordinates.", nameof(screenLocation));
 
-        // The offset source intentionally remains renderer-neutral. Until a source supplies a
-        // point-to-character mapping, return a degenerate range at the nearest safe endpoint.
-        return CreateRange(0, 0);
+        if (_source is not IAutomationTextViewSource view || _peer.Owner is not UIElement element
+            || !element.GetRenderMatrix().TryInvert(out _)) return null;
+        Rect viewport = view.TextViewport;
+        if (viewport.IsEmpty || viewport.Width <= 0 || viewport.Height <= 0) return null;
+        Point local = element.PointFromScreen(screenLocation);
+        var visibility = new AutomationVisibility(element);
+        if (viewport.Contains(local) && !visibility.Contains(local)) return null;
+        local = new Point(Math.Clamp(local.X, viewport.Left, Math.BitDecrement(viewport.Right)),
+            Math.Clamp(local.Y, viewport.Top, Math.BitDecrement(viewport.Bottom)));
+        if (!visibility.Contains(local) && !visibility.TryGetPoint(viewport, local, out local)) return null;
+        return view.TryGetInsertionIndex(local, out int index) ? CreateRange(index, index) : null;
     }
 
     internal AutomationTextRangeProvider CreateRange(int start, int end) =>
@@ -116,6 +128,12 @@ internal sealed class AutomationTextRangeProvider : ITextRangeProvider
         {
             case TextUnit.Character:
             case TextUnit.Format:
+                if (unit == TextUnit.Format && Source is IAutomationTextStyleSource)
+                {
+                    if (AutomationTextStyles.At(AutomationTextStyles.GetRuns(Source), _start, text.Length) is { } format)
+                    { _start = format.Start; _end = format.Start + format.Length; }
+                    break;
+                }
                 if (_end <= _start)
                 {
                     if (_start < text.Length)
@@ -147,7 +165,23 @@ internal sealed class AutomationTextRangeProvider : ITextRangeProvider
         }
     }
 
-    public ITextRangeProvider? FindAttribute(int attribute, object? value, bool backward) => null;
+    public ITextRangeProvider? FindAttribute(int attribute, object? value, bool backward)
+    {
+        ClampToDocument();
+        if (attribute == IsReadOnlyAttributeId) return Equals(Source.IsReadOnly, value) ? Clone() : null;
+        var matches = new List<AutomationTextSpan>();
+        foreach (var run in AutomationTextStyles.GetRuns(Source))
+        {
+            int start = Math.Max(run.Start, _start), end = Math.Min(run.Start + run.Length, _end);
+            if (end <= start || AutomationTextStyles.Value(run.Style, attribute) is not { } actual || !Equals(actual, value)) continue;
+            if (matches.Count > 0 && matches[^1].Start + matches[^1].Length == start)
+                matches[^1] = matches[^1] with { Length = end - matches[^1].Start };
+            else matches.Add(new(start, end - start));
+        }
+        if (matches.Count == 0) return null;
+        var match = backward ? matches[^1] : matches[0];
+        return _provider.CreateRange(match.Start, match.Start + match.Length);
+    }
 
     public ITextRangeProvider? FindText(string text, bool backward, bool ignoreCase)
     {
@@ -162,8 +196,24 @@ internal sealed class AutomationTextRangeProvider : ITextRangeProvider
         return index < 0 ? null : new AutomationTextRangeProvider(_provider, _start + index, _start + index + text.Length);
     }
 
-    public object? GetAttributeValue(int attribute) =>
-        attribute == IsReadOnlyAttributeId ? Source.IsReadOnly : null;
+    public object? GetAttributeValue(int attribute)
+    {
+        ClampToDocument();
+        if (attribute == IsReadOnlyAttributeId) return Source.IsReadOnly;
+        var runs = AutomationTextStyles.GetRuns(Source);
+        if (_start == _end)
+            return AutomationTextStyles.At(runs, _start, DocumentText.Length) is { } caret ? AutomationTextStyles.Value(caret.Style, attribute) : null;
+        object? result = null; bool found = false;
+        foreach (var run in runs)
+        {
+            if (run.Start >= _end || run.Start + run.Length <= _start) continue;
+            object? value = AutomationTextStyles.Value(run.Style, attribute);
+            if (value == null) return null;
+            if (!found) { found = true; result = value; }
+            else if (!Equals(result, value)) result = AutomationTextAttributeValues.Mixed;
+        }
+        return result;
+    }
 
     public double[] GetBoundingRectangles()
     {
@@ -171,20 +221,26 @@ internal sealed class AutomationTextRangeProvider : ITextRangeProvider
         if (rectangles.Count == 0)
             return [];
 
-        var values = new double[rectangles.Count * 4];
+        var values = new List<double>(rectangles.Count * 4);
+        AutomationVisibility? visibility = _provider.Peer.Owner is UIElement owner ? new(owner) : null;
+        Matrix screen = Matrix.Identity;
+        if (_provider.Peer.Owner is UIElement visual)
+        {
+            Point origin = visual.PointToScreen(default), x = visual.PointToScreen(new(1, 0)), y = visual.PointToScreen(new(0, 1));
+            screen = new Matrix(x.X - origin.X, x.Y - origin.Y, y.X - origin.X, y.Y - origin.Y, origin.X, origin.Y);
+        }
         for (int index = 0; index < rectangles.Count; index++)
         {
             Rect rectangle = rectangles[index];
-            if (_provider.Peer.Owner is UIElement element)
-                rectangle = element.MapLocalRectToScreen(rectangle);
+            if (visibility != null && !visibility.TryClip(rectangle, screen, out rectangle)) continue;
 
-            values[index * 4] = rectangle.Left;
-            values[index * 4 + 1] = rectangle.Top;
-            values[index * 4 + 2] = rectangle.Width;
-            values[index * 4 + 3] = rectangle.Height;
+            values.Add(rectangle.Left);
+            values.Add(rectangle.Top);
+            values.Add(rectangle.Width);
+            values.Add(rectangle.Height);
         }
 
-        return values;
+        return values.ToArray();
     }
 
     internal IReadOnlyList<Rect> GetLocalBoundingRectangles()
@@ -215,6 +271,27 @@ internal sealed class AutomationTextRangeProvider : ITextRangeProvider
         ClampToDocument();
         if (count == 0)
             return 0;
+
+        if (unit == TextUnit.Format && Source is IAutomationTextStyleSource)
+        {
+            // UIA moves a caret without expanding it; a non-empty range is
+            // normalized to one format unit and must still span a unit at EOF.
+            if (_start == _end)
+            {
+                _start = MoveOffsetByUnit(DocumentText, _start, unit, count, out int caretMoved);
+                _end = _start;
+                return caretMoved;
+            }
+            var runs = AutomationTextStyles.GetRuns(Source);
+            int current = -1;
+            for (int index = 0; index < runs.Count; index++)
+                if (_start >= runs[index].Start && _start < runs[index].Start + runs[index].Length) { current = index; break; }
+            if (current < 0) return 0;
+            int target = (int)Math.Clamp((long)current + count, 0, runs.Count - 1);
+            if (target == current) return 0;
+            _start = runs[target].Start; _end = _start + runs[target].Length;
+            return target - current;
+        }
 
         int start = MoveOffsetByUnit(DocumentText, _start, unit, count, out int actual);
         _start = start;
@@ -377,7 +454,7 @@ internal sealed class AutomationTextRangeProvider : ITextRangeProvider
         return start == 0 ? 0 : LineStart(text, start - 1);
     }
 
-    private static int MoveOffsetByUnit(string text, int offset, TextUnit unit, int count, out int actual)
+    private int MoveOffsetByUnit(string text, int offset, TextUnit unit, int count, out int actual)
     {
         actual = 0;
         offset = Math.Clamp(offset, 0, text.Length);
@@ -385,7 +462,15 @@ internal sealed class AutomationTextRangeProvider : ITextRangeProvider
             return offset;
 
         int direction = count > 0 ? 1 : -1;
-        int steps = Math.Abs(count);
+        int steps = (int)Math.Min(Math.Abs((long)count), text.Length + 1L);
+        if (unit == TextUnit.Format && Source is IAutomationTextStyleSource)
+        {
+            var boundaries = AutomationTextStyles.GetRuns(Source).SelectMany(run => new[] { run.Start, run.Start + run.Length })
+                .Append(0).Append(text.Length).Distinct().Order().ToArray();
+            foreach (int boundary in direction > 0 ? boundaries.Where(value => value > offset) : boundaries.Where(value => value < offset).Reverse())
+            { if (steps-- == 0) break; offset = boundary; actual += direction; }
+            return offset;
+        }
         switch (unit)
         {
             case TextUnit.Character:

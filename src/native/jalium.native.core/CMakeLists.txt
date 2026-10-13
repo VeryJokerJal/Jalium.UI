@@ -26,6 +26,7 @@ set(SOURCES
     src/context.cpp
     src/render_target.cpp
     src/brush.cpp
+    src/text_paragraph.cpp
     src/font_resource.cpp
     src/bitmap.cpp
     src/backend_registry.cpp
@@ -74,6 +75,13 @@ if(WIN32)
             dwrite
             gdi32
     )
+elseif(APPLE)
+    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreText" "-framework CoreGraphics" "-framework CoreFoundation")
+    target_sources(${PROJECT_NAME} PRIVATE src/apple_font.mm include/jalium_apple_font.h)
+    target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework AppKit")
+    endif()
 elseif(ANDROID)
     target_link_libraries(${PROJECT_NAME}
         PRIVATE

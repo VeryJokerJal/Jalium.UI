@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Reflection;
 using Jalium.UI.Controls;
+using Jalium.UI.Data;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
@@ -95,6 +97,10 @@ public sealed class RazorVirtualizeHostTests
             root.Measure(constraint);
             root.Arrange(bounds);
 
+            // Propagate descendant invalidations before the viewer consumes refined extents.
+            // Measuring only the panel can release an end anchor too early.
+            root.UpdateLayout();
+
             // Measuring from the root is not enough on its own: a parent whose own constraint did
             // not change short-circuits before reaching the child, so an invalidation raised deep
             // in the tree goes nowhere. Re-measuring the stale element against the constraint it
@@ -127,7 +133,7 @@ public sealed class RazorVirtualizeHostTests
     public void AsScrollViewerContent_TheViewerAdoptsTheHostItself()
     {
         var host = BuildHost(600, out _);
-        var viewer = new ScrollViewer { Content = host };
+        var viewer = new ScrollViewer { CanContentScroll = true, Content = host };
 
         Settle(viewer, new Size(ViewportWidth, ViewportHeight));
 
@@ -138,7 +144,7 @@ public sealed class RazorVirtualizeHostTests
     public void InsideAScrollViewer_TheHostDoesNotBuildASecondOne()
     {
         var host = BuildHost(600, out _);
-        var viewer = new ScrollViewer { Content = host };
+        var viewer = new ScrollViewer { CanContentScroll = true, Content = host };
 
         Settle(viewer, new Size(ViewportWidth, ViewportHeight));
 
@@ -150,7 +156,7 @@ public sealed class RazorVirtualizeHostTests
     public void InsideAScrollViewer_FiveThousandItems_RealizesOnlyTheViewport()
     {
         var host = BuildHost(5000, out _);
-        var viewer = new ScrollViewer { Content = host };
+        var viewer = new ScrollViewer { CanContentScroll = true, Content = host };
 
         var panel = Settle(viewer, new Size(ViewportWidth, ViewportHeight));
 
@@ -171,6 +177,90 @@ public sealed class RazorVirtualizeHostTests
         Assert.InRange(panel!.Children.Count, 12, 120);
     }
 
+    [Theory]
+    [InlineData(Orientation.Vertical)]
+    [InlineData(Orientation.Horizontal)]
+    public void Standalone_ScrollCommandsReachTheLastItem(Orientation orientation)
+    {
+        var host = BuildHost(5000, out _);
+        host.Orientation = orientation;
+        var frame = new Border { Width = ViewportWidth, Height = ViewportHeight, Child = host };
+        var window = new Window { TitleBarStyle = WindowTitleBarStyle.Native,
+            Width = ViewportWidth, Height = ViewportHeight, Content = frame };
+        var constraint = new Size(ViewportWidth, ViewportHeight);
+        var panel = Settle(window, constraint);
+        var viewer = Assert.IsType<ScrollViewer>(FindDescendant<ScrollViewer>(host));
+
+        Assert.NotNull(panel);
+        Assert.InRange(panel!.Children.Count, 1, 120);
+        Assert.Null(host.ItemContainerGenerator.ContainerFromIndex(4999));
+
+        if (orientation == Orientation.Vertical)
+            viewer.ScrollToBottom();
+        else
+            viewer.ScrollToEnd();
+        Settle(window, constraint);
+
+        double offset = orientation == Orientation.Vertical ? viewer.VerticalOffset : viewer.HorizontalOffset;
+        double extent = orientation == Orientation.Vertical ? viewer.ExtentHeight : viewer.ExtentWidth;
+        double viewport = orientation == Orientation.Vertical ? viewer.ViewportHeight : viewer.ViewportWidth;
+        Assert.True(offset > 0);
+        Assert.Equal(extent - viewport, offset, 3);
+        Assert.True(host.ItemContainerGenerator.ContainerFromIndex(4999) != null,
+            $"last item missing: {orientation}, offset={offset}, extent={extent}, viewport={viewport}, " +
+            $"realized={string.Join(',', panel.Children.Cast<UIElement>().Select(child => host.ItemContainerGenerator.IndexFromContainer(child)))}");
+        Assert.Null(host.ItemContainerGenerator.ContainerFromIndex(0));
+        Assert.InRange(panel.Children.Count, 1, 120);
+
+        if (orientation == Orientation.Vertical)
+            viewer.ScrollToTop();
+        else
+            viewer.ScrollToHome();
+        Settle(window, constraint);
+        Assert.NotNull(host.ItemContainerGenerator.ContainerFromIndex(0));
+        Assert.Null(host.ItemContainerGenerator.ContainerFromIndex(4999));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PhysicalOuterViewer_IsPreservedUntilContentScrollingIsEnabled(bool explicitFalse)
+    {
+        var host = BuildHost(200, out _);
+        var viewer = new ScrollViewer { Content = host };
+        if (explicitFalse)
+            viewer.CanContentScroll = false;
+        var constraint = new Size(ViewportWidth, ViewportHeight);
+        var panel = Settle(viewer, constraint);
+
+        Assert.False(viewer.CanContentScroll);
+        Assert.Null(ScrollInfoOf(viewer));
+        Assert.Null(host.ScrollOwner);
+        Assert.NotNull(FindDescendant<ScrollViewer>(host));
+        Assert.Equal(200, panel!.Children.Count);
+        viewer.LineDown();
+        Settle(viewer, constraint);
+        Assert.True(viewer.VerticalOffset > 0);
+
+        viewer.CanContentScroll = true;
+        panel = Settle(viewer, constraint);
+        Assert.Same(host, ScrollInfoOf(viewer));
+        Assert.Same(viewer, host.ScrollOwner);
+        Assert.Null(FindDescendant<ScrollViewer>(host));
+        Assert.InRange(panel!.Children.Count, 12, 120);
+        Assert.Equal(0, viewer.VerticalOffset);
+        viewer.ScrollToBottom();
+        Settle(viewer, constraint);
+        Assert.NotNull(host.ItemContainerGenerator.ContainerFromIndex(199));
+
+        viewer.CanContentScroll = false;
+        panel = Settle(viewer, constraint);
+        Assert.Null(host.ScrollOwner);
+        Assert.Null(ScrollInfoOf(viewer));
+        Assert.Equal(0, viewer.VerticalOffset);
+        Assert.Equal(200, panel!.Children.Count);
+    }
+
     [Fact]
     public void UnboundedScrollAxis_DegradesToEagerLayoutRatherThanRenderingNothing()
     {
@@ -184,6 +274,64 @@ public sealed class RazorVirtualizeHostTests
 
         Assert.False(VirtualizingPanel.GetIsVirtualizing(host));
         Assert.True(host.DesiredSize.Height > 0, "the host collapsed to zero height instead of degrading");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void BoundedLayoutRestoresTheApplicationsVirtualizationValue(bool enabled)
+    {
+        var host = BuildHost(200, out _);
+        VirtualizingPanel.SetIsVirtualizing(host, enabled);
+        var viewer = new ScrollViewer { Content = host };
+        var constraint = new Size(ViewportWidth, ViewportHeight);
+        Settle(viewer, constraint);
+        Assert.False(VirtualizingPanel.GetIsVirtualizing(host));
+        Assert.Equal(enabled, host.ReadLocalValue(VirtualizingPanel.IsVirtualizingProperty));
+
+        viewer.CanContentScroll = true;
+        var panel = Settle(viewer, constraint);
+        Assert.Equal(enabled, VirtualizingPanel.GetIsVirtualizing(host));
+        Assert.Equal(enabled, host.ReadLocalValue(VirtualizingPanel.IsVirtualizingProperty));
+        if (enabled)
+            Assert.InRange(panel!.Children.Count, 12, 120);
+        else
+            Assert.Equal(200, panel!.Children.Count);
+    }
+
+    [Fact]
+    public void UnboundedFallbackPreservesTheVirtualizationBindingAndItsLatestValue()
+    {
+        var source = new Border();
+        ScrollViewer.SetCanContentScroll(source, true);
+        var host = BuildHost(200, out _);
+        host.SetBinding(VirtualizingPanel.IsVirtualizingProperty, new Binding
+        {
+            Source = source, Path = new PropertyPath(ScrollViewer.CanContentScrollProperty),
+            Mode = BindingMode.OneWay,
+        });
+        var binding = host.GetBindingExpression(VirtualizingPanel.IsVirtualizingProperty);
+        var viewer = new ScrollViewer { Content = host };
+        var constraint = new Size(ViewportWidth, ViewportHeight);
+        Settle(viewer, constraint);
+        Assert.False(VirtualizingPanel.GetIsVirtualizing(host));
+        Assert.True(ScrollViewer.GetCanContentScroll(source));
+        Assert.Same(binding, host.GetBindingExpression(VirtualizingPanel.IsVirtualizingProperty));
+
+        viewer.CanContentScroll = true;
+        var panel = Settle(viewer, constraint);
+        Assert.True(VirtualizingPanel.GetIsVirtualizing(host));
+        Assert.InRange(panel!.Children.Count, 12, 120);
+        Assert.Same(binding, host.GetBindingExpression(VirtualizingPanel.IsVirtualizingProperty));
+
+        viewer.CanContentScroll = false;
+        Settle(viewer, constraint);
+        ScrollViewer.SetCanContentScroll(source, false);
+        viewer.CanContentScroll = true;
+        panel = Settle(viewer, constraint);
+        Assert.False(VirtualizingPanel.GetIsVirtualizing(host));
+        Assert.Equal(200, panel!.Children.Count);
+        Assert.Same(binding, host.GetBindingExpression(VirtualizingPanel.IsVirtualizingProperty));
     }
 
     [Fact]
@@ -211,7 +359,7 @@ public sealed class RazorVirtualizeHostTests
         host.RangeEnd = 5000;
         host.IsRangeSource = true;
 
-        var viewer = new ScrollViewer { Content = host };
+        var viewer = new ScrollViewer { CanContentScroll = true, Content = host };
         var panel = Settle(viewer, new Size(ViewportWidth, ViewportHeight));
 
         Assert.IsType<RazorIntRange>(host.ItemsSource);
@@ -304,7 +452,7 @@ public sealed class RazorVirtualizeHostTests
     public void LayoutSettlesInsteadOfLooping()
     {
         var host = BuildHost(5000, out _);
-        var viewer = new ScrollViewer { Content = host };
+        var viewer = new ScrollViewer { CanContentScroll = true, Content = host };
         var constraint = new Size(ViewportWidth, ViewportHeight);
         var bounds = new Rect(0, 0, constraint.Width, constraint.Height);
 

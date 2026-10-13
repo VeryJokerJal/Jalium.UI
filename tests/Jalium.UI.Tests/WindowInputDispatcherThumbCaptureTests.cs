@@ -7,8 +7,80 @@ using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
+[Collection("Application")]
 public sealed class WindowInputDispatcherThumbCaptureTests
 {
+    [Fact]
+    public void MouseWheel_PreviewAndBubbleRetainBothAxesAndPreciseDeviceMetadata()
+    {
+        UIElement.ForceReleaseMouseCapture();
+        using var host = new CountingInputHost();
+        var target = new Border();
+        host.HitTarget = target;
+        var received = new List<MouseWheelEventArgs>();
+        target.AddHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler((_, e) => received.Add(e)));
+        target.AddHandler(UIElement.MouseWheelEvent, new MouseWheelEventHandler((_, e) =>
+        {
+            received.Add(e);
+            e.Handled = true;
+        }));
+        var dispatcher = new WindowInputDispatcher(host);
+        dispatcher.HandleMouseWheel(new Point(6, 10), 0.25, -0.125, true,
+            MouseButtonStates.AllReleased, ModifierKeys.Shift, 1, MouseWheelPhase.Changed, MouseWheelPhase.Began);
+
+        Assert.Equal(2, received.Count);
+        Assert.All(received, e =>
+        {
+            Assert.Equal(0.25, e.HorizontalDelta);
+            Assert.Equal(-0.125, e.VerticalDelta);
+            Assert.True(e.HasPreciseScrollingDeltas);
+            Assert.Equal(MouseWheelPhase.Changed, e.Phase);
+            Assert.Equal(MouseWheelPhase.Began, e.MomentumPhase);
+            Assert.Equal(ModifierKeys.Shift, e.KeyboardModifiers);
+        });
+    }
+
+    [Fact]
+    public void MouseWheel_PreviewAxisConsumptionSurvivesTheBubbleTransition()
+    {
+        UIElement.ForceReleaseMouseCapture();
+        using var host = new CountingInputHost();
+        var target = new Border();
+        host.HitTarget = target;
+        target.AddHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler((_, e) => e.IsVerticalDeltaHandled = true));
+        MouseWheelEventArgs? received = null;
+        target.AddHandler(UIElement.MouseWheelEvent, new MouseWheelEventHandler((_, e) => { received = e; e.Handled = true; }));
+        new WindowInputDispatcher(host).HandleMouseWheel(new Point(), 10, -10, true,
+            MouseButtonStates.AllReleased, ModifierKeys.None, 1);
+        Assert.NotNull(received);
+        Assert.True(received.IsVerticalDeltaHandled);
+        Assert.False(received.IsHorizontalDeltaHandled);
+    }
+
+    [Fact]
+    public void MouseWheel_GestureTargetSurvivesMovingContent_ThroughReleaseAndMomentum()
+    {
+        var root = new Grid();
+        var first = new Border();
+        var second = new Border();
+        root.Children.Add(first);
+        root.Children.Add(second);
+        var routing = new MouseWheelGestureRouting();
+        Assert.Same(first, routing.ResolveTarget(first, root, MouseWheelPhase.Began, MouseWheelPhase.None));
+        Assert.Same(first, routing.ResolveTarget(second, root, MouseWheelPhase.Changed, MouseWheelPhase.None));
+        Assert.Same(first, routing.ResolveTarget(second, root, MouseWheelPhase.Ended, MouseWheelPhase.None));
+        Assert.Same(first, routing.ResolveTarget(second, root, MouseWheelPhase.None, MouseWheelPhase.Began));
+        Assert.Same(first, routing.ResolveTarget(second, root, MouseWheelPhase.None, MouseWheelPhase.Ended));
+        Assert.Same(second, routing.ResolveTarget(second, root, MouseWheelPhase.Began, MouseWheelPhase.None));
+        MouseWheelEventArgs? cancelled = null;
+        second.AddHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler((_, e) => cancelled = e));
+        routing.Cancel();
+        Assert.Equal(MouseWheelPhase.Cancelled, cancelled?.Phase);
+        Assert.Same(first, routing.ResolveTarget(first, root, MouseWheelPhase.Changed, MouseWheelPhase.None));
+        root.Children.Remove(first);
+        Assert.Same(second, routing.ResolveTarget(second, root, MouseWheelPhase.Changed, MouseWheelPhase.None));
+    }
+
     [Fact]
     public void CapturedThumb_MoveAndRelease_BypassHitTestAndReleaseImmediately()
     {

@@ -6,6 +6,7 @@
     <!-- TreeView Style -->
     <!-- ============================================== -->
     <Style TargetType="TreeView">
+        <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
@@ -22,6 +23,7 @@
                             Shape="RoundedRectangle"
                             ClipToBounds="True">
                         <ScrollViewer Name="PART_ScrollViewer"
+                                      CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
                                       HorizontalScrollBarVisibility="Auto"
                                       VerticalScrollBarVisibility="Auto">
                             <ItemsPresenter />
@@ -48,6 +50,7 @@
     <!-- TreeSelector Style (drop-down with tree popup) -->
     <!-- ============================================== -->
     <Style TargetType="TreeSelector">
+        <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
         <Setter Property="Background" Value="{ThemeResource ControlBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
@@ -152,6 +155,7 @@
                                        RadiusX="14"
                                        RadiusY="14" />
                             <ScrollViewer Margin="6"
+                                          CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
                                           MaxHeight="{Binding MaxDropDownHeight, RelativeSource={RelativeSource AncestorType=TreeSelector}}"
                                           HorizontalScrollBarVisibility="Auto"
                                           VerticalScrollBarVisibility="Auto">

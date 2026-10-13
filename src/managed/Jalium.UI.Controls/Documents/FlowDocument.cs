@@ -487,19 +487,23 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         {
             var result = GetPositionInBlock(block, offset, direction, ref currentOffset);
             if (result != null)
+            {
+                // At a shared Run boundary, a forward insertion belongs to
+                // the following Run, even when it is inside a nested Span.
+                if (direction == LogicalDirection.Forward && result.Parent is Run run && result.Offset == run.Text.Length)
+                {
+                    var following = GetPositionAtOffset(offset + 1, LogicalDirection.Backward);
+                    if (following?.Parent is Run next && GetDocumentOffset(next, 0) == offset)
+                        return new TextPointer(this, next, 0, direction);
+                }
                 return result;
+            }
         }
 
-        // If offset is at the very end
+        // The position after the final paragraph is part of the plain-text
+        // range. Parenting it to a Paragraph would clamp away its final break.
         if (offset == currentOffset)
-        {
-            if (Blocks.Count > 0)
-            {
-                var lastBlock = Blocks[Blocks.Count - 1];
-                return new TextPointer(this, lastBlock, GetBlockLength(lastBlock), direction);
-            }
-            return new TextPointer(this, null, 0, direction);
-        }
+            return new TextPointer(this, null, offset, direction);
 
         return null;
     }
@@ -629,56 +633,9 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
     {
         ArgumentNullException.ThrowIfNull(position);
         if (!ReferenceEquals(position.Document, this))
-        {
             throw new ArgumentException("The TextPointer belongs to a different document.", nameof(position));
-        }
-
-        var paragraph = position.Paragraph
-            ?? throw new InvalidOperationException("A paragraph break can only be inserted inside a Paragraph.");
-        var siblings = paragraph.OwnerCollection
-            ?? throw new InvalidOperationException("The Paragraph is not attached to a BlockCollection.");
-        var newParagraph = new Paragraph();
-        CopyLocalValues(paragraph, newParagraph);
-
-        if (position.Parent is Run run && ReferenceEquals(run.Parent, paragraph) && run.OwnerCollection is { } inlines)
-        {
-            var runIndex = inlines.IndexOf(run);
-            var split = Math.Clamp(position.Offset, 0, run.Text.Length);
-            var trailingText = run.Text[split..];
-            run.Text = run.Text[..split];
-            if (trailingText.Length != 0)
-            {
-                var trailingRun = new Run(trailingText);
-                CopyLocalValues(run, trailingRun);
-                trailingRun.Text = trailingText;
-                newParagraph.Inlines.Add(trailingRun);
-            }
-
-            while (inlines.Count > runIndex + 1)
-            {
-                var trailing = inlines[runIndex + 1];
-                inlines.RemoveAt(runIndex + 1);
-                newParagraph.Inlines.Add(trailing);
-            }
-        }
-        else
-        {
-            var text = paragraph.Inlines.GetText();
-            var paragraphStart = GetDocumentOffset(paragraph, 0);
-            var split = Math.Clamp(position.DocumentOffset - paragraphStart, 0, text.Length);
-            paragraph.Inlines.Clear();
-            if (split != 0)
-            {
-                paragraph.Inlines.Add(new Run(text[..split]));
-            }
-            if (split != text.Length)
-            {
-                newParagraph.Inlines.Add(new Run(text[split..]));
-            }
-        }
-
-        siblings.Insert(siblings.IndexOf(paragraph) + 1, newParagraph);
-        return newParagraph.ContentStart;
+        using var change = (Parent as Controls.RichTextBox)?.DeclareChangeBlock();
+        return DocumentInsertion.SplitParagraph(position);
     }
 
     private static bool TryGetElementOffset(
@@ -762,16 +719,6 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
             {
                 yield return childParagraph;
             }
-        }
-    }
-
-    private static void CopyLocalValues(DependencyObject source, DependencyObject destination)
-    {
-        var values = source.GetLocalValueEnumerator();
-        while (values.MoveNext())
-        {
-            var entry = values.Current;
-            destination.SetValue(entry.Property, entry.Value);
         }
     }
 
@@ -1040,6 +987,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         _documentPaginator ??= new FlowDocumentPaginator(this);
 
     internal event EventHandler? ViewerPaginationChanged;
+    internal event EventHandler? ContentChanged;
 
     internal void NotifyTextPresentationChanged()
         => ViewerPaginationChanged?.Invoke(this, EventArgs.Empty);
@@ -1052,7 +1000,8 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
     private void OnBlocksChanged(object? sender, EventArgs e)
     {
         _viewerPaginator?.InvalidatePagination();
-        ViewerPaginationChanged?.Invoke(this, EventArgs.Empty);
+        try { ContentChanged?.Invoke(this, EventArgs.Empty); }
+        finally { ViewerPaginationChanged?.Invoke(this, EventArgs.Empty); }
     }
 
     private static void OnViewerPaginationPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -1060,7 +1009,20 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         if (d is FlowDocument document)
         {
             document._viewerPaginator?.InvalidatePagination();
-            document.ViewerPaginationChanged?.Invoke(document, EventArgs.Empty);
+            try
+            {
+                // Page constraints belong to the viewer. Text formatting is
+                // editable document content, including formatting on the root.
+                if (e.Property == FontFamilyProperty || e.Property == FontSizeProperty ||
+                    e.Property == FontStyleProperty || e.Property == FontWeightProperty ||
+                    e.Property == FontStretchProperty || e.Property == ForegroundProperty ||
+                    e.Property == BackgroundProperty || e.Property == TextAlignmentProperty ||
+                    e.Property == LineHeightProperty || e.Property == FlowDirectionProperty ||
+                    e.Property == TextElement.TextDecorationsProperty || e.Property == LineStackingStrategyProperty ||
+                    e.Property == IsHyphenationEnabledProperty)
+                    document.ContentChanged?.Invoke(document, EventArgs.Empty);
+            }
+            finally { document.ViewerPaginationChanged?.Invoke(document, EventArgs.Empty); }
         }
     }
 

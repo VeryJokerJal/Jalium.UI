@@ -17,7 +17,8 @@ public partial class ScrollViewer : ContentControl
     private const string ScrollBarAutoHideEnvironmentVariable = "JALIUM_SCROLLBAR_AUTOHIDE";
     private static readonly bool s_isScrollBarAutoHideEnabledByDefault =
         DetermineDefaultScrollBarAutoHide(
-            Environment.GetEnvironmentVariable(ScrollBarAutoHideEnvironmentVariable));
+            Environment.GetEnvironmentVariable(ScrollBarAutoHideEnvironmentVariable),
+            !OperatingSystem.IsMacOS() || Platform.MacOSScrollBarSettings.PrefersOverlayScrollBars);
 
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -174,7 +175,7 @@ public partial class ScrollViewer : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanContentScrollProperty =
         DependencyProperty.RegisterAttached(nameof(CanContentScroll), typeof(bool), typeof(ScrollViewer),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnCanContentScrollChanged));
 
     /// <summary>
     /// Identifies the PanningMode dependency property.
@@ -262,13 +263,15 @@ public partial class ScrollViewer : ContentControl
     /// Identifies the IsOverlayScrollBarEnabled dependency property.
     /// Overlay scroll bars render as compact edge indicators over the content.
     /// Classic scroll bars consume gutter space when shown; a stable CSS gutter
-    /// also reserves it without overflow. The default is enabled on mobile systems.
+    /// also reserves it without overflow. The default follows macOS preferences
+    /// and is enabled on mobile systems.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOverlayScrollBarEnabledProperty =
         DependencyProperty.Register(nameof(IsOverlayScrollBarEnabled), typeof(bool), typeof(ScrollViewer),
             new PropertyMetadata(
-                OperatingSystem.IsAndroid() || OperatingSystem.IsIOS(),
+                OperatingSystem.IsAndroid() || OperatingSystem.IsIOS() ||
+                (OperatingSystem.IsMacOS() && Platform.MacOSScrollBarSettings.PrefersOverlayScrollBars),
                 OnOverlayScrollBarEnabledChanged));
 
     internal static readonly DependencyProperty CssScrollBarWidthProperty =
@@ -517,7 +520,7 @@ public partial class ScrollViewer : ContentControl
         return CssScrollBarColors;
     }
 
-    internal static bool DetermineDefaultScrollBarAutoHide(string? environmentValue)
+    internal static bool DetermineDefaultScrollBarAutoHide(string? environmentValue, bool platformDefault = true)
     {
         if (!string.IsNullOrWhiteSpace(environmentValue))
         {
@@ -536,16 +539,25 @@ public partial class ScrollViewer : ContentControl
             }
         }
 
-        // Auto-hide is the documented default for every host. Applications that
-        // need persistent scroll bars can opt out per viewer, or process-wide via
-        // JALIUM_SCROLLBAR_AUTOHIDE=0. Inferring policy from a process/command name
-        // made the same control behave differently inside Gallery applications.
-        return true;
+        return platformDefault;
+    }
+
+    internal void ApplyMacOSScrollBarPreferences(bool prefersOverlay)
+    {
+        if (Platform.MacOSScrollBarSettings.PrefersReducedMotion)
+            ResetMacOSWheelElasticity();
+        Platform.MacOSScrollBarSettings.ApplyDefault(this, IsOverlayScrollBarEnabledProperty, prefersOverlay);
+        Platform.MacOSScrollBarSettings.ApplyDefault(this, IsScrollBarAutoHideEnabledProperty,
+            DetermineDefaultScrollBarAutoHide(
+                Environment.GetEnvironmentVariable(ScrollBarAutoHideEnvironmentVariable), prefersOverlay));
+        SnapPendingSmoothScrollIfDisabled();
+        ApplyScrollBarAutoHideVisualState();
     }
 
     /// <inheritdoc />
     protected override void OnContentChanged(object? oldContent, object? newContent)
     {
+        ResetMacOSWheelElasticity();
         // New content gets a fresh Auto decision — carrying the previous page's
         // dead-band state over would stick a scroll bar on (or off) for content
         // with completely different dimensions.
@@ -556,7 +568,31 @@ public partial class ScrollViewer : ContentControl
         ClearEndAnchor(isVertical: false);
         ScrollInfo = null;
         base.OnContentChanged(oldContent, newContent);
-        ScrollInfo = ContentElement as IScrollInfo;
+        ScrollInfo = CanContentScroll ? ContentElement as IScrollInfo : null;
+    }
+
+    private static void OnCanContentScrollChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not ScrollViewer viewer)
+            return;
+
+        viewer.ResetMacOSWheelElasticity();
+        viewer.CancelSmoothScroll();
+        viewer.ClearEndAnchor(isVertical: true);
+        viewer.ClearEndAnchor(isVertical: false);
+        viewer.ScrollInfo = viewer.CanContentScroll ? viewer.ContentElement as IScrollInfo : null;
+
+        // The old provider's units need not be DIP. Start the new mode at its
+        // origin instead of treating logical offsets or pending targets as pixels.
+        viewer._scrollInfo?.SetHorizontalOffset(0);
+        viewer._scrollInfo?.SetVerticalOffset(0);
+        viewer._horizontalOffset = viewer._verticalOffset = 0;
+        viewer._requestedHorizontalOffset = viewer._requestedVerticalOffset = 0;
+        viewer._smoothTargetX = viewer._smoothTargetY = 0;
+        viewer.ContentElement?.InvalidateMeasure();
+        viewer.ContentElement?.InvalidateArrange();
+        viewer.InvalidateMeasure();
+        viewer.InvalidateArrange();
     }
 
     /// <summary>
@@ -654,7 +690,8 @@ public partial class ScrollViewer : ContentControl
     private bool _cssThinScrollBarMinimumsApplied;
 
     private double GetScrollBarLayoutSize()
-        => IsOverlayScrollBarEnabled ? OverlayScrollBarLayoutSize
+        => IsOverlayScrollBarEnabled
+            ? (_verticalScrollBar.UseMacOSScrollBarBehavior ? 16.0 : OverlayScrollBarLayoutSize)
             : CssScrollBarWidth == CssScrollBarWidthMode.Thin ? ThinScrollBarSize : ScrollBarSize;
 
     private void UpdateCssScrollBarMinimums()
@@ -819,6 +856,8 @@ public partial class ScrollViewer : ContentControl
         ClipToBounds = true;
 
         // Register for input events
+        AddHandler(PreviewMouseWheelEvent, new Input.MouseWheelEventHandler(HandleMacOSWheelGesturePhase), handledEventsToo: true);
+        AddHandler(PreviewMouseDownEvent, new Input.MouseButtonEventHandler(HandleMacOSWheelGestureInterrupt), handledEventsToo: true);
         AddHandler(MouseWheelEvent, new Input.MouseWheelEventHandler(HandleMouseWheel));
         AddHandler(MouseDownEvent, new Input.MouseButtonEventHandler(HandleMouseDown));
         AddHandler(MouseMoveEvent, new Input.MouseEventHandler(HandleMouseMove));
@@ -844,6 +883,11 @@ public partial class ScrollViewer : ContentControl
         // immediate visual parent. Pair this with OnVisualParentChanged so every lifecycle exit
         // retires frame-paced timers and transient input state.
         Unloaded += OnScrollViewerUnloaded;
+        if (OperatingSystem.IsMacOS())
+        {
+            Loaded += OnScrollViewerLoaded;
+            ApplyMacOSScrollBarPreferences(Platform.MacOSScrollBarSettings.PrefersOverlayScrollBars);
+        }
     }
 
     /// <inheritdoc />
@@ -860,6 +904,12 @@ public partial class ScrollViewer : ContentControl
         {
             CompleteLifecycleCleanup();
         }
+    }
+
+    private void OnScrollViewerLoaded(object sender, RoutedEventArgs e)
+    {
+        // A cached page can be detached while system preferences change.
+        ApplyMacOSScrollBarPreferences(Platform.MacOSScrollBarSettings.PrefersOverlayScrollBars);
     }
 
     private void OnScrollViewerUnloaded(object sender, RoutedEventArgs e)
@@ -1026,6 +1076,9 @@ public partial class ScrollViewer : ContentControl
         _bounceFromY = 0;
         _overscrollX = 0;
         _overscrollY = 0;
+        _macOSWheelGestureActive = _macOSWheelOwnsOverscroll = false;
+        _macOSWheelSuppressMomentumX = _macOSWheelSuppressMomentumY = false;
+        _isApplyingMacOSWheelScroll = false;
 
         _isApplyingEndAnchor = false;
         ClearEndAnchor(isVertical: true);
@@ -1052,6 +1105,7 @@ public partial class ScrollViewer : ContentControl
             SmallChange = LineScrollAmount
         };
         scrollBar.Scroll += OnScrollBarScroll;
+        scrollBar.IsKeyboardFocusWithinChanged += OnScrollBarKeyboardFocusWithinChanged;
         scrollBar.AddHandler(MouseEnterEvent, new Input.MouseEventHandler(OnScrollBarMouseEnter));
         scrollBar.AddHandler(MouseLeaveEvent, new Input.MouseEventHandler(OnScrollBarMouseLeave));
         return scrollBar;
@@ -1237,6 +1291,16 @@ public partial class ScrollViewer : ContentControl
         // Moving from the bar into the content remains inside the overall viewer,
         // but it resumes the normal idle countdown instead of staying expanded.
         RestartScrollBarAutoHideTimer();
+    }
+
+    private void OnScrollBarKeyboardFocusWithinChanged(object? sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is not ScrollBar { UseMacOSScrollBarBehavior: true } scrollBar)
+            return;
+        if (scrollBar.IsKeyboardFocusWithin)
+            RevealAutoHideScrollBarsTemporarily();
+        else
+            HideAutoHideScrollBarsIfEligible();
     }
 
     private void OnAutoHideRegionMouseLeave(object sender, Input.MouseEventArgs e)
@@ -1426,6 +1490,13 @@ public partial class ScrollViewer : ContentControl
 
     private void StartBounceAnimation()
     {
+        if (OperatingSystem.IsMacOS() && Platform.MacOSScrollBarSettings.PrefersReducedMotion)
+        {
+            CancelBounceAnimation();
+            _overscrollX = _overscrollY = 0;
+            UpdateOverscrollVisuals();
+            return;
+        }
         _bounceFromX = _overscrollX;
         _bounceFromY = _overscrollY;
         _bounceStartTicks = Environment.TickCount64;
@@ -1444,24 +1515,27 @@ public partial class ScrollViewer : ContentControl
 
     private void OnBounceTick(object? sender, EventArgs e)
     {
+        if (OperatingSystem.IsMacOS() && Platform.MacOSScrollBarSettings.PrefersReducedMotion)
+        {
+            StartBounceAnimation();
+            return;
+        }
         double elapsed = Environment.TickCount64 - _bounceStartTicks;
         double t = Math.Clamp(elapsed / BounceDurationMs, 0, 1);
-        // Ease-out cubic: 1 - (1-t)^3 — fast spring back, gentle settle.
-        double eased = 1.0 - Math.Pow(1.0 - t, 3.0);
-        _overscrollX = _bounceFromX * (1.0 - eased);
-        _overscrollY = _bounceFromY * (1.0 - eased);
-        InvalidateArrange();
-        UpdateScrollBarMetrics();
+        // A damped spring for trackpads; preserve the touch-panning curve.
+        double remaining = _macOSWheelOwnsOverscroll
+            ? (1 + 8 * t) * Math.Exp(-8 * t)
+            : Math.Pow(1 - t, 3);
+        _overscrollX = _bounceFromX * remaining;
+        _overscrollY = _bounceFromY * remaining;
         if (t >= 1.0)
         {
             _overscrollX = 0;
             _overscrollY = 0;
             _bounceTimer!.IsEnabled = false;
-            InvalidateArrange();
-            UpdateScrollBarMetrics();
-            RevealOverlayIndicatorForScrollMovement();
             Jalium.UI.Diagnostics.ScrollDiagnostics.RecordOverscroll(Name, "bounce-end", 0, 0);
         }
+        UpdateOverscrollVisuals();
     }
 
     private void CancelBounceAnimation()
@@ -2139,7 +2213,7 @@ public partial class ScrollViewer : ContentControl
         if (_hasInitializedOverlayAutoHide)
             return;
 
-        // Show the initial 2-DIP indicator, then let the normal two-second
+        // Show the initial compact indicator, then let the normal two-second
         // idle countdown hide it. Without this first-use state it would enter
         // the already-hidden progress on its first layout.
         _hasInitializedOverlayAutoHide = true;
@@ -2189,7 +2263,8 @@ public partial class ScrollViewer : ContentControl
         // Keep expanded only for direct interaction with this scrollbar.
         // Avoid using ScrollViewer.IsMouseCaptureWithin here because unrelated
         // captures inside the viewer can keep bars expanded indefinitely.
-        if (scrollBar.IsMouseCaptured)
+        if (scrollBar.IsMouseCaptured ||
+            (scrollBar.UseMacOSScrollBarBehavior && scrollBar.IsKeyboardFocusWithin))
             return true;
 
         if (ReferenceEquals(scrollBar, _verticalScrollBar) && _isDraggingVerticalThumb)
@@ -2199,7 +2274,7 @@ public partial class ScrollViewer : ContentControl
             return true;
 
         if (IsOverlayScrollBarEnabled &&
-            (_isPointerPanningActive || _isSmoothScrolling || _bounceTimer is { IsEnabled: true }))
+            (_isPointerPanningActive || _macOSWheelGestureActive || _isSmoothScrolling || _bounceTimer is { IsEnabled: true }))
         {
             return true;
         }
@@ -2321,7 +2396,8 @@ public partial class ScrollViewer : ContentControl
         // Shape and visibility are independent on desktop:
         // outside = hidden, content = visible/slim, scrollbar = visible/expanded.
         // Overlay indicators retain their existing scroll-driven visibility model.
-        var targetVisibility = scrollBar.IsOverlayStyle || IsMouseOver ? 1.0 : 0.0;
+        var targetVisibility = scrollBar.IsOverlayStyle || IsMouseOver ||
+            (scrollBar.UseMacOSScrollBarBehavior && scrollBar.IsKeyboardFocusWithin) ? 1.0 : 0.0;
         scrollBar.StartAutoHideVisibilityTransition(targetVisibility);
     }
 
@@ -2500,6 +2576,10 @@ public partial class ScrollViewer : ContentControl
     public void ScrollToHorizontalOffset(double offset)
     {
         offset = ValidateScrollOffset(offset, nameof(offset));
+        if (HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled)
+            offset = 0;
+        if (!_isApplyingMacOSWheelScroll && !_isApplyingEndAnchor && !_isApplyingSmoothScrollStep)
+            ResetMacOSWheelElasticity();
         if (!_isApplyingEndAnchor)
         {
             ClearEndAnchor(isVertical: false);
@@ -2551,6 +2631,10 @@ public partial class ScrollViewer : ContentControl
     {
         var rawOffset = offset;
         offset = ValidateScrollOffset(offset, nameof(offset));
+        if (VerticalScrollBarVisibility == ScrollBarVisibility.Disabled)
+            offset = 0;
+        if (!_isApplyingMacOSWheelScroll && !_isApplyingEndAnchor && !_isApplyingSmoothScrollStep)
+            ResetMacOSWheelElasticity();
         if (!_isApplyingEndAnchor)
         {
             ClearEndAnchor(isVertical: true);
@@ -2997,23 +3081,15 @@ public partial class ScrollViewer : ContentControl
         {
             if (current == ContentElement)
             {
-                // When the content implements IScrollInfo (e.g. StackPanel doing its own
-                // physical scrolling), its ArrangeOverride already bakes the negative
-                // scroll offset into each child's _visualBounds. The accumulated y here
-                // therefore represents the child's CURRENT viewport-applied position,
-                // not its logical position in the content's full extent. MakeVisible
-                // expects logical content coordinates so it can compare against the
-                // viewport rect and compute the correct delta — add the scroll offset
-                // back to undo the bake-in. Without this, BringIntoView under-scrolls
-                // by exactly _scrollInfo.VerticalOffset on every call, leaving the
-                // focused element below the viewport while the focus-visual adorner
-                // (which uses raw _visualBounds) ends up drawn down in the footer
-                // region of the window.
-                if (_scrollInfo != null)
-                {
-                    x += _scrollInfo.HorizontalOffset;
-                    y += _scrollInfo.VerticalOffset;
-                }
+                // Include the content root's margin/alignment, then undo the viewport
+                // origin, scrolling and elasticity to recover extent coordinates.
+                // Physical content moves the root; IScrollInfo moves its children.
+                var viewport = GetContentViewportRect(RenderSize);
+                var rootBounds = ContentElement.VisualBounds;
+                x += rootBounds.X - viewport.Left - _overscrollX
+                    + (_scrollInfo?.HorizontalOffset ?? _horizontalOffset);
+                y += rootBounds.Y - viewport.Top - _overscrollY
+                    + (_scrollInfo?.VerticalOffset ?? _verticalOffset);
                 return new Point(x, y);
             }
 
@@ -3665,6 +3741,20 @@ public partial class ScrollViewer : ContentControl
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         if (e.Handled)
+            return;
+
+        if (!e.HasPreciseScrollingDeltas)
+            ResetMacOSWheelElasticity();
+
+        if (e.HasPreciseScrollingDeltas || e.HorizontalDelta != 0 ||
+            e.VerticalDelta != e.Delta || (e.KeyboardModifiers & ModifierKeys.Shift) != 0 ||
+            e.IsHorizontalDeltaHandled || e.IsVerticalDeltaHandled)
+        {
+            HandleDirectionalMouseWheel(e);
+            return;
+        }
+
+        if (e.Delta == 0)
             return;
 
         bool scrollingTowardStart = e.Delta > 0;
@@ -4799,6 +4889,8 @@ public partial class ScrollViewer : ContentControl
 
     private double GetEffectiveScrollInertiaDurationMs()
     {
+        if (OperatingSystem.IsMacOS() && Platform.MacOSScrollBarSettings.PrefersReducedMotion)
+            return 0;
         var durationMs = ScrollInertiaDurationMs;
         if (double.IsNaN(durationMs) || double.IsInfinity(durationMs))
             return DefaultScrollInertiaDurationMs;
@@ -4915,6 +5007,9 @@ public partial class ScrollViewer : ContentControl
         _lastNotifiedHorizontalOffset = _horizontalOffset;
         _lastNotifiedVerticalOffset = _verticalOffset;
 
+        // Adorners live outside the scrolled subtree, so the normal content
+        // arrangement does not invalidate a keyboard focus indicator's position.
+        Jalium.UI.Documents.AdornerLayer.GetAdornerLayer(this)?.InvalidateAdornerPositions(this);
         OnScrollChanged(e);
     }
 
@@ -4922,6 +5017,7 @@ public partial class ScrollViewer : ContentControl
     {
         if (d is ScrollViewer scrollViewer)
         {
+            scrollViewer.ResetMacOSWheelElasticity();
             // Update IScrollInfo scroll capabilities when visibility changes
             if (scrollViewer._scrollInfo != null)
             {
@@ -4929,6 +5025,15 @@ public partial class ScrollViewer : ContentControl
                     scrollViewer.HorizontalScrollBarVisibility != ScrollBarVisibility.Disabled;
                 scrollViewer._scrollInfo.CanVerticallyScroll =
                     scrollViewer.VerticalScrollBarVisibility != ScrollBarVisibility.Disabled;
+            }
+
+            if (scrollViewer.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled)
+            {
+                scrollViewer.ScrollToHorizontalOffset(0);
+            }
+            if (scrollViewer.VerticalScrollBarVisibility == ScrollBarVisibility.Disabled)
+            {
+                scrollViewer.ScrollToVerticalOffset(0);
             }
 
             scrollViewer.InvalidateMeasure();

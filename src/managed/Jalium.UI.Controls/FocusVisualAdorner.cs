@@ -91,6 +91,37 @@ public sealed class FocusVisualAdorner : Adorner
         return finalSize;
     }
 
+    internal override Geometry? GetLayoutClip()
+    {
+        var visible = new LayoutClipStack();
+        // The layer is outside the adorned element's subtree. Reapply its ancestor
+        // clips without clipping the focus style's intentional outward border.
+        Visual child = AdornedElement;
+        for (Visual? current = AdornedElement.VisualParent; current != null; current = current.VisualParent)
+        {
+            if (current is UIElement ancestor)
+            {
+                IntersectClip(ancestor, ancestor.GetLayoutClip(), visible);
+                IntersectClip(ancestor, ancestor.GetChildLayoutClip(), visible);
+                IntersectClip(ancestor, ancestor.GetAdditionalChildLayoutClip(child), visible);
+            }
+            child = current;
+        }
+        return visible.Clips.Count > 0 ? visible : base.GetLayoutClip();
+    }
+
+    private void IntersectClip(UIElement ancestor, Geometry? geometry, LayoutClipStack visible)
+    {
+        if (geometry == null) return;
+        if (!GetRenderMatrixTo(null).TryInvert(out var inverse))
+        {
+            visible.Clips.Add((Geometry.Empty, Matrix.Identity));
+            return;
+        }
+        var mapping = Matrix.Multiply(ancestor.GetRenderMatrixTo(null), inverse);
+        visible.Clips.Add((geometry, mapping));
+    }
+
     /// <summary>
     /// Minimal <see cref="Control"/> subclass used to host the focus visual's template.
     /// Declaring a dedicated type means per-control-type focus visual styles are unnecessary:

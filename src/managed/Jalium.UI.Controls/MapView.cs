@@ -539,11 +539,13 @@ public class MapView : Control
     {
         if (!IsEnabled || !IsZoomEnabled) return;
 
+        if (!double.IsFinite(e.VerticalDelta) || e.VerticalDelta == 0) return;
+
         var position = e.GetPosition(this);
         var geoBefore = ScreenToGeo(position);
 
         // Zoom in or out
-        double delta = e.Delta > 0 ? 1 : -1;
+        double delta = e.VerticalDelta > 0 ? 1 : -1;
         double newZoom = Math.Clamp(ZoomLevel + delta, MinZoomLevel, MaxZoomLevel);
 
         if (Math.Abs(newZoom - ZoomLevel) > 0.001)

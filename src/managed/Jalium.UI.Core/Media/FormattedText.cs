@@ -10,6 +10,10 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed partial class FormattedText
 {
+    // Immutable platform layout used by flow content. Keeping it on the draw
+    // command preserves shaping through effect captures and display lists.
+    private object? _platformTextLine;
+    internal object? PlatformTextLine { get => _platformTextLine; init => _platformTextLine = value; }
     /// <summary>
     /// Gets the text content.
     /// </summary>
@@ -579,6 +583,10 @@ public sealed partial class FormattedText
     internal FormattedText CreateRenderSnapshot(Brush? foreground)
     {
         var snapshot = (FormattedText)MemberwiseClone();
+        if (_platformTextLine is IPlatformTextLine platformLine)
+        {
+            snapshot._platformTextLine = platformLine.CreateRenderSnapshot();
+        }
 
         // Range-format mutations replace entries in the source array. Give the
         // snapshot its own entry table while sharing the immutable-by-convention

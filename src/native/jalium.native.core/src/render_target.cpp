@@ -1350,6 +1350,18 @@ JALIUM_API void jalium_draw_blur_effect(
     }
 }
 
+JALIUM_API JaliumResult jalium_draw_blur_effect_kernel(JaliumRenderTarget* rt,
+    float x, float y, float w, float h, float radius, int32_t kernelType,
+    float uvOffsetX, float uvOffsetY)
+{
+    if (!rt || w <= 0 || h <= 0 || kernelType < 0 || kernelType > 1)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto* provider = dynamic_cast<jalium::BlurKernelProvider*>(
+        reinterpret_cast<jalium::RenderTarget*>(rt));
+    return provider ? provider->DrawBlurEffectWithKernel(x, y, w, h, radius,
+        kernelType, uvOffsetX, uvOffsetY) : JALIUM_ERROR_NOT_SUPPORTED;
+}
+
 JALIUM_API void jalium_draw_drop_shadow_effect(
     JaliumRenderTarget* rt,
     float x, float y, float w, float h,
@@ -1691,6 +1703,14 @@ JALIUM_API void jalium_draw_shader_effect(
     });
 }
 
+JALIUM_API JaliumResult jalium_render_target_get_last_shader_effect_result(JaliumRenderTarget* rt)
+{
+    if(!rt)return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto* provider=dynamic_cast<jalium::ShaderEffectStatusProvider*>(
+        reinterpret_cast<jalium::RenderTarget*>(rt));
+    return provider?provider->GetLastShaderEffectResult():JALIUM_ERROR_NOT_SUPPORTED;
+}
+
 // HLSL-source custom shader effect — the cross-backend path. Both backends
 // compile the supplied SM6 HLSL at runtime (D3D12 via D3DCompile, Vulkan via
 // DXC→SPIR-V), so a single authored shader drives both. Lets the Vulkan backend
@@ -1786,6 +1806,22 @@ JALIUM_API JaliumResult jalium_push_elliptical_rect_clip(
     catch (...) { return JALIUM_ERROR_UNKNOWN; }
 }
 
+JALIUM_API JaliumResult jalium_push_stroke_path_clip(JaliumRenderTarget* rt,
+    float startX, float startY, const float* commands, uint32_t length,
+    float width, int32_t closed, int32_t join, float miter, int32_t cap,
+    const float* dash, uint32_t dashCount, float phase, int32_t edgeMode)
+{
+    if (!rt || !commands || !length || length > jalium::kMaxPathFloatCount ||
+        dashCount > jalium::kMaxDashFloatCount || (dashCount && !dash) ||
+        !(width > 0) || !std::isfinite(width)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::StrokePathClipProvider*>(reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider ? provider->PushStrokePathClip(startX, startY, commands, length,
+            width, closed != 0, join, miter, cap, dash, dashCount, phase, edgeMode) : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
 JALIUM_API JaliumResult jalium_push_path_clip(
     JaliumRenderTarget* rt, float startX, float startY,
     const float* commands, uint32_t commandLength, int32_t fillRule)
@@ -1802,6 +1838,8 @@ JALIUM_API JaliumResult jalium_push_path_clip(
         else if (tag == 3.0f) length = 5;
         else if (tag == 4.0f) length = 8;
         else if (tag == 5.0f) length = 1;
+        else if (tag == 6.0f || tag == 8.0f) length = 2;
+        else if (tag == 7.0f) length = 4;
         if (length == 0 || length > commandLength - index)
             return JALIUM_ERROR_INVALID_ARGUMENT;
         for (uint32_t component = 1; component < length; ++component)

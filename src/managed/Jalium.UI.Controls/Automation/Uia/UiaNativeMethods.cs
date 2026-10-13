@@ -60,6 +60,9 @@ internal static partial class UiaNativeMethods
     [DllImport("uiautomationcore.dll", EntryPoint = "UiaGetReservedNotSupportedValue")]
     internal static extern int UiaGetReservedNotSupportedValue(out nint punkNotSupportedValue);
 
+    [DllImport("uiautomationcore.dll", EntryPoint = "UiaGetReservedMixedAttributeValue")]
+    internal static extern int UiaGetReservedMixedAttributeValue(out nint punkMixedAttributeValue);
+
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool ClientToScreen(nint hWnd, ref POINT lpPoint);

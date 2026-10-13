@@ -20,13 +20,17 @@ internal sealed class CaretManager
         get => _offset;
         set
         {
-            if (_offset != value)
+            bool affinityChanged = BackwardAffinity;
+            BackwardAffinity = false;
+            if (_offset != value || affinityChanged)
             {
                 _offset = value;
                 OffsetChanged?.Invoke(this, EventArgs.Empty);
             }
         }
     }
+
+    internal bool BackwardAffinity { get; set; }
 
     /// <summary>
     /// Gets or sets the desired column for vertical navigation (preserved across up/down moves).

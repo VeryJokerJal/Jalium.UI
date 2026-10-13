@@ -762,7 +762,7 @@ public:
         VelloTransform t = VelloTransform::FromEngine(transform);
         EncodeTransform(t);
         EncodeStyle(VelloStyle::Fill(fillRule));
-        uint32_t nSegs = EncodePathCommands(startX, startY, commands, commandLength, true);
+        uint32_t nSegs = EncodePathCommands(startX, startY, commands, commandLength, true, ArcTolerance(t));
         if (nSegs == 0) return true;  // nothing to draw; not an error
         float bx0, by0, bx1, by1;
         CommandHullBounds(startX, startY, commands, commandLength, bx0, by0, bx1, by1);
@@ -790,7 +790,7 @@ public:
 
         EncodeTransform(t);
         EncodeStyle(VelloStyle::Stroke(strokeWidth, lineJoin, miterLimit, lineCap));
-        uint32_t nSegs = EncodePathCommands(startX, startY, commands, commandLength, false);
+        uint32_t nSegs = EncodePathCommands(startX, startY, commands, commandLength, false, ArcTolerance(t));
         if (nSegs == 0) return true;
         AccumulateStrokeBounds(startX, startY, commands, commandLength, strokeWidth,
                                miterLimit, t);
@@ -863,7 +863,7 @@ public:
         VelloTransform t = VelloTransform::FromEngine(transform);
         EncodeTransform(t);
         EncodeStyle(VelloStyle::Fill(fillRule));
-        uint32_t nSegs = EncodePathCommands(startX, startY, commands, commandLength, true);
+        uint32_t nSegs = EncodePathCommands(startX, startY, commands, commandLength, true, ArcTolerance(t));
         if (nSegs == 0) EncodeEmptyShape();
         // NOTE: a clip only ever shrinks what is visible, so it deliberately
         // does not grow the sub-scene region.
@@ -1364,6 +1364,15 @@ private:
         while (i < commandLength) {
             int tag = (int)commands[i];
             switch (tag) {
+                case kTagStrokeFlags:
+                case kTagEdgeMode:
+                    if (i + 1 >= commandLength) return;
+                    i += 2;
+                    break;
+                case kTagStrokeCaps:
+                    if (i + 3 >= commandLength) return;
+                    i += 4;
+                    break;
                 case kTagMoveTo:
                 case kTagLineTo:
                     if (i + 2 >= commandLength) return;
@@ -1476,8 +1485,16 @@ private:
 
     // Parse the Jalium float command stream into the path encoder.
     // Returns the number of encoded segments.
+    static float ArcTolerance(const VelloTransform& transform)
+    {
+        double sum = 0;
+        for (float value : transform.matrix) sum += double(value)*value;
+        const double scale = std::sqrt(sum); // conservative bound on the largest singular value
+        return static_cast<float>(0.125 / std::max(std::isfinite(scale) ? scale : 1.0,0.01));
+    }
+
     uint32_t EncodePathCommands(float startX, float startY, const float* commands,
-                                uint32_t commandLength, bool isFill)
+                                uint32_t commandLength, bool isFill, float arcTolerance)
     {
         VelloPathEncoder enc(scene_.pathTags, scene_.pathData, scene_.numPathSegments,
                              scene_.numPaths, isFill);
@@ -1487,6 +1504,15 @@ private:
         while (i < commandLength) {
             int tag = (int)commands[i];
             switch (tag) {
+                case kTagStrokeFlags:
+                case kTagEdgeMode:
+                    if (i + 1 >= commandLength) return enc.Finish(true);
+                    i += 2;
+                    break;
+                case kTagStrokeCaps:
+                    if (i + 3 >= commandLength) return enc.Finish(true);
+                    i += 4;
+                    break;
                 case kTagMoveTo:
                     if (i + 2 >= commandLength) return enc.Finish(true);
                     curX = commands[i + 1];
@@ -1525,7 +1551,7 @@ private:
                     bool largeArc = commands[i + 6] != 0.0f;
                     bool sweep = commands[i + 7] != 0.0f;
                     EncodeSvgArcAsCubics(enc, curX, curY, ex, ey, rx, ry, rotDeg, largeArc,
-                                         sweep);
+                                         sweep, arcTolerance);
                     curX = ex;
                     curY = ey;
                     i += 8;
@@ -1542,89 +1568,93 @@ private:
         return enc.Finish(true);
     }
 
-    // SVG arc -> cubic Beziers (endpoint to center parameterization, split at
-    // <= 90 degrees per segment, (4/3)tan(theta/4) control distance). The GPU
-    // flattens the cubics adaptively.
+    // SVG endpoint arcs become cubic Beziers. Both conversion error and GPU
+    // flattening must remain bounded after the complete device transform.
     static void EncodeSvgArcAsCubics(VelloPathEncoder& enc, float startX, float startY,
                                      float endX, float endY, float rx, float ry,
-                                     float xAxisRotationDegrees, bool largeArc, bool sweep)
+                                     float xAxisRotationDegrees, bool largeArc, bool sweep, float tolerance)
     {
-        constexpr float kPi = 3.14159265358979323846f;
-        constexpr float kEps = 1e-5f;
-        if ((std::fabs(startX - endX) < kEps && std::fabs(startY - endY) < kEps) || rx <= kEps ||
-            ry <= kEps) {
+        constexpr double kPi = 3.14159265358979323846;
+        rx = std::fabs(rx);
+        ry = std::fabs(ry);
+        if (startX == endX && startY == endY) return;
+        if (rx == 0 || ry == 0) {
             enc.LineTo(endX, endY);
             return;
         }
-        rx = std::fabs(rx);
-        ry = std::fabs(ry);
-        float phi = xAxisRotationDegrees * kPi / 180.0f;
-        float cosPhi = std::cos(phi), sinPhi = std::sin(phi);
-        float dx = (startX - endX) * 0.5f, dy = (startY - endY) * 0.5f;
-        float x1p = cosPhi * dx + sinPhi * dy;
-        float y1p = -sinPhi * dx + cosPhi * dy;
-        float rxSq = rx * rx, rySq = ry * ry;
-        float x1pSq = x1p * x1p, y1pSq = y1p * y1p;
-        float radiiCheck = x1pSq / rxSq + y1pSq / rySq;
+        double radiusX = rx, radiusY = ry;
+        double phi = std::remainder(double(xAxisRotationDegrees),360.0)*kPi/180.0;
+        double cosPhi = std::cos(phi), sinPhi = std::sin(phi);
+        double dx = (double(startX) - endX) * 0.5, dy = (double(startY) - endY) * 0.5;
+        double x1p = cosPhi * dx + sinPhi * dy;
+        double y1p = -sinPhi * dx + cosPhi * dy;
+        double rxSq = radiusX * radiusX, rySq = radiusY * radiusY;
+        double x1pSq = x1p * x1p, y1pSq = y1p * y1p;
+        double radiiCheck = x1pSq / rxSq + y1pSq / rySq;
         if (radiiCheck > 1.0f) {
-            float scale = std::sqrt(radiiCheck);
-            rx *= scale;
-            ry *= scale;
-            rxSq = rx * rx;
-            rySq = ry * ry;
+            double scale = std::sqrt(radiiCheck);
+            radiusX *= scale;
+            radiusY *= scale;
+            rxSq = radiusX * radiusX;
+            rySq = radiusY * radiusY;
         }
-        float num = rxSq * rySq - rxSq * y1pSq - rySq * x1pSq;
-        float den = rxSq * y1pSq + rySq * x1pSq;
-        float sign = (largeArc == sweep) ? -1.0f : 1.0f;
-        float factor = (den <= kEps) ? 0.0f : sign * std::sqrt(std::fmax(0.0f, num / den));
-        float cxp = factor * (rx * y1p / ry);
-        float cyp = factor * (-ry * x1p / rx);
-        float cx = cosPhi * cxp - sinPhi * cyp + (startX + endX) * 0.5f;
-        float cy = sinPhi * cxp + cosPhi * cyp + (startY + endY) * 0.5f;
-        auto vecAngle = [](float ux, float uy, float vx, float vy) {
-            float dotv = ux * vx + uy * vy;
-            float lenp = std::sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
-            if (lenp <= 0.0f) return 0.0f;
-            float c = std::fmin(std::fmax(dotv / lenp, -1.0f), 1.0f);
-            float ang = std::acos(c);
-            return (ux * vy - uy * vx < 0.0f) ? -ang : ang;
-        };
-        float v1x = (x1p - cxp) / rx, v1y = (y1p - cyp) / ry;
-        float v2x = (-x1p - cxp) / rx, v2y = (-y1p - cyp) / ry;
-        float startAngle = vecAngle(1.0f, 0.0f, v1x, v1y);
-        float deltaAngle = vecAngle(v1x, v1y, v2x, v2y);
+        double num = rxSq * rySq - rxSq * y1pSq - rySq * x1pSq;
+        double den = rxSq * y1pSq + rySq * x1pSq;
+        double sign = (largeArc == sweep) ? -1.0f : 1.0f;
+        double factor = den <= 0 ? 0 : sign * std::sqrt(std::max(0.0, num / den));
+        double cxp = factor * (radiusX * y1p / radiusY);
+        double cyp = factor * (-radiusY * x1p / radiusX);
+        double cx = cosPhi * cxp - sinPhi * cyp + (double(startX) + endX) * 0.5;
+        double cy = sinPhi * cxp + cosPhi * cyp + (double(startY) + endY) * 0.5;
+        double v1x = (x1p - cxp) / radiusX, v1y = (y1p - cyp) / radiusY;
+        double v2x = (-x1p - cxp) / radiusX, v2y = (-y1p - cyp) / radiusY;
+        double startAngle = std::atan2(v1y,v1x);
+        double deltaAngle = std::atan2(v1x*v2y-v1y*v2x,v1x*v2x+v1y*v2y);
         if (!sweep && deltaAngle > 0.0f) deltaAngle -= 2.0f * kPi;
         else if (sweep && deltaAngle < 0.0f) deltaAngle += 2.0f * kPi;
 
         int nSegs = (int)std::ceil(std::fabs(deltaAngle) / (kPi * 0.5f));
         nSegs = std::max(nSegs, 1);
-        float segAngle = deltaAngle / (float)nSegs;
-        float kappa = (4.0f / 3.0f) * std::tan(segAngle * 0.25f);
-        float angle = startAngle;
+        // For a unit-circle cubic, r^2-1 = a^2*z^2*(1-4*z), where
+        // z=t*(1-t), a=2*sin(angle/2)*tan(angle/4)^2. Its maximum is
+        // a^2/108, giving a stable exact radial-error bound. Scaling by
+        // the largest ellipse radius bounds distance after the ellipse map.
+        while (nSegs < 65536) {
+            const double step = std::abs(deltaAngle)/nSegs;
+            const double tangent = std::tan(step/4);
+            const double a = 2*std::sin(step/2)*tangent*tangent;
+            const double e = a*a/108;
+            const double error = std::max(radiusX,radiusY)*e/(std::sqrt(1+e)+1);
+            if (error <= std::max(double(tolerance)*0.25,1e-7)) break;
+            nSegs = std::min(nSegs*2,65536);
+        }
+        double segAngle = deltaAngle / (float)nSegs;
+        double kappa = (4.0 / 3.0) * std::tan(segAngle * 0.25);
+        double angle = startAngle;
         for (int s = 0; s < nSegs; s++) {
-            float a0 = angle;
-            float a1 = angle + segAngle;
-            float c0 = std::cos(a0), s0 = std::sin(a0);
-            float c1 = std::cos(a1), s1 = std::sin(a1);
+            double a0 = angle;
+            double a1 = angle + segAngle;
+            double c0 = std::cos(a0), s0 = std::sin(a0);
+            double c1 = std::cos(a1), s1 = std::sin(a1);
             // Points/derivatives on the unit circle, mapped through the
             // ellipse radii and rotation.
-            auto mapPoint = [&](float ux, float uy, float& ox, float& oy) {
-                float ex2 = rx * ux, ey2 = ry * uy;
+            auto mapPoint = [&](double ux, double uy, double& ox, double& oy) {
+                double ex2 = radiusX * ux, ey2 = radiusY * uy;
                 ox = cosPhi * ex2 - sinPhi * ey2 + cx;
                 oy = sinPhi * ex2 + cosPhi * ey2 + cy;
             };
-            auto mapDeriv = [&](float ux, float uy, float& ox, float& oy) {
-                float ex2 = rx * ux, ey2 = ry * uy;
+            auto mapDeriv = [&](double ux, double uy, double& ox, double& oy) {
+                double ex2 = radiusX * ux, ey2 = radiusY * uy;
                 ox = cosPhi * ex2 - sinPhi * ey2;
                 oy = sinPhi * ex2 + cosPhi * ey2;
             };
-            float p0x, p0y, p3x, p3y, d0x, d0y, d1x, d1y;
+            double p0x, p0y, p3x, p3y, d0x, d0y, d1x, d1y;
             mapPoint(c0, s0, p0x, p0y);
             mapPoint(c1, s1, p3x, p3y);
             mapDeriv(-s0, c0, d0x, d0y);
             mapDeriv(-s1, c1, d1x, d1y);
-            float p1x = p0x + kappa * d0x, p1y = p0y + kappa * d0y;
-            float p2x = p3x - kappa * d1x, p2y = p3y - kappa * d1y;
+            double p1x = p0x + kappa * d0x, p1y = p0y + kappa * d0y;
+            double p2x = p3x - kappa * d1x, p2y = p3y - kappa * d1y;
             if (s == nSegs - 1) {
                 p3x = endX;
                 p3y = endY;
@@ -1846,7 +1876,7 @@ private:
             // Degenerate pattern: draw solid.
             EncodeTransform(t);
             EncodeStyle(VelloStyle::Stroke(strokeWidth, lineJoin, miterLimit, lineCap));
-            uint32_t nSegs = EncodePathCommands(startX, startY, commands, commandLength, false);
+            uint32_t nSegs = EncodePathCommands(startX, startY, commands, commandLength, false, ArcTolerance(t));
             if (nSegs > 0) EncodeBrush(brush, opacity, t);
             return true;
         }

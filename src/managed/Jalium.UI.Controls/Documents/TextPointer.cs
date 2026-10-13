@@ -205,7 +205,13 @@ public sealed class TextPointer : ContentPosition, IComparable<TextPointer>
             }
         }
 
-        return GetPositionAtOffset(direction == LogicalDirection.Forward ? step : -step, direction);
+        var next = GetPositionAtOffset(direction == LogicalDirection.Forward ? step : -step, direction);
+        // The final paragraph terminator can be selected by ContentEnd, but it
+        // does not add another caret stop beyond the last paragraph's content.
+        if (direction == LogicalDirection.Forward && next?.Parent is null &&
+            _document.Blocks.Count != 0 && next?.DocumentOffset == _document.GetText().Length)
+            return null;
+        return next;
     }
 
     /// <summary>

@@ -15,6 +15,7 @@ internal interface IPlatformWindow : IDisposable
     NativeSurfaceDescriptor GetSurface();
 
     void Show();
+    void Show(bool activate) => Show();
     void Hide();
     void Close();
 
@@ -22,17 +23,37 @@ internal interface IPlatformWindow : IDisposable
     void Resize(int width, int height);
     void Move(int x, int y);
 
+    /// <summary>Applies startup placement using native outer frames and screen coordinates.</summary>
+    bool ApplyStartupLocation(WindowStartupLocation location, nint ownerNativeHandle) => false;
+
     int GetWidth();
     int GetHeight();
 
     /// <summary>Gets the window origin in screen coordinates (physical pixels).</summary>
     void GetPosition(out int x, out int y);
 
+    /// <summary>Gets the client view's top-left origin in physical screen pixels.</summary>
+    bool TryGetClientOrigin(out int x, out int y)
+    {
+        GetPosition(out x, out y);
+        return true;
+    }
+
+    /// <summary>Gets saved normal geometry when the platform has already changed its frame.</summary>
+    bool TryGetRestoreBounds(out int x, out int y, out int width, out int height)
+    {
+        x = y = width = height = 0;
+        return false;
+    }
+
     /// <summary>Applies min/max client-size constraints in physical pixels (0 = unbounded).</summary>
     void SetMinMaxSize(int minWidth, int minHeight, int maxWidth, int maxHeight);
 
     /// <summary>Starts a window-system-driven interactive move (call from a mouse press handler).</summary>
     bool BeginMoveDrag();
+
+    /// <summary>Performs the platform's configured title-bar double-click action.</summary>
+    bool PerformTitleBarDoubleClick() => false;
 
     /// <summary>Starts a window-system-driven interactive resize from the given edge.</summary>
     bool BeginResizeDrag(int edge);
@@ -57,6 +78,18 @@ internal interface IPlatformWindow : IDisposable
 
     /// <summary>Toggles server-side window decorations where supported.</summary>
     bool SetDecorated(bool decorated);
+
+    /// <summary>Applies all style capabilities atomically where supported.</summary>
+    bool SetStyle(uint style) => false;
+
+    /// <summary>Extends a native macOS client area behind the system title bar.</summary>
+    bool SetExtendedTitleBar(bool extended) => false;
+
+    /// <summary>Aligns native macOS caption buttons with the toolbar's content.</summary>
+    bool SetTitleBarContentHeight(double height) => false;
+
+    /// <summary>Sets the native material corresponding to WindowBackdropType.</summary>
+    bool SetSystemBackdrop(int backdrop) => false;
 
     /// <summary>Updates the transient owner relationship. A zero handle clears it.</summary>
     bool SetOwner(nint ownerNativeHandle);
@@ -114,7 +147,8 @@ internal readonly record struct PlatformImeContext(
         ImeSurroundingTextSnapshot? surroundingText,
         Rect localCaretRectangle,
         Point targetOrigin,
-        double dpiScale)
+        double dpiScale,
+        bool preserveDocumentOffsets = false)
     {
         if (!enabled)
             return Disabled;
@@ -138,7 +172,17 @@ internal readonly record struct PlatformImeContext(
         int anchorBytes = 0;
         if (surroundingText is { } snapshot)
         {
-            if (ImeTextEncoding.TryCreateUtf8SurroundingWindow(
+            if (preserveDocumentOffsets)
+            {
+                // NSTextInputClient ranges are absolute UTF-16 document offsets.
+                // A Wayland-sized excerpt would silently give AppKit wrong ranges.
+                text = snapshot.Text ?? string.Empty;
+                cursorBytes = ImeTextEncoding.GetUtf8ByteOffset(text,
+                    ImeTextEncoding.SnapToGraphemeBoundary(text, snapshot.CursorIndex, forward: false));
+                anchorBytes = ImeTextEncoding.GetUtf8ByteOffset(text,
+                    ImeTextEncoding.SnapToGraphemeBoundary(text, snapshot.AnchorIndex, forward: false));
+            }
+            else if (ImeTextEncoding.TryCreateUtf8SurroundingWindow(
                     snapshot,
                     ImeTextEncoding.MaximumSurroundingTextUtf8Bytes,
                     out ImeSurroundingTextSnapshot window))
@@ -173,6 +217,28 @@ internal readonly record struct PlatformImeContext(
     }
 }
 
+/// <summary>Synchronous AppKit selection/replacement request and acknowledgement.</summary>
+internal sealed class PlatformImeTextRequest(int start, int length, string? text, bool replace)
+{
+    internal int Start { get; } = start;
+    internal int Length { get; } = length;
+    internal string Text { get; } = text ?? string.Empty;
+    internal bool Replace { get; } = replace;
+    internal bool Applied { get; set; }
+}
+
+/// <summary>Synchronous AppKit geometry query. Points and rectangles use client physical pixels.</summary>
+internal sealed class PlatformImeGeometryRequest(int kind, int start, int length, Point point)
+{
+    internal int Kind { get; } = kind; // 0/1: committed range/point; 2/3: provisional range/point.
+    internal int Start { get; } = start;
+    internal int Length { get; } = length;
+    internal Point Point { get; } = point;
+    internal bool Handled { get; set; }
+    internal ImeTextRangeGeometry Geometry { get; set; }
+    internal int CharacterIndex { get; set; } = -1;
+}
+
 /// <summary>
 /// Platform event data passed from the native platform layer to managed code.
 /// </summary>
@@ -183,6 +249,7 @@ internal struct PlatformEvent
 
     // Resize
     public int Width, Height;
+    public bool IsUserInitiatedResize;
 
     // Move
     public int X, Y;
@@ -196,9 +263,13 @@ internal struct PlatformEvent
     public int Button;
     public int Modifiers;
     public int ClickCount;
+    public uint MouseButtons;
+    public bool HasMouseButtonStates;
 
     // Wheel
     public float WheelDeltaX, WheelDeltaY;
+    public bool WheelHasPreciseScrollingDeltas;
+    public Input.MouseWheelPhase WheelPhase, WheelMomentumPhase;
 
     // Key
     public int KeyCode;
@@ -215,6 +286,8 @@ internal struct PlatformEvent
     // Wayland delete-surrounding lengths are UTF-8 byte counts.
     public int ImeDeleteBeforeUtf8ByteCount;
     public int ImeDeleteAfterUtf8ByteCount;
+    public PlatformImeTextRequest? ImeTextRequest;
+    public PlatformImeGeometryRequest? ImeGeometryRequest;
 
     // Pointer
     public uint PointerId;
@@ -264,6 +337,7 @@ internal enum PlatformEventType
     StateChanged = 9,
     MonitorsChanged = 10,
     PointingDevicesChanged = 11,
+    ScrollBarSettingsChanged = 12,
 
     FocusGained = 20,
     FocusLost = 21,
@@ -282,6 +356,8 @@ internal enum PlatformEventType
     CompositionUpdate = 44,
     CompositionEnd = 45,
     DeleteSurroundingText = 46,
+    ImeTextRequest = 47,
+    ImeGeometryRequest = 48,
 
     PointerDown = 50,
     PointerUp = 51,

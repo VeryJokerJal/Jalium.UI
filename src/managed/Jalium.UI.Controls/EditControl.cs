@@ -14,12 +14,13 @@ namespace Jalium.UI.Controls;
 /// A code editor control with syntax highlighting, line numbers, and efficient text rendering.
 /// Uses a Rope-based document model and renders directly via DrawingContext.
 /// </summary>
-public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICssCaretAnimationHost
+public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICssCaretAnimationHost
 {
     private InputMethodWeakSubscription<EditControl>? _imeSubscription;
+    private readonly MacOSWordNavigationLayout _macWordLayout = new();
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Edit);
+        => new Jalium.UI.Automation.Peers.EditControlAutomationPeer(this);
 
     #region Static Brushes
 
@@ -192,6 +193,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
     private int _cachedMaxLineLengthVersion = -1;
     private string? _layoutFontFamily;
     private double _layoutFontSize = double.NaN;
+    private int _layoutFontWeight = 400;
+    private int _layoutFontStyle;
     private const int MaxSemanticHighlightMatches = 1024;
     private const int LargeDocumentFoldingThrottleLineCount = 2000;
     private const int LargeDocumentFoldingThrottleTextLength = 150_000;
@@ -1016,6 +1019,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
                 return ExecuteEditorCommand(binding.CommandId);
         }
 
+        // Explicit user bindings keep precedence over native text navigation.
+        // A physical Control-F/A/etc. is an editing key, rather than the
+        // compatible Command shortcut used by the default bindings.
+        if (MacOSTextKeyBehavior.ResolveEditingKey(keyArgs) != keyArgs.Key)
+            return false;
+
         for (int i = 0; i < _defaultKeyBindings.Count; i++)
         {
             var binding = _defaultKeyBindings[i];
@@ -1035,7 +1044,10 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
             return;
 
         var shift = e.IsShiftDown;
-        var ctrl = e.IsControlDown;
+        var editingKey = MacOSTextKeyBehavior.ResolveEditingKey(e);
+        var ctrl = e.IsControlDown && editingKey == e.Key;
+        var commandNavigation = MacOSTextKeyBehavior.IsCommandNavigation(e);
+        var optionWord = MacOSTextKeyBehavior.IsOptionWord(e);
 
         if (_isImeComposing && (_behaviorOptions.SuppressShortcutsDuringIme || IsFeatureEnabled(EditFeature.ImeShortcutSuppression)))
         {
@@ -1062,32 +1074,42 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         // LSP keyboard handling (completion navigation, shortcuts)
         HandleLspKeyDown(e.Key, e.KeyboardModifiers);
 
-        switch (e.Key)
+        switch (editingKey)
         {
             case Key.Left:
-                MoveCaret(ctrl ? MoveToWordBoundary(_caret.Offset, -1) : _caret.Offset - 1, shift);
+                if (optionWord) MoveMacOSWord(false, shift);
+                else if (commandNavigation) MoveCaret(_document.GetLineByOffset(_caret.Offset).Offset, shift);
+                else if (ctrl) MoveCaret(MoveToWordBoundary(_caret.Offset, -1), shift);
+                else MoveCaretLeft(shift);
                 _caret.DesiredColumn = -1;
                 e.Handled = true;
                 break;
 
             case Key.Right:
-                MoveCaret(ctrl ? MoveToWordBoundary(_caret.Offset, 1) : _caret.Offset + 1, shift);
+                if (commandNavigation) MoveCaretToLineEnd(shift);
+                else if (optionWord) MoveMacOSWord(true, shift);
+                else if (ctrl) MoveCaret(MoveToWordBoundary(_caret.Offset, 1), shift);
+                else MoveCaretRight(shift);
                 _caret.DesiredColumn = -1;
                 e.Handled = true;
                 break;
 
             case Key.Up:
-                MoveCaretVertically(-1, shift);
+                if (commandNavigation) MoveCaret(0, shift);
+                else MoveCaretVertically(-1, shift);
                 e.Handled = true;
                 break;
 
             case Key.Down:
-                MoveCaretVertically(1, shift);
+                if (commandNavigation) MoveCaret(_document.TextLength, shift);
+                else MoveCaretVertically(1, shift);
                 e.Handled = true;
                 break;
 
             case Key.Home:
-                if (ctrl)
+                if (editingKey != e.Key)
+                    MoveCaret(_document.GetLineByOffset(_caret.Offset).Offset, shift);
+                else if (ctrl)
                     MoveCaret(0, shift);
                 else
                     MoveCaretToLineStart(shift);
@@ -1115,12 +1137,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
                 break;
 
             case Key.Back:
-                HandleBackspace(ctrl);
+                HandleBackspace(ctrl, optionWord);
                 e.Handled = true;
                 break;
 
             case Key.Delete:
-                HandleDelete(ctrl);
+                HandleDelete(ctrl, optionWord);
                 e.Handled = true;
                 break;
 
@@ -1258,6 +1280,13 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         if (e.Handled || IsReadOnly)
             return;
 
+        if (e.ImeReplacementRange is { } range)
+        {
+            e.Handled = ((IImeSupport)this).TryReplaceImeText(range.Start, range.Length, e.Text);
+            if (e.Handled && e.Text.Length != 0) HandleLspTextInput(e.Text);
+            return;
+        }
+
         var text = e.Text;
         if (string.IsNullOrEmpty(text)) return;
 
@@ -1313,6 +1342,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         else if (_clickCount == 2)
         {
             // Double-click: select word
+            offset = MacOSTextKeyBehavior.GetWordIndexFromPoint(this, Text, position, offset);
             SelectWordAt(offset);
             _wordSelectionAnchorStart = _selection.StartOffset;
             _wordSelectionAnchorEnd = _selection.EndOffset;
@@ -1484,6 +1514,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
         if (_isWordSelecting)
         {
+            offset = MacOSTextKeyBehavior.GetWordIndexFromPoint(this, Text, position, offset);
             ExtendWordSelectionToOffset(offset);
         }
         else
@@ -1519,22 +1550,28 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
 
-        bool horizontal = e.KeyboardModifiers.HasFlag(ModifierKeys.Shift);
-        if (horizontal)
-        {
-            double columnsToScroll = 6;
-            double delta = -e.Delta / 120.0 * columnsToScroll * Math.Max(1, _view.CharWidth);
-            ScrollHorizontallyBy(delta, allowAnimation: true, userInitiated: true);
-        }
-        else
-        {
-            double linesToScroll = 3;
-            double delta = -e.Delta / 120.0 * linesToScroll * Math.Max(1, _view.LineHeight);
-            ScrollVerticallyBy(delta, allowAnimation: true, userInitiated: true);
-        }
+        var input = new MouseWheelScrollInput(e, 6 * Math.Max(1, _view.CharWidth),
+            3 * Math.Max(1, _view.LineHeight));
+        if (input.Horizontal == 0 && input.Vertical == 0)
+            return;
+
+        bool animate = !e.HasPreciseScrollingDeltas && IsScrollInertiaEnabled &&
+            GetEffectiveScrollInertiaDurationMs() > 0;
+        double horizontal = animate && _isScrollAnimating ? _scrollAnimationTargetHorizontalOffset : _view.HorizontalOffset;
+        double vertical = animate && _isScrollAnimating ? _scrollAnimationTargetVerticalOffset : _view.VerticalOffset;
+        double targetHorizontal = Math.Clamp(horizontal + input.Horizontal, 0, GetMaxHorizontalOffset());
+        double targetVertical = Math.Clamp(vertical + input.Vertical, 0, GetMaxVerticalOffset());
+        bool horizontalMoved = input.Horizontal != 0 && targetHorizontal != horizontal;
+        bool verticalMoved = input.Vertical != 0 && targetVertical != vertical;
+
+        // Direct touchpad and native momentum packets already describe the next position.
+        // Also cancel a pending wheel animation when the user takes over with the touchpad.
+        if (!animate) CancelScrollAnimation();
+        if (horizontalMoved || verticalMoved)
+            SetScrollOffsets(targetVertical, targetHorizontal, allowAnimation: animate, userInitiated: true);
         if (_isMinimapHovering)
             UpdateMinimapHoverTooltipPopup();
-        e.Handled = true;
+        input.MarkHandled(e, horizontalMoved, verticalMoved);
     }
 
     private void UpdateCursorForPointer(Point position)
@@ -2012,7 +2049,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     #region Caret Movement
 
-    private void MoveCaret(int newOffset, bool extendSelection)
+    private void MoveCaret(int newOffset, bool extendSelection, bool backwardAffinity = false)
     {
         int oldCaret = _caret.Offset;
         int oldSelectionStart = _selection.StartOffset;
@@ -2031,6 +2068,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         }
 
         _caret.Offset = newOffset;
+        _caret.BackwardAffinity = backwardAffinity;
         _caret.ResetBlink();
         EnsureCaretVisible();
         UpdateActiveBracketPair();
@@ -2144,6 +2182,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
     /// skin-tone sequence, a flag, a combining sequence — moves as one unit so
     /// the caret and forward deletion never split one. Clusters never span a
     /// line delimiter, so the scan only ever materialises the current line.
+    /// A CRLF delimiter is one boundary step, like the shared segmenter.
     /// </summary>
     private int NextGraphemeOffset(int offset)
     {
@@ -2153,8 +2192,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
         var line = _document.GetLineByOffset(offset);
         int column = offset - line.Offset;
-        // At or inside the line delimiter: step one code unit, as before.
-        if (column >= line.Length) return Math.Min(length, offset + 1);
+        if (column >= line.Length) return line.Offset + line.TotalLength;
 
         string lineText = _document.GetLineText(line.LineNumber);
         if (column >= lineText.Length) return Math.Min(length, offset + 1);
@@ -2174,8 +2212,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
         var line = _document.GetLineByOffset(offset);
         int column = offset - line.Offset;
-        // At the line start: step back one code unit over the previous delimiter.
-        if (column <= 0) return offset - 1;
+        if (column <= 0) return line.LineNumber > 1 ? _document.GetLineByNumber(line.LineNumber - 1).EndOffset : 0;
+        if (column > line.Length) return line.EndOffset;
 
         string lineText = _document.GetLineText(line.LineNumber);
         int safeColumn = Math.Min(column, lineText.Length);
@@ -2194,8 +2232,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
         var line = _document.GetLineByOffset(offset);
         int column = offset - line.Offset;
-        // Line-content edges and the delimiter region are already boundaries.
-        if (column <= 0 || column >= line.Length) return offset;
+        if (column > line.Length) return forward ? line.Offset + line.TotalLength : line.EndOffset;
+        if (column <= 0 || column == line.Length) return offset;
 
         string lineText = _document.GetLineText(line.LineNumber);
         int safeColumn = Math.Min(column, lineText.Length);
@@ -2216,8 +2254,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
         var line = _document.GetLineByOffset(offset);
         int column = offset - line.Offset;
-        // Line-content edges and the delimiter region are already boundaries.
-        if (column <= 0 || column >= line.Length) return offset;
+        if (column > line.Length) return column - line.Length < line.TotalLength - column ? line.EndOffset : line.Offset + line.TotalLength;
+        if (column <= 0 || column == line.Length) return offset;
 
         string lineText = _document.GetLineText(line.LineNumber);
         int safeColumn = Math.Min(column, lineText.Length);
@@ -2258,7 +2296,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
             return;
         }
 
-        var caretPoint = _view.GetPointFromOffset(_caret.Offset, ShowLineNumbers);
+        var caretPoint = _view.GetPointFromOffset(_caret.Offset, ShowLineNumbers, _caret.BackwardAffinity);
         double targetVerticalOffset = _view.VerticalOffset;
         double targetHorizontalOffset = _view.HorizontalOffset;
 
@@ -2324,7 +2362,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         InvalidateVisual();
     }
 
-    private void HandleBackspace(bool ctrl)
+    private void HandleBackspace(bool ctrl, bool optionWord = false)
     {
         if (IsReadOnly) return;
 
@@ -2336,7 +2374,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
         if (_caret.Offset == 0) return;
 
-        int deleteFrom = ctrl ? MoveToWordBoundary(_caret.Offset, -1) : PreviousGraphemeOffset(_caret.Offset);
+        int deleteFrom = optionWord ? MacOSTextKeyBehavior.FindWordBoundary(Text, _caret.Offset, forward: false)
+            : ctrl ? MoveToWordBoundary(_caret.Offset, -1) : PreviousGraphemeOffset(_caret.Offset);
         int length = _caret.Offset - deleteFrom;
 
         _document.Remove(deleteFrom, length);
@@ -2354,7 +2393,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         InvalidateVisual();
     }
 
-    private void HandleDelete(bool ctrl)
+    private void HandleDelete(bool ctrl, bool optionWord = false)
     {
         if (IsReadOnly) return;
 
@@ -2366,7 +2405,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
         if (_caret.Offset >= _document.TextLength) return;
 
-        int deleteTo = ctrl ? MoveToWordBoundary(_caret.Offset, 1) : NextGraphemeOffset(_caret.Offset);
+        int deleteTo = optionWord ? MacOSTextKeyBehavior.FindWordBoundary(Text, _caret.Offset, forward: true)
+            : ctrl ? MoveToWordBoundary(_caret.Offset, 1) : NextGraphemeOffset(_caret.Offset);
         int length = deleteTo - _caret.Offset;
 
         _document.Remove(_caret.Offset, length);
@@ -2657,6 +2697,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     private (int start, int length) GetWordRangeAtOffset(int offset)
     {
+        if (MacOSTextKeyBehavior.TryGetWordRange(Text, offset, out int nativeStart, out int nativeLength))
+            return (nativeStart, nativeLength);
         if (_document.TextLength == 0)
             return (0, 0);
 
@@ -2835,13 +2877,13 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     public void MoveCaretLeft(bool extendSelection = false)
     {
-        MoveCaret(PreviousGraphemeOffset(_caret.Offset), extendSelection);
+        MoveCaret(!extendSelection && _selection.HasSelection ? _selection.StartOffset : PreviousGraphemeOffset(_caret.Offset), extendSelection);
         _caret.DesiredColumn = -1;
     }
 
     public void MoveCaretRight(bool extendSelection = false)
     {
-        MoveCaret(NextGraphemeOffset(_caret.Offset), extendSelection);
+        MoveCaret(!extendSelection && _selection.HasSelection ? _selection.StartOffset + _selection.Length : NextGraphemeOffset(_caret.Offset), extendSelection);
         _caret.DesiredColumn = -1;
     }
 
@@ -2857,14 +2899,27 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     public void MoveCaretWordLeft(bool extendSelection = false)
     {
-        MoveCaret(MoveToWordBoundary(_caret.Offset, -1), extendSelection);
+        if (OperatingSystem.IsMacOS()) MoveMacOSWord(false, extendSelection);
+        else MoveCaret(MoveToWordBoundary(_caret.Offset, -1), extendSelection);
         _caret.DesiredColumn = -1;
     }
 
     public void MoveCaretWordRight(bool extendSelection = false)
     {
-        MoveCaret(MoveToWordBoundary(_caret.Offset, 1), extendSelection);
+        if (OperatingSystem.IsMacOS()) MoveMacOSWord(true, extendSelection);
+        else MoveCaret(MoveToWordBoundary(_caret.Offset, 1), extendSelection);
         _caret.DesiredColumn = -1;
+    }
+
+    private void MoveMacOSWord(bool right, bool extendSelection)
+    {
+        if (_macWordLayout.TryNavigate(Text, FontFamily?.GetRenderingSource(this) ?? "Cascadia Code",
+            FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), double.PositiveInfinity,
+            _view.LineHeight, _caret.Offset, _selection.StartOffset, extendSelection ? 0 : _selection.Length,
+            right, _caret.BackwardAffinity, out var destination))
+            MoveCaret((int)destination.TextPosition, extendSelection, destination.BackwardAffinity != 0);
+        else MoveCaret(MacOSTextKeyBehavior.FindWordBoundary(Text, _caret.Offset, right, physical: true,
+            selectionStart: _selection.StartOffset, selectionLength: extendSelection ? 0 : _selection.Length), extendSelection);
     }
 
     public void MoveCaretToDocumentStart(bool extendSelection = false)
@@ -3728,6 +3783,25 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
     bool IImeSupport.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
         => TryGetImeSurroundingText(out snapshot);
 
+    bool IImeSupport.TrySetImeSelection(int start, int length)
+    {
+        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(_document.Text, start, length,
+                out start, out length))
+            return false;
+        Select(start, length);
+        return true;
+    }
+
+    bool IImeSupport.TryReplaceImeText(int start, int length, string text)
+    {
+        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(_document.Text, start, length,
+                out start, out length))
+            return false;
+        Select(start, length);
+        InsertText(text);
+        return true;
+    }
+
     public bool DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
     {
         if (IsReadOnly ||
@@ -3753,17 +3827,74 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     public Point GetImeCaretPosition()
     {
-        var caretPos = _view.GetPointFromOffset(_caret.Offset, ShowLineNumbers);
-        caretPos = new Point(caretPos.X, caretPos.Y + _view.LineHeight);
-
-        return caretPos;
+        Rect caret = GetImeCaretRectangle();
+        return new Point(caret.X, caret.Bottom);
     }
 
     public Rect GetImeCaretRectangle()
     {
-        Point bottom = GetImeCaretPosition();
-        double height = Math.Max(1, _view.LineHeight);
-        return new Rect(bottom.X, bottom.Y - height, 1, height);
+        EnsureViewLayoutMetrics();
+        if (_isImeComposing)
+        {
+            Rect caret = GetImeCompositionCaret(ImeTextEncoding.SnapToGraphemeBoundary(_imeCompositionString,
+                Math.Clamp(_imeCompositionCursor, 0, _imeCompositionString.Length), false), false);
+            return new Rect(caret.X, caret.Y, 1, caret.Height);
+        }
+        Point point = _view.GetPointFromOffset(_caret.Offset, ShowLineNumbers, _caret.BackwardAffinity);
+        return new Rect(point.X, point.Y, 1, Math.Max(1, _view.LineHeight));
+    }
+
+    private Rect GetImeCompositionCaret(int index, bool trailing)
+    {
+        Point origin = _view.GetPointFromOffset(Math.Clamp(_imeCompositionStart, 0, _document.TextLength), ShowLineNumbers);
+        return ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, origin, _view.LineHeight,
+            FontFamily?.GetRenderingSource(this) ?? "Cascadia Code", FontSize,
+            FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), float.PositiveInfinity, MeasureImeCompositionText);
+    }
+
+    private double MeasureImeCompositionText(string text)
+    {
+        var formatted = new FormattedText(text, FontFamily?.GetRenderingSource(this) ?? "Cascadia Code", FontSize)
+        { FontWeight = FontWeight.ToOpenTypeWeight(), FontStyle = FontStyle.ToOpenTypeStyle() };
+        TextMeasurement.MeasureText(formatted);
+        return formatted.Width > 0 ? formatted.Width : text.Length * Math.Max(1, _view.CharWidth);
+    }
+
+    bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
+    {
+        geometry = default;
+        if (composition)
+            return _isImeComposing && ImeTextGeometry.TryGetFirstLineRange(_imeCompositionString,
+                start, length, GetImeCompositionCaret, out geometry);
+        string text = _document.Text;
+        if (!ImeTextEncoding.TryNormalizeUtf16Range(text, start, length, out start, out length)) return false;
+        var line = _document.GetLineByOffset(start);
+        if (!_view.TryGetLineTop(line.LineNumber, out double y)) return false;
+        int end = Math.Min(start + length, line.Offset + line.TotalLength);
+        Point left = _view.GetPointFromOffset(Math.Min(start, line.Offset + line.Length), ShowLineNumbers);
+        Point right = _view.GetPointFromOffset(Math.Min(end, line.Offset + line.Length), ShowLineNumbers);
+        geometry = new(new Rect(Math.Min(left.X, right.X), y, Math.Abs(right.X - left.X),
+            Math.Max(1, _view.LineHeight)), start, end - start);
+        return true;
+    }
+
+    bool IImeSupport.TryGetImeCharacterIndex(Point point, bool composition, out int index)
+    {
+        index = -1;
+        double left = ShowLineNumbers ? _view.TextAreaLeft : 0;
+        if (point.X < left || point.Y < 0 || point.X >= GetContentRenderWidth(RenderSize.Width) ||
+            point.Y >= GetContentRenderHeight(RenderSize.Height)) return false;
+        if (!composition)
+        {
+            index = ImeTextEncoding.SnapToGraphemeBoundary(_document.Text,
+                _view.GetOffsetFromPoint(point, ShowLineNumbers), false);
+            return true;
+        }
+        if (!_isImeComposing) return false;
+        Rect caret = GetImeCompositionCaret(0, false);
+        return ImeTextGeometry.TryHitTest(_imeCompositionString, point, new Point(caret.X, caret.Y), caret.Height,
+            FontFamily?.GetRenderingSource(this) ?? "Cascadia Code", FontSize,
+            FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), float.PositiveInfinity, MeasureImeCompositionText, true, out index);
     }
 
     public void OnImeCompositionStart()
@@ -3773,7 +3904,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
 
-        if (_selection.HasSelection)
+        if (OperatingSystem.IsMacOS())
+            _imeCompositionStart = _selection.HasSelection ? _selection.StartOffset : _caret.Offset;
+        else if (_selection.HasSelection)
             DeleteSelection();
 
         UpdateImeWindowIfComposing();
@@ -3814,6 +3947,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
     {
+        _macWordLayout.Dispose();
         _imeSubscription?.Detach();
         CloseMinimapHoverTooltipPopup();
         if (ReferenceEquals(InputMethod.CurrentTarget, this))
@@ -3948,11 +4082,14 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         // Sync the Text DP without triggering a re-parse
         var currentText = _document.Text;
         if (Text != currentText)
-            SetValue(TextProperty, currentText);
+            SetCurrentValue(TextProperty, currentText);
 
         _caret.CoerceToDocument(_document);
         _selection.AnchorOffset = Math.Clamp(_selection.AnchorOffset, 0, _document.TextLength);
         _selection.ActiveOffset = Math.Clamp(_selection.ActiveOffset, 0, _document.TextLength);
+
+        // Notify the cached peer before user callbacks, which may throw or close the window.
+        (GetExistingAutomationPeer() as Jalium.UI.Automation.Peers.EditControlAutomationPeer)?.NotifyTextChanged();
 
         int changedLineNumber;
         if (_document.TextLength <= 0)
@@ -5066,7 +5203,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
         double x = Math.Max(textAreaLeft, point.X);
         var text = new FormattedText(_imeCompositionString, fontFamily, fontSize)
         {
-            Foreground = ResolveImeCompositionTextBrush()
+            Foreground = ResolveImeCompositionTextBrush(),
+            FontWeight = FontWeight.ToOpenTypeWeight(),
+            FontStyle = FontStyle.ToOpenTypeStyle()
         };
         TextMeasurement.MeasureText(text);
         double measuredWidth = text.Width > 0
@@ -5580,14 +5719,18 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     private void UpdateViewFontLayout(string fontFamily, double fontSize)
     {
-        if (_layoutFontFamily != fontFamily || _layoutFontSize != fontSize)
+        int weight = FontWeight.ToOpenTypeWeight(), style = FontStyle.ToOpenTypeStyle();
+        if (_layoutFontFamily != fontFamily || _layoutFontSize != fontSize ||
+            _layoutFontWeight != weight || _layoutFontStyle != style)
         {
             _cachedMaxLineLengthVersion = -1;
             _layoutFontFamily = fontFamily;
             _layoutFontSize = fontSize;
+            _layoutFontWeight = weight;
+            _layoutFontStyle = style;
         }
 
-        _view.UpdateLayout(fontFamily, fontSize);
+        _view.UpdateLayout(fontFamily, fontSize, weight, style);
     }
 
     private void UpdateViewLayoutForRenderableSize()
@@ -6067,6 +6210,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     private double GetEffectiveScrollInertiaDurationMs()
     {
+        if (OperatingSystem.IsMacOS() && Platform.MacOSScrollBarSettings.PrefersReducedMotion)
+            return 0;
         double duration = ScrollInertiaDurationMs;
         if (double.IsNaN(duration) || double.IsInfinity(duration))
             return DefaultScrollInertiaDurationMs;
@@ -6645,12 +6790,14 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics, Styling.ICs
 
     private void OnSelectionChanged()
     {
+        (GetExistingAutomationPeer() as Jalium.UI.Automation.Peers.EditControlAutomationPeer)?.NotifySelectionChanged();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
         RefreshLinuxImeContext();
     }
 
     private void OnCaretPositionChanged()
     {
+        (GetExistingAutomationPeer() as Jalium.UI.Automation.Peers.EditControlAutomationPeer)?.NotifySelectionChanged();
         CaretPositionChanged?.Invoke(this, EventArgs.Empty);
         RefreshLinuxImeContext();
     }

@@ -309,6 +309,8 @@ public class ScrollViewerAutoHideTests
     {
         var scrollBar = new ScrollBar
         {
+            IsOverlayStyle = false,
+            UseMacOSScrollBarBehavior = false,
             Orientation = Orientation.Vertical,
             Maximum = 100,
             ViewportSize = 20

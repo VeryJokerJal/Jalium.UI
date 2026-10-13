@@ -79,6 +79,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     // Mouse tracking
     private UIElement? _lastMouseOverElement;
+    private readonly MouseWheelGestureRouting _wheelGestureRouting = new();
     private bool _isMouseTracking;
     private MouseButtonStates _platformMouseButtons = MouseButtonStates.AllReleased;
     private const uint MousePointerId = 1;
@@ -1128,13 +1129,35 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 break;
             }
 
+            case PlatformEventType.ScrollBarSettingsChanged:
+                MacOSScrollBarSettings.Refresh(this);
+                break;
+
             case PlatformEventType.MouseWheel:
+                // A press or release may have happened outside this popup. An
+                // available native snapshot, including all-released, supersedes
+                // the local history; legacy packets keep the last known state.
+                if (evt.HasMouseButtonStates)
+                {
+                    _platformMouseButtons = new MouseButtonStates
+                    {
+                        Left = (evt.MouseButtons & 1) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                        Right = (evt.MouseButtons & 2) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                        Middle = (evt.MouseButtons & 4) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                        XButton1 = (evt.MouseButtons & 8) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                        XButton2 = (evt.MouseButtons & 16) != 0 ? MouseButtonState.Pressed : MouseButtonState.Released,
+                    };
+                }
                 OnMouseWheel(
                     BuildMouseWParam(_platformMouseButtons),
                     nint.Zero,
                     PlatformPosition(evt.MouseX, evt.MouseY),
                     MapPlatformModifiers(evt.Modifiers),
-                    (int)Math.Round(evt.WheelDeltaY * 120.0f));
+                    MouseWheelEventArgs.ToLegacyDelta(evt.WheelDeltaY * 120.0),
+                    evt.WheelDeltaX * 120.0,
+                    evt.WheelDeltaY * 120.0,
+                    evt.WheelHasPreciseScrollingDeltas,
+                    evt.WheelPhase, evt.WheelMomentumPhase);
                 break;
 
             case PlatformEventType.PointerDown:
@@ -1476,7 +1499,12 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         nint lParam,
         Point? platformPosition = null,
         ModifierKeys? platformModifiers = null,
-        int? platformDelta = null)
+        int? platformDelta = null,
+        double horizontalDelta = 0,
+        double? verticalDelta = null,
+        bool hasPreciseScrollingDeltas = false,
+        MouseWheelPhase phase = MouseWheelPhase.None,
+        MouseWheelPhase momentumPhase = MouseWheelPhase.None)
     {
         // WM_MOUSEWHEEL lParam contains SCREEN coordinates (physical pixels)
         Point position;
@@ -1511,10 +1539,12 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         Mouse.UpdateState(position, hitElement, buttons);
         var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
+        target = _wheelGestureRouting.ResolveTarget(target, this, phase, momentumPhase);
+
         MouseWheelEventArgs tunnelArgs = new(
-            PreviewMouseWheelEvent, position, delta,
+            PreviewMouseWheelEvent, position, horizontalDelta, verticalDelta ?? delta, hasPreciseScrollingDeltas,
             left, middle, right,
-            xButton1, xButton2, modifiers, timestamp);
+            xButton1, xButton2, modifiers, timestamp, phase, momentumPhase);
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -1523,9 +1553,13 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         if (!tunnelArgs.Handled)
         {
             MouseWheelEventArgs bubbleArgs = new(
-                MouseWheelEvent, position, delta,
+                MouseWheelEvent, position, horizontalDelta, verticalDelta ?? delta, hasPreciseScrollingDeltas,
                 left, middle, right,
-                xButton1, xButton2, modifiers, timestamp);
+                xButton1, xButton2, modifiers, timestamp, phase, momentumPhase)
+            {
+                IsHorizontalDeltaHandled = tunnelArgs.IsHorizontalDeltaHandled,
+                IsVerticalDeltaHandled = tunnelArgs.IsVerticalDeltaHandled
+            };
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
@@ -2777,6 +2811,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         StopRenderRecoveryRetry();
 
         // Remove child before destroying window
+        _wheelGestureRouting.Cancel();
         Child = null;
         _lastMouseOverElement = null;
 
@@ -2831,5 +2866,3 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     #endregion
 }
-
-

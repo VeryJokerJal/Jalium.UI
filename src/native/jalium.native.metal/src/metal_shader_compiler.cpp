@@ -18,9 +18,10 @@ namespace {
 
 bool CompileMetalFragmentInternal(const char* hlsl,const wchar_t* dxcEntry,
     const char* spirvEntry,const char* metalEntry,bool brushResources,
-    std::string& msl,std::string& entryPoint,std::string& error)
+    std::string& msl,std::string& entryPoint,std::string& error,uint32_t* constantBytes=nullptr)
 {
     msl.clear(); entryPoint.clear(); error.clear();
+    if(constantBytes)*constantBytes=0;
     if (!hlsl || !*hlsl) { error = "empty HLSL source"; return false; }
 #ifndef JALIUM_HAS_DXC_SPIRV_CROSS
     error = "DXC/SPIRV-Cross compiler archive is not linked";
@@ -91,6 +92,42 @@ bool CompileMetalFragmentInternal(const char* hlsl,const wchar_t* dxcEntry,
     spvc_compiler_rename_entry_point(mslCompiler, spirvEntry,
         metalEntry, SpvExecutionModelFragment);
 
+    if(!brushResources){
+        spvc_resources resources=nullptr;
+        if(spvc_compiler_create_shader_resources(mslCompiler,&resources)!=SPVC_SUCCESS){
+            error="shader resource reflection failed";
+            spvc_context_destroy(context);releaseAll();return false;
+        }
+        const spvc_resource_type kinds[]={SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
+            SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+            SPVC_RESOURCE_TYPE_STORAGE_BUFFER,SPVC_RESOURCE_TYPE_STORAGE_IMAGE};
+        for(auto kind:kinds){
+            const spvc_reflected_resource* list=nullptr;size_t count=0;
+            spvc_resources_get_resource_list_for_type(resources,kind,&list,&count);
+            for(size_t i=0;i<count;++i){
+                unsigned expected=kind==SPVC_RESOURCE_TYPE_UNIFORM_BUFFER?0:
+                    kind==SPVC_RESOURCE_TYPE_SEPARATE_IMAGE?16:32;
+                if(kind==SPVC_RESOURCE_TYPE_STORAGE_BUFFER||kind==SPVC_RESOURCE_TYPE_STORAGE_IMAGE||
+                    spvc_compiler_get_decoration(mslCompiler,list[i].id,SpvDecorationDescriptorSet)!=0||
+                    spvc_compiler_get_decoration(mslCompiler,list[i].id,SpvDecorationBinding)!=expected||
+                    spvc_type_get_num_array_dimensions(spvc_compiler_get_type_handle(mslCompiler,list[i].type_id))!=0){
+                    error="pixel shader resources must follow the b0/t0/s0 effect contract";
+                    spvc_context_destroy(context);releaseAll();return false;
+                }
+                if(kind==SPVC_RESOURCE_TYPE_UNIFORM_BUFFER){
+                    size_t bytes=0;
+                    if(spvc_compiler_get_declared_struct_size(mslCompiler,
+                        spvc_compiler_get_type_handle(mslCompiler,list[i].base_type_id),&bytes)!=SPVC_SUCCESS||
+                        bytes>256u*1024u){
+                        error="pixel shader constants exceed the 256 KiB effect limit";
+                        spvc_context_destroy(context);releaseAll();return false;
+                    }
+                    if(constantBytes)*constantBytes=static_cast<uint32_t>(bytes);
+                }
+            }
+        }
+    }
+
     // The framework shader contract is b0/t0/s0. DXC's binding shifts above
     // keep register classes disjoint in SPIR-V; remap them to Metal's separate
     // buffer/texture/sampler namespaces.
@@ -129,10 +166,10 @@ bool CompileMetalFragmentInternal(const char* hlsl,const wchar_t* dxcEntry,
 } // namespace
 
 bool CompileMetalPixelShader(const char* hlsl, std::string& msl,
-    std::string& entryPoint, std::string& error)
+    std::string& entryPoint, std::string& error,uint32_t* constantBytes)
 {
     return CompileMetalFragmentInternal(hlsl,L"main","main",
-        "jalium_custom_fragment",false,msl,entryPoint,error);
+        "jalium_custom_fragment",false,msl,entryPoint,error,constantBytes);
 }
 
 bool CompileMetalBrushShader(const char* brushMainHlsl,std::string& msl,

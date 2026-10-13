@@ -108,10 +108,99 @@ JALIUM_API JaliumTextFormat* jalium_text_format_create(
     }
 }
 
+JALIUM_API JaliumTextFormat* jalium_text_format_create_with_width(JaliumContext* ctx,
+    const wchar_t* fontFamily, float fontSize, int32_t fontWeight, int32_t fontStyle, float widthPercentage)
+{
+    if (!std::isfinite(widthPercentage) || widthPercentage < 0) return nullptr;
+    if (!ctx || !fontFamily || !std::isfinite(fontSize) || fontSize <= jalium::kMinManagedFontSize ||
+        fontSize > jalium::kMaxManagedFontSize) return nullptr;
+    try {
+        uint32_t length = 0;
+        if (!jalium::ManagedUtf16LengthBounded(fontFamily, jalium::kMaxManagedFontFamilyCodeUnits, &length)) return nullptr;
+        auto factory = dynamic_cast<jalium::TextFormatWidthFactory*>(jalium::GetBackendFromContext(ctx));
+        if (!factory) return widthPercentage == 100 ? jalium_text_format_create(ctx, fontFamily, fontSize, fontWeight, fontStyle) : nullptr;
+        auto family = jalium::ManagedToWString(fontFamily, length);
+        return reinterpret_cast<JaliumTextFormat*>(factory->CreateTextFormatWithWidth(
+            family.c_str(), fontSize, fontWeight, fontStyle, widthPercentage));
+    } catch (...) { return nullptr; }
+}
+
 JALIUM_API void jalium_text_format_destroy(JaliumTextFormat* format) {
     if (format) {
         delete reinterpret_cast<jalium::TextFormat*>(format);
     }
+}
+
+JALIUM_API JaliumResult jalium_text_format_set_font_fallbacks(JaliumTextFormat* format,
+    JaliumTextFormat* const* fallbackFormats, uint32_t count)
+{
+    if (!format || count > jalium::kMaxFontFallbackCount || (count && !fallbackFormats))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (uint32_t i = 0; i < count; ++i)
+        if (!fallbackFormats[i]) return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto provider = dynamic_cast<jalium::TextFontFallbackProvider*>(reinterpret_cast<jalium::TextFormat*>(format));
+        return provider ? provider->SetFontFallbacks(
+            reinterpret_cast<jalium::TextFormat* const*>(fallbackFormats), count) : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+namespace {
+bool ValidUnicodeRanges(const JaliumUnicodeRange* ranges, uint32_t count)
+{
+    if (count > jalium::kMaxFontUnicodeRangeCount || (count && !ranges)) return false;
+    for (uint32_t i = 0; i < count; ++i)
+        if (ranges[i].first > ranges[i].last || ranges[i].last > 0x10ffffu) return false;
+    return true;
+}
+}
+
+JALIUM_API JaliumResult jalium_text_format_set_unicode_ranges(JaliumTextFormat* format,
+    const JaliumUnicodeRange* ranges, uint32_t count, int32_t enabled)
+{
+    if (!format || (enabled != 0 && enabled != 1) || !ValidUnicodeRanges(ranges, count))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto provider = dynamic_cast<jalium::TextFontCharacterProvider*>(reinterpret_cast<jalium::TextFormat*>(format));
+        return provider ? provider->SetUnicodeRanges(ranges, count, enabled != 0) : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_text_format_get_character_coverage(JaliumTextFormat* format,
+    const uint32_t* characters, uint32_t count, uint8_t* supported)
+{
+    if (!format || count > jalium::kMaxFontCharacterCount || (count && (!characters || !supported)))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (uint32_t i = 0; i < count; ++i)
+        if (characters[i] > 0x10ffffu || (characters[i] >= 0xd800u && characters[i] <= 0xdfffu))
+            return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto provider = dynamic_cast<jalium::TextFontCharacterProvider*>(reinterpret_cast<jalium::TextFormat*>(format));
+        return provider ? provider->GetCharacterCoverage(characters, count, supported) : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
+}
+
+JALIUM_API JaliumResult jalium_text_format_set_font_display(JaliumTextFormat* format,
+    const JaliumFontDisplayEntry* entries, uint32_t count)
+{
+    if (!format || count > jalium::kMaxFontFallbackCount || (count && !entries))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    uint64_t total = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& entry = entries[i];
+        total += entry.rangeCount;
+        if (!ValidUnicodeRanges(entry.ranges, entry.rangeCount) || total > jalium::kMaxFontUnicodeRangeCount ||
+            entry.flags > 3 || entry.flags == 2 || ((entry.flags & 1) != 0) == (entry.format != nullptr))
+            return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        auto provider = dynamic_cast<jalium::TextFontCharacterProvider*>(reinterpret_cast<jalium::TextFormat*>(format));
+        return provider ? provider->SetFontDisplay(entries, count) : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+    catch (...) { return JALIUM_ERROR_UNKNOWN; }
 }
 
 JALIUM_API void jalium_text_format_set_alignment(JaliumTextFormat* format, int32_t alignment) {
@@ -249,6 +338,88 @@ JALIUM_API JaliumResult jalium_text_format_hit_test_text_position(
         }
 #endif
         return status;
+    } catch (const std::bad_alloc&) {
+        *result = {};
+        return JALIUM_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        *result = {};
+        return JALIUM_ERROR_UNKNOWN;
+    }
+}
+
+JALIUM_API JaliumResult jalium_text_format_hit_test_text_range(
+    JaliumTextFormat* format, const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight, uint32_t textPosition, uint32_t length,
+    JaliumTextRangeMetrics* result)
+{
+    if (result) *result = {};
+    if (!format || !text || !result || textLength > jalium::kMaxManagedTextCodeUnits ||
+        textPosition > textLength || length > textLength - textPosition ||
+        !std::isfinite(maxWidth) || !std::isfinite(maxHeight))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto provider = dynamic_cast<jalium::TextRangeMetricsProvider*>(
+            reinterpret_cast<jalium::TextFormat*>(format));
+        if (!provider) return JALIUM_ERROR_NOT_SUPPORTED;
+#if defined(_WIN32)
+        return provider->HitTestTextRange(text, textLength, maxWidth, maxHeight,
+            textPosition, length, result);
+#else
+        auto wide = jalium::ManagedToWString(text, textLength);
+        uint32_t start = jalium::ManagedUtf16IndexToWStringIndex(text, textLength, textPosition);
+        uint32_t end = jalium::ManagedUtf16IndexToWStringIndex(text, textLength, textPosition + length);
+        if (length && jalium::ManagedWStringIndexToUtf16Index(text, textLength, end) < textPosition + length)
+            ++end;
+        auto status = provider->HitTestTextRange(wide.c_str(), static_cast<uint32_t>(wide.size()),
+            maxWidth, maxHeight, start, length ? end - start : 0, result);
+        if (status == JALIUM_OK) {
+            uint32_t resultEnd = jalium::ManagedWStringIndexToUtf16Index(text, textLength,
+                result->textPosition + result->length);
+            result->textPosition = jalium::ManagedWStringIndexToUtf16Index(text, textLength, result->textPosition);
+            result->length = resultEnd - result->textPosition;
+        }
+        return status;
+#endif
+    } catch (const std::bad_alloc&) {
+        *result = {};
+        return JALIUM_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        *result = {};
+        return JALIUM_ERROR_UNKNOWN;
+    }
+}
+
+JALIUM_API JaliumResult jalium_text_format_get_line_metrics(
+    JaliumTextFormat* format, const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight, uint32_t textPosition, int32_t backwardAffinity,
+    JaliumTextLineMetrics* result)
+{
+    if (result) *result = {};
+    if (!format || !text || !result || textLength > jalium::kMaxManagedTextCodeUnits ||
+        textPosition > textLength || !std::isfinite(maxWidth) || !std::isfinite(maxHeight))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto provider = dynamic_cast<jalium::TextLineMetricsProvider*>(
+            reinterpret_cast<jalium::TextFormat*>(format));
+        if (!provider) return JALIUM_ERROR_NOT_SUPPORTED;
+#if defined(_WIN32)
+        return provider->GetLineMetrics(text, textLength, maxWidth, maxHeight,
+            textPosition, backwardAffinity, result);
+#else
+        auto wide = jalium::ManagedToWString(text, textLength);
+        auto status = provider->GetLineMetrics(wide.c_str(), static_cast<uint32_t>(wide.size()),
+            maxWidth, maxHeight, jalium::ManagedUtf16IndexToWStringIndex(text, textLength, textPosition),
+            backwardAffinity, result);
+        if (status == JALIUM_OK) {
+            uint32_t end = jalium::ManagedWStringIndexToUtf16Index(text, textLength,
+                result->textPosition + result->length);
+            result->textPosition = jalium::ManagedWStringIndexToUtf16Index(text, textLength, result->textPosition);
+            result->length = end - result->textPosition;
+            result->leftCaretPosition = jalium::ManagedWStringIndexToUtf16Index(text, textLength, result->leftCaretPosition);
+            result->rightCaretPosition = jalium::ManagedWStringIndexToUtf16Index(text, textLength, result->rightCaretPosition);
+        }
+        return status;
+#endif
     } catch (const std::bad_alloc&) {
         *result = {};
         return JALIUM_ERROR_OUT_OF_MEMORY;

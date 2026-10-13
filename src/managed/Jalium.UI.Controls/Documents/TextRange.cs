@@ -225,138 +225,17 @@ public class TextRange
     private void SetText(string value)
     {
         value ??= string.Empty;
-
-        // Delete existing content
-        DeleteContent();
-
-        // Insert new text at start position
-        InsertTextAtPosition(_start, value);
+        var document = _start.Document;
+        int start = _start.DocumentOffset;
+        int length = _end.DocumentOffset - start;
+        bool includesImplicitFinalBreak = start == 0 && length == document.GetText().Length &&
+            (value.EndsWith('\n') || value.EndsWith('\r'));
+        using var change = (document.Parent as Controls.RichTextBox)?.DeclareChangeBlock();
+        var end = DocumentTextEditing.Replace(document, start, length, value);
+        _start = document.GetPositionAtOffset(Math.Min(start, end.DocumentOffset), LogicalDirection.Forward) ?? document.ContentStart;
+        _end = includesImplicitFinalBreak ? document.ContentEnd : end;
         OnRangeContentChanged();
         OnChanged();
-    }
-
-    private void DeleteContent()
-    {
-        if (IsEmpty)
-            return;
-
-        int startOffset = _start.DocumentOffset;
-        int endOffset = _end.DocumentOffset;
-
-        // Simple case: selection is within a single Run
-        if (_start.Parent is Run startRun && _end.Parent is Run endRun && startRun == endRun)
-        {
-            var text = startRun.Text;
-            var localStart = _start.Offset;
-            var localEnd = _end.Offset;
-
-            startRun.Text = text.Substring(0, localStart) + text.Substring(localEnd);
-
-            // Remove empty runs
-            if (startRun.Text.Length == 0 && startRun.Parent is Paragraph p && p.Inlines.Count > 1)
-            {
-                p.Inlines.Remove(startRun);
-            }
-
-            _end = _start;
-            return;
-        }
-
-        // General case: deletion spans multiple elements within the same paragraph
-        var paragraph = _start.Paragraph;
-        if (paragraph == null)
-            return;
-
-        int currentOffset = 0;
-        // Calculate paragraph base offset
-        foreach (var block in _start.Document.Blocks)
-        {
-            if (block == paragraph)
-                break;
-            currentOffset += GetBlockLength(block);
-        }
-
-        // Process each inline in the paragraph
-        var inlinesToRemove = new List<Inline>();
-        int inlineOffset = currentOffset;
-
-        foreach (var inline in paragraph.Inlines)
-        {
-            int inlineLength = GetInlineLength(inline);
-            int inlineEnd = inlineOffset + inlineLength;
-
-            if (inline is Run run)
-            {
-                if (inlineOffset >= startOffset && inlineEnd <= endOffset)
-                {
-                    // Entire run is within selection - mark for removal
-                    inlinesToRemove.Add(run);
-                }
-                else if (inlineOffset < startOffset && inlineEnd > endOffset)
-                {
-                    // Selection is entirely within this run
-                    int localStart = startOffset - inlineOffset;
-                    int localEnd = endOffset - inlineOffset;
-                    run.Text = run.Text.Substring(0, localStart) + run.Text.Substring(localEnd);
-                }
-                else if (inlineOffset < startOffset && inlineEnd > startOffset)
-                {
-                    // Selection starts within this run
-                    int localStart = startOffset - inlineOffset;
-                    run.Text = run.Text.Substring(0, localStart);
-                }
-                else if (inlineOffset < endOffset && inlineEnd > endOffset)
-                {
-                    // Selection ends within this run
-                    int localEnd = endOffset - inlineOffset;
-                    run.Text = run.Text.Substring(localEnd);
-                }
-            }
-
-            inlineOffset = inlineEnd;
-        }
-
-        // Remove fully-deleted runs (but keep at least one inline)
-        foreach (var inline in inlinesToRemove)
-        {
-            if (paragraph.Inlines.Count > 1)
-            {
-                paragraph.Inlines.Remove(inline);
-            }
-            else if (inline is Run emptyRun)
-            {
-                emptyRun.Text = string.Empty;
-            }
-        }
-
-        // Update positions
-        _end = _start;
-    }
-
-    private void InsertTextAtPosition(TextPointer position, string text)
-    {
-        if (string.IsNullOrEmpty(text))
-            return;
-
-        if (position.Parent is Run run)
-        {
-            var offset = position.Offset;
-            run.Text = run.Text.Insert(offset, text);
-        }
-        else if (position.Parent is Paragraph paragraph)
-        {
-            // Insert a new Run
-            var newRun = new Run(text);
-
-            if (position.Offset == 0)
-            {
-                paragraph.Inlines.Insert(0, newRun);
-            }
-            else
-            {
-                paragraph.Inlines.Add(newRun);
-            }
-        }
     }
 
     #endregion

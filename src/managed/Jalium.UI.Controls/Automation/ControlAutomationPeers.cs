@@ -143,19 +143,22 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public override void Select()
     {
-        ItemOwner.IsSelected = true;
+        if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: true, exclusive: true);
+        else ItemOwner.IsSelected = true;
     }
 
     /// <inheritdoc />
     public override void AddToSelection()
     {
-        ItemOwner.IsSelected = true;
+        if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: true, exclusive: false);
+        else ItemOwner.IsSelected = true;
     }
 
     /// <inheritdoc />
     public override void RemoveFromSelection()
     {
-        ItemOwner.IsSelected = false;
+        if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: false, exclusive: false);
+        else ItemOwner.IsSelected = false;
     }
 
     #endregion
@@ -1134,6 +1137,9 @@ public class WindowAutomationPeer : FrameworkElementAutomationPeer
     }
 
     private Window WindowOwner => (Window)Owner;
+
+    /// <inheritdoc />
+    protected override bool IsDialogCore() => WindowOwner.IsModal || base.IsDialogCore();
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()

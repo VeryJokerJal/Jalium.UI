@@ -395,6 +395,28 @@ public sealed class MouseWheelEventArgs : MouseEventArgs
 {
     public int Delta { get; }
 
+    /// <summary>Gets the horizontal wheel delta; positive values scroll right. One notch is 120 units.</summary>
+    public double HorizontalDelta { get; }
+
+    /// <summary>Gets the vertical wheel delta; positive values scroll up. One notch is 120 units.</summary>
+    public double VerticalDelta { get; }
+
+    /// <summary>
+    /// Gets whether the deltas come from a precise device. For these events,
+    /// 120 units represent 48 device-independent pixels, including native momentum.
+    /// </summary>
+    public bool HasPreciseScrollingDeltas { get; }
+
+    /// <summary>Gets the direct scrolling gesture phase, including zero-delta release packets.</summary>
+    public MouseWheelPhase Phase { get; }
+
+    /// <summary>Gets the phase of momentum supplied by the input device.</summary>
+    public MouseWheelPhase MomentumPhase { get; }
+
+    // A diagonal packet can be consumed on one axis and bubble on the other.
+    internal bool IsHorizontalDeltaHandled { get; set; }
+    internal bool IsVerticalDeltaHandled { get; set; }
+
     public MouseWheelEventArgs(
         RoutedEvent routedEvent,
         Point position,
@@ -409,7 +431,58 @@ public sealed class MouseWheelEventArgs : MouseEventArgs
         : base(routedEvent, position, leftButton, middleButton, rightButton, xButton1, xButton2, modifiers, timestamp)
     {
         Delta = delta;
+        VerticalDelta = delta;
     }
+
+    /// <summary>Initializes wheel event data without discarding fractional or horizontal deltas.</summary>
+    public MouseWheelEventArgs(
+        RoutedEvent routedEvent,
+        Point position,
+        double horizontalDelta,
+        double verticalDelta,
+        bool hasPreciseScrollingDeltas,
+        MouseButtonState leftButton,
+        MouseButtonState middleButton,
+        MouseButtonState rightButton,
+        MouseButtonState xButton1,
+        MouseButtonState xButton2,
+        ModifierKeys modifiers,
+        int timestamp)
+        : this(routedEvent, position, horizontalDelta, verticalDelta, hasPreciseScrollingDeltas,
+            leftButton, middleButton, rightButton, xButton1, xButton2, modifiers, timestamp,
+            MouseWheelPhase.None, MouseWheelPhase.None)
+    {
+    }
+
+    /// <summary>Initializes precise wheel data together with the gesture and momentum lifecycle.</summary>
+    public MouseWheelEventArgs(
+        RoutedEvent routedEvent,
+        Point position,
+        double horizontalDelta,
+        double verticalDelta,
+        bool hasPreciseScrollingDeltas,
+        MouseButtonState leftButton,
+        MouseButtonState middleButton,
+        MouseButtonState rightButton,
+        MouseButtonState xButton1,
+        MouseButtonState xButton2,
+        ModifierKeys modifiers,
+        int timestamp,
+        MouseWheelPhase phase,
+        MouseWheelPhase momentumPhase)
+        : this(routedEvent, position, ToLegacyDelta(verticalDelta),
+            leftButton, middleButton, rightButton, xButton1, xButton2, modifiers, timestamp)
+    {
+        HorizontalDelta = horizontalDelta;
+        VerticalDelta = verticalDelta;
+        HasPreciseScrollingDeltas = hasPreciseScrollingDeltas;
+        Phase = phase;
+        MomentumPhase = momentumPhase;
+    }
+
+    internal static int ToLegacyDelta(double delta) => double.IsFinite(delta)
+        ? (int)Math.Clamp(Math.Round(delta), int.MinValue, int.MaxValue)
+        : 0;
 
     /// <summary>
     /// Initializes mouse-wheel event data from a logical mouse device.
@@ -418,6 +491,7 @@ public sealed class MouseWheelEventArgs : MouseEventArgs
         : base(mouse, timestamp, stylusDevice: null)
     {
         Delta = delta;
+        VerticalDelta = delta;
     }
 
     /// <inheritdoc />

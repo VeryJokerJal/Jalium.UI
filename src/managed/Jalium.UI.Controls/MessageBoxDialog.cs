@@ -1,4 +1,5 @@
 using Jalium.UI.Media;
+using System.ComponentModel;
 
 namespace Jalium.UI.Controls;
 
@@ -9,6 +10,8 @@ namespace Jalium.UI.Controls;
 internal sealed class MessageBoxDialog : Window
 {
     private MessageBoxResult _result;
+    private readonly bool _requiresSelection;
+    private bool _hasSelection;
 
     internal MessageBoxResult Result => _result;
 
@@ -17,29 +20,49 @@ internal sealed class MessageBoxDialog : Window
         string caption,
         MessageBoxButton button,
         MessageBoxImage icon,
-        MessageBoxResult defaultResult)
+        MessageBoxResult defaultResult,
+        MessageBoxOptions options = MessageBoxOptions.None)
     {
         Title = caption ?? string.Empty;
-        Width = 400;
+        Width = Math.Min(400, Math.Max(1, SystemParameters.WorkArea.Width - 40));
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ResizeMode = ResizeMode.NoResize;
+        _requiresSelection = button == MessageBoxButton.YesNo;
+        IsShowCloseButton = !_requiresSelection;
 
-        _result = defaultResult != MessageBoxResult.None ? defaultResult : MessageBoxResult.OK;
+        // Dismissal is not an implicit click on the default. Yes/No requires an
+        // explicit choice; No is only the fallback for accepted owner teardown.
+        _result = button switch
+        {
+            MessageBoxButton.OKCancel or MessageBoxButton.YesNoCancel => MessageBoxResult.Cancel,
+            MessageBoxButton.YesNo => MessageBoxResult.No,
+            _ => MessageBoxResult.OK,
+        };
 
-        Content = BuildContent(messageText, button, icon);
+        Content = BuildContent(messageText, button, icon, defaultResult, options);
     }
 
-    private UIElement BuildContent(string messageText, MessageBoxButton button, MessageBoxImage icon)
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        if (_requiresSelection && !_hasSelection &&
+            OwnerForPlatformTermination?.IsCloseRequestedForPlatformTermination != true)
+            e.Cancel = true;
+    }
+
+    private UIElement BuildContent(string messageText, MessageBoxButton button, MessageBoxImage icon,
+        MessageBoxResult defaultResult, MessageBoxOptions options)
     {
         var rootPanel = new StackPanel { Margin = new Thickness(20) };
 
         // Icon + message row
-        var messageRow = new StackPanel
+        var messageRow = new Grid
         {
-            Orientation = Orientation.Horizontal,
             Margin = new Thickness(0, 0, 0, 20)
         };
+        messageRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        messageRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         // Icon text (using Unicode symbols)
         string iconChar = GetIconCharacter(icon);
@@ -60,10 +83,23 @@ internal sealed class MessageBoxDialog : Window
         {
             Text = messageText ?? string.Empty,
             TextWrapping = TextWrapping.Wrap,
-            VerticalAlignment = VerticalAlignment.Center,
-            MaxWidth = 320
+            VerticalAlignment = VerticalAlignment.Top,
+            TextAlignment = options.HasFlag(MessageBoxOptions.RightAlign) ? TextAlignment.Right : TextAlignment.Left,
+            FlowDirection = options.HasFlag(MessageBoxOptions.RtlReading) ? FlowDirection.RightToLeft : FlowDirection.LeftToRight
         };
-        messageRow.Children.Add(textBlock);
+        var messageScroll = new ScrollViewer
+        {
+            Content = textBlock,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = Math.Max(80, SystemParameters.WorkArea.Height * 0.6),
+            Focusable = false
+        };
+        // Short messages should not add an empty Tab stop. Long messages still
+        // expose the viewer for keyboard scrolling after layout is available.
+        messageScroll.Loaded += (_, _) => messageScroll.Focusable = messageScroll.CanScrollVertically;
+        Grid.SetColumn(messageScroll, 1);
+        messageRow.Children.Add(messageScroll);
 
         rootPanel.Children.Add(messageRow);
 
@@ -74,11 +110,16 @@ internal sealed class MessageBoxDialog : Window
             HorizontalAlignment = HorizontalAlignment.Right
         };
 
-        foreach (var (label, result) in GetButtons(button))
+        var buttons = GetButtons(button);
+        var defaultButton = buttons.Any(candidate => candidate.Result == defaultResult)
+            ? defaultResult : buttons[0].Result;
+        foreach (var (label, result) in buttons)
         {
             var btn = new Button
             {
                 Content = label,
+                IsDefault = result == defaultButton,
+                IsCancel = result == MessageBoxResult.Cancel || buttons.Length == 1,
                 MinWidth = 80,
                 Margin = new Thickness(4, 0, 0, 0),
                 Padding = new Thickness(16, 6, 16, 6)
@@ -87,10 +128,15 @@ internal sealed class MessageBoxDialog : Window
             var capturedResult = result;
             btn.Click += (_, _) =>
             {
+                _hasSelection = true;
                 _result = capturedResult;
+                bool wasModal = IsModal;
                 DialogResult = true;
-                Close();
+                if (!wasModal) Close();
             };
+
+            if (btn.IsDefault)
+                Loaded += (_, _) => btn.Focus();
 
             buttonPanel.Children.Add(btn);
         }

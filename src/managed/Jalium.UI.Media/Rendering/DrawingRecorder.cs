@@ -411,11 +411,14 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     }
 
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
+        => DrawGeometry(brush, pen, geometry, EdgeMode.Unspecified);
+
+    public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry, EdgeMode edgeMode)
     {
         var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush), geometry.Bounds);
         var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         var capturedGeometry = SnapGeometry(geometry);
-        _commands.Add(DrawCommand.GeometryCmd(canonicalBrush, canonicalPen, capturedGeometry));
+        _commands.Add(DrawCommand.GeometryCmd(canonicalBrush, canonicalPen, capturedGeometry, edgeMode));
         _bounds.AccumulateRect(capturedGeometry.Bounds, StrokeSlop(canonicalPen));
     }
 

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+using Jalium.UI.Automation;
 using RawProvider = Jalium.UI.Automation.Provider;
 using Text = Jalium.UI.Automation.Text;
 
@@ -99,6 +100,16 @@ internal sealed partial class UiaTextRangeProvider : IUiaTextRangeProvider
     public UiaVariant GetAttributeValue(int attributeId)
     {
         object? value = _inner.GetAttributeValue(attributeId);
+        if (ReferenceEquals(value, AutomationTextAttributeValues.Mixed))
+        {
+            try
+            {
+                if (UiaNativeMethods.UiaGetReservedMixedAttributeValue(out nint mixed) >= 0 && mixed != nint.Zero)
+                    return UiaVariant.FromUnknown(mixed);
+            }
+            catch { }
+            return default;
+        }
         if (value is not null)
             return UiaVariant.From(value);
 

@@ -1225,6 +1225,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     /// </summary>
     internal void OnWindowClosed(Window window, int remainingWindowCount)
     {
+        if (Volatile.Read(ref _windowCloseShutdownDeferrals) != 0) return;
         var shouldShutdown = ShutdownMode switch
         {
             ShutdownMode.OnLastWindowClose => remainingWindowCount == 0,

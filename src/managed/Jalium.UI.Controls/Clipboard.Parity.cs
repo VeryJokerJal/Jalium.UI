@@ -18,7 +18,8 @@ namespace Jalium.UI;
 /// Windows access requires an STA thread, matching WPF. Linux exposes native
 /// X11/Wayland MIME formats, but persistence after process exit depends on an
 /// external clipboard manager because the current native ABI has no
-/// SAVE_TARGETS handoff. Android currently supports text only. Other platforms
+/// SAVE_TARGETS handoff. macOS uses AppKit's persistent pasteboard; Android
+/// currently supports text only. Other platforms
 /// throw <see cref="PlatformNotSupportedException"/>.
 /// </remarks>
 public static class Clipboard

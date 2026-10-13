@@ -315,6 +315,38 @@ public class DependencyObject : DispatcherObject
         }
     }
 
+    private readonly record struct ValueMutationState(
+        bool CanReject,
+        DependencyValueStore.Entry Entry,
+        AnimatedPropertyValue? Animation);
+
+    private ValueMutationState CaptureValueMutationState(DependencyProperty dp)
+    {
+        if (!dp.MayCoerce || dp.GetMetadata(GetType()).CoerceValueCallback is null)
+            return default;
+        AnimatedPropertyValue? animation = null;
+        _animatedValues?.TryGetValue(dp, out animation);
+        return new(true, _valueStore?.CaptureProperty(dp) ?? default, animation);
+    }
+
+    private object? GetValueAfterMutation(DependencyProperty dp, ValueMutationState state, bool baseValue = false)
+    {
+        try { return baseValue ? GetEffectiveBaseValue(dp, forceCoerce: true) : GetValue(dp); }
+        catch
+        {
+            if (state.CanReject)
+            {
+                var store = _valueStore ??= new DependencyValueStore();
+                store.RestoreProperty(dp, state.Entry);
+                if (store.Count == 0) _valueStore = null;
+                if (state.Animation is null) RemoveStoredValue(ref _animatedValues, dp);
+                else (_animatedValues ??= new())[dp] = state.Animation;
+                dp.InvalidateInheritedSources();
+            }
+            throw;
+        }
+    }
+
     /// <summary>
     /// Gets the cached dependency-object type descriptor for this instance.
     /// </summary>
@@ -675,7 +707,7 @@ public class DependencyObject : DispatcherObject
         var rangeBefore = Styling.CssRangeState.GetInRange(this);
 
         // Remove existing binding
-        ClearBinding(dp);
+        DetachBinding(dp);
 
         // Create and activate the binding expression
         var expression = binding.CreateBindingExpression(this, dp);
@@ -811,6 +843,14 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
+        if (_bindings?.ContainsKey(dp) == true)
+            ClearValueCore(dp);
+    }
+
+    // Replacing an expression keeps its last target value until the new
+    // expression transfers a value. Public clearing also removes that value.
+    private void DetachBinding(DependencyProperty dp)
+    {
         if (_bindings?.TryGetValue(dp, out var expression) == true)
         {
             var requiredBefore = Styling.CssOptionalityState.GetRequired(this);
@@ -827,22 +867,11 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     public void ClearAllBindings()
     {
-        var bindings = _bindings;
-        if (bindings is null)
+        if (_bindings is not { Count: > 0 } bindings)
             return;
 
-        var requiredBefore = Styling.CssOptionalityState.GetRequired(this);
-        var rangeBefore = Styling.CssRangeState.GetInRange(this);
-
-        foreach (var expression in bindings.Values)
-        {
-            expression.Deactivate();
-        }
-        bindings.Clear();
-        if (ReferenceEquals(_bindings, bindings))
-            _bindings = null;
-        Styling.CssOptionalityState.NotifyBindingChange(this, requiredBefore);
-        Styling.CssRangeState.NotifyBindingChange(this, rangeBefore);
+        foreach (var property in bindings.Keys.ToArray())
+            ClearBinding(property);
     }
 
     /// <summary>
@@ -928,6 +957,7 @@ public class DependencyObject : DispatcherObject
     private void ClearValueCore(DependencyProperty dp)
     {
         CheckSealedAccess();
+        DetachBinding(dp);
         MutateValue(
             dp,
             ValueMutation.ForClearLocal(),
@@ -1525,7 +1555,8 @@ public class DependencyObject : DispatcherObject
         var hadNativeDirection = trackDocumentDirection && TryGetValueWithoutCss(dp, out oldNativeDirection);
 
         var oldLayer = GetEffectiveValueLayer(dp);
-        if (allowAutoTransition && TryMutateValueWithAutomaticTransition(dp, mutateCore, notifyBinding))
+        var mutationState = CaptureValueMutationState(dp);
+        if (allowAutoTransition && TryMutateValueWithAutomaticTransition(dp, mutateCore, notifyBinding, mutationState))
         {
             if (oldLayer != GetEffectiveValueLayer(dp))
                 OnEffectiveValueSourceChanged(dp);
@@ -1537,6 +1568,11 @@ public class DependencyObject : DispatcherObject
         var oldValue = GetValue(dp);
         if (!mutateCore.Apply(this, dp))
             return;
+
+        // Validate the tentative effective value before publishing source,
+        // rendering, transition or binding notifications. A rejected Window
+        // visibility request must leave subsequent reads usable.
+        if (mutationState.CanReject) _ = GetValueAfterMutation(dp, mutationState);
 
         if (trackDocumentDirection)
             NotifyNativeDirectionChanged(dp, hadNativeDirection, oldNativeDirection);
@@ -1572,7 +1608,7 @@ public class DependencyObject : DispatcherObject
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
             if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
             {
-                binding.UpdateSource();
+                binding.OnTargetValueChanged();
             }
         }
         if (this is UIElement displayElement && dp == UIElement.VisibilityProperty &&
@@ -1589,7 +1625,10 @@ public class DependencyObject : DispatcherObject
 
     // A control can depend on which source owns a value even when the value
     // itself is unchanged (for example, authored padding equal to a default).
-    internal virtual void OnEffectiveValueSourceChanged(DependencyProperty property) { }
+    internal virtual void OnEffectiveValueSourceChanged(DependencyProperty property)
+    {
+        Styling.CssFlowProperties.OnWrappingSourceChanged(this, property);
+    }
 
     private bool InvalidateCssRadiusPrecedence(DependencyProperty dp)
     {
@@ -1614,7 +1653,8 @@ public class DependencyObject : DispatcherObject
             NotifyCssBorderPresentationChanged();
     }
 
-    private bool TryMutateValueWithAutomaticTransition(DependencyProperty dp, ValueMutation mutateCore, bool notifyBinding)
+    private bool TryMutateValueWithAutomaticTransition(DependencyProperty dp, ValueMutation mutateCore, bool notifyBinding,
+        ValueMutationState mutationState)
     {
         if (this is not UIElement uiElement ||
             !uiElement.ShouldAutomaticallyTransition(dp) ||
@@ -1639,16 +1679,19 @@ public class DependencyObject : DispatcherObject
             return true;
         }
 
+        object? newBaseValue = null;
+        if (mutationState.CanReject) newBaseValue = GetValueAfterMutation(dp, mutationState, baseValue: true);
+
         InvalidateCssRadiusPrecedence(dp);
         InvalidateCssBorderPrecedence(dp);
         if (uiElement.StopCssTransitionForLocalValue(dp))
         {
             if (notifyBinding && _bindings?.TryGetValue(dp, out var localBinding) == true)
-                localBinding.UpdateSource();
+                localBinding.OnTargetValueChanged();
             return true;
         }
 
-        var newBaseValue = GetEffectiveBaseValue(dp, forceCoerce: true);
+        if (!mutationState.CanReject) newBaseValue = GetEffectiveBaseValue(dp, forceCoerce: true);
         if (Equals(oldBaseValue, newBaseValue))
         {
             if (!hadAutomaticTransition)
@@ -1668,7 +1711,7 @@ public class DependencyObject : DispatcherObject
         {
             if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
             {
-                binding.UpdateSource();
+                binding.OnTargetValueChanged();
             }
 
             return true;
@@ -1681,7 +1724,7 @@ public class DependencyObject : DispatcherObject
 
         if (notifyBinding && _bindings?.TryGetValue(dp, out var fallbackBinding) == true)
         {
-            fallbackBinding.UpdateSource();
+            fallbackBinding.OnTargetValueChanged();
         }
 
         return true;
@@ -1715,8 +1758,13 @@ public class DependencyObject : DispatcherObject
         SetStoredValue(dp, DependencyValueStore.Layer.Local, value);
     }
 
-    private bool ClearLocalValueCore(DependencyProperty dp) =>
-        RemoveStoredValue(dp, DependencyValueStore.Layer.Local);
+    private bool ClearLocalValueCore(DependencyProperty dp)
+    {
+        // SetCurrentValue may be stored without a local value (for example,
+        // over a metadata default). ClearValue must discard that modifier too.
+        bool removedCurrent = RemoveStoredValue(dp, DependencyValueStore.Layer.Current);
+        return RemoveStoredValue(dp, DependencyValueStore.Layer.Local) || removedCurrent;
+    }
 
     // A null can never be the effective value of a non-nullable value-type dependency property:
     // the generated CLR accessor unboxes it (e.g. (Thickness)GetValue(BorderThicknessProperty)) and

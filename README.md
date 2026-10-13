@@ -30,7 +30,7 @@ WPF-inspired APIs, JALXAML with Razor extensions, and native rendering on Window
 | Windows 10/11 | `Jalium.UI.Desktop` · `win-x64`, `win-arm64` package layout | Win32 | DirectX 12, software; optional Vulkan | x64 is the primary source-build target; ARM64 packaging exists but lacks equivalent CI qualification |
 | Linux desktop | `Jalium.UI.Linux` · glibc/musl x64/Arm64 layout | X11, Wayland | Vulkan, software | Shipped; qualification varies by RID—see the [verification matrix](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux-parity-status.md) |
 | Android 7.0+ (API 24+) | `Jalium.UI.Android` · `arm64-v8a`, `x86_64` | Android native activity | Vulkan, software | Shipped platform package |
-| macOS | No entry package | Not implemented | Metal renderer source only | Not a release target yet |
+| macOS | `Jalium.UI.MacOS` | AppKit development host | Metal + CoreText | Apple Silicon development; [build and validation](docs/macos-development.md) |
 
 ## Why Jalium.UI
 
@@ -76,7 +76,7 @@ WPF-inspired APIs, JALXAML with Razor extensions, and native rendering on Window
 | `jalium.native.core` | Windows, Linux, Android | Native core runtime, backend registry, context management |
 | `jalium.native.d3d12` | Windows | DirectX 12 render target and Vello GPU pipeline |
 | `jalium.native.vulkan` | Windows (optional), Linux, Android | Vulkan render backend |
-| `jalium.native.metal` | Source only | Metal renderer implementation; the macOS window/platform host is not implemented |
+| `jalium.native.metal` | macOS development | Metal renderer with CoreText; AppKit host and Gallery entry available |
 | `jalium.native.software` | Windows, Linux, Android | CPU-based software rendering fallback |
 | `jalium.native.platform` | Windows, Linux, Android | Platform abstraction for windows, input, and events |
 | `jalium.native.text` | Linux, Android | Self-hosted text engine (sfnt/cmap/glyf/CFF + OT shaper; fontconfig for discovery on Linux) |
@@ -454,7 +454,7 @@ Jalium.UI/
       jalium.native.core/      # Native runtime core, backend registry
       jalium.native.d3d12/     # DirectX 12 + Vello GPU backend
       jalium.native.vulkan/    # Vulkan backend
-      jalium.native.metal/     # Metal renderer source (no macOS host yet)
+      jalium.native.metal/     # Metal renderer + CoreText (macOS development)
       jalium.native.software/  # CPU software renderer
       jalium.native.platform/  # Platform abstraction layer
       jalium.native.text/      # Self-hosted text engine (non-Windows)

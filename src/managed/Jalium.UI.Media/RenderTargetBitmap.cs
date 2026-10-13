@@ -75,8 +75,8 @@ public sealed partial class RenderTargetBitmap : BitmapSource
 
         _pixelWidth = pixelWidth;
         _pixelHeight = pixelHeight;
-        _dpiX = dpiX > 0 ? dpiX : 96.0;
-        _dpiY = dpiY > 0 ? dpiY : 96.0;
+        _dpiX = double.IsFinite(dpiX) && dpiX > 0 ? dpiX : 96.0;
+        _dpiY = double.IsFinite(dpiY) && dpiY > 0 ? dpiY : 96.0;
         _stride = PixelBufferLayout.GetMinimumStride(pixelWidth);
         _pixelBuffer = new byte[
             PixelBufferLayout.GetRequiredByteCount(pixelWidth, pixelHeight, _stride)]; // BGRA32

@@ -14,6 +14,7 @@ namespace Jalium.UI.Controls;
 internal sealed class WindowInputDispatcher
 {
     private readonly IInputDispatcherHost _host;
+    private readonly MouseWheelGestureRouting _wheelGestureRouting = new();
 
     // ── Mouse state ──
     private UIElement? _lastMouseOverElement;
@@ -521,7 +522,14 @@ internal sealed class WindowInputDispatcher
     /// <summary>Handles mouse wheel.</summary>
     public void HandleMouseWheel(Point position, int delta, MouseButtonStates buttons,
         ModifierKeys modifiers, int timestamp)
+        => HandleMouseWheel(position, 0, delta, false, buttons, modifiers, timestamp);
+
+    /// <summary>Handles two-axis wheel input, retaining precise device deltas.</summary>
+    public void HandleMouseWheel(Point position, double horizontalDelta, double verticalDelta,
+        bool hasPreciseScrollingDeltas, MouseButtonStates buttons, ModifierKeys modifiers, int timestamp,
+        MouseWheelPhase phase = MouseWheelPhase.None, MouseWheelPhase momentumPhase = MouseWheelPhase.None)
     {
+        int delta = MouseWheelEventArgs.ToLegacyDelta(verticalDelta);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
@@ -532,11 +540,13 @@ internal sealed class WindowInputDispatcher
         Mouse.UpdateState(position, hitElement, buttons);
         var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
+        target = _wheelGestureRouting.ResolveTarget(target, _host.Self, phase, momentumPhase);
+
         // Raise tunnel event (PreviewMouseWheel)
         MouseWheelEventArgs tunnelArgs = new(
-            UIElement.PreviewMouseWheelEvent, position, delta,
+            UIElement.PreviewMouseWheelEvent, position, horizontalDelta, verticalDelta, hasPreciseScrollingDeltas,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase);
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -545,9 +555,13 @@ internal sealed class WindowInputDispatcher
         if (!tunnelArgs.Handled)
         {
             MouseWheelEventArgs bubbleArgs = new(
-                UIElement.MouseWheelEvent, position, delta,
+                UIElement.MouseWheelEvent, position, horizontalDelta, verticalDelta, hasPreciseScrollingDeltas,
                 buttons.Left, buttons.Middle, buttons.Right,
-                buttons.XButton1, buttons.XButton2, modifiers, timestamp);
+                buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase)
+            {
+                IsHorizontalDeltaHandled = tunnelArgs.IsHorizontalDeltaHandled,
+                IsVerticalDeltaHandled = tunnelArgs.IsVerticalDeltaHandled
+            };
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
@@ -587,6 +601,14 @@ internal sealed class WindowInputDispatcher
 
     /// <summary>Handles key down. Returns true if handled.</summary>
     public bool HandleKeyDown(Key key, ModifierKeys modifiers, bool isRepeat, int timestamp)
+        => HandleKeyDownCore(key, modifiers, isRepeat, timestamp, null);
+
+    public bool HandlePlatformKeyDown(Key key, ModifierKeys modifiers, bool isRepeat, int timestamp,
+        ModifierKeys physicalModifiers)
+        => HandleKeyDownCore(key, modifiers, isRepeat, timestamp, physicalModifiers);
+
+    private bool HandleKeyDownCore(Key key, ModifierKeys modifiers, bool isRepeat, int timestamp,
+        ModifierKeys? physicalModifiers)
     {
         if (ShouldSuppressReactivatedEscape(key, isKeyDown: true))
             return true;
@@ -628,13 +650,15 @@ internal sealed class WindowInputDispatcher
             ActivateKeyboardPressedChain(target);
 
         // Raise tunnel event (PreviewKeyDown)
-        KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp);
+        KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp)
+            { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         // Raise bubble event (KeyDown) if not handled
         if (!tunnelArgs.Handled)
         {
-            KeyEventArgs bubbleArgs = new(UIElement.KeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp);
+            KeyEventArgs bubbleArgs = new(UIElement.KeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp)
+                { PhysicalModifiers = physicalModifiers };
             target.RaiseEvent(bubbleArgs);
 
             // Auto Tab/Shift+Tab focus navigation
@@ -699,6 +723,14 @@ internal sealed class WindowInputDispatcher
 
     /// <summary>Handles key up. Returns true if handled.</summary>
     public bool HandleKeyUp(Key key, ModifierKeys modifiers, int timestamp)
+        => HandleKeyUpCore(key, modifiers, timestamp, null);
+
+    public bool HandlePlatformKeyUp(Key key, ModifierKeys modifiers, int timestamp,
+        ModifierKeys physicalModifiers)
+        => HandleKeyUpCore(key, modifiers, timestamp, physicalModifiers);
+
+    private bool HandleKeyUpCore(Key key, ModifierKeys modifiers, int timestamp,
+        ModifierKeys? physicalModifiers)
     {
         if (ShouldSuppressReactivatedEscape(key, isKeyDown: false))
             return true;
@@ -706,15 +738,19 @@ internal sealed class WindowInputDispatcher
         if (_host.OnPreviewWindowKeyUp(key, modifiers))
             return true;
 
-        var target = Keyboard.FocusedElement as UIElement ?? _host.Self;
+        var target = OperatingSystem.IsMacOS()
+            ? _host.GetKeyboardEventTarget()
+            : Keyboard.FocusedElement as UIElement ?? _host.Self;
 
-        KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp);
+        KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp)
+            { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
         bool handled = tunnelArgs.Handled;
 
         if (!handled)
         {
-            KeyEventArgs bubbleArgs = new(UIElement.KeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp);
+            KeyEventArgs bubbleArgs = new(UIElement.KeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp)
+                { PhysicalModifiers = physicalModifiers };
             target.RaiseEvent(bubbleArgs);
             handled = bubbleArgs.Handled;
         }
@@ -728,6 +764,12 @@ internal sealed class WindowInputDispatcher
     /// <summary>Handles character input (WM_CHAR or PlatformEvent.CharInput).</summary>
     public void HandleCharInput(string text, int timestamp)
     {
+        // Tab is already handled by KeyDown, either as focus navigation or as
+        // editor indentation. Its subsequent WM_CHAR must not reach the newly
+        // focused control or insert a second tab in an AcceptsTab editor.
+        if (text == "\t")
+            return;
+
         var target = _host.GetTextInputTarget();
         if (target == null)
             return;
@@ -840,6 +882,7 @@ internal sealed class WindowInputDispatcher
 
     private void ResetTransientInputStateOnDeactivate()
     {
+        _wheelGestureRouting.Cancel();
         ResetClientMouseLeaveTracking();
         UIElement.ForceReleaseMouseCapture();
         ClearPressedChains();
@@ -858,6 +901,7 @@ internal sealed class WindowInputDispatcher
     internal void HandleSubtreeDetached(UIElement root)
     {
         ArgumentNullException.ThrowIfNull(root);
+        _wheelGestureRouting.ClearWithin(root);
 
         int timestamp = Environment.TickCount;
         bool detachingWholeWindow = ReferenceEquals(root, _host.Self);
