@@ -73,8 +73,19 @@ jobs:
           dotnet-version: 10.0.300
       - name: Select pinned Xcode and workload
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
           dotnet workload install macos --version 10.0.300.2
+          # The pinned 26.5 SDK requires a valid preferences file on fresh hosts.
+          # https://github.com/dotnet/macios/issues/25476
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+          preferences = Path.home() / 'Library/Preferences/Xamarin/Settings.plist'
+          if not preferences.exists():
+              preferences.parent.mkdir(parents=True, exist_ok=True)
+              with preferences.open('wb') as stream:
+                  plistlib.dump({'AppleSdkRoot': '/Applications/Xcode_26.5.app'}, stream)
+          PY
       - uses: actions/cache/restore@v4
         id: apple-toolchain
         with:
