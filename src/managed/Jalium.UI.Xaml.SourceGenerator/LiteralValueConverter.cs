@@ -39,9 +39,13 @@ internal static class LiteralValueConverter
         }
 
         // Razor expressions / interpolation / code-block tokens — never safe inline.
-        if (value.IndexOf('@') >= 0 && !value.StartsWith("@@", StringComparison.Ordinal))
+        if (value.IndexOf('@') >= 0)
         {
-            return null;
+            if (RazorExpressionLowering.ContainsRazor(value))
+                return null;
+            // Pure Razor escapes bypass expression lowering. Decode them before
+            // emitting a typed setter, matching the runtime value resolver.
+            value = value.Replace("@@", "@");
         }
 
         // Unwrap nullable<T> — convert against the underlying value type, then reuse.

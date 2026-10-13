@@ -22,6 +22,7 @@
     <Compile Include="../Jalium.UI.Tests/CssStyleSheetSourceTests.cs" Link="CssStyleSheetSourceTests.cs" />
     <Compile Include="../Jalium.UI.Tests/CssStateInvalidationTests.cs" Link="CssStateInvalidationTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TreeSelectorTests.cs" Link="TreeSelectorTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssTransformThreadTests.cs" Link="CssTransformThreadTests.cs" />
     <EmbeddedResource Include="../Jalium.UI.Tests/TestAssets/CssSource/*.css"
                       LogicalName="Jalium.UI.Tests.TestAssets.CssSource.%(Filename)%(Extension)" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />

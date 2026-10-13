@@ -81,6 +81,10 @@ internal static partial class CssCoreProperties
             }
 
             var relativeLengths = CssTransformParser.RelativeLengths(text);
+            // Compiled inline declarations are cached across dispatchers.
+            // Absolute transforms must be immutable just like contextual ones.
+            if (relativeLengths.Length == 0 && transform?.CanFreeze == true)
+                transform.Freeze();
             return relativeLengths.Length > 0 ? new CssContextTransformValue(text, relativeLengths)
                 : new CssImmediateValue(UIElement.RenderTransformProperty, transform);
         });
