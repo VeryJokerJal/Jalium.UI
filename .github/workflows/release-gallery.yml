@@ -4,6 +4,16 @@ on:
   push:
     branches: [codex/release-26.11.0]
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Build all platforms, or retry only Linux
+        type: choice
+        options: [all, linux]
+        default: all
+      framework_ref:
+        description: Optional exact framework revision to rebuild
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -13,6 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  FRAMEWORK_COMMIT: ${{ inputs.framework_ref || github.sha }}
   GALLERY_COMMIT: 455f4735bca8bd6be59966f70afc926fc08e6818
   DOTNET_NOLOGO: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
@@ -25,6 +36,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: Jalium.UI
+          ref: ${{ env.FRAMEWORK_COMMIT }}
           fetch-depth: 0
       - uses: actions/checkout@v4
         with:
@@ -43,7 +55,16 @@ jobs:
             -e JALIUM_GALLERY_ROOT=/work/Jalium.UI.Gallery \
             -e JALIUM_RELEASE_ROOT=/work/artifacts/gallery-26.11.0 \
             jalium-gallery-release:26.11.0 \
-            bash eng/release/build-gallery.sh linux
+            bash -c '
+              set -euo pipefail
+              # Ubuntu 20.04 Git ignores safe.directory supplied with -c.
+              # Trust only these two checkouts inside this disposable container.
+              git config --global --add safe.directory /work/Jalium.UI
+              git config --global --add safe.directory /work/Jalium.UI.Gallery
+              git -C /work/Jalium.UI rev-parse HEAD
+              git -C /work/Jalium.UI.Gallery rev-parse HEAD
+              bash eng/release/build-gallery.sh linux
+            '
       - uses: actions/upload-artifact@v4
         with:
           name: gallery-linux
@@ -56,12 +77,14 @@ jobs:
           path: artifacts/gallery-26.11.0/test-results/*
 
   macos:
+    if: ${{ inputs.platform != 'linux' }}
     runs-on: macos-26
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
           path: Jalium.UI
+          ref: ${{ env.FRAMEWORK_COMMIT }}
           fetch-depth: 0
       - uses: actions/checkout@v4
         with:
@@ -113,12 +136,14 @@ jobs:
           path: artifacts/gallery-26.11.0/test-results/*
 
   windows:
+    if: ${{ inputs.platform != 'linux' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           path: Jalium.UI
+          ref: ${{ env.FRAMEWORK_COMMIT }}
           fetch-depth: 0
       - uses: actions/checkout@v4
         with:
@@ -177,12 +202,14 @@ jobs:
           if-no-files-found: error
 
   android:
+    if: ${{ inputs.platform != 'linux' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           path: Jalium.UI
+          ref: ${{ env.FRAMEWORK_COMMIT }}
           fetch-depth: 0
       - uses: actions/checkout@v4
         with:
@@ -247,6 +274,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FRAMEWORK_COMMIT }}
       - uses: actions/download-artifact@v4
         with:
           pattern: gallery-*
@@ -266,9 +295,9 @@ jobs:
           if gh release view v26.11.0 --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft > release-state.txt 2>/dev/null; then
             test "$(cat release-state.txt)" = true || { echo '26.11.0 is already published; refusing to replace its assets.' >&2; exit 1; }
           else
-            gh release create v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title 'Jalium.UI 26.11.0' --notes-file ../eng/release/26.11.0.md
+            gh release create v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$FRAMEWORK_COMMIT" --draft --title 'Jalium.UI 26.11.0' --notes-file ../eng/release/26.11.0.md
           fi
-          gh release edit v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --notes-file ../eng/release/26.11.0.md
+          gh release edit v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$FRAMEWORK_COMMIT" --notes-file ../eng/release/26.11.0.md
           gh release upload v26.11.0 --repo "$GITHUB_REPOSITORY" Jalium.Gallery-* SHA256SUMS.txt --clobber
           mkdir downloaded
           gh release download v26.11.0 --repo "$GITHUB_REPOSITORY" --pattern 'Jalium.Gallery-*' --dir downloaded
