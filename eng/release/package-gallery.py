@@ -14,7 +14,8 @@ VERSION = "26.11.0"
 
 
 def git_head(root):
-    return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    # CI containers mount these explicitly supplied checkouts under another UID.
+    return subprocess.check_output(["git", "-c", f"safe.directory={root}", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
 
 
 def main():
