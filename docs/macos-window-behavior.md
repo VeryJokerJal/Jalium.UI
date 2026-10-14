@@ -4,6 +4,44 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+### v199：Window Lab 的完整依赖恢复与 Apple 音频编译
+
+2026-10-15 重新 fetch 并核对：远端 master **10160c7e** 和 cloud 窗口修复
+**e93bc755** 均已包含在当前本地 master；保持现有分支和其他任务的未提交改动。
+新增的两个 26.11.0 发布分支已取回，尚未合入当前分支。
+
+宿主的早期观察器收到 AppKit 启动通知。具体委托的诊断捕获到模块初始化失败：
+缺少 System.IO.Packaging, Version=10.0.0.0，导致原启动回调无法执行。
+同一冻结源码做路径对照：通过 `/var/...` 显式 restore 仍退出 0，却只有
+**1** 项依赖且没有 ProjectReferences；改用真实 `/private/var/...` 路径后
+为 **44** 项，包含 macOS 平台入口与 System.IO.Packaging。原包引用已经存在，
+没有修改框架启动回调或为框架重复添加包依赖。
+
+新增 `.tools/build-window-lab.py`，解析源码、构建目录及原生负载的真实路径，
+显式恢复完整依赖图后用 `--no-restore` 构建，并检查平台引用与打包运行时文件。
+撤回 v197 的直接 Managed 项目引用，恢复只通过 macOS 入口引用统一实现。
+以 `/var/...` 调用此脚本，冻结宿主构建 **退出 0，14.46 秒**，依赖 **44** 项，
+应用内包含 System.IO.Packaging.dll；签名严格验证退出 0。
+
+恢复原始继承回调后，实际 AX 树和截图出现现有中文编辑窗口；工具输入追加 abc，
+另一实例选中 emoji 后替换为 X，编辑焦点保留。它们是工具交互证据。
+只引用平台入口的小窗口版本完成构建，但随后 Mac 锁定，未取得该版本的截图、
+撤销／重做、Tab 或物理 IME／VoiceOver 验收。临时源码的观察器与诊断委托
+没有写入框架。渲染负载仍沿用普通开发库，不称为完整干净发布包。
+
+当前 PR **c870954c** 的 Window CI **22/22，402.96 秒**，包括 **610/610** AX
+和 **74/74** 原生编辑焦点；图像与 readback 通过。完整 Apple CI 已通过
+IOSurface 编译，随后在 iOS 音频失败：miniaudio_backend.cpp 以 C++ 编译，
+移动平台后端却导入 AVFoundation 的 Objective-C 声明。本机完整源文件复现退出 1。
+Apple 音频目标仅将此共享源文件设为 Objective-C++，其他平台保持原 C++ 源路径。
+参见 [CMake LANGUAGE 属性](https://cmake.org/cmake/help/latest/prop_sf/LANGUAGE.html)。
+
+冻结源码的 CMake 完整媒体目标：macOS、iOS／模拟器、tvOS／模拟器 **5/5**
+产生媒体及 Core 静态归档；七组 Apple SDK 的 miniaudio 实际对象均生成，
+**7/7**。visionOS 两组完整媒体目标仍因现有相机 API 不可用而失败，不能称为
+完整 Apple 构建通过。新提交的 CI、全 AX ASAN、物理输入、混合 DPI／Spaces、
+最低系统及发布包继续开放，整个 macOS 目标未完成。
+
 ### v198：IOSurface 公共头文件与完整 AX ASAN 计时
 
 2026-10-15 核对 PR #175 已合并，远端 master 为 **10160c7e**。上轮
