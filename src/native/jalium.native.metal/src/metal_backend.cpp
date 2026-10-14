@@ -1018,7 +1018,9 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
         if (!std::isfinite(deviceTransform[i])) return false;
     }
 
-    CGColorRef color = CGColorCreateGenericRGB(r, g, b, a);
+    // Color glyphs keep their palette and do not use the foreground color's
+    // alpha. Apply brush opacity to the context for both color and outline runs.
+    CGColorRef color = CGColorCreateGenericRGB(r, g, b, 1);
     CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength, color);
     CTFramesetterRef setter = attributed
         ? CTFramesetterCreateWithAttributedString(attributed) : nullptr;
@@ -1172,6 +1174,7 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
         pixelHeight - (m12 * x + m22 * (y + frameHeight) + dy - rasterTop));
     CGContextConcatCTM(context, textToBitmap);
     CGContextSetTextMatrix(context, CGAffineTransformIdentity);
+    CGContextSetAlpha(context, std::clamp(a, 0.0f, 1.0f));
     for(CFIndex index=0;index<lineCount;++index){
         CTLineRef line=static_cast<CTLineRef>(const_cast<void*>(
             CFArrayGetValueAtIndex(lines,index)));
