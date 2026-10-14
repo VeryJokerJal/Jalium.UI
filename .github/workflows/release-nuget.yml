@@ -7,12 +7,18 @@ on:
     inputs:
       mode:
         type: choice
-        options: [all, android-retry]
+        options: [all, android-retry, common-retry, android-consumer]
         default: all
       source_run:
         description: Qualified common-package run for an Android retry
         type: string
         default: '38538030308'
+      framework_ref:
+        type: string
+        required: false
+      android_run:
+        type: string
+        default: '38540272797'
 
 permissions:
   contents: read
@@ -23,13 +29,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_SOURCE: a8467a8e723ba4dec090e6e141691ae91c16b639
+  RELEASE_SOURCE: ${{ inputs.framework_ref || github.sha }}
   DOTNET_NOLOGO: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
 
 jobs:
   linux-native:
-    if: ${{ inputs.mode != 'android-retry' }}
+    if: ${{ inputs.mode == '' || inputs.mode == 'all' }}
     strategy:
       fail-fast: false
       matrix:
@@ -79,7 +85,7 @@ jobs:
           if-no-files-found: error
 
   windows-native:
-    if: ${{ inputs.mode != 'android-retry' }}
+    if: ${{ inputs.mode == '' || inputs.mode == 'all' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -111,7 +117,7 @@ jobs:
           if-no-files-found: error
 
   common-packages:
-    if: ${{ inputs.mode != 'android-retry' }}
+    if: ${{ always() && !cancelled() && (inputs.mode == 'common-retry' || (needs.linux-native.result == 'success' && needs.windows-native.result == 'success')) }}
     needs: [linux-native, windows-native]
     runs-on: windows-2025
     timeout-minutes: 60
@@ -130,27 +136,37 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: native-windows
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin
       - uses: actions/download-artifact@v4
         with:
           name: native-linux-x64
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin/native/linux-x64/Release
       - uses: actions/download-artifact@v4
         with:
           name: native-linux-arm64
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin/native/linux-arm64/Release
       - uses: actions/download-artifact@v4
         with:
           name: native-linux-musl-x64
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin/native/linux-musl-x64/Release
       - uses: actions/download-artifact@v4
         with:
           name: native-linux-musl-arm64
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin/native/linux-musl-arm64/Release
       - name: Pack thirteen common and desktop packages
         shell: pwsh
         run: |
-          python automation/eng/release/pack-nuget.py Jalium.UI "$env:RUNNER_TEMP/packages" "$env:RUNNER_TEMP/package-build"
+          python automation/eng/release/pack-nuget.py Jalium.UI "$env:RUNNER_TEMP/packages" "$env:RUNNER_TEMP/package-build" --source-commit "$env:RELEASE_SOURCE"
           if ($LASTEXITCODE -ne 0) { throw 'Package build failed' }
       - name: Verify packaged Windows consumer
         shell: pwsh
@@ -168,6 +184,7 @@ jobs:
           if-no-files-found: error
 
   android-package:
+    if: ${{ inputs.mode != 'common-retry' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -194,30 +211,45 @@ jobs:
           & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'ndk;27.2.12479018' 'platforms;android-36' 'build-tools;36.0.0'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK installation failed' }
       - name: Build both Android ABIs
+        if: inputs.mode != 'android-consumer'
         shell: bash
         run: |
           export ANDROID_SDK_ROOT="$(cygpath -u "$ANDROID_HOME")"
           export ANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
           bash Jalium.UI/src/native/build-android.sh all
       - name: Pack Android entry
+        if: inputs.mode != 'android-consumer'
         shell: pwsh
         run: |
-          python automation/eng/release/pack-nuget.py Jalium.UI "$env:RUNNER_TEMP/packages" "$env:RUNNER_TEMP/package-build" --entry Android
+          python automation/eng/release/pack-nuget.py Jalium.UI "$env:RUNNER_TEMP/packages" "$env:RUNNER_TEMP/package-build" --entry Android --source-commit "$env:RELEASE_SOURCE"
           if ($LASTEXITCODE -ne 0) { throw 'Android package build failed' }
       - uses: actions/download-artifact@v4
-        if: inputs.mode == 'android-retry'
+        if: inputs.mode == 'android-retry' || inputs.mode == 'android-consumer'
         with:
           name: nuget-common
           run-id: ${{ inputs.source_run }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/packages
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'android-consumer'
+        with:
+          name: nuget-android
+          run-id: ${{ inputs.android_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/packages
       - name: Verify Android NuGet consumers for both ABIs
-        if: inputs.mode == 'android-retry'
+        if: inputs.mode == 'android-retry' || inputs.mode == 'android-consumer'
         shell: pwsh
         run: |
+          if ('${{ inputs.mode }}' -eq 'android-consumer') {
+            python automation/eng/release/normalize-android-nuget.py "$env:RUNNER_TEMP/packages"
+            if ($LASTEXITCODE -ne 0) { throw 'Android dependency normalization failed' }
+          }
+          $feed = "$env:RUNNER_TEMP/packages"
+          "<configuration><packageSources><clear/><add key='release' value='$feed'/><add key='nuget.org' value='https://api.nuget.org/v3/index.json'/></packageSources><packageSourceMapping><packageSource key='release'><package pattern='Jalium.*'/></packageSource><packageSource key='nuget.org'><package pattern='*'/></packageSource></packageSourceMapping></configuration>" | Set-Content "$env:RUNNER_TEMP/consumer-NuGet.config"
           foreach ($rid in @('android-arm64', 'android-x64')) {
             $output = "$env:RUNNER_TEMP/consumer-$rid"
-            dotnet publish Jalium.UI/tests/Jalium.UI.NuGetTest.Android/Jalium.UI.NuGetTest.Android.csproj -c Release -r $rid -m:1 -p:JaliumPackageVersion=26.11.0 -p:JaliumBuildRoot="$env:RUNNER_TEMP/consumer-build-$rid" -p:RestoreConfigFile="$env:RUNNER_TEMP/package-build/NuGet.release.config" -p:RestorePackagesPath="$env:RUNNER_TEMP/consumer-nuget" -p:JavaSdkDirectory="$env:JAVA_HOME" -p:AndroidSdkDirectory="$env:ANDROID_HOME" -p:AndroidPackageFormats=apk -p:AndroidKeyStore=false -p:GeneratePackageOnBuild=false -o $output
+            dotnet publish Jalium.UI/tests/Jalium.UI.NuGetTest.Android/Jalium.UI.NuGetTest.Android.csproj -c Release -r $rid -m:1 -p:JaliumPackageVersion=26.11.0 -p:JaliumBuildRoot="$env:RUNNER_TEMP/consumer-build-$rid" -p:RestoreConfigFile="$env:RUNNER_TEMP/consumer-NuGet.config" -p:RestorePackagesPath="$env:RUNNER_TEMP/consumer-nuget" -p:JavaSdkDirectory="$env:JAVA_HOME" -p:AndroidSdkDirectory="$env:ANDROID_HOME" -p:AndroidPackageFormats=apk -p:AndroidKeyStore=false -p:GeneratePackageOnBuild=false -o $output
             if ($LASTEXITCODE -ne 0) { throw "Android NuGet consumer failed: $rid" }
             $apk = @(Get-ChildItem $output -Filter '*-Signed.apk')
             if ($apk.Count -ne 1) { throw "Expected one APK: $rid" }
@@ -289,7 +321,8 @@ jobs:
           '
 
   windows-static-consumer:
-    if: ${{ inputs.mode == 'android-retry' }}
+    needs: common-packages
+    if: ${{ always() && !cancelled() && (inputs.mode == 'android-retry' || (inputs.mode == 'common-retry' && needs.common-packages.result == 'success')) }}
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -302,7 +335,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: nuget-common
-          run-id: ${{ inputs.source_run }}
+          run-id: ${{ inputs.mode == 'common-retry' && github.run_id || inputs.source_run }}
           github-token: ${{ github.token }}
           path: packages
       - name: Publish and run a static NativeAOT package consumer
