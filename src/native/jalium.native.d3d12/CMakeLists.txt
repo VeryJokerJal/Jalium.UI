@@ -16,8 +16,6 @@ set(HEADERS
     include/d3d12_vello.h
     include/d3d12_vello_engine.h
     include/d3dx12.h
-    include/liquid_glass_effects.h
-    include/transition_shader_effect.h
 )
 
 set(SOURCES
@@ -37,8 +35,6 @@ set(SOURCES
     src/d3d12_video_surface.cpp
     src/d3d12_vello.cpp
     src/d3d12_vello_engine.cpp
-    src/liquid_glass_effects.cpp
-    src/transition_shader_effect.cpp
 )
 
 set(SHADER_SOURCES

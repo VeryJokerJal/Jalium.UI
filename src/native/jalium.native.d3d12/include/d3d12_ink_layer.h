@@ -5,6 +5,7 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>
+#include <vector>
 
 namespace jalium {
 
@@ -51,6 +52,13 @@ public:
     // reports STALE_CONTEXT — upload/pipeline failures here are momentary
     // (TRANSIENT: retry the same handles next frame) and true device
     // removal is recovered out-of-band by full RenderContext replacement.
+    //
+    // Clear()/DispatchBrush() now only RECORD into a deferred batch; the
+    // batch is submitted by FlushPending() (called from the render target's
+    // BlitInkLayer at the frame boundary), so a device-removal failure is
+    // observed one call later than it would have been by the previous
+    // synchronous implementation. See FlushPending for the sticky-error
+    // contract.
     int DispatchBrush(
         D3D12BrushShader*               shader,
         const void*                     strokePoints,
@@ -71,10 +79,19 @@ public:
     static D3D12BrushShaderPipeline* SharedPipeline(ID3D12Device* device);
 
 private:
+    // D3D12RenderTarget::BlitInkLayer (d3d12_render_target.cpp) must flush
+    // the accumulated ink batch before it records this texture as a sampled
+    // bitmap on the main render list. FlushPending stays private otherwise.
+    friend class D3D12RenderTarget;
+
     bool CreateResources(uint32_t width, uint32_t height);
     void ReleaseResources();
     bool EnsureDispatchResources();
     void ExecuteAndWait(ID3D12GraphicsCommandList* cmdList);
+    void BeginBatchIfNeeded();
+    void FlushPending(bool wait);
+    bool WaitForFence(uint64_t value);
+    bool ArenaAlloc(uint64_t bytes, void** cpuOut, D3D12_GPU_VIRTUAL_ADDRESS* gpuOut);
 
     ID3D12Device*                 device_ = nullptr;
     ID3D12CommandQueue*           queue_  = nullptr;
@@ -94,21 +111,39 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE   srvCpu_ = {};
     D3D12_GPU_DESCRIPTOR_HANDLE   srvGpu_ = {};
 
-    // Per-dispatch scratch: command allocator, list, fence. Synchronous
-    // for simplicity — brush dispatch latency is already dominated by
-    // shader compile the first time a shader is used.
+    // Command allocator, list and fence. A single list is reused every
+    // batch; the allocator can only be Reset once the previous batch's
+    // fence has completed (BeginBatchIfNeeded guards that).
     ComPtr<ID3D12CommandAllocator> cmdAlloc_;
     ComPtr<ID3D12GraphicsCommandList> cmdList_;
     ComPtr<ID3D12Fence>            fence_;
     uint64_t                       fenceValue_ = 0;
     HANDLE                         fenceEvent_ = nullptr;
 
-    // Upload buffers (reused across dispatches)
-    ComPtr<ID3D12Resource>        cbUpload_;       // 96 bytes (b0)
-    ComPtr<ID3D12Resource>        userCbUpload_;   // user params (b1); grows as needed
-    uint32_t                      userCbUploadCapacity_ = 0;
-    ComPtr<ID3D12Resource>        sbUpload_;       // points × 16; grows as needed
-    uint32_t                      sbUploadCapacity_ = 0;
+    // ── Deferred multi-dispatch batching ────────────────────────────────
+    // Clear()/DispatchBrush() accumulate into one command list and one
+    // per-batch upload arena instead of doing one blocking ExecuteAndWait
+    // per call; FlushPending() submits at the frame boundary.
+    bool                 batchOpen_ = false;
+    uint64_t             lastSubmittedFenceValue_ = 0;
+    // Sticky failure latch. The previous synchronous path surfaced a
+    // device-removal HRESULT on the very next Clear/DispatchBrush; the
+    // asynchronous path can only learn about it after submission, so we
+    // latch it here and subsequent DispatchBrush calls return it (Clear is
+    // void and simply becomes a no-op).
+    int                  batchError_ = 0;
+    ID3D12PipelineState* currentPso_ = nullptr;
+
+    // Per-batch upload arena: one large UPLOAD buffer with a bump allocator.
+    // Each dispatch bumps a private 256-byte-aligned slot so concurrent
+    // dispatches never overwrite each other's still-in-flight data. On
+    // overflow the active buffer is retired (kept alive until the batch's
+    // fence completes) and a larger one takes over.
+    ComPtr<ID3D12Resource>              arena_;
+    uint8_t*                            arenaCpu_ = nullptr;
+    uint64_t                            arenaCapacity_ = 0;
+    uint64_t                            arenaOffset_ = 0;
+    std::vector<ComPtr<ID3D12Resource>> retiredArena_;
 };
 
 } // namespace jalium

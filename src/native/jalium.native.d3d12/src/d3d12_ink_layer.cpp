@@ -40,6 +40,8 @@ D3D12InkLayerBitmap::D3D12InkLayerBitmap(ID3D12Device* device, ID3D12CommandQueu
 
 D3D12InkLayerBitmap::~D3D12InkLayerBitmap()
 {
+    // ReleaseResources flushes any open batch (blocking) before the texture
+    // is freed — see its FlushPending(true).
     ReleaseResources();
     if (fenceEvent_)
     {
@@ -55,15 +57,20 @@ bool D3D12InkLayerBitmap::Initialize(uint32_t width, uint32_t height)
     if (!CreateResources(width, height)) return false;
     if (!EnsureDispatchResources())      return false;
     Clear(0, 0, 0, 0);
+    // The layer must actually be cleared before it's first used — commit the
+    // one-off clear batch now (a single synchronous submit is acceptable here).
+    FlushPending(true);
     return true;
 }
 
 bool D3D12InkLayerBitmap::Resize(uint32_t width, uint32_t height)
 {
     if (width == width_ && height == height_) return true;
+    // ReleaseResources flushes the open batch before dropping the old texture.
     ReleaseResources();
     if (!CreateResources(width, height)) return false;
     Clear(0, 0, 0, 0);
+    FlushPending(true);
     return true;
 }
 
@@ -138,6 +145,12 @@ bool D3D12InkLayerBitmap::CreateResources(uint32_t width, uint32_t height)
 
 void D3D12InkLayerBitmap::ReleaseResources()
 {
+    // Commit + drain any batch (open or already submitted) that still
+    // references the backing texture before dropping it — otherwise the GPU
+    // could be reading a freed texture (D3D12 error → device removal).
+    FlushPending(true);
+    retiredArena_.clear();   // fence complete → retired arenas are idle
+
     texture_.Reset();
     rtvHeap_.Reset();
     srvHeap_.Reset();
@@ -166,26 +179,9 @@ bool D3D12InkLayerBitmap::EnsureDispatchResources()
                               IID_PPV_ARGS(fence_.GetAddressOf()));
     if (FAILED(hr)) return false;
 
-    // Constants upload buffer (96 bytes = 1 CBV aligned to 256)
-    D3D12_HEAP_PROPERTIES uploadProps = {};
-    uploadProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC cbDesc = {};
-    cbDesc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-    cbDesc.Width            = 256;
-    cbDesc.Height           = 1;
-    cbDesc.DepthOrArraySize = 1;
-    cbDesc.MipLevels        = 1;
-    cbDesc.Format           = DXGI_FORMAT_UNKNOWN;
-    cbDesc.SampleDesc.Count = 1;
-    cbDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    hr = device_->CreateCommittedResource(
-        &uploadProps, D3D12_HEAP_FLAG_NONE,
-        &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(cbUpload_.GetAddressOf()));
-    if (FAILED(hr)) return false;
-
+    // Upload storage (b0 cbuffer / b1 user params / t0 stroke points) is no
+    // longer per-object; each dispatch allocates a private slot out of the
+    // per-batch arena (see ArenaAlloc).
     return true;
 }
 
@@ -204,12 +200,150 @@ void D3D12InkLayerBitmap::ExecuteAndWait(ID3D12GraphicsCommandList* cmdList)
     }
 }
 
+bool D3D12InkLayerBitmap::WaitForFence(uint64_t value)
+{
+    if (!fence_ || value == 0) return true;
+    if (fence_->GetCompletedValue() >= value) return true;
+    if (FAILED(fence_->SetEventOnCompletion(value, fenceEvent_))) return false;
+    return WaitForSingleObject(fenceEvent_, INFINITE) == WAIT_OBJECT_0;
+}
+
+void D3D12InkLayerBitmap::BeginBatchIfNeeded()
+{
+    if (batchOpen_) return;
+    if (!cmdList_ || !cmdAlloc_ || !fence_) return;  // EnsureDispatchResources absent
+
+    // Only one batch is ever in flight: the command allocator can't be Reset
+    // until the previously-submitted batch is GPU-complete. In steady state
+    // the previous frame's batch has long finished, so this is a no-op.
+    if (lastSubmittedFenceValue_ != 0 &&
+        fence_->GetCompletedValue() < lastSubmittedFenceValue_)
+    {
+        WaitForFence(lastSubmittedFenceValue_);
+    }
+
+    // Previous batch complete → any arena buffer retired during it is idle.
+    retiredArena_.clear();
+
+    HRESULT hr = cmdAlloc_->Reset();
+    if (FAILED(hr))
+    {
+        batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        return;
+    }
+    hr = cmdList_->Reset(cmdAlloc_.Get(), nullptr);
+    if (FAILED(hr))
+    {
+        batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        return;
+    }
+
+    arenaOffset_ = 0;
+    currentPso_  = nullptr;  // list was Reset without an initial PSO
+    batchOpen_   = true;
+}
+
+void D3D12InkLayerBitmap::FlushPending(bool wait)
+{
+    if (!batchOpen_)
+    {
+        // No pending recording, but a previously submitted batch may still be
+        // in flight (e.g. a resize right after BlitInkLayer). A blocking caller
+        // must drain it before it releases resources the batch still reads.
+        if (wait) WaitForFence(lastSubmittedFenceValue_);
+        return;
+    }
+
+    HRESULT hr = cmdList_->Close();
+    if (SUCCEEDED(hr) && queue_ && fence_)
+    {
+        ID3D12CommandList* lists[] = { cmdList_.Get() };
+        queue_->ExecuteCommandLists(1, lists);
+        ++fenceValue_;
+        hr = queue_->Signal(fence_.Get(), fenceValue_);
+        lastSubmittedFenceValue_ = fenceValue_;
+    }
+    batchOpen_ = false;
+
+    // Sticky failure latch. The previous synchronous implementation surfaced
+    // a device-removal HRESULT on the very next Clear/DispatchBrush. The
+    // deferred batch is submitted here instead, so the failure can only be
+    // observed after submission — latch it in batchError_ and let subsequent
+    // DispatchBrush calls return it (Clear is void and just becomes a no-op).
+    // Device removal itself is still recovered out-of-band by full context
+    // replacement.
+    if (FAILED(hr) || (device_ && FAILED(device_->GetDeviceRemovedReason())))
+    {
+        batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+    }
+
+    if (wait)
+        WaitForFence(lastSubmittedFenceValue_);
+}
+
+bool D3D12InkLayerBitmap::ArenaAlloc(uint64_t bytes, void** cpuOut,
+                                     D3D12_GPU_VIRTUAL_ADDRESS* gpuOut)
+{
+    // 256-byte alignment satisfies the root-CBV requirement and the 16-byte
+    // StructuredBuffer element stride for the root-SRV.
+    const uint64_t align   = 256;
+    const uint64_t aligned = (bytes + align - 1) & ~(align - 1);
+
+    if (!arena_ || arenaOffset_ + aligned > arenaCapacity_)
+    {
+        uint64_t newCap = arenaCapacity_ ? arenaCapacity_ : (256ull * 1024ull);
+        while (newCap < arenaOffset_ + aligned) newCap *= 2;
+
+        D3D12_HEAP_PROPERTIES upProps = {};
+        upProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width            = newCap;
+        desc.Height           = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels        = 1;
+        desc.Format           = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        ComPtr<ID3D12Resource> fresh;
+        HRESULT hr = device_->CreateCommittedResource(
+            &upProps, D3D12_HEAP_FLAG_NONE,
+            &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(fresh.GetAddressOf()));
+        if (FAILED(hr)) return false;
+
+        void* mapped = nullptr;
+        D3D12_RANGE nil = { 0, 0 };
+        hr = fresh->Map(0, &nil, &mapped);
+        if (FAILED(hr)) return false;
+
+        // If earlier dispatches in this open batch already recorded GPU
+        // references into the current arena, keep it alive until the batch's
+        // fence completes; otherwise it is safe to release immediately.
+        if (arena_ && arenaOffset_ > 0)
+            retiredArena_.push_back(arena_);
+
+        arena_         = fresh;
+        arenaCpu_      = static_cast<uint8_t*>(mapped);
+        arenaCapacity_ = newCap;
+        arenaOffset_   = 0;
+    }
+
+    const uint64_t off = arenaOffset_;
+    arenaOffset_ += aligned;
+    *cpuOut = arenaCpu_ + off;
+    *gpuOut = arena_->GetGPUVirtualAddress() + off;
+    return true;
+}
+
 void D3D12InkLayerBitmap::Clear(float r, float g, float b, float a)
 {
+    if (batchError_) return;                 // sticky device-loss; see FlushPending
     if (!texture_ || !cmdList_) return;
 
-    cmdAlloc_->Reset();
-    cmdList_->Reset(cmdAlloc_.Get(), nullptr);
+    BeginBatchIfNeeded();
+    if (!batchOpen_ || batchError_) return;
 
     if (textureState_ != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
@@ -237,7 +371,7 @@ void D3D12InkLayerBitmap::Clear(float r, float g, float b, float a)
     cmdList_->ResourceBarrier(1, &toPsr);
     textureState_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-    ExecuteAndWait(cmdList_.Get());
+    // Recorded into the current batch only — no submit, no CPU wait here.
 }
 
 int D3D12InkLayerBitmap::DispatchBrush(
@@ -249,6 +383,10 @@ int D3D12InkLayerBitmap::DispatchBrush(
     const void*        extraParams,
     uint32_t           extraParamsSize)
 {
+    // Sticky batch failure (e.g. device removed) observed at the last
+    // FlushPending — surfaced here because Clear()/DispatchBrush no longer
+    // submit synchronously. See FlushPending.
+    if (batchError_)                         return batchError_;
     if (!shader || !shader->Pso())           return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
     if (!texture_ || !cmdList_)              return JALIUM_INK_DISPATCH_ERROR_INVALID_STATE;
     if (pointCount < 2)                      return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
@@ -263,74 +401,10 @@ int D3D12InkLayerBitmap::DispatchBrush(
     auto* pipeline = SharedPipeline(device_);
     if (!pipeline) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
 
-    // Grow stroke-points upload buffer if needed
-    const uint32_t requiredSb = pointCount * 16u;
-    if (sbUploadCapacity_ < requiredSb || !sbUpload_)
-    {
-        sbUpload_.Reset();
-        uint32_t cap = 1;
-        while (cap < requiredSb) cap *= 2;
-        if (cap < 256) cap = 256;
-
-        D3D12_HEAP_PROPERTIES upProps = {};
-        upProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-        D3D12_RESOURCE_DESC sbDesc = {};
-        sbDesc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-        sbDesc.Width            = cap;
-        sbDesc.Height           = 1;
-        sbDesc.DepthOrArraySize = 1;
-        sbDesc.MipLevels        = 1;
-        sbDesc.Format           = DXGI_FORMAT_UNKNOWN;
-        sbDesc.SampleDesc.Count = 1;
-        sbDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        HRESULT hr = device_->CreateCommittedResource(
-            &upProps, D3D12_HEAP_FLAG_NONE,
-            &sbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            IID_PPV_ARGS(sbUpload_.GetAddressOf()));
-        // Momentary upload-buffer allocation failure: the layer and shader
-        // handles are still healthy — the caller retries the same handles
-        // next frame. Never a generation loss on D3D12 (device removal is
-        // recovered out-of-band via full context replacement).
-        if (FAILED(hr)) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
-        sbUploadCapacity_ = cap;
-    }
-
-    // Upload stroke points
-    {
-        void* mapped = nullptr;
-        D3D12_RANGE nil = { 0, 0 };
-        sbUpload_->Map(0, &nil, &mapped);
-        std::memcpy(mapped, strokePoints, requiredSb);
-        sbUpload_->Unmap(0, nullptr);
-    }
-
-    // Upload cbuffer: full 80-byte managed struct (matches the 80-byte
-    // HLSL cbuffer byte-for-byte). ViewportSize lives at offset 64 in
-    // the cbuffer and is native-authoritative — whatever the managed
-    // struct carries in those bytes is ignored and overwritten with the
-    // ink-layer bitmap's pixel dimensions. Pad fields (offset 72..79)
-    // are cleared so no managed leakage reaches the shader.
-    {
-        void* mapped = nullptr;
-        D3D12_RANGE nil = { 0, 0 };
-        cbUpload_->Map(0, &nil, &mapped);
-        std::memset(mapped, 0, 256);
-        std::memcpy(mapped, managedConstants, managedConstantsSize);
-        // Overwrite ViewportSize + Pad at offset 64 (in floats: index 16..19).
-        float* vp = (float*)mapped + 16;
-        vp[0] = (float)width_;
-        vp[1] = (float)height_;
-        vp[2] = 0.0f;
-        vp[3] = 0.0f;
-        cbUpload_->Unmap(0, nullptr);
-    }
-
     // Pixel-aligned scissor from BBoxMin/BBoxMax in the cbuffer (offsets
-    // 20..27 in the 80-byte managed struct). Evaluate BEFORE touching the
-    // command list — if the bbox is empty there's nothing to draw, and we
-    // must not leave a half-recorded cmdList with barriers that never
-    // execute (that would desync CPU-tracked textureState_ from the
-    // actual GPU state and cause D3D12 #538 on the next Clear/Dispatch).
+    // 20..27 in the 80-byte managed struct). Computed from the CPU-side
+    // managed constants BEFORE the batch is opened — an empty bbox records
+    // nothing and leaves CPU-tracked textureState_ untouched.
     const float* ubo = (const float*)managedConstants;
     const int minX = std::max(0, (int)std::floor(ubo[8]));
     const int minY = std::max(0, (int)std::floor(ubo[9]));
@@ -343,49 +417,60 @@ int D3D12InkLayerBitmap::DispatchBrush(
         return JALIUM_INK_DISPATCH_OK;
     }
 
-    // Upload optional user params (b1). CBV size must be 256-byte aligned;
-    // the upload buffer grows on demand so a big custom shader cbuffer
-    // doesn't re-alloc every frame.
-    bool hasUserParams = (extraParams != nullptr && extraParamsSize > 0);
+    const bool     hasUserParams = (extraParams != nullptr && extraParamsSize > 0);
+    const uint64_t requiredSb    = (uint64_t)pointCount * 16u;
+    const uint64_t alignedUser   = hasUserParams
+        ? (((uint64_t)extraParamsSize + 255u) & ~(uint64_t)255u) : 0u;
+
+    // Accumulate into this frame's batch (opened lazily on first call).
+    BeginBatchIfNeeded();
+    if (batchError_) return batchError_;
+    if (!batchOpen_) return JALIUM_INK_DISPATCH_ERROR_INVALID_STATE;
+
+    // Per-dispatch upload slots out of the per-batch arena. Each dispatch
+    // gets private, non-overlapping storage so a later dispatch can never
+    // clobber an earlier one the GPU has not yet consumed.
+    void* cbCpu = nullptr;
+    D3D12_GPU_VIRTUAL_ADDRESS cbGpu = 0;
+    if (!ArenaAlloc(256, &cbCpu, &cbGpu)) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+
+    // Full 80-byte managed struct (matches the 80-byte HLSL cbuffer
+    // byte-for-byte). ViewportSize lives at offset 64 and is
+    // native-authoritative — the managed bytes there are overwritten with the
+    // ink-layer bitmap's pixel dimensions; pad fields (offset 72..79) are
+    // cleared so no managed leakage reaches the shader.
+    std::memset(cbCpu, 0, 256);
+    std::memcpy(cbCpu, managedConstants, managedConstantsSize);
+    float* vp = (float*)cbCpu + 16;
+    vp[0] = (float)width_;
+    vp[1] = (float)height_;
+    vp[2] = 0.0f;
+    vp[3] = 0.0f;
+
+    // Optional user params (b1), 256-byte aligned for the root CBV. Binding
+    // the b0 slot again as a harmless placeholder when absent — the shader
+    // won't read it unless it declares the cbuffer, so the CBV just has to
+    // be valid.
+    D3D12_GPU_VIRTUAL_ADDRESS userGpu = cbGpu;
     if (hasUserParams)
     {
-        const uint32_t alignedSize = (extraParamsSize + 255u) & ~255u;
-        if (userCbUploadCapacity_ < alignedSize || !userCbUpload_)
-        {
-            userCbUpload_.Reset();
-            D3D12_HEAP_PROPERTIES upProps = {};
-            upProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-            D3D12_RESOURCE_DESC ucbDesc = {};
-            ucbDesc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-            ucbDesc.Width            = alignedSize;
-            ucbDesc.Height           = 1;
-            ucbDesc.DepthOrArraySize = 1;
-            ucbDesc.MipLevels        = 1;
-            ucbDesc.Format           = DXGI_FORMAT_UNKNOWN;
-            ucbDesc.SampleDesc.Count = 1;
-            ucbDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-            HRESULT hr = device_->CreateCommittedResource(
-                &upProps, D3D12_HEAP_FLAG_NONE,
-                &ucbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(userCbUpload_.GetAddressOf()));
-            // Same classification as the stroke-buffer allocation above.
-            if (FAILED(hr)) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
-            userCbUploadCapacity_ = alignedSize;
-        }
-        void* mapped = nullptr;
-        D3D12_RANGE nil = { 0, 0 };
-        userCbUpload_->Map(0, &nil, &mapped);
-        std::memset(mapped, 0, alignedSize);
-        std::memcpy(mapped, extraParams, extraParamsSize);
-        userCbUpload_->Unmap(0, nullptr);
+        void* userCpu = nullptr;
+        D3D12_GPU_VIRTUAL_ADDRESS userAllocGpu = 0;
+        if (!ArenaAlloc(alignedUser, &userCpu, &userAllocGpu))
+            return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        std::memset(userCpu, 0, (size_t)alignedUser);
+        std::memcpy(userCpu, extraParams, extraParamsSize);
+        userGpu = userAllocGpu;
     }
 
-    // Record dispatch. From this point on, ANY exit path must Execute
-    // the command list (so barriers actually apply on the GPU) — early
-    // returns between Reset() and ExecuteAndWait() would desync state.
-    cmdAlloc_->Reset();
-    cmdList_->Reset(cmdAlloc_.Get(), shader->Pso());
+    void* sbCpu = nullptr;
+    D3D12_GPU_VIRTUAL_ADDRESS sbGpu = 0;
+    if (!ArenaAlloc(requiredSb, &sbCpu, &sbGpu))
+        return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+    std::memcpy(sbCpu, strokePoints, (size_t)requiredSb);
 
+    // Record into the open batch. No submit / no CPU wait here — the batch is
+    // submitted once at the frame boundary by FlushPending().
     if (textureState_ != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
         D3D12_RESOURCE_BARRIER barrier = {};
@@ -400,24 +485,28 @@ int D3D12InkLayerBitmap::DispatchBrush(
 
     cmdList_->OMSetRenderTargets(1, &rtvCpu_, FALSE, nullptr);
 
-    D3D12_VIEWPORT vp = {};
-    vp.TopLeftX = 0; vp.TopLeftY = 0;
-    vp.Width    = (float)width_;
-    vp.Height   = (float)height_;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    cmdList_->RSSetViewports(1, &vp);
+    D3D12_VIEWPORT vp2 = {};
+    vp2.TopLeftX = 0; vp2.TopLeftY = 0;
+    vp2.Width    = (float)width_;
+    vp2.Height   = (float)height_;
+    vp2.MinDepth = 0.0f;
+    vp2.MaxDepth = 1.0f;
+    cmdList_->RSSetViewports(1, &vp2);
     cmdList_->RSSetScissorRects(1, &scissor);
 
     cmdList_->SetGraphicsRootSignature(pipeline->RootSignature());
-    cmdList_->SetGraphicsRootConstantBufferView(0, cbUpload_->GetGPUVirtualAddress());
-    // b1: user params when present. Binding cbUpload_ again as a harmless
-    // placeholder when absent — the shader won't read it unless it declares
-    // the cbuffer, so the bytes don't matter; the CBV just has to be valid.
-    cmdList_->SetGraphicsRootConstantBufferView(
-        1,
-        (hasUserParams ? userCbUpload_ : cbUpload_)->GetGPUVirtualAddress());
-    cmdList_->SetGraphicsRootShaderResourceView(2, sbUpload_->GetGPUVirtualAddress());
+    cmdList_->SetGraphicsRootConstantBufferView(0, cbGpu);
+    cmdList_->SetGraphicsRootConstantBufferView(1, userGpu);
+    cmdList_->SetGraphicsRootShaderResourceView(2, sbGpu);
+
+    // The list was Reset without an initial PSO (Clear may run first in the
+    // batch), so the PSO is always set explicitly — deduped against the
+    // batch's current one.
+    if (currentPso_ != shader->Pso())
+    {
+        cmdList_->SetPipelineState(shader->Pso());
+        currentPso_ = shader->Pso();
+    }
 
     cmdList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList_->DrawInstanced(3, 1, 0, 0);
@@ -433,7 +522,6 @@ int D3D12InkLayerBitmap::DispatchBrush(
     cmdList_->ResourceBarrier(1, &toPsr);
     textureState_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-    ExecuteAndWait(cmdList_.Get());
     return JALIUM_INK_DISPATCH_OK;
 }
 
