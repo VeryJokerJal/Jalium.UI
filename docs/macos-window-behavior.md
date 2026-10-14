@@ -4,6 +4,33 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+### v198：IOSurface 公共头文件与完整 AX ASAN 计时
+
+2026-10-15 核对 PR #175 已合并，远端 master 为 **10160c7e**。上轮
+**1c6b4924** 的 Window CI **22/22，435.36 秒**、图像与 readback 通过。
+完整 Apple native/packages 进入 iOS 后在 Metal 的 IOSurface/IOSurface.h 失败。
+Linux 两个 x64 组通过，glibc arm64 取消、musl arm64 失败，合并包跳过；
+这些结果不表示全部平台或发布包完成。
+
+使用冻结已合并源代码，在本机 iOS SDK 复现相同头文件错误。Metal 后端改为
+导入 IOSurfaceRef.h；此头在 macOS、iOS、tvOS、visionOS SDK 中提供所需
+IOSurfaceRef／IOSurfaceLookup 声明，原 IOSurface 导入和 retain／release 路径
+保留。完整 Metal 后端源文件生成 arm64 对象 **7/7 退出 0**，涵盖 macOS、
+三个 UIKit 设备及其模拟器。CMake 的完整 iOS Metal 目标及 Core 依赖完成
+**24** 个步骤并产生静态归档，**3.96 秒、退出 0**。此目标未链接运行时 DXC／
+SPIRV-Cross，因此不算完整设备切片、运行时 Shader 编译器、XCFramework 或入口包。
+
+另以已合并原生源码构建 Debug ASAN，保留完整 AX 的原 **240 秒**限制。
+第一次与其他任务的窗口夹具重叠，**595/610** 后在 **240.12 秒**超时，
+没有最终汇总或 ASAN 内存错误。启动时确认无其他 AX 进程的计时复查，
+**408** 项完成后在 **240.08 秒**超时。**83** 项各超过 1.8 秒，合计
+**198.38 秒**，长耗时集中于最小化、恢复及激活等待。采样落在 Pump 的
+原生事件读取，尚未到最终清理；此次没有证明“全部检查后退出卡住”的历史描述。
+逐项 autoreleasepool 试验仍在 **240.08 秒**超时，期间又出现并行窗口夹具；
+该试验已弃用，原夹具恢复。没有提高超时、拆减检查或提交未经证明的窗口修复。
+完整 AX ASAN、宿主启动、物理 IME／VoiceOver、混合 DPI／Spaces 和最低系统等
+缺项继续开放。新 SDK 修复仍需完整 Apple CI，整个 macOS 目标未完成。
+
 ### v197：Apple SDK 编译阻塞与当前 Window 验收状态
 
 2026-10-14 核对现有 PR **18807c8f** 的终态：Window CI **22/22，409.04 秒**，
