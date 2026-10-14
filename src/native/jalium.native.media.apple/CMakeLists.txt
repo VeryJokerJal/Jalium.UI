@@ -1,5 +1,12 @@
 project(jalium.native.media.apple)
 
+# miniaudio's mobile CoreAudio backend imports AVFoundation and uses Objective-C.
+# Keep the shared .cpp source portable, but compile this Apple target as ObjC++.
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.media.core/src/audio/miniaudio_backend.cpp
+    PROPERTIES LANGUAGE OBJCXX
+)
+
 add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE}
     src/apple_media.mm
     ${JALIUM_AUDIO_SOURCES}
