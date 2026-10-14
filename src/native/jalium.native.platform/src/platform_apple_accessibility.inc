@@ -681,17 +681,20 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
         selected.length <= (NSUInteger)request.textCount - selected.location && [bridge focusedElement] == self;
 }
 - (BOOL)writeSelectionToPasteboard:(NSPasteboard*)pasteboard types:(NSArray<NSPasteboardType>*)types {
-    if (!pasteboard || ![types containsObject:NSPasteboardTypeString] || ![self canServeTextService:NO]) return NO;
+    NSPasteboardType type = nil;
+    for (NSPasteboardType candidate in types)
+        if (IsAppleTextServiceType(candidate)) { type = candidate; break; }
+    if (!pasteboard || !type || ![self canServeTextService:NO]) return NO;
     NSRange selected = self.accessibilitySelectedTextRange;
     if (selected.location == NSNotFound || !selected.length) return NO;
     NSString* text = self.accessibilitySelectedText;
     if (!text.length || ![self canServeTextService:NO] ||
         !NSEqualRanges(selected, self.accessibilitySelectedTextRange)) return NO;
-    [pasteboard declareTypes:@[NSPasteboardTypeString] owner:nil];
+    [pasteboard declareTypes:@[type] owner:nil];
     if (![self canServeTextService:NO] ||
         !NSEqualRanges(selected, self.accessibilitySelectedTextRange) ||
         ![text isEqualToString:self.accessibilitySelectedText] || ![self canServeTextService:NO]) return NO;
-    BOOL accepted = [pasteboard setString:text forType:NSPasteboardTypeString];
+    BOOL accepted = [pasteboard setString:text forType:type];
     return accepted && [self canServeTextService:NO];
 }
 - (BOOL)readSelectionFromPasteboard:(NSPasteboard*)pasteboard {
