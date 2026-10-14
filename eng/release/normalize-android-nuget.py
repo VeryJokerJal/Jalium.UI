@@ -25,8 +25,10 @@ for path in sorted(folder.glob('Jalium.UI.Android.26.11.0.*')):
             data = source.read(info)
             if info.filename.endswith('.nuspec'):
                 tree = ET.fromstring(data)
+                if tree.tag.startswith('{'):
+                    ET.register_namespace('', tree.tag[1:].split('}', 1)[0])
                 for dependency in tree.findall('.//{*}dependency'):
-                    if dependency.get('id') in ['System.Security.Cryptography.Xml', 'System.Security.Cryptography.Pkcs']:
+                    if dependency.get('id') in ['System.Security.Cryptography.Xml', 'System.Security.Cryptography.Pkcs'] and dependency.get('version') != '10.0.13':
                         changed.append({'id': dependency.get('id'), 'from': dependency.get('version'), 'to': '10.0.13'})
                         dependency.set('version', '10.0.13')
                 data = ET.tostring(tree, encoding='utf-8', xml_declaration=True)
@@ -36,8 +38,11 @@ for path in sorted(folder.glob('Jalium.UI.Android.26.11.0.*')):
     with zipfile.ZipFile(temp) as target:
         assert target.testzip() is None
         assert all(hashlib.sha256(target.read(name)).hexdigest() == digest for name, digest in entries.items())
-    temp.replace(path)
-    records.append({'package': path.name, 'dependencyChanges': changed, 'unchangedPayloadEntries': len(entries)})
+    if changed:
+        temp.replace(path)
+    else:
+        temp.unlink()
+    records.append({'package': path.name, 'dependencyChanges': changed, 'unchangedPayloadEntries': len(entries), 'rewritten': bool(changed)})
 assert records, 'Android package not found'
 (folder / 'android-dependency-normalization.json').write_text(json.dumps(records, indent=2) + '\n')
 print(json.dumps(records, indent=2))
