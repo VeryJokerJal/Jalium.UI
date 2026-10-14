@@ -499,6 +499,11 @@ VsOutput main(uint vertexId : SV_VertexID)
 // ============================================================================
 // Liquid Glass — pixel shader (SDF refraction, highlight, inner shadow, fusion)
 // Ported from the original D2D1 custom effect (liquid_glass_effects.cpp).
+//
+// MSVC rejects any single string literal longer than 16,380 bytes with error
+// C2026, so this HLSL source is emitted as two adjacent raw string literals.
+// The compiler concatenates them back into one byte-identical string, and
+// shaders/gen_liquid_glass_bytecode.ps1 reassembles the segments before fxc.
 // ============================================================================
 
 static const char kLiquidGlassPS[] = R"HLSL(
@@ -696,7 +701,7 @@ float3 applyVibrancy(float3 color, float amount)
 float3 SrgbToLinear(float3 s)
 {
     return s;
-}
+})HLSL" R"HLSL(
 
 float4 main(PsInput input) : SV_Target
 {
