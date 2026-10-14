@@ -7,7 +7,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [all, android-retry, common-retry, android-consumer]
+        options: [all, android-retry, common-retry, android-consumer, linux-consumer]
         default: all
       source_run:
         description: Qualified common-package run for an Android retry
@@ -184,7 +184,7 @@ jobs:
           if-no-files-found: error
 
   android-package:
-    if: ${{ inputs.mode != 'common-retry' }}
+    if: ${{ inputs.mode == '' || inputs.mode == 'all' || inputs.mode == 'android-retry' || inputs.mode == 'android-consumer' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -270,7 +270,7 @@ jobs:
           if-no-files-found: error
 
   linux-consumer:
-    if: ${{ inputs.mode != 'android-retry' }}
+    if: ${{ always() && !cancelled() && (inputs.mode == 'linux-consumer' || needs.common-packages.result == 'success') }}
     needs: common-packages
     strategy:
       fail-fast: false
@@ -297,6 +297,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: nuget-common
+          run-id: ${{ inputs.mode == 'linux-consumer' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: packages
       - name: Prepare glibc consumer image
         if: matrix.image == 'glibc'
