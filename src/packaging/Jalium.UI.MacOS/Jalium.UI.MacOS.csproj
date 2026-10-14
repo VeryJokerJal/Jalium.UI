@@ -22,6 +22,15 @@
     <ProjectReference Include="..\..\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
     <ProjectReference Include="..\..\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
     <ProjectReference Include="..\..\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj"
+                      BuildReference="false" ReferenceOutputAssembly="false"
+                      TreatAsPackageReference="true" JaliumPackOnlyDependency="true"
+                      PrivateAssets="none" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
+                      BuildReference="false" ReferenceOutputAssembly="false"
+                      TreatAsPackageReference="true" JaliumPackOnlyDependency="true"
+                      PrivateAssets="none"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers;IsTrimmable;IsAotCompatible" />
   </ItemGroup>
   <ItemGroup Condition="Exists('$(JaliumMacNativeRoot)/.jalium-native-complete')">
     <Content Include="$(JaliumMacNativeRoot)/*.dylib" Pack="true"

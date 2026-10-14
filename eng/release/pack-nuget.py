@@ -20,6 +20,8 @@ def main():
     parser.add_argument("build", type=pathlib.Path)
     parser.add_argument("--entry", choices=["common", "Android", "MacOS"], default="common")
     parser.add_argument("--allow-newer-xcode", action="store_true")
+    parser.add_argument("--source-commit", default=SOURCE,
+                        help="Explicit revision for a supplemental packaging correction")
     args = parser.parse_args()
     source = args.source.resolve(strict=True)
     output = args.output.resolve()
@@ -27,7 +29,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     build.mkdir(parents=True, exist_ok=True)
     head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-    assert head == SOURCE, "Release packages must use the published source revision"
+    assert head == args.source_commit, "Release packages must use the explicitly selected source revision"
     assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=no"], text=True).strip()
     # Separate source mappings prevent an already cached or published Jalium
     # package from replacing any dependency built during this release.
@@ -46,7 +48,7 @@ def main():
     properties = [f"-p:JaliumBuildRoot={build}", f"-p:RestoreConfigFile={config_path}",
                   f"-p:RestorePackagesPath={build / 'nuget'}", f"-p:PackageOutputPath={output}",
                   "-p:GeneratePackageOnBuild=false", "-p:BuildJaliumNativeProjects=false",
-                  "-p:BuildJaliumNativeStaticProjects=false", f"-p:RepositoryCommit={SOURCE}"]
+                  "-p:BuildJaliumNativeStaticProjects=false", f"-p:RepositoryCommit={head}"]
     if args.allow_newer_xcode:
         properties.append("-p:ValidateXcodeVersion=false")
     projects = [source / "src/managed" / name / (name + ".csproj") for name in COMMON]
