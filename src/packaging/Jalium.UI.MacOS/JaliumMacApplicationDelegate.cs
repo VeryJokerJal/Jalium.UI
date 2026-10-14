@@ -50,6 +50,13 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
                 ?? NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleName")?.ToString()
                 ?? NSProcessInfo.ProcessInfo.ProcessName;
             appMenu.Title = appName;
+            if (application.ServicesMenu == null)
+            {
+                var servicesMenu = new NSMenu("Services");
+                application.ServicesMenu = servicesMenu;
+                appMenu.AddItem(new NSMenuItem("Services") { Submenu = servicesMenu });
+                appMenu.AddItem(NSMenuItem.SeparatorItem);
+            }
             appMenu.AddItem(new NSMenuItem($"Hide {appName}", new Selector("hide:"), "h")
             { Target = application });
             appMenu.AddItem(new NSMenuItem("Hide Others", new Selector("hideOtherApplications:"), "h")

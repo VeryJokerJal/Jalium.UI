@@ -2807,6 +2807,18 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     return allowed && IsLiveWindow(owner, nativeWindow) && owner->enabled && owner->visible &&
         nativeWindow.visible && !nativeWindow.miniaturized;
 }
+// Services retain the specific managed text peer, not the shared input view.
+- (id)validRequestorForSendType:(NSPasteboardType)sendType returnType:(NSPasteboardType)returnType {
+    const BOOL sends = sendType.length != 0, receives = returnType.length != 0;
+    if ((sends || receives) && (!sends || [sendType isEqualToString:NSPasteboardTypeString]) &&
+        (!receives || [returnType isEqualToString:NSPasteboardTypeString])) {
+        JaliumAppleAccessibilityElement* peer = [self.accessibilityBridge focusedElement];
+        if ([peer canServeTextService:receives] &&
+            (!sends || peer.accessibilitySelectedTextRange.length != 0) &&
+            [peer canServeTextService:receives]) return peer;
+    }
+    return [super validRequestorForSendType:sendType returnType:returnType];
+}
 // Standard AppKit responder actions let native menus, services and automation
 // invoke the same managed editing commands as keyboard gestures.
 // Preserve their Command identity: physical Control-A is a text navigation
@@ -3343,6 +3355,7 @@ JaliumResult jalium_platform_init_impl()
 {
 #if TARGET_OS_OSX
     [NSApplication sharedApplication];
+    [NSApp registerServicesMenuSendTypes:@[NSPasteboardTypeString] returnTypes:@[NSPasteboardTypeString]];
     ObserveNativeMenuTracking();
     AppleKeyboardMapSnapshot();
 #endif

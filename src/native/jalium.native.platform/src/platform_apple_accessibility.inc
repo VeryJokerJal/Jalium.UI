@@ -177,6 +177,7 @@ static id QueryWindowAccessibilityButton(JaliumPlatformWindow* window, int32_t k
 @property(nonatomic) BOOL postingDestruction;
 - (BOOL)info:(JaliumAccessibilityRequest*)request;
 - (BOOL)action:(int32_t)action;
+- (BOOL)canServeTextService:(BOOL)writing;
 - (void)retire;
 @end
 
@@ -667,6 +668,44 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     [text getCharacters:buffer.data() range:NSMakeRange(0, text.length)];
     request.text = buffer.data(); request.textCount = request.textCapacity = (int32_t)text.length;
     [_bridge query:&request];
+}
+- (BOOL)canServeTextService:(BOOL)writing {
+    JaliumAppleAccessibilityBridge* bridge = _bridge;
+    JaliumAccessibilityRequest request{};
+    if ([bridge focusedElement] != self || ![self info:&request] ||
+        (request.flags & (JALIUM_AX_ENABLED | JALIUM_AX_TEXT)) != (JALIUM_AX_ENABLED | JALIUM_AX_TEXT) ||
+        (request.flags & (JALIUM_AX_PASSWORD | JALIUM_AX_OFFSCREEN)) ||
+        (writing && !(request.flags & JALIUM_AX_EDITABLE_TEXT)) || request.textCount < 0) return NO;
+    NSRange selected = self.accessibilitySelectedTextRange;
+    return selected.location != NSNotFound && selected.location <= (NSUInteger)request.textCount &&
+        selected.length <= (NSUInteger)request.textCount - selected.location && [bridge focusedElement] == self;
+}
+- (BOOL)writeSelectionToPasteboard:(NSPasteboard*)pasteboard types:(NSArray<NSPasteboardType>*)types {
+    if (!pasteboard || ![types containsObject:NSPasteboardTypeString] || ![self canServeTextService:NO]) return NO;
+    NSRange selected = self.accessibilitySelectedTextRange;
+    if (selected.location == NSNotFound || !selected.length) return NO;
+    NSString* text = self.accessibilitySelectedText;
+    if (!text.length || ![self canServeTextService:NO] ||
+        !NSEqualRanges(selected, self.accessibilitySelectedTextRange)) return NO;
+    [pasteboard declareTypes:@[NSPasteboardTypeString] owner:nil];
+    if (![self canServeTextService:NO] ||
+        !NSEqualRanges(selected, self.accessibilitySelectedTextRange) ||
+        ![text isEqualToString:self.accessibilitySelectedText] || ![self canServeTextService:NO]) return NO;
+    BOOL accepted = [pasteboard setString:text forType:NSPasteboardTypeString];
+    return accepted && [self canServeTextService:NO];
+}
+- (BOOL)readSelectionFromPasteboard:(NSPasteboard*)pasteboard {
+    if (!pasteboard || ![self canServeTextService:YES]) return NO;
+    NSString* text = [pasteboard stringForType:NSPasteboardTypeString];
+    if (![text isKindOfClass:NSString.class] || text.length > 16 * 1024 * 1024 ||
+        ![self canServeTextService:YES]) return NO;
+    JaliumAccessibilityRequest request{};
+    request.nodeId = _nodeId; request.operation = JALIUM_AX_TEXT_NAVIGATION;
+    request.index = JALIUM_AX_REPLACE_SELECTION;
+    std::vector<uint16_t> buffer(std::max<NSUInteger>(1, text.length));
+    [text getCharacters:buffer.data() range:NSMakeRange(0, text.length)];
+    request.text = buffer.data(); request.textCount = request.textCapacity = (int32_t)text.length;
+    return [_bridge query:&request];
 }
 - (NSRect)accessibilityFrameForRange:(NSRange)range {
     if (range.location > INT32_MAX || range.length > INT32_MAX) return NSZeroRect;

@@ -560,6 +560,14 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
         ${PROJECT_NAME} jalium.native.core "-framework AppKit" "-framework CoreText")
     add_test(NAME jalium.native.platform.macos.text-font COMMAND jalium.native.platform.text-font.tests)
     set_tests_properties(jalium.native.platform.macos.text-font PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.platform.text-services.tests tests/platform_apple_text_services_tests.mm)
+    target_include_directories(jalium.native.platform.text-services.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.text-services.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.text-services.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.text-services.tests)
+    add_test(NAME jalium.native.platform.macos.window.text-services COMMAND jalium.native.platform.text-services.tests)
+    set_tests_properties(jalium.native.platform.macos.window.text-services PROPERTIES TIMEOUT 30)
     add_executable(jalium.native.platform.window.accessibility.tests
         tests/platform_apple_window_accessibility_tests.mm)
     target_include_directories(jalium.native.platform.window.accessibility.tests PRIVATE
