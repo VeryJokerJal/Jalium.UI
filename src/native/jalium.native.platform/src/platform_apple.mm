@@ -2103,6 +2103,12 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     return NSCursor.arrowCursor;
 }
 
+static BOOL IsAppleTextServiceType(NSPasteboardType type)
+{
+    // AppKit still passes the legacy alias when invoking system Services.
+    return [type isEqualToString:NSPasteboardTypeString] || [type isEqualToString:@"NSStringPboardType"];
+}
+
 @interface JaliumAppleView : NSView <NSTextInputClient,NSDraggingDestination,NSDraggingSource,NSUserInterfaceValidations>
 @property(nonatomic, readonly) uint64_t geometryRevision;
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
@@ -2810,8 +2816,8 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 // Services retain the specific managed text peer, not the shared input view.
 - (id)validRequestorForSendType:(NSPasteboardType)sendType returnType:(NSPasteboardType)returnType {
     const BOOL sends = sendType.length != 0, receives = returnType.length != 0;
-    if ((sends || receives) && (!sends || [sendType isEqualToString:NSPasteboardTypeString]) &&
-        (!receives || [returnType isEqualToString:NSPasteboardTypeString])) {
+    if ((sends || receives) && (!sends || IsAppleTextServiceType(sendType)) &&
+        (!receives || IsAppleTextServiceType(returnType))) {
         JaliumAppleAccessibilityElement* peer = [self.accessibilityBridge focusedElement];
         if ([peer canServeTextService:receives] &&
             (!sends || peer.accessibilitySelectedTextRange.length != 0) &&

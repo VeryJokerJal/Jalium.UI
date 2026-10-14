@@ -89,6 +89,10 @@ struct Fixture {
         }
     }
 };
+struct PrivateServicePasteboard {
+    NSPasteboard* board = NSPasteboard.pasteboardWithUniqueName;
+    ~PrivateServicePasteboard() { [board releaseGlobally]; }
+};
 @interface ReentrantServicePasteboard : NSObject
 @property(nonatomic, copy) NSString* value;
 @property(nonatomic) std::function<void()> callback;
@@ -130,6 +134,58 @@ int main() {
                 Check([request writeSelectionToPasteboard:board types:@[NSPasteboardTypeString]], "export rejected");
                 Check([[board stringForType:NSPasteboardTypeString] isEqualToString:@"🙂"], "selection split or wrong text");
                 [board releaseGlobally];
+            });
+            run("AppKit legacy export preserves the requested text type", [](Fixture& f) {
+                id request = f.Request(); PrivateServicePasteboard pasteboard;
+                Check([request writeSelectionToPasteboard:pasteboard.board types:@[@"NSStringPboardType"]],
+                    "legacy AppKit export rejected");
+                Check([[pasteboard.board stringForType:@"NSStringPboardType"] isEqualToString:@"🙂"] &&
+                    [[pasteboard.board stringForType:NSPasteboardTypeString] isEqualToString:@"🙂"],
+                    "legacy export cannot be read through both AppKit aliases");
+            });
+            run("legacy and modern service directions interoperate", [](Fixture& f) {
+                for (NSString* send in @[NSPasteboardTypeString, @"NSStringPboardType"])
+                    for (NSString* receive in @[NSPasteboardTypeString, @"NSStringPboardType"])
+                        Check(f.Request(send, receive) != nil, "plain-text alias combination rejected");
+            });
+            run("legacy service return replaces the Unicode selection", [](Fixture& f) {
+                id request = f.Request(@"NSStringPboardType", @"NSStringPboardType");
+                PrivateServicePasteboard pasteboard;
+                [pasteboard.board setString:@"窗口驗證" forType:@"NSStringPboardType"];
+                Check([request readSelectionFromPasteboard:pasteboard.board] && f.writes == 1 &&
+                    [f.text isEqualToString:@"A窗口驗證 e\u0301 Z"], "legacy return missed managed selection");
+            });
+            run("legacy read-only text supports export without mutation", [](Fixture& f) {
+                f.flags &= ~JALIUM_AX_EDITABLE_TEXT;
+                id request = f.Request(@"NSStringPboardType", nil);
+                Check(request != nil && f.Request(nil, @"NSStringPboardType") == nil &&
+                    f.Request(@"NSStringPboardType", @"NSStringPboardType") == nil, "wrong legacy read-only capability");
+                PrivateServicePasteboard pasteboard;
+                Check([request writeSelectionToPasteboard:pasteboard.board types:@[@"NSStringPboardType"]],
+                    "legacy read-only export rejected");
+                [pasteboard.board setString:@"bad" forType:@"NSStringPboardType"];
+                Check(![request readSelectionFromPasteboard:pasteboard.board] && f.writes == 0,
+                    "legacy read-only service changed text");
+            });
+            run("legacy services cannot expose password text", [](Fixture& f) {
+                f.flags |= JALIUM_AX_PASSWORD;
+                Check(f.Request(@"NSStringPboardType", nil) == nil && f.Request(nil, @"NSStringPboardType") == nil &&
+                    f.Request(@"NSStringPboardType", @"NSStringPboardType") == nil && f.reads == 0 && f.writes == 0,
+                    "legacy alias bypassed password privacy");
+            });
+            run("legacy insertion service accepts a collapsed selection", [](Fixture& f) {
+                f.selection = NSMakeRange(0, 0);
+                Check(f.Request(@"NSStringPboardType", nil) == nil, "legacy send advertised an empty selection");
+                id request = f.Request(nil, @"NSStringPboardType"); PrivateServicePasteboard pasteboard;
+                [pasteboard.board setString:@"前" forType:@"NSStringPboardType"];
+                Check([request readSelectionFromPasteboard:pasteboard.board] &&
+                    [f.text isEqualToString:@"前A🙂 e\u0301 Z"], "legacy insertion rejected");
+            });
+            run("legacy text aliases do not advertise rich transfer", [](Fixture& f) {
+                Check(f.Request(NSPasteboardTypeRTF, @"NSStringPboardType") == nil &&
+                    f.Request(@"NSStringPboardType", NSPasteboardTypeRTF) == nil &&
+                    f.Request(@"public.plain-text", @"NSStringPboardType") == nil,
+                    "legacy handling advertised an unsupported transfer");
             });
             run("service return replaces the selection", [](Fixture& f) {
                 id request = f.Request(); auto* board = NSPasteboard.pasteboardWithUniqueName;
