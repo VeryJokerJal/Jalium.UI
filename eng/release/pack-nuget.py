@@ -30,7 +30,20 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     assert head == args.source_commit, "Release packages must use the explicitly selected source revision"
-    assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=no"], text=True).strip()
+    changed = set(filter(None, subprocess.check_output(
+        ["git", "-C", str(source), "diff", "HEAD", "--name-only", "-z"], text=True).split("\0")))
+    generated = set()
+    if args.entry == "Android":
+        # The source tree tracks historical sample payloads. The canonical
+        # dual-ABI builder replaces precisely these files with fresh outputs.
+        prefix = "samples/Jalium.UI.AndroidDemo/libs/"
+        generated.add(prefix + ".jalium-android-payload-complete")
+        for abi in ("arm64-v8a", "x86_64"):
+            generated.add(prefix + abi + "/.jalium-native-complete")
+            for library in ("core", "platform", "media.core", "media", "text", "vulkan", "software"):
+                generated.add(prefix + abi + "/libjalium.native." + library + ".so")
+            generated.add(prefix + abi + "/libc++_shared.so")
+    assert not changed.difference(generated), "Tracked sources changed: " + repr(sorted(changed.difference(generated)))
     # Separate source mappings prevent an already cached or published Jalium
     # package from replacing any dependency built during this release.
     config = ET.Element("configuration")

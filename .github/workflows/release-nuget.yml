@@ -4,9 +4,19 @@ on:
   push:
     branches: [codex/nuget-26.11.0]
   workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [all, android-retry]
+        default: all
+      source_run:
+        description: Qualified common-package run for an Android retry
+        type: string
+        default: '38538030308'
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: nuget-26.11.0
@@ -19,6 +29,7 @@ env:
 
 jobs:
   linux-native:
+    if: ${{ inputs.mode != 'android-retry' }}
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +79,7 @@ jobs:
           if-no-files-found: error
 
   windows-native:
+    if: ${{ inputs.mode != 'android-retry' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -99,6 +111,7 @@ jobs:
           if-no-files-found: error
 
   common-packages:
+    if: ${{ inputs.mode != 'android-retry' }}
     needs: [linux-native, windows-native]
     runs-on: windows-2025
     timeout-minutes: 60
@@ -191,6 +204,32 @@ jobs:
         run: |
           python automation/eng/release/pack-nuget.py Jalium.UI "$env:RUNNER_TEMP/packages" "$env:RUNNER_TEMP/package-build" --entry Android
           if ($LASTEXITCODE -ne 0) { throw 'Android package build failed' }
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'android-retry'
+        with:
+          name: nuget-common
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/packages
+      - name: Verify Android NuGet consumers for both ABIs
+        if: inputs.mode == 'android-retry'
+        shell: pwsh
+        run: |
+          foreach ($rid in @('android-arm64', 'android-x64')) {
+            $output = "$env:RUNNER_TEMP/consumer-$rid"
+            dotnet publish Jalium.UI/tests/Jalium.UI.NuGetTest.Android/Jalium.UI.NuGetTest.Android.csproj -c Release -r $rid -m:1 -p:JaliumPackageVersion=26.11.0 -p:JaliumBuildRoot="$env:RUNNER_TEMP/consumer-build-$rid" -p:RestoreConfigFile="$env:RUNNER_TEMP/package-build/NuGet.release.config" -p:RestorePackagesPath="$env:RUNNER_TEMP/consumer-nuget" -p:JavaSdkDirectory="$env:JAVA_HOME" -p:AndroidSdkDirectory="$env:ANDROID_HOME" -p:AndroidPackageFormats=apk -p:AndroidKeyStore=false -p:GeneratePackageOnBuild=false -o $output
+            if ($LASTEXITCODE -ne 0) { throw "Android NuGet consumer failed: $rid" }
+            $apk = @(Get-ChildItem $output -Filter '*-Signed.apk')
+            if ($apk.Count -ne 1) { throw "Expected one APK: $rid" }
+            & "$env:ANDROID_HOME/build-tools/36.0.0/apksigner.bat" verify --verbose $apk[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw 'APK signature invalid' }
+            & "$env:ANDROID_HOME/build-tools/36.0.0/zipalign.exe" -c -P 16 -v 4 $apk[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw 'APK alignment invalid' }
+            $env:QUALIFIED_APK = $apk[0].FullName
+            $env:QUALIFIED_ABI = if ($rid -eq 'android-arm64') { 'arm64-v8a' } else { 'x86_64' }
+            python -c "import os,zipfile; z=zipfile.ZipFile(os.environ['QUALIFIED_APK']); abi=os.environ['QUALIFIED_ABI']; names=z.namelist(); assert {n.split('/')[1] for n in names if n.startswith('lib/') and n.endswith('.so')}=={abi}; assert all('lib/'+abi+'/libjalium.native.'+name+'.so' in names for name in ['core','platform','media.core','media','text','vulkan','software'])"
+            if ($LASTEXITCODE -ne 0) { throw 'APK native payload invalid' }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: nuget-android
@@ -199,6 +238,7 @@ jobs:
           if-no-files-found: error
 
   linux-consumer:
+    if: ${{ inputs.mode != 'android-retry' }}
     needs: common-packages
     strategy:
       fail-fast: false
@@ -237,6 +277,7 @@ jobs:
               bash eng/linux/test-nuget-consumer.sh "${{ matrix.rid }}" /work/packages "/tmp/consumer-${{ matrix.rid }}" 26.11.0 "$mode"
             done
           '
+
       - name: Test musl deployment shapes
         if: matrix.image != 'glibc'
         run: |
@@ -246,3 +287,45 @@ jobs:
               bash eng/linux/test-nuget-consumer.sh "${{ matrix.rid }}" /work/packages "/tmp/consumer-${{ matrix.rid }}" 26.11.0 "$mode"
             done
           '
+
+  windows-static-consumer:
+    if: ${{ inputs.mode == 'android-retry' }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-common
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: packages
+      - name: Publish and run a static NativeAOT package consumer
+        shell: pwsh
+        run: |
+          $consumer = "$env:RUNNER_TEMP/static-consumer"
+          New-Item -ItemType Directory $consumer | Out-Null
+          @'
+          <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings><PublishAot>true</PublishAot><UseJaliumNativeAot>true</UseJaliumNativeAot></PropertyGroup><ItemGroup><PackageReference Include="Jalium.UI.Desktop" Version="26.11.0" /></ItemGroup></Project>
+          '@ | Set-Content "$consumer/Consumer.csproj"
+          @'
+          using Jalium.UI;
+          using Jalium.UI.Controls;
+          var app = new Application();
+          var window = new Window { Title = "NuGet static NativeAOT consumer", Width = 600, Height = 400, Content = new TextBlock { Text = "26.11.0" } };
+          app.MainWindow = window;
+          window.Shown += (_, _) => { Console.WriteLine("[nuget-static] ready"); new Thread(() => { Thread.Sleep(1000); window.Dispatcher.BeginInvoke((Action)window.Close); }) { IsBackground = true }.Start(); };
+          window.Closed += (_, _) => Console.WriteLine("[nuget-static] completed");
+          return app.Run();
+          '@ | Set-Content "$consumer/Program.cs"
+          $feed = Join-Path $env:GITHUB_WORKSPACE 'packages'
+          "<configuration><packageSources><clear/><add key='release' value='$feed'/><add key='nuget.org' value='https://api.nuget.org/v3/index.json'/></packageSources><packageSourceMapping><packageSource key='release'><package pattern='Jalium.*'/></packageSource><packageSource key='nuget.org'><package pattern='*'/></packageSource></packageSourceMapping></configuration>" | Set-Content "$consumer/NuGet.config"
+          dotnet publish "$consumer/Consumer.csproj" -c Release -r win-x64 --self-contained true -p:RestorePackagesPath="$env:RUNNER_TEMP/static-nuget" -o "$consumer/published"
+          if ($LASTEXITCODE -ne 0) { throw 'Static NativeAOT NuGet consumer publish failed' }
+          & "$consumer/published/Consumer.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Static NativeAOT NuGet consumer did not start and exit normally' }
