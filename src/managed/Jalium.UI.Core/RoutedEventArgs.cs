@@ -19,6 +19,7 @@ public class RoutedEventArgs : EventArgs
     // Programmatic and ordinary routed events leave this unset.
     internal Func<bool>? CommandInputLifetime { get; set; }
     internal bool IsCommandInputCurrent => CommandInputLifetime?.Invoke() != false;
+    internal UIElement? CommandInputScope { get; set; }
 
     /// <summary>
     /// Gets or sets the source element that raised the event.

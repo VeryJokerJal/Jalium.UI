@@ -92,7 +92,7 @@ public sealed class MacOSKeyBindingRouteTests
     {
         if (!OperatingSystem.IsMacOS()) return;
         using var host = new Host();
-        var dialog = new ContentDialog(); host.Root.Children.Add(dialog);
+        var dialog = new ContentDialog { Visibility = Visibility.Visible }; host.Root.Children.Add(dialog);
         typeof(Window).GetProperty("ActiveContentDialog", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host.Window, dialog);
         try
         {

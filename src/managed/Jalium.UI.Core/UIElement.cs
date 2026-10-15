@@ -352,6 +352,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         while (current != null)
         {
             current.InvokeHandlers(current, e);
+            if (ReferenceEquals(current, e.CommandInputScope)) break;
             // 沿 visual parent 链向上找下一个 UIElement 祖先。如果中间夹了非 UIElement
             // 的 Visual（比如 ContainerVisual / DrawingVisual / HostVisual），用 `as UIElement`
             // 直接返回 null 会让 bubble 在那里中断、无法到达真正的 UIElement 祖先（例如
@@ -405,6 +406,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         while (current != null)
         {
             path.Add(current);
+            if (ReferenceEquals(current, e.CommandInputScope)) break;
             current = NextUIElementAncestor(current);
         }
 

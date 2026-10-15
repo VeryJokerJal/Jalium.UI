@@ -5340,7 +5340,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     (Keyboard.FocusedElement == null && IsMacOSInputTargetValid(this) ? this : null);
                 var commandTarget = OperatingSystem.IsMacOS() ? ResolveCommandTarget() : null;
                 var commandFocus = Keyboard.FocusedElement;
-                UIElement commandScope = ActiveContentDialog ?? (UIElement)this;
+                var commandDialog = ActiveContentDialog;
+                UIElement commandScope = commandDialog ?? (UIElement)this;
                 var commandPlatform = _platformWindow;
                 nint commandHandle = Handle;
                 int commandGeneration = Volatile.Read(ref _renderLifecycleGeneration);
@@ -5361,7 +5362,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     var commandArgs = new KeyEventArgs(UIElement.KeyDownEvent, key, modifiers, true, isRepeat, timestamp)
                     { PhysicalModifiers = physicalModifiers, Source = commandTarget };
                     commandArgs.SetOriginalSource(commandTarget);
-                    CommandManager.ProcessInput(commandTarget!, commandArgs, IsCommandTargetCurrent, commandScope);
+                    CommandManager.ProcessInput(commandTarget!, commandArgs, IsCommandTargetCurrent,
+                        commandScope, commandRouteScope: commandDialog);
                 }
                 break;
             }

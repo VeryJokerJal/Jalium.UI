@@ -207,9 +207,10 @@ public sealed class CommandManager
     /// <param name="args">The input event arguments.</param>
     /// <param name="isInputCurrent">Rechecks the caller's captured input lifetime.</param>
     /// <param name="keyBindingScope">Optional ancestor boundary for native key bindings.</param>
+    /// <param name="commandRouteScope">Optional modal boundary for routed command events.</param>
     /// <returns>True if the input was processed by a command; otherwise, false.</returns>
     internal static bool ProcessInput(UIElement element, InputEventArgs args, Func<bool>? isInputCurrent = null,
-        UIElement? keyBindingScope = null)
+        UIElement? keyBindingScope = null, UIElement? commandRouteScope = null)
     {
         var inputRoot = args is MouseEventArgs ? GetInputRoot(element) : null;
         var keyRoute = args is KeyEventArgs && keyBindingScope != null
@@ -230,17 +231,19 @@ public sealed class CommandManager
             var candidate = FindInputCommand(owner, args, IsCurrent);
             if (!IsCurrent()) return true;
             if (candidate.Command == null) continue;
-            var target = candidate.Target ?? element;
+            var target = candidate.Command is RoutedCommand ? candidate.Target ?? element : element;
+            var commandCurrent = CaptureCommandLifetime(target, commandRouteScope, IsCurrent);
+            if (!commandCurrent()) return true;
             bool canExecute;
             bool continueRouting = false;
             if (candidate.Command is RoutedCommand routed)
-                canExecute = routed.CanExecute(candidate.Parameter, target, IsCurrent, out continueRouting);
+                canExecute = routed.CanExecute(candidate.Parameter, target, commandCurrent, out continueRouting, commandRouteScope);
             else canExecute = candidate.Command.CanExecute(candidate.Parameter);
-            if (!IsCurrent()) return true;
+            if (!commandCurrent()) return true;
             if (canExecute)
             {
                 if (candidate.Command is RoutedCommand command)
-                    command.Execute(candidate.Parameter, target, IsCurrent);
+                    command.Execute(candidate.Parameter, target, commandCurrent, commandRouteScope);
                 else candidate.Command.Execute(candidate.Parameter);
                 return true;
             }
@@ -249,18 +252,20 @@ public sealed class CommandManager
 
         // Retain the existing shared application gestures for commands exposed
         // by routed event handlers rather than a CommandBinding collection.
+        var defaultCommandCurrent = CaptureCommandLifetime(element, commandRouteScope, IsCurrent);
+        if (!defaultCommandCurrent()) return true;
         foreach (var command in GetAllRoutedCommands())
         {
             foreach (InputGesture gesture in command.InputGestures.Cast<InputGesture>().ToArray())
             {
                 bool matches = gesture.Matches(element, args);
-                if (!IsCurrent()) return true;
+                if (!defaultCommandCurrent()) return true;
                 if (!matches) continue;
-                bool canExecute = command.CanExecute(null, element, IsCurrent, out _);
-                if (!IsCurrent()) return true;
+                bool canExecute = command.CanExecute(null, element, defaultCommandCurrent, out _, commandRouteScope);
+                if (!defaultCommandCurrent()) return true;
                 if (canExecute)
                 {
-                    command.Execute(null, element, IsCurrent);
+                    command.Execute(null, element, defaultCommandCurrent, commandRouteScope);
                     return true;
                 }
             }
@@ -269,6 +274,19 @@ public sealed class CommandManager
     }
 
     private readonly record struct InputCommand(ICommand? Command, IInputElement? Target, object? Parameter);
+
+    private static Func<bool> CaptureCommandLifetime(IInputElement target, UIElement? scope, Func<bool> isInputCurrent)
+    {
+        if (scope == null) return isInputCurrent;
+        if (target is not UIElement element) return () => false;
+        var route = CaptureKeyBindingRoute(element, scope);
+        // Explicit targets also retain their captured parent chain. The input
+        // focus alone cannot detect that a different command target was moved.
+        return () => isInputCurrent() && element.IsEnabled && element.IsVisible &&
+            scope.IsEnabled && scope.IsVisible &&
+            !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element) &&
+            !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(scope) && IsKeyBindingRouteCurrent(route);
+    }
 
     private static InputCommand FindInputCommand(UIElement owner, InputEventArgs args, Func<bool> isCurrent)
     {

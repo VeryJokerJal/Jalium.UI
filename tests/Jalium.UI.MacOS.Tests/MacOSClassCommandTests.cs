@@ -82,7 +82,7 @@ public sealed class MacOSClassCommandTests
         using var host = new Host<ModalOwner>(); var background = new Counter(); var dialogCommand = new Counter();
         CommandManager.RegisterClassInputBinding(typeof(ClassWindow<ModalOwner>), KeyBinding(background));
         CommandManager.RegisterClassInputBinding(typeof(ClassDialog), KeyBinding(dialogCommand));
-        var dialog = new ClassDialog(); host.Root.Children.Add(dialog);
+        var dialog = new ClassDialog { Visibility = Visibility.Visible }; host.Root.Children.Add(dialog);
         var property = typeof(Window).GetProperty("ActiveContentDialog", BindingFlags.Instance | BindingFlags.NonPublic)!;
         property.SetValue(host.Window, dialog);
         try { host.Key(); Assert.Equal((0, 1), (background.Executions, dialogCommand.Executions)); }

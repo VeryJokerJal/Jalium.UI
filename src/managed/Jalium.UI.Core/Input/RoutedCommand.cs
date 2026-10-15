@@ -112,7 +112,7 @@ public class RoutedCommand : ICommand
         CanExecute(parameter, target, null, out _);
 
     internal bool CanExecute(object? parameter, IInputElement? target, Func<bool>? isInputCurrent,
-        out bool continueRouting)
+        out bool continueRouting, UIElement? routingScope = null)
     {
         continueRouting = false;
         target ??= Keyboard.FocusedElement;
@@ -120,7 +120,8 @@ public class RoutedCommand : ICommand
         var args = new CanExecuteRoutedEventArgs(this, parameter)
         {
             RoutedEvent = PreviewCanExecuteEvent,
-            CommandInputLifetime = isInputCurrent
+            CommandInputLifetime = isInputCurrent,
+            CommandInputScope = routingScope
         };
         try
         {
@@ -135,7 +136,7 @@ public class RoutedCommand : ICommand
             continueRouting = args.ContinueRouting;
             return args.CanExecute;
         }
-        finally { args.CommandInputLifetime = null; }
+        finally { args.CommandInputLifetime = null; args.CommandInputScope = null; }
     }
 
     /// <summary>
@@ -155,10 +156,11 @@ public class RoutedCommand : ICommand
     public void Execute(object? parameter, IInputElement? target) =>
         ExecuteCore(parameter, target, null);
 
-    internal void Execute(object? parameter, IInputElement? target, Func<bool> isInputCurrent) =>
-        ExecuteCore(parameter, target, isInputCurrent);
+    internal void Execute(object? parameter, IInputElement? target, Func<bool> isInputCurrent,
+        UIElement? routingScope = null) => ExecuteCore(parameter, target, isInputCurrent, routingScope);
 
-    private void ExecuteCore(object? parameter, IInputElement? target, Func<bool>? isInputCurrent)
+    private void ExecuteCore(object? parameter, IInputElement? target, Func<bool>? isInputCurrent,
+        UIElement? routingScope = null)
     {
         target ??= Keyboard.FocusedElement;
         if (target is not UIElement uiElement || isInputCurrent?.Invoke() == false)
@@ -166,17 +168,18 @@ public class RoutedCommand : ICommand
 
         // Physical input keeps its captured lifetime through this second query
         // and PreviewExecuted. Programmatic execution retains its explicit target.
-        if (!CanExecute(parameter, target, isInputCurrent, out _) || isInputCurrent?.Invoke() == false)
+        if (!CanExecute(parameter, target, isInputCurrent, out _, routingScope) || isInputCurrent?.Invoke() == false)
             return;
 
         // Raise PreviewExecuted (tunnel)
         var previewArgs = new ExecutedRoutedEventArgs(this, parameter)
         {
             RoutedEvent = PreviewExecutedEvent,
-            CommandInputLifetime = isInputCurrent
+            CommandInputLifetime = isInputCurrent,
+            CommandInputScope = routingScope
         };
         try { uiElement.RaiseEvent(previewArgs); }
-        finally { previewArgs.CommandInputLifetime = null; }
+        finally { previewArgs.CommandInputLifetime = null; previewArgs.CommandInputScope = null; }
 
         if (previewArgs.Handled || isInputCurrent?.Invoke() == false)
             return;
@@ -185,10 +188,11 @@ public class RoutedCommand : ICommand
         var args = new ExecutedRoutedEventArgs(this, parameter)
         {
             RoutedEvent = ExecutedEvent,
-            CommandInputLifetime = isInputCurrent
+            CommandInputLifetime = isInputCurrent,
+            CommandInputScope = routingScope
         };
         try { uiElement.RaiseEvent(args); }
-        finally { args.CommandInputLifetime = null; }
+        finally { args.CommandInputLifetime = null; args.CommandInputScope = null; }
     }
 
     /// <summary>
