@@ -1,4 +1,5 @@
 #include "d3d12_backend.h"
+#include "d3d12_ink_layer.h"
 #include "d3d12_render_target.h"
 #include "d3d12_resources.h"
 #include "jalium_string_util.h"
@@ -146,6 +147,12 @@ D3D12Backend::~D3D12Backend() {
         std::lock_guard<std::mutex> lock(graveyardMutex_);
         graveyard_.clear();
     }
+
+    // Best-effort retirement of deferred ink batches: completed fences (and
+    // lost devices) release their GPU dependencies here instead of holding
+    // them until process exit. Batches still in flight keep their ComPtrs —
+    // including on the device/queue — so this teardown order stays safe.
+    ReclaimDeferredInkBatches();
 
     // Release in reverse order of creation
     wicFactory_.Reset();
