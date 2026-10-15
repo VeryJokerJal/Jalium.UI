@@ -23,6 +23,8 @@ struct D3D12InkLayerBitmapTestAccess
     static ComPtr<ID3D12CommandAllocator> SwapAllocator(
         D3D12InkLayerBitmap& layer, ComPtr<ID3D12CommandAllocator> replacement)
         { layer.cmdAlloc_.Swap(replacement); return replacement; }
+    static size_t RetainedPsoCount(D3D12InkLayerBitmap& layer)
+        { return layer.batchPsos_.size(); }
 };
 }
 
@@ -302,6 +304,24 @@ void PsoInFlight(Fixture& f)
     f.Pixel(*layer, {255, 0, 0, 255});
 }
 
+void PsoDedupe(Fixture& f)
+{
+    auto layer = f.Layer();
+    auto a = f.Shader();
+    auto b = f.Shader();
+    for (int i = 0; i < 8; ++i)
+    {
+        Require(f.Draw(*layer, *a) == 0, "dispatch brush A");
+        Require(f.Draw(*layer, *b) == 0, "dispatch brush B");
+    }
+    Require(D3D12InkLayerBitmapTestAccess::Flush(*layer), "submit batch");
+    // Alternating brushes must retain one reference per distinct PSO, not one
+    // AddRef per brush switch inside a single batch.
+    Require(D3D12InkLayerBitmapTestAccess::RetainedPsoCount(*layer) == 2,
+            "one retained reference per distinct PSO");
+    f.Pixel(*layer, {255, 0, 0, 255});
+}
+
 void UnloadOpenBatch(Fixture& f)
 {
     auto layer = f.Layer();
@@ -385,6 +405,7 @@ int main(int argc, char** argv)
         const std::string name = argv[1];
         if (name == "pso-before-submit") PsoBeforeSubmit(fixture);
         else if (name == "pso-in-flight") PsoInFlight(fixture);
+        else if (name == "pso-dedupe") PsoDedupe(fixture);
         else if (name == "unload-open-batch") UnloadOpenBatch(fixture);
         else if (name == "close-retry") CloseRetry(fixture);
         else if (name == "clear-retry") ClearRetry(fixture);

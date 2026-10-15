@@ -20,7 +20,7 @@ if(MSVC)
     target_compile_options(jalium.native.d3d12.ink.tests PRIVATE /utf-8 /W4 /EHsc)
 endif()
 
-foreach(case IN ITEMS pso-before-submit pso-in-flight unload-open-batch
+foreach(case IN ITEMS pso-before-submit pso-in-flight pso-dedupe unload-open-batch
         close-retry clear-retry allocator-retry signal-retry signal-teardown)
     add_test(NAME jalium.native.d3d12.ink.${case}
         COMMAND jalium.native.d3d12.ink.tests ${case})
