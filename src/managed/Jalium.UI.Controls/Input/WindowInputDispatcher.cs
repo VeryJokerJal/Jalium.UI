@@ -108,6 +108,8 @@ internal sealed class WindowInputDispatcher
     /// <summary>Handles mouse move from both Win32 and cross-platform paths.</summary>
     public void HandleMouseMove(Point position, MouseButtonStates buttons, ModifierKeys modifiers, int timestamp)
     {
+        var physicalModifiers = modifiers;
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
@@ -176,7 +178,7 @@ internal sealed class WindowInputDispatcher
         MouseEventArgs tunnelArgs = new(
             UIElement.PreviewMouseMoveEvent, position,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -188,7 +190,7 @@ internal sealed class WindowInputDispatcher
             MouseEventArgs bubbleArgs = new(
                 UIElement.MouseMoveEvent, position,
                 buttons.Left, buttons.Middle, buttons.Right,
-                buttons.XButton1, buttons.XButton2, modifiers, timestamp);
+                buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
@@ -265,6 +267,8 @@ internal sealed class WindowInputDispatcher
     public void HandleMouseDown(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int clickCount, int timestamp)
     {
+        var physicalModifiers = modifiers;
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
@@ -362,7 +366,7 @@ internal sealed class WindowInputDispatcher
         MouseButtonEventArgs tunnelArgs = new(
             UIElement.PreviewMouseDownEvent, position, button, currentState, clickCount,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -374,11 +378,15 @@ internal sealed class WindowInputDispatcher
             MouseButtonEventArgs bubbleArgs = new(
                 UIElement.MouseDownEvent, position, button, currentState, clickCount,
                 buttons.Left, buttons.Middle, buttons.Right,
-                buttons.XButton1, buttons.XButton2, modifiers, timestamp);
+                buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
         }
+
+        // A handled mouse press never started a pointer session. In particular,
+        // a command may have detached or closed this target during dispatch.
+        if (sourceHandled && !sourceCanceled) return;
 
         if (!SuppressMouseToPointerPromotion)
         {
@@ -399,6 +407,8 @@ internal sealed class WindowInputDispatcher
     public void HandleMouseUp(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int timestamp)
     {
+        var physicalModifiers = modifiers;
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         if (_suppressMouseUpButton == button)
@@ -473,7 +483,7 @@ internal sealed class WindowInputDispatcher
         MouseButtonEventArgs tunnelArgs = new(
             UIElement.PreviewMouseUpEvent, position, button, currentState, clickCount: 1,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -484,7 +494,7 @@ internal sealed class WindowInputDispatcher
             MouseButtonEventArgs bubbleArgs = new(
                 UIElement.MouseUpEvent, position, button, currentState, clickCount: 1,
                 buttons.Left, buttons.Middle, buttons.Right,
-                buttons.XButton1, buttons.XButton2, modifiers, timestamp);
+                buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
@@ -529,6 +539,8 @@ internal sealed class WindowInputDispatcher
         bool hasPreciseScrollingDeltas, MouseButtonStates buttons, ModifierKeys modifiers, int timestamp,
         MouseWheelPhase phase = MouseWheelPhase.None, MouseWheelPhase momentumPhase = MouseWheelPhase.None)
     {
+        var physicalModifiers = modifiers;
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         int delta = MouseWheelEventArgs.ToLegacyDelta(verticalDelta);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
@@ -546,7 +558,7 @@ internal sealed class WindowInputDispatcher
         MouseWheelEventArgs tunnelArgs = new(
             UIElement.PreviewMouseWheelEvent, position, horizontalDelta, verticalDelta, hasPreciseScrollingDeltas,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase) { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -559,6 +571,7 @@ internal sealed class WindowInputDispatcher
                 buttons.Left, buttons.Middle, buttons.Right,
                 buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase)
             {
+                PhysicalModifiers = physicalModifiers,
                 IsHorizontalDeltaHandled = tunnelArgs.IsHorizontalDeltaHandled,
                 IsVerticalDeltaHandled = tunnelArgs.IsVerticalDeltaHandled
             };
@@ -1474,6 +1487,7 @@ internal sealed class WindowInputDispatcher
 
     internal void RaisePointerMovePipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         point.SourceElement = target;
         PointerMoveEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerMoveEvent, StylusPoints = stylusPoints };
         target.RaiseEvent(previewArgs);
@@ -1507,6 +1521,7 @@ internal sealed class WindowInputDispatcher
 
     internal void RaisePointerCancelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         point.SourceElement = target;
         PointerCancelEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerCancelEvent };
         target.RaiseEvent(previewArgs);
@@ -1519,6 +1534,7 @@ internal sealed class WindowInputDispatcher
 
     internal void RaisePointerDownPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         point.SourceElement = target;
         PointerDownEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerDownEvent, StylusPoints = stylusPoints };
         target.RaiseEvent(previewArgs);
@@ -1552,6 +1568,7 @@ internal sealed class WindowInputDispatcher
 
     internal void RaisePointerUpPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         point.SourceElement = target;
         PointerUpEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerUpEvent, StylusPoints = stylusPoints };
         target.RaiseEvent(previewArgs);
@@ -1585,6 +1602,7 @@ internal sealed class WindowInputDispatcher
 
     internal static void RaisePointerWheelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         PointerWheelChangedEventArgs args = new(point, modifiers, timestamp) { RoutedEvent = PointerEvents.PointerWheelChangedEvent };
         target.RaiseEvent(args);
     }

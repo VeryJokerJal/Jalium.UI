@@ -58,7 +58,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         EventManager.RegisterClassHandler(typeof(UIElement), MouseEnterEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseEnter(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), MouseLeaveEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseLeave(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseWheelEvent, new MouseWheelEventHandler((s, e) => ((UIElement)s).OnPreviewMouseWheel(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), MouseWheelEvent, new MouseWheelEventHandler((s, e) => ((UIElement)s).OnMouseWheel(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelThunk));
 
         // Touch
         TouchDevice.CaptureChanged += OnTouchDeviceCaptureChanged;
@@ -128,9 +128,34 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     private static void OnMouseDownThunk(object sender, MouseButtonEventArgs e)
     {
         var element = (UIElement)sender;
+        if (element.ProcessMouseInputCommand(e))
+        {
+            e.Handled = true;
+            return;
+        }
         element.OnMouseDown(e);
         if (e.Handled) return;
         ReRaiseButtonEvent(element, e, MouseLeftButtonDownEvent, MouseRightButtonDownEvent);
+    }
+
+    // Controls can handle platform gestures before portable command matching,
+    // without changing routed class-handler registration order.
+    internal virtual bool ProcessMouseInputCommand(MouseEventArgs e) =>
+        CommandManager.ProcessInput(this, e);
+
+    private static void OnMouseWheelThunk(object sender, MouseWheelEventArgs e)
+    {
+        var element = (UIElement)sender;
+        // Phase-only packets still carry gesture lifetime, but do not invoke a
+        // wheel command. Preserve precise movement below the legacy integer delta.
+        if (((e.HorizontalDelta != 0 && !e.IsHorizontalDeltaHandled) ||
+             (e.VerticalDelta != 0 && !e.IsVerticalDeltaHandled)) &&
+            element.ProcessMouseInputCommand(e))
+        {
+            e.Handled = true;
+            return;
+        }
+        element.OnMouseWheel(e);
     }
 
     private static void OnPreviewMouseUpThunk(object sender, MouseButtonEventArgs e)
@@ -182,6 +207,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             source.Timestamp)
         {
             Source = source.Source,
+            PhysicalModifiers = source.PhysicalModifiers,
         };
         // WPF 一贯行为：OriginalSource 在整个事件路由过程中保持为 hit test 最初命中的元素。
         // 不复制 OriginalSource 会让 element.RaiseEvent 里的 SetOriginalSource(this) 把

@@ -262,7 +262,7 @@ public sealed class MacOSTextContextMenuTests
         if (!OperatingSystem.IsMacOS()) return;
         using var host = new Host();
         ModifierKeys? observed = null;
-        host.Editor.MouseMove += (_, e) => observed = e.KeyboardModifiers;
+        host.Editor.MouseMove += (_, e) => observed = e.PhysicalModifiers;
         var method = typeof(Window).GetMethod("OnPlatformEvent", BindingFlags.Instance | BindingFlags.NonPublic)!;
         method.Invoke(host.Window, [new PlatformEvent
         { Type = PlatformEventType.MouseMove, MouseX = 24, MouseY = 10, Modifiers = flags }]);

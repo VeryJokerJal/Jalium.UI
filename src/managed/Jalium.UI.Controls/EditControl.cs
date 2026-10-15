@@ -1354,7 +1354,8 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         {
             // Single click
             var definitionModifier = OperatingSystem.IsMacOS() ? ModifierKeys.Windows : ModifierKeys.Control;
-            if (e.KeyboardModifiers.HasFlag(definitionModifier) && _lspIntegration?.IsActive == true)
+            var definitionModifiers = e.PhysicalModifiers.GetValueOrDefault(e.KeyboardModifiers);
+            if (definitionModifiers.HasFlag(definitionModifier) && _lspIntegration?.IsActive == true)
             {
                 // Command-click on macOS; Control-click on other platforms.
                 GoToDefinition(offset);

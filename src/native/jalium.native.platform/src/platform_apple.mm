@@ -55,6 +55,7 @@ struct JaliumTimer {
 #if TARGET_OS_OSX
 @class JaliumAppleWindowDelegate;
 @class JaliumAppleAccessibilityBridge;
+namespace { struct AppleContentFocus; }
 struct JaliumAppleDragSource {
     NSWindow* window = nil;
     NSDraggingSession* session = nil;
@@ -92,7 +93,7 @@ struct JaliumPlatformWindow {
     bool interactiveResize = false;
     bool nativeClosing = false;
     bool fullScreenTransition = false;
-    bool fullScreenHadContentFocus = false;
+    std::shared_ptr<AppleContentFocus> fullScreenContentFocus;
     uint64_t stateRequestSequence = 0;
     uint64_t geometrySequence = 0;
     uint64_t fullScreenRequestSequence = 0;
@@ -731,23 +732,41 @@ bool BeginFullScreenTransition(JaliumPlatformWindow* window)
 {
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
     NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
-    window->fullScreenRequestSequence = window->stateRequestSequence;
+    uint64_t request = window->stateRequestSequence;
+    window->fullScreenRequestSequence = request;
     window->fullScreenTransition = true;
-    NSResponder* responder = nativeWindow.firstResponder;
-    if (!IsLiveWindow(window, nativeWindow)) return false;
-    window->fullScreenHadContentFocus = responder == view;
+    auto live = [&] {
+        return IsLiveWindow(window, nativeWindow) && !window->destroying &&
+            (NSView*)window->view == view && window->fullScreenTransition &&
+            window->fullScreenRequestSequence == request;
+    };
+    NSView* __attribute__((objc_precise_lifetime)) inputRoot = nativeWindow.contentView;
+    if (!live()) return false;
+    auto focus = std::make_shared<AppleContentFocus>();
+    if (!focus->Capture(nativeWindow, inputRoot, window->visible, live)) return false;
+    window->fullScreenContentFocus = std::move(focus);
     return true;
 }
 
-void RestoreFullScreenContentFocus(JaliumPlatformWindow* window, bool hadContentFocus)
+void RestoreFullScreenContentFocus(JaliumPlatformWindow* window,
+    const std::shared_ptr<AppleContentFocus>& focus)
 {
-    if (!hadContentFocus || !IsLiveWindow(window) || window->destroying || !window->enabled ||
-        !window->visible || !window->window.visible || window->fullScreenTransition) return;
-    NSResponder* responder = window->window.firstResponder;
-    // AppKit can replace our input view with its default window responder.
-    // Preserve a newer native input target and never activate the window here.
-    if (!responder || responder == window->window)
-        [window->window makeFirstResponder:(NSView*)window->view];
+    if (!focus || !IsLiveWindow(window) || window->destroying || !window->enabled ||
+        !window->visible || window->fullScreenTransition) return;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
+    auto live = [&] {
+        return IsLiveWindow(window, nativeWindow) && !window->destroying &&
+            (NSView*)window->view == view && window->enabled && window->visible &&
+            !window->fullScreenTransition;
+    };
+    bool visible = nativeWindow.visible;
+    if (!live() || !visible) return;
+    NSView* __attribute__((objc_precise_lifetime)) inputRoot = nativeWindow.contentView;
+    if (!live()) return;
+    // Reuse style-transition ownership, newer-responder and shared-field-editor
+    // checks. A completion never activates the window or reuses stale ranges.
+    focus->Restore(nativeWindow, inputRoot, window->enabled, window->visible, live);
 }
 
 void CancelPendingWindowSelection(JaliumPlatformWindow* window)
@@ -3198,13 +3217,12 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         JaliumPlatformWindow* window = weakView.jaliumOwner;
         if (!IsLiveWindow(window) || !window->fullScreenTransition ||
             window->fullScreenRequestSequence != completedRequest) return;
-        bool hadContentFocus = window->fullScreenHadContentFocus;
-        window->fullScreenHadContentFocus = false;
+        auto inputFocus = std::move(window->fullScreenContentFocus);
         window->fullScreenTransition = false;
         window->applyingWindowState = true;
         PublishWindowState(window, JALIUM_WINDOW_STATE_FULLSCREEN);
         if (weakView.jaliumOwner != window) return;
-        RestoreFullScreenContentFocus(window, hadContentFocus);
+        RestoreFullScreenContentFocus(window, inputFocus);
         if (weakView.jaliumOwner != window) return;
         window->applyingWindowState = false;
         ApplyQueuedWindowState(window);
@@ -3220,8 +3238,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         JaliumPlatformWindow* window = weakView.jaliumOwner;
         if (!IsLiveWindow(window) || !window->fullScreenTransition ||
             window->fullScreenRequestSequence != completedRequest) return;
-        bool hadContentFocus = window->fullScreenHadContentFocus;
-        window->fullScreenHadContentFocus = false;
+        auto inputFocus = std::move(window->fullScreenContentFocus);
         window->fullScreenTransition = false;
         window->applyingWindowState = true;
         ApplyAppleStyle(window);
@@ -3242,7 +3259,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         }
         PublishWindowState(window, window->beforeFullScreen);
         if (weakView.jaliumOwner != window) return;
-        RestoreFullScreenContentFocus(window, hadContentFocus);
+        RestoreFullScreenContentFocus(window, inputFocus);
         if (weakView.jaliumOwner != window) return;
         window->applyingWindowState = false;
         ApplyQueuedWindowState(window);
@@ -3272,8 +3289,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
             current->requestedState = actualState;
             current->requestedNativeZoom = false;
         }
-        bool hadContentFocus = current->fullScreenHadContentFocus;
-        current->fullScreenHadContentFocus = false;
+        auto inputFocus = std::move(current->fullScreenContentFocus);
         current->fullScreenTransition = false;
         current->applyingWindowState = true;
         current->state = actualState;
@@ -3285,7 +3301,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         JaliumPlatformEvent e{}; e.type = JALIUM_EVENT_STATE_CHANGED;
         e.stateChanged.newState = actualState; DispatchWindowEvent(current, e);
         if (weakView.jaliumOwner != current || !IsLiveWindow(current)) return;
-        RestoreFullScreenContentFocus(current, hadContentFocus);
+        RestoreFullScreenContentFocus(current, inputFocus);
         if (weakView.jaliumOwner != current || !IsLiveWindow(current)) return;
         current->applyingWindowState = false;
         ApplyQueuedWindowState(current);

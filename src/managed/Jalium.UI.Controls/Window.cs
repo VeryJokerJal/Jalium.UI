@@ -5865,7 +5865,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         const int PointerToolEraser = 2;
 
         var position = new Point(evt.PointerX / _dpiScale, evt.PointerY / _dpiScale);
-        var modifiers = MapPlatformModifiers(evt.Modifiers);
+        var modifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
         bool isDown = evt.Type == PlatformEventType.PointerDown;
         bool isUp = evt.Type == PlatformEventType.PointerUp;
         bool isTouch = evt.PointerType == 1;

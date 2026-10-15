@@ -233,35 +233,55 @@ public sealed class CommandManager
     /// <returns>True if the input was processed by a command; otherwise, false.</returns>
     internal static bool ProcessInput(UIElement element, InputEventArgs args)
     {
-        // Check instance input bindings
+        var inputRoot = args is MouseEventArgs ? GetInputRoot(element) : null;
+        bool IsCurrent() => inputRoot == null ||
+            element.IsVisible && element.IsEnabled &&
+            ReferenceEquals(GetInputRoot(element), inputRoot) &&
+            (inputRoot is not UIElement root || root.IsVisible && root.IsEnabled);
+        if (!IsCurrent()) return false;
+
+        // Matching and CanExecute may close or move the target. Consume input
+        // from a retired route and never run a command in a replacement root.
         var binding = element.InputBindings.FindMatch(element, args);
-        if (binding?.Command != null)
+        if (!IsCurrent()) return true;
+        var boundCommand = binding?.Command;
+        if (boundCommand != null)
         {
-            var target = binding.CommandTarget ?? element;
-            if (binding.Command is RoutedCommand routedCommand)
+            var target = binding!.CommandTarget ?? element;
+            var parameter = binding.CommandParameter;
+            if (boundCommand is RoutedCommand routedCommand)
             {
-                if (routedCommand.CanExecute(binding.CommandParameter, target))
+                bool canExecute = routedCommand.CanExecute(parameter, target);
+                if (!IsCurrent()) return true;
+                if (canExecute)
                 {
-                    routedCommand.Execute(binding.CommandParameter, target);
+                    routedCommand.Execute(parameter, target);
                     return true;
                 }
             }
-            else if (binding.Command.CanExecute(binding.CommandParameter))
+            else
             {
-                binding.Command.Execute(binding.CommandParameter);
-                return true;
+                bool canExecute = boundCommand.CanExecute(parameter);
+                if (!IsCurrent()) return true;
+                if (canExecute)
+                {
+                    boundCommand.Execute(parameter);
+                    return true;
+                }
             }
         }
 
-        // Check command's built-in input gestures for routed commands
-        // Check all common application commands for input gesture matches
         foreach (var command in GetAllRoutedCommands())
         {
             foreach (InputGesture gesture in command.InputGestures)
             {
-                if (gesture.Matches(element, args))
+                bool matches = gesture.Matches(element, args);
+                if (!IsCurrent()) return true;
+                if (matches)
                 {
-                    if (command.CanExecute(null, element))
+                    bool canExecute = command.CanExecute(null, element);
+                    if (!IsCurrent()) return true;
+                    if (canExecute)
                     {
                         command.Execute(null, element);
                         return true;
@@ -271,6 +291,14 @@ public sealed class CommandManager
         }
 
         return false;
+    }
+
+    private static Jalium.UI.Media.Visual GetInputRoot(UIElement element)
+    {
+        Jalium.UI.Media.Visual current = element;
+        while (current.VisualParent is { } parent)
+            current = parent;
+        return current;
     }
 
     private static IEnumerable<RoutedCommand> GetAllRoutedCommands()

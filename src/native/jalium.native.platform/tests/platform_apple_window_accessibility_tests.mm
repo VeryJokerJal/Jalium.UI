@@ -2289,8 +2289,12 @@ int main(int argc, char** argv)
                             bool completed = false;
                             WindowNotification acknowledged(f, NSWindowDidMiniaturizeNotification, [&] { completed = true; });
                             delayed.Complete();
-                            Require(Pump([&] { return completed && !f.native.miniaturized &&
-                                jalium_window_get_state(f.window) == requested; }), "native start lost the latest queued state");
+                            bool restored = Pump([&] { return completed && !f.native.miniaturized &&
+                                jalium_window_get_state(f.window) == requested; });
+                            if (!restored) std::printf("Minimize start diagnostic: completed=%d mini=%d visible=%d state=%d requested=%d\n",
+                                completed, f.native.miniaturized, f.native.visible,
+                                jalium_window_get_state(f.window), requested);
+                            Require(restored, "native start lost the latest queued state");
                             Require(NSEqualRects(RestoreBounds(f), restore), "native start replaced normal restore bounds");
                         });
                     }
@@ -2914,6 +2918,147 @@ int main(int argc, char** argv)
                 });
             }
             const char* focusOutcomes[] = {"enter success", "exit success", "enter failure", "exit failure"};
+            // Keep the existing AX suite within its original deadline. The
+            // expanded embedded-input cases have their own CTest entry.
+            if (fullScreenFocusOnly || caseName) {
+                for (int outcome = 0; outcome < 4; ++outcome) for (int kind = 0; kind < 3; ++kind)
+                    for (bool renderingChild : {false, true}) {
+                        std::string name = std::string("fullscreen focus embedded ") + focusOutcomes[outcome] +
+                            " control " + std::to_string(kind) + (renderingChild ? " rendering child" : " content child");
+                        run(name.c_str(), [=](Fixture& f) {
+                            NSTextField* control = addControl(f, kind, renderingChild);
+                            NSString* text = control.stringValue;
+                            ControlledFullScreen transition(f.native);
+                            bool exiting = (outcome & 1) != 0;
+                            if (exiting) {
+                                transition.Will(); transition.Complete();
+                                Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN; }, 0.4),
+                                    "controlled initial fullscreen did not finish");
+                            }
+                            Require(control.currentEditor && f.native.firstResponder == control.currentEditor,
+                                "controlled initial transition lost its field-editor precondition");
+                            NSRange selection = NSMakeRange(2, 2);
+                            control.currentEditor.selectedRange = selection;
+                            FrontRequests front(f.native);
+                            jalium_window_set_state(f.window, exiting ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_FULLSCREEN);
+                            // Replay the same AppKit responder loss covered for the
+                            // drawing view, now with a real shared field editor.
+                            [f.native makeFirstResponder:nil];
+                            f.events.clear();
+                            if (outcome >= 2) transition.Fail(); else transition.Complete();
+                            Require(Pump([&] {
+                                for (const auto& event : f.events) if (event.type == JALIUM_EVENT_STATE_CHANGED) return true;
+                                return false;
+                            }, 0.4), "fullscreen completion did not publish state");
+                            Require(control.currentEditor && f.native.firstResponder == control.currentEditor,
+                                "fullscreen completion lost its embedded native input control");
+                            Require([control.stringValue isEqualToString:text] && NSEqualRanges(control.currentEditor.selectedRange, selection),
+                                "fullscreen completion changed native text or UTF-16 selection");
+                            Require(front.key == 0 && front.main == 0, "embedded input restoration activated its window");
+                            [(NSTextView*)control.currentEditor insertText:@"A" replacementRange:selection];
+                            Require([control.stringValue isEqualToString:[text stringByReplacingCharactersInRange:selection withString:@"A"]],
+                                "fullscreen field editor could not continue native editing");
+                        });
+                    }
+                for (int outcome = 0; outcome < 4; ++outcome) for (int action = 0; action < 9; ++action) {
+                    std::string name = std::string("fullscreen focus embedded callback ") + focusOutcomes[outcome] +
+                        " action " + std::to_string(action);
+                    run(name.c_str(), [=](Fixture& f) {
+                        NSTextField* control = addControl(f, 0, false);
+                        NSTextField* newer = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 100, 300, 32)];
+                        newer.stringValue = @"newer"; [f.native.contentView addSubview:newer];
+                        ControlledFullScreen transition(f.native);
+                        bool exiting = (outcome & 1) != 0;
+                        if (exiting) {
+                            transition.Will(); transition.Complete();
+                            Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN; }, 0.4),
+                                "controlled initial fullscreen did not finish");
+                        }
+                        Require(control.currentEditor && f.native.firstResponder == control.currentEditor,
+                            "callback fixture lost its initial field editor");
+                        control.currentEditor.selectedRange = NSMakeRange(2, 2);
+                        FrontRequests front(f.native);
+                        struct Context {
+                            Fixture& fixture;
+                            NSTextField* control;
+                            NSTextField* newer;
+                            int action;
+                            uint32_t style;
+                            bool called = false;
+                            std::unique_ptr<Fixture> replacement;
+                            NSRect frame = NSZeroRect;
+                            ~Context() {
+                                if (fixture.window) jalium_window_set_event_callback(fixture.window, Capture, &fixture.events);
+                            }
+                        } context{f, control, newer, action, style};
+                        jalium_window_set_event_callback(f.window, [](const JaliumPlatformEvent* event, void* user) {
+                            auto& c = *static_cast<Context*>(user);
+                            Capture(event, &c.fixture.events);
+                            if (event->type != JALIUM_EVENT_STATE_CHANGED || c.called) return;
+                            c.called = true;
+                            if (c.action == 0) jalium_window_hide(c.fixture.window);
+                            else if (c.action == 1) jalium_window_set_enabled(c.fixture.window, 0);
+                            else if (c.action == 2) [c.control removeFromSuperview];
+                            else if (c.action == 3) c.control.hidden = YES;
+                            else if (c.action == 4) c.control.enabled = NO;
+                            else if (c.action == 5) Require([c.fixture.native makeFirstResponder:c.newer], "newer control rejected focus");
+                            else if (c.action == 6) c.control.stringValue = @"changed";
+                            else {
+                                c.fixture.Destroy();
+                                if (c.action == 8) {
+                                    c.replacement = std::make_unique<Fixture>(c.style, 500, 300, 560, 360);
+                                    c.frame = c.replacement->native.frame; c.replacement->events.clear();
+                                }
+                            }
+                        }, &context);
+                        jalium_window_set_state(f.window, exiting ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_FULLSCREEN);
+                        [f.native makeFirstResponder:nil];
+                        if (outcome >= 2) transition.Fail(); else transition.Complete();
+                        Require(Pump([&] { return context.called; }, 0.4), "fullscreen state callback did not run");
+                        if (action >= 7) {
+                            Require(!f.window, "fullscreen callback retained its closed owner");
+                            if (context.replacement) Require(NSEqualRects(context.replacement->native.frame, context.frame) &&
+                                context.replacement->events.empty(), "fullscreen focus completion changed its replacement");
+                        } else if (action == 5) Require(newer.currentEditor && f.native.firstResponder == newer.currentEditor,
+                            "fullscreen restoration stole newer native input focus");
+                        else if (action == 6) Require(control.currentEditor && f.native.firstResponder == control.currentEditor &&
+                            [control.stringValue isEqualToString:@"changed"] &&
+                            !NSEqualRanges(control.currentEditor.selectedRange, NSMakeRange(2, 2)),
+                            "fullscreen restoration replaced newer text or reused its old selection");
+                        else Require(!control.currentEditor || f.native.firstResponder != control.currentEditor,
+                            "fullscreen restoration focused an excluded native control");
+                        Require(front.key == 0 && front.main == 0, "fullscreen callback restoration activated a window");
+                    });
+                }
+                for (bool exiting : {false, true}) for (bool delegateRead : {false, true}) for (bool replace : {false, true}) {
+                    std::string name = std::string("fullscreen focus embedded capture ") + (exiting ? "exit " : "enter ") +
+                        (delegateRead ? "delegate" : "editor") + (replace ? " replacement" : " closes");
+                    run(name.c_str(), [=](Fixture& f) {
+                        NSTextField* control = addControl(f, 0, false);
+                        ControlledFullScreen transition(f.native);
+                        if (exiting) {
+                            transition.Will(); transition.Complete();
+                            Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN; }, 0.4),
+                                "controlled initial fullscreen did not finish");
+                        }
+                        id target = delegateRead ? (id)control.currentEditor : (id)control;
+                        std::unique_ptr<Fixture> replacement;
+                        NSRect replacementFrame = NSZeroRect;
+                        RestoreSnapshotProbe probe(target, delegateRead ? @selector(delegate) : @selector(currentEditor), [&] {
+                            f.Destroy();
+                            if (replace) {
+                                replacement = std::make_unique<Fixture>(style, 500, 300, 560, 360);
+                                replacementFrame = replacement->native.frame; replacement->events.clear();
+                            }
+                        });
+                        jalium_window_set_state(f.window, exiting ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_FULLSCREEN);
+                        Require(probe.called && !f.window, "fullscreen focus getter did not retire its original owner");
+                        Pump([] { return false; }, 0.04);
+                        if (replacement) Require(NSEqualRects(replacement->native.frame, replacementFrame) && replacement->events.empty(),
+                            "fullscreen focus capture changed its replacement");
+                    });
+                }
+            }
             const char* focusTargets[] = {"input view", "previously unfocused", "hidden", "disabled", "new native responder"};
             for (int outcome = 0; outcome < 4; ++outcome) for (int target = 0; target < 5; ++target) {
                 std::string name = std::string("fullscreen focus ") + focusOutcomes[outcome] + " retains " + focusTargets[target];

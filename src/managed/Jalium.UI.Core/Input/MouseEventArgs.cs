@@ -100,6 +100,13 @@ public class MouseEventArgs : InputEventArgs
     public ModifierKeys KeyboardModifiers { get; }
 
     /// <summary>
+    /// Gets the physical modifier snapshot supplied by native input, when available.
+    /// On macOS this distinguishes physical Control from Command even when Command
+    /// is exposed as logical Control for portable input bindings.
+    /// </summary>
+    public ModifierKeys? PhysicalModifiers { get; internal init; }
+
+    /// <summary>
     /// Gets or sets a value indicating whether downstream pointer promotion should be canceled.
     /// </summary>
     public bool Cancel { get; set; }

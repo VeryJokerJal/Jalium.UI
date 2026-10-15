@@ -26,8 +26,6 @@ public static class PlatformTextContextMenus
         foreach (var type in new[] { typeof(TextBoxBase), typeof(EditControl), typeof(PasswordBox),
             typeof(Terminal), typeof(HexEditor) })
         {
-            EventManager.RegisterClassHandler(type, UIElement.MouseDownEvent,
-                new MouseButtonEventHandler(OnMouseDown));
             EventManager.RegisterClassHandler(type, UIElement.PreviewMouseUpEvent,
                 new MouseButtonEventHandler(OnMouseUp), handledEventsToo: true);
             EventManager.RegisterClassHandler(type, UIElement.KeyDownEvent,
@@ -42,26 +40,29 @@ public static class PlatformTextContextMenus
         set => _show = value;
     }
 
-    private static void OnMouseDown(object sender, MouseButtonEventArgs e)
+    internal static bool TryHandleMouseDown(UIElement owner, MouseButtonEventArgs e)
     {
-        if (sender is not UIElement owner) return;
+        if (owner is not (TextBoxBase or EditControl or PasswordBox or Terminal or HexEditor)) return false;
         var state = PointerStates.GetValue(owner, static _ => new PointerState());
         state.SuppressRelease = null;
+        var physicalModifiers = e.PhysicalModifiers.GetValueOrDefault(e.KeyboardModifiers);
         if (e.Handled || !OperatingSystem.IsMacOS() || _show == null ||
             !(e.ChangedButton == MouseButton.Right || e.ChangedButton == MouseButton.Left &&
-                (e.KeyboardModifiers & ModifierKeys.Control) != 0)) return;
+                (physicalModifiers & ModifierKeys.Control) != 0)) return false;
         // Template buttons keep their own actions and menus.
         for (var source = e.OriginalSource as Visual; source != null && source != owner; source = source.VisualParent)
-            if (source is ButtonBase) return;
+            if (source is ButtonBase) return false;
 
         var origin = e.OriginalSource as Visual;
         // Attached menus retain ContextMenuService's normal mouse-up pipeline.
-        if (e.ChangedButton == MouseButton.Right && FindExplicitMenuOwner(origin ?? owner) != null) return;
+        if (e.ChangedButton == MouseButton.Right && FindExplicitMenuOwner(origin ?? owner) != null) return false;
         if (Open(owner, e.GetPosition(owner), origin))
         {
             state.SuppressRelease = e.ChangedButton;
             e.Handled = true;
+            return true;
         }
+        return false;
     }
 
     private static void OnMouseUp(object sender, MouseButtonEventArgs e)
