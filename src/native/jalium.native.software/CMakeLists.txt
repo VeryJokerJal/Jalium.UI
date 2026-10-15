@@ -253,4 +253,6 @@ if(JALIUM_TEXT_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID AND TARGET jal
         jalium.native.core)
     add_test(NAME jalium.native.software.text-pixels
              COMMAND jalium.native.software.text.tests)
+    add_test(NAME jalium.native.software.fallback-hit-testing
+             COMMAND jalium.native.software.text.tests --fallback-hit-testing)
 endif()
