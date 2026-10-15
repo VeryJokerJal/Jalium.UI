@@ -12,8 +12,8 @@ public sealed class CommandManager
     }
 
     private static readonly object _syncLock = new();
-    private static readonly List<WeakReference<CommandBinding>> _classCommandBindings = new();
-    private static readonly List<WeakReference<InputBinding>> _classInputBindings = new();
+    private static readonly Dictionary<Type, List<CommandBinding>> _classCommandBindings = new();
+    private static readonly Dictionary<Type, List<InputBinding>> _classInputBindings = new();
 
     /// <summary>
     /// Occurs when the command manager detects conditions that might change
@@ -61,14 +61,11 @@ public sealed class CommandManager
 
         lock (_syncLock)
         {
-            _classCommandBindings.Add(new WeakReference<CommandBinding>(commandBinding));
+            if (!_classCommandBindings.TryGetValue(type, out var bindings))
+                _classCommandBindings[type] = bindings = [];
+            bindings.Add(commandBinding);
         }
 
-        // Register handlers for the command's events
-        EventManager.RegisterClassHandler(type, PreviewExecutedEvent, new ExecutedRoutedEventHandler(OnClassPreviewExecuted));
-        EventManager.RegisterClassHandler(type, ExecutedEvent, new ExecutedRoutedEventHandler(OnClassExecuted));
-        EventManager.RegisterClassHandler(type, PreviewCanExecuteEvent, new CanExecuteRoutedEventHandler(OnClassPreviewCanExecute));
-        EventManager.RegisterClassHandler(type, CanExecuteEvent, new CanExecuteRoutedEventHandler(OnClassCanExecute));
     }
 
     /// <summary>
@@ -83,7 +80,9 @@ public sealed class CommandManager
 
         lock (_syncLock)
         {
-            _classInputBindings.Add(new WeakReference<InputBinding>(inputBinding));
+            if (!_classInputBindings.TryGetValue(type, out var bindings))
+                _classInputBindings[type] = bindings = [];
+            bindings.Add(inputBinding);
         }
     }
 
@@ -151,78 +150,54 @@ public sealed class CommandManager
         element?.RemoveHandler(CanExecuteEvent, handler);
     }
 
-    private static void OnClassPreviewExecuted(object sender, ExecutedRoutedEventArgs e)
+    private static TBinding[] GetClassBindings<TBinding>(Dictionary<Type, List<TBinding>> registry,
+        Type type, bool newestFirst = false)
     {
-        if (sender is UIElement element)
-        {
-            var binding = FindCommandBinding(element, e.Command);
-            if (binding != null)
-            {
-                binding.OnPreviewExecuted(sender, e);
-                if (e.Handled)
-                    return;
-            }
-        }
-    }
-
-    private static void OnClassExecuted(object sender, ExecutedRoutedEventArgs e)
-    {
-        if (sender is UIElement element)
-        {
-            var binding = FindCommandBinding(element, e.Command);
-            if (binding != null)
-            {
-                binding.OnExecuted(sender, e);
-                e.Handled = true;
-            }
-        }
-    }
-
-    private static void OnClassPreviewCanExecute(object sender, CanExecuteRoutedEventArgs e)
-    {
-        if (sender is UIElement element)
-        {
-            var binding = FindCommandBinding(element, e.Command);
-            if (binding != null)
-            {
-                binding.OnPreviewCanExecute(sender, e);
-            }
-        }
-    }
-
-    private static void OnClassCanExecute(object sender, CanExecuteRoutedEventArgs e)
-    {
-        if (sender is UIElement element)
-        {
-            var binding = FindCommandBinding(element, e.Command);
-            if (binding != null)
-            {
-                binding.OnCanExecute(sender, e);
-            }
-        }
-    }
-
-    private static CommandBinding? FindCommandBinding(UIElement element, ICommand? command)
-    {
-        if (command == null)
-            return null;
-
-        // First, check instance command bindings
-        var binding = element.CommandBindings.FindBinding(command);
-        if (binding != null)
-            return binding;
-
-        // Check class command bindings
+        List<TBinding>? snapshot = null;
         lock (_syncLock)
         {
-            foreach (var weakRef in _classCommandBindings)
+            for (Type? current = type; current != null; current = current.BaseType)
             {
-                if (weakRef.TryGetTarget(out var classBinding) && classBinding.Command == command)
-                    return classBinding;
+                if (!registry.TryGetValue(current, out var bindings)) continue;
+                snapshot ??= [];
+                if (newestFirst)
+                    for (int i = bindings.Count - 1; i >= 0; i--) snapshot.Add(bindings[i]);
+                else snapshot.AddRange(bindings);
             }
         }
+        return snapshot?.ToArray() ?? [];
+    }
 
-        return null;
+    internal static void InvokeCommandBindings(UIElement element, object sender, RoutedEventArgs args,
+        CommandBindingCollection? instanceBindings)
+    {
+        if (args.Handled || !args.IsCommandInputCurrent) return;
+        ICommand? command = args switch
+        {
+            CanExecuteRoutedEventArgs query when args.RoutedEvent == CanExecuteEvent || args.RoutedEvent == PreviewCanExecuteEvent => query.Command,
+            ExecutedRoutedEventArgs execution when args.RoutedEvent == ExecutedEvent || args.RoutedEvent == PreviewExecutedEvent => execution.Command,
+            _ => null
+        };
+        if (command == null) return;
+        // Capture registrations before user handlers run, and release the lock
+        // before any command or gesture callback can register another binding.
+        var local = instanceBindings?.Cast<CommandBinding>().ToArray() ?? [];
+        var inherited = GetClassBindings(_classCommandBindings, element.GetType());
+        foreach (var binding in local.Concat(inherited))
+        {
+            if (args.Handled || !args.IsCommandInputCurrent) return;
+            if (!ReferenceEquals(binding.Command, command)) continue;
+            if (args is CanExecuteRoutedEventArgs query)
+            {
+                if (args.RoutedEvent == PreviewCanExecuteEvent) binding.OnPreviewCanExecute(sender, query);
+                else binding.OnCanExecute(sender, query);
+            }
+            else if (args is ExecutedRoutedEventArgs execution)
+            {
+                if (args.RoutedEvent == PreviewExecutedEvent) binding.OnPreviewExecuted(sender, execution);
+                else binding.OnExecuted(sender, execution);
+            }
+        }
     }
 
     /// <summary>
@@ -246,70 +221,86 @@ public sealed class CommandManager
              (inputRoot is not UIElement root || root.IsVisible && root.IsEnabled));
         if (!IsCurrent()) return false;
 
-        // Matching and CanExecute may close or move the target. Consume input
-        // from a retired route and never run a command in a replacement root.
-        var binding = element.InputBindings.FindMatch(element, args);
-        if (!IsCurrent()) return true;
-        // Native key input is dispatched once after control handlers. Search
-        // its captured ancestors before the shared built-in gesture fallback,
-        // retaining the focused command target and the active modal boundary.
-        if (binding?.Command == null && keyRoute != null)
+        // Each node resolves its own instance/class bindings before moving to
+        // an ancestor. The command target remains the original input target.
+        var owners = keyRoute ?? [element];
+        foreach (var visual in owners)
         {
-            for (int i = 1; i < keyRoute.Count; i++)
+            if (visual is not UIElement owner) continue;
+            var candidate = FindInputCommand(owner, args, IsCurrent);
+            if (!IsCurrent()) return true;
+            if (candidate.Command == null) continue;
+            var target = candidate.Target ?? element;
+            bool canExecute;
+            bool continueRouting = false;
+            if (candidate.Command is RoutedCommand routed)
+                canExecute = routed.CanExecute(candidate.Parameter, target, IsCurrent, out continueRouting);
+            else canExecute = candidate.Command.CanExecute(candidate.Parameter);
+            if (!IsCurrent()) return true;
+            if (canExecute)
             {
-                if (keyRoute[i] is not UIElement owner) continue;
-                binding = owner.InputBindings.FindMatch(owner, args);
-                if (!IsCurrent()) return true;
-                if (binding?.Command != null) break;
+                if (candidate.Command is RoutedCommand command)
+                    command.Execute(candidate.Parameter, target, IsCurrent);
+                else candidate.Command.Execute(candidate.Parameter);
+                return true;
             }
-        }
-        var boundCommand = binding?.Command;
-        if (boundCommand != null)
-        {
-            var target = binding!.CommandTarget ?? element;
-            var parameter = binding.CommandParameter;
-            if (boundCommand is RoutedCommand routedCommand)
-            {
-                bool canExecute = routedCommand.CanExecute(parameter, target);
-                if (!IsCurrent()) return true;
-                if (canExecute)
-                {
-                    routedCommand.Execute(parameter, target, IsCurrent);
-                    return true;
-                }
-            }
-            else
-            {
-                bool canExecute = boundCommand.CanExecute(parameter);
-                if (!IsCurrent()) return true;
-                if (canExecute)
-                {
-                    boundCommand.Execute(parameter);
-                    return true;
-                }
-            }
+            if (!continueRouting) return false;
         }
 
+        // Retain the existing shared application gestures for commands exposed
+        // by routed event handlers rather than a CommandBinding collection.
         foreach (var command in GetAllRoutedCommands())
         {
-            foreach (InputGesture gesture in command.InputGestures)
+            foreach (InputGesture gesture in command.InputGestures.Cast<InputGesture>().ToArray())
             {
                 bool matches = gesture.Matches(element, args);
                 if (!IsCurrent()) return true;
-                if (matches)
+                if (!matches) continue;
+                bool canExecute = command.CanExecute(null, element, IsCurrent, out _);
+                if (!IsCurrent()) return true;
+                if (canExecute)
                 {
-                    bool canExecute = command.CanExecute(null, element);
-                    if (!IsCurrent()) return true;
-                    if (canExecute)
-                    {
-                        command.Execute(null, element, IsCurrent);
-                        return true;
-                    }
+                    command.Execute(null, element, IsCurrent);
+                    return true;
                 }
             }
         }
-
         return false;
+    }
+
+    private readonly record struct InputCommand(ICommand? Command, IInputElement? Target, object? Parameter);
+
+    private static InputCommand FindInputCommand(UIElement owner, InputEventArgs args, Func<bool> isCurrent)
+    {
+        var classInputs = GetClassBindings(_classInputBindings, owner.GetType(), newestFirst: true);
+        var localCommands = owner.CommandBindings.Cast<CommandBinding>().ToArray();
+        var classCommands = GetClassBindings(_classCommandBindings, owner.GetType());
+        var binding = owner.InputBindings.FindMatch(owner, args, isCurrent);
+        if (!isCurrent()) return default;
+        if (binding?.Command is not { } command)
+        {
+            binding = null;
+            foreach (var candidate in classInputs)
+            {
+                bool matches = candidate.Gesture?.Matches(owner, args) == true;
+                if (!isCurrent()) return default;
+                if (matches && candidate.Command != null) { binding = candidate; break; }
+            }
+        }
+        if (binding?.Command is { } bound)
+            return new(bound, binding.CommandTarget, binding.CommandParameter);
+
+        foreach (var candidate in localCommands.Concat(classCommands))
+        {
+            if (candidate.Command is not RoutedCommand routed) continue;
+            foreach (InputGesture gesture in routed.InputGestures.Cast<InputGesture>().ToArray())
+            {
+                bool matches = gesture.Matches(owner, args);
+                if (!isCurrent()) return default;
+                if (matches) return new(routed, null, null);
+            }
+        }
+        return default;
     }
 
     private static List<Jalium.UI.Media.Visual> CaptureKeyBindingRoute(UIElement element, UIElement scope)

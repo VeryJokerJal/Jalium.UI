@@ -429,6 +429,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     private void InvokeHandlers(object sender, RoutedEventArgs e)
     {
+        if (!e.IsCommandInputCurrent) return;
         var routedEvent = e.RoutedEvent!;
 
         // Invoke class handlers first
@@ -436,6 +437,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         {
             if (!e.Handled || classHandler.HandledEventsToo)
             {
+                if (!e.IsCommandInputCurrent) return;
                 e.InvokeHandler(classHandler.Handler, sender);
             }
         }
@@ -448,59 +450,14 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             {
                 if (!e.Handled || handler.InvokeHandledEventsToo)
                 {
+                    if (!e.IsCommandInputCurrent) return;
                     e.InvokeHandler(handler.Handler, sender);
                 }
             }
         }
 
-        // Check CommandBindings for RoutedCommand events
-        if (_commandBindings != null && _commandBindings.Count > 0)
-        {
-            if (routedEvent == Input.RoutedCommand.CanExecuteEvent && e is Input.CanExecuteRoutedEventArgs canExecArgs)
-            {
-                foreach (Input.CommandBinding binding in _commandBindings)
-                {
-                    if (binding.Command == canExecArgs.Command)
-                    {
-                        binding.OnCanExecute(sender, canExecArgs);
-                        if (canExecArgs.Handled) break;
-                    }
-                }
-            }
-            else if (routedEvent == Input.RoutedCommand.ExecutedEvent && e is Input.ExecutedRoutedEventArgs execArgs)
-            {
-                foreach (Input.CommandBinding binding in _commandBindings)
-                {
-                    if (binding.Command == execArgs.Command)
-                    {
-                        binding.OnExecuted(sender, execArgs);
-                        if (execArgs.Handled) break;
-                    }
-                }
-            }
-            else if (routedEvent == Input.RoutedCommand.PreviewCanExecuteEvent && e is Input.CanExecuteRoutedEventArgs previewCanExecArgs)
-            {
-                foreach (Input.CommandBinding binding in _commandBindings)
-                {
-                    if (binding.Command == previewCanExecArgs.Command)
-                    {
-                        binding.OnPreviewCanExecute(sender, previewCanExecArgs);
-                        if (previewCanExecArgs.Handled) break;
-                    }
-                }
-            }
-            else if (routedEvent == Input.RoutedCommand.PreviewExecutedEvent && e is Input.ExecutedRoutedEventArgs previewExecArgs)
-            {
-                foreach (Input.CommandBinding binding in _commandBindings)
-                {
-                    if (binding.Command == previewExecArgs.Command)
-                    {
-                        binding.OnPreviewExecuted(sender, previewExecArgs);
-                        if (previewExecArgs.Handled) break;
-                    }
-                }
-            }
-        }
+        if (e is Input.CanExecuteRoutedEventArgs or Input.ExecutedRoutedEventArgs)
+            Input.CommandManager.InvokeCommandBindings(this, sender, e, _commandBindings);
     }
 
     #endregion

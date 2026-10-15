@@ -108,21 +108,34 @@ public class RoutedCommand : ICommand
     /// <param name="parameter">Data used by the command.</param>
     /// <param name="target">The input element on which to check the command.</param>
     /// <returns>true if the command can execute on the target; otherwise, false.</returns>
-    public bool CanExecute(object? parameter, IInputElement? target)
+    public bool CanExecute(object? parameter, IInputElement? target) =>
+        CanExecute(parameter, target, null, out _);
+
+    internal bool CanExecute(object? parameter, IInputElement? target, Func<bool>? isInputCurrent,
+        out bool continueRouting)
     {
-        // target ??= FocusManager.GetFocusedElement(); // Would get focused element
-
-        if (target is not UIElement uiElement)
-            return false;
-
+        continueRouting = false;
+        target ??= Keyboard.FocusedElement;
+        if (target is not UIElement uiElement || isInputCurrent?.Invoke() == false) return false;
         var args = new CanExecuteRoutedEventArgs(this, parameter)
         {
-            RoutedEvent = CanExecuteEvent
+            RoutedEvent = PreviewCanExecuteEvent,
+            CommandInputLifetime = isInputCurrent
         };
-
-        uiElement.RaiseEvent(args);
-
-        return args.CanExecute;
+        try
+        {
+            uiElement.RaiseEvent(args);
+            if (isInputCurrent?.Invoke() == false) return false;
+            if (!args.Handled)
+            {
+                args.RoutedEvent = CanExecuteEvent;
+                uiElement.RaiseEvent(args);
+            }
+            if (isInputCurrent?.Invoke() == false) return false;
+            continueRouting = args.ContinueRouting;
+            return args.CanExecute;
+        }
+        finally { args.CommandInputLifetime = null; }
     }
 
     /// <summary>
@@ -147,20 +160,23 @@ public class RoutedCommand : ICommand
 
     private void ExecuteCore(object? parameter, IInputElement? target, Func<bool>? isInputCurrent)
     {
+        target ??= Keyboard.FocusedElement;
         if (target is not UIElement uiElement || isInputCurrent?.Invoke() == false)
             return;
 
         // Physical input keeps its captured lifetime through this second query
         // and PreviewExecuted. Programmatic execution retains its explicit target.
-        if (!CanExecute(parameter, target) || isInputCurrent?.Invoke() == false)
+        if (!CanExecute(parameter, target, isInputCurrent, out _) || isInputCurrent?.Invoke() == false)
             return;
 
         // Raise PreviewExecuted (tunnel)
         var previewArgs = new ExecutedRoutedEventArgs(this, parameter)
         {
-            RoutedEvent = PreviewExecutedEvent
+            RoutedEvent = PreviewExecutedEvent,
+            CommandInputLifetime = isInputCurrent
         };
-        uiElement.RaiseEvent(previewArgs);
+        try { uiElement.RaiseEvent(previewArgs); }
+        finally { previewArgs.CommandInputLifetime = null; }
 
         if (previewArgs.Handled || isInputCurrent?.Invoke() == false)
             return;
@@ -168,9 +184,11 @@ public class RoutedCommand : ICommand
         // Raise Executed (bubble)
         var args = new ExecutedRoutedEventArgs(this, parameter)
         {
-            RoutedEvent = ExecutedEvent
+            RoutedEvent = ExecutedEvent,
+            CommandInputLifetime = isInputCurrent
         };
-        uiElement.RaiseEvent(args);
+        try { uiElement.RaiseEvent(args); }
+        finally { args.CommandInputLifetime = null; }
     }
 
     /// <summary>
