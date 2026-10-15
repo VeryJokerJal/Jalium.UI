@@ -83,6 +83,91 @@ public sealed class MacOSPointerSelectionTests
         Assert.Same(column, grid.SelectedCells[0].Column);
     }
 
+    [Theory]
+    [InlineData(ModifierKeys.Control)]
+    [InlineData(ModifierKeys.Windows)]
+    public void TreeSelectorPointerTogglesPreserveOtherItems(ModifierKeys modifiers)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var selector = new TreeSelector { SelectionMode = SelectionMode.Extended };
+        var first = new TreeSelectorItem { Header = "first" };
+        var second = new TreeSelectorItem { Header = "second" };
+        selector.Items.Add(first); selector.Items.Add(second);
+        using var host = new Host(selector);
+        ClickHeader(first, ModifierKeys.None);
+        ClickHeader(second, modifiers);
+        Assert.Equal(new object[] { "first", "second" }, selector.SelectedItems.Cast<object>());
+        ClickHeader(first, modifiers);
+        Assert.Equal(new object[] { "second" }, selector.SelectedItems.Cast<object>());
+    }
+
+    [Fact]
+    public void TreeSelectorShiftPointerSelectsTheVisibleRange()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var selector = new TreeSelector { SelectionMode = SelectionMode.Extended };
+        var items = Enumerable.Range(0, 3).Select(i => new TreeSelectorItem { Header = i }).ToArray();
+        foreach (var item in items) selector.Items.Add(item);
+        using var host = new Host(selector);
+        ClickHeader(items[0], ModifierKeys.None);
+        ClickHeader(items[2], ModifierKeys.Shift);
+        Assert.Equal(new object[] { 0, 1, 2 }, selector.SelectedItems.Cast<object>());
+    }
+
+    [Theory]
+    [InlineData(ModifierKeys.Control)]
+    [InlineData(ModifierKeys.Windows)]
+    public void TreeSelectorPrimaryShiftPointerAddsTheRange(ModifierKeys primary)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var selector = new TreeSelector { SelectionMode = SelectionMode.Extended };
+        var items = Enumerable.Range(0, 4).Select(i => new TreeSelectorItem { Header = i }).ToArray();
+        foreach (var item in items) selector.Items.Add(item);
+        using var host = new Host(selector);
+        ClickHeader(items[0], ModifierKeys.None);
+        ClickHeader(items[2], primary);
+        ClickHeader(items[3], primary | ModifierKeys.Shift);
+        Assert.Equal(new object[] { 0, 2, 3 }, selector.SelectedItems.Cast<object>());
+    }
+
+    [Fact]
+    public void TreeSelectorUnmodifiedPointerReplacesTheSelection()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var selector = new TreeSelector { SelectionMode = SelectionMode.Extended };
+        var first = new TreeSelectorItem { Header = "first" };
+        var second = new TreeSelectorItem { Header = "second" };
+        selector.Items.Add(first); selector.Items.Add(second);
+        using var host = new Host(selector);
+        selector.SelectedItems.Add("first"); selector.SelectedItems.Add("second");
+        ClickHeader(first, ModifierKeys.None);
+        Assert.Equal(new object[] { "first" }, selector.SelectedItems.Cast<object>());
+    }
+
+    [Theory]
+    [InlineData(Key.Enter)]
+    [InlineData(Key.Space)]
+    public void TreeSelectorPrimarySelectionKeyUsesTheLogicalEventModifiers(Key key)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var selector = new TreeSelector { SelectionMode = SelectionMode.Extended };
+        var first = new TreeSelectorItem { Header = "first" };
+        var second = new TreeSelectorItem { Header = "second" };
+        selector.Items.Add(first); selector.Items.Add(second);
+        using var host = new Host(selector);
+        ClickHeader(first, ModifierKeys.None);
+        var input = new KeyEventArgs(UIElement.KeyDownEvent, key, ModifierKeys.Control,
+            isDown: true, isRepeat: false, timestamp: 0)
+            { PhysicalModifiers = ModifierKeys.Windows };
+        second.RaiseEvent(input);
+        Assert.True(input.Handled);
+        Assert.Equal(new object[] { "first", "second" }, selector.SelectedItems.Cast<object>());
+    }
+
+    private static void ClickHeader(TreeSelectorItem item, ModifierKeys modifiers) =>
+        typeof(TreeSelectorItem).GetMethod("OnHeaderMouseDown", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(item, [item, Mouse(modifiers)]);
+
     private static void ClickRow(Control grid, Control row, ModifierKeys modifiers) =>
         grid.GetType().GetMethod("OnRowMouseDown", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(grid, [row, Mouse(modifiers)]);
