@@ -3,6 +3,8 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+// 此处的 D2D1 类型（ID2D1SimplifiedGeometrySink 等）仅用于 DirectWrite 的
+// GetGlyphRunOutline 字形轮廓提取，并非 D2D 渲染路径，属于有意保留的例外。
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wrl/client.h>

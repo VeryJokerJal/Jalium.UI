@@ -140,6 +140,11 @@ if (args.Length == 1 && args[0] == "--window-editing-actions")
     return WindowEditingActionChecks.RunAll();
 if (args.Length == 1 && args[0].StartsWith("--window-editing-actions-case=", StringComparison.Ordinal))
     return WindowEditingActionChecks.RunCase(args[0]);
+if (args.Length == 1 && args[0] == "--window-text-context-menu")
+    return WindowTextContextMenuChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-text-context-menu-case=", StringComparison.Ordinal))
+    return WindowTextContextMenuChecks.RunCase(args[0]);
+
 if (args.Length == 1 && args[0] == "--window-editing-menu")
     return WindowEditingMenuChecks.RunAll();
 if (args.Length == 1 && args[0] == "--editor-accessibility")

@@ -23,13 +23,21 @@ $sourceHeader = [IO.File]::ReadAllText($SourceHeaderPath)
 function Get-EmbeddedShaderSource {
     param([Parameter(Mandatory)][string]$Symbol)
 
-    $pattern = 'static\s+const\s+char\s+{0}\[\]\s*=\s*R"HLSL\((?<body>[\s\S]*?)\)HLSL";' -f [Regex]::Escape($Symbol)
+    # A source may be split into several adjacent R"HLSL(...)HLSL" literals to
+    # stay under the MSVC per-literal limit (16,380 bytes, error C2026). Capture
+    # everything up to the terminating `)HLSL";` and stitch the segment bodies
+    # back together so fxc receives the original, unsplit HLSL.
+    $pattern = 'static\s+const\s+char\s+{0}\[\]\s*=\s*(?<body>[\s\S]*?)\)HLSL"\s*;' -f [Regex]::Escape($Symbol)
     $match = [Regex]::Match($sourceHeader, $pattern)
     if (-not $match.Success) {
         throw "Unable to find embedded shader source: $Symbol"
     }
 
-    return $match.Groups['body'].Value
+    $body = $match.Groups['body'].Value
+    $body = $body -replace '^\s*R"HLSL\(', ''
+    $body = $body -replace '\)HLSL"\s*R"HLSL\(', ''
+
+    return $body
 }
 
 $shaderSpecs = @(

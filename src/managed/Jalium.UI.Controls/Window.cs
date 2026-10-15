@@ -5290,7 +5290,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.MouseMove:
             {
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
-                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                var modifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 _inputDispatcher.HandleMouseMove(position, GetPlatformMouseButtons(evt), modifiers, Environment.TickCount);
                 break;
             }
@@ -5299,11 +5299,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
                 var button = MapPlatformMouseButton(evt.Button);
-                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                var modifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 var buttons = GetPlatformMouseButtons(evt).WithButton(button, MouseButtonState.Pressed);
                 if (TryHandleMacOSWindowChrome(button, position, evt.ClickCount))
                     break;
-                _inputDispatcher.HandleMouseDown(button, position, buttons, modifiers, evt.ClickCount, Environment.TickCount);
+                _macOSTextMenuConsumedPointer = false;
+                try { _inputDispatcher.HandleMouseDown(button, position, buttons, modifiers, evt.ClickCount, Environment.TickCount); }
+                finally { CompleteMacOSTextMenuPointer(); }
                 break;
             }
 
@@ -5311,7 +5313,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
                 var button = MapPlatformMouseButton(evt.Button);
-                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                var modifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 if (TryCompleteMacOSTitleBarDoubleClick(button, position)) break;
                 _inputDispatcher.HandleMouseUp(button, position, GetPlatformMouseButtons(evt).WithButton(button, MouseButtonState.Released), modifiers, Environment.TickCount);
                 break;
@@ -5320,7 +5322,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.MouseWheel:
             {
                 var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
-                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                var modifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 _inputDispatcher.HandleMouseWheel(position, evt.WheelDeltaX * 120.0, evt.WheelDeltaY * 120.0,
                     evt.WheelHasPreciseScrollingDeltas, GetPlatformMouseButtons(evt), modifiers, Environment.TickCount,
                     evt.WheelPhase, evt.WheelMomentumPhase);
