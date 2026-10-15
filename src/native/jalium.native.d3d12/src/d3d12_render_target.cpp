@@ -3306,6 +3306,13 @@ void D3D12RenderTarget::BlitInkLayer(D3D12InkLayerBitmap* inkBitmap,
                                       float dstX, float dstY, float opacity)
 {
     if (!isDrawing_ || !directRenderer_ || !inkBitmap) return;
+
+    // Submit the ink layer's accumulated Clear()/DispatchBrush() batch BEFORE
+    // recording the ink texture as a sampled bitmap on the main render list.
+    // Both submit to the same DIRECT queue, so FIFO ordering guarantees the
+    // ink writes complete before the main list that samples them runs.
+    inkBitmap->FlushPending(false);
+
     if (!inkBitmap->Texture()) return;
     FlushVelloIfNeeded();
 

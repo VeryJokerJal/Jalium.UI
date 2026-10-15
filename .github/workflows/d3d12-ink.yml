@@ -1,0 +1,29 @@
+name: D3D12 ink
+
+on:
+  pull_request:
+    paths:
+      - 'src/native/jalium.native.d3d12/**'
+      - 'src/native/jalium.native.core/**'
+      - '.github/workflows/d3d12-ink.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  warp-regression:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure native ink regression tests
+        run: cmake -S src/native/jalium.native.d3d12/tests -B out/ink-tests -A x64
+      - name: Build production ink sources and WARP tests
+        run: cmake --build out/ink-tests --config Release --parallel 4
+      - name: Test PSO lifetime, batching and transient recovery on D3D12 WARP
+        run: ctest --test-dir out/ink-tests -C Release --output-on-failure -V
+      - name: Configure complete D3D12 backend
+        run: cmake -S src/native -B out/native -A x64
+      - name: Build complete D3D12 backend
+        run: cmake --build out/native --config Release --target jalium.native.d3d12 --parallel 4
