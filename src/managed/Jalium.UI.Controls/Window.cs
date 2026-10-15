@@ -5337,16 +5337,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var physicalModifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 int timestamp = Environment.TickCount;
                 var commandTarget = OperatingSystem.IsMacOS() ? GetTextInputTarget() : null;
+                var commandFocus = Keyboard.FocusedElement;
+                var commandPlatform = _platformWindow;
+                nint commandHandle = Handle;
+                int commandGeneration = Volatile.Read(ref _renderLifecycleGeneration);
+                bool IsCommandTargetCurrent() => commandTarget != null &&
+                    IsEnabled && Visibility == Visibility.Visible &&
+                    ReferenceEquals(commandTarget, GetTextInputTarget()) &&
+                    ReferenceEquals(commandFocus, Keyboard.FocusedElement) &&
+                    !_isClosing && !_managedTeardownStarted &&
+                    commandGeneration == Volatile.Read(ref _renderLifecycleGeneration) &&
+                    ReferenceEquals(commandPlatform, _platformWindow) && commandHandle == Handle;
                 bool handled = _inputDispatcher.HandlePlatformKeyDown(key, modifiers, isRepeat, timestamp,
                     physicalModifiers);
                 // AppKit edit actions also arrive as key events. Let custom
                 // routed commands handle them after the control's own handlers.
-                if (!handled && commandTarget != null && !_isClosing && !_managedTeardownStarted &&
-                    IsEnabled && Visibility == Visibility.Visible &&
-                    ReferenceEquals(commandTarget, GetTextInputTarget()))
-                    CommandManager.ProcessInput(commandTarget,
+                if (!handled && IsCommandTargetCurrent())
+                    CommandManager.ProcessInput(commandTarget!,
                         new KeyEventArgs(UIElement.KeyDownEvent, key, modifiers, true, isRepeat, timestamp)
-                        { PhysicalModifiers = physicalModifiers });
+                        { PhysicalModifiers = physicalModifiers }, IsCommandTargetCurrent);
                 break;
             }
 

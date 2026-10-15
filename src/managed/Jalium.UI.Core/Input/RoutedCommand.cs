@@ -139,15 +139,20 @@ public class RoutedCommand : ICommand
     /// </summary>
     /// <param name="parameter">Data used by the command.</param>
     /// <param name="target">The input element on which to execute the command.</param>
-    public void Execute(object? parameter, IInputElement? target)
-    {
-        // target ??= FocusManager.GetFocusedElement(); // Would get focused element
+    public void Execute(object? parameter, IInputElement? target) =>
+        ExecuteCore(parameter, target, null);
 
-        if (target is not UIElement uiElement)
+    internal void Execute(object? parameter, IInputElement? target, Func<bool> isInputCurrent) =>
+        ExecuteCore(parameter, target, isInputCurrent);
+
+    private void ExecuteCore(object? parameter, IInputElement? target, Func<bool>? isInputCurrent)
+    {
+        if (target is not UIElement uiElement || isInputCurrent?.Invoke() == false)
             return;
 
-        // First check if command can execute
-        if (!CanExecute(parameter, target))
+        // Physical input keeps its captured lifetime through this second query
+        // and PreviewExecuted. Programmatic execution retains its explicit target.
+        if (!CanExecute(parameter, target) || isInputCurrent?.Invoke() == false)
             return;
 
         // Raise PreviewExecuted (tunnel)
@@ -157,7 +162,7 @@ public class RoutedCommand : ICommand
         };
         uiElement.RaiseEvent(previewArgs);
 
-        if (previewArgs.Handled)
+        if (previewArgs.Handled || isInputCurrent?.Invoke() == false)
             return;
 
         // Raise Executed (bubble)

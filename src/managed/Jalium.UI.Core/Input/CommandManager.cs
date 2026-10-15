@@ -231,13 +231,13 @@ public sealed class CommandManager
     /// <param name="element">The element that received the input.</param>
     /// <param name="args">The input event arguments.</param>
     /// <returns>True if the input was processed by a command; otherwise, false.</returns>
-    internal static bool ProcessInput(UIElement element, InputEventArgs args)
+    internal static bool ProcessInput(UIElement element, InputEventArgs args, Func<bool>? isInputCurrent = null)
     {
         var inputRoot = args is MouseEventArgs ? GetInputRoot(element) : null;
-        bool IsCurrent() => inputRoot == null ||
-            element.IsVisible && element.IsEnabled &&
-            ReferenceEquals(GetInputRoot(element), inputRoot) &&
-            (inputRoot is not UIElement root || root.IsVisible && root.IsEnabled);
+        bool IsCurrent() => (isInputCurrent?.Invoke() ?? true) &&
+            (inputRoot == null || element.IsVisible && element.IsEnabled &&
+             ReferenceEquals(GetInputRoot(element), inputRoot) &&
+             (inputRoot is not UIElement root || root.IsVisible && root.IsEnabled));
         if (!IsCurrent()) return false;
 
         // Matching and CanExecute may close or move the target. Consume input
@@ -255,7 +255,7 @@ public sealed class CommandManager
                 if (!IsCurrent()) return true;
                 if (canExecute)
                 {
-                    routedCommand.Execute(parameter, target);
+                    routedCommand.Execute(parameter, target, IsCurrent);
                     return true;
                 }
             }
@@ -283,7 +283,7 @@ public sealed class CommandManager
                     if (!IsCurrent()) return true;
                     if (canExecute)
                     {
-                        command.Execute(null, element);
+                        command.Execute(null, element, IsCurrent);
                         return true;
                     }
                 }

@@ -26,6 +26,7 @@ internal sealed class WindowInputDispatcher
     private long _mouseOverGeneration;
     private readonly List<UIElement> _mousePressedChain = [];
     private MouseButton? _suppressMouseUpButton;
+    private readonly HashSet<MouseButton> _suppressedMousePointerReleases = [];
     private TitleBarButton? _hoveredTitleBarButton;
     private TitleBarButton? _pressedTitleBarButton;
     private bool _isClientMouseLeaveTracking;
@@ -269,6 +270,7 @@ internal sealed class WindowInputDispatcher
     {
         var physicalModifiers = modifiers;
         modifiers = MouseInputModifiers.ToLogical(modifiers);
+        _suppressedMousePointerReleases.Remove(button);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
@@ -386,7 +388,11 @@ internal sealed class WindowInputDispatcher
 
         // A handled mouse press never started a pointer session. In particular,
         // a command may have detached or closed this target during dispatch.
-        if (sourceHandled && !sourceCanceled) return;
+        if (sourceHandled && !sourceCanceled)
+        {
+            _suppressedMousePointerReleases.Add(button);
+            return;
+        }
 
         if (!SuppressMouseToPointerPromotion)
         {
@@ -409,6 +415,7 @@ internal sealed class WindowInputDispatcher
     {
         var physicalModifiers = modifiers;
         modifiers = MouseInputModifiers.ToLogical(modifiers);
+        bool suppressPointerRelease = _suppressedMousePointerReleases.Remove(button);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         if (_suppressMouseUpButton == button)
@@ -500,7 +507,8 @@ internal sealed class WindowInputDispatcher
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
         }
 
-        if (!SuppressMouseToPointerPromotion)
+        if (suppressPointerRelease) CleanupPointerSession(MousePointerId);
+        if (!SuppressMouseToPointerPromotion && !suppressPointerRelease)
         {
             PointerPoint pointerPoint = CreateMousePointerPoint(
                 position, buttons, modifiers, timestamp,
@@ -900,6 +908,7 @@ internal sealed class WindowInputDispatcher
         UIElement.ForceReleaseMouseCapture();
         ClearPressedChains();
         _suppressMouseUpButton = null;
+        _suppressedMousePointerReleases.Clear();
 
         if (_host.TitleBarStyle == WindowTitleBarStyle.Custom)
             ClearTitleBarInteractionState();
@@ -1070,6 +1079,7 @@ internal sealed class WindowInputDispatcher
 
         if (detachingWholeWindow)
         {
+            _suppressedMousePointerReleases.Clear();
             ResetClientMouseLeaveTracking();
             _suppressEscapeUntilTick = 0;
         }

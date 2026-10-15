@@ -84,6 +84,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private MouseButtonStates _platformMouseButtons = MouseButtonStates.AllReleased;
     private const uint MousePointerId = 1;
     private readonly Dictionary<uint, UIElement?> _activePointerTargets = [];
+    private readonly HashSet<MouseButton> _suppressedMousePointerReleases = [];
     private readonly Dictionary<uint, PointerPoint> _lastPointerPoints = [];
     private readonly Dictionary<uint, StylusDevice> _activeStylusDevices = [];
     private readonly Dictionary<uint, PointerManipulationSession> _activeManipulationSessions = [];
@@ -1348,6 +1349,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         var physicalModifiers = platformModifiers ?? GetModifierKeys();
         var modifiers = MouseInputModifiers.ToLogical(physicalModifiers);
         int timestamp = Environment.TickCount;
+        _suppressedMousePointerReleases.Remove(button);
 
         var hitElement = HitTest(position)?.VisualHit as UIElement;
         UpdateMouseOverState(hitElement);
@@ -1387,6 +1389,14 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
         }
 
+        // Commands and handled mouse input never started a pointer gesture.
+        // Track its release even when a hover move updates pointer state.
+        if (sourceHandled && !sourceCanceled)
+        {
+            if (!_disposed) _suppressedMousePointerReleases.Add(button);
+            return;
+        }
+
         PointerPoint pointerPoint = CreateMousePointerPoint(
             position,
             left, middle, right, xButton1, xButton2,
@@ -1418,6 +1428,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         var physicalModifiers = platformModifiers ?? GetModifierKeys();
         var modifiers = MouseInputModifiers.ToLogical(physicalModifiers);
         int timestamp = Environment.TickCount;
+        bool suppressPointerRelease = _suppressedMousePointerReleases.Remove(button);
 
         var hitElement = HitTest(position)?.VisualHit as UIElement;
         UpdateMouseOverState(hitElement);
@@ -1455,6 +1466,12 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
+        }
+
+        if (suppressPointerRelease)
+        {
+            CleanupPointerSession(MousePointerId);
+            return;
         }
 
         PointerPoint pointerPoint = CreateMousePointerPoint(

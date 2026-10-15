@@ -283,6 +283,47 @@ public sealed class MacOSTextContextMenuTests
         Assert.Equal(MouseButtonState.Released, Jalium.UI.Input.Mouse.RightButton);
     }
 
+    [Theory]
+    [InlineData(0, false)] [InlineData(0, true)]
+    [InlineData(1, false)] [InlineData(1, true)]
+    [InlineData(2, false)] [InlineData(2, true)]
+    [InlineData(3, false)] [InlineData(3, true)]
+    public void MacOSPopupUsesAnOwnerOverlayForItsNativeEditingMenu(int kind, bool keyboard)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var host = new Host(kind);
+        host.Panel.Children.Remove(host.Editor);
+        var popup = new Popup
+        {
+            Child = host.Editor, PlacementTarget = host.Other,
+            PreferExternalWindow = true, StaysOpen = true,
+            PopupAnimation = PopupAnimation.None
+        };
+        try
+        {
+            popup.IsOpen = true;
+            Assert.Same(host.Window, Window.GetWindow(host.Editor));
+            Assert.Null(typeof(Popup).GetField("_popupWindow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(popup));
+            Assert.True(host.Editor.Focus());
+            int calls = 0;
+            PlatformTextContextMenus.Show = request =>
+            {
+                calls++;
+                Assert.Equal(host.Window.Handle, request.Owner);
+                Assert.True(request.IsCurrent());
+                Assert.True(request.CanExecute(PlatformTextEditingCommand.SelectAll));
+                if (!keyboard)
+                    Assert.Equal(host.Editor.TranslatePoint(new Point(24, 32), host.Window), request.Position);
+                return true;
+            };
+            if (keyboard)
+                host.Editor.RaiseEvent(new KeyEventArgs(UIElement.KeyDownEvent, Key.F10, ModifierKeys.Shift, true, false, 0));
+            else host.Editor.RaiseEvent(Mouse(UIElement.MouseDownEvent, MouseButton.Right));
+            Assert.Equal(1, calls);
+        }
+        finally { popup.IsOpen = false; }
+    }
+
     private static MouseButtonEventArgs Mouse(RoutedEvent routed, MouseButton button, ModifierKeys modifiers = ModifierKeys.None) =>
         new(routed, new Point(24, 32), button, routed == UIElement.MouseDownEvent ? MouseButtonState.Pressed : MouseButtonState.Released,
             1, MouseButtonState.Released, MouseButtonState.Released, MouseButtonState.Released,

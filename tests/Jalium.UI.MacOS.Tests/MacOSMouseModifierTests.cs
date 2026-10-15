@@ -282,8 +282,64 @@ public sealed class MacOSMouseModifierTests
             ModifierKeys.Control)));
         host.Send(wheel ? PlatformEventType.MouseWheel : PlatformEventType.MouseDown, 8, clicks);
         Assert.Equal(1, command.Count);
-        if (!wheel) host.Send(PlatformEventType.MouseUp, 8);
+        if (!wheel)
+        {
+            Assert.Equal(0, host.ActivePointerCount);
+            host.Send(PlatformEventType.MouseUp, 8);
+        }
         Assert.Equal(1, command.Count);
+    }
+
+    [Theory]
+    [InlineData(1, false)] [InlineData(1, true)]
+    [InlineData(2, false)] [InlineData(2, true)]
+    public void PopupHandledMouseCommandDoesNotPromoteAnUnpairedRelease(int clicks, bool moveBeforeRelease)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var host = new PopupHost();
+        var command = new Counter();
+        host.Target.InputBindings.Add(new MouseBinding(command, new MouseGesture(
+            clicks == 2 ? MouseAction.LeftDoubleClick : MouseAction.LeftClick, ModifierKeys.Control)));
+        int down = 0, up = 0;
+        host.Target.PointerDown += (_, _) => down++;
+        host.Target.PointerUp += (_, _) => up++;
+        host.Send(PlatformEventType.MouseDown, 8, clicks);
+        if (moveBeforeRelease) host.Send(PlatformEventType.MouseMove, 8);
+        host.Send(PlatformEventType.MouseUp, 8);
+        Assert.Equal(1, command.Count);
+        Assert.Equal((0, 0), (down, up));
+        Assert.Equal(0, host.ActivePointerCount);
+        // Consuming this command must not suppress the next ordinary gesture.
+        host.Target.InputBindings.Clear();
+        host.Send(PlatformEventType.MouseDown, 0);
+        host.Send(PlatformEventType.MouseUp, 0);
+        Assert.Equal((1, 1), (down, up));
+    }
+
+    [Theory]
+    [InlineData(1, false)] [InlineData(1, true)]
+    [InlineData(2, false)] [InlineData(2, true)]
+    public void WindowHandledMouseCommandDoesNotPromoteAnUnpairedRelease(int clicks, bool moveBeforeRelease)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var host = new Host();
+        var command = new Counter();
+        host.Target.InputBindings.Add(new MouseBinding(command, new MouseGesture(
+            clicks == 2 ? MouseAction.LeftDoubleClick : MouseAction.LeftClick, ModifierKeys.Control)));
+        int down = 0, up = 0;
+        host.Target.PointerDown += (_, _) => down++;
+        host.Target.PointerUp += (_, _) => up++;
+        host.Send(PlatformEventType.MouseDown, 8, clicks);
+        if (moveBeforeRelease) host.Send(PlatformEventType.MouseMove, 8);
+        host.Send(PlatformEventType.MouseUp, 8);
+        Assert.Equal(1, command.Count);
+        Assert.Equal((0, 0), (down, up));
+        Assert.Empty(host.Dispatcher.ActivePointerTargets);
+        // Consuming this command must not suppress the next ordinary gesture.
+        host.Target.InputBindings.Clear();
+        host.Send(PlatformEventType.MouseDown, 0);
+        host.Send(PlatformEventType.MouseUp, 0);
+        Assert.Equal((1, 1), (down, up));
     }
 
     [Theory]
@@ -473,6 +529,8 @@ public sealed class MacOSMouseModifierTests
         internal readonly Control Target = new() { Background = Brushes.White, Focusable = true };
         private readonly Window _owner;
         private readonly PopupWindow _popup;
+        internal int ActivePointerCount => ((System.Collections.IDictionary)typeof(PopupWindow)
+            .GetField("_activePointerTargets", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(_popup)!).Count;
         internal PopupHost()
         {
             Keyboard.Initialize(); Keyboard.ClearFocus();

@@ -387,7 +387,10 @@ struct RestoreSnapshotProbe {
         int firstRead = 1, int actionCount = 1)
         : target(object), onRead(std::move(action)), invokeOnRead(firstRead), remainingActions(actionCount)
     {
-        Class cls = object_getClass(target);
+        // A style getter installed on a temporary KVO subclass would remain
+        // there after restoration and shadow later fullscreen overrides.
+        Class cls = selector == @selector(styleMask) && [target isKindOfClass:NSWindow.class]
+            ? [target class] : object_getClass(target);
         Method inherited = class_getInstanceMethod(cls, selector);
         original = method_getImplementation(inherited);
         // Keep AppKit/KVO's object class intact. Other objects use the real
@@ -851,6 +854,23 @@ struct DeferredMinimizationStart : RejectedMinimization {
     }
 };
 
+@interface WindowStyleObservationObserver : NSObject
+@end
+@implementation WindowStyleObservationObserver
+- (void)observeValueForKeyPath:(NSString*)keyPath ofObject:(id)object
+    change:(NSDictionary*)change context:(void*)context {}
+@end
+
+struct WindowStyleObservation {
+    NSWindow* window;
+    WindowStyleObservationObserver* observer = [WindowStyleObservationObserver new];
+    explicit WindowStyleObservation(NSWindow* native) : window(native)
+    {
+        [window addObserver:observer forKeyPath:@"styleMask" options:0 context:nullptr];
+    }
+    ~WindowStyleObservation() { [window removeObserver:observer forKeyPath:@"styleMask"]; }
+};
+
 struct ControlledFullScreen;
 static ControlledFullScreen* g_fullScreen = nullptr;
 static IMP g_originalFullScreenToggle = nullptr, g_originalStyleMask = nullptr;
@@ -867,7 +887,9 @@ struct ControlledFullScreen {
     int toggles = 0;
     explicit ControlledFullScreen(NSWindow* native) : window(native)
     {
-        Class cls = object_getClass(native);
+        // AppKit may introduce a KVO subclass after this fixture starts. Keep
+        // both overrides on the reported window class across that isa change.
+        Class cls = [native class];
         auto install = [&](SEL selector, IMP replacement, IMP& original) {
             Method inherited = class_getInstanceMethod(cls, selector);
             original = method_getImplementation(inherited);
@@ -2921,6 +2943,33 @@ int main(int argc, char** argv)
             // Keep the existing AX suite within its original deadline. The
             // expanded embedded-input cases have their own CTest entry.
             if (fullScreenFocusOnly || caseName) {
+                run("fullscreen focus late observation", [](Fixture& f) {
+                    // Compose with the getter probe used by the ordinary AX
+                    // matrix. Its restored method must not shadow later hooks.
+                    {
+                        RestoreSnapshotProbe probe(f.native, @selector(styleMask), [] {});
+                        (void)f.native.styleMask;
+                        Require(probe.called, "initial style getter probe was not exercised");
+                    }
+                    ControlledFullScreen transition(f.native);
+                    Class before = object_getClass(f.native);
+                    WindowStyleObservation observation(f.native);
+                    std::printf("Fullscreen observation: before=%s observed=%s reported=%s\n",
+                        class_getName(before), class_getName(object_getClass(f.native)),
+                        class_getName([f.native class]));
+                    transition.Will(); transition.Complete();
+                    Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN; }, 0.4),
+                        "observed initial fullscreen did not finish");
+                    Require((f.native.styleMask & NSWindowStyleMaskFullScreen) != 0,
+                        "temporary observation class bypassed the controlled fullscreen mask");
+                    int toggles = transition.toggles;
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    Require(transition.toggles == toggles + 1,
+                        "observed fullscreen exit did not start a native transition");
+                    transition.Complete();
+                    Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL; }, 0.4),
+                        "observed fullscreen exit did not finish");
+                });
                 for (int outcome = 0; outcome < 4; ++outcome) for (int kind = 0; kind < 3; ++kind)
                     for (bool renderingChild : {false, true}) {
                         std::string name = std::string("fullscreen focus embedded ") + focusOutcomes[outcome] +
@@ -3028,6 +3077,39 @@ int main(int argc, char** argv)
                         else Require(!control.currentEditor || f.native.firstResponder != control.currentEditor,
                             "fullscreen restoration focused an excluded native control");
                         Require(front.key == 0 && front.main == 0, "fullscreen callback restoration activated a window");
+                    });
+                }
+                // A newer state request is queued while the original capture
+                // owns its transition. Its sequence must not invalidate capture.
+                for (bool exiting : {false, true}) for (bool delegateRead : {false, true})
+                    for (bool maximize : {false, true}) {
+                    std::string name = std::string("fullscreen focus capture queues ") + (exiting ? "exit " : "enter ") +
+                        (delegateRead ? "delegate " : "editor ") + (maximize ? "maximize" : "normal");
+                    run(name.c_str(), [=](Fixture& f) {
+                        NSTextField* control = addControl(f, 0, false);
+                        ControlledFullScreen transition(f.native);
+                        if (exiting) {
+                            transition.Will(); transition.Complete();
+                            Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN; }, 0.4),
+                                "initial fullscreen did not finish before queued capture");
+                        }
+                        id target = delegateRead ? (id)control.currentEditor : (id)control;
+                        auto requested = maximize ? JALIUM_WINDOW_STATE_MAXIMIZED : JALIUM_WINDOW_STATE_NORMAL;
+                        RestoreSnapshotProbe probe(target, delegateRead ? @selector(delegate) : @selector(currentEditor), [&] {
+                            jalium_window_set_state(f.window, requested);
+                        });
+                        int toggles = transition.toggles;
+                        jalium_window_set_state(f.window, exiting ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_FULLSCREEN);
+                        Require(probe.called, "queued state did not run during input focus capture");
+                        Require(transition.toggles == toggles + 1, "newer state blocked the original fullscreen transition");
+                        transition.Complete();
+                        if (!exiting) {
+                            Require(Pump([&] { return transition.toggles == toggles + 2; }, 0.4),
+                                "queued state did not start its fullscreen exit");
+                            transition.Complete();
+                        }
+                        Require(Pump([&] { return jalium_window_get_state(f.window) == requested; }, 0.4),
+                            "queued state was stranded after input focus capture");
                     });
                 }
                 for (bool exiting : {false, true}) for (bool delegateRead : {false, true}) for (bool replace : {false, true}) {
