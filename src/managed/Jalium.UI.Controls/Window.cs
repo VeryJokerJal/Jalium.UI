@@ -5336,14 +5336,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 bool isRepeat = evt.IsRepeat != 0;
                 var physicalModifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 int timestamp = Environment.TickCount;
-                var commandTarget = OperatingSystem.IsMacOS() ? GetTextInputTarget() : null;
+                UIElement? ResolveCommandTarget() => GetTextInputTarget() ??
+                    (Keyboard.FocusedElement == null && IsMacOSInputTargetValid(this) ? this : null);
+                var commandTarget = OperatingSystem.IsMacOS() ? ResolveCommandTarget() : null;
                 var commandFocus = Keyboard.FocusedElement;
+                UIElement commandScope = ActiveContentDialog ?? (UIElement)this;
                 var commandPlatform = _platformWindow;
                 nint commandHandle = Handle;
                 int commandGeneration = Volatile.Read(ref _renderLifecycleGeneration);
                 bool IsCommandTargetCurrent() => commandTarget != null &&
                     IsEnabled && Visibility == Visibility.Visible &&
-                    ReferenceEquals(commandTarget, GetTextInputTarget()) &&
+                    ReferenceEquals(commandTarget, ResolveCommandTarget()) &&
+                    ReferenceEquals(commandScope, ActiveContentDialog ?? (UIElement)this) &&
                     ReferenceEquals(commandFocus, Keyboard.FocusedElement) &&
                     !_isClosing && !_managedTeardownStarted &&
                     commandGeneration == Volatile.Read(ref _renderLifecycleGeneration) &&
@@ -5353,9 +5357,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // AppKit edit actions also arrive as key events. Let custom
                 // routed commands handle them after the control's own handlers.
                 if (!handled && IsCommandTargetCurrent())
-                    CommandManager.ProcessInput(commandTarget!,
-                        new KeyEventArgs(UIElement.KeyDownEvent, key, modifiers, true, isRepeat, timestamp)
-                        { PhysicalModifiers = physicalModifiers }, IsCommandTargetCurrent);
+                {
+                    var commandArgs = new KeyEventArgs(UIElement.KeyDownEvent, key, modifiers, true, isRepeat, timestamp)
+                    { PhysicalModifiers = physicalModifiers, Source = commandTarget };
+                    commandArgs.SetOriginalSource(commandTarget);
+                    CommandManager.ProcessInput(commandTarget!, commandArgs, IsCommandTargetCurrent, commandScope);
+                }
                 break;
             }
 

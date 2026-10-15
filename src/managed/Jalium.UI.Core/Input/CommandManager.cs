@@ -230,11 +230,17 @@ public sealed class CommandManager
     /// </summary>
     /// <param name="element">The element that received the input.</param>
     /// <param name="args">The input event arguments.</param>
+    /// <param name="isInputCurrent">Rechecks the caller's captured input lifetime.</param>
+    /// <param name="keyBindingScope">Optional ancestor boundary for native key bindings.</param>
     /// <returns>True if the input was processed by a command; otherwise, false.</returns>
-    internal static bool ProcessInput(UIElement element, InputEventArgs args, Func<bool>? isInputCurrent = null)
+    internal static bool ProcessInput(UIElement element, InputEventArgs args, Func<bool>? isInputCurrent = null,
+        UIElement? keyBindingScope = null)
     {
         var inputRoot = args is MouseEventArgs ? GetInputRoot(element) : null;
+        var keyRoute = args is KeyEventArgs && keyBindingScope != null
+            ? CaptureKeyBindingRoute(element, keyBindingScope) : null;
         bool IsCurrent() => (isInputCurrent?.Invoke() ?? true) &&
+            (keyRoute == null || IsKeyBindingRouteCurrent(keyRoute)) &&
             (inputRoot == null || element.IsVisible && element.IsEnabled &&
              ReferenceEquals(GetInputRoot(element), inputRoot) &&
              (inputRoot is not UIElement root || root.IsVisible && root.IsEnabled));
@@ -244,6 +250,19 @@ public sealed class CommandManager
         // from a retired route and never run a command in a replacement root.
         var binding = element.InputBindings.FindMatch(element, args);
         if (!IsCurrent()) return true;
+        // Native key input is dispatched once after control handlers. Search
+        // its captured ancestors before the shared built-in gesture fallback,
+        // retaining the focused command target and the active modal boundary.
+        if (binding?.Command == null && keyRoute != null)
+        {
+            for (int i = 1; i < keyRoute.Count; i++)
+            {
+                if (keyRoute[i] is not UIElement owner) continue;
+                binding = owner.InputBindings.FindMatch(owner, args);
+                if (!IsCurrent()) return true;
+                if (binding?.Command != null) break;
+            }
+        }
         var boundCommand = binding?.Command;
         if (boundCommand != null)
         {
@@ -291,6 +310,26 @@ public sealed class CommandManager
         }
 
         return false;
+    }
+
+    private static List<Jalium.UI.Media.Visual> CaptureKeyBindingRoute(UIElement element, UIElement scope)
+    {
+        List<Jalium.UI.Media.Visual> route = [];
+        for (Jalium.UI.Media.Visual? current = element; current != null && route.Count < 4096; current = current.VisualParent)
+        {
+            route.Add(current);
+            if (ReferenceEquals(current, scope)) return route;
+        }
+        // A detached or cyclic route cannot reach the requested input scope.
+        return [];
+    }
+
+    private static bool IsKeyBindingRouteCurrent(List<Jalium.UI.Media.Visual> route)
+    {
+        if (route.Count == 0) return false;
+        for (int i = 0; i + 1 < route.Count; i++)
+            if (!ReferenceEquals(route[i].VisualParent, route[i + 1])) return false;
+        return true;
     }
 
     private static Jalium.UI.Media.Visual GetInputRoot(UIElement element)
