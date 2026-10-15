@@ -1214,7 +1214,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         }
         else if (SelectionMode == DataGridSelectionMode.Extended)
         {
-            if (modifiers.HasFlag(ModifierKeys.Control))
+            if (PointerSelectionModifiers.IsToggle(modifiers))
             {
                 if (IsItemSelected(item))
                     RemoveFromSelection(item);

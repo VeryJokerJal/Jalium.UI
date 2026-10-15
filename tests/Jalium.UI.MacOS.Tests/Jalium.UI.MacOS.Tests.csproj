@@ -29,6 +29,8 @@
   <ItemGroup>
     <Compile Remove="MacOSTextGeometryIntegrationTests.cs" />
     <Compile Include="MacOSTextGeometryIntegrationTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSEditControlImeGeometryTests.cs" />
+    <Compile Include="MacOSEditControlImeGeometryTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
     <Compile Remove="MacOSWindowVisualLineTests.cs" />
     <Compile Include="MacOSWindowVisualLineTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
     <Compile Remove="MacOSRichParagraphTests.cs" />

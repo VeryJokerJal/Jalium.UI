@@ -3864,6 +3864,8 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
     {
         geometry = default;
+        // AppKit can query marked-text geometry before the editor's first render.
+        EnsureViewLayoutMetrics();
         if (composition)
             return _isImeComposing && ImeTextGeometry.TryGetFirstLineRange(_imeCompositionString,
                 start, length, GetImeCompositionCaret, out geometry);
@@ -3882,6 +3884,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     bool IImeSupport.TryGetImeCharacterIndex(Point point, bool composition, out int index)
     {
         index = -1;
+        EnsureViewLayoutMetrics();
         double left = ShowLineNumbers ? _view.TextAreaLeft : 0;
         if (point.X < left || point.Y < 0 || point.X >= GetContentRenderWidth(RenderSize.Width) ||
             point.Y >= GetContentRenderHeight(RenderSize.Height)) return false;

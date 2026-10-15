@@ -63,8 +63,9 @@ public sealed class MacOSTextContextMenuTests
     }
 
     [Theory]
-    [InlineData(false)] [InlineData(true)]
-    public void ExplicitMenuAndCancelledOpening_AreNotReplaced(bool cancel)
+    [InlineData(false, MouseButton.Right)] [InlineData(true, MouseButton.Right)]
+    [InlineData(false, MouseButton.Left)] [InlineData(true, MouseButton.Left)]
+    public void ExplicitMenuAndCancelledOpening_AreNotReplaced(bool cancel, MouseButton button)
     {
         if (!OperatingSystem.IsMacOS()) return;
         using var host = new Host();
@@ -73,10 +74,13 @@ public sealed class MacOSTextContextMenuTests
         int openings = 0;
         ContextMenuService.AddContextMenuOpeningHandler(host.Panel, (_, e) => { openings++; e.Handled = cancel; });
         PlatformTextContextMenus.Show = _ => throw new Xunit.Sdk.XunitException("Explicit menu replaced");
-        host.Editor.RaiseEvent(Mouse(UIElement.MouseDownEvent, MouseButton.Right));
-        var release = Mouse(UIElement.PreviewMouseUpEvent, MouseButton.Right);
-        host.Editor.RaiseEvent(release);
-        Assert.True(release.Handled);
+        var modifiers = button == MouseButton.Left ? ModifierKeys.Control : ModifierKeys.None;
+        host.Editor.RaiseEvent(Mouse(UIElement.MouseDownEvent, button, modifiers));
+        if (button == MouseButton.Right) Assert.False(menu.IsOpen);
+        var preview = Mouse(UIElement.PreviewMouseUpEvent, button, modifiers);
+        host.Editor.RaiseEvent(preview);
+        Assert.Equal(button == MouseButton.Left && !cancel, preview.Handled);
+        if (!preview.Handled) host.Editor.RaiseEvent(Mouse(UIElement.MouseUpEvent, button, modifiers));
         Assert.Equal(!cancel, menu.IsOpen);
         Assert.Equal(1, openings);
         menu.Close();
@@ -95,6 +99,24 @@ public sealed class MacOSTextContextMenuTests
         });
         PlatformTextContextMenus.Show = _ => throw new Xunit.Sdk.XunitException("Invalid popup opened");
         host.Editor.RaiseEvent(Mouse(UIElement.MouseDownEvent, MouseButton.Right));
+    }
+
+    [Theory]
+    [InlineData(false, Key.F10, ModifierKeys.Shift)] [InlineData(true, Key.F10, ModifierKeys.Shift)]
+    [InlineData(false, Key.Apps, ModifierKeys.None)] [InlineData(true, Key.Apps, ModifierKeys.None)]
+    public void ExplicitKeyboardMenu_UsesOneOpeningRequest(bool cancel, Key key, ModifierKeys modifiers)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var host = new Host();
+        var menu = new ContextMenu();
+        ContextMenuService.SetContextMenu(host.Panel, menu);
+        int openings = 0;
+        ContextMenuService.AddContextMenuOpeningHandler(host.Panel, (_, e) => { openings++; e.Handled = cancel; });
+        PlatformTextContextMenus.Show = _ => throw new Xunit.Sdk.XunitException("Explicit menu replaced");
+        host.Editor.RaiseEvent(new KeyEventArgs(UIElement.KeyDownEvent, key, modifiers, true, false, 0));
+        Assert.Equal(!cancel, menu.IsOpen);
+        Assert.Equal(1, openings);
+        menu.Close();
     }
 
     [Fact]
@@ -152,6 +174,39 @@ public sealed class MacOSTextContextMenuTests
         PlatformTextContextMenus.Show = _ => { calls++; return true; };
         host.Editor.RaiseEvent(Mouse(UIElement.MouseDownEvent, MouseButton.Right));
         Assert.Equal(0, calls);
+    }
+
+    [Theory]
+    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
+    public void UnopenedMenu_PreservesControlClickAndRelease(int reason)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var host = new Host();
+        PlatformTextContextMenus.Show = _ => false;
+        if (reason == 0) ContextMenuService.SetIsEnabled(host.Editor, false);
+        if (reason == 1)
+            ContextMenuService.AddContextMenuOpeningHandler(host.Editor, (_, e) => e.Handled = true);
+        if (reason == 3) host.SetHandle(0);
+
+        host.Editor.RaiseEvent(Mouse(UIElement.MouseDownEvent, MouseButton.Left, ModifierKeys.Control));
+        Assert.Equal(0, ((TextBox)host.Editor).SelectionLength);
+        var release = Mouse(UIElement.PreviewMouseUpEvent, MouseButton.Left, ModifierKeys.Control);
+        host.Editor.RaiseEvent(release);
+        Assert.False(release.Handled);
+        host.Editor.RaiseEvent(Mouse(UIElement.MouseUpEvent, MouseButton.Left, ModifierKeys.Control));
+    }
+
+    [Theory]
+    [InlineData(Key.F10, ModifierKeys.Shift)] [InlineData(Key.Apps, ModifierKeys.None)]
+    public void CancelledKeyboardMenu_DoesNotConsumeTheKey(Key key, ModifierKeys modifiers)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var host = new Host();
+        ContextMenuService.AddContextMenuOpeningHandler(host.Editor, (_, e) => e.Handled = true);
+        PlatformTextContextMenus.Show = _ => throw new Xunit.Sdk.XunitException("Cancelled menu opened");
+        var args = new KeyEventArgs(UIElement.KeyDownEvent, key, modifiers, true, false, 0);
+        host.Editor.RaiseEvent(args);
+        Assert.False(args.Handled);
     }
 
     [Fact]
@@ -268,6 +323,7 @@ public sealed class MacOSTextContextMenuTests
         public void Dispose()
         {
             PlatformTextContextMenus.Show = _previous;
+            Jalium.UI.Input.Mouse.Capture(null);
             SetHandle(0); Keyboard.ClearFocus(); Window.Close();
         }
     }

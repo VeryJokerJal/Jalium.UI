@@ -719,9 +719,11 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
 }
 - (BOOL)readSelectionFromPasteboard:(NSPasteboard*)pasteboard {
     if (!pasteboard || ![self canServeTextService:YES]) return NO;
+    NSRange selected = self.accessibilitySelectedTextRange;
     NSString* text = [pasteboard stringForType:NSPasteboardTypeString];
     if (![text isKindOfClass:NSString.class] || text.length > 16 * 1024 * 1024 ||
-        ![self canServeTextService:YES]) return NO;
+        ![self canServeTextService:YES] ||
+        !NSEqualRanges(selected, self.accessibilitySelectedTextRange)) return NO;
     JaliumAccessibilityRequest request{};
     request.nodeId = _nodeId; request.operation = JALIUM_AX_TEXT_NAVIGATION;
     request.index = JALIUM_AX_REPLACE_SELECTION;

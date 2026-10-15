@@ -450,7 +450,7 @@ public static class ContextMenuService
         }
     }
 
-    private static bool TryOpenAttachedForKeyboard(UIElement owner)
+    internal static bool TryOpenAttachedForKeyboard(UIElement owner)
     {
         var menu = GetContextMenu(owner);
         if (menu == null)

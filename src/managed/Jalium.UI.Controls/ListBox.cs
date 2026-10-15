@@ -1270,7 +1270,7 @@ public class ListBoxItem : ContentControl
             Focus();
 
             // Extract modifier key state from the event args
-            bool ctrl = (e.KeyboardModifiers & ModifierKeys.Control) != 0;
+            bool ctrl = PointerSelectionModifiers.IsToggle(e.KeyboardModifiers);
             bool shift = (e.KeyboardModifiers & ModifierKeys.Shift) != 0;
 
             ParentListBox?.SelectItem(this, ctrl, shift);

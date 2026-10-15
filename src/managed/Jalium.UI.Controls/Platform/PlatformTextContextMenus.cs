@@ -54,9 +54,14 @@ public static class PlatformTextContextMenus
         for (var source = e.OriginalSource as Visual; source != null && source != owner; source = source.VisualParent)
             if (source is ButtonBase) return;
 
-        state.SuppressRelease = e.ChangedButton;
-        e.Handled = true;
-        Open(owner, e.GetPosition(owner), e.OriginalSource as Visual);
+        var origin = e.OriginalSource as Visual;
+        // Attached menus retain ContextMenuService's normal mouse-up pipeline.
+        if (e.ChangedButton == MouseButton.Right && FindExplicitMenuOwner(origin ?? owner) != null) return;
+        if (Open(owner, e.GetPosition(owner), origin))
+        {
+            state.SuppressRelease = e.ChangedButton;
+            e.Handled = true;
+        }
     }
 
     private static void OnMouseUp(object sender, MouseButtonEventArgs e)
@@ -74,32 +79,37 @@ public static class PlatformTextContextMenus
         if (e.Handled || !OperatingSystem.IsMacOS() || _show == null || sender is not UIElement owner ||
             !(e.Key == Key.F10 && e.KeyboardModifiers == ModifierKeys.Shift ||
               e.Key == Key.Apps && e.KeyboardModifiers == ModifierKeys.None)) return;
-        e.Handled = true;
-        Open(owner, null);
+        if (e.Key == Key.F10 && FindExplicitMenuOwner(owner) != null) return;
+        e.Handled = Open(owner, null);
     }
 
-    private static void Open(UIElement owner, Point? position, Visual? source = null)
+    private static bool Open(UIElement owner, Point? position, Visual? source = null)
     {
-        if (_opening) return;
+        if (_opening) return false;
         _opening = true;
-        try { OpenCore(owner, position, source); }
+        try { return OpenCore(owner, position, source); }
         finally { _opening = false; }
     }
 
-    private static void OpenCore(UIElement owner, Point? position, Visual? source)
+    private static UIElement? FindExplicitMenuOwner(Visual source)
+    {
+        for (Visual? current = source; current != null; current = current.VisualParent)
+            if (current is UIElement owner && ContextMenuService.GetContextMenu(owner) != null) return owner;
+        return null;
+    }
+
+    private static bool OpenCore(UIElement owner, Point? position, Visual? source)
     {
         // Explicit menus on this editor or its containers retain the existing
         // placement, ShowOnDisabled and cancellation pipeline.
-        for (Visual? current = source ?? owner; current != null; current = current.VisualParent)
+        if (FindExplicitMenuOwner(source ?? owner) is { } menuOwner)
         {
-            if (current is not UIElement menuOwner || ContextMenuService.GetContextMenu(menuOwner) == null) continue;
-            if (position is { } point)
-                ContextMenuService.TryOpen(menuOwner, owner.TranslatePoint(point, null));
-            else ContextMenuService.Open(menuOwner, ContextMenuService.GetContextMenu(menuOwner)!);
-            return;
+            return position is { } point
+                ? ContextMenuService.TryOpen(menuOwner, owner.TranslatePoint(point, null))
+                : ContextMenuService.TryOpenAttachedForKeyboard(menuOwner);
         }
         if (!owner.IsEnabled || !owner.IsVisible || !ContextMenuService.GetIsEnabled(owner) ||
-            Window.GetWindow(owner) is not { } window || !owner.Focus()) return;
+            Window.GetWindow(owner) is not { } window || !owner.Focus()) return false;
 
         Point? eventPosition = position is { } pointAt ? owner.TranslatePoint(pointAt, null) : null;
         var opening = eventPosition is { } at
@@ -107,12 +117,12 @@ public static class PlatformTextContextMenus
             : new ContextMenuEventArgs(owner, true);
         opening.RoutedEvent = ContextMenuService.ContextMenuOpeningEvent;
         owner.RaiseEvent(opening);
-        if (opening.Handled) return;
+        if (opening.Handled) return false;
         var caret = owner is IImeSupport ime ? ime.GetImeCaretRectangle() : Rect.Empty;
         Point anchor = position ?? (!caret.IsEmpty
             ? new Point(caret.Left, caret.Bottom) : new Point(0, owner.RenderSize.Height));
         var request = window.CreateMacOSTextContextMenuRequest(owner, anchor);
-        if (request == null || !request.IsCurrent()) return;
+        if (request == null || !request.IsCurrent()) return false;
         bool shown = false;
         try { shown = _show?.Invoke(request) == true; }
         finally
@@ -127,5 +137,6 @@ public static class PlatformTextContextMenus
                 owner.RaiseEvent(closing);
             }
         }
+        return shown;
     }
 }

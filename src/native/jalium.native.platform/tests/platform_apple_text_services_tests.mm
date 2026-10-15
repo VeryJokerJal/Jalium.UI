@@ -247,6 +247,22 @@ int main() {
                 Check(![request readSelectionFromPasteboard:board] && f.writes == 1, "provider rejection hidden");
                 [board releaseGlobally];
             });
+            run("pasteboard callback cannot replace a different selection", [](Fixture& f) {
+                id request = f.Request(); auto* board = [ReentrantServicePasteboard new]; board.value = @"bad";
+                NSString* original = f.text;
+                board.callback = [&] { f.selection = NSMakeRange(4, 2); };
+                Check(![request readSelectionFromPasteboard:(NSPasteboard*)board] && f.writes == 0 &&
+                    [f.text isEqualToString:original] && NSEqualRanges(f.selection, NSMakeRange(4, 2)),
+                    "reentrant board replaced the new selection");
+            });
+            run("pasteboard callback cannot redirect to a new insertion point", [](Fixture& f) {
+                id request = f.Request(); auto* board = [ReentrantServicePasteboard new]; board.value = @"bad";
+                NSString* original = f.text;
+                board.callback = [&] { f.selection = NSMakeRange(3, 0); };
+                Check(![request readSelectionFromPasteboard:(NSPasteboard*)board] && f.writes == 0 &&
+                    [f.text isEqualToString:original] && NSEqualRanges(f.selection, NSMakeRange(3, 0)),
+                    "reentrant board inserted at the new caret");
+            });
             run("hidden owner invalidates retained requestor", [](Fixture& f) {
                 id request = f.Request(); jalium_window_hide(f.window);
                 auto* board = [ReentrantServicePasteboard new]; board.value = @"bad";
