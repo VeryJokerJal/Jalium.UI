@@ -4,6 +4,35 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+### v206：Apple 着色器工具链的 SDK 可用性
+
+当前 PR 9669879f 的 Window CI **23/23，424.88 秒**，完整 macOS native
+**49/49，490.39 秒**，image-orientation 与 Metal readback 通过。Apple 全矩阵
+随后在 tvOS 的 DXC LLVM 支持层失败：Mach 异常端口及 fork/exec 被 SDK 禁止。
+这次失败已越过原先的 macOS 超时，但还没有完成后续 slices、XCFramework 和包。
+
+将固定依赖的静态库调整提取为受检查、可重复执行的补丁脚本：桌面崩溃报告的
+Mach 端口操作限于 macOS；SDK 不允许 fork/exec 的 Apple 目标走正常 ENOSYS
+失败路径，保留可用的 posix_spawn 路径及进程内 HLSL 编译。没有关闭动态着色器
+编译。依赖完成指纹和 CI 缓存键均包含补丁脚本摘要，防止复用旧的完成戳。
+全部源码锚点先校验，再写入依赖；源版本漂移会明确失败并保持原文件不变。
+
+- 三个被修改的支持源文件在七种 Apple SDK 目标生成真实 arm64 对象：**21/21**。
+  tvOS、tvOS Simulator、visionOS 与 visionOS Simulator 不再导入被禁止的 Mach
+  异常端口、fork 或 exec。最低部署版本保持原值。
+- 完整 tvOS Release DXC 静态目标构建退出 **0**（**1270** 个构建动作，241.21 秒）；
+  按生产流程合并 **52** 个归档，**63,102,880** 字节，DxcCreateInstance 导出唯一。
+  全部 **1083** 个记录平台的对象均为 tvOS，没有混入宿主 macOS 对象。
+- macOS 使用新编译的支持对象替换原编译器归档中的对应对象，按生产链接参数保留
+  DXC 初始化入口后，合法 HLSL→SPIR-V、非法源码拒绝及桌面子进程执行均通过。
+  基线同样通过。此前未保留初始化入口的独立探针在二者上均于工厂初始化崩溃，
+  不是补丁引入的回归；生产 CMake 原本已保留该入口。
+- 重复应用补丁保持文件摘要不变；改变固定源码锚点会被拒绝，四个文件均无部分写入。
+  本机使用 Xcode 27 SDK；CI Xcode 26.6 全矩阵与发布包仍需等待新的提交结果。
+
+本节不表示 tvOS/visionOS 设备执行或完整 Apple 包通过，也不替代尚缺的 macOS
+真实输入、截图、Writing Tools、VoiceOver、多屏／Spaces 与最低系统验收。
+
 ### v204–v205：系统文本上下文菜单与迁移后的完整回归
 
 macOS 平台入口现在为 TextBox、RichTextBox、EditControl、PasswordBox、Terminal
