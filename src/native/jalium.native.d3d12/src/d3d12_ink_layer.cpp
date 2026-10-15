@@ -6,6 +6,7 @@
 #include <memory>
 #include <unordered_map>
 #include <mutex>
+#include <algorithm>
 
 namespace jalium {
 
@@ -15,6 +16,42 @@ namespace {
 // dispatches on the same device all share one root signature + VS.
 std::mutex                                                              s_pipelineMutex;
 std::unordered_map<ID3D12Device*, std::unique_ptr<D3D12BrushShaderPipeline>> s_pipelines;
+
+// If teardown cannot establish/wait for a completion marker, ownership must
+// outlive the bitmap. Retry retirement at later batch boundaries rather than
+// blocking on an unsignalled value or releasing GPU dependencies prematurely.
+struct DeferredInkBatch
+{
+    ComPtr<ID3D12Device> device;
+    ComPtr<ID3D12CommandQueue> queue;
+    ComPtr<ID3D12Fence> fence;
+    uint64_t fenceValue = 0;
+    bool needsSignal = false;
+    std::vector<ComPtr<IUnknown>> dependencies;
+};
+
+std::mutex s_deferredInkMutex;
+std::vector<DeferredInkBatch> s_deferredInkBatches;
+
+void ReclaimDeferredInkBatches()
+{
+    std::lock_guard<std::mutex> lock(s_deferredInkMutex);
+    for (auto it = s_deferredInkBatches.begin(); it != s_deferredInkBatches.end();)
+    {
+        auto& batch = *it;
+        const bool deviceLost = FAILED(batch.device->GetDeviceRemovedReason());
+        if (!deviceLost && batch.needsSignal)
+        {
+            if (SUCCEEDED(batch.queue->Signal(batch.fence.Get(), batch.fenceValue)))
+                batch.needsSignal = false;
+        }
+        if (deviceLost || (!batch.needsSignal &&
+                           batch.fence->GetCompletedValue() >= batch.fenceValue))
+            it = s_deferredInkBatches.erase(it);
+        else
+            ++it;
+    }
+}
 
 } // namespace
 
@@ -42,7 +79,7 @@ D3D12InkLayerBitmap::~D3D12InkLayerBitmap()
 {
     // ReleaseResources flushes any open batch (blocking) before the texture
     // is freed — see its FlushPending(true).
-    ReleaseResources();
+    if (!ReleaseResources()) DeferInFlightResources();
     if (fenceEvent_)
     {
         CloseHandle(fenceEvent_);
@@ -59,19 +96,17 @@ bool D3D12InkLayerBitmap::Initialize(uint32_t width, uint32_t height)
     Clear(0, 0, 0, 0);
     // The layer must actually be cleared before it's first used — commit the
     // one-off clear batch now (a single synchronous submit is acceptable here).
-    FlushPending(true);
-    return true;
+    return batchOpen_ && FlushPending(true);
 }
 
 bool D3D12InkLayerBitmap::Resize(uint32_t width, uint32_t height)
 {
     if (width == width_ && height == height_) return true;
     // ReleaseResources flushes the open batch before dropping the old texture.
-    ReleaseResources();
+    if (!ReleaseResources()) return false;
     if (!CreateResources(width, height)) return false;
     Clear(0, 0, 0, 0);
-    FlushPending(true);
-    return true;
+    return batchOpen_ && FlushPending(true);
 }
 
 bool D3D12InkLayerBitmap::CreateResources(uint32_t width, uint32_t height)
@@ -143,41 +178,81 @@ bool D3D12InkLayerBitmap::CreateResources(uint32_t width, uint32_t height)
     return true;
 }
 
-void D3D12InkLayerBitmap::ReleaseResources()
+bool D3D12InkLayerBitmap::ReleaseResources()
 {
     // Commit + drain any batch (open or already submitted) that still
     // references the backing texture before dropping it — otherwise the GPU
     // could be reading a freed texture (D3D12 error → device removal).
-    FlushPending(true);
+    if (!FlushPending(true) && device_ && SUCCEEDED(device_->GetDeviceRemovedReason()))
+        return false;
     retiredArena_.clear();   // fence complete → retired arenas are idle
+    batchPsos_.clear();
 
     texture_.Reset();
     rtvHeap_.Reset();
     srvHeap_.Reset();
     width_ = height_ = 0;
     textureState_ = D3D12_RESOURCE_STATE_COMMON;
+    return true;
+}
+
+void D3D12InkLayerBitmap::DeferInFlightResources()
+{
+    DeferredInkBatch batch;
+    batch.device = device_;
+    batch.queue = queue_;
+    batch.fence = fence_;
+    batch.needsSignal = batchNeedsSignal_;
+    batch.fenceValue = batchNeedsSignal_ ? fenceValue_ + 1 : lastSubmittedFenceValue_;
+    auto keep = [&](auto& resource) {
+        if (resource) batch.dependencies.emplace_back(resource.Get());
+    };
+    keep(texture_);
+    keep(rtvHeap_);
+    keep(srvHeap_);
+    keep(cmdAlloc_);
+    keep(cmdList_);
+    keep(arena_);
+    for (auto& arena : retiredArena_) keep(arena);
+    for (auto& pso : batchPsos_) keep(pso);
+    std::lock_guard<std::mutex> lock(s_deferredInkMutex);
+    s_deferredInkBatches.push_back(std::move(batch));
 }
 
 bool D3D12InkLayerBitmap::EnsureDispatchResources()
 {
-    if (cmdList_) return true;
+    if (!fenceEvent_) return false;
 
-    HRESULT hr = device_->CreateCommandAllocator(
-        D3D12_COMMAND_LIST_TYPE_DIRECT,
-        IID_PPV_ARGS(cmdAlloc_.GetAddressOf()));
-    if (FAILED(hr)) return false;
+    HRESULT hr;
+    if (!cmdAlloc_)
+    {
+        hr = device_->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(cmdAlloc_.GetAddressOf()));
+        if (FAILED(hr)) return false;
+    }
 
-    hr = device_->CreateCommandList(
-        0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-        cmdAlloc_.Get(), nullptr,
-        IID_PPV_ARGS(cmdList_.GetAddressOf()));
-    if (FAILED(hr)) return false;
-    cmdList_->SetName(L"JaliumInkCmdList");  // [JALIUM-921 diag]
-    cmdList_->Close();
+    if (!cmdList_)
+    {
+        hr = device_->CreateCommandList(
+            0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+            cmdAlloc_.Get(), nullptr,
+            IID_PPV_ARGS(cmdList_.GetAddressOf()));
+        if (FAILED(hr)) return false;
+        cmdList_->SetName(L"JaliumInkCmdList");  // [JALIUM-921 diag]
+        if (FAILED(cmdList_->Close()))
+        {
+            cmdList_.Reset();
+            return false;
+        }
+    }
 
-    hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                              IID_PPV_ARGS(fence_.GetAddressOf()));
-    if (FAILED(hr)) return false;
+    if (!fence_)
+    {
+        hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                  IID_PPV_ARGS(fence_.GetAddressOf()));
+        if (FAILED(hr)) return false;
+    }
 
     // Upload storage (b0 cbuffer / b1 user params / t0 stroke points) is no
     // longer per-object; each dispatch allocates a private slot out of the
@@ -185,19 +260,11 @@ bool D3D12InkLayerBitmap::EnsureDispatchResources()
     return true;
 }
 
-void D3D12InkLayerBitmap::ExecuteAndWait(ID3D12GraphicsCommandList* cmdList)
+int D3D12InkLayerBitmap::TakeBatchError()
 {
-    cmdList->Close();
-    ID3D12CommandList* lists[] = { cmdList };
-    queue_->ExecuteCommandLists(1, lists);
-
-    ++fenceValue_;
-    queue_->Signal(fence_.Get(), fenceValue_);
-    if (fence_->GetCompletedValue() < fenceValue_)
-    {
-        fence_->SetEventOnCompletion(fenceValue_, fenceEvent_);
-        WaitForSingleObject(fenceEvent_, INFINITE);
-    }
+    const int error = batchError_;
+    batchError_ = 0;
+    return error;
 }
 
 bool D3D12InkLayerBitmap::WaitForFence(uint64_t value)
@@ -208,77 +275,95 @@ bool D3D12InkLayerBitmap::WaitForFence(uint64_t value)
     return WaitForSingleObject(fenceEvent_, INFINITE) == WAIT_OBJECT_0;
 }
 
-void D3D12InkLayerBitmap::BeginBatchIfNeeded()
+bool D3D12InkLayerBitmap::BeginBatchIfNeeded()
 {
-    if (batchOpen_) return;
-    if (!cmdList_ || !cmdAlloc_ || !fence_) return;  // EnsureDispatchResources absent
+    if (batchOpen_) return true;
+    ReclaimDeferredInkBatches();
+    if (!device_ || FAILED(device_->GetDeviceRemovedReason()) ||
+        !EnsureDispatchResources() || !SignalPendingBatch())
+    {
+        batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        return false;
+    }
 
     // Only one batch is ever in flight: the command allocator can't be Reset
     // until the previously-submitted batch is GPU-complete. In steady state
     // the previous frame's batch has long finished, so this is a no-op.
-    if (lastSubmittedFenceValue_ != 0 &&
-        fence_->GetCompletedValue() < lastSubmittedFenceValue_)
+    if (!WaitForFence(lastSubmittedFenceValue_))
     {
-        WaitForFence(lastSubmittedFenceValue_);
+        batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        return false;
     }
 
     // Previous batch complete → any arena buffer retired during it is idle.
     retiredArena_.clear();
+    batchPsos_.clear();
 
     HRESULT hr = cmdAlloc_->Reset();
     if (FAILED(hr))
     {
         batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
-        return;
+        return false;
     }
     hr = cmdList_->Reset(cmdAlloc_.Get(), nullptr);
     if (FAILED(hr))
     {
         batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
-        return;
+        cmdList_.Reset();
+        return false;
     }
 
     arenaOffset_ = 0;
     currentPso_  = nullptr;  // list was Reset without an initial PSO
+    batchInitialTextureState_ = textureState_;
     batchOpen_   = true;
+    return true;
 }
 
-void D3D12InkLayerBitmap::FlushPending(bool wait)
+bool D3D12InkLayerBitmap::SignalPendingBatch()
 {
-    if (!batchOpen_)
-    {
-        // No pending recording, but a previously submitted batch may still be
-        // in flight (e.g. a resize right after BlitInkLayer). A blocking caller
-        // must drain it before it releases resources the batch still reads.
-        if (wait) WaitForFence(lastSubmittedFenceValue_);
-        return;
-    }
-
-    HRESULT hr = cmdList_->Close();
-    if (SUCCEEDED(hr) && queue_ && fence_)
-    {
-        ID3D12CommandList* lists[] = { cmdList_.Get() };
-        queue_->ExecuteCommandLists(1, lists);
-        ++fenceValue_;
-        hr = queue_->Signal(fence_.Get(), fenceValue_);
-        lastSubmittedFenceValue_ = fenceValue_;
-    }
-    batchOpen_ = false;
-
-    // Sticky failure latch. The previous synchronous implementation surfaced
-    // a device-removal HRESULT on the very next Clear/DispatchBrush. The
-    // deferred batch is submitted here instead, so the failure can only be
-    // observed after submission — latch it in batchError_ and let subsequent
-    // DispatchBrush calls return it (Clear is void and just becomes a no-op).
-    // Device removal itself is still recovered out-of-band by full context
-    // replacement.
-    if (FAILED(hr) || (device_ && FAILED(device_->GetDeviceRemovedReason())))
+    if (!batchNeedsSignal_) return true;
+    const uint64_t value = fenceValue_ + 1;
+    if (FAILED(queue_->Signal(fence_.Get(), value)))
     {
         batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        return false;
+    }
+    fenceValue_ = lastSubmittedFenceValue_ = value;
+    batchNeedsSignal_ = false;
+    return true;
+}
+
+bool D3D12InkLayerBitmap::FlushPending(bool wait)
+{
+    if (batchOpen_)
+    {
+        const HRESULT hr = cmdList_->Close();
+        batchOpen_ = false;
+        if (FAILED(hr))
+        {
+            // A command list whose Close failed cannot be Reset. None of its
+            // barriers executed, so discard it and roll back CPU state too.
+            cmdList_.Reset();
+            textureState_ = batchInitialTextureState_;
+            batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+            return false;
+        }
+        ID3D12CommandList* lists[] = { cmdList_.Get() };
+        queue_->ExecuteCommandLists(1, lists);
+        batchNeedsSignal_ = true;
     }
 
-    if (wait)
-        WaitForFence(lastSubmittedFenceValue_);
+    // Publish only a successfully queued fence value. If Signal failed, the
+    // next call retries the marker before any allocator/upload/PSO is reused.
+    if (!SignalPendingBatch() ||
+        (device_ && FAILED(device_->GetDeviceRemovedReason())) ||
+        (wait && !WaitForFence(lastSubmittedFenceValue_)))
+    {
+        batchError_ = JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+        return false;
+    }
+    return true;
 }
 
 bool D3D12InkLayerBitmap::ArenaAlloc(uint64_t bytes, void** cpuOut,
@@ -339,11 +424,7 @@ bool D3D12InkLayerBitmap::ArenaAlloc(uint64_t bytes, void** cpuOut,
 
 void D3D12InkLayerBitmap::Clear(float r, float g, float b, float a)
 {
-    if (batchError_) return;                 // sticky device-loss; see FlushPending
-    if (!texture_ || !cmdList_) return;
-
-    BeginBatchIfNeeded();
-    if (!batchOpen_ || batchError_) return;
+    if (!texture_ || !BeginBatchIfNeeded()) return;
 
     if (textureState_ != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
@@ -383,12 +464,11 @@ int D3D12InkLayerBitmap::DispatchBrush(
     const void*        extraParams,
     uint32_t           extraParamsSize)
 {
-    // Sticky batch failure (e.g. device removed) observed at the last
-    // FlushPending — surfaced here because Clear()/DispatchBrush no longer
-    // submit synchronously. See FlushPending.
-    if (batchError_)                         return batchError_;
+    // Report an asynchronous failure once; a healthy batch may retry using
+    // these same handles on the next call.
+    if (batchError_)                         return TakeBatchError();
     if (!shader || !shader->Pso())           return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
-    if (!texture_ || !cmdList_)              return JALIUM_INK_DISPATCH_ERROR_INVALID_STATE;
+    if (!texture_)                          return JALIUM_INK_DISPATCH_ERROR_INVALID_STATE;
     if (pointCount < 2)                      return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
     if (managedConstantsSize == 0 || managedConstantsSize > 80)
         return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
@@ -423,9 +503,7 @@ int D3D12InkLayerBitmap::DispatchBrush(
         ? (((uint64_t)extraParamsSize + 255u) & ~(uint64_t)255u) : 0u;
 
     // Accumulate into this frame's batch (opened lazily on first call).
-    BeginBatchIfNeeded();
-    if (batchError_) return batchError_;
-    if (!batchOpen_) return JALIUM_INK_DISPATCH_ERROR_INVALID_STATE;
+    if (!BeginBatchIfNeeded()) return TakeBatchError();
 
     // Per-dispatch upload slots out of the per-batch arena. Each dispatch
     // gets private, non-overlapping storage so a later dispatch can never
@@ -504,6 +582,7 @@ int D3D12InkLayerBitmap::DispatchBrush(
     // batch's current one.
     if (currentPso_ != shader->Pso())
     {
+        batchPsos_.emplace_back(shader->Pso());
         cmdList_->SetPipelineState(shader->Pso());
         currentPso_ = shader->Pso();
     }

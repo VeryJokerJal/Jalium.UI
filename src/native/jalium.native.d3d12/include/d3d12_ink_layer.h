@@ -57,8 +57,8 @@ public:
     // batch is submitted by FlushPending() (called from the render target's
     // BlitInkLayer at the frame boundary), so a device-removal failure is
     // observed one call later than it would have been by the previous
-    // synchronous implementation. See FlushPending for the sticky-error
-    // contract.
+    // synchronous implementation. Transient batch errors are reported once;
+    // the same handles can be retried on the following call.
     int DispatchBrush(
         D3D12BrushShader*               shader,
         const void*                     strokePoints,
@@ -83,13 +83,16 @@ private:
     // the accumulated ink batch before it records this texture as a sampled
     // bitmap on the main render list. FlushPending stays private otherwise.
     friend class D3D12RenderTarget;
+    friend struct D3D12InkLayerBitmapTestAccess;
 
     bool CreateResources(uint32_t width, uint32_t height);
-    void ReleaseResources();
+    bool ReleaseResources();
     bool EnsureDispatchResources();
-    void ExecuteAndWait(ID3D12GraphicsCommandList* cmdList);
-    void BeginBatchIfNeeded();
-    void FlushPending(bool wait);
+    bool BeginBatchIfNeeded();
+    bool FlushPending(bool wait);
+    bool SignalPendingBatch();
+    int TakeBatchError();
+    void DeferInFlightResources();
     bool WaitForFence(uint64_t value);
     bool ArenaAlloc(uint64_t bytes, void** cpuOut, D3D12_GPU_VIRTUAL_ADDRESS* gpuOut);
 
@@ -125,14 +128,18 @@ private:
     // per-batch upload arena instead of doing one blocking ExecuteAndWait
     // per call; FlushPending() submits at the frame boundary.
     bool                 batchOpen_ = false;
+    bool                 batchNeedsSignal_ = false;
     uint64_t             lastSubmittedFenceValue_ = 0;
-    // Sticky failure latch. The previous synchronous path surfaced a
-    // device-removal HRESULT on the very next Clear/DispatchBrush; the
-    // asynchronous path can only learn about it after submission, so we
-    // latch it here and subsequent DispatchBrush calls return it (Clear is
-    // void and simply becomes a no-op).
+    // Errors discovered by Clear()/FlushPending() are consumed by the next
+    // DispatchBrush(). They must not permanently disable otherwise healthy
+    // handles. A failed Close discards the list and restores the state from
+    // before that unsubmitted recording.
     int                  batchError_ = 0;
+    D3D12_RESOURCE_STATES batchInitialTextureState_ = D3D12_RESOURCE_STATE_COMMON;
     ID3D12PipelineState* currentPso_ = nullptr;
+    // Command lists do not retain PSOs. Keep every bound PSO alive through
+    // submission and fence completion, even if its public brush is disposed.
+    std::vector<ComPtr<ID3D12PipelineState>> batchPsos_;
 
     // Per-batch upload arena: one large UPLOAD buffer with a bump allocator.
     // Each dispatch bumps a private 256-byte-aligned slot so concurrent

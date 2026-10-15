@@ -86,3 +86,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.d3d12"
     DEBUG_POSTFIX ""
 )
+
+option(JALIUM_D3D12_BUILD_TESTS "Build D3D12 WARP ink regression tests" OFF)
+if(JALIUM_D3D12_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
