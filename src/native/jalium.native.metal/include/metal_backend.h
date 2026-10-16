@@ -93,7 +93,8 @@ private:
         float clipX, float clipY, float clipWidth, float clipHeight,
         float r, float g, float b, float a,
         std::vector<uint8_t>& pixels, uint32_t& pixelWidth,
-        uint32_t& pixelHeight, float& deviceX, float& deviceY) const;
+        uint32_t& pixelHeight, float& deviceX, float& deviceY,
+        const uint32_t* ranges, uint32_t rangeCount, int32_t visibility) const;
     uint64_t CacheIdentity() const;
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -139,7 +140,7 @@ private:
 
 class MetalBackend;
 
-class MetalRenderTarget final : public RenderTarget, public TextParagraphRenderProvider,
+class MetalRenderTarget final : public RenderTarget, public TextParagraphRenderProvider, public TextGlyphRangeRenderProvider,
     public EllipticalClipProvider, public EllipticalEffectProvider,
     public SpreadShadowProvider, public CssBoxShadowProvider,
     public CssShadowLayerProvider, public FilterDropShadowProvider,
@@ -202,6 +203,7 @@ public:
     void DrawContentBorder(float x, float y, float w, float h, float blRadius,
         float brRadius, Brush* fillBrush, Brush* strokeBrush,
         float strokeWidth) override;
+    JaliumResult SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode) override;
     void RenderParagraphLine(TextParagraph* paragraph, uint32_t line,
         float x, float y, float opacity) override;
     void RenderText(const wchar_t* text, uint32_t textLength, TextFormat* format,

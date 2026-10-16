@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-writing-tools-glyphs")
+    return WindowWritingToolsGlyphChecks.Run();
+
 if (args.Length == 1 && args[0] == "--window-writing-tools")
     return WindowWritingToolsChecks.Run();
 

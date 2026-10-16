@@ -1517,7 +1517,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderLine(DrawingContext dc, LineLayoutInfo lineLayout, double x, double y)
     {
-        using var presentation = MacOSWritingToolsPresentation.PushHidden(this, dc);
+        using var presentation = MacOSWritingToolsPresentation.PushTextClip(this, dc);
         var pad = Math.Max(1, lineLayout.Height);
         var bounds = new Rect(x - pad, y - pad,
             Math.Max(1, lineLayout.Width) + 2 * pad, lineLayout.Height + 2 * pad);
@@ -1534,6 +1534,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                     MaxTextWidth = Math.Max(1, lineLayout.Width),
                     MaxTextHeight = Math.Max(1, lineLayout.Height)
                 };
+                MacOSWritingToolsPresentation.ApplyGlyphRanges(this, formatted, lineLayout.ParagraphOffset, nativeLine.Paragraph.Text.Length);
                 dc.DrawText(formatted, new Point(x, y));
             }
             Dictionary<TextElement, DecorationSegment>? decorations = null;
@@ -1562,6 +1563,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                             FontWeight = fontWeight.ToOpenTypeWeight(),
                             FontStyle = fontStyle.ToOpenTypeStyle()
                         };
+                        MacOSWritingToolsPresentation.ApplyGlyphRanges(this, formattedText, runLayout.StartOffset);
                         dc.DrawText(formattedText, new Point(runX, y));
                     }
                     CollectRunTextDecorations(runLayout, runX, fontFamily, fontSize,
@@ -1569,6 +1571,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 }
             }
             if (decorations is not null)
+                using (MacOSWritingToolsPresentation.PushDecorationRanges(this, dc))
                 foreach (var segment in decorations.Values.OrderBy(static item => item.Depth))
                     DrawTextDecorationSegment(dc, segment, lineLayout.NativeLine is null
                         ? y : y + lineLayout.Baseline - segment.Ascent);

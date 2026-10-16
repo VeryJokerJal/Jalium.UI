@@ -1044,6 +1044,15 @@ public sealed class RenderTarget : IDisposable
     /// <summary>
     /// Draws text.
     /// </summary>
+    internal unsafe void SetTextGlyphRanges(uint[]? ranges, int mode)
+    {
+        fixed (uint* pairs = ranges)
+        {
+            var result = NativeMethods.SetTextGlyphRanges(_handle, pairs, (uint)(ranges?.Length / 2 ?? 0), mode);
+            if (result != JaliumResult.Ok) throw new InvalidOperationException($"Text glyph filtering failed: {result}");
+        }
+    }
+
     public void DrawText(string text, NativeTextFormat format, float x, float y, float width, float height, NativeBrush brush)
     {
         ThrowIfDisposed();

@@ -1019,6 +1019,9 @@ internal static partial class NativeMethods
     /// <summary>
     /// Draws text.
     /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_text_glyph_ranges")]
+    internal static unsafe partial JaliumResult SetTextGlyphRanges(nint renderTarget, uint* pairs, uint count, int mode);
+
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_text")]
     internal static unsafe partial void DrawTextRaw(nint renderTarget, char* text, int textLength, nint textFormat, float x, float y, float width, float height, nint brush);
 

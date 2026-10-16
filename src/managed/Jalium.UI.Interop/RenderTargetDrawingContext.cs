@@ -1880,6 +1880,19 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <inheritdoc />
     public override void DrawText(FormattedText formattedText, Point origin)
     {
+        if (_closed || formattedText is null) return;
+        if (formattedText.GlyphVisibility == 0 || !OperatingSystem.IsMacOS() || _renderTarget.Backend != RenderBackend.Metal)
+        {
+            DrawTextCore(formattedText, origin);
+            return;
+        }
+        _renderTarget.SetTextGlyphRanges(formattedText.GlyphRanges, formattedText.GlyphVisibility);
+        try { DrawTextCore(formattedText, origin); }
+        finally { _renderTarget.SetTextGlyphRanges(null, 0); }
+    }
+
+    private void DrawTextCore(FormattedText formattedText, Point origin)
+    {
         if (!_closed && formattedText?.PlatformTextLine is NativeTextParagraph.Line line)
         {
             _renderTarget.DrawParagraphLine(line, (float)(origin.X + Offset.X), (float)(origin.Y + Offset.Y));

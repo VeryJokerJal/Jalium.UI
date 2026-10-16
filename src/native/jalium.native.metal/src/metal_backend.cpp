@@ -1001,7 +1001,8 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
     float clipX, float clipY, float clipWidth, float clipHeight,
     float r, float g, float b, float a,
     std::vector<uint8_t>& pixels, uint32_t& pixelWidth,
-    uint32_t& pixelHeight, float& deviceX, float& deviceY) const
+    uint32_t& pixelHeight, float& deviceX, float& deviceY,
+    const uint32_t* ranges, uint32_t rangeCount, int32_t visibility) const
 {
     pixels.clear(); pixelWidth = pixelHeight = 0; deviceX = deviceY = 0;
 #ifdef __APPLE__
@@ -1183,7 +1184,8 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
         for (CFIndex runIndex = 0; runIndex < CFArrayGetCount(runs); ++runIndex) {
             auto run = static_cast<CTRunRef>(CFArrayGetValueAtIndex(runs, runIndex));
             if (!IsFontRunInvisible(CTRunGetAttributes(run)))
-                DrawFontRun(run, context, CGPointMake(origin.x, origin.y + verticalOffset));
+                DrawFontRunRanges(run, context, CGPointMake(origin.x, origin.y + verticalOffset),
+                    CFAttributedStringGetString(attributed), ranges, rangeCount, visibility);
         }
     }
     deviceX = static_cast<float>(rasterLeft);

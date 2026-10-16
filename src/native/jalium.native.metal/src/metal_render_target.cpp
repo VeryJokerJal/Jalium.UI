@@ -470,6 +470,8 @@ struct MetalRenderTarget::Impl {
     std::unordered_map<uint64_t,TextCacheEntry> textCache;
     size_t textCacheBytes=0;
     uint64_t textCacheClock=0;
+    std::vector<uint32_t> glyphRanges;
+    int32_t glyphVisibility = 0;
 
     void TrimTextCache()
     {
@@ -2326,6 +2328,23 @@ void MetalRenderTarget::DrawContentBorder(float x, float y, float w, float h,
         strokeBrush, strokeWidth, false, 2, 10);
 }
 
+JaliumResult MetalRenderTarget::SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode)
+{
+    // Build before swapping, so allocation failures cannot retire the old state.
+    std::vector<std::pair<uint32_t, uint32_t>> sorted;
+    for (uint32_t i = 0; i < count; ++i)
+        if (pairs[2 * i + 1]) sorted.emplace_back(pairs[2 * i], pairs[2 * i] + pairs[2 * i + 1]);
+    std::sort(sorted.begin(), sorted.end());
+    std::vector<uint32_t> merged;
+    for (const auto& span : sorted) {
+        if (!merged.empty() && span.first <= merged[merged.size() - 2] + merged.back())
+            merged.back() = std::max(merged.back(), span.second - merged[merged.size() - 2]);
+        else { merged.push_back(span.first); merged.push_back(span.second - span.first); }
+    }
+    impl_->glyphRanges.swap(merged); impl_->glyphVisibility = mode;
+    return JALIUM_OK;
+}
+
 void MetalRenderTarget::RenderText(const wchar_t* text, uint32_t textLength,
     TextFormat* format, float x, float y, float w, float h, Brush* brush)
 {
@@ -2358,6 +2377,8 @@ void MetalRenderTarget::RenderText(const wchar_t* text, uint32_t textLength,
     float layout[]={x,y,w,h,r,g,b,a};mix(layout,sizeof(layout));mix(matrix,sizeof(matrix));
     uint32_t viewport[]={impl_->pixelWidth,impl_->pixelHeight};
     mix(viewport,sizeof(viewport));
+    mix(&impl_->glyphVisibility, sizeof(impl_->glyphVisibility));
+    if (!impl_->glyphRanges.empty()) mix(impl_->glyphRanges.data(), impl_->glyphRanges.size() * sizeof(uint32_t));
     if(auto cached=impl_->textCache.find(cacheKey);cached!=impl_->textCache.end()){
         cached->second.lastUse=++impl_->textCacheClock;
         impl_->DrawDeviceTexture(cached->second.texture,cached->second.x,cached->second.y,
@@ -2365,7 +2386,8 @@ void MetalRenderTarget::RenderText(const wchar_t* text, uint32_t textLength,
     }
     if (!metalFormat->Rasterize(text, textLength, x, y, w, h, matrix,
         0, 0, static_cast<float>(impl_->pixelWidth), static_cast<float>(impl_->pixelHeight),
-        r, g, b, a, pixels, pixelWidth, pixelHeight, deviceX, deviceY)) return;
+        r, g, b, a, pixels, pixelWidth, pixelHeight, deviceX, deviceY,
+        impl_->glyphRanges.data(), static_cast<uint32_t>(impl_->glyphRanges.size() / 2), impl_->glyphVisibility)) return;
     MTLTextureDescriptor* descriptor=[MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
         width:pixelWidth height:pixelHeight mipmapped:NO];
@@ -2397,6 +2419,8 @@ void MetalRenderTarget::RenderParagraphLine(TextParagraph* paragraph, uint32_t l
     mix(&identity, sizeof(identity)); mix(&line, sizeof(line));
     float placement[] = {x, y, opacity}; mix(placement, sizeof(placement)); mix(matrix, sizeof(matrix));
     uint32_t viewport[] = {impl_->pixelWidth, impl_->pixelHeight}; mix(viewport, sizeof(viewport));
+    mix(&impl_->glyphVisibility, sizeof(impl_->glyphVisibility));
+    if (!impl_->glyphRanges.empty()) mix(impl_->glyphRanges.data(), impl_->glyphRanges.size() * sizeof(uint32_t));
     if (auto cached = impl_->textCache.find(cacheKey); cached != impl_->textCache.end()) {
         cached->second.lastUse = ++impl_->textCacheClock;
         impl_->DrawDeviceTexture(cached->second.texture, cached->second.x, cached->second.y,
@@ -2405,7 +2429,8 @@ void MetalRenderTarget::RenderParagraphLine(TextParagraph* paragraph, uint32_t l
     }
     std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float deviceX = 0, deviceY = 0;
     if (!metal->RasterizeLine(line, x, y, opacity, matrix, impl_->pixelWidth, impl_->pixelHeight,
-        pixels, width, height, deviceX, deviceY)) return;
+        pixels, width, height, deviceX, deviceY, impl_->glyphRanges.data(),
+        static_cast<uint32_t>(impl_->glyphRanges.size() / 2), impl_->glyphVisibility)) return;
     MTLTextureDescriptor* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
         width:width height:height mipmapped:NO];
     descriptor.storageMode = MTLStorageModeShared; descriptor.usage = MTLTextureUsageShaderRead;

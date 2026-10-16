@@ -594,8 +594,8 @@ internal sealed class EditorView
                 }
 
                 // Line text with syntax highlighting
-                using (writingToolsOwner is null ? default(MacOSWritingToolsPresentation.ClipScope) : MacOSWritingToolsPresentation.PushHidden(writingToolsOwner, dc))
-                    RenderLineText(dc, docLine, cachedLine, lineNum, lineText, y, textAreaLeft, fontFamily, fontSize, fontWeight, fontStyle, foreground);
+                using (writingToolsOwner is null ? default(MacOSWritingToolsPresentation.ClipScope) : MacOSWritingToolsPresentation.PushTextClip(writingToolsOwner, dc))
+                    RenderLineText(dc, docLine, cachedLine, lineNum, lineText, y, textAreaLeft, fontFamily, fontSize, fontWeight, fontStyle, foreground, writingToolsOwner);
             }
 
             // Render caret
@@ -680,7 +680,7 @@ internal sealed class EditorView
 
     private void RenderLineText(DrawingContext dc, DocumentLine docLine, EditorViewLine cachedLine, int lineNum, string lineText,
         double y, double textAreaLeft, string fontFamily, double fontSize,
-        FontWeight fontWeight, FontStyle fontStyle, Brush defaultForeground)
+        FontWeight fontWeight, FontStyle fontStyle, Brush defaultForeground, UIElement? writingToolsOwner)
     {
         if (docLine.Length == 0) return;
 
@@ -716,6 +716,7 @@ internal sealed class EditorView
                 var formatted = new FormattedText(tokenText, fontFamily, fontSize)
                 { Foreground = brush, FontWeight = fontWeight.ToOpenTypeWeight(), FontStyle = fontStyle.ToOpenTypeStyle() };
                 double tokenX = GetColumnX(cachedLine, lineText, tokenStart, textAreaLeft);
+                if (writingToolsOwner is not null) MacOSWritingToolsPresentation.ApplyGlyphRanges(writingToolsOwner, formatted, docLine.Offset + tokenStart);
                 dc.DrawText(formatted, new Point(tokenX, y));
             }
         }
@@ -725,6 +726,7 @@ internal sealed class EditorView
             string text = visibleColumnLimit < lineText.Length ? lineText[..visibleColumnLimit] : lineText;
             var formatted = new FormattedText(text, fontFamily, fontSize)
             { Foreground = defaultForeground, FontWeight = fontWeight.ToOpenTypeWeight(), FontStyle = fontStyle.ToOpenTypeStyle() };
+            if (writingToolsOwner is not null) MacOSWritingToolsPresentation.ApplyGlyphRanges(writingToolsOwner, formatted, docLine.Offset);
             dc.DrawText(formatted, new Point(textAreaLeft - HorizontalOffset, y));
         }
     }

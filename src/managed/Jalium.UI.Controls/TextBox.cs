@@ -1779,7 +1779,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
     {
         Point offset = HasContentHost ? GetTextContentOrigin() : Point.Zero;
-        using (MacOSWritingToolsPresentation.PushHidden(this, dc, offset))
+        using (MacOSWritingToolsPresentation.PushTextClip(this, dc, offset))
             DrawTextCore(dc, contentRect, lineHeight);
         MacOSWritingToolsPresentation.DrawInactive(this, dc, offset);
     }
@@ -1880,11 +1880,13 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                     Math.Max(1, lineWidth) + 2 * FontSize, lineBlockHeight + 2 * FontSize));
             try
             {
+                MacOSWritingToolsPresentation.ApplyGlyphRanges(this, formattedText, line.StartIndex);
                 dc.DrawText(formattedText, new Point(x, y));
-                DrawTextDecorations(dc, x, y, lineWidth, wrapWidth, visualRows, lineHeight,
-                    textBrush, wrapMode, decorationSizePrefix?[^1] ?? -1,
-                    i == firstDecoratedLine, i == lastDecoratedLine,
-                    decorationSizePrefix?[i] ?? -1);
+                using (MacOSWritingToolsPresentation.PushDecorationRanges(this, dc, HasContentHost ? GetTextContentOrigin() : Point.Zero))
+                    DrawTextDecorations(dc, x, y, lineWidth, wrapWidth, visualRows, lineHeight,
+                        textBrush, wrapMode, decorationSizePrefix?[^1] ?? -1,
+                        i == firstDecoratedLine, i == lastDecoratedLine,
+                        decorationSizePrefix?[i] ?? -1);
             }
             finally
             {

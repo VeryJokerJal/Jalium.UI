@@ -7,6 +7,34 @@ namespace Jalium.UI.Tests;
 public sealed class MacOSRecordedTextTests : MacOSGeometryTestBase
 {
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Recording_GlyphFilterCannotAliasNormalTextOrMutableRanges(bool filteredFirst, bool wholeFrame)
+    {
+        DrawingObjectPool.Clear();
+        var filtered = Text(null);
+        filtered.GlyphVisibility = 2;
+        filtered.GlyphRanges = new uint[] { 0, 2 };
+        var recorder = new DrawingRecorder();
+        if (wholeFrame) recorder.BindWholeFrame(); else recorder.Bind(new object());
+        recorder.DrawText(filteredFirst ? filtered : Text(null), new Point(10, 10));
+        recorder.DrawText(filteredFirst ? Text(null) : filtered, new Point(10, 40));
+        var drawing = recorder.Commit();
+        filtered.GlyphRanges[1] = 1;
+        filtered.GlyphVisibility = 0;
+        var captured = (FormattedText)drawing.Commands[filteredFirst ? 0 : 1].A!;
+        var normal = (FormattedText)drawing.Commands[filteredFirst ? 1 : 0].A!;
+        Assert.Equal(2, captured.GlyphVisibility);
+        Assert.Equal(new uint[] { 0, 2 }, captured.GlyphRanges);
+        Assert.Equal(0, normal.GlyphVisibility);
+        Assert.Null(normal.GlyphRanges);
+        Assert.Equal(0, DrawingObjectPool.CanonicalizeFormattedText(Text(null)).GlyphVisibility);
+        DrawingObjectPool.Clear();
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void Recording_EqualTextKeepsEachPlatformLayout(bool wholeFrame)

@@ -13,7 +13,11 @@ namespace Jalium.UI;
 internal static class MacOSWritingToolsPresentation
 {
     private static readonly ConditionalWeakTable<UIElement, State> States = new();
+    internal static bool UsesShapedGlyphRanges => OperatingSystem.IsMacOS() && Jalium.UI.Interop.RenderContext.Current?.Backend == Jalium.UI.Interop.RenderBackend.Metal;
     [ThreadStatic] private static int _previewDepth;
+    [ThreadStatic] private static UIElement? _previewOwner;
+    [ThreadStatic] private static IAutomationTextProviderSource? _previewSource;
+    [ThreadStatic] private static int _previewStart, _previewLength;
     [ThreadStatic] private static int _undoDepth;
     internal static bool IsUndoRedo => _undoDepth != 0;
     internal static UndoScope BeginUndoRedo() => new(true);
@@ -116,10 +120,58 @@ internal static class MacOSWritingToolsPresentation
         Invalidate(owner);
     }
 
+    internal static void ApplyGlyphRanges(UIElement owner, FormattedText text, int documentOffset, int? layoutLength = null)
+    {
+        if (!UsesShapedGlyphRanges) return;
+        bool preview = _previewDepth != 0 && ReferenceEquals(owner, _previewOwner);
+        State? state = null;
+        if (!preview && (_previewDepth != 0 || !States.TryGetValue(owner, out state) || !state.Current())) return;
+        int length = layoutLength ?? text.Text.Length;
+        List<uint> ranges = new();
+        void Add(int start, int count)
+        {
+            int from = Math.Max(start, documentOffset), to = (int)Math.Min((long)start + count, (long)documentOffset + length);
+            if (to > from) { ranges.Add((uint)(from - documentOffset)); ranges.Add((uint)(to - from)); }
+        }
+        if (preview)
+        {
+            Add(_previewStart, _previewLength);
+            text.GlyphVisibility = 1;
+        }
+        else
+        {
+            foreach (var animation in state!.Animations.Values.SelectMany(list => list).ToArray())
+                if (animation.Kind != 8 || EnsureInactive(owner, state, animation)) Add(animation.Start, animation.Length);
+            if (ranges.Count == 0 || !state.Current()) return;
+            text.GlyphVisibility = 2;
+        }
+        text.GlyphRanges = ranges.ToArray();
+    }
+
     internal readonly struct ClipScope(DrawingContext? context) : IDisposable
     {
         public void Dispose() => context?.Pop();
     }
+    internal static ClipScope PushDecorationRanges(UIElement owner, DrawingContext context, Point offset = default)
+    {
+        if (_previewDepth == 0) return PushHidden(owner, context, offset);
+        if (!ReferenceEquals(owner, _previewOwner)) return default;
+        // Decorations follow the selected advances; glyph ink is filtered in
+        // the shaped run, separately, so this clip cannot cut italic glyphs.
+        if (_previewSource is null) return default;
+        Geometry? included = null;
+        foreach (var rect in _previewSource.GetBoundingRectangles(_previewStart, _previewLength))
+            if (Finite(rect) && rect.Width > 0)
+            {
+                var local = new Rect(rect.X - offset.X, rect.Y - offset.Y, rect.Width, rect.Height);
+                included = included is null ? new RectangleGeometry(local) : new CombinedGeometry(GeometryCombineMode.Union, included, new RectangleGeometry(local));
+            }
+        context.PushClip(included ?? Geometry.Empty);
+        return new(context);
+    }
+    internal static ClipScope PushTextClip(UIElement owner, DrawingContext context, Point offset = default) =>
+        UsesShapedGlyphRanges ? default : PushHidden(owner, context, offset);
+
     internal static ClipScope PushHidden(UIElement owner, DrawingContext context, Point offset = default)
     {
         if (_previewDepth != 0 || !States.TryGetValue(owner, out var state) || !state.Current()) return default;
@@ -192,6 +244,85 @@ internal static class MacOSWritingToolsPresentation
         return new(output.ToArray(), rendered.Value.Frame, rendered.Value.Rectangles);
     }
     private static (WriteableBitmap Bitmap, Rect Frame, IReadOnlyList<Rect> Rectangles)? RenderRange(
+        UIElement owner, IAutomationTextProviderSource source, int start, int length,
+        Matrix transform, double dpi, Rect? requested, Func<bool> current)
+    {
+        if (!current() || !double.IsFinite(dpi) || dpi <= 0) return null;
+        var rectangles = source.GetBoundingRectangles(start, length).Where(Finite).Where(rect => rect.Width > 0).ToArray();
+        if (rectangles.Length == 0 || !current()) return null;
+        if (!UsesShapedGlyphRanges) return RenderLegacyRange(owner, source, start, length, transform, dpi, requested, current);
+        // The caret rectangles describe advances, not glyph ink. Capture the
+        // visible viewport with a shaped-glyph filter, then trim transparent
+        // margins. Italics, marks and color emoji can extend past those advances.
+        if (owner is not FrameworkElement element) return null;
+        Rect viewport = Transform(new Rect(0, 0, element.RenderSize.Width, element.RenderSize.Height), transform);
+        if (requested is { } clip) viewport = Rect.Intersect(viewport, clip);
+        if (!Finite(viewport) || viewport.Width <= 0) return null;
+        double left = Math.Floor(viewport.X * dpi), top = Math.Floor(viewport.Y * dpi);
+        double width = Math.Ceiling(viewport.Right * dpi) - left, height = Math.Ceiling(viewport.Bottom * dpi) - top;
+        if (width <= 0 || height <= 0 || width > 16384 || height > 16384 || width * height > 16 * 1024 * 1024) return null;
+        Rect captured = new(left / dpi, top / dpi, width / dpi, height / dpi);
+        var bitmap = MacOSWritingToolsBitmapCapture.Capture((int)width, (int)height, dpi, dc =>
+        {
+            dc.PushTransform(new TranslateTransform(-captured.X, -captured.Y));
+            dc.PushTransform(new MatrixTransform(transform));
+            var previousOwner = _previewOwner; var previousSource = _previewSource; int previousStart = _previewStart, previousLength = _previewLength;
+            ++_previewDepth; _previewOwner = owner; _previewSource = source; _previewStart = start; _previewLength = length;
+            try
+            {
+                switch (owner)
+                {
+                    case TextBox text: text.RenderWritingToolsText(dc); break;
+                    case RichTextBox rich: rich.RenderWritingToolsText(dc); break;
+                    case EditControl editor: editor.RenderWritingToolsText(dc); break;
+                }
+            }
+            finally
+            {
+                --_previewDepth; _previewOwner = previousOwner; _previewSource = previousSource; _previewStart = previousStart; _previewLength = previousLength;
+                dc.Pop(); dc.Pop();
+            }
+        }, current);
+        if (bitmap is null || !current()) return null;
+        var projected = rectangles.Select(rect => Transform(rect, transform)).ToArray();
+        Rect frame = Rect.Empty;
+        foreach (var rect in projected) frame = frame.IsEmpty ? rect : Rect.Union(frame, rect);
+        frame = Rect.Intersect(frame, captured);
+        int stride = bitmap.PixelWidth * 4;
+        byte[] pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        int inkLeft = bitmap.PixelWidth, inkTop = bitmap.PixelHeight, inkRight = 0, inkBottom = 0;
+        for (int row = 0; row < bitmap.PixelHeight; ++row)
+            for (int col = 0; col < bitmap.PixelWidth; ++col)
+                if (pixels[row * stride + col * 4 + 3] != 0)
+                {
+                    inkLeft = Math.Min(inkLeft, col); inkTop = Math.Min(inkTop, row);
+                    inkRight = Math.Max(inkRight, col + 1); inkBottom = Math.Max(inkBottom, row + 1);
+                }
+        if (inkRight > inkLeft)
+        {
+            Rect ink = new(captured.X + inkLeft / dpi, captured.Y + inkTop / dpi,
+                (inkRight - inkLeft) / dpi, (inkBottom - inkTop) / dpi);
+            frame = frame.IsEmpty ? ink : Rect.Union(frame, ink);
+        }
+        if (!Finite(frame) || frame.Width <= 0) return null;
+        int cropX = Math.Clamp((int)Math.Floor((frame.X - captured.X) * dpi), 0, bitmap.PixelWidth - 1);
+        int cropY = Math.Clamp((int)Math.Floor((frame.Y - captured.Y) * dpi), 0, bitmap.PixelHeight - 1);
+        int cropRight = Math.Clamp((int)Math.Ceiling((frame.Right - captured.X) * dpi), cropX + 1, bitmap.PixelWidth);
+        int cropBottom = Math.Clamp((int)Math.Ceiling((frame.Bottom - captured.Y) * dpi), cropY + 1, bitmap.PixelHeight);
+        int cropWidth = cropRight - cropX, cropHeight = cropBottom - cropY;
+        byte[] trimmed = new byte[checked(cropWidth * cropHeight * 4)];
+        for (int row = 0; row < cropHeight; ++row)
+            Buffer.BlockCopy(pixels, (cropY + row) * stride + cropX * 4, trimmed, row * cropWidth * 4, cropWidth * 4);
+        var result = new WriteableBitmap(cropWidth, cropHeight, 96 * dpi, 96 * dpi, PixelFormats.Bgra32, null);
+        result.WritePixels(new Int32Rect(0, 0, cropWidth, cropHeight), trimmed, cropWidth * 4, 0);
+        frame = new Rect(captured.X + cropX / dpi, captured.Y + cropY / dpi, cropWidth / dpi, cropHeight / dpi);
+        var candidates = projected.Select(rect => Rect.Intersect(rect, frame)).Where(Finite).ToArray();
+        return current() ? (result, frame, candidates) : null;
+    }
+    // Preserve the existing bounds-based path for renderers without the optional
+    // glyph-range capability (for example an explicitly selected Software backend).
+    private static (WriteableBitmap Bitmap, Rect Frame, IReadOnlyList<Rect> Rectangles)? RenderLegacyRange(
         UIElement owner, IAutomationTextProviderSource source, int start, int length,
         Matrix transform, double dpi, Rect? requested, Func<bool> current)
     {

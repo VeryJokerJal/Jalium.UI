@@ -35,7 +35,8 @@ public:
     bool RasterizeLine(uint32_t line, float x, float y, float opacity,
         const float* deviceTransform, float clipWidth, float clipHeight,
         std::vector<uint8_t>& pixels, uint32_t& pixelWidth, uint32_t& pixelHeight,
-        float& deviceX, float& deviceY) const;
+        float& deviceX, float& deviceY, const uint32_t* ranges = nullptr,
+        uint32_t rangeCount = 0, int32_t visibility = 0) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

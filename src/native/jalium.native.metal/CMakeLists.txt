@@ -132,6 +132,12 @@ if(JALIUM_METAL_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         "-framework CoreText" "-framework CoreFoundation" "-framework Foundation")
     add_test(NAME jalium.native.metal.text-metrics COMMAND jalium.native.metal.text-metrics)
     set_tests_properties(jalium.native.metal.text-metrics PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.metal.text-glyph-ranges tests/metal_text_glyph_ranges.mm)
+    target_compile_options(jalium.native.metal.text-glyph-ranges PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.metal.text-glyph-ranges PRIVATE jalium.native.metal jalium.native.core
+        "-framework AppKit" "-framework QuartzCore")
+    add_test(NAME jalium.native.metal.text-glyph-ranges COMMAND jalium.native.metal.text-glyph-ranges)
+    set_tests_properties(jalium.native.metal.text-glyph-ranges PROPERTIES TIMEOUT 60)
     add_executable(jalium.native.metal.fonts tests/metal_font_resources.mm tests/metal_font_cascade.mm tests/metal_font_width.mm tests/metal_font_matching.mm)
     target_compile_options(jalium.native.metal.fonts PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.metal.fonts PRIVATE jalium.native.metal jalium.native.core

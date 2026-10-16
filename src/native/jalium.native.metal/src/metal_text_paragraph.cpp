@@ -355,7 +355,8 @@ JaliumResult MetalTextParagraph::GetSelection(uint32_t line, uint32_t start, uin
 
 bool MetalTextParagraph::RasterizeLine(uint32_t line, float x, float y, float opacity,
     const float* matrix, float clipWidth, float clipHeight, std::vector<uint8_t>& pixels,
-    uint32_t& pixelWidth, uint32_t& pixelHeight, float& deviceX, float& deviceY) const
+    uint32_t& pixelWidth, uint32_t& pixelHeight, float& deviceX, float& deviceY,
+    const uint32_t* ranges, uint32_t rangeCount, int32_t visibility) const
 {
     pixels.clear(); pixelWidth = pixelHeight = 0; deviceX = deviceY = 0;
 #ifdef __APPLE__
@@ -404,7 +405,7 @@ bool MetalTextParagraph::RasterizeLine(uint32_t line, float x, float y, float op
         if (number) CFNumberGetValue(number, kCFNumberFloat32Type, &alpha);
         CGContextSaveGState(context.value);
         CGContextSetAlpha(context.value, std::clamp(opacity, 0.0f, 1.0f) * alpha);
-        DrawFontRun(run, context.value, CGPointZero);
+        DrawFontRunRanges(run, context.value, CGPointZero, impl_->String(), ranges, rangeCount, visibility);
         CGContextRestoreGState(context.value);
     }
     deviceX = static_cast<float>(left); deviceY = static_cast<float>(top); return true;

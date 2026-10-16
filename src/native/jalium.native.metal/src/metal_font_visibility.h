@@ -1,5 +1,7 @@
 #pragma once
 #include <vector>
+#include <algorithm>
+#include <cstdint>
 namespace jalium { struct FontCascadeEntry { const void* font; const void* canonical; }; }
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
@@ -79,6 +81,57 @@ inline void ApplyFontVisibility(CFMutableAttributedStringRef attributed, CFRange
 }
 inline bool IsFontRunInvisible(CFDictionaryRef attributes)
 { return CFDictionaryGetValue(attributes, CFSTR("JaliumFontInvisible")) == kCFBooleanTrue; }
+
+inline void DrawFontRunRanges(CTRunRef run, CGContextRef context, CGPoint origin,
+    CFStringRef text, const uint32_t* ranges, uint32_t count, int32_t mode)
+{
+    CGContextSaveGState(context);
+    CGAffineTransform matrix = CTRunGetTextMatrix(run);
+    matrix.tx = origin.x; matrix.ty = origin.y;
+    CGContextSetTextMatrix(context, matrix);
+    if (mode == 0) CTRunDraw(run, context, CFRangeMake(0, 0));
+    else {
+        CFIndex n = CTRunGetGlyphCount(run);
+        if (n == 0) { CGContextRestoreGState(context); return; }
+        std::vector<CFIndex> indices(static_cast<size_t>(n));
+        CTRunGetStringIndices(run, CFRangeMake(0, n), indices.data());
+        auto boundaries = indices;
+        auto span = CTRunGetStringRange(run);
+        boundaries.push_back(span.location + span.length);
+        std::sort(boundaries.begin(), boundaries.end());
+        boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+        CFIndex first = -1;
+        for (CFIndex i = 0; i <= n; ++i) {
+            bool draw = false;
+            if (i < n) {
+                CFIndex start = indices[static_cast<size_t>(i)];
+                auto next = std::upper_bound(boundaries.begin(), boundaries.end(), start);
+                CFIndex end = next == boundaries.end() ? start + 1 : *next;
+                if (text && start >= 0 && end > start && end <= CFStringGetLength(text)) {
+                    auto a = CFStringGetRangeOfComposedCharactersAtIndex(text, start);
+                    auto b = CFStringGetRangeOfComposedCharactersAtIndex(text, end - 1);
+                    start = a.location; end = b.location + b.length;
+                }
+                // The target normalizes and merges ranges. Find the first end
+                // after this cluster in logarithmic time, including RTL runs.
+                uint32_t lo = 0, hi = count;
+                while (lo < hi) {
+                    uint32_t mid = lo + (hi - lo) / 2;
+                    if (static_cast<uint64_t>(ranges[2 * mid]) + ranges[2 * mid + 1] <= static_cast<uint64_t>(std::max<CFIndex>(0, start))) lo = mid + 1;
+                    else hi = mid;
+                }
+                bool selected = start >= 0 && lo < count && static_cast<CFIndex>(ranges[2 * lo]) < end;
+                draw = mode == 1 ? selected : !selected;
+            }
+            if (draw && first < 0) first = i;
+            if (!draw && first >= 0) {
+                CTRunDraw(run, context, CFRangeMake(first, i - first));
+                first = -1;
+            }
+        }
+    }
+    CGContextRestoreGState(context);
+}
 
 inline void DrawFontRun(CTRunRef run, CGContextRef context, CGPoint origin)
 {
