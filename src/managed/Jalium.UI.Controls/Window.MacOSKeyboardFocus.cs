@@ -11,9 +11,24 @@ public partial class Window : IKeyboardFocusHost
     private Action<int>? _macOSResponderFocusRestore;
     private int _macOSResponderFocusEpoch;
 
+    internal bool IsMacOSKeyboardInputTargetEligible(UIElement target)
+    {
+        var route = InputRoute.Capture(NormalizeMacOSAccessibilityTarget(target), MacOSInputOwner);
+        // An overlay shares its owner's native window, so AppKit cannot reject
+        // tooltip focus for us. Keep the same policy for both popup hosts.
+        return route.Count != 0 && !route.Any(node => node is Controls.ToolTip ||
+            node is Controls.Primitives.PopupRoot { OwnerPopup.Child: Controls.ToolTip }) &&
+            InputRoute.IsCurrent(route);
+    }
+
+    bool IKeyboardFocusHost.IsKeyboardFocusTargetEligible(UIElement target) =>
+        !OperatingSystem.IsMacOS() || IsMacOSKeyboardInputTargetEligible(target);
+
     bool IKeyboardFocusHost.TryAcquireKeyboardFocus(UIElement target)
     {
-        if (!OperatingSystem.IsMacOS() || _platformWindow is not IPlatformKeyboardFocus platform) return true;
+        if (!OperatingSystem.IsMacOS()) return true;
+        if (!IsMacOSKeyboardInputTargetEligible(target)) return false;
+        if (_platformWindow is not IPlatformKeyboardFocus platform) return true;
         if (!Dispatcher.CheckAccess()) return false;
         var owner = MacOSInputOwner;
         var current = CaptureMacOSAccessibilityLifetime(target);
@@ -22,7 +37,7 @@ public partial class Window : IKeyboardFocusHost
         long intent = FocusService.FocusIntentRevision;
         bool IsCurrent(bool after) => target.Focusable && target.IsEnabled && current() &&
             activation(after) && intent == FocusService.FocusIntentRevision &&
-            ReferenceEquals(provider, FocusService.Provider);
+            ReferenceEquals(provider, FocusService.Provider) && IsMacOSKeyboardInputTargetEligible(target);
         if (!IsCurrent(false)) return false;
         owner._macOSKeyboardFocusAcquisitionDepth++;
         try { return platform.TrySetKeyboardFocus() && IsCurrent(true); }

@@ -482,8 +482,10 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         bool enabled = ReferenceEquals(peer, _root) && !_window.IsMacOSPopupHost
             ? peer.IsEnabled() : CanMutate(peer);
         if (enabled) flags |= MacOSAXFlags.Enabled;
-        if (enabled && peer.IsKeyboardFocusable()) flags |= MacOSAXFlags.Focusable;
-        if (enabled && peer.HasKeyboardFocus()) flags |= MacOSAXFlags.Focused;
+        bool keyboardEligible = GetActionTarget(peer) is { } focusTarget &&
+            _window.IsMacOSKeyboardInputTargetEligible(focusTarget);
+        if (enabled && keyboardEligible && peer.IsKeyboardFocusable()) flags |= MacOSAXFlags.Focusable;
+        if (enabled && keyboardEligible && peer.HasKeyboardFocus()) flags |= MacOSAXFlags.Focused;
         if (peer.IsDialog()) flags |= MacOSAXFlags.Dialog;
         if (ReferenceEquals(peer, _root) && _window.IsModal) flags |= MacOSAXFlags.Modal;
         if (peer.Owner is TitleBarButton caption)

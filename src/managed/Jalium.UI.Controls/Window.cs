@@ -13396,7 +13396,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool IsMacOSInputTargetValid(UIElement element)
     {
-        if (!element.IsEnabled || !element.IsVisible || Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element)) return false;
+        if (!element.IsEnabled || !element.IsVisible || Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element) ||
+            !IsMacOSKeyboardInputTargetEligible(element)) return false;
         var owner = MacOSInputOwner;
         var physical = GetMacOSPhysicalWindow(element);
         return physical != null && (ReferenceEquals(physical, owner) ||

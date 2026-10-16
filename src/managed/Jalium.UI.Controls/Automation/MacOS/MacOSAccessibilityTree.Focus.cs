@@ -29,7 +29,9 @@ internal sealed unsafe partial class MacOSAccessibilityTree
 
     private bool RequestFocus(AutomationPeer peer, Func<bool> lifetime, FocusRequest request, Func<bool, bool> activationLifetime)
     {
-        bool IsCurrent() => request.IsCurrent && lifetime() && request.HasCurrentIntent;
+        var target = GetActionTarget(peer);
+        bool IsCurrent() => target != null && request.IsCurrent && lifetime() && request.HasCurrentIntent &&
+            _window.IsMacOSKeyboardInputTargetEligible(target);
         if (!IsCurrent() || !activationLifetime(false)) return false;
         // Renderer-neutral trees have no AppKit surface to select. Preserve
         // their synchronous provider contract without requesting activation.

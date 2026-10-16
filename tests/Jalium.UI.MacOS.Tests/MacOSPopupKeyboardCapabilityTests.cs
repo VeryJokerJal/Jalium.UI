@@ -72,13 +72,24 @@ public sealed partial class MacOSAccessibilityFocusHostTests
         Assert.False(PopupKeyboardEligible(h)); Assert.False(h.Source.IsHitTestVisible);
     }
 
-    [Fact]
-    public void PopupKeyboardEligibilityPreservesTooltipNonactivation()
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void PopupKeyboardEligibilityPreservesTooltipNonactivation(bool tooltipFocusable)
     {
         if (!OperatingSystem.IsMacOS()) return;
-        using var h = new Host("native", hitTest: false, popupChild: new ToolTip
-        { Focusable = true, Content = new TextBox { Text = "提示" } });
-        Assert.False(PopupKeyboardEligible(h)); Assert.Equal(0, h.ActivationCalls);
+        var editor = new TextBox { Text = "提示中文🙂", Width = 100, Height = 30 };
+        var template = new ControlTemplate(typeof(ToolTip));
+        // This host has no XAML theme loader. Mount the actual content so the
+        // negative capability cannot pass merely because the child is absent.
+        template.SetVisualTree(() => new ContentPresenter { Content = editor });
+        var tooltip = new ToolTip { Focusable = tooltipFocusable, Content = editor, Template = template };
+        using var h = new Host("native", hitTest: false, popupChild: tooltip);
+        Assert.IsType<ContentPresenter>(editor.VisualParent);
+        Assert.Same(h.Source, Window.GetMacOSPhysicalWindow(editor));
+        Assert.True(editor.Focusable && editor.IsEnabled && editor.IsVisible);
+        Assert.False(PopupKeyboardEligible(h));
+        editor.Focusable = false; Assert.False(PopupKeyboardEligible(h));
+        editor.Focusable = true; Assert.False(PopupKeyboardEligible(h));
+        Assert.Same(h.Before, Keyboard.FocusedElement); Assert.Equal(0, h.ActivationCalls);
     }
 
     [Fact]

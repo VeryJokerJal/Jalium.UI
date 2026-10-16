@@ -8612,3 +8612,67 @@ NSTextField 对照不可用，明确列为跳过。托管 TRX 的 Counters.notEx
 系统设置切换、硬件热插拔／混合 DPI 验收。本地正式 .app 启动仍未通过，父提交
 在 CI runner 的成功不能替代本地结果。新提交的 CI 将独立跟进；完整 macOS
 目标继续进行，PR 保持打开且不合并。
+
+## v240：阻止 ToolTip 内容夺取 Window 键盘焦点
+
+实际 AppKit 宿主捕获到覆盖层 ToolTip 的内容 TextBox.Focus() 返回 true，并替换
+owner 的逻辑键盘焦点。外部 ToolTip 已由原生窗口拒绝 key/main；覆盖层共享
+owner 的正常窗口，不能依靠 AppKit 的窗口能力阻止此行为。普通 Tab 预测也会
+选中提示内容；AX 焦点请求和元数据同样缺少这一目标资格检查。
+
+现在用当前输入路由统一判断 ToolTip 根及后代的键盘资格，同时覆盖 overlay 和
+PopupRoot。普通 Focus 在选取原生输入面之前拒绝；AX 在排队／激活前检查，
+并在回调后复查；原生键盘与文本路由也使用同一规则。Tab、反向 Tab 及方向导航
+在收集候选时仅查询资格，不触发原生焦点动作。AX 保留 Enabled 和可读内容，
+不再宣布 Focusable／Focused。普通指针穿透 Popup 的 TextBox 仍可取得焦点。
+新增查询接口有默认实现，非 macOS 的焦点与导航行为保留。
+
+先修正夹具的内容挂载前提：此前仅引用统一托管程序集的原生宿主没有加载 XAML
+主题，其 ToolTip 未挂载内容，不能证明内含可聚焦控件时的行为。相同源码中，
+仅 Managed 的宿主无加载器／模板、内容无父项、尺寸 0×0；引用框架既有 XAML
+项目后，默认模板与资源生效，TextBox 挂入 ContentPresenter，ToolTip 为 202×54。
+两组含构建分别 **2.818／10.646 秒**；没有新增产品依赖或修改样式。
+
+永久回归显式挂载实际内容，不依赖全局主题加载顺序。修复前的 12 个新测试为
+**10 失败／2 通过，3.729 秒**；两个通过项是普通 Popup 的正对照。修复后连同
+原有能力测试的两种 ToolTip.Focusable 值，定向 **14/14，48.876 秒**。覆盖普通
+Focus、AX 激活前拒绝、AX 元数据、Tab 预测和往返移动。旧原生宿主加入覆盖层
+断言后于第 22 项失败，实际观察到 Focus 返回 true；修复后相同前提通过。
+
+完整主题的实际 AppKit 宿主覆盖 Native／Custom 标题栏：各有独立 Popup 包裹的
+ToolTip、真正 IsOpen 的 owner 内覆盖层，以及越界后自动提升为外部窗口的
+ToolTip。核对实际模板、可视父项、NSWindow 和已加载平台库路径；检查普通
+Focus、进程内 AX Focus、内容替换、保留的旧 AX 引用与覆盖层 Tab 往返。
+普通指针穿透 Popup 的可聚焦 TextBox 作为正对照。修复后 PR 宿主 **89/89**，
+含构建 **13.711 秒**。首次诊断将 AppKit 对象指针误作 PID，其观察值已弃用；
+最终夹具通过 processIdentifier 读取真实 PID，结果单列。
+
+宿主以非激活方式显示 owner；六个 ToolTip 场景都记录 appActive=false、key=false，
+系统前台 PID 与本进程不同。普通 Popup 的 Focus 在相同条件下成功，因此负项
+不是以整个宿主失效作为通过。此结果覆盖实际布局、宿主、焦点资格与进程内 AX，
+不代替真实前台输入、截图、外部 AX 或 VoiceOver。桌面客户端与系统提示问题
+仍待独立处理。原生产品源码未修改，八库内容将在最终清理前核对。
+
+最终串行验收（本地历史另行构建匹配的 8 个原生库，18.481 秒）：
+
+| 范围 | 结果 |
+| --- | --- |
+| PR 完整托管回归 | **2209 通过／0 失败／2 项既有 opt-in 跳过**，2211 总数，含构建 **20.002 秒** |
+| 本地历史完整托管回归 | **2126 通过／0 失败／2 项既有 opt-in 跳过**，2128 总数，含构建 **42.310 秒** |
+| 完整主题实际 AppKit ToolTip 宿主 | 两条历史各 **89/89**；含构建 **13.711／13.443 秒**，六种 ToolTip 上下文和两个正对照分别记录 |
+| 原生变更边界 | PR 本轮前后 **8 库 SHA-256 全部相同**；没有原生产品修改，未重跑完整 C++／ASan 套件 |
+| 提交边界 | 同一九路径补丁应用于两条历史，原有 **34** 处差异的路径及精确增删内容保持 |
+
+两条托管 TRX 各有两条 NotExecuted 逐项记录，Counters.notExecuted 为 0；跳过按
+逐项记录计数，不将其计为通过。此前 `1fe24c79` 的 Window CI 为 **32/32、
+518.59 秒**，含显示通知 34/34、基本 AX 每种标题栏 305/305、正式 .app 同一
+PID=4397 的 STARTED／FINISHED／EXIT 和 result=0。这些是父提交的原生证据；
+本轮新提交 CI 独立跟进。此前本地完整原生 **32/33** 的正式 .app 超时仍保留为
+失败；v239 已定位外部卷日志打开权限提示与随后系统前台门槛，未把它改记通过。
+桌面探测仍为 tunnel-client 超过 300 秒未连接；本轮没有截图、物理输入、真实
+IME、外部 AX、VoiceOver 或实际系统状态切换验收。整体 macOS 目标继续进行。
+
+父提交的 [Linux glibc arm64](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38941884426/job/117111769149)
+在 SvgParserConformanceTests.Path_data_with_coordinates_after_Z_fails_fast 的原有 5 秒
+检查失败，日志为 parser hung；此失败未在本轮修复或归因于 Window。glibc x64
+与 musl x64 已通过；musl arm64 和 Apple 原生／包构建仍在进行，不能记为通过。
