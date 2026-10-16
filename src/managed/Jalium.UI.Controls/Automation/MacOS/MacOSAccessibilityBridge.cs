@@ -688,13 +688,14 @@ internal sealed unsafe partial class MacOSAccessibilityTree
 
     private bool PerformAction(AutomationPeer peer, MacOSAXAction action)
     {
+        var activationLifetime = action == MacOSAXAction.SetFocus ? _window.CaptureMacOSAccessibilityActivationLifetime() : null;
+        var focusRequest = action == MacOSAXAction.SetFocus ? CaptureFocusRequest() : default;
         var lifetime = CaptureActionLifetime(peer);
         if (!lifetime()) return false;
         switch (action)
         {
             case MacOSAXAction.SetFocus when peer.IsKeyboardFocusable():
-                if (!lifetime()) return false;
-                peer.SetFocus(); return lifetime() && peer.HasKeyboardFocus();
+                return RequestFocus(peer, lifetime, focusRequest, activationLifetime!);
             case MacOSAXAction.Press:
                 if (peer.GetPattern(PatternInterface.Invoke) is IInvokeProvider)
                 {

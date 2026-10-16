@@ -9,6 +9,7 @@ namespace Jalium.UI;
 public static class FocusService
 {
     private static IFocusProvider? _provider;
+    internal static long FocusIntentRevision { get; private set; }
 
     /// <summary>
     /// Gets or sets the focus provider implementation.
@@ -29,6 +30,7 @@ public static class FocusService
     /// </summary>
     public static IInputElement? Focus(IInputElement? element)
     {
+        unchecked { FocusIntentRevision++; }
         if (element is UIElement uiElement &&
             Styling.CssDisplayProperties.IsExitInert(uiElement))
             return _provider?.FocusedElement;
@@ -42,6 +44,7 @@ public static class FocusService
     /// </summary>
     public static void ClearFocus()
     {
+        unchecked { FocusIntentRevision++; }
         _provider?.ClearFocus();
     }
 

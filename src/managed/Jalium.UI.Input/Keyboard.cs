@@ -30,8 +30,13 @@ public static partial class Keyboard
     /// </summary>
     public static IInputElement? FocusedElement => _provider.FocusedElement;
 
-    internal static void UpdatePrimaryFocusedElement(IInputElement? element) =>
+    internal static long FocusRevision { get; private set; }
+
+    internal static void UpdatePrimaryFocusedElement(IInputElement? element)
+    {
+        unchecked { FocusRevision++; }
         _primaryDevice.FocusedElement = element;
+    }
 
     /// <summary>Gets the primary logical keyboard device.</summary>
     public static KeyboardDevice PrimaryDevice => _primaryDevice;

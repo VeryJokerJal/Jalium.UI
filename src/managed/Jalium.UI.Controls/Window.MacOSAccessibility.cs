@@ -8,6 +8,32 @@ namespace Jalium.UI;
 public partial class Window
 {
     private int _macOSAccessibilityPresentationGeneration;
+    private int _macOSAccessibilityFocusActivationDepth;
+
+    internal Func<bool, bool> CaptureMacOSAccessibilityActivationLifetime()
+    {
+        var owner = MacOSInputOwner;
+        int native = _macOSNativeActivationGeneration, ownerNative = owner._macOSNativeActivationGeneration;
+        int logical = owner._macOSActivationGeneration;
+        long application = Volatile.Read(ref _macOSPlatformActivationGeneration);
+        var key = CurrentKey();
+        int keyGeneration = key?._macOSNativeActivationGeneration ?? 0;
+        return afterActivation => afterActivation && ReferenceEquals(CurrentKey(), this) ||
+            native == _macOSNativeActivationGeneration && ownerNative == owner._macOSNativeActivationGeneration &&
+            logical == owner._macOSActivationGeneration && application == Volatile.Read(ref _macOSPlatformActivationGeneration) &&
+            ReferenceEquals(key, CurrentKey()) && (key == null || keyGeneration == key._macOSNativeActivationGeneration);
+
+        static Window? CurrentKey() => _macOSNativeKeyWindow?.TryGetTarget(out var window) == true &&
+            window._macOSNativeIsKey && !window._isClosing && !window._managedTeardownStarted ? window : null;
+    }
+
+    internal bool ActivateForMacOSAccessibilityFocus()
+    {
+        var owner = MacOSInputOwner;
+        owner._macOSAccessibilityFocusActivationDepth++;
+        try { return Activate(); }
+        finally { owner._macOSAccessibilityFocusActivationDepth--; }
+    }
 
     internal Button? FindMacOSDefaultOrCancelButton(bool cancel, bool physicalOnly = false)
     {
