@@ -628,6 +628,7 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
         ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
     target_compile_options(jalium.native.platform.window.text-input-lifetime.tests PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.platform.window.text-input-lifetime.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.text-input-lifetime.tests)
     add_test(NAME jalium.native.platform.macos.window.text-input-lifetime
         COMMAND jalium.native.platform.window.text-input-lifetime.tests)
     set_tests_properties(jalium.native.platform.macos.window.text-input-lifetime PROPERTIES TIMEOUT 30)
