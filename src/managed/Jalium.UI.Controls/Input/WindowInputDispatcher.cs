@@ -774,8 +774,7 @@ internal sealed class WindowInputDispatcher
             {
                 if (key == Key.Enter)
                 {
-                    var buttonSearchRoot = (UIElement?)_host.ActiveContentDialog ?? (UIElement?)_host.FindContainingInPlaceDialog() ?? _host.KeyboardScopeRoot;
-                    var defaultButton = _host.FindButton(buttonSearchRoot, b => b.IsDefault);
+                    var defaultButton = _host.FindDefaultOrCancelButton(cancel: false);
                     if (defaultButton != null)
                     {
                         defaultButton.PerformClick();
@@ -789,8 +788,7 @@ internal sealed class WindowInputDispatcher
                         bubbleArgs.Handled = true;
                         return true;
                     }
-                    var buttonSearchRoot = (UIElement?)_host.ActiveContentDialog ?? (UIElement?)_host.FindContainingInPlaceDialog() ?? _host.KeyboardScopeRoot;
-                    var cancelButton = _host.FindButton(buttonSearchRoot, b => b.IsCancel);
+                    var cancelButton = _host.FindDefaultOrCancelButton(cancel: true);
                     if (cancelButton != null)
                     {
                         cancelButton.PerformClick();

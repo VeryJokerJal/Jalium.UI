@@ -1629,6 +1629,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private static void OnMacOSWindowVisibilityChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var window = (Window)d;
+        unchecked { window._macOSAccessibilityPresentationGeneration++; }
         var visibility = (Visibility)e.NewValue!;
         if (window._macOSVisibilityBeingUpdated == visibility) return;
         window.ApplyMacOSWindowVisibility(visibility);
@@ -13345,7 +13346,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (OperatingSystem.IsMacOS() && IsMacOSPopupHost) return MacOSInputOwner.FindContainingInPlaceDialog();
         var focused = Keyboard.FocusedElement as Visual;
-        for (var current = focused; current != null; current = current.VisualParent)
+        int depth = 0;
+        for (var current = focused; current != null && depth++ < 4096;
+            current = OperatingSystem.IsMacOS() ? InputRoute.GetParent(current) : current.VisualParent)
         {
             if (current is ContentDialog dialog && ActiveInPlaceDialogs.Contains(dialog))
             {
@@ -15702,6 +15705,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     UIElement? IInputDispatcherHost.GetTextInputTarget() => GetTextInputTarget();
     ContentDialog? IInputDispatcherHost.FindContainingInPlaceDialog() => FindContainingInPlaceDialog();
     Button? IInputDispatcherHost.FindButton(UIElement root, Func<Button, bool> predicate) => FindButton(root, predicate);
+    Button? IInputDispatcherHost.FindDefaultOrCancelButton(bool cancel) => OperatingSystem.IsMacOS()
+        ? FindMacOSDefaultOrCancelButton(cancel)
+        : FindButton((UIElement?)ActiveContentDialog ?? (UIElement?)FindContainingInPlaceDialog() ?? this,
+            button => cancel ? button.IsCancel : button.IsDefault);
 
     bool IInputDispatcherHost.CanOpenDevTools => CanOpenDevTools;
 

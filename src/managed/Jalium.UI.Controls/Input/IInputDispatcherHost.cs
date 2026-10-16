@@ -51,6 +51,9 @@ internal interface IInputDispatcherHost
     MouseCommandInput? CaptureNativeMouseCommandInput(UIElement target, Func<bool>? isPacketCurrent = null) => null;
     ContentDialog? FindContainingInPlaceDialog();
     Button? FindButton(UIElement root, Func<Button, bool> predicate);
+    Button? FindDefaultOrCancelButton(bool cancel) => FindButton(
+        (UIElement?)ActiveContentDialog ?? (UIElement?)FindContainingInPlaceDialog() ?? KeyboardScopeRoot,
+        button => cancel ? button.IsCancel : button.IsDefault);
 
     // ── DevTools ──
 
