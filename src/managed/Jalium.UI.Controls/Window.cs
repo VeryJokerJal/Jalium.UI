@@ -12835,6 +12835,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             _elideUiThreadDirtyRectsDuringFullLayout = false;
         }
+        if (OperatingSystem.IsMacOS()) MacOSInputLayoutUpdated?.Invoke(this, EventArgs.Empty);
     }
 
     private static void PublishLayoutPassStatsFromTicks(

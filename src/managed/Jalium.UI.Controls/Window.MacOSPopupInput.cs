@@ -10,6 +10,9 @@ public partial class Window
 {
     internal bool IsMacOSPopupInputOwnerAlive => !_isClosing && !_managedTeardownStarted;
 
+    internal event Action<UIElement>? MacOSInputSubtreeDetached;
+    internal event EventHandler? MacOSInputLayoutUpdated;
+
     internal void RestoreMacOSPopupInputFocus(UIElement? previous, UIElement anchor, UIElement retiredFocus)
     {
         bool CanRestore() => IsMacOSPopupInputOwnerAlive && IsEnabled && Visibility == Visibility.Visible &&

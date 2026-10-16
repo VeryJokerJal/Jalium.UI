@@ -452,41 +452,7 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
 
     private void UpdateIsKeyboardFocusWithin(UIElement? oldFocus, UIElement? newFocus)
     {
-        var oldChain = GetVisualAncestorChain(oldFocus);
-        var newChain = GetVisualAncestorChain(newFocus);
-        var newSet = new HashSet<UIElement>(newChain);
-        var oldSet = new HashSet<UIElement>(oldChain);
-
-        // Clear IsKeyboardFocusWithin only for ancestors that no longer contain the focused element.
-        foreach (var element in oldChain)
-        {
-            if (!newSet.Contains(element))
-            {
-                element.UpdateIsKeyboardFocusWithin(false);
-            }
-        }
-
-        // Set IsKeyboardFocusWithin only for ancestors newly entered by the focused element.
-        foreach (var element in newChain)
-        {
-            if (!oldSet.Contains(element))
-            {
-                element.UpdateIsKeyboardFocusWithin(true);
-            }
-        }
-    }
-
-    private static List<UIElement> GetVisualAncestorChain(UIElement? element)
-    {
-        var chain = new List<UIElement>();
-        var current = element;
-        while (current != null)
-        {
-            chain.Add(current);
-            current = current.VisualParent as UIElement;
-        }
-
-        return chain;
+        KeyboardFocusWithinState.Update(oldFocus, newFocus);
     }
 }
 // Key and ModifierKeys enums moved to Jalium.UI.Core/Input/KeyboardEnums.cs

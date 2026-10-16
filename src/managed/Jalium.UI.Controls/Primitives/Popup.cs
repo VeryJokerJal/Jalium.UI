@@ -173,7 +173,7 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementTargetProperty =
         DependencyProperty.Register(nameof(PlacementTarget), typeof(UIElement), typeof(Popup),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, (d, _) => ((Popup)d).OnMacOSPlacementTargetChanged()));
 
     /// <summary>
     /// Identifies the Placement dependency property.
@@ -613,7 +613,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         if (_parentWindow == null) return;
         if (OperatingSystem.IsMacOS())
         {
-            if (!_parentWindow.IsMacOSPopupInputOwnerAlive)
+            if (!_parentWindow.IsMacOSPopupInputOwnerAlive || !_parentWindow.IsEnabled || !_parentWindow.IsVisible ||
+                !IsMacOSPopupAnchorValid(_parentWindow))
             { _parentWindow = null; SetCurrentValue(IsOpenProperty, false); return; }
             _macOSFocusBeforeOpen = Jalium.UI.Input.Keyboard.FocusedElement as UIElement;
         }
@@ -666,6 +667,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
 
         // Subscribe to parent window moves for repositioning
         _parentWindow.LocationChanged += OnParentWindowLocationChanged;
+
+        if (OperatingSystem.IsMacOS()) ObserveMacOSPopupOwner();
 
         StartOpenAnimation();
         OnOpened(EventArgs.Empty);
@@ -741,6 +744,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
     private void ClosePopupCore(Action? beforeClosed = null)
     {
         if (_popupRoot == null) return;
+
+        if (OperatingSystem.IsMacOS()) StopObservingMacOSPopupOwner();
 
         StopOpenAnimation(resetVisualState: true);
         _pendingContentSizeRoot = null;
