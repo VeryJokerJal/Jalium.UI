@@ -88,6 +88,17 @@ internal sealed class PopupRoot : Decorator, IInputRouteParentProvider
         OwnerPopup.SetIsMouseOver(true);
     }
 
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (OperatingSystem.IsMacOS() && !e.Handled && e.Key == Key.Escape &&
+            OwnerPopup.IsOpen && !OwnerPopup.StaysOpen)
+        {
+            OwnerPopup.SetCurrentValue(Popup.IsOpenProperty, false);
+            e.Handled = true;
+        }
+    }
+
     protected override Size MeasureOverride(Size constraint)
     {
         var desiredSize = base.MeasureOverride(constraint);

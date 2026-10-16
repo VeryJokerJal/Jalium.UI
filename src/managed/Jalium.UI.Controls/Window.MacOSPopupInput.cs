@@ -8,7 +8,7 @@ namespace Jalium.UI;
 
 public partial class Window
 {
-    internal bool IsMacOSPopupInputOwnerAlive => !_isClosing && !_managedTeardownStarted;
+    internal bool IsMacOSPopupInputOwnerAlive => !_isClosing && !_managedTeardownStarted && IsMacOSPopupHostCurrent;
 
     internal event Action<UIElement>? MacOSInputSubtreeDetached;
     internal event EventHandler? MacOSInputLayoutUpdated;
@@ -58,29 +58,33 @@ public partial class Window
     MouseCommandInput? IInputDispatcherHost.CaptureNativeMouseCommandInput(UIElement target, Func<bool>? isPacketCurrent)
     {
         if (!OperatingSystem.IsMacOS()) return null;
-        var dialog = ActiveContentDialog;
+        var owner = MacOSInputOwner;
+        var dialog = owner.ActiveContentDialog;
         var platform = _platformWindow;
         nint handle = Handle;
         int generation = Volatile.Read(ref _renderLifecycleGeneration);
         int activationGeneration = _macOSActivationGeneration;
-        return new MouseCommandInput(target, this, dialog ?? (UIElement)this, dialog,
-            () => isPacketCurrent?.Invoke() != false && !_isClosing && !_managedTeardownStarted && IsEnabled && Visibility == Visibility.Visible &&
-                generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
-                handle == Handle && ReferenceEquals(dialog, ActiveContentDialog));
+        int nativeActivationGeneration = _macOSNativeActivationGeneration;
+        return new MouseCommandInput(target, this, dialog ?? (UIElement)owner, dialog,
+            () => isPacketCurrent?.Invoke() != false && !_isClosing && !_managedTeardownStarted && IsMacOSPopupHostCurrent && IsEnabled && Visibility == Visibility.Visible &&
+                generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && nativeActivationGeneration == _macOSNativeActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
+                handle == Handle && ReferenceEquals(dialog, owner.ActiveContentDialog));
     }
 
     private Func<bool> CaptureMacOSInputLifetime(UIElement target, bool textInput)
     {
-        var route = InputRoute.Capture(target, this);
+        var route = InputRoute.Capture(target, MacOSInputOwner);
         var focus = Keyboard.FocusedElement;
-        var dialog = ActiveContentDialog;
+        var owner = MacOSInputOwner;
+        var dialog = owner.ActiveContentDialog;
         var platform = _platformWindow;
         nint handle = Handle;
         int generation = Volatile.Read(ref _renderLifecycleGeneration);
         int activationGeneration = _macOSActivationGeneration;
-        return () => !_isClosing && !_managedTeardownStarted && IsEnabled && Visibility == Visibility.Visible &&
-            generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
-            handle == Handle && ReferenceEquals(focus, Keyboard.FocusedElement) && ReferenceEquals(dialog, ActiveContentDialog) &&
+        int nativeActivationGeneration = _macOSNativeActivationGeneration;
+        return () => !_isClosing && !_managedTeardownStarted && IsMacOSPopupHostCurrent && IsEnabled && Visibility == Visibility.Visible &&
+            generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && nativeActivationGeneration == _macOSNativeActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
+            handle == Handle && ReferenceEquals(focus, Keyboard.FocusedElement) && ReferenceEquals(dialog, owner.ActiveContentDialog) &&
             InputRoute.IsCurrent(route) && IsMacOSInputTargetValid(target) &&
             ReferenceEquals(target, textInput ? GetTextInputTarget() : GetKeyboardEventTarget());
     }

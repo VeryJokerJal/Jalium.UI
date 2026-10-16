@@ -26,7 +26,7 @@ public partial class Popup
         if (root == null || ReferenceEquals(root, _macOSClosingRoot)) return;
         var previousClosingRoot = _macOSClosingRoot;
         _macOSClosingRoot = root;
-        var owner = _parentWindow;
+        var owner = _parentWindow?.MacOSInputOwner;
         var previousFocus = _macOSFocusBeforeOpen;
         _macOSFocusBeforeOpen = null;
         var anchor = PlacementTarget ?? this;
@@ -44,6 +44,9 @@ public partial class Popup
             var children = _overlayLayer?.Children.OfType<PopupRoot>()
                 .Where(child => !ReferenceEquals(child, root) && IsAncestorOfPopupRoot(child))
                 .Select(child => child.OwnerPopup).ToArray() ?? [];
+            if (owner != null)
+                children = children.Concat(owner.MacOSExternalPopupGroup.Where(p => p._popupRoot != null &&
+                    IsAncestorOfPopupRoot(p._popupRoot))).Distinct().ToArray();
             foreach (var child in children) Run(() => child.IsOpen = false);
 
             var focus = Keyboard.FocusedElement as UIElement;

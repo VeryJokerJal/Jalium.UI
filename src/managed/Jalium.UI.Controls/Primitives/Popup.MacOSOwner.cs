@@ -16,6 +16,28 @@ public partial class Popup
     private void OnMacOSPlacementTargetChanged()
     {
         if (!OperatingSystem.IsMacOS() || _popupRoot == null) return;
+        var parent = GetParentWindow();
+        if (_parentWindow != null && parent != null && !ReferenceEquals(parent, _parentWindow) &&
+            ReferenceEquals(parent.MacOSInputOwner, _parentWindow.MacOSInputOwner) && IsMacOSPopupAnchorValid(parent))
+        {
+            var previous = _parentWindow;
+            previous.LocationChanged -= OnParentWindowLocationChanged;
+            _parentWindow = parent;
+            parent.LocationChanged += OnParentWindowLocationChanged;
+            if (_macOSPopupWindow != null)
+            {
+                previous.ActiveExternalPopups.Remove(this);
+                if (!parent.ActiveExternalPopups.Contains(this)) parent.ActiveExternalPopups.Add(this);
+                if (!_macOSPopupWindow.ReparentMacOSPopupHost(parent))
+                { SetCurrentValue(IsOpenProperty, false); return; }
+            }
+            else if (_overlayLayer != null)
+            {
+                _overlayLayer.RemovePopupRoot(_popupRoot);
+                _overlayLayer = parent.OverlayLayer;
+                _overlayLayer.AddPopupRoot(_popupRoot);
+            }
+        }
         ObserveMacOSPopupOwner();
         _macOSOwnerPositionDirty = true;
         QueueMacOSPopupOwnerCheck();
@@ -88,7 +110,7 @@ public partial class Popup
         {
             if (node is UIElement element && (!element.IsVisible || element.Visibility != Visibility.Visible ||
                 IsHitTestVisible && !element.IsEnabled || Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element))) return false;
-            if (ReferenceEquals(node, owner)) return true;
+            if (ReferenceEquals(node, owner.MacOSInputOwner)) return true;
         }
         return false;
     }

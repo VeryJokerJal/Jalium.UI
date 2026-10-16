@@ -56,6 +56,7 @@ typedef enum JaliumWindowStyle {
     JALIUM_WINDOW_STYLE_POPUP         = 1 << 7,
     JALIUM_WINDOW_STYLE_TRANSPARENT   = 1 << 8,  ///< Per-pixel alpha (WS_EX_NOREDIRECTIONBITMAP)
     JALIUM_WINDOW_STYLE_POPUP_GRAB    = 1 << 9,  ///< Light-dismiss/menu popup with an explicit input grab
+    JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT = 1 << 10, ///< Noninteractive popup surface (macOS)
 } JaliumWindowStyle;
 
 /// Window state.

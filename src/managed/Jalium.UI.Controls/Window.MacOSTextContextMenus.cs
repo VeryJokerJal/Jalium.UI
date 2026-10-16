@@ -23,8 +23,10 @@ public partial class Window
     {
         nint handle = Handle;
         int activationGeneration = _macOSActivationGeneration;
+        int nativeActivationGeneration = _macOSNativeActivationGeneration;
         bool IsCurrent() => Dispatcher.CheckAccess() && handle != 0 && Handle == handle &&
             activationGeneration == _macOSActivationGeneration &&
+            nativeActivationGeneration == _macOSNativeActivationGeneration &&
             !_isClosing && !_managedTeardownStarted && IsEnabled && IsVisible &&
             IsMacOSInputTargetValid(target) && ReferenceEquals(GetTextInputTarget(), target);
         if (!IsCurrent()) return null;

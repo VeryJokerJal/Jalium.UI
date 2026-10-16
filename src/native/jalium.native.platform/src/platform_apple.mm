@@ -341,6 +341,7 @@ void ApplyAppleSurfaceAppearance(JaliumPlatformWindow* window)
     bool reduceTransparency = hasBackdrop &&
         NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
     bool transparent = (explicitTransparency || hasBackdrop) && !reduceTransparency;
+    window->window.ignoresMouseEvents = (window->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT) != 0;
     window->window.opaque = !transparent;
     window->window.backgroundColor = transparent ? NSColor.clearColor : NSColor.windowBackgroundColor;
     window->window.hasShadow = hasBackdrop || !explicitTransparency;
@@ -1826,7 +1827,8 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     }
     return [super accessibilityRoleDescription];
 }
-- (BOOL)canBecomeKeyWindow { return _jaliumOwner && _jaliumOwner->enabled; }
+- (BOOL)canBecomeKeyWindow { return _jaliumOwner && _jaliumOwner->enabled &&
+    !(_jaliumOwner->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT); }
 - (BOOL)canBecomeMainWindow { return _jaliumOwner && _jaliumOwner->enabled &&
     !(_jaliumOwner->style & JALIUM_WINDOW_STYLE_POPUP); }
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {

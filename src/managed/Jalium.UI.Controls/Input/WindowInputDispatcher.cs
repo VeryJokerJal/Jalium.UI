@@ -242,7 +242,7 @@ internal sealed class WindowInputDispatcher
     /// </summary>
     private bool HasBlockingExternalPopup()
     {
-        var popups = _host.ActiveExternalPopups;
+        var popups = _host.BlockingExternalPopups;
         for (int i = 0; i < popups.Count; i++)
         {
             if (!popups[i].StaysOpen)
@@ -287,7 +287,7 @@ internal sealed class WindowInputDispatcher
 
         // 按下点落在覆盖层的哪个弹窗里（没有则 null）。下面两段 light dismiss 都要用它：
         // 落在弹窗里的按下不是「点到外面」，既不关它的祖先、也不吞掉点击。
-        var hitOverlayRoot = _host.OverlayLayer.FindPopupRootAt(position);
+        var hitOverlayRoot = _host.OverlayLayer.FindPopupRootAt(position) ?? _host.HostedPopupRoot;
 
         // Check light dismiss via OverlayLayer — clicks outside popups close them
         bool dismissed = topLevelMenuItemBehindOverlay == null
@@ -296,15 +296,16 @@ internal sealed class WindowInputDispatcher
         // Light dismiss for external popup windows (rendered outside the parent window).
         // 与覆盖层那一段同一次按下里一起判：点在所有弹窗之外时两种宿主形态一起关（和非客户区按下、
         // 窗口失活走的 CloseAllLightDismissPopups 一致），不再是先关覆盖层、外飞的留到下一次点击。
-        if (_host.ActiveExternalPopups.Count > 0)
+        if (_host.MouseDismissPopups.Count > 0)
         {
             // 链感知：按下落在覆盖层的某个弹窗里时（典型是外飞菜单里级联出来、又落回主窗口覆盖层的
             // 子菜单/下拉），它的祖先外飞弹窗不算「被点到外面」——保持打开，点击照常派发给弹窗内容；
             // 只有与按下点无关的外飞弹窗才关。否则父菜单被关、点击被吞、子菜单却留着还能继续点。
-            var popupsToClose = _host.ActiveExternalPopups
+            var popupsToClose = _host.MouseDismissPopups
                 .Where(p => !p.StaysOpen
                             && !p.HasPointerCaptureWithin
-                            && (hitOverlayRoot == null || !p.IsAncestorOfPopupRoot(hitOverlayRoot)))
+                            && (hitOverlayRoot == null || !ReferenceEquals(p, hitOverlayRoot.OwnerPopup) &&
+                                !p.IsAncestorOfPopupRoot(hitOverlayRoot)))
                 .ToList();
             foreach (var popup in popupsToClose)
                 popup.IsOpen = false;
@@ -760,7 +761,7 @@ internal sealed class WindowInputDispatcher
             {
                 if (key == Key.Enter)
                 {
-                    var buttonSearchRoot = (UIElement?)_host.ActiveContentDialog ?? (UIElement?)_host.FindContainingInPlaceDialog() ?? _host.Self;
+                    var buttonSearchRoot = (UIElement?)_host.ActiveContentDialog ?? (UIElement?)_host.FindContainingInPlaceDialog() ?? _host.KeyboardScopeRoot;
                     var defaultButton = _host.FindButton(buttonSearchRoot, b => b.IsDefault);
                     if (defaultButton != null)
                     {
@@ -770,7 +771,12 @@ internal sealed class WindowInputDispatcher
                 }
                 else if (key == Key.Escape)
                 {
-                    var buttonSearchRoot = (UIElement?)_host.ActiveContentDialog ?? (UIElement?)_host.FindContainingInPlaceDialog() ?? _host.Self;
+                    if (_host.TryDismissPopupOnEscape(target))
+                    {
+                        bubbleArgs.Handled = true;
+                        return true;
+                    }
+                    var buttonSearchRoot = (UIElement?)_host.ActiveContentDialog ?? (UIElement?)_host.FindContainingInPlaceDialog() ?? _host.KeyboardScopeRoot;
                     var cancelButton = _host.FindButton(buttonSearchRoot, b => b.IsCancel);
                     if (cancelButton != null)
                     {
@@ -951,6 +957,7 @@ internal sealed class WindowInputDispatcher
     internal void CompleteMacOSWindowDeactivation(Func<bool> isCurrent)
     {
         CloseLightDismissPopupsOnDeactivate(nint.Zero, isCurrent);
+        if (isCurrent()) _host.Self.CloseMacOSPopupGroupOnDeactivate(isCurrent);
         if (isCurrent()) _host.WakeRenderPipeline();
     }
 

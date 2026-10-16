@@ -110,7 +110,7 @@ public static class PlatformTextContextMenus
                 : ContextMenuService.TryOpenAttachedForKeyboard(menuOwner);
         }
         if (!owner.IsEnabled || !owner.IsVisible || !ContextMenuService.GetIsEnabled(owner) ||
-            Window.GetWindow(owner) is not { } window || !owner.Focus()) return false;
+            Window.GetMacOSPhysicalWindow(owner) is not { } window || !owner.Focus()) return false;
 
         Point? eventPosition = position is { } pointAt ? owner.TranslatePoint(pointAt, null) : null;
         var opening = eventPosition is { } at

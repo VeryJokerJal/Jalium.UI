@@ -48,7 +48,7 @@ public partial class Window
             OnDeactivated(EventArgs.Empty);
             if (!IsCurrent()) return;
         }
-        Application.Current?.SetPlatformActivationState(false);
+        if (!HasMacOSNativeKeyWindow) Application.Current?.SetPlatformActivationState(false);
         if (IsCurrent()) UpdateInputMethodAssociation();
     }
 }

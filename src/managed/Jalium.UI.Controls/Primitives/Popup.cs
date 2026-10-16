@@ -125,7 +125,9 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         // Standalone PopupWindow hosts keep their existing physical route.
         if (!ReferenceEquals(_popupRoot, root)) return root.VisualParent;
         if (!IsOpen || _parentWindow == null) return null;
-        if (_isUsingExternalWindow) return root.VisualParent;
+        if (_isUsingExternalWindow)
+            return _macOSPopupWindow != null && IsMacOSExternalHostCurrent(_macOSPopupWindow)
+                ? this : root.VisualParent;
         if (_overlayLayer == null || !ReferenceEquals(root.VisualParent, _overlayLayer)) return null;
 
         return this;
@@ -140,7 +142,7 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         if (PlacementTarget is not { } anchor)
         {
             var declaration = VisualParent as Visual;
-            return declaration == null ? _overlayLayer :
+            return declaration == null ? (Visual?)_overlayLayer ?? _parentWindow.MacOSInputOwner :
                 ReferenceEquals(ResolveOwningWindow(declaration), _parentWindow) ? declaration : null;
         }
         var owner = ResolveOwningWindow(anchor);
@@ -415,8 +417,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
     /// 默认行为是先按 overlay 走，只有溢出父窗口/屏幕工作区才切外飞窗口；这对真正的右键菜单
     /// （ContextMenu / MenuFlyout）不合适 —— context menu 按 Win32/WPF/WinUI 惯例总是独立顶层窗口，
     /// 才能正确处理"菜单贴到任意位置 / 不受父窗口裁切 / 自身 light dismiss"。设为 <c>true</c> 后
-    /// <see cref="OpenPopup"/> 会跳过 overflow 检查直接走外飞窗口（仅 Windows 平台；其它平台仍回退
-    /// 到 overlay）。
+    /// <see cref="OpenPopup"/> 会在支持原生弹层的 Windows、Linux 和 macOS 窗口中跳过 overflow
+    /// 检查；没有原生宿主时仍回退到 overlay。
     /// </para>
     /// <para>
     /// 与 <see cref="ShouldConstrainToRootBounds"/> 互斥：constrain=true 时不允许外飞，本属性被忽略。
@@ -646,7 +648,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         var windowLocalPos = CalculateWindowLocalPosition(popupSize);
         var windowSize = new Size(_parentWindow.ActualWidth, _parentWindow.ActualHeight);
 
-        bool supportsExternalPopup = Platform.PlatformFactory.IsWindows || Platform.PlatformFactory.IsLinux;
+        bool supportsExternalPopup = Platform.PlatformFactory.IsWindows || Platform.PlatformFactory.IsLinux ||
+            OperatingSystem.IsMacOS() && CanCreateMacOSPopupHost;
         bool useExternalWindow = ResolveHostPlacement(
             windowLocalPos, popupSize, windowSize, supportsExternalPopup, out var adjustedPos);
 
@@ -693,7 +696,7 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
     internal void RequestHostRender()
     {
         IWindowHost? host = _isUsingExternalWindow
-            ? _popupWindow
+            ? (IWindowHost?)_macOSPopupWindow ?? _popupWindow
             : _parentWindow;
 
         if (host == null)
@@ -719,8 +722,14 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         // clamping. Linux receives parent-relative coordinates; xdg_positioner
         // applies compositor constraints and X11 uses the translated owner
         // origin, so applying a second global clamp here would corrupt it.
-        if (Platform.PlatformFactory.IsWindows)
+        if (Platform.PlatformFactory.IsWindows || OperatingSystem.IsMacOS())
             screenPos = ApplyScreenAutoFlip(screenPos, popupSize);
+
+        if (OperatingSystem.IsMacOS())
+        {
+            OpenAsMacOSExternalWindow(screenPos, popupSize);
+            return;
+        }
 
         _popupWindow = new PopupWindow(_parentWindow!, _popupRoot!);
         var dpiScale = _parentWindow!.DpiScale;
@@ -749,9 +758,13 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
 
         StopOpenAnimation(resetVisualState: true);
         _pendingContentSizeRoot = null;
+        MacOSPopupWindowHost? retiredMacOSHost = null;
 
         if (_isUsingExternalWindow)
         {
+            retiredMacOSHost = _macOSPopupWindow;
+            _macOSPopupWindow = null;
+            if (retiredMacOSHost != null) retiredMacOSHost.Content = null;
             _popupWindow?.Dispose();
             _popupWindow = null;
             while (_parentWindow?.ActiveExternalPopups.Remove(this) == true)
@@ -777,7 +790,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         _overlayLayer = null;
         SetIsMouseOver(false);
 
-        beforeClosed?.Invoke();
+        try { beforeClosed?.Invoke(); }
+        finally { retiredMacOSHost?.CloseMacOSPopupHost(); }
         OnClosed(EventArgs.Empty);
     }
 
@@ -963,11 +977,18 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         var popupSize = new Size(_popupRoot.Width, _popupRoot.Height);
         var windowLocalPos = CalculateWindowLocalPosition(popupSize);
         var windowSize = new Size(_parentWindow.ActualWidth, _parentWindow.ActualHeight);
-        var supportsExternalPopup = Platform.PlatformFactory.IsWindows || Platform.PlatformFactory.IsLinux;
+        var supportsExternalPopup = Platform.PlatformFactory.IsWindows || Platform.PlatformFactory.IsLinux ||
+            OperatingSystem.IsMacOS() && CanCreateMacOSPopupHost;
         var shouldPromote = ResolveHostPlacement(
             windowLocalPos, popupSize, windowSize, supportsExternalPopup, out var overlayPos);
 
-        if (_isUsingExternalWindow && _popupWindow != null)
+        if (_isUsingExternalWindow && _macOSPopupWindow != null)
+        {
+            var screen = ApplyScreenAutoFlip(WindowLocalToScreen(windowLocalPos), popupSize);
+            var scale = _parentWindow.DpiScale;
+            _macOSPopupWindow.MoveTo(new Point(screen.X / scale, screen.Y / scale), popupSize);
+        }
+        else if (_isUsingExternalWindow && _popupWindow != null)
         {
             var screenPos = WindowLocalToScreen(windowLocalPos);
             // Keep this symmetric with OpenAsExternalWindow: Linux popup
@@ -1278,8 +1299,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         // 只在 Windows 上强制：Wayland 的嵌套 xdg_popup 必须以最顶层的 grab 弹窗为 parent，而原生层目前
         // 一律挂在顶层窗口下，强制外飞会招来协议错误；Linux 仍按「装不下才外飞」。
         if (supportsExternalPopup
-            && Platform.PlatformFactory.IsWindows
-            && IsAnchoredInsideExternalPopupWindow())
+            && (Platform.PlatformFactory.IsWindows || OperatingSystem.IsMacOS())
+            && !ShouldConstrainToRootBounds && IsAnchoredInsideExternalPopupWindow())
         {
             overlayPosition = requestedPosition;
             return true;
@@ -1315,7 +1336,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
     /// </summary>
     private Point ResolveScreenConstrainedPosition(Point requestedPosition, Size popupSize)
     {
-        if (!OperatingSystem.IsWindows() || _parentWindow is null || _parentWindow.Handle == nint.Zero)
+        if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) || _parentWindow is null ||
+            _parentWindow.Handle == nint.Zero)
         {
             return requestedPosition;
         }
@@ -1408,6 +1430,12 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
 
     private Rect GetWorkingArea()
     {
+        if (OperatingSystem.IsMacOS() && _parentWindow != null)
+        {
+            var area = GetMacOSPopupWorkArea();
+            var scale = _parentWindow.DpiScale;
+            return new Rect(area.X * scale, area.Y * scale, area.Width * scale, area.Height * scale);
+        }
         if (!OperatingSystem.IsWindows())
         {
             // Linux external-popup coordinates are intentionally owner-relative
@@ -1451,6 +1479,11 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         // Input is DIPs — convert to physical pixels before ClientToScreen
         var dpiScale = _parentWindow!.DpiScale;
         var pt = new POINT { X = (int)(windowLocal.X * dpiScale), Y = (int)(windowLocal.Y * dpiScale) };
+        if (OperatingSystem.IsMacOS())
+        {
+            var origin = _parentWindow.GetMacOSClientScreenOrigin();
+            return new Point((origin.X + windowLocal.X) * dpiScale, (origin.Y + windowLocal.Y) * dpiScale);
+        }
         if (!OperatingSystem.IsWindows())
         {
             // Degraded model matching GetWorkingArea above: treat the window
@@ -1479,6 +1512,11 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
             Y = (int)Math.Round(screenPhysical.Y)
         };
 
+        if (OperatingSystem.IsMacOS())
+        {
+            var origin = _parentWindow.GetMacOSClientScreenOrigin();
+            return new Point(screenPhysical.X / dpiScale - origin.X, screenPhysical.Y / dpiScale - origin.Y);
+        }
         if (OperatingSystem.IsWindows())
         {
             ScreenToClient(_parentWindow.Handle, ref pt);
@@ -1549,7 +1587,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         var workArea = GetWorkingArea();
         var workAreaHeight = workArea.Height > 0 ? workArea.Height / dpiScale : double.PositiveInfinity;
 
-        var maxHeight = Math.Min(windowHeight, workAreaHeight);
+        var maxHeight = OperatingSystem.IsMacOS() && CanCreateMacOSPopupHost && !ShouldConstrainToRootBounds
+            ? workAreaHeight : Math.Min(windowHeight, workAreaHeight);
         if (double.IsInfinity(maxHeight))
             maxHeight = windowHeight;
         if (double.IsInfinity(maxHeight))
@@ -1733,7 +1772,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         // VisualParent。必须经由 PopupWindow.OwnerWindow 解析到真正的顶层窗口，否则会一路走到 fallback 的
         // Application.Current.MainWindow：在主窗口里这恰好等于正确窗口（bug 隐身），但从第二个窗口打开时，
         // 就会按主窗口原点做 ClientToScreen，使子菜单整体偏移（偏移量 = 两窗口客户区原点之差）。
-        return ResolveOwningWindow(this)
+        return (OperatingSystem.IsMacOS() ? ResolveOwningWindow(PlacementTarget) : null)
+            ?? ResolveOwningWindow(this)
             ?? ResolveOwningWindow(PlacementTarget)
             // Fallback: use Application.Current.MainWindow. This handles cases where the visual
             // tree is not fully connected (e.g., programmatically created Popups for ToolTips).
@@ -1776,8 +1816,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
     {
         for (var current = start; current != null; current = current.VisualParent)
         {
-            if (current is Window)
-                return false;
+            if (current is Window window)
+                return OperatingSystem.IsMacOS() && window.IsMacOSPopupHost;
             if (current is PopupWindow)
                 return true;
         }

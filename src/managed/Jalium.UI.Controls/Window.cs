@@ -99,7 +99,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             while (current != null)
             {
                 if (current is Window window)
-                    return window;
+                    return OperatingSystem.IsMacOS() ? window.MacOSInputOwner : window;
                 current = current.VisualParent;
             }
         }
@@ -3136,7 +3136,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         if (!CanContinueShow(showGeneration)) return;
 
-        Application.Current?.NotifyWindowShowing(this);
+        if (!IsMacOSPopupHost) Application.Current?.NotifyWindowShowing(this);
         if (!CanContinueShow(showGeneration)) return;
 
         _dispatcher = Dispatcher.CurrentDispatcher;
@@ -3334,7 +3334,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // AppKit removes a hidden child from its parent's list. Every display
         // entry point must bind the current modal/explicit owner again; an
         // ordinary display clears the previous implicit dialog owner.
-        _ = platformWindow.SetOwner(OwnerForPlatformTermination?.Handle ?? nint.Zero);
+        _ = platformWindow.SetOwner(IsMacOSPopupHost ? MacOSPopupParentHandle : OwnerForPlatformTermination?.Handle ?? nint.Zero);
     }
 
     private bool CanContinueMacOSDisplay(IPlatformWindow platformWindow, Visibility visibility) =>
@@ -3822,7 +3822,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         var session = _macOSModalSessions.LastOrDefault();
         if (session == null) _macOSModalEnabledStates.Remove(window);
-        else enabled &= ReferenceEquals(session.Dialog, window);
+        else enabled &= ReferenceEquals(session.Dialog, window.MacOSInputOwner);
         bool updating = window._updatingMacOSModalEnabled;
         window._updatingMacOSModalEnabled = true;
         try { window.IsEnabled = enabled; }
@@ -4672,7 +4672,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ? OwnerForPlatformTermination : _modalOwner ?? Owner)?.Handle ?? nint.Zero;
         _platformWindow = PlatformFactory.CreateWindow(
             Title ?? string.Empty, x, y, physicalWidth, physicalHeight,
-            style, platformOwnerHandle);
+            ApplyMacOSPopupStyle(style), IsMacOSPopupHost ? MacOSPopupParentHandle : platformOwnerHandle);
         _hasLastPlatformImeContext = false;
 
         if (_platformWindow == null)
@@ -5213,6 +5213,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
 
             case PlatformEventType.Destroyed:
+                if (OperatingSystem.IsMacOS() && IsMacOSPopupHost && _macOSHostedPopup?.IsMacOSExternalHostCurrent(this) == true)
+                {
+                    _macOSPopupNativeDestroyed = true;
+                    _macOSHostedPopup.SetCurrentValue(Popup.IsOpenProperty, false);
+                    break;
+                }
                 _pendingMacOSTitleBarDoubleClick = false;
                 DisableLinuxImeContext(force: true);
                 if (OperatingSystem.IsLinux())
@@ -5253,7 +5259,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 if (OperatingSystem.IsMacOS())
                 {
-                    HandleMacOSActivationChanged(active: true);
+                    HandleMacOSPlatformActivation(active: true);
                     break;
                 }
                 Jalium.UI.Styling.CssMediaQuery.RefreshPointingDevices();
@@ -5281,7 +5287,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 if (OperatingSystem.IsMacOS())
                 {
-                    HandleMacOSActivationChanged(active: false);
+                    HandleMacOSPlatformActivation(active: false);
                     break;
                 }
                 DisableLinuxImeContext(force: true);
@@ -5345,24 +5351,27 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 bool isRepeat = evt.IsRepeat != 0;
                 var physicalModifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 int timestamp = Environment.TickCount;
+                Window inputOwner = OperatingSystem.IsMacOS() ? MacOSInputOwner : this;
                 UIElement? ResolveCommandTarget() => GetTextInputTarget() ??
-                    (Keyboard.FocusedElement == null && IsMacOSInputTargetValid(this) ? this : null);
+                    (Keyboard.FocusedElement == null && inputOwner.IsMacOSInputTargetValid(inputOwner) ? inputOwner : null);
                 var commandTarget = OperatingSystem.IsMacOS() ? ResolveCommandTarget() : null;
                 var commandFocus = Keyboard.FocusedElement;
-                var commandDialog = ActiveContentDialog;
-                UIElement commandScope = commandDialog ?? (UIElement)this;
+                var commandDialog = inputOwner.ActiveContentDialog;
+                UIElement commandScope = commandDialog ?? (UIElement)inputOwner;
                 var commandPlatform = _platformWindow;
                 nint commandHandle = Handle;
                 int commandGeneration = Volatile.Read(ref _renderLifecycleGeneration);
                 int commandActivationGeneration = _macOSActivationGeneration;
+                int commandNativeActivationGeneration = _macOSNativeActivationGeneration;
                 bool IsCommandTargetCurrent() => commandTarget != null &&
                     IsEnabled && Visibility == Visibility.Visible &&
                     ReferenceEquals(commandTarget, ResolveCommandTarget()) &&
-                    ReferenceEquals(commandScope, ActiveContentDialog ?? (UIElement)this) &&
+                    ReferenceEquals(commandScope, inputOwner.ActiveContentDialog ?? (UIElement)inputOwner) &&
                     ReferenceEquals(commandFocus, Keyboard.FocusedElement) &&
-                    !_isClosing && !_managedTeardownStarted &&
+                    !_isClosing && !_managedTeardownStarted && IsMacOSPopupHostCurrent &&
                     commandGeneration == Volatile.Read(ref _renderLifecycleGeneration) &&
                     commandActivationGeneration == _macOSActivationGeneration &&
+                    commandNativeActivationGeneration == _macOSNativeActivationGeneration &&
                     ReferenceEquals(commandPlatform, _platformWindow) && commandHandle == Handle;
                 bool handled = _inputDispatcher.HandlePlatformKeyDown(key, modifiers, isRepeat, timestamp,
                     physicalModifiers);
@@ -5414,7 +5423,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.CompositionEnd:
             {
                 if (OperatingSystem.IsMacOS() && InputMethod.CurrentTarget is UIElement composingTarget &&
-                    !IsDescendantOf(composingTarget, this)) break;
+                    !IsMacOSInputTargetValid(composingTarget)) break;
                 string result = evt.CompositionText ?? string.Empty;
                 UIElement? commitTarget = null;
                 if (OperatingSystem.IsMacOS() && result.Length != 0 &&
@@ -6444,7 +6453,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             uint platformStyle = ComputePlatformWindowStyle(
                 WindowStyle, ResizeMode, TitleBarStyle, Topmost, AllowsTransparency,
                 IsShowCloseButton, IsShowMinimizeButton, IsShowMaximizeButton);
-            if (_platformWindow.SetStyle(platformStyle))
+            if (_platformWindow.SetStyle(ApplyMacOSPopupStyle(platformStyle)))
             {
                 UpdatePlatformSizeConstraints();
                 return;
@@ -7455,6 +7464,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// snapshotted intentionally: callers that want a live view need to
     /// re-snapshot each frame.
     /// </remarks>
+    internal static Window[] SnapshotApplicationWindows() => SnapshotOpenWindows().Where(w => !w.IsMacOSPopupHost).ToArray();
+
     internal static Window[] SnapshotOpenWindows()
     {
         // _windows is mutated only on the UI thread (WM_NCCREATE / WM_DESTROY
@@ -13291,6 +13302,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private UIElement GetKeyboardEventTarget()
     {
+        if (OperatingSystem.IsMacOS() && IsMacOSPopupHost) return MacOSInputOwner.GetKeyboardEventTarget();
         if (OperatingSystem.IsMacOS() && TryGetMacOSOwnedPopupInputTarget(out var popupTarget)) return popupTarget!;
         var focusedElement = Keyboard.FocusedElement as UIElement;
         if (OperatingSystem.IsMacOS() && focusedElement != null && !IsMacOSInputTargetValid(focusedElement))
@@ -13305,10 +13317,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void RestoreMacOSKeyboardFocus()
     {
+        if (IsMacOSPopupHost) { MacOSInputOwner.RestoreMacOSKeyboardFocus(); return; }
         if (_isClosing || _managedTeardownStarted) return;
         if (Keyboard.FocusedElement is UIElement current && current.Focusable && current.IsEnabled
             && current.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(current)
-            && IsDescendantOf(current, this)) return;
+            && IsMacOSInputTargetValid(current)) return;
         if (FocusManager.GetFocusedElement(this) is UIElement previous && previous.Focusable
             && previous.IsEnabled && previous.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(previous))
         {
@@ -13330,6 +13343,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private ContentDialog? FindContainingInPlaceDialog()
     {
+        if (OperatingSystem.IsMacOS() && IsMacOSPopupHost) return MacOSInputOwner.FindContainingInPlaceDialog();
         var focused = Keyboard.FocusedElement as Visual;
         for (var current = focused; current != null; current = current.VisualParent)
         {
@@ -13344,6 +13358,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private UIElement? GetTextInputTarget()
     {
+        if (OperatingSystem.IsMacOS() && IsMacOSPopupHost) return MacOSInputOwner.GetTextInputTarget();
         if (OperatingSystem.IsMacOS() && TryGetMacOSOwnedPopupInputTarget(out var popupTarget)) return popupTarget;
         var focusedElement = Keyboard.FocusedElement as UIElement;
         if (OperatingSystem.IsMacOS() && focusedElement != null && !IsMacOSInputTargetValid(focusedElement))
@@ -13360,9 +13375,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return focusedElement;
     }
 
-    private bool IsMacOSInputTargetValid(UIElement element) =>
-        element.IsEnabled && element.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element)
-        && IsDescendantOf(element, this) && InputRoute.IsWithin(element, this);
+    private bool IsMacOSInputTargetValid(UIElement element)
+    {
+        if (!element.IsEnabled || !element.IsVisible || Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element)) return false;
+        var owner = MacOSInputOwner;
+        var physical = GetMacOSPhysicalWindow(element);
+        return physical != null && (ReferenceEquals(physical, owner) ||
+            physical.IsMacOSPopupHost && ReferenceEquals(physical.MacOSInputOwner, owner) && physical.IsMacOSPopupHostCurrent) &&
+            InputRoute.IsWithin(element, owner);
+    }
 
     private static bool IsDescendantOf(UIElement descendant, UIElement ancestor)
     {
@@ -13837,7 +13858,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsMacOS())
+        {
+            UpdateLinuxImeContext();
+            if (!IsMacOSPopupHost)
+                foreach (var host in _macOSPopupHosts.ToArray())
+                    if (host.IsMacOSPopupHostCurrent && !host._isClosing) host.UpdateLinuxImeContext();
+            return;
+        }
+        if (OperatingSystem.IsLinux())
         {
             UpdateLinuxImeContext();
             return;
@@ -13891,7 +13920,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void UpdateImeCompositionWindow()
     {
-        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsMacOS())
+        {
+            UpdateLinuxImeContext();
+            if (!IsMacOSPopupHost)
+                foreach (var host in _macOSPopupHosts.ToArray())
+                    if (host.IsMacOSPopupHostCurrent && !host._isClosing) host.UpdateLinuxImeContext();
+            return;
+        }
+        if (OperatingSystem.IsLinux())
         {
             UpdateLinuxImeContext();
             return;
@@ -13963,16 +14000,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     internal void RefreshLinuxImeContext()
     {
-        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
-            UpdateLinuxImeContext();
+        if (OperatingSystem.IsMacOS()) UpdateInputMethodAssociation();
+        else if (OperatingSystem.IsLinux()) UpdateLinuxImeContext();
         else if (PlatformFactory.IsAndroid)
             UpdateAndroidImeContext();
     }
 
+    private int _macOSImeRefreshGeneration;
+
     private void UpdateLinuxImeContext()
     {
-        if (_platformWindow == null)
+        if (_platformWindow is not { } platform)
             return;
+        int refresh = OperatingSystem.IsMacOS() ? unchecked(++_macOSImeRefreshGeneration) : 0;
+        var refreshTarget = OperatingSystem.IsMacOS() ? GetTextInputTarget() : null;
+        var refreshLifetime = refreshTarget == null ? null : CaptureMacOSInputLifetime(refreshTarget, textInput: true);
+        bool IsCurrent() => ReferenceEquals(platform, _platformWindow) &&
+            (!OperatingSystem.IsMacOS() || refresh == _macOSImeRefreshGeneration) && refreshLifetime?.Invoke() != false;
 
         if (OperatingSystem.IsMacOS())
         {
@@ -13989,9 +14033,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
         }
         PlatformImeContext context = CreatePlatformImeContext();
+        if (!IsCurrent()) return;
         if (OperatingSystem.IsMacOS() && !context.Enabled && InputMethod.IsComposing &&
             InputMethod.CurrentTarget is UIElement composingTarget && IsDescendantOf(composingTarget, this))
             InputMethod.CancelComposition();
+        if (!IsCurrent()) return;
         if (_hasLastPlatformImeContext && context == _lastPlatformImeContext)
             return;
 
@@ -14024,20 +14070,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private PlatformImeContext CreatePlatformImeContext()
     {
         if (!IsActive || _isClosing ||
+            OperatingSystem.IsMacOS() && (_macOSPopupHosts.Count != 0 || IsMacOSPopupHost) && !_macOSNativeIsKey ||
             !TryGetImeTarget(out UIElement? target, out IImeSupport? support) ||
             target == null || support == null)
         {
             return PlatformImeContext.Disabled;
         }
 
+        var inputLifetime = OperatingSystem.IsMacOS() ? CaptureMacOSInputLifetime(target, textInput: true) : null;
         ImeSurroundingTextSnapshot? surroundingText = null;
         if (support.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot))
             surroundingText = snapshot;
 
+        if (inputLifetime?.Invoke() == false) return PlatformImeContext.Disabled;
         Rect caretRectangle = support.GetImeCaretRectangle();
+        if (inputLifetime?.Invoke() == false) return PlatformImeContext.Disabled;
         Point targetOrigin = default;
         if (OperatingSystem.IsMacOS())
-            caretRectangle = TransformImeRectangle(caretRectangle, target.GetRenderMatrix());
+            caretRectangle = TransformImeRectangle(caretRectangle, GetMacOSInputTransform(target));
         else if (target is FrameworkElement frameworkElement)
             targetOrigin = frameworkElement.TransformToAncestor(null);
 
@@ -14056,7 +14106,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             !TryGetImeTarget(out UIElement? target, out IImeSupport? support) || target == null || support == null)
             return;
         var inputLifetime = CaptureMacOSInputLifetime(target, textInput: true);
-        Matrix transform = target.GetRenderMatrix();
+        Matrix transform = GetMacOSInputTransform(target);
         bool composition = request.Kind >= 2;
         if (request.Kind is 1 or 3)
         {
@@ -15631,8 +15681,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     OverlayLayer IInputDispatcherHost.OverlayLayer => OverlayLayer;
     IReadOnlyList<Popup> IInputDispatcherHost.ActiveExternalPopups => ActiveExternalPopups;
-    ContentDialog? IInputDispatcherHost.ActiveContentDialog => ActiveContentDialog;
-    IReadOnlyList<ContentDialog> IInputDispatcherHost.ActiveInPlaceDialogs => ActiveInPlaceDialogs;
+    IReadOnlyList<Popup> IInputDispatcherHost.MouseDismissPopups => OperatingSystem.IsMacOS() ? GetMacOSMousePopupGroup() : ActiveExternalPopups;
+    IReadOnlyList<Popup> IInputDispatcherHost.BlockingExternalPopups => OperatingSystem.IsMacOS()
+        ? MacOSExternalPopupGroup.Where(p => _macOSHostedPopupRoot == null ||
+            !ReferenceEquals(p, _macOSHostedPopupRoot.OwnerPopup) && !p.IsAncestorOfPopupRoot(_macOSHostedPopupRoot)).ToArray()
+        : ActiveExternalPopups;
+    PopupRoot? IInputDispatcherHost.HostedPopupRoot => _macOSHostedPopupRoot;
+    bool IInputDispatcherHost.TryDismissPopupOnEscape(UIElement target) => OperatingSystem.IsMacOS() && TryDismissMacOSFocusedPopup(target);
+    ContentDialog? IInputDispatcherHost.ActiveContentDialog => OperatingSystem.IsMacOS() ? MacOSInputDialog : ActiveContentDialog;
+    IReadOnlyList<ContentDialog> IInputDispatcherHost.ActiveInPlaceDialogs =>
+        OperatingSystem.IsMacOS() ? MacOSInputOwner.ActiveInPlaceDialogs : ActiveInPlaceDialogs;
+    UIElement IInputDispatcherHost.KeyboardScopeRoot => OperatingSystem.IsMacOS() ? MacOSInputOwner : this;
 
     bool IInputDispatcherHost.IsTitleBarVisible() => IsTitleBarVisible();
     TitleBarButton? IInputDispatcherHost.GetTitleBarButtonAtPoint(Point point, double windowWidth) => GetTitleBarButtonAtPoint(point, windowWidth);
@@ -15722,12 +15781,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     public Jalium.UI.Interop.RenderBackend CurrentRenderBackend
         => RenderTarget?.Backend ?? Jalium.UI.Interop.RenderBackend.Auto;
 
-    bool IInputDispatcherHost.OnPreviewWindowKeyDown(Key key, ModifierKeys modifiers, bool isRepeat) => OnPreviewWindowKeyDown(key, modifiers, isRepeat);
-    bool IInputDispatcherHost.OnPreviewWindowKeyUp(Key key, ModifierKeys modifiers) => OnPreviewWindowKeyUp(key, modifiers);
-    bool IInputDispatcherHost.OnPreviewWindowMouseDown(MouseButton button, Point position, int clickCount) => OnPreviewWindowMouseDown(button, position, clickCount);
-    bool IInputDispatcherHost.OnPreviewWindowMouseUp(MouseButton button, Point position) => OnPreviewWindowMouseUp(button, position);
-    bool IInputDispatcherHost.OnPreviewWindowMouseMove(Point position) => OnPreviewWindowMouseMove(position);
-    bool IInputDispatcherHost.OnPreviewWindowMouseWheel(int delta, Point position) => OnPreviewWindowMouseWheel(delta, position);
+    bool IInputDispatcherHost.OnPreviewWindowKeyDown(Key key, ModifierKeys modifiers, bool isRepeat) => IsMacOSPopupHost
+        ? MacOSInputOwner.OnPreviewWindowKeyDown(key, modifiers, isRepeat) : OnPreviewWindowKeyDown(key, modifiers, isRepeat);
+    bool IInputDispatcherHost.OnPreviewWindowKeyUp(Key key, ModifierKeys modifiers) => IsMacOSPopupHost
+        ? MacOSInputOwner.OnPreviewWindowKeyUp(key, modifiers) : OnPreviewWindowKeyUp(key, modifiers);
+    bool IInputDispatcherHost.OnPreviewWindowMouseDown(MouseButton button, Point position, int clickCount) => IsMacOSPopupHost
+        ? MacOSInputOwner.OnPreviewWindowMouseDown(button, GetMacOSOwnerInputPoint(position), clickCount) : OnPreviewWindowMouseDown(button, position, clickCount);
+    bool IInputDispatcherHost.OnPreviewWindowMouseUp(MouseButton button, Point position) => IsMacOSPopupHost
+        ? MacOSInputOwner.OnPreviewWindowMouseUp(button, GetMacOSOwnerInputPoint(position)) : OnPreviewWindowMouseUp(button, position);
+    bool IInputDispatcherHost.OnPreviewWindowMouseMove(Point position) => IsMacOSPopupHost
+        ? MacOSInputOwner.OnPreviewWindowMouseMove(GetMacOSOwnerInputPoint(position)) : OnPreviewWindowMouseMove(position);
+    bool IInputDispatcherHost.OnPreviewWindowMouseWheel(int delta, Point position) => IsMacOSPopupHost
+        ? MacOSInputOwner.OnPreviewWindowMouseWheel(delta, GetMacOSOwnerInputPoint(position)) : OnPreviewWindowMouseWheel(delta, position);
 
     void IInputDispatcherHost.InvalidateWindow() => InvalidateWindow();
     void IInputDispatcherHost.RequestFullInvalidation() => RequestFullInvalidation();
