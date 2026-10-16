@@ -1437,6 +1437,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         {
             // Render document content
             RenderDocument(dc, contentBounds);
+            MacOSWritingToolsPresentation.DrawInactive(this, dc);
 
             if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
             {
@@ -1516,6 +1517,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderLine(DrawingContext dc, LineLayoutInfo lineLayout, double x, double y)
     {
+        using var presentation = MacOSWritingToolsPresentation.PushHidden(this, dc);
         var pad = Math.Max(1, lineLayout.Height);
         var bounds = new Rect(x - pad, y - pad,
             Math.Max(1, lineLayout.Width) + 2 * pad, lineLayout.Height + 2 * pad);
@@ -1768,6 +1770,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderSelection(DrawingContext dc, Rect contentBounds)
     {
+        using var presentation = MacOSWritingToolsPresentation.PushHidden(this, dc);
         var selBrush = ResolveSelectionBrush();
         if (selBrush == null || _selection == null || _selection.IsEmpty)
             return;
@@ -1887,6 +1890,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderCaret(DrawingContext dc, Rect contentBounds)
     {
+        if (MacOSWritingToolsPresentation.IsPresenting(this)) return;
         if (_isImeComposing)
             return;
 
@@ -2727,7 +2731,9 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
         if (e.ImeReplacementRange is { } range)
         {
-            e.Handled = TryReplaceImeText(range.Start, range.Length, e.Text);
+            e.Handled = e.NativeTextServicesPayload is { } payload
+                ? TryReplaceWritingToolsText(range.Start, range.Length, payload, e.NativeEditLifetime ?? (() => true))
+                : TryReplaceImeText(range.Start, range.Length, e.Text);
             return;
         }
 

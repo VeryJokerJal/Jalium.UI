@@ -5071,6 +5071,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.DeleteSurroundingText:
             case PlatformEventType.ImeTextRequest:
             case PlatformEventType.ImeGeometryRequest:
+            case PlatformEventType.TextServicesRequest:
                 OnPlatformEvent(evt);
                 break;
         }
@@ -5506,6 +5507,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     _hasLastPlatformImeContext = false;
                     RefreshLinuxImeContext();
                 }
+                break;
+
+            case PlatformEventType.TextServicesRequest:
+                if (evt.TextServicesRequest is { } textServicesRequest)
+                    HandleMacOSTextServicesRequest(textServicesRequest);
                 break;
 
             case PlatformEventType.ImeGeometryRequest:
@@ -14032,6 +14038,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (_platformWindow is not { } platform)
             return;
+        if (OperatingSystem.IsMacOS())
+        {
+            if (UpdateMacOSTextServicesTarget() || _macOSTextServicesTarget is { } servicesTarget &&
+                MacOSWritingToolsPresentation.IsPresenting(servicesTarget)) _hasLastPlatformImeContext = false;
+        }
         int refresh = OperatingSystem.IsMacOS() ? unchecked(++_macOSImeRefreshGeneration) : 0;
         var refreshTarget = OperatingSystem.IsMacOS() ? GetTextInputTarget() : null;
         var refreshLifetime = refreshTarget == null ? null : CaptureMacOSInputLifetime(refreshTarget, textInput: true);

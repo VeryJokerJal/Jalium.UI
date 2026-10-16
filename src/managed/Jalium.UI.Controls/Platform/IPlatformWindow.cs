@@ -228,6 +228,17 @@ internal sealed class PlatformImeTextRequest(int start, int length, string? text
 }
 
 /// <summary>Synchronous AppKit geometry query. Points and rectangles use client physical pixels.</summary>
+/// <summary>Borrowed native text service request; replies are copied before dispatch returns.</summary>
+internal sealed class PlatformTextServicesRequest(int kind, int start, int length, int flags, string? payload)
+{
+    internal int Kind { get; } = kind;
+    internal int Start { get; } = start;
+    internal int Length { get; } = length;
+    internal int Flags { get; } = flags;
+    internal string Payload { get; } = string.IsNullOrEmpty(payload) ? "{}" : payload;
+    internal byte[]? Response { get; set; }
+}
+
 internal sealed class PlatformImeGeometryRequest(int kind, int start, int length, Point point)
 {
     internal int Kind { get; } = kind; // 0/1: committed range/point; 2/3: provisional range/point.
@@ -288,6 +299,7 @@ internal struct PlatformEvent
     public int ImeDeleteAfterUtf8ByteCount;
     public PlatformImeTextRequest? ImeTextRequest;
     public PlatformImeGeometryRequest? ImeGeometryRequest;
+    public PlatformTextServicesRequest? TextServicesRequest;
 
     // Pointer
     public uint PointerId;
@@ -360,6 +372,7 @@ internal enum PlatformEventType
     DeleteSurroundingText = 46,
     ImeTextRequest = 47,
     ImeGeometryRequest = 48,
+    TextServicesRequest = 49,
 
     PointerDown = 50,
     PointerUp = 51,

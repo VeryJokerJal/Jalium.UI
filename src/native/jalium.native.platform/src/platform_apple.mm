@@ -2452,6 +2452,9 @@ static BOOL IsAppleTextServiceType(NSPasteboardType type)
 @property(nonatomic) BOOL imeEnabled;
 @property(nonatomic) uint64_t textInputGeneration;
 @property(nonatomic) uint64_t markedTextRevision;
+@property(nonatomic, strong) id writingToolsAdapter;
+@property(nonatomic) BOOL textServicesEnabled;
+@property(nonatomic) uint64_t writingToolsGeneration;
 @property(nonatomic) BOOL menuEscapeKeyDown;
 @property(nonatomic) JaliumCursorShape cursorShape;
 @property(nonatomic) BOOL cursorHidden;
@@ -2489,6 +2492,7 @@ struct AppleTextInputContext {
 };
 
 #include "platform_apple_accessibility.inc"
+#include "platform_apple_writing_tools.inc"
 
 @implementation JaliumAppleView
 @synthesize imeEnabled = _imeEnabled;
@@ -2571,7 +2575,13 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (BOOL)acceptsFirstResponder { return _jaliumOwner && _jaliumOwner->enabled; }
 - (BOOL)becomeFirstResponder { ++_textInputGeneration; DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_GAINED); return YES; }
-- (BOOL)resignFirstResponder { ++_textInputGeneration; [self restoreCursor]; DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_LOST); return YES; }
+- (BOOL)resignFirstResponder {
+    AppleTextInputContext lifetime(self);
+    InvalidateAppleWritingTools(self);
+    if (!lifetime.IsSameContext()) return YES;
+    ++_textInputGeneration; [self restoreCursor];
+    DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_LOST); return YES;
+}
 - (NSTextInputContext*)inputContext {
     return _jaliumOwner && _jaliumOwner->enabled && self.imeEnabled ? super.inputContext : nil;
 }
@@ -2997,6 +3007,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (void)setMarkedText:(id)value selectedRange:(NSRange)selected replacementRange:(NSRange)replacement {
     AppleTextInputContext context(self);
+    InvalidateAppleWritingTools(self);
     if (!context.IsCurrent()) return;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
     NSString* text=[value isKindOfClass:[NSAttributedString class]]?[value string]:value;
@@ -4030,6 +4041,7 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
     if(!window || window->destroying)return;
     window->destroying = true;
     #if TARGET_OS_OSX
+    InvalidateAppleWritingTools(window->view);
     for (id observer in window->stateCompletionObservers)
         [NSNotificationCenter.defaultCenter removeObserver:observer];
     window->stateCompletionObservers = nil;
@@ -4394,8 +4406,26 @@ int32_t jalium_apple_window_set_system_backdrop(JaliumPlatformWindow* w, int32_t
     return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
 }
+int32_t jalium_apple_window_enable_text_services(JaliumPlatformWindow* w, int32_t enabled)
+{
+    if (!w) return JALIUM_ERROR_INVALID_ARGUMENT;
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread || !IsLiveWindow(w) || w->destroying)
+        return JALIUM_ERROR_INVALID_STATE;
+    w->view.textServicesEnabled = enabled != 0;
+    if (enabled) RefreshAppleWritingTools(w->view);
+    else InvalidateAppleWritingTools(w->view);
+    return JALIUM_OK;
+#else
+    (void)enabled;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
 void jalium_window_hide(JaliumPlatformWindow* w){if(!w)return;w->visible=false;
 #if TARGET_OS_OSX
+    NSWindow* __strong originalWindow = w->window;
+    InvalidateAppleWritingTools(w->view);
+    if (!IsLiveWindow(w, originalWindow) || w->visible) return;
     CancelAppleDrag(w);
     NSWindow* nativeWindow = w->window;
     CancelPendingWindowSelection(w);
@@ -4779,6 +4809,8 @@ int32_t jalium_window_set_enabled(JaliumPlatformWindow* w,int32_t enabled){if(!w
 #if TARGET_OS_OSX
     JaliumAppleWindow* nativeWindow = (JaliumAppleWindow*)w->window;
     if (!w->enabled) {
+        InvalidateAppleWritingTools(w->view);
+        if (!IsLiveWindow(w, nativeWindow) || w->enabled) return JALIUM_OK;
         CancelAppleDrag(w);
         CancelPendingWindowSelection(w);
         [w->systemMenu cancelTrackingWithoutAnimation];
@@ -4980,6 +5012,7 @@ int32_t jalium_window_update_ime_context(JaliumPlatformWindow* w,int32_t enabled
         if (!update.IsSameContext()) return JALIUM_OK;
     }
     [w->view.inputContext invalidateCharacterCoordinates];
+    if (update.IsSameContext()) RefreshAppleWritingTools(w->view);
 #else
     if(enabled)[w->view becomeFirstResponder];else [w->view resignFirstResponder];
 #endif

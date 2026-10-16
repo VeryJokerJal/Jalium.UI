@@ -924,8 +924,9 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                     ResolveGutterBackgroundBrush(),
                     fontFamily, fontSize, FontWeight, FontStyle,
                     renderLineNumbers: !applyGutterOverflowShield,
-                    suppressCaret: _isImeComposing,
-                    caretShape: Styling.CssCaretShapeProperties.Get(this));
+                    suppressCaret: _isImeComposing || MacOSWritingToolsPresentation.IsPresenting(this),
+                    caretShape: Styling.CssCaretShapeProperties.Get(this), writingToolsOwner: this);
+                MacOSWritingToolsPresentation.DrawInactive(this, dc);
 
                 if (_profiler != null && IsFeatureEnabled(EditFeature.RenderProfiling))
                 {
@@ -2649,12 +2650,14 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
     public void Undo()
     {
+        using var transaction = MacOSWritingToolsPresentation.BeginUndoRedo();
         _document.UndoStack.Undo(_document);
         SyncCaretAfterUndoRedo();
     }
 
     public void Redo()
     {
+        using var transaction = MacOSWritingToolsPresentation.BeginUndoRedo();
         _document.UndoStack.Redo(_document);
         SyncCaretAfterUndoRedo();
     }

@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-writing-tools")
+    return WindowWritingToolsChecks.Run();
+
 if (args.Length == 1 && args[0] == "--window-notifications-observe")
     return WindowNotificationChecks.Observe(false);
 if (args.Length == 1 && args[0] == "--window-notifications-observe-custom")

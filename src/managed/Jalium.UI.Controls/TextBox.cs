@@ -1778,6 +1778,14 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
     {
+        Point offset = HasContentHost ? GetTextContentOrigin() : Point.Zero;
+        using (MacOSWritingToolsPresentation.PushHidden(this, dc, offset))
+            DrawTextCore(dc, contentRect, lineHeight);
+        MacOSWritingToolsPresentation.DrawInactive(this, dc, offset);
+    }
+
+    private void DrawTextCore(DrawingContext dc, Rect contentRect, double lineHeight)
+    {
         if (FontSize == 0) return;
         var text = Text;
         var textBrush = ResolveTextForegroundBrush();
@@ -2087,6 +2095,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight)
     {
+        using var presentation = MacOSWritingToolsPresentation.PushHidden(this, dc, HasContentHost ? GetTextContentOrigin() : Point.Zero);
         var selectionBrush = ResolveSelectionBrush();
         if (selectionBrush == null)
             return;
@@ -2288,6 +2297,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void DrawCaret(DrawingContext dc, Rect contentRect, double lineHeight)
     {
+        if (MacOSWritingToolsPresentation.IsPresenting(this)) return;
         // Update and get the current caret opacity first (needed for animation to progress)
         var caretOpacity = UpdateCaretAnimation();
 

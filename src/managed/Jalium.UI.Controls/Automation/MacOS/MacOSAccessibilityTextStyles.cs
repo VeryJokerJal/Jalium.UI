@@ -32,6 +32,23 @@ internal sealed unsafe partial class MacOSAccessibilityTree
             if (AutomationTextStyles.At(runs, start, text.Length) is not { } run) return false;
             request.TextStart = run.Start; request.TextLength = run.Length; return true;
         }
+        string? payload = CreateTextStyleSnapshot(source, start, length,
+            () => !_window.IsClosedForPlatformTermination && IsVisible(peer) && !peer.IsPassword() && source.Text == text,
+            runs);
+        return payload is not null && WriteString(payload, ref request);
+    }
+
+    // Shared by native accessibility and Writing Tools. Both use the same font
+    // resolution and raw UTF-16 representation as the actual editor rendering.
+    internal static string? CreateTextStyleSnapshot(IAutomationTextProviderSource source,
+        int start, int length, Func<bool> isCurrent, IReadOnlyList<AutomationTextStyleSpan>? capturedRuns = null)
+    {
+        if (source is not IAutomationTextStyleSource styled || !isCurrent()) return null;
+        string text = source.Text;
+        if (text.Length > MaximumStyleTextLength || start < 0 || start > text.Length ||
+            length < 0 || length > text.Length - start) return null;
+        var runs = capturedRuns ?? styled.GetTextStyles();
+        if (!isCurrent() || source.Text != text || !ValidStyleRuns(runs, text.Length)) return null;
         var fonts = new TextMeasurement.RenderingFont?[runs.Count];
         for (int index = 0; index < runs.Count; index++)
         {
@@ -40,8 +57,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 text.Substring(run.Start, run.Length), run.Style.FontSize, run.Style.FontWeight, run.Style.FontStyle);
         }
         // Materializing a CSS font can dispatch user callbacks as well.
-        if (_window.IsClosedForPlatformTermination || !IsVisible(peer)
-            || peer.IsPassword() || source.Text != text) return false;
+        if (!isCurrent() || source.Text != text) return null;
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
         {
@@ -66,13 +82,13 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 WriteColor("strikeColor", style.StrikethroughColor); writer.WriteNumber("alignment", style.Alignment);
                 writer.WriteNumber("direction", style.Direction); writer.WriteString("language", style.Language);
                 writer.WriteEndObject(); writer.Flush();
-                if (stream.Length > MaximumStylePayloadLength) return false;
+                if (stream.Length > MaximumStylePayloadLength) return null;
             }
             writer.WriteEndArray(); writer.WriteEndObject(); writer.Flush();
             void WriteColor(string name, uint? color) { if (color is { } value) writer.WriteNumber(name, value); }
         }
-        if (stream.Length > MaximumStylePayloadLength) return false;
-        return WriteString(Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length), ref request);
+        if (stream.Length > MaximumStylePayloadLength) return null;
+        return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
     }
 
     private static bool ValidStyleRuns(IReadOnlyList<AutomationTextStyleSpan> runs, int textLength)

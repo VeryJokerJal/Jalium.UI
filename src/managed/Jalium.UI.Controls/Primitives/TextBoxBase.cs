@@ -60,6 +60,12 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// Subclasses call this whenever Text / TextWrapping / FontSize / any
     /// other property that changes the text-layout size changes.
     /// </summary>
+    internal void InvalidateWritingToolsText()
+    {
+        _textBoxContentHost?.InvalidateVisual();
+        InvalidateVisual();
+    }
+
     protected void InvalidateTextContentMeasure()
     {
         _textBoxContentHost?.InvalidateMeasure();
@@ -1643,7 +1649,11 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// <summary>
     /// Undoes the last edit operation.
     /// </summary>
-    public bool Undo() => UndoCore();
+    public bool Undo()
+    {
+        using var transaction = MacOSWritingToolsPresentation.BeginUndoRedo();
+        return UndoCore();
+    }
 
     internal virtual bool UndoCore()
     {
@@ -1681,7 +1691,11 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     /// <summary>
     /// Redoes the last undone operation.
     /// </summary>
-    public bool Redo() => RedoCore();
+    public bool Redo()
+    {
+        using var transaction = MacOSWritingToolsPresentation.BeginUndoRedo();
+        return RedoCore();
+    }
 
     internal virtual bool RedoCore()
     {

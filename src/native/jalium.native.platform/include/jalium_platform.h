@@ -110,6 +110,7 @@ typedef enum JaliumEventType {
     JALIUM_EVENT_DELETE_SURROUNDING_TEXT = 46,
     JALIUM_EVENT_IME_TEXT_REQUEST = 47,
     JALIUM_EVENT_IME_GEOMETRY_REQUEST = 48,
+    JALIUM_EVENT_TEXT_SERVICES_REQUEST = 49,
 
     // Pointer (touch/pen)
     JALIUM_EVENT_POINTER_DOWN     = 50,
@@ -249,6 +250,23 @@ typedef struct JaliumImeGeometryResult {
     float x, y, width, height;
 } JaliumImeGeometryResult;
 
+/// Synchronous custom-text service bridge. UTF-8 JSON payloads and replies are
+/// borrowed only during the window callback. respond copies the reply before
+/// returning; clients must never retain either the request or its callback.
+/// Kinds: 0 capabilities, 1 styled snapshot, 2 replace, 3 select, 4 geometry,
+/// 5 transparent preview, 6 prepare animation, 7 finish animation, 8 state.
+/// All text ranges use absolute UTF-16 offsets and rectangles use client pixels.
+typedef void (*JaliumTextServicesResponse)(void* context, const char* utf8, size_t length);
+typedef struct JaliumTextServicesRequest {
+    int32_t kind;
+    int32_t start;
+    int32_t length;
+    int32_t flags;
+    const char* utf8Payload;
+    void* responseContext;
+    JaliumTextServicesResponse respond;
+} JaliumTextServicesRequest;
+
 /// Window creation parameters.
 typedef struct JaliumWindowParams {
     const JaliumUtf16Char* title;    ///< Null-terminated UTF-16 title.
@@ -368,6 +386,8 @@ typedef struct JaliumPlatformEvent {
             float y;
             JaliumImeGeometryResult* result;
         } imeGeometryRequest;
+
+        struct { JaliumTextServicesRequest* request; } textServicesRequest;
 
         // JALIUM_EVENT_POINTER_DOWN / UP / MOVE / CANCEL
         struct {
@@ -534,6 +554,13 @@ JALIUM_PLATFORM_API void jalium_apple_notify_lifecycle(int32_t eventType);
 /// Shows an AppKit window, optionally preserving the current key window.
 JALIUM_PLATFORM_API void jalium_apple_window_show(
     JaliumPlatformWindow* window, int32_t activate);
+
+/// Opt into synchronous text service requests. Off by default, so existing
+/// native clients keep their original event stream. macOS 15.2+ uses the system
+/// custom-view Writing Tools coordinator; other Apple platforms are unsupported.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_enable_text_services(
+    JaliumPlatformWindow* window, int32_t enabled);
+
 /// Selects the AppKit content responder/key window without activating the app,
 /// ordering a hidden window, or restoring a minimized window.
 JALIUM_PLATFORM_API int32_t jalium_apple_window_set_keyboard_focus(JaliumPlatformWindow* window);

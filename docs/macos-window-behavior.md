@@ -4,6 +4,73 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v243：自绘文本视图接入 Writing Tools
+
+macOS 15.2 起，输入视图安装实际 NSWritingToolsCoordinator，并声明
+preferredBehavior=Complete。通过显式 opt-in 的事件 49，同步查询托管文本、UTF-16
+选区、共享字体／样式快照、段落／列表／表格、实际分段矩形与透明字形预览。
+应答在回调返回前复制；旧原生调用方不增加事件。保留 95 个已有导出，新增一个
+可选 Apple opt-in 入口；64 位事件仍为 72 字节，新请求为 40 字节。
+
+TextBox、RichTextBox 与 EditControl 共用文本 provider 和渲染字体解析。密码框不参与；
+只读文本保留读取能力，实际控件拒绝替换。SDK 提案走 PreviewTextInput／TextInput；
+预览回调自行编辑后，不再按旧范围继续默认替换，并向 SDK 同步回调产生的编辑。
+完成回调报告实际接受的文字、格式及结构。富文本导入真实 Run、Paragraph、List、
+Table，使用既有修改事务与撤销／重做；保留范围外的节点及格式。表格虚拟分隔符
+保持原有 UTF-16 文档投影，并标记为不可编辑。多个离散选区请求被拒绝，不合并成
+一个会误选文字的范围。当前支持框架已有的常规格式，不声称任意 AppKit 属性及
+任意混合列表／表格嵌套都能无损往返。
+
+协调器使用独立会话标识，并检查编辑器、响应者、激活、窗口与输入代次。旧会话结束
+不能清除同一编辑器的新表现。结束回调中的新 Show／Enable 优先于外层旧 Hide／
+Disable；退出 opt-in 或刷新代次变化后，不使用旧能力应答重建协调器。临时隐藏、
+灰色字形与交错动画采用绘制遮罩，不改写文档或控件样式。实际原生离屏 readback
+生成透明 PNG；在触碰 AppKit 前拒绝工作线程。正文及格式变化报告 updateRange，
+重排报告 reflow；每次可能重入的 SDK 调用后重新检查当前操作。系统可用时，菜单
+采用 SDK 自带的本地化 Writing Tools 项、子菜单和操作标签。
+
+冻结源码的串行验收：
+
+| 范围 | 结果 |
+| --- | --- |
+| 同一 SDK 可执行文件／匹配旧负载 | 新库 **60/60，1.778 秒**；前置提交的匹配八库 **2 通过／58 失败，1.883 秒**，保留旧 opt-out 检查。可执行文件 SHA-256 相同，实际加载库路径逐次核对。 |
+| 新增回调反例 | 同一最终 60 项夹具在保护修复前 **54/60**；两种标题栏分别复现 stop→Show、stop→Enable、能力查询→opt-out。修复后 **60/60**，可执行文件不变。 |
+| 原生整套 | PR **34/34，577.257 秒**；本地历史 **34/34，581.800 秒**。各含基本 AX **610/610**，Native／Custom 各 305；另含通用 AX、剪贴板、窗口与新增 SDK 场景。下行正式 .app 单独执行，未重复计数。两套实际 CTest 最大并发均为 1。 |
+| 原始正式 .app | 两套均通过原始启动器、前台、nonce／PID、result 与 STARTED／FINISHED／EXIT 校验，**9.528／9.474 秒**。宿主 PID **81106／82279** 各与系统前台一致。仅其已有 HOST_WORK_DIR 输入指向本轮内部缓存，程序及校验不变，无遗留宿主进程。 |
+| AddressSanitizer | **4/4，10.600 秒含构建**：Writing Tools、文本输入生命周期、属性／输入、Services。detect_leaks=0:halt_on_error=1；这是内存访问检查，不是泄漏验收。 |
+| 托管整套 | PR **2239 通过／0 失败／2 项既有跳过，23.648 秒**；本地历史 **2156 通过／0 失败／2 项既有跳过，48.292 秒**。跳过按实际 NotExecuted 记录核对。本轮事务、结构、非法数据及契约检查 **26/26**。 |
+| 打包 SDK→原生→托管 | 两套均为 **6/6 场景、132 项检查**，Native／Custom × 三类编辑器；分别 **3.167／2.933 秒，不含构建**。每个场景要求 AppKit active、key、实际输入响应者和系统前台 PID 一致。覆盖实际上下文、几何、字形预览、替换、一步 Undo／Redo、预览回调自行编辑、只读拒绝、密码隔离及退役上下文。 |
+| 实际原生像素 | **92/92**：普通／模板 TextBox、RichTextBox、EditControl，透明字形 PNG，中文／emoji 的 1×／1.5×／2×，变换、重叠动画、退役生命期与结束后逐字节恢复。使用实际控件绘制及原生 readback，不是外部桌面截图。 |
+| 全主题 AppKit Popup／ToolTip | 两套均 **129/129，15.493／16.536 秒含构建**；保持真实内容挂载、原生 key 资格、进程内 AX 与普通兄弟控件回归。 |
+| Apple SDK／ABI | macOS、iOS／模拟器、tvOS／模拟器、visionOS／模拟器 **7/7 语法检查**；另通过强制 pre-15.2 编译分支与 64 位事件布局检查，共 **9/9**。强制宏分支使用当前 SDK，不是实际旧 SDK 或最低系统运行验收。 |
+
+相对前置 PR 负载，仅 platform 库改变，另七库 SHA-256 相同，已有 95 个 jalium_
+导出保留。Window CMake 目标依赖永久 Writing Tools 夹具，现有 CI 显式构建列表可
+间接构建新检查。两套源码保留原有 34 个差异路径及精确增删内容；工作副本 9 个
+相关路径的并行未提交改动单独保留，其中 Window.cs 的 Linux IME 生命周期修改与
+本轮 11 行插入并存。共享 native 负载不参与本轮构建。
+
+SDK 补查纠正了新接口在非 macOS 分支引用不存在错误码的问题，现返回既有 NOT_SUPPORTED。
+两套 macOS 重新构建的八库及 22 个测试可执行文件，构建前后 SHA-256 均完全相同；
+前述 macOS 运行结果对应相同二进制。ASAN 在该修正后重新构建并通过四组检查。
+
+打包宿主第一次整套收尾构建因本轮外置 TMPDIR 含空格，MSBuild Exec 在执行导出
+扫描前找不到临时命令文件。仅改用本轮内部缓存 TMPDIR 后，两套构建及宿主通过；
+源码未改变。恢复脚本的收尾变量遗漏另由完整结果与源码哈希审计修正，不将脚本异常
+当作通过。早期纯托管软件预览没有绘制字形；最终路径改用实际原生后端，以上像素
+检查仍保留真实字形断言。macOS 绑定宿主使用已安装的 .NET 10.0.300／macOS 26.5
+工作负载、Xcode 27，编译指定 ValidateXcodeVersion=false；不代替固定 CI 工具链
+及完整生产包验收。
+
+公开 SDK 在两个实际打包前台宿主中均报告 Writing Tools 可用性 false。以上通过
+证明 SDK 委托、托管事务与绘制链路，未调用真实 Apple Intelligence 服务，也未验证
+实际系统菜单操作及系统驱动的完整动画顺序。桌面 tunnel 仍未连接，没有新增物理
+键鼠、真实 IME、外部 AX、VoiceOver、混合 DPI／Spaces、最低系统或 Intel 验收。
+新提交 CI 独立跟踪；整体 macOS 目标保持进行。
+
+永久入口：原生 writing-tools CTest，以及 MacOS.HostSmoke --window-writing-tools。
+参见 [Apple 协调器文档](https://developer.apple.com/documentation/appkit/nswritingtoolscoordinator)。
+
 ### v230：原生响应者交接同步键盘焦点与逻辑历史
 
 原生子视图（含 NSTextField 的 field editor）接管输入后，默认键盘 provider 现在清除

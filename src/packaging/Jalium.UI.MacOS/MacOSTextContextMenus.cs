@@ -27,8 +27,8 @@ internal static class MacOSTextContextMenus
         using var target = new EditingTarget(request, view);
         foreach (var (command, title, _) in Commands)
         {
-            // AppKit may insert Writing Tools and Services using the existing
-            // selection requestor. Keep shortcuts in the main menu only.
+            // Keep editing shortcuts in the main menu only. Writing Tools
+            // below uses the SDK's own localized submenu and operation tags.
             bool hideUnavailable = command is PlatformTextEditingCommand.Undo or PlatformTextEditingCommand.Redo or
                 PlatformTextEditingCommand.SelectAll;
             if (hideUnavailable && !request.CanExecute(command)) continue;
@@ -37,6 +37,17 @@ internal static class MacOSTextContextMenus
             string label = NSBundle.FromClass(new Class(typeof(NSApplication))).GetLocalizedString(title, title, null);
             menu.AddItem(new NSMenuItem(label, new Selector("performEditingCommand:"), string.Empty)
             { Target = target, Tag = (nint)command });
+        }
+        if (OperatingSystem.IsMacOSVersionAtLeast(15, 2) &&
+            NSWritingToolsCoordinator.IsWritingToolsAvailable && view.WritingToolsCoordinator is not null)
+        {
+            var items = NSMenuItem.WritingToolsItems;
+            if (items.Length != 0 && menu.Items.Length != 0) menu.AddItem(NSMenuItem.SeparatorItem);
+            foreach (var item in items)
+            {
+                target.GuardWritingToolsItem(item);
+                menu.AddItem(item);
+            }
         }
         if (!request.IsCurrent()) return false;
         NSMenu? previous = view.Menu;
@@ -59,14 +70,48 @@ internal static class MacOSTextContextMenus
     {
         private readonly PlatformTextContextMenuRequest _request;
         private readonly NSView _view;
+        private readonly nint _writingToolsCoordinator;
+        private readonly Dictionary<nint, (Selector Action, NSObject? Target)> _writingToolsCommands = new();
 
         internal EditingTarget(PlatformTextContextMenuRequest request, NSView view)
-        { _request = request; _view = view; }
+        {
+            _request = request; _view = view;
+            if (OperatingSystem.IsMacOSVersionAtLeast(15, 2)) _writingToolsCoordinator = view.WritingToolsCoordinator?.Handle ?? 0;
+        }
+
+        internal void GuardWritingToolsItem(NSMenuItem item)
+        {
+            if (item.Submenu is { } submenu)
+            {
+                foreach (var child in submenu.Items) GuardWritingToolsItem(child);
+                return;
+            }
+            if (item.IsSeparatorItem || item.Action is not { } action) return;
+            _writingToolsCommands[(nint)item.Handle] = (action, item.Target);
+            item.Target = this; item.Action = new Selector("performWritingToolsCommand:");
+        }
+
+        private bool IsWritingToolsCurrent() => OperatingSystem.IsMacOSVersionAtLeast(15, 2) &&
+            _writingToolsCoordinator != 0 && _request.IsCurrent() &&
+            _view.WritingToolsCoordinator?.Handle == _writingToolsCoordinator && NSWritingToolsCoordinator.IsWritingToolsAvailable;
 
         public bool ValidateMenuItem(NSMenuItem item)
         {
-            try { return _request.CanExecute((PlatformTextEditingCommand)(int)item.Tag); }
+            try
+            {
+                return _writingToolsCommands.ContainsKey((nint)item.Handle) ? IsWritingToolsCurrent()
+                    : _request.CanExecute((PlatformTextEditingCommand)(int)item.Tag);
+            }
             catch { return false; } // Application callbacks must not escape into AppKit.
+        }
+
+        [Export("performWritingToolsCommand:")]
+        public void PerformWritingToolsCommand(NSMenuItem item)
+        {
+            if (!ValidateMenuItem(item) || !_writingToolsCommands.TryGetValue((nint)item.Handle, out var command)) return;
+            // Preserve AppKit's standard item tags (proofread, rewrite, tone,
+            // summary/list/table, compose) and the captured native responder.
+            NSApplication.SharedApplication.SendAction(command.Action, command.Target ?? _view, item);
         }
 
         [Export("performEditingCommand:")]
