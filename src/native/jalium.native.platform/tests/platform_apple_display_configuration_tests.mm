@@ -210,6 +210,60 @@ int RunChecks()
             PostDisplayChange();
             Require(replacement.monitors == 1, "new platform lifecycle did not install its observer");
         });
+        run("background snapshot excludes subsequently created windows", [&] {
+            Fixture old(style), survivor(style);
+            PostFromBackground();
+            old.Close();
+            Fixture replacement(style);
+            PostFromBackground();
+            Pump();
+            Require(old.monitors == 0 && survivor.monitors == 2 && replacement.monitors == 1,
+                "queued background snapshot included a later window: old=" + std::to_string(old.monitors) +
+                " survivor=" + std::to_string(survivor.monitors) + " replacement=" +
+                std::to_string(replacement.monitors));
+        });
+        run("reentrant snapshot excludes subsequently created windows", [&] {
+            Fixture first(style), survivor(style);
+            first.onMonitors = [&] { if (first.monitors == 1) { PostDisplayChange(); PostDisplayChange(); } };
+            PostDisplayChange();
+            first.Close();
+            Fixture replacement(style);
+            PostDisplayChange();
+            Pump();
+            Require(first.monitors == 1 && survivor.monitors == 3 && replacement.monitors == 1,
+                "queued reentrant snapshot included a later window: first=" + std::to_string(first.monitors) +
+                " survivor=" + std::to_string(survivor.monitors) + " replacement=" +
+                std::to_string(replacement.monitors));
+        });
+        run("reentrant delivery runs while a dispatcher callback pumps events", [&] {
+            Fixture first(style), later(style);
+            first.onMonitors = [&] { if (first.monitors == 1) { PostDisplayChange(); PostDisplayChange(); } };
+            struct Probe {
+                JaliumDispatcher* dispatcher = nullptr;
+                Fixture* first;
+                Fixture* later;
+                bool done = false;
+                bool mainThread = false;
+                unsigned firstInside = 0, laterInside = 0;
+                ~Probe() { if (dispatcher) jalium_dispatcher_destroy(dispatcher); }
+            } probe{nullptr, &first, &later};
+            Require(jalium_dispatcher_create(&probe.dispatcher) == JALIUM_OK, "dispatcher creation");
+            jalium_dispatcher_set_callback(probe.dispatcher, [](void* context) {
+                auto& probe = *static_cast<Probe*>(context);
+                probe.mainThread = NSThread.isMainThread;
+                PostDisplayChange();
+                Pump();
+                probe.firstInside = probe.first->monitors;
+                probe.laterInside = probe.later->monitors;
+                probe.done = true;
+            }, &probe);
+            jalium_dispatcher_wake(probe.dispatcher);
+            Pump();
+            Require(probe.done && probe.mainThread && probe.firstInside == 2 && probe.laterInside == 2,
+                "main-queue callback starved nested display delivery: done=" + std::to_string(probe.done) +
+                " main=" + std::to_string(probe.mainThread) + " first=" +
+                std::to_string(probe.firstInside) + " later=" + std::to_string(probe.laterInside));
+        });
         run("reference counted initialization keeps one observer", [&] {
             Fixture fixture(style);
             { PlatformLifetime extra; extra.Start(); PostDisplayChange();

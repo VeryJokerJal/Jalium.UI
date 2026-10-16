@@ -190,10 +190,14 @@ std::atomic<uint64_t> g_nextAppleDragTargetId{1};
 NSMutableArray<NSMenu*>* g_trackingMenus;
 id g_menuTrackingBeginObserver;
 id g_menuTrackingEndObserver;
+struct AppleDisplayChangeTarget {
+    JaliumPlatformWindow* window;
+    NSWindow* __weak nativeWindow;
+};
 struct AppleDisplayChangeState {
     std::atomic<bool> active{true};
     bool broadcasting = false; // Main thread only.
-    bool pending = false;
+    std::vector<AppleDisplayChangeTarget> pending; // Main thread only.
 };
 std::shared_ptr<AppleDisplayChangeState> g_displayChangeState;
 id g_displayChangeObserver;
@@ -268,41 +272,69 @@ bool IsLiveWindow(JaliumPlatformWindow* window, NSWindow* nativeWindow)
     return IsLiveWindow(window) && window->window == nativeWindow;
 }
 
-void BroadcastAppleDisplayChange(std::shared_ptr<AppleDisplayChangeState> state)
+std::vector<AppleDisplayChangeTarget> CaptureAppleDisplayChangeTargets()
+{
+    // The notification may arrive off the main thread. Capture registration
+    // and native identity together before later windows can enter its scope.
+    // Weak native identities do not extend an AppKit object's lifetime on the
+    // posting thread; each actual callback retains its native target on main.
+    std::scoped_lock lock(g_windowsMutex);
+    std::vector<AppleDisplayChangeTarget> targets;
+    targets.reserve(g_windows.size());
+    for (auto* window : g_windows)
+        targets.push_back({window, window->window});
+    return targets;
+}
+
+void BroadcastAppleDisplayChange(std::shared_ptr<AppleDisplayChangeState> state,
+    std::vector<AppleDisplayChangeTarget> targets);
+
+void QueueAppleDisplayChange(std::shared_ptr<AppleDisplayChangeState> state,
+    std::vector<AppleDisplayChangeTarget> targets)
+{
+    // A host can pump AppKit from within a main-dispatch-queue callback.
+    // Another block on that same serial queue cannot run until it returns.
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+        BroadcastAppleDisplayChange(state, targets);
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
+void BroadcastAppleDisplayChange(std::shared_ptr<AppleDisplayChangeState> state,
+    std::vector<AppleDisplayChangeTarget> targets)
 {
     if (!state->active.load(std::memory_order_acquire)) return;
     if (!NSThread.isMainThread) {
-        dispatch_async(dispatch_get_main_queue(), ^{ BroadcastAppleDisplayChange(state); });
+        QueueAppleDisplayChange(state, std::move(targets));
         return;
     }
     if (state->broadcasting) {
-        state->pending = true;
+        for (const auto& target : targets) {
+            NSWindow* nativeWindow = target.nativeWindow;
+            if (!nativeWindow) continue;
+            const bool known = std::any_of(state->pending.begin(), state->pending.end(),
+                [&](const auto& pending) {
+                    return pending.window == target.window && pending.nativeWindow == nativeWindow;
+                });
+            if (!known) state->pending.push_back(target);
+        }
         return;
     }
     state->broadcasting = true;
-    struct Target {
-        JaliumPlatformWindow* window;
-        NSWindow* __strong nativeWindow;
-    };
-    std::vector<Target> targets;
-    {
-        std::scoped_lock lock(g_windowsMutex);
-        targets.reserve(g_windows.size());
-        for (auto* window : g_windows)
-            targets.push_back({window, window->window});
-    }
     // A notification callback may destroy itself or another window, create a
     // replacement at the same address, or shut down/reinitialize the platform.
     // Never hold the registry lock across application callbacks.
     for (const auto& target : targets) {
         if (!state->active.load(std::memory_order_acquire)) break;
-        if (IsLiveWindow(target.window, target.nativeWindow) && !target.window->destroying)
+        NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = target.nativeWindow;
+        if (nativeWindow && IsLiveWindow(target.window, nativeWindow) && !target.window->destroying)
             DispatchSimple(target.window, JALIUM_EVENT_MONITORS_CHANGED);
     }
     state->broadcasting = false;
-    if (state->pending && state->active.load(std::memory_order_acquire)) {
-        state->pending = false;
-        dispatch_async(dispatch_get_main_queue(), ^{ BroadcastAppleDisplayChange(state); });
+    if (!state->pending.empty() && state->active.load(std::memory_order_acquire)) {
+        auto pending = std::move(state->pending);
+        state->pending.clear();
+        QueueAppleDisplayChange(state, std::move(pending));
     }
 }
 
@@ -313,7 +345,7 @@ void ObserveAppleDisplayChanges()
     g_displayChangeObserver = [NSNotificationCenter.defaultCenter
         addObserverForName:NSApplicationDidChangeScreenParametersNotification
         object:NSApp queue:nil usingBlock:^(NSNotification*) {
-            BroadcastAppleDisplayChange(state);
+            BroadcastAppleDisplayChange(state, CaptureAppleDisplayChangeTargets());
         }];
 }
 
