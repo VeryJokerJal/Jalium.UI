@@ -79,7 +79,7 @@ public enum PlacementMode
 /// creates a lightweight native window to render outside the parent window bounds.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Child")]
-public partial class Popup : FrameworkElement
+public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParentProvider
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -119,6 +119,35 @@ public partial class Popup : FrameworkElement
     /// Gets whether the hosted popup subtree owns an active pointer capture.
     /// </summary>
     internal bool HasPointerCaptureWithin => _popupRoot?.HasPointerCaptureWithin == true;
+
+    internal Visual? GetMacOSInputRouteParent(PopupRoot root)
+    {
+        // Standalone PopupWindow hosts keep their existing physical route.
+        if (!ReferenceEquals(_popupRoot, root)) return root.VisualParent;
+        if (!IsOpen || _parentWindow == null) return null;
+        if (_isUsingExternalWindow) return root.VisualParent;
+        if (_overlayLayer == null || !ReferenceEquals(root.VisualParent, _overlayLayer)) return null;
+
+        return this;
+    }
+
+    Visual? Jalium.UI.Input.IInputRouteParentProvider.InputRouteParent =>
+        OperatingSystem.IsMacOS() && _popupRoot != null ? GetMacOSInputOwnerParent() : VisualParent as Visual;
+
+    private Visual? GetMacOSInputOwnerParent()
+    {
+        if (!IsOpen || _parentWindow == null) return null;
+        if (PlacementTarget is not { } anchor)
+        {
+            var declaration = VisualParent as Visual;
+            return declaration == null ? _overlayLayer :
+                ReferenceEquals(ResolveOwningWindow(declaration), _parentWindow) ? declaration : null;
+        }
+        var owner = ResolveOwningWindow(anchor);
+        if (!ReferenceEquals(owner, _parentWindow) || !anchor.IsEnabled || !anchor.IsVisible ||
+            Jalium.UI.Styling.CssDisplayProperties.IsExitInert(anchor)) return null;
+        return anchor;
+    }
 
     #region Dependency Properties
 
@@ -572,6 +601,9 @@ public partial class Popup : FrameworkElement
 
     private void OpenPopup()
     {
+        if (OperatingSystem.IsMacOS() && _macOSClosingRoot != null) return;
+        if (OperatingSystem.IsMacOS() && HasClosingMacOSPopupAncestor())
+        { SetCurrentValue(IsOpenProperty, false); return; }
         if (_popupRoot != null) return;
 
         var child = Child;
@@ -579,6 +611,12 @@ public partial class Popup : FrameworkElement
 
         _parentWindow = GetParentWindow();
         if (_parentWindow == null) return;
+        if (OperatingSystem.IsMacOS())
+        {
+            if (!_parentWindow.IsMacOSPopupInputOwnerAlive)
+            { _parentWindow = null; SetCurrentValue(IsOpenProperty, false); return; }
+            _macOSFocusBeforeOpen = Jalium.UI.Input.Keyboard.FocusedElement as UIElement;
+        }
 
         // Attach the child to its PopupRoot before preparing or measuring it.  The root
         // is the inheritance bridge for the detached popup tree (most importantly for
@@ -696,6 +734,12 @@ public partial class Popup : FrameworkElement
 
     private void ClosePopup()
     {
+        if (OperatingSystem.IsMacOS()) CloseMacOSPopup();
+        else ClosePopupCore();
+    }
+
+    private void ClosePopupCore(Action? beforeClosed = null)
+    {
         if (_popupRoot == null) return;
 
         StopOpenAnimation(resetVisualState: true);
@@ -728,6 +772,7 @@ public partial class Popup : FrameworkElement
         _overlayLayer = null;
         SetIsMouseOver(false);
 
+        beforeClosed?.Invoke();
         OnClosed(EventArgs.Empty);
     }
 

@@ -5409,10 +5409,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (OperatingSystem.IsMacOS() && result.Length != 0 &&
                     (!TryGetImeTarget(out commitTarget, out _) ||
                      (InputMethod.IsComposing && !ReferenceEquals(InputMethod.CurrentTarget, commitTarget)))) break;
+                var commitLifetime = OperatingSystem.IsMacOS() && commitTarget != null
+                    ? CaptureMacOSInputLifetime(commitTarget, textInput: true) : null;
                 InputMethod.EndComposition(result.Length == 0 ? null : result);
                 // Composition-ended callbacks may move focus. Never send the
                 // old editor's commit into the editor they just focused.
-                if (result.Length != 0 && (!OperatingSystem.IsMacOS() ||
+                if (result.Length != 0 && commitLifetime?.Invoke() != false && (!OperatingSystem.IsMacOS() ||
                     (TryGetImeTarget(out UIElement? currentTarget, out _) && ReferenceEquals(currentTarget, commitTarget))))
                     _inputDispatcher.HandleCharInput(result, Environment.TickCount);
                 break;
@@ -5432,15 +5434,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (evt.ImeTextRequest is { } request &&
                     TryGetImeTarget(out UIElement? requestTarget, out IImeSupport? textSupport))
                 {
+                    var requestLifetime = OperatingSystem.IsMacOS()
+                        ? CaptureMacOSInputLifetime(requestTarget!, textInput: true) : null;
                     if (!textSupport!.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot requestSnapshot) ||
                         !ImeTextEncoding.TryNormalizeUtf16Range(requestSnapshot.Text,
                             request.Start, request.Length, out int rangeStart, out int rangeLength)) break;
+                    if (requestLifetime?.Invoke() == false) break;
                     if (request.Replace && InputMethod.IsComposing)
                     {
                         InputMethod.EndComposition();
                         // A composition callback can change focus or disable the
                         // editor. Recheck before applying text to the old target.
-                        if (!TryGetImeTarget(out UIElement? currentTarget, out _) ||
+                        if (requestLifetime?.Invoke() == false || !TryGetImeTarget(out UIElement? currentTarget, out _) ||
                             !ReferenceEquals(currentTarget, requestTarget)) break;
                     }
                     if (request.Replace)
@@ -5448,7 +5453,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         var preview = new TextCompositionEventArgs(UIElement.PreviewTextInputEvent,
                             request.Text, Environment.TickCount)
                         { ImeReplacementRange = (rangeStart, rangeLength) };
-                        requestTarget!.RaiseEvent(preview);
+                        InputRoute.Raise(requestTarget!, preview, requestLifetime);
+                        if (requestLifetime?.Invoke() == false) break;
                         if (preview.Handled) request.Applied = true;
                         else if (TryGetImeTarget(out UIElement? currentTarget, out _) &&
                             ReferenceEquals(currentTarget, requestTarget))
@@ -5456,7 +5462,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                             var input = new TextCompositionEventArgs(UIElement.TextInputEvent,
                                 request.Text, Environment.TickCount)
                             { ImeReplacementRange = (rangeStart, rangeLength) };
-                            requestTarget.RaiseEvent(input);
+                            InputRoute.Raise(requestTarget!, input, requestLifetime);
                             request.Applied = input.Handled;
                         }
                     }
@@ -13273,6 +13279,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private UIElement GetKeyboardEventTarget()
     {
+        if (OperatingSystem.IsMacOS() && TryGetMacOSOwnedPopupInputTarget(out var popupTarget)) return popupTarget!;
         var focusedElement = Keyboard.FocusedElement as UIElement;
         if (OperatingSystem.IsMacOS() && focusedElement != null && !IsMacOSInputTargetValid(focusedElement))
             focusedElement = null;
@@ -13325,6 +13332,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private UIElement? GetTextInputTarget()
     {
+        if (OperatingSystem.IsMacOS() && TryGetMacOSOwnedPopupInputTarget(out var popupTarget)) return popupTarget;
         var focusedElement = Keyboard.FocusedElement as UIElement;
         if (OperatingSystem.IsMacOS() && focusedElement != null && !IsMacOSInputTargetValid(focusedElement))
             focusedElement = null;
@@ -13342,7 +13350,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool IsMacOSInputTargetValid(UIElement element) =>
         element.IsEnabled && element.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element)
-        && IsDescendantOf(element, this);
+        && IsDescendantOf(element, this) && InputRoute.IsWithin(element, this);
 
     private static bool IsDescendantOf(UIElement descendant, UIElement ancestor)
     {

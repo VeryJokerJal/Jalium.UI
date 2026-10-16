@@ -322,24 +322,10 @@ public sealed class CommandManager
     }
 
     private static List<Jalium.UI.Media.Visual> CaptureKeyBindingRoute(UIElement element, UIElement scope)
-    {
-        List<Jalium.UI.Media.Visual> route = [];
-        for (Jalium.UI.Media.Visual? current = element; current != null && route.Count < 4096; current = current.VisualParent)
-        {
-            route.Add(current);
-            if (ReferenceEquals(current, scope)) return route;
-        }
-        // A detached or cyclic route cannot reach the requested input scope.
-        return [];
-    }
+        => InputRoute.Capture(element, scope);
 
     private static bool IsKeyBindingRouteCurrent(List<Jalium.UI.Media.Visual> route)
-    {
-        if (route.Count == 0) return false;
-        for (int i = 0; i + 1 < route.Count; i++)
-            if (!ReferenceEquals(route[i].VisualParent, route[i + 1])) return false;
-        return true;
-    }
+        => InputRoute.IsCurrent(route);
 
     private static Jalium.UI.Media.Visual GetInputRoot(UIElement element)
     {

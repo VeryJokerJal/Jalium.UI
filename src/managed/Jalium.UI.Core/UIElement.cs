@@ -348,8 +348,10 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     private void RaiseEventBubble(RoutedEventArgs e)
     {
+        bool inputRoute = UsesInputRoute(e);
+        HashSet<UIElement>? visited = inputRoute ? [] : null;
         UIElement? current = this;
-        while (current != null)
+        while (current != null && (visited == null || visited.Add(current)))
         {
             current.InvokeHandlers(current, e);
             if (ReferenceEquals(current, e.CommandInputScope)) break;
@@ -357,21 +359,24 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             // 的 Visual（比如 ContainerVisual / DrawingVisual / HostVisual），用 `as UIElement`
             // 直接返回 null 会让 bubble 在那里中断、无法到达真正的 UIElement 祖先（例如
             // 模板根之上的控件本体）。改为穿透非 UIElement 节点继续向上寻找。
-            current = NextUIElementAncestor(current);
+            current = NextUIElementAncestor(current, inputRoute);
         }
     }
 
+    private static bool UsesInputRoute(RoutedEventArgs e) => e is KeyEventArgs or TextCompositionEventArgs
+        or CanExecuteRoutedEventArgs or ExecutedRoutedEventArgs;
+
     /// <summary>
-    /// 沿 <see cref="Visual.VisualParent"/> 链向上找下一个 <see cref="UIElement"/> 祖先；
-    /// 中间夹的纯 <see cref="Visual"/> 节点会被穿透。链尽头返回 null。
+    /// Finds the next UIElement in the visual or popup input route, skipping plain Visual nodes.
     /// </summary>
-    private static UIElement? NextUIElementAncestor(Visual node)
+    private static UIElement? NextUIElementAncestor(Visual node, bool inputRoute = false)
     {
-        Visual? cur = node.VisualParent;
-        while (cur != null)
+        Visual? cur = inputRoute ? InputRoute.GetParent(node) : node.VisualParent;
+        int depth = 0;
+        while (cur != null && depth++ < 4096)
         {
             if (cur is UIElement ui) return ui;
-            cur = cur.VisualParent;
+            cur = inputRoute ? InputRoute.GetParent(cur) : cur.VisualParent;
         }
         return null;
     }
@@ -402,12 +407,14 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
         // Build the path from root to source. 同 RaiseEventBubble：穿透中间的非 UIElement
         // 节点（ContainerVisual 等），否则 tunnel 会丢失模板控件本体之上的祖先。
+        bool inputRoute = UsesInputRoute(e);
+        HashSet<UIElement>? visited = inputRoute ? [] : null;
         UIElement? current = this;
-        while (current != null)
+        while (current != null && (visited == null || visited.Add(current)))
         {
             path.Add(current);
             if (ReferenceEquals(current, e.CommandInputScope)) break;
-            current = NextUIElementAncestor(current);
+            current = NextUIElementAncestor(current, inputRoute);
         }
 
         // Tunnel from root to source

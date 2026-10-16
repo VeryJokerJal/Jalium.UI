@@ -666,6 +666,8 @@ internal sealed class WindowInputDispatcher
         }
 
         var target = _host.GetKeyboardEventTarget();
+        var inputLifetime = physicalModifiers.HasValue ? _host.CaptureNativeInputLifetime(target, textInput: false) : null;
+        if (inputLifetime?.Invoke() == false) return true;
 
         if (!isRepeat && (key == Key.Space || key == Key.Enter))
             ActivateKeyboardPressedChain(target);
@@ -673,14 +675,18 @@ internal sealed class WindowInputDispatcher
         // Raise tunnel event (PreviewKeyDown)
         KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp)
             { PhysicalModifiers = physicalModifiers };
-        target.RaiseEvent(tunnelArgs);
+        RaiseNativeInput(target, tunnelArgs, inputLifetime);
+        if (inputLifetime?.Invoke() == false)
+        { ClearKeyboardPressedChain(); return true; }
 
         // Raise bubble event (KeyDown) if not handled
         if (!tunnelArgs.Handled)
         {
             KeyEventArgs bubbleArgs = new(UIElement.KeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp)
                 { PhysicalModifiers = physicalModifiers };
-            target.RaiseEvent(bubbleArgs);
+            RaiseNativeInput(target, bubbleArgs, inputLifetime);
+            if (inputLifetime?.Invoke() == false)
+            { ClearKeyboardPressedChain(); return true; }
 
             // Auto Tab/Shift+Tab focus navigation
             if (!bubbleArgs.Handled && key == Key.Tab)
@@ -762,24 +768,30 @@ internal sealed class WindowInputDispatcher
         var target = OperatingSystem.IsMacOS()
             ? _host.GetKeyboardEventTarget()
             : Keyboard.FocusedElement as UIElement ?? _host.Self;
+        var inputLifetime = physicalModifiers.HasValue ? _host.CaptureNativeInputLifetime(target, textInput: false) : null;
+        if (inputLifetime?.Invoke() == false)
+        {
+            if (key is Key.Space or Key.Enter) ClearKeyboardPressedChain();
+            return true;
+        }
 
         KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp)
             { PhysicalModifiers = physicalModifiers };
-        target.RaiseEvent(tunnelArgs);
+        RaiseNativeInput(target, tunnelArgs, inputLifetime);
         bool handled = tunnelArgs.Handled;
 
-        if (!handled)
+        if (!handled && inputLifetime?.Invoke() != false)
         {
             KeyEventArgs bubbleArgs = new(UIElement.KeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp)
                 { PhysicalModifiers = physicalModifiers };
-            target.RaiseEvent(bubbleArgs);
+            RaiseNativeInput(target, bubbleArgs, inputLifetime);
             handled = bubbleArgs.Handled;
         }
 
         if (key == Key.Space || key == Key.Enter)
             ClearKeyboardPressedChain();
 
-        return handled;
+        return handled || inputLifetime?.Invoke() == false;
     }
 
     /// <summary>Handles character input (WM_CHAR or PlatformEvent.CharInput).</summary>
@@ -794,16 +806,21 @@ internal sealed class WindowInputDispatcher
         var target = _host.GetTextInputTarget();
         if (target == null)
             return;
+        var inputLifetime = _host.CaptureNativeInputLifetime(target, textInput: true);
+        if (inputLifetime?.Invoke() == false) return;
 
         TextCompositionEventArgs tunnelArgs = new(UIElement.PreviewTextInputEvent, text, timestamp);
-        target.RaiseEvent(tunnelArgs);
+        RaiseNativeInput(target, tunnelArgs, inputLifetime);
 
-        if (!tunnelArgs.Handled)
+        if (!tunnelArgs.Handled && inputLifetime?.Invoke() != false)
         {
             TextCompositionEventArgs bubbleArgs = new(UIElement.TextInputEvent, text, timestamp);
-            target.RaiseEvent(bubbleArgs);
+            RaiseNativeInput(target, bubbleArgs, inputLifetime);
         }
     }
+
+    private static void RaiseNativeInput(UIElement target, RoutedEventArgs args, Func<bool>? inputLifetime)
+        => InputRoute.Raise(target, args, inputLifetime);
 
     private bool ShouldSuppressReactivatedEscape(Key key, bool isKeyDown)
     {

@@ -15,7 +15,7 @@ public class RoutedEventArgs : EventArgs
     /// </summary>
     public bool Handled { get; set; }
 
-    // A physical command carries its original input lifetime through routing.
+    // Native input and physical commands carry their original lifetime through routing.
     // Programmatic and ordinary routed events leave this unset.
     internal Func<bool>? CommandInputLifetime { get; set; }
     internal bool IsCommandInputCurrent => CommandInputLifetime?.Invoke() != false;

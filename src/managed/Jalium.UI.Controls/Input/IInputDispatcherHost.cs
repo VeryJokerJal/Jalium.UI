@@ -42,6 +42,7 @@ internal interface IInputDispatcherHost
 
     UIElement GetKeyboardEventTarget();
     UIElement? GetTextInputTarget();
+    Func<bool>? CaptureNativeInputLifetime(UIElement target, bool textInput) => null;
     ContentDialog? FindContainingInPlaceDialog();
     Button? FindButton(UIElement root, Func<Button, bool> predicate);
 
