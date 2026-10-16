@@ -582,6 +582,12 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.platform.macos.window.minimize-recovery
         COMMAND jalium.native.platform.window.accessibility.tests --minimize-recovery-only)
     set_tests_properties(jalium.native.platform.macos.window.minimize-recovery PROPERTIES TIMEOUT 90)
+    add_test(NAME jalium.native.platform.macos.window.restore-recovery
+        COMMAND jalium.native.platform.window.accessibility.tests --restore-recovery-only)
+    set_tests_properties(jalium.native.platform.macos.window.restore-recovery PROPERTIES TIMEOUT 120)
+    add_test(NAME jalium.native.platform.macos.window.restore-queue-recovery
+        COMMAND jalium.native.platform.window.accessibility.tests --restore-queue-recovery-only)
+    set_tests_properties(jalium.native.platform.macos.window.restore-queue-recovery PROPERTIES TIMEOUT 90)
     add_test(NAME jalium.native.platform.macos.window.fullscreen-input-focus
         COMMAND jalium.native.platform.window.accessibility.tests --fullscreen-focus-only)
     set_tests_properties(jalium.native.platform.macos.window.fullscreen-input-focus PROPERTIES TIMEOUT 60)

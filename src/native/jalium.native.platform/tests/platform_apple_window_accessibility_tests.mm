@@ -498,12 +498,10 @@ struct DeferredDeminiaturize {
     Method method;
     explicit DeferredDeminiaturize(NSWindow* native) : window(native)
     {
-        Class nativeClass = object_getClass(native);
-        Method inherited = class_getInstanceMethod(nativeClass, @selector(deminiaturize:));
-        g_originalDeminiaturize = method_getImplementation(inherited);
-        class_addMethod(nativeClass, @selector(deminiaturize:), g_originalDeminiaturize,
-            method_getTypeEncoding(inherited));
-        method = class_getInstanceMethod(nativeClass, @selector(deminiaturize:));
+        // Hold the SDK primitive after the framework has begun tracking the
+        // restore, matching real delayed AppKit completion on either route.
+        method = class_getInstanceMethod(NSWindow.class, @selector(deminiaturize:));
+        g_originalDeminiaturize = method_getImplementation(method);
         g_deferredWindow = native;
         method_setImplementation(method, reinterpret_cast<IMP>(DeferDeminiaturize));
     }
@@ -895,6 +893,58 @@ struct SuppressedMinimizeAcknowledgement {
     }
 };
 
+// Withhold only this delegate's acknowledgement, preserving the real SDK
+// restoration and independent Cocoa notification observers.
+static id g_suppressedRestoreDelegate = nil;
+static IMP g_originalRestoreCompletion = nullptr;
+static void SuppressRestoreCompletion(id object, SEL selector, NSNotification* note)
+{
+    if (object != g_suppressedRestoreDelegate)
+        reinterpret_cast<void (*)(id, SEL, NSNotification*)>(g_originalRestoreCompletion)(object, selector, note);
+}
+struct SuppressedRestoreAcknowledgement {
+    id delegate;
+    Method method;
+    explicit SuppressedRestoreAcknowledgement(NSWindow* window) : delegate(window.delegate)
+    {
+        g_suppressedRestoreDelegate = delegate;
+        method = class_getInstanceMethod([delegate class], @selector(windowDidDeminiaturize:));
+        g_originalRestoreCompletion = method_setImplementation(method, reinterpret_cast<IMP>(SuppressRestoreCompletion));
+    }
+    void DeliverLateCompletion(NSWindow* window)
+    {
+        reinterpret_cast<void (*)(id, SEL, NSNotification*)>(g_originalRestoreCompletion)(delegate,
+            @selector(windowDidDeminiaturize:), [NSNotification notificationWithName:NSWindowDidDeminiaturizeNotification object:window]);
+    }
+    ~SuppressedRestoreAcknowledgement()
+    {
+        method_setImplementation(method, g_originalRestoreCompletion);
+        g_suppressedRestoreDelegate = nil;
+    }
+};
+static NSWindow* g_rejectedRestoreWindow = nil;
+static int g_rejectedRestoreCalls = 0;
+static IMP g_originalRestorePrimitive = nullptr;
+static void RejectRestorePrimitive(id object, SEL selector, id sender)
+{
+    if (object == g_rejectedRestoreWindow) ++g_rejectedRestoreCalls;
+    else reinterpret_cast<void (*)(id, SEL, id)>(g_originalRestorePrimitive)(object, selector, sender);
+}
+struct RejectedRestore {
+    Method method = class_getInstanceMethod(NSWindow.class, @selector(deminiaturize:));
+    explicit RejectedRestore(NSWindow* window)
+    {
+        g_rejectedRestoreWindow = window;
+        g_rejectedRestoreCalls = 0;
+        g_originalRestorePrimitive = method_setImplementation(method, reinterpret_cast<IMP>(RejectRestorePrimitive));
+    }
+    ~RejectedRestore()
+    {
+        method_setImplementation(method, g_originalRestorePrimitive);
+        g_rejectedRestoreWindow = nil;
+    }
+};
+
 @interface WindowStyleObservationObserver : NSObject
 @end
 @implementation WindowStyleObservationObserver
@@ -1004,6 +1054,8 @@ int main(int argc, char** argv)
     bool minimizeTransitionOnly = argc == 2 && std::strcmp(argv[1], "--minimize-transition-only") == 0;
     bool minimizeStartOnly = argc == 2 && std::strcmp(argv[1], "--minimize-start-only") == 0;
     bool minimizeRecoveryOnly = argc == 2 && std::strcmp(argv[1], "--minimize-recovery-only") == 0;
+    bool restoreRecoveryOnly = argc == 2 && std::strcmp(argv[1], "--restore-recovery-only") == 0;
+    bool restoreQueueRecoveryOnly = argc == 2 && std::strcmp(argv[1], "--restore-queue-recovery-only") == 0;
     bool activationTransitionOnly = argc == 2 && std::strcmp(argv[1], "--activation-transition-only") == 0;
     bool fullScreenFailureOnly = argc == 2 && std::strcmp(argv[1], "--fullscreen-failure-only") == 0;
     bool fullScreenFocusOnly = argc == 2 && std::strcmp(argv[1], "--fullscreen-focus-only") == 0;
@@ -1012,7 +1064,7 @@ int main(int argc, char** argv)
     bool frameOnly = (argc == 2 && std::strcmp(argv[1], "--frame-only") == 0) ||
         [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JaliumValidationFrameOnly"] boolValue];
     const char* caseName = argc == 2 && std::strncmp(argv[1], "--case-name=", 12) == 0 ? argv[1] + 12 : nullptr;
-    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !geometryQueryOnly && !titlebarActionOnly && !styleInputFocusOnly && !minimizeTransitionOnly && !minimizeStartOnly && !minimizeRecoveryOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
+    if (argc != 1 && !delayedRestoreOnly && !replacementOnly && !restoreCaptureOnly && !restoreGeometryOnly && !workAreaOnly && !geometryLifecycleOnly && !titlebarLifecycleOnly && !geometryQueryOnly && !titlebarActionOnly && !styleInputFocusOnly && !minimizeTransitionOnly && !minimizeStartOnly && !minimizeRecoveryOnly && !restoreRecoveryOnly && !restoreQueueRecoveryOnly && !activationTransitionOnly && !fullScreenFailureOnly && !fullScreenFocusOnly && !contentFocusOnly && !selectionProbeOnly && !frameOnly && !caseName) return 2;
     @autoreleasepool {
         Require(jalium_platform_init() == 0, "platform initialization failed");
         bool foregroundHost = UsesForegroundValidationHost();
@@ -1066,6 +1118,10 @@ int main(int argc, char** argv)
                     std::strstr(name, "restore capture geometry") != nullptr) return;
                 if (minimizeTransitionOnly && std::strstr(name, "minimize completion") == nullptr) return;
                 if (minimizeRecoveryOnly && std::strstr(name, "minimize completion recovery") == nullptr) return;
+                if (restoreRecoveryOnly && std::strstr(name, "restore completion recovery") == nullptr) return;
+                if (restoreQueueRecoveryOnly && std::strstr(name, "restore queue recovery") == nullptr) return;
+                if (!restoreQueueRecoveryOnly && !caseName && std::strstr(name, "restore queue recovery") != nullptr) return;
+                if (!restoreRecoveryOnly && !caseName && std::strstr(name, "restore completion recovery") != nullptr) return;
                 if (!minimizeRecoveryOnly && !caseName && std::strstr(name, "minimize completion recovery") != nullptr) return;
                 if (minimizeStartOnly && std::strstr(name, "minimize start") == nullptr &&
                     std::strcmp(name, "minimize completion rejection releases later requests") != 0) return;
@@ -2691,6 +2747,188 @@ int main(int argc, char** argv)
                         "retired activation selected or changed a replacement window");
                 });
             }
+            for (bool nativeAction : {false, true})
+                for (auto initial : {JALIUM_WINDOW_STATE_NORMAL, JALIUM_WINDOW_STATE_MAXIMIZED})
+                    for (auto requested : {JALIUM_WINDOW_STATE_NORMAL, JALIUM_WINDOW_STATE_MAXIMIZED, JALIUM_WINDOW_STATE_MINIMIZED}) {
+                        char name[180];
+                        std::snprintf(name, sizeof(name), "restore completion recovery queues state %d from state %d via %s",
+                            requested, initial, nativeAction ? "native action" : "platform API");
+                        run(name, [=](Fixture& f) {
+                            NSRect restore = RestoreBounds(f);
+                            jalium_window_set_state(f.window, initial);
+                            jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                            Require(Pump([&] { return f.native.miniaturized &&
+                                jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "initial minimize did not complete");
+                            f.events.clear();
+                            SuppressedRestoreAcknowledgement suppressed(f.native);
+                            if (nativeAction) [f.native deminiaturize:nil];
+                            else jalium_window_set_state(f.window, initial);
+                            Require(Pump([&] { return !f.native.miniaturized; }), "AppKit did not really restore");
+                            Require(!Settable(f.native, NSAccessibilityMinimizedAttribute), "unacknowledged native restoration is not tracked");
+                            jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                            jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                            jalium_window_set_state(f.window, requested);
+                            Require(Pump([&] { return jalium_window_get_state(f.window) == requested &&
+                                f.native.miniaturized == (requested == JALIUM_WINDOW_STATE_MINIMIZED); }), "missing restore acknowledgement stranded the latest state");
+                            Require(NSEqualRects(RestoreBounds(f), restore), "restore recovery replaced normal bounds");
+                            int restored = 0;
+                            for (const auto& event : f.events)
+                                restored += event.type == JALIUM_EVENT_STATE_CHANGED && event.stateChanged.newState == initial;
+                            Require(restored == 1, "restore completion was not published exactly once");
+                            auto count = f.events.size();
+                            suppressed.DeliverLateCompletion(f.native);
+                            Require(f.events.size() == count && jalium_window_get_state(f.window) == requested &&
+                                f.native.miniaturized == (requested == JALIUM_WINDOW_STATE_MINIMIZED), "late restore completion overwrote a newer state");
+                        });
+                    }
+            for (bool nativeAction : {false, true})
+                for (auto initial : {JALIUM_WINDOW_STATE_NORMAL, JALIUM_WINDOW_STATE_MAXIMIZED}) {
+                    char name[160];
+                    std::snprintf(name, sizeof(name), "restore completion recovery retains state %d via %s", initial,
+                        nativeAction ? "native action" : "platform API");
+                    run(name, [=](Fixture& f) {
+                        NSRect restore = RestoreBounds(f);
+                        jalium_window_set_state(f.window, initial);
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                        Require(Pump([&] { return f.native.miniaturized &&
+                            jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "initial minimization did not finish");
+                        SuppressedRestoreAcknowledgement suppressed(f.native);
+                        if (nativeAction) [f.native deminiaturize:nil];
+                        else jalium_window_set_state(f.window, initial);
+                        Require(Pump([&] { return !f.native.miniaturized && jalium_window_get_state(f.window) == initial; }),
+                            "native restore acknowledgement remained missing");
+                        auto count = f.events.size(); suppressed.DeliverLateCompletion(f.native);
+                        Require(f.events.size() == count, "duplicate restore completion republished state");
+                        Require(NSEqualRects(RestoreBounds(f), restore), "native restoration lost normal bounds");
+                    });
+                }
+            for (bool nativeAction : {false, true}) {
+                run(nativeAction ? "restore completion recovery releases rejected native operation"
+                    : "restore completion recovery releases rejected platform operation", [=](Fixture& f) {
+                    NSRect restore = RestoreBounds(f);
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                    Require(Pump([&] { return f.native.miniaturized &&
+                        jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "initial minimization did not finish");
+                    {
+                        RejectedRestore rejected(f.native);
+                        if (nativeAction) [f.native deminiaturize:nil];
+                        else jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                        Require(Pump([&] { return Settable(f.native, NSAccessibilityMinimizedAttribute); }),
+                            "rejected native restoration left the transition active");
+                        Require(f.native.miniaturized && jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED,
+                            "rejected native restoration published an unobserved state");
+                    }
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                    Require(Pump([&] { return !f.native.miniaturized &&
+                        jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MAXIMIZED; }), "new request remained blocked after restore rejection");
+                    Require(NSEqualRects(RestoreBounds(f), restore), "restore rejection changed normal bounds");
+                });
+                run(nativeAction ? "restore completion recovery native callback preserves replacement"
+                    : "restore completion recovery platform callback preserves replacement", [=](Fixture& f) {
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                    Require(Pump([&] { return f.native.miniaturized &&
+                        jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "initial minimization did not finish");
+                    SuppressedRestoreAcknowledgement suppressed(f.native);
+                    struct Context { Fixture* original; uint32_t style; std::unique_ptr<Fixture> replacement; NSRect frame; }
+                        context{&f, style, nullptr, NSZeroRect};
+                    jalium_window_set_event_callback(f.window, [](const JaliumPlatformEvent* event, void* data) {
+                        auto& c = *static_cast<Context*>(data);
+                        if (event->type != JALIUM_EVENT_STATE_CHANGED || c.replacement ||
+                            event->stateChanged.newState != JALIUM_WINDOW_STATE_NORMAL) return;
+                        c.original->Destroy(); c.replacement = std::make_unique<Fixture>(c.style, 300, 200, 420, 300);
+                        c.frame = c.replacement->native.frame;
+                    }, &context);
+                    if (nativeAction) [f.native deminiaturize:nil];
+                    else jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    bool replaced = Pump([&] { return context.replacement != nullptr; });
+                    if (f.window) jalium_window_set_event_callback(f.window, Capture, &f.events);
+                    Require(replaced, "restore recovery did not dispatch the completion callback");
+                    Pump([] { return false; }, 0.05);
+                    Require(NSEqualRects(context.replacement->native.frame, context.frame) &&
+                        jalium_window_get_state(context.replacement->window) == JALIUM_WINDOW_STATE_NORMAL,
+                        "retired restore completion changed its replacement");
+                });
+            }
+            run("restore completion recovery ignores a retired target", [=](Fixture& f) {
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                Require(Pump([&] { return f.native.miniaturized &&
+                    jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "initial minimization did not finish");
+                SuppressedRestoreAcknowledgement suppressed(f.native);
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                Require(Pump([&] { return !f.native.miniaturized; }), "native restoration did not run");
+                f.Destroy(); Fixture replacement(style, 300, 200, 420, 300); NSRect frame = replacement.native.frame;
+                Pump([] { return false; }, 1.1);
+                Require(NSEqualRects(replacement.native.frame, frame) &&
+                    jalium_window_get_state(replacement.window) == JALIUM_WINDOW_STATE_NORMAL,
+                    "retired restore task changed its replacement");
+            });
+            for (bool nativeAction : {false, true})
+                for (auto requested : {JALIUM_WINDOW_STATE_NORMAL, JALIUM_WINDOW_STATE_MINIMIZED}) {
+                    char name[180];
+                    std::snprintf(name, sizeof(name), "restore queue recovery retains late SDK state %d via %s",
+                        requested, nativeAction ? "native action" : "platform API");
+                    run(name, [=](Fixture& f) {
+                        NSRect restore = RestoreBounds(f);
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                        Require(Pump([&] { return f.native.miniaturized &&
+                            jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "initial minimization did not finish");
+                        DeferredDeminiaturize deferred(f.native);
+                        if (nativeAction) [f.native deminiaturize:nil];
+                        else jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                        jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                        jalium_window_set_state(f.window, requested);
+                        Pump([] { return false; }, 1.1);
+                        Require(f.native.miniaturized && jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED,
+                            "deferred SDK primitive published restoration prematurely");
+                        deferred.Complete();
+                        Require(Pump([&] { return jalium_window_get_state(f.window) == requested &&
+                            f.native.miniaturized == (requested == JALIUM_WINDOW_STATE_MINIMIZED); }),
+                            "late SDK restoration overwrote the latest request");
+                        Require(NSEqualRects(RestoreBounds(f), restore), "late SDK restoration lost normal bounds");
+                    });
+                }
+            run("restore queue recovery attempts a newer rejected request once", [](Fixture& f) {
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                Require(Pump([&] { return f.native.miniaturized &&
+                    jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "initial minimization did not finish");
+                RejectedRestore rejected(f.native);
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MAXIMIZED);
+                Require(Pump([&] { return g_rejectedRestoreCalls == 2 &&
+                    Settable(f.native, NSAccessibilityMinimizedAttribute); }),
+                    "newer rejected request did not finish its bounded retry");
+                Pump([] { return false; }, 0.15);
+                Require(g_rejectedRestoreCalls == 2 && f.native.miniaturized &&
+                    jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED,
+                    "rejected restoration retried without a newer request");
+            });
+            for (bool cancelZoom : {false, true})
+                run(cancelZoom ? "restore queue recovery keeps paired native Zoom cancellation"
+                    : "restore queue recovery keeps native Zoom best-fit", [=](Fixture& f) {
+                    NSRect restore = RestoreBounds(f), nativeFrame = f.native.frame;
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_MINIMIZED);
+                    Require(Pump([&] { return f.native.miniaturized &&
+                        jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "initial minimization did not finish");
+                    SuppressedRestoreAcknowledgement suppressed(f.native);
+                    BestFitZoom bestFit(f.native);
+                    jalium_window_set_state(f.window, JALIUM_WINDOW_STATE_NORMAL);
+                    Require(Pump([&] { return !f.native.miniaturized; }), "SDK restoration did not run");
+                    [f.native zoom:nil]; if (cancelZoom) [f.native zoom:nil];
+                    auto requested = cancelZoom ? JALIUM_WINDOW_STATE_NORMAL : JALIUM_WINDOW_STATE_MAXIMIZED;
+                    Require(Pump([&] { return jalium_window_get_state(f.window) == requested; }),
+                        "restore acknowledgement lost native Zoom intent");
+                    Require(!f.native.miniaturized && NSEqualRects(RestoreBounds(f), restore),
+                        "native Zoom during restoration lost normal bounds");
+                    if (!cancelZoom) {
+                        Require(NSEqualRects(f.native.frame, bestFit.delegate.standardFrame),
+                            "queued native Zoom used Fill instead of the SDK best-fit frame");
+                        [f.native zoom:nil];
+                        Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_NORMAL; }),
+                            "native Zoom could not return to normal");
+                    } else Require(NSEqualRects(f.native.frame, nativeFrame),
+                        "paired native Zoom changed the restored normal frame");
+                });
             run("delayed deminiaturization drains the latest state request", [](Fixture& f) {
                 NSRect restore = RestoreBounds(f);
                 RestoreTrace trace(f);

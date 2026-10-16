@@ -100,6 +100,9 @@ struct JaliumPlatformWindow {
     bool miniaturizing = false;
     uint64_t miniaturizationSequence = 0;
     uint64_t pendingMiniaturizationRequest = 0;
+    uint64_t deminiaturizationSequence = 0;
+    uint64_t pendingDeminiaturizationRequest = 0;
+    bool pendingDeminiaturizationStart = false;
     bool pendingActivation = false;
     bool pendingMainSelection = false;
     uint64_t selectionGeneration = 0;
@@ -867,6 +870,85 @@ void ScheduleWindowMinimizationRecovery(JaliumPlatformWindow* window)
     });
 }
 
+void CompleteWindowDeminiaturization(JaliumPlatformWindow* window, NSWindow* nativeWindow)
+{
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying) return;
+    if (!window->deminiaturizing && !window->pendingDeminiaturizationRequest &&
+        window->state != JALIUM_WINDOW_STATE_MINIMIZED) return;
+    uint64_t sequence = window->deminiaturizationSequence;
+    bool minimized = nativeWindow.miniaturized;
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+        window->deminiaturizationSequence != sequence || minimized) return;
+    // Native restorations retain AppKit's previous normal/maximized state.
+    // An outstanding request retains any newer state queued by its callbacks.
+    if (!window->deminiaturizing && !window->pendingDeminiaturizationRequest)
+        window->requestedState = window->beforeMinimize;
+    window->miniaturizing = false;
+    window->pendingMiniaturizationRequest = 0;
+    ++window->miniaturizationSequence;
+    window->deminiaturizing = true;
+    window->pendingDeminiaturizationStart = false;
+    window->pendingDeminiaturizationRequest = 0;
+    sequence = ++window->deminiaturizationSequence;
+    if (window->beforeMinimize == JALIUM_WINDOW_STATE_NORMAL &&
+        !ApplyPendingStartupPlacement(window)) return;
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+        window->deminiaturizationSequence != sequence) return;
+    PublishWindowState(window, window->beforeMinimize);
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+        window->deminiaturizationSequence != sequence || !window->deminiaturizing) return;
+    window->deminiaturizing = false;
+    if (window->pendingStartupPlacement || window->requestedState != window->state ||
+        window->requestedNativeZoom || window->pendingActivation || window->pendingMainSelection) {
+        __weak NSWindow* weakWindow = nativeWindow;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSWindow* __attribute__((objc_precise_lifetime)) currentWindow = weakWindow;
+            if (currentWindow && IsLiveWindow(window, currentWindow) && !window->destroying &&
+                window->deminiaturizationSequence == sequence) ApplyQueuedWindowState(window);
+        });
+    }
+}
+
+void ScheduleWindowDeminiaturizationRecovery(JaliumPlatformWindow* window)
+{
+    __weak NSWindow* weakWindow = window->window;
+    uint64_t sequence = window->deminiaturizationSequence;
+    uint64_t request = window->pendingDeminiaturizationRequest;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = weakWindow;
+        auto current = [&] {
+            return nativeWindow && IsLiveWindow(window, nativeWindow) && !window->destroying &&
+                window->deminiaturizationSequence == sequence &&
+                window->pendingDeminiaturizationRequest == request && window->deminiaturizing;
+        };
+        if (!current()) return;
+        bool minimized = nativeWindow.miniaturized;
+        if (!current()) return;
+        if (!minimized) {
+            CompleteWindowDeminiaturization(window, nativeWindow);
+            return;
+        }
+        window->deminiaturizing = false;
+        window->pendingDeminiaturizationStart = false;
+        // Preserve identity for a late completion, without retrying the same
+        // request automatically when the SDK made no observable progress.
+        if (window->stateRequestSequence != request) ApplyQueuedWindowState(window);
+    });
+}
+
+void RequestWindowDeminiaturization(JaliumPlatformWindow* window)
+{
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    window->deminiaturizing = true;
+    window->pendingDeminiaturizationStart = true;
+    window->pendingDeminiaturizationRequest = window->stateRequestSequence;
+    uint64_t sequence = ++window->deminiaturizationSequence;
+    [nativeWindow deminiaturize:nil];
+    if (IsLiveWindow(window, nativeWindow) && !window->destroying &&
+        window->deminiaturizationSequence == sequence && window->deminiaturizing)
+        ScheduleWindowDeminiaturizationRecovery(window);
+}
+
 bool BeginWindowMinimize(JaliumPlatformWindow* window)
 {
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
@@ -971,8 +1053,7 @@ void ApplyWindowState(JaliumPlatformWindow* window, JaliumWindowState state)
         // AppKit may finish deminiaturizing in a later event. Reapplying Zoom
         // before that acknowledgement mistakes the maximized frame for a new
         // normal frame and destroys RestoreBounds.
-        window->deminiaturizing = true;
-        [nativeWindow deminiaturize:nil];
+        RequestWindowDeminiaturization(window);
         return;
     }
     if (state == JALIUM_WINDOW_STATE_FULLSCREEN) {
@@ -1032,8 +1113,7 @@ void ApplyQueuedWindowState(JaliumPlatformWindow* window)
             // A minimized window is natively invisible. Restore it before
             // replaying best-fit Zoom or completing a paired cancellation.
             window->requestedNativeZoom = true;
-            window->deminiaturizing = true;
-            [nativeWindow deminiaturize:nil];
+            RequestWindowDeminiaturization(window);
             return;
         }
     }
@@ -1989,6 +2069,32 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     // AppKit may return before either acknowledgement. Recover from the real
     // native state if no start notification was delivered to our delegate.
     ScheduleWindowMinimizationRecovery(owner);
+}
+- (void)deminiaturize:(id)sender {
+    auto* owner = _jaliumOwner;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = self;
+    if (!owner || !IsLiveWindow(owner, nativeWindow) || owner->destroying ||
+        (owner->deminiaturizing && !owner->pendingDeminiaturizationStart)) return;
+    if (!owner->pendingDeminiaturizationStart) {
+        uint64_t request = owner->stateRequestSequence;
+        bool minimized = nativeWindow.miniaturized;
+        if (!IsLiveWindow(owner, nativeWindow) || owner->destroying || owner->deminiaturizing ||
+            owner->stateRequestSequence != request) return;
+        if (!minimized) {
+            [super deminiaturize:sender];
+            return;
+        }
+        owner->requestedState = owner->beforeMinimize;
+        owner->pendingDeminiaturizationRequest = ++owner->stateRequestSequence;
+        ++owner->deminiaturizationSequence;
+        owner->deminiaturizing = true;
+    }
+    owner->pendingDeminiaturizationStart = false;
+    uint64_t sequence = owner->deminiaturizationSequence;
+    [super deminiaturize:sender];
+    if (IsLiveWindow(owner, nativeWindow) && !owner->destroying &&
+        owner->deminiaturizationSequence == sequence && owner->deminiaturizing)
+        ScheduleWindowDeminiaturizationRecovery(owner);
 }
 - (void)performMiniaturize:(id)sender {
     if (!_jaliumOwner || !_jaliumOwner->enabled ||
@@ -3252,25 +3358,8 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (void)windowDidDeminiaturize:(NSNotification*)note {
     if (!_owner) return;
-    auto* window = _owner;
-    NSWindow* nativeWindow = window->window;
-    window->miniaturizing = false;
-    if (!window->deminiaturizing) window->requestedState = window->beforeMinimize;
-    window->deminiaturizing = true;
-    if (window->beforeMinimize == JALIUM_WINDOW_STATE_NORMAL &&
-        !ApplyPendingStartupPlacement(window)) return;
-    PublishWindowState(window, window->beforeMinimize);
-    if (!IsLiveWindow(window, nativeWindow)) return;
-    window->deminiaturizing = false;
-    if (window->pendingStartupPlacement || window->requestedState != window->state || window->requestedNativeZoom ||
-        window->pendingActivation || window->pendingMainSelection) {
-        __weak JaliumAppleWindow* weakWindow = (JaliumAppleWindow*)window->window;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            JaliumPlatformWindow* current = weakWindow.jaliumOwner;
-            if (current && IsLiveWindow(current) && !current->destroying)
-                ApplyQueuedWindowState(current);
-        });
-    }
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = _owner->window;
+    CompleteWindowDeminiaturization(_owner, nativeWindow);
 }
 - (void)windowWillEnterFullScreen:(NSNotification*)note {
     if (!_owner) return;
