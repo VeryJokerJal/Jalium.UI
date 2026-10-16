@@ -12,7 +12,7 @@
 #include <vector>
 
 namespace {
-void Require(bool value, const char* message)
+void Require(bool value, const std::string& message)
 {
     if (!value) throw std::runtime_error(message);
 }
@@ -72,6 +72,9 @@ void Pump(double seconds = 0.06)
 {
     auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
     do {
+        // Match the product host: pending AppKit events and main-queue work
+        // both need to run before asserting asynchronous notification counts.
+        jalium_platform_poll_events();
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.005, true);
     } while (std::chrono::steady_clock::now() < end);
 }
@@ -186,7 +189,8 @@ int RunChecks()
                 "nested display change reentered or interrupted the current snapshot");
             Pump();
             Require(first.monitors == 2 && later.monitors == 2 && maxDepth == 1,
-                "nested changes were lost or scheduled duplicate broadcasts");
+                "nested changes were lost or scheduled duplicate broadcasts: first=" + std::to_string(first.monitors) +
+                " later=" + std::to_string(later.monitors) + " depth=" + std::to_string(maxDepth));
         });
         run("background notification reaches only the main thread", [&] {
             Fixture first(style), later(style);
@@ -194,7 +198,9 @@ int RunChecks()
             Require(first.monitors == 0 && later.monitors == 0, "background post called window callbacks inline");
             Pump();
             Require(first.monitors == 1 && later.monitors == 1 && first.mainThreadOnly && later.mainThreadOnly,
-                "background change did not marshal to the main thread");
+                "background change did not marshal to the main thread: first=" + std::to_string(first.monitors) +
+                " later=" + std::to_string(later.monitors) + " main=" +
+                std::to_string(first.mainThreadOnly && later.mainThreadOnly));
         });
         run("queued work cannot survive shutdown and reinitialization", [&] {
             Fixture old(style); PostFromBackground();

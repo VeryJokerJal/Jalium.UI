@@ -580,9 +580,18 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     target_compile_options(jalium.native.platform.window.accessibility.tests PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.platform.window.accessibility.tests PRIVATE
         ${PROJECT_NAME} "-framework AppKit")
-    add_test(NAME jalium.native.platform.macos.window.accessibility
-        COMMAND jalium.native.platform.window.accessibility.tests)
-    set_tests_properties(jalium.native.platform.macos.window.accessibility PROPERTIES TIMEOUT 240)
+    # Both titlebars retain every existing case and the 240-second process cap.
+    # Separate processes keep cumulative AppKit animation cost from timing out
+    # the entire second titlebar before its remaining assertions can execute.
+    add_test(NAME jalium.native.platform.macos.window.accessibility.native
+        COMMAND jalium.native.platform.window.accessibility.tests --native-titlebar-only)
+    add_test(NAME jalium.native.platform.macos.window.accessibility.custom
+        COMMAND jalium.native.platform.window.accessibility.tests --custom-titlebar-only)
+    set_tests_properties(jalium.native.platform.macos.window.accessibility.native
+        jalium.native.platform.macos.window.accessibility.custom PROPERTIES TIMEOUT 240)
+    add_test(NAME jalium.native.platform.macos.window.transition-acknowledgement
+        COMMAND jalium.native.platform.window.accessibility.tests --transition-acknowledgement-only)
+    set_tests_properties(jalium.native.platform.macos.window.transition-acknowledgement PROPERTIES TIMEOUT 60)
     add_test(NAME jalium.native.platform.macos.window.minimize-recovery
         COMMAND jalium.native.platform.window.accessibility.tests --minimize-recovery-only)
     set_tests_properties(jalium.native.platform.macos.window.minimize-recovery PROPERTIES TIMEOUT 90)

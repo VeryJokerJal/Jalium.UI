@@ -74,6 +74,7 @@ struct JaliumPlatformWindow {
 #if TARGET_OS_OSX
     NSWindow* window = nil;
     JaliumAppleWindowDelegate* delegate = nil;
+    NSArray* stateCompletionObservers = nil;
     NSVisualEffectView* backdropView = nil;
     NSMenu* systemMenu = nil;
     JaliumEditingCommandQuery editingCommandQuery = nullptr;
@@ -914,10 +915,10 @@ void ScheduleWindowMinimizationRecovery(JaliumPlatformWindow* window)
         if (!current()) return;
         bool minimized = nativeWindow.miniaturized;
         if (!current()) return;
-        if (minimized) {
-            CompleteWindowMinimization(window, nativeWindow);
-            return;
-        }
+        // The native bit can change before AppKit finishes its animation.
+        // Completion comes from the delegate or our independent observer;
+        // treating this timer as completion can cancel the SDK's did event.
+        if (minimized) return;
         window->miniaturizing = false;
         // Retain a pending request identity for a late start. Do not retry a
         // silent minimize; drain the latest explicit state or selection.
@@ -980,16 +981,37 @@ void ScheduleWindowDeminiaturizationRecovery(JaliumPlatformWindow* window)
         if (!current()) return;
         bool minimized = nativeWindow.miniaturized;
         if (!current()) return;
-        if (!minimized) {
-            CompleteWindowDeminiaturization(window, nativeWindow);
-            return;
-        }
+        // A cleared native bit does not acknowledge the end of restoration.
+        // Wait for the actual notification before applying queued work/focus.
+        if (!minimized) return;
         window->deminiaturizing = false;
         window->pendingDeminiaturizationStart = false;
         // Preserve identity for a late completion, without retrying the same
         // request automatically when the SDK made no observable progress.
         if (window->stateRequestSequence != request) ApplyQueuedWindowState(window);
     });
+}
+
+void ObserveWindowStateCompletions(JaliumPlatformWindow* window)
+{
+    __weak NSWindow* weakWindow = window->window;
+    NSMutableArray* observers = [NSMutableArray new];
+    for (NSNotificationName name : {NSWindowDidMiniaturizeNotification, NSWindowDidDeminiaturizeNotification}) {
+        id observer = [NSNotificationCenter.defaultCenter addObserverForName:name
+            object:window->window queue:nil usingBlock:^(NSNotification* note) {
+                // AppKit window transitions run on the main thread. Ignore a
+                // foreign off-thread post rather than mutating window state.
+                if (!NSThread.isMainThread) return;
+                NSWindow* nativeWindow = weakWindow;
+                if (!nativeWindow || note.object != nativeWindow) return;
+                if ([note.name isEqual:NSWindowDidMiniaturizeNotification])
+                    CompleteWindowMinimization(window, nativeWindow);
+                else
+                    CompleteWindowDeminiaturization(window, nativeWindow);
+            }];
+        [observers addObject:observer];
+    }
+    window->stateCompletionObservers = observers.copy;
 }
 
 void RequestWindowDeminiaturization(JaliumPlatformWindow* window)
@@ -3901,6 +3923,9 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     result->height=lround(root.bounds.size.height*result->scale);
 #endif
     {std::scoped_lock lock(g_windowsMutex);g_windows.push_back(result.get());}
+#if TARGET_OS_OSX
+    ObserveWindowStateCompletions(result.get());
+#endif
     return result.release();
 }
 
@@ -3909,6 +3934,9 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
     if(!window || window->destroying)return;
     window->destroying = true;
     #if TARGET_OS_OSX
+    for (id observer in window->stateCompletionObservers)
+        [NSNotificationCenter.defaultCenter removeObserver:observer];
+    window->stateCompletionObservers = nil;
     CancelAppleDrag(window);
     [window->systemMenu cancelTrackingWithoutAnimation];
     [window->view.accessibilityBridge detach];
