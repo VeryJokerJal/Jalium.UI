@@ -919,6 +919,41 @@ internal sealed class WindowInputDispatcher
         _host.WakeRenderPipeline();
     }
 
+    // Called only for native macOS activation, whose notifications can reenter
+    // synchronously through focus, popup, capture and dependency-property handlers.
+    internal Action PrepareMacOSWindowDeactivation()
+    {
+        long generation = unchecked(++_mouseInputGeneration);
+        UIElement[] mousePressed = DetachPressedChain(_mousePressedChain);
+        UIElement[] keyboardPressed = DetachPressedChain(_keyboardPressedChain);
+        UIElement? capture = UIElement.MouseCapturedElement is { } captured &&
+            (IsDescendantOf(captured, _host.Self) || captured.GetWindowHostOrNull() == null)
+            ? captured : null;
+        UIElement? wheelTarget = _wheelGestureRouting.DetachCancellationTarget();
+        TitleBarButton? hovered = _hoveredTitleBarButton, pressed = _pressedTitleBarButton;
+        _hoveredTitleBarButton = _pressedTitleBarButton = null;
+        ResetClientMouseLeaveTracking();
+        _suppressMouseUpButton = null;
+        _suppressedMousePointerReleases.Clear();
+        return () =>
+        {
+            if (capture != null && generation == _mouseInputGeneration &&
+                ReferenceEquals(capture, UIElement.MouseCapturedElement)) capture.ReleaseMouseCapture();
+            ClearDetachedPressedChain(mousePressed, _mousePressedChain, _keyboardPressedChain);
+            ClearDetachedPressedChain(keyboardPressed, _keyboardPressedChain, _mousePressedChain);
+            if (hovered != null && !ReferenceEquals(hovered, _hoveredTitleBarButton)) hovered.SetIsMouseOver(false);
+            if (pressed != null && !ReferenceEquals(pressed, _pressedTitleBarButton) &&
+                !_mousePressedChain.Contains(pressed) && !_keyboardPressedChain.Contains(pressed)) pressed.SetIsPressed(false);
+            if (wheelTarget != null) MouseWheelGestureRouting.RaiseCancellation(wheelTarget);
+        };
+    }
+
+    internal void CompleteMacOSWindowDeactivation(Func<bool> isCurrent)
+    {
+        CloseLightDismissPopupsOnDeactivate(nint.Zero, isCurrent);
+        if (isCurrent()) _host.WakeRenderPipeline();
+    }
+
     /// <summary>WM_CANCELMODE — cancel all modal input state.</summary>
     public void HandleCancelMode()
     {
@@ -940,12 +975,12 @@ internal sealed class WindowInputDispatcher
             : 0;
     }
 
-    private void CloseLightDismissPopupsOnDeactivate(nint newForegroundWindow)
+    private void CloseLightDismissPopupsOnDeactivate(nint newForegroundWindow, Func<bool>? isCurrent = null)
     {
         if (_host.IsPopupWindow(newForegroundWindow))
             return;
 
-        _ = _host.OverlayLayer.CloseLightDismissPopups();
+        _ = _host.OverlayLayer.CloseLightDismissPopups(isCurrent);
 
         if (_host.ActiveExternalPopups.Count == 0)
             return;
@@ -954,7 +989,10 @@ internal sealed class WindowInputDispatcher
             .Where(p => !p.StaysOpen)
             .ToList();
         foreach (var popup in popupsToClose)
+        {
+            if (isCurrent?.Invoke() == false) break;
             popup.IsOpen = false;
+        }
     }
 
     private void ResetTransientInputStateOnDeactivate()
@@ -1484,11 +1522,12 @@ internal sealed class WindowInputDispatcher
 
     private static void ClearDetachedPressedChain(
         UIElement[] previous,
-        List<UIElement> currentChain)
+        List<UIElement> currentChain,
+        List<UIElement>? additionalChain = null)
     {
         foreach (UIElement element in previous)
         {
-            if (!currentChain.Contains(element))
+            if (!currentChain.Contains(element) && additionalChain?.Contains(element) != true)
                 element.SetIsPressed(false);
         }
     }

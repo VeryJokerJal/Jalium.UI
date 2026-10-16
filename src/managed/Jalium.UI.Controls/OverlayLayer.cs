@@ -189,7 +189,7 @@ internal sealed class OverlayLayer : Canvas
     private static double ExplicitOrZero(double length)
         => double.IsNaN(length) || double.IsInfinity(length) || length < 0 ? 0 : length;
 
-    internal int CloseLightDismissPopups()
+    internal int CloseLightDismissPopups(Func<bool>? isCurrent = null)
     {
         if (_lightDismissRoots.Count == 0)
         {
@@ -200,12 +200,15 @@ internal sealed class OverlayLayer : Canvas
             .Select(r => r.OwnerPopup)
             .Distinct()
             .ToList();
+        int closed = 0;
         foreach (var popup in popupsToClose)
         {
+            if (isCurrent?.Invoke() == false) break;
             popup.IsOpen = false;
+            closed++;
         }
 
-        return popupsToClose.Count;
+        return closed;
     }
 
     /// <summary>

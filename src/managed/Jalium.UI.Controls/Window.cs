@@ -5251,7 +5251,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     UpdateInputMethodAssociation();
                     break;
                 }
-                if (OperatingSystem.IsMacOS()) RestoreMacOSKeyboardFocus();
+                if (OperatingSystem.IsMacOS())
+                {
+                    HandleMacOSActivationChanged(active: true);
+                    break;
+                }
                 Jalium.UI.Styling.CssMediaQuery.RefreshPointingDevices();
                 if (!IsActive)
                 {
@@ -5273,6 +5277,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (OperatingSystem.IsMacOS() && evt.Type == PlatformEventType.FocusLost)
                 {
                     _inputDispatcher.ClearMousePressedChain();
+                    break;
+                }
+                if (OperatingSystem.IsMacOS())
+                {
+                    HandleMacOSActivationChanged(active: false);
                     break;
                 }
                 DisableLinuxImeContext(force: true);
@@ -5345,6 +5354,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var commandPlatform = _platformWindow;
                 nint commandHandle = Handle;
                 int commandGeneration = Volatile.Read(ref _renderLifecycleGeneration);
+                int commandActivationGeneration = _macOSActivationGeneration;
                 bool IsCommandTargetCurrent() => commandTarget != null &&
                     IsEnabled && Visibility == Visibility.Visible &&
                     ReferenceEquals(commandTarget, ResolveCommandTarget()) &&
@@ -5352,6 +5362,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     ReferenceEquals(commandFocus, Keyboard.FocusedElement) &&
                     !_isClosing && !_managedTeardownStarted &&
                     commandGeneration == Volatile.Read(ref _renderLifecycleGeneration) &&
+                    commandActivationGeneration == _macOSActivationGeneration &&
                     ReferenceEquals(commandPlatform, _platformWindow) && commandHandle == Handle;
                 bool handled = _inputDispatcher.HandlePlatformKeyDown(key, modifiers, isRepeat, timestamp,
                     physicalModifiers);
@@ -14044,6 +14055,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (!OperatingSystem.IsMacOS() || !IsActive || _isClosing || request.Kind is < 0 or > 3 ||
             !TryGetImeTarget(out UIElement? target, out IImeSupport? support) || target == null || support == null)
             return;
+        var inputLifetime = CaptureMacOSInputLifetime(target, textInput: true);
         Matrix transform = target.GetRenderMatrix();
         bool composition = request.Kind >= 2;
         if (request.Kind is 1 or 3)
@@ -14066,7 +14078,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         // A custom layout query can run callbacks. Never return another editor's
         // geometry after focus changed or the window was closed during the query.
-        request.Handled = IsActive && !_isClosing && TryGetImeTarget(out UIElement? current, out _) &&
+        request.Handled = inputLifetime() && IsActive && !_isClosing && TryGetImeTarget(out UIElement? current, out _) &&
             ReferenceEquals(current, target);
     }
 

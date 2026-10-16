@@ -22,7 +22,9 @@ public partial class Window
     internal PlatformTextContextMenuRequest? CreateMacOSTextContextMenuRequest(UIElement target, Point position)
     {
         nint handle = Handle;
+        int activationGeneration = _macOSActivationGeneration;
         bool IsCurrent() => Dispatcher.CheckAccess() && handle != 0 && Handle == handle &&
+            activationGeneration == _macOSActivationGeneration &&
             !_isClosing && !_managedTeardownStarted && IsEnabled && IsVisible &&
             IsMacOSInputTargetValid(target) && ReferenceEquals(GetTextInputTarget(), target);
         if (!IsCurrent()) return null;

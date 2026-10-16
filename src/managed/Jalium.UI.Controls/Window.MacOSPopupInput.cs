@@ -62,9 +62,10 @@ public partial class Window
         var platform = _platformWindow;
         nint handle = Handle;
         int generation = Volatile.Read(ref _renderLifecycleGeneration);
+        int activationGeneration = _macOSActivationGeneration;
         return new MouseCommandInput(target, this, dialog ?? (UIElement)this, dialog,
             () => isPacketCurrent?.Invoke() != false && !_isClosing && !_managedTeardownStarted && IsEnabled && Visibility == Visibility.Visible &&
-                generation == Volatile.Read(ref _renderLifecycleGeneration) && ReferenceEquals(platform, _platformWindow) &&
+                generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
                 handle == Handle && ReferenceEquals(dialog, ActiveContentDialog));
     }
 
@@ -76,8 +77,9 @@ public partial class Window
         var platform = _platformWindow;
         nint handle = Handle;
         int generation = Volatile.Read(ref _renderLifecycleGeneration);
+        int activationGeneration = _macOSActivationGeneration;
         return () => !_isClosing && !_managedTeardownStarted && IsEnabled && Visibility == Visibility.Visible &&
-            generation == Volatile.Read(ref _renderLifecycleGeneration) && ReferenceEquals(platform, _platformWindow) &&
+            generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
             handle == Handle && ReferenceEquals(focus, Keyboard.FocusedElement) && ReferenceEquals(dialog, ActiveContentDialog) &&
             InputRoute.IsCurrent(route) && IsMacOSInputTargetValid(target) &&
             ReferenceEquals(target, textInput ? GetTextInputTarget() : GetKeyboardEventTarget());
