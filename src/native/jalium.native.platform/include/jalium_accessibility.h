@@ -6,7 +6,10 @@
 // a null buffer first requests the length. Geometry is in content-view points
 // with a top-left origin, never physical Retina pixels or global screen space.
 enum JaliumAccessibilityOperation {
-    JALIUM_AX_INFO, JALIUM_AX_CHILD, JALIUM_AX_STRING, JALIUM_AX_FOCUS,
+    // Root-only, read-only capability; resultId is 0 or 1. Existing operation
+    // numbers stay stable, including on hosts without child snapshots.
+    JALIUM_AX_POPUP_CAN_BECOME_KEY = 64,
+    JALIUM_AX_INFO = 0, JALIUM_AX_CHILD, JALIUM_AX_STRING, JALIUM_AX_FOCUS,
     JALIUM_AX_HIT_TEST, JALIUM_AX_ACTION, JALIUM_AX_SET_VALUE,
     JALIUM_AX_TEXT_SELECTION, JALIUM_AX_SET_TEXT_SELECTION, JALIUM_AX_TEXT_BOUNDS,
     JALIUM_AX_ATTACHED, JALIUM_AX_WINDOW_BUTTON, JALIUM_AX_TEXT_NAVIGATION,

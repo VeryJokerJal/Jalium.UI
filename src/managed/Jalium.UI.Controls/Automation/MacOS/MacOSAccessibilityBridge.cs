@@ -355,6 +355,10 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         if (!IsVisible(peer)) return false;
         switch (request.Operation)
         {
+            case MacOSAXOperation.PopupCanBecomeKey:
+                if (!ReferenceEquals(peer, _root) || !_window.IsMacOSPopupHost) return false;
+                request.ResultId = _window.CanMacOSPopupReceiveKeyboardInput() ? 1ul : 0;
+                return !_disposed;
             case MacOSAXOperation.Info: Describe(peer, ref request); return true;
             case MacOSAXOperation.WindowButton:
                 if (!ReferenceEquals(peer, _root) || (uint)request.Index > (uint)MacOSAXWindowButton.Zoom) return false;

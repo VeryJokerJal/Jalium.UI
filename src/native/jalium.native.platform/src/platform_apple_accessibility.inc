@@ -157,6 +157,16 @@ static bool QueryWindowAccessibilityInfo(JaliumPlatformWindow* window, JaliumAcc
     return [window->view.accessibilityBridge query:request] != NO;
 }
 
+static bool QueryWindowPopupKeyboard(JaliumPlatformWindow* window)
+{
+    if (!NSThread.isMainThread || !window || !IsLiveWindow(window) || window->destroying) return false;
+    // Only retain the bridge across the callback: the platform owner may die.
+    JaliumAppleAccessibilityBridge* bridge = window->view.accessibilityBridge;
+    JaliumAccessibilityRequest request{};
+    request.nodeId = 1; request.operation = JALIUM_AX_POPUP_CAN_BECOME_KEY;
+    return [bridge query:&request] && request.resultId == 1;
+}
+
 static id QueryWindowAccessibilityButton(JaliumPlatformWindow* window, int32_t kind)
 {
     if (!NSThread.isMainThread || !window || !IsLiveWindow(window) || window->destroying) return nil;

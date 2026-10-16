@@ -9,7 +9,7 @@ using Jalium.UI.Media;
 namespace Jalium.UI.Tests;
 
 [Collection("macOS Window globals")]
-public sealed class MacOSAccessibilityFocusHostTests
+public sealed partial class MacOSAccessibilityFocusHostTests
 {
     [Theory] [InlineData("owner")] [InlineData("overlay")] [InlineData("native")]
     public void FocusRequestReturnsBeforeActivatingItsPhysicalWindow(string kind)
@@ -205,7 +205,7 @@ public sealed class MacOSAccessibilityFocusHostTests
         internal readonly Window Source;
         internal readonly MacOSAccessibilityTree Tree;
         internal int ActivationCalls => Popup?.Host?.ActivationCalls ?? Owner.ActivationCalls;
-        internal Host(string kind)
+        internal Host(string kind, bool hitTest = true, UIElement? popupChild = null)
         {
             Keyboard.Initialize(); Keyboard.ClearFocus(); Visible(Owner);
             Content.Children.Add(Before); Canvas.SetTop(Before, 40); Owner.Content = Content;
@@ -213,7 +213,7 @@ public sealed class MacOSAccessibilityFocusHostTests
             else
             {
                 Body.Children.Add(Target); Body.Children.Add(Other); Canvas.SetTop(Other, 40);
-                Popup = new() { PlacementTarget = Before, Child = Body, ShouldConstrainToRootBounds = kind == "overlay", StaysOpen = true };
+                Popup = new() { PlacementTarget = Before, Child = popupChild ?? Body, ShouldConstrainToRootBounds = kind == "overlay", StaysOpen = true, IsHitTestVisible = hitTest };
             }
             Owner.Measure(new Size(500, 400)); Owner.Arrange(new Rect(0, 0, 500, 400));
             if (Popup != null) Popup.IsOpen = true;

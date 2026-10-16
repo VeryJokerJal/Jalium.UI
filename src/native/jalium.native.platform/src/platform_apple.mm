@@ -1580,6 +1580,7 @@ void ReleaseRootView(UIView* view)
 
 static bool QueryWindowAccessibilityInfo(JaliumPlatformWindow* window, JaliumAccessibilityRequest* request);
 static id QueryWindowAccessibilityButton(JaliumPlatformWindow* window, int32_t kind);
+static bool QueryWindowPopupKeyboard(JaliumPlatformWindow* window);
 
 static bool CanWriteWindowAccessibility(JaliumPlatformWindow* window)
 {
@@ -1606,6 +1607,7 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
 
 @interface JaliumAppleWindow : NSWindow
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
+@property(nonatomic) BOOL queryingPopupKeyboard;
 @end
 @implementation JaliumAppleWindow
 - (void)layoutIfNeeded {
@@ -1827,8 +1829,29 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     }
     return [super accessibilityRoleDescription];
 }
-- (BOOL)canBecomeKeyWindow { return _jaliumOwner && _jaliumOwner->enabled &&
-    !(_jaliumOwner->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT); }
+- (BOOL)canBecomeKeyWindow {
+    auto* owner = _jaliumOwner;
+    if (!owner || !owner->enabled) return NO;
+    if (!(owner->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT)) return YES;
+    if (!(owner->style & JALIUM_WINDOW_STYLE_POPUP) || !NSThread.isMainThread ||
+        _queryingPopupKeyboard || !IsLiveWindow(owner, self) || owner->destroying || !owner->visible) return NO;
+    JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    (void)keepAlive;
+    JaliumAppleView* view = owner->view;
+    NSWindow* key = NSApp.keyWindow;
+    auto style = owner->style;
+    auto generation = owner->selectionGeneration;
+    BOOL eligible = NO;
+    _queryingPopupKeyboard = YES;
+    @try { eligible = QueryWindowPopupKeyboard(owner); }
+    @catch (NSException*) { eligible = NO; }
+    @finally { _queryingPopupKeyboard = NO; }
+    // The managed query can hide, disable, reparent, or destroy its host.
+    // Never dereference the original owner until its identity is revalidated.
+    return eligible && _jaliumOwner == owner && IsLiveWindow(owner, self) &&
+        !owner->destroying && owner->enabled && owner->visible && owner->view == view &&
+        owner->style == style && owner->selectionGeneration == generation && NSApp.keyWindow == key;
+}
 - (BOOL)canBecomeMainWindow { return _jaliumOwner && _jaliumOwner->enabled &&
     !(_jaliumOwner->style & JALIUM_WINDOW_STYLE_POPUP); }
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
