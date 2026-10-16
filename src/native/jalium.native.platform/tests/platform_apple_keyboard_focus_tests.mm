@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 
 static int checks, activations, orders, keySelections;
 static NSWindow* observed;
@@ -59,6 +60,19 @@ struct Fixture {
     FocusResponder* responder;
     std::function<bool()> resign;
     std::function<void()> query;
+    std::vector<JaliumEventType> focusEvents;
+    std::vector<bool> acknowledgedState;
+    std::function<void(JaliumEventType)> onFocus;
+    static void Event(const JaliumPlatformEvent* event, void* data)
+    {
+        if (event->type != JALIUM_EVENT_RESPONDER_FOCUS_GAINED && event->type != JALIUM_EVENT_RESPONDER_FOCUS_LOST) return;
+        auto& fixture = *static_cast<Fixture*>(data);
+        fixture.focusEvents.push_back(event->type);
+        fixture.acknowledgedState.push_back((fixture.native.firstResponder == fixture.view) ==
+            (event->type == JALIUM_EVENT_RESPONDER_FOCUS_GAINED));
+        auto callback = std::move(fixture.onFocus); fixture.onFocus = {};
+        if (callback) callback(event->type);
+    }
     static int32_t Query(JaliumAccessibilityRequest* request, void* data)
     {
         auto& fixture = *static_cast<Fixture*>(data);
@@ -79,6 +93,7 @@ struct Fixture {
         window = jalium_window_create(&params); Check(window, "create owned fixture");
         view = (__bridge NSView*)reinterpret_cast<void*>(jalium_window_get_native_handle(window));
         native = view.window;
+        jalium_window_set_event_callback(window, Event, this);
         jalium_apple_window_set_accessibility(window, Query, this);
         jalium_apple_window_show(window, 0);
         responder = [[FocusResponder alloc] initWithFrame:NSMakeRect(0, 0, 100, 30)];
@@ -123,6 +138,56 @@ struct NativeModal {
     }
     ~NativeModal() { @try { Close(); } @catch (NSException*) { } }
 };
+
+static void CheckResponderNotifications(int32_t(*focus)(JaliumPlatformWindow*))
+{
+    {
+        Fixture fixture; Check(focus(fixture.window) == JALIUM_OK, "acquire framework responder before native handover");
+        fixture.focusEvents.clear(); fixture.acknowledgedState.clear();
+        NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 100, 30)];
+        [fixture.view addSubview:field];
+        Check([fixture.native makeFirstResponder:field], "actual NSTextField accepts native handover");
+        Check(fixture.native.firstResponder != fixture.view, "native field owns the actual responder");
+        Check(fixture.focusEvents == std::vector<JaliumEventType>{JALIUM_EVENT_RESPONDER_FOCUS_LOST},
+            "nested native field editor handover reports one accepted loss");
+        Check(fixture.acknowledgedState == std::vector<bool>{true}, "loss notification observes the completed native handover");
+        Check([fixture.native makeFirstResponder:field], "repeated native field handover succeeds");
+        Check(fixture.focusEvents.size() == 1, "repeated native editor selection does not repeat surface loss");
+        Check([fixture.native makeFirstResponder:fixture.view], "native surface accepts responder back");
+        Check(fixture.focusEvents == std::vector<JaliumEventType>{JALIUM_EVENT_RESPONDER_FOCUS_LOST, JALIUM_EVENT_RESPONDER_FOCUS_GAINED},
+            "returning native responder reports one accepted gain");
+        Check(fixture.acknowledgedState == std::vector<bool>{true, true}, "gain notification observes the completed native handover");
+        Check([fixture.native makeFirstResponder:fixture.view], "repeated surface selection succeeds");
+        Check(fixture.focusEvents.size() == 2, "repeated surface selection does not repeat gain");
+        [field removeFromSuperview];
+    }
+    {
+        Fixture fixture; fixture.InstallResponder(); fixture.focusEvents.clear();
+        fixture.resign = [] { return false; };
+        Check(focus(fixture.window) != JALIUM_OK, "native editor can refuse framework acquisition");
+        Check(fixture.focusEvents.empty(), "refused native editor leaves accepted surface state unchanged");
+    }
+    {
+        Fixture fixture; Check(focus(fixture.window) == JALIUM_OK, "acquire before nested callback handover");
+        fixture.focusEvents.clear(); fixture.acknowledgedState.clear();
+        fixture.onFocus = [&](JaliumEventType event) {
+            if (event == JALIUM_EVENT_RESPONDER_FOCUS_LOST) [fixture.native makeFirstResponder:fixture.view];
+        };
+        fixture.InstallResponder();
+        Check(fixture.native.firstResponder == fixture.view, "callback may choose a newer native responder");
+        Check(fixture.focusEvents == std::vector<JaliumEventType>{JALIUM_EVENT_RESPONDER_FOCUS_LOST, JALIUM_EVENT_RESPONDER_FOCUS_GAINED},
+            "nested newer handover is acknowledged without a stale trailing event");
+        Check(fixture.acknowledgedState == std::vector<bool>{true, true}, "nested events each observe their accepted responder");
+    }
+    {
+        Fixture fixture; Check(focus(fixture.window) == JALIUM_OK, "acquire before observer destroys window");
+        fixture.focusEvents.clear();
+        fixture.onFocus = [&](JaliumEventType) { fixture.Destroy(); };
+        Check([fixture.native makeFirstResponder:fixture.responder], "accepted native handover survives observer teardown");
+        Check(fixture.window == nullptr && fixture.focusEvents.size() == 1, "destroyed owner is not accessed after responder notification");
+    }
+    std::printf("native responder notifications passed\n");
+}
 
 static int CheckReadinessCallbacks(int32_t(*focus)(JaliumPlatformWindow*))
 {
@@ -182,6 +247,8 @@ int main()
             using SetFocus = int32_t(*)(JaliumPlatformWindow*);
             auto focus = reinterpret_cast<SetFocus>(dlsym(RTLD_DEFAULT, "jalium_apple_window_set_keyboard_focus"));
             Check(focus != nullptr, "native keyboard focus entry point exists");
+            Dl_info payload{}; dladdr(reinterpret_cast<void*>(focus), &payload);
+            std::printf("native keyboard focus payload: %s\n", payload.dli_fname ? payload.dli_fname : "unknown");
             Check(focus(nullptr) != JALIUM_OK, "null window rejected");
             for (bool transparent : {false, true}) {
                 Fixture fixture(transparent); observed = fixture.native;
@@ -277,6 +344,7 @@ int main()
                 Check(focus(fixture.window) == JALIUM_OK, "ordinary focus recovers after sheet closes");
                 observed = nil;
             }
+            CheckResponderNotifications(focus);
             if (CheckReadinessCallbacks(focus)) code = 1;
         } catch (const std::exception& error) {
             std::fprintf(stderr, "FAIL keyboard focus: %s\n", error.what()); code = 1;

@@ -88,6 +88,9 @@ typedef enum JaliumEventType {
     // Focus
     JALIUM_EVENT_FOCUS_GAINED     = 20,
     JALIUM_EVENT_FOCUS_LOST       = 21,
+    // Accepted AppKit first-responder changes; independent of activation.
+    JALIUM_EVENT_RESPONDER_FOCUS_GAINED = 22,
+    JALIUM_EVENT_RESPONDER_FOCUS_LOST = 23,
 
     // Mouse
     JALIUM_EVENT_MOUSE_MOVE       = 30,

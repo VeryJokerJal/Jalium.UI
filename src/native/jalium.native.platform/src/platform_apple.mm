@@ -1608,8 +1608,40 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
 @interface JaliumAppleWindow : NSWindow
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
 @property(nonatomic) BOOL queryingPopupKeyboard;
+@property(nonatomic) uint64_t responderFocusSequence;
+@property(nonatomic, weak) NSView* responderFocusView;
+@property(nonatomic) BOOL responderFocusState;
 @end
 @implementation JaliumAppleWindow
+- (BOOL)makeFirstResponder:(NSResponder*)responder {
+    JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    ++_responderFocusSequence;
+    JaliumPlatformWindow* owner = _jaliumOwner;
+    NSView* view = owner && IsLiveWindow(owner, self) && !owner->destroying ? (NSView*)owner->view : nil;
+    auto current = [&](uint64_t sequence) {
+        NSWindow* actualWindow = view.window;
+        return sequence == _responderFocusSequence && _jaliumOwner == owner && owner &&
+            IsLiveWindow(owner, self) && !owner->destroying && (NSView*)owner->view == view && actualWindow == self;
+    };
+    if (view && _responderFocusView != view) {
+        uint64_t sequence = _responderFocusSequence;
+        bool before = self.firstResponder == view;
+        if (current(sequence)) { _responderFocusView = view; _responderFocusState = before; }
+    }
+    BOOL accepted = [super makeFirstResponder:responder];
+    uint64_t sequence = _responderFocusSequence;
+    if (!view || !current(sequence)) return accepted;
+    bool after = self.firstResponder == view;
+    if (current(sequence)) {
+        // NSTextField may select its field editor through a nested call. Keep
+        // the last acknowledged surface state across that SDK handover.
+        bool changed = _responderFocusState != after;
+        _responderFocusView = view; _responderFocusState = after;
+        if (changed) DispatchSimple(owner, after ? JALIUM_EVENT_RESPONDER_FOCUS_GAINED : JALIUM_EVENT_RESPONDER_FOCUS_LOST);
+    }
+    (void)keepAlive;
+    return accepted;
+}
 - (void)layoutIfNeeded {
     JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
     (void)keepAlive;

@@ -341,6 +341,8 @@ internal enum PlatformEventType
 
     FocusGained = 20,
     FocusLost = 21,
+    ResponderFocusGained = 22,
+    ResponderFocusLost = 23,
 
     MouseMove = 30,
     MouseDown = 31,

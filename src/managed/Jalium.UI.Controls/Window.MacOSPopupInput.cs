@@ -65,6 +65,7 @@ public partial class Window
         int generation = Volatile.Read(ref _renderLifecycleGeneration);
         int activationGeneration = _macOSActivationGeneration;
         int nativeActivationGeneration = _macOSNativeActivationGeneration;
+        int responderFocusEpoch = _macOSResponderFocusEpoch;
         var policies = InputRoute.Capture(target, owner).OfType<Popup>()
             .Select(popup => (Popup: popup, Revision: popup.MacOSInteractionRevision)).ToArray();
         Popup? sourcePopup = _macOSHostedPopup;
@@ -77,7 +78,8 @@ public partial class Window
         long sourceRevision = sourcePopup?.MacOSInteractionRevision ?? 0;
         return new MouseCommandInput(target, this, dialog ?? (UIElement)owner, dialog,
             () => isPacketCurrent?.Invoke() != false && !_isClosing && !_managedTeardownStarted && IsMacOSPopupHostCurrent && IsEnabled && Visibility == Visibility.Visible &&
-                generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && nativeActivationGeneration == _macOSNativeActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
+                generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && nativeActivationGeneration == _macOSNativeActivationGeneration &&
+                responderFocusEpoch == _macOSResponderFocusEpoch && ReferenceEquals(platform, _platformWindow) &&
                 handle == Handle && ReferenceEquals(dialog, owner.ActiveContentDialog) &&
                 (sourcePopup == null || sourcePopup.IsHitTestVisible && sourceRevision == sourcePopup.MacOSInteractionRevision) &&
                 policies.All(policy => policy.Revision == policy.Popup.MacOSInteractionRevision));
@@ -94,8 +96,10 @@ public partial class Window
         int generation = Volatile.Read(ref _renderLifecycleGeneration);
         int activationGeneration = _macOSActivationGeneration;
         int nativeActivationGeneration = _macOSNativeActivationGeneration;
+        int responderFocusEpoch = _macOSResponderFocusEpoch;
         return () => !_isClosing && !_managedTeardownStarted && IsMacOSPopupHostCurrent && IsEnabled && Visibility == Visibility.Visible &&
-            generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && nativeActivationGeneration == _macOSNativeActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
+            generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && nativeActivationGeneration == _macOSNativeActivationGeneration &&
+                responderFocusEpoch == _macOSResponderFocusEpoch && ReferenceEquals(platform, _platformWindow) &&
             handle == Handle && ReferenceEquals(focus, Keyboard.FocusedElement) && ReferenceEquals(dialog, owner.ActiveContentDialog) &&
             InputRoute.IsCurrent(route) && IsMacOSInputTargetValid(target) &&
             ReferenceEquals(target, textInput ? GetTextInputTarget() : GetKeyboardEventTarget());

@@ -4031,6 +4031,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (!_managedTeardownStarted)
             {
                 _managedTeardownStarted = true;
+                _macOSResponderFocusRestore = null;
                 unchecked { _renderLifecycleGeneration++; }
             }
 
@@ -5250,7 +5251,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.FocusGained:
                 if (OperatingSystem.IsMacOS() && evt.Type == PlatformEventType.FocusGained)
                 {
-                    if (IsActive)
+                    if (IsActive && _macOSResponderFocusRestore == null)
                     {
                         RestoreMacOSKeyboardFocus();
                         _inputDispatcher.HandleSetFocus();
@@ -5301,6 +5302,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (OperatingSystem.IsLinux())
                     Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: false);
                 _inputDispatcher.HandleWindowDeactivated(nint.Zero, clearKeyboardFocus: false);
+                break;
+
+            case PlatformEventType.ResponderFocusGained:
+            case PlatformEventType.ResponderFocusLost:
+                if (OperatingSystem.IsMacOS())
+                    HandleMacOSResponderFocusChanged(evt.Type == PlatformEventType.ResponderFocusGained);
                 break;
 
             case PlatformEventType.MouseMove:
@@ -5364,6 +5371,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 int commandGeneration = Volatile.Read(ref _renderLifecycleGeneration);
                 int commandActivationGeneration = _macOSActivationGeneration;
                 int commandNativeActivationGeneration = _macOSNativeActivationGeneration;
+                int commandResponderFocusEpoch = _macOSResponderFocusEpoch;
                 bool IsCommandTargetCurrent() => commandTarget != null &&
                     IsEnabled && Visibility == Visibility.Visible &&
                     ReferenceEquals(commandTarget, ResolveCommandTarget()) &&
@@ -5373,6 +5381,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     commandGeneration == Volatile.Read(ref _renderLifecycleGeneration) &&
                     commandActivationGeneration == _macOSActivationGeneration &&
                     commandNativeActivationGeneration == _macOSNativeActivationGeneration &&
+                    commandResponderFocusEpoch == _macOSResponderFocusEpoch &&
                     ReferenceEquals(commandPlatform, _platformWindow) && commandHandle == Handle;
                 bool handled = _inputDispatcher.HandlePlatformKeyDown(key, modifiers, isRepeat, timestamp,
                     physicalModifiers);
