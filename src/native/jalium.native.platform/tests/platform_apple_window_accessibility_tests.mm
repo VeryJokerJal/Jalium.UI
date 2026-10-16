@@ -1207,8 +1207,12 @@ int main(int argc, char** argv)
                 if (selectionProbeOnly && std::strstr(name, "selection probe") == nullptr) return;
                 ++total;
                 try {
-                    Fixture fixture(style);
-                    check(fixture);
+                    // Release each independent fixture's Cocoa temporaries
+                    // before the following case creates another native window.
+                    @autoreleasepool {
+                        Fixture fixture(style);
+                        check(fixture);
+                    }
                     ++passed;
                     std::printf("PASS %s: %s\n", style == regular ? "Native" : "Custom", name);
                 } catch (const std::exception& error) {
