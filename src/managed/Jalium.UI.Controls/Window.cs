@@ -13319,7 +13319,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void RestoreMacOSKeyboardFocus()
     {
         if (IsMacOSPopupHost) { MacOSInputOwner.RestoreMacOSKeyboardFocus(); return; }
-        if (_macOSAccessibilityFocusActivationDepth != 0) return;
+        if (_macOSAccessibilityFocusActivationDepth != 0 || _macOSKeyboardFocusAcquisitionDepth != 0) return;
         if (_isClosing || _managedTeardownStarted) return;
         if (Keyboard.FocusedElement is UIElement current && current.Focusable && current.IsEnabled
             && current.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(current)

@@ -531,6 +531,9 @@ JALIUM_PLATFORM_API void jalium_apple_notify_lifecycle(int32_t eventType);
 /// Shows an AppKit window, optionally preserving the current key window.
 JALIUM_PLATFORM_API void jalium_apple_window_show(
     JaliumPlatformWindow* window, int32_t activate);
+/// Selects the AppKit content responder/key window without activating the app,
+/// ordering a hidden window, or restoring a minimized window.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_keyboard_focus(JaliumPlatformWindow* window);
 /// Applies the complete window style, including caption button capabilities.
 JALIUM_PLATFORM_API int32_t jalium_apple_window_set_style(
     JaliumPlatformWindow* window, uint32_t style);

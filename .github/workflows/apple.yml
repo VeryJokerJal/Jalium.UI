@@ -84,6 +84,7 @@ jobs:
           jalium.native.platform.window.tests
           jalium.native.platform.window.accessibility.tests
           jalium.native.platform.window.popup-keyboard.tests
+          jalium.native.platform.window.keyboard-focus.tests
           jalium.native.platform.window.resize.tests
           jalium.native.platform.window.menu.tests
           jalium.native.platform.window.startup.tests

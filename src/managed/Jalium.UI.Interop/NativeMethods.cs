@@ -1959,6 +1959,9 @@ internal static partial class NativeMethods
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_activate")]
     internal static partial int WindowActivate(nint window);
 
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_apple_window_set_keyboard_focus")]
+    internal static partial int AppleWindowSetKeyboardFocus(nint window);
+
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_show_system_menu")]
     internal static partial int WindowShowSystemMenu(nint window, int x, int y);
 
