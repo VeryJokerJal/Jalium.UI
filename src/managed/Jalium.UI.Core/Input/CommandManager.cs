@@ -212,26 +212,33 @@ public sealed class CommandManager
     internal static bool ProcessInput(UIElement element, InputEventArgs args, Func<bool>? isInputCurrent = null,
         UIElement? keyBindingScope = null, UIElement? commandRouteScope = null)
     {
+        var mouseInput = (args as MouseEventArgs)?.CommandInput;
+        commandRouteScope ??= mouseInput?.CommandScope;
+        var commandFocus = FocusService.FocusedElement;
+        var inputTarget = mouseInput?.Target ?? element;
         var inputRoot = args is MouseEventArgs ? GetInputRoot(element) : null;
         var keyRoute = args is KeyEventArgs && keyBindingScope != null
             ? CaptureKeyBindingRoute(element, keyBindingScope) : null;
         bool IsCurrent() => (isInputCurrent?.Invoke() ?? true) &&
+            (mouseInput == null || mouseInput.IsCurrent() && ReferenceEquals(commandFocus, FocusService.FocusedElement)) &&
             (keyRoute == null || IsKeyBindingRouteCurrent(keyRoute)) &&
             (inputRoot == null || element.IsVisible && element.IsEnabled &&
              ReferenceEquals(GetInputRoot(element), inputRoot) &&
              (inputRoot is not UIElement root || root.IsVisible && root.IsEnabled));
-        if (!IsCurrent()) return false;
+        if (!IsCurrent()) return mouseInput != null;
 
         // Each node resolves its own instance/class bindings before moving to
         // an ancestor. The command target remains the original input target.
-        var owners = keyRoute ?? [element];
+        IReadOnlyList<Jalium.UI.Media.Visual> owners = mouseInput != null
+            ? mouseInput.OwnersAt(element) : keyRoute ?? [element];
+        if (owners.Count == 0) return false;
         foreach (var visual in owners)
         {
             if (visual is not UIElement owner) continue;
             var candidate = FindInputCommand(owner, args, IsCurrent);
             if (!IsCurrent()) return true;
             if (candidate.Command == null) continue;
-            var target = candidate.Command is RoutedCommand ? candidate.Target ?? element : element;
+            var target = candidate.Command is RoutedCommand ? candidate.Target ?? inputTarget : inputTarget;
             var commandCurrent = CaptureCommandLifetime(target, commandRouteScope, IsCurrent);
             if (!commandCurrent()) return true;
             bool canExecute;
@@ -247,12 +254,15 @@ public sealed class CommandManager
                 else candidate.Command.Execute(candidate.Parameter);
                 return true;
             }
-            if (!continueRouting) return false;
+            // A disabled mouse mapping leaves ordinary clicks available. At
+            // an overlay bridge, continue through the omitted logical owners
+            // just as separate physical ancestors receive the unhandled event.
+            if (!continueRouting && mouseInput == null) return false;
         }
 
         // Retain the existing shared application gestures for commands exposed
         // by routed event handlers rather than a CommandBinding collection.
-        var defaultCommandCurrent = CaptureCommandLifetime(element, commandRouteScope, IsCurrent);
+        var defaultCommandCurrent = CaptureCommandLifetime(inputTarget, commandRouteScope, IsCurrent);
         if (!defaultCommandCurrent()) return true;
         foreach (var command in GetAllRoutedCommands())
         {
@@ -261,11 +271,11 @@ public sealed class CommandManager
                 bool matches = gesture.Matches(element, args);
                 if (!defaultCommandCurrent()) return true;
                 if (!matches) continue;
-                bool canExecute = command.CanExecute(null, element, defaultCommandCurrent, out _, commandRouteScope);
+                bool canExecute = command.CanExecute(null, inputTarget, defaultCommandCurrent, out _, commandRouteScope);
                 if (!defaultCommandCurrent()) return true;
                 if (canExecute)
                 {
-                    command.Execute(null, element, defaultCommandCurrent, commandRouteScope);
+                    command.Execute(null, inputTarget, defaultCommandCurrent, commandRouteScope);
                     return true;
                 }
             }

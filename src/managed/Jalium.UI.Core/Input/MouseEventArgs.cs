@@ -62,6 +62,8 @@ public readonly struct MouseButtonStates
 /// </summary>
 public class MouseEventArgs : InputEventArgs
 {
+    internal MouseCommandInput? CommandInput { get; set; }
+
     private readonly StylusDevice? _associatedStylusDevice;
 
     /// <summary>

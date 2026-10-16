@@ -55,6 +55,19 @@ public partial class Window
     Func<bool>? IInputDispatcherHost.CaptureNativeInputLifetime(UIElement target, bool textInput) =>
         OperatingSystem.IsMacOS() ? CaptureMacOSInputLifetime(target, textInput) : null;
 
+    MouseCommandInput? IInputDispatcherHost.CaptureNativeMouseCommandInput(UIElement target, Func<bool>? isPacketCurrent)
+    {
+        if (!OperatingSystem.IsMacOS()) return null;
+        var dialog = ActiveContentDialog;
+        var platform = _platformWindow;
+        nint handle = Handle;
+        int generation = Volatile.Read(ref _renderLifecycleGeneration);
+        return new MouseCommandInput(target, this, dialog ?? (UIElement)this, dialog,
+            () => isPacketCurrent?.Invoke() != false && !_isClosing && !_managedTeardownStarted && IsEnabled && Visibility == Visibility.Visible &&
+                generation == Volatile.Read(ref _renderLifecycleGeneration) && ReferenceEquals(platform, _platformWindow) &&
+                handle == Handle && ReferenceEquals(dialog, ActiveContentDialog));
+    }
+
     private Func<bool> CaptureMacOSInputLifetime(UIElement target, bool textInput)
     {
         var route = InputRoute.Capture(target, this);

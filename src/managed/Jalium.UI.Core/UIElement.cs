@@ -215,7 +215,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // 命中元素的可追溯性 —— 任何按 OriginalSource 判断"用户点了哪个真实元素"的 handler
         // 都会拿到错误的祖先节点而不是叶子。
         args.SetOriginalSource(source.OriginalSource);
-        element.RaiseEvent(args);
+        args.CommandInputLifetime = source.CommandInputLifetime;
+        try { element.RaiseEvent(args); }
+        finally { args.CommandInputLifetime = null; }
         if (args.Handled) source.Handled = true;
     }
 
