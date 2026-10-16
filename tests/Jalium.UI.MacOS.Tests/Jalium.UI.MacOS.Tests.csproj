@@ -14,6 +14,7 @@
   <ItemGroup>
     <Compile Include="../Jalium.UI.Tests/MouseWheelSignConsumerTests.cs" Link="MouseWheelSignConsumerTests.cs" />
     <Compile Include="../../src/packaging/Jalium.UI.MacOS/FileDialogFilterSelection.cs" Link="FileDialogFilterSelection.cs" />
+    <Compile Include="../../src/packaging/Jalium.UI.MacOS/MacOSSessionEndReason.cs" Link="MacOSSessionEndReason.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockNoWrapInheritanceTests.cs" Link="TextBlockNoWrapInheritanceTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockParityTests.cs" Link="TextBlockParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockRenderCacheTests.cs" Link="TextBlockRenderCacheTests.cs" />

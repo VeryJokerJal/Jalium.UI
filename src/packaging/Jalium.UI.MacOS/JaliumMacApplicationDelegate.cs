@@ -94,6 +94,8 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
     {
         if (_stopped || Jalium.UI.Application.Current is not { } application)
             return NSApplicationTerminateReply.Now;
+        if (application.IsHandlingMacOSSessionEnding)
+            return NSApplicationTerminateReply.Cancel;
         if (_windowCloseRequest != null)
         {
             // Terminate(Later) enters a modal run loop. A nested Terminate from
@@ -101,6 +103,19 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
             return _retryTerminationAfterClose || application.Windows.Cast<Jalium.UI.Window>()
                 .Any(window => window.IsCloseDecisionPendingForPlatformTermination)
                 ? NSApplicationTerminateReply.Cancel : NSApplicationTerminateReply.Later;
+        }
+        var currentEvent = NSAppleEventManager.SharedAppleEventManager.CurrentAppleEvent;
+        if (currentEvent != null)
+        {
+            using var quitReason = currentEvent.ParamDescriptorForKeyword(0x7768793f); // kAEQuitReason
+            if (MacOSSessionEndReason.TryGet((uint)currentEvent.EventClass, (uint)currentEvent.EventID,
+                (uint?)quitReason?.EnumCodeValue(), out var reason))
+            {
+                bool allowed = application.RaiseMacOSSessionEnding(reason);
+                if (_stopped) return NSApplicationTerminateReply.Now;
+                if (!allowed || !ReferenceEquals(application, Jalium.UI.Application.Current))
+                    return NSApplicationTerminateReply.Cancel;
+            }
         }
         MacOSWindowCloseRequest? request = null;
         request = new MacOSWindowCloseRequest(application, allowed =>

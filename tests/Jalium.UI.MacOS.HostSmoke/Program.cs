@@ -203,6 +203,10 @@ if (args.Length == 1 && args[0].StartsWith("--window-reopen-foreground-case=", S
     return WindowReopenForegroundChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-quit")
     return WindowQuitChecks.RunAll();
+if (args.Length == 1 && args[0] == "--window-session-ending")
+    return WindowSessionEndingChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-session-ending-case=", StringComparison.Ordinal))
+    return WindowSessionEndingChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-native-quit")
     return WindowNativeQuitChecks.RunAll();
 if (args.Length == 1 && args[0].StartsWith("--window-native-quit-case=", StringComparison.Ordinal))
