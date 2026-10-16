@@ -31,7 +31,8 @@ public partial class Window
                         var candidate = CaptureMacOSAccessibilityLifetime(element);
                         // IsEnabledCore may run user code. Recheck the captured
                         // target after those reads, including a detached child.
-                        if (element.Focusable && element.IsEnabled && current() && candidate()) return true;
+                        if (element.Focusable && element.IsEnabled && current() && candidate() &&
+                            IsMacOSKeyboardInputTargetEligible(element)) return true;
                     }
                 }
                 // Use visual eligibility, without invoking automation providers or

@@ -8676,3 +8676,45 @@ IME、外部 AX、VoiceOver 或实际系统状态切换验收。整体 macOS 目
 在 SvgParserConformanceTests.Path_data_with_coordinates_after_Z_fails_fast 的原有 5 秒
 检查失败，日志为 parser hung；此失败未在本轮修复或归因于 Window。glibc x64
 与 musl x64 已通过；musl arm64 和 Apple 原生／包构建仍在进行，不能记为通过。
+
+## v241：嵌套 ToolTip 的原生键盘资格与焦点规则一致
+
+v240 已拒绝 ToolTip 根及后代的逻辑 Focus 和 AX Focus，但原生 Popup 的键盘
+资格查询只特别排除 Child 直接为 ToolTip 的情况。普通 Popup 经过 Border 等
+容器包裹 ToolTip 后，扫描仍将其可聚焦后代计入，导致 canBecomeKeyWindow=true，
+即使没有其他可用输入目标。此处记录的是错误的原生资格，不宣称观察到实际抢 key。
+
+现在候选经过现有 IsEnabled／存活与身份回调检查后，再使用同一当前输入路由的
+键盘资格规则。ToolTip 子树不会使原生 Popup 具备 key 能力；其外部的普通控件
+仍可启用键盘输入，改变 Focusable、IsEnabled 或 Visibility 后，无需布局即可
+重新查询。查询不调用 Focus、原生输入面选择或激活。原生库和其他平台行为未改。
+
+新增四个永久回归在修复前 **4 失败／0 通过，34.640 秒**；覆盖两种 ToolTip
+Focusable 值、指针穿透与普通命中模式，以及普通兄弟控件的可用性变化。
+全主题实际 AppKit 宿主保留 v240 的 89 项，再加入两种标题栏 × 两种 ToolTip
+Focusable 的四个嵌套场景。每个场景实际挂载 TextBox、验证原生路径和正常兄弟
+控件的 Focus 正对照，再读取 canBecomeKeyWindow／canBecomeMainWindow。
+匹配父提交负载为 **117/129，21.946 秒（含构建）**；12 个新负项均失败：
+只有提示内容、普通兄弟不可聚焦／禁用／折叠时仍误报 canBecomeKeyWindow=true。
+其余正对照及原有 89 项通过，查询本身没有更换 native key／firstResponder。
+
+宿主仍以非激活方式显示 owner，系统前台另有进程；这属于实际布局、AppKit
+能力和进程内 AX 的检查，不代替物理输入、真实 IME、外部 AX 或 VoiceOver。
+桌面工具仍为 tunnel-client 超过 300 秒未连接，原来的系统提示与正式 .app 本地
+启动缺口保留。整套回归及新提交 CI 结果分别记录后，不将父提交结果计作新通过。
+
+最终串行验收（两条历史分别构建匹配的 8 个原生库）：
+
+| 范围 | 实测结果 |
+| --- | --- |
+| PR 完整托管回归 | **2213 通过／0 失败／2 项既有 opt-in 跳过**，2215 总数，含构建 **47.891 秒** |
+| 本地历史完整托管回归 | **2130 通过／0 失败／2 项既有 opt-in 跳过**，2132 总数，含构建 **46.574 秒** |
+| 完整主题实际 AppKit 宿主 | 两条历史各 **129/129**，含构建 **14.305／15.427 秒**；新增四种嵌套场景的 12 个负项全部通过，原有 89 项与兄弟控件正对照保持 |
+| 原生与提交边界 | PR 本轮前后 **8 库 SHA-256 全相同**；未重跑完整 C++／ASan。三路径共同补丁保持两条历史原有 **34** 处差异的路径及精确增删内容 |
+
+TRX 的跳过仍按各两条 NotExecuted 明细统计，不按为 0 的 Counters.notExecuted
+计作通过。新增 Window 查询在读取状态后复查目标资格，不提高等待或改变断言。
+父提交 `708ce1db` 的 Metal 与图片 CI 已通过；[Window CI](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/38950928824/job/117141798510)
+仍在原生合同验证步骤，Apple 原生／包构建和 Linux 也仍进行中。这些作业尚无最终
+通过结论，新提交 CI 将单独跟进。未验证的正式 .app 本地启动、前台交互、外部
+AX／VoiceOver、多屏／Spaces 与完整 macOS 目标继续保留。
