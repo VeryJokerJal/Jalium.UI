@@ -4544,28 +4544,37 @@ int32_t jalium_apple_window_set_keyboard_focus(JaliumPlatformWindow* w)
             w->enabled && w->visible && w->view == view && w->style == style &&
             w->selectionGeneration == generation && actualWindow == nativeWindow;
     };
+    auto ready = [&] {
+        NSWindow* modal = NSApp.modalWindow;
+        bool available = nativeWindow.visible && !nativeWindow.miniaturized && !nativeWindow.attachedSheet &&
+            (!modal || modal == nativeWindow);
+        // AppKit getters and responder/key callbacks may run application code.
+        // Revalidate the retained objects before reading the platform owner.
+        return current() && available && !w->miniaturizing && !w->deminiaturizing &&
+            !w->fullScreenTransition && !w->appKitZooming && !w->applyingWindowState &&
+            w->requestedState == w->state;
+    };
     @try {
-        if (!nativeWindow.visible || nativeWindow.miniaturized || nativeWindow.attachedSheet ||
-            NSApp.modalWindow && NSApp.modalWindow != nativeWindow || !current()) return JALIUM_ERROR_INVALID_STATE;
-        if (w->miniaturizing || w->deminiaturizing || w->fullScreenTransition || w->appKitZooming ||
-            w->applyingWindowState || w->requestedState != w->state) return JALIUM_ERROR_INVALID_STATE;
+        if (!ready()) return JALIUM_ERROR_INVALID_STATE;
         CancelPendingWindowSelection(w);
         generation = w->selectionGeneration;
         bool eligible = nativeWindow.canBecomeKeyWindow;
-        if (!current() || !eligible) return JALIUM_ERROR_INVALID_STATE;
+        if (!ready() || !eligible) return JALIUM_ERROR_INVALID_STATE;
         NSWindow* previousKey = NSApp.keyWindow;
         // A native editor may refuse to end editing. Obtain its responder
         // acknowledgement before changing which window receives keyboard input.
         bool accepted = [nativeWindow makeFirstResponder:view];
-        if (!current() || !accepted) return JALIUM_ERROR_INVALID_STATE;
+        if (!ready() || !accepted) return JALIUM_ERROR_INVALID_STATE;
         NSWindow* afterResponder = NSApp.keyWindow;
         if (afterResponder != previousKey && afterResponder != nativeWindow) return JALIUM_ERROR_INVALID_STATE;
-        if (!nativeWindow.keyWindow) [nativeWindow makeKeyWindow];
-        if (!current()) return JALIUM_ERROR_INVALID_STATE;
+        bool alreadyKey = nativeWindow.keyWindow;
+        if (!ready()) return JALIUM_ERROR_INVALID_STATE;
+        if (!alreadyKey) [nativeWindow makeKeyWindow];
+        if (!ready()) return JALIUM_ERROR_INVALID_STATE;
         NSWindow* key = NSApp.keyWindow;
         if (key != nativeWindow && (NSApp.active || key != previousKey)) return JALIUM_ERROR_INVALID_STATE;
         NSResponder* responder = nativeWindow.firstResponder;
-        return current() && responder == view ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
+        return ready() && responder == view ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
     } @catch (NSException*) { return JALIUM_ERROR_INVALID_STATE; }
 #else
     return JALIUM_ERROR_NOT_SUPPORTED;

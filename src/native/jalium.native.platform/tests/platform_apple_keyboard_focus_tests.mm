@@ -10,7 +10,8 @@
 
 static int checks, activations, orders, keySelections;
 static NSWindow* observed;
-static IMP originalActivate, originalActivateIgnoring, originalOrder, originalKey;
+static IMP originalActivate, originalActivateIgnoring, originalOrder, originalKey, originalResponder;
+static std::function<void()> afterKey, afterResponderRead;
 static void Check(bool value, const char* message)
 { if (!value) throw std::runtime_error(message); ++checks; }
 static void CountActivate(id, SEL) { ++activations; }
@@ -24,6 +25,19 @@ static void CountKey(id object, SEL selector)
 {
     if (object == observed) ++keySelections;
     reinterpret_cast<void(*)(id, SEL)>(originalKey)(object, selector);
+    if (object == observed) {
+        auto callback = std::move(afterKey); afterKey = {};
+        if (callback) callback();
+    }
+}
+static NSResponder* ReadResponder(id object, SEL selector)
+{
+    NSResponder* result = reinterpret_cast<NSResponder*(*)(id, SEL)>(originalResponder)(object, selector);
+    if (object == observed) {
+        auto callback = std::move(afterResponderRead); afterResponderRead = {};
+        if (callback) callback();
+    }
+    return result;
 }
 
 @interface FocusResponder : NSView
@@ -77,6 +91,75 @@ struct Fixture {
     ~Fixture() { responder.resign = nullptr; Destroy(); }
 };
 
+struct NativeModal {
+    NSWindow* parent;
+    NSPanel* panel;
+    NSModalSession session = nullptr;
+    bool sheet, opened = false;
+    NativeModal(NSWindow* owner, bool asSheet) : parent(owner), sheet(asSheet)
+    {
+        panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 160, 80)
+            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    }
+    void Open()
+    {
+        if (sheet) [parent beginSheet:panel completionHandler:nil];
+        else session = [NSApp beginModalSessionForWindow:panel];
+        opened = true;
+    }
+    bool OwnsInput() const { return sheet ? parent.attachedSheet == panel : NSApp.modalWindow == panel; }
+    void Close()
+    {
+        if (!opened) return;
+        if (sheet && parent.attachedSheet == panel) [parent endSheet:panel];
+        if (session) { [NSApp endModalSession:session]; session = nullptr; }
+        [panel orderOut:nil];
+        NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+        while (OwnsInput() && deadline.timeIntervalSinceNow > 0) {
+            jalium_platform_poll_events();
+            [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+        }
+        opened = false;
+    }
+    ~NativeModal() { @try { Close(); } @catch (NSException*) { } }
+};
+
+static int CheckReadinessCallbacks(int32_t(*focus)(JaliumPlatformWindow*))
+{
+    int failed = 0;
+    for (bool sheet : {true, false}) for (int phase = 0; phase != 4; ++phase) {
+        const char* boundary = phase == 0 ? "eligibility" : phase == 1 ? "responder" : phase == 2 ? "key" : "responder read";
+        try {
+            Fixture fixture(phase == 0, phase == 0); fixture.InstallResponder();
+            NativeModal modal(fixture.native, sheet);
+            struct ResetHook { ~ResetHook() { afterKey = {}; afterResponderRead = {}; observed = nil; } } reset;
+            observed = fixture.native;
+            bool injected = false; int keysAfterInjection = 0;
+            auto inject = [&] {
+                modal.Open(); injected = true; keysAfterInjection = keySelections;
+            };
+            if (phase == 0) fixture.query = inject;
+            else if (phase == 1) fixture.resign = [&] { inject(); return true; };
+            else if (phase == 2) afterKey = inject;
+            else afterKey = [&] { afterResponderRead = inject; };
+            int32_t result = focus(fixture.window);
+            Check(injected && modal.OwnsInput(), "native modal callback probe actually owns input");
+            Check(result != JALIUM_OK, "callback-created native modality rejects old focus request");
+            Check(keySelections == keysAfterInjection, "new native modality prevents later parent key requests");
+            if (phase == 0)
+                Check(fixture.native.firstResponder == fixture.responder, "eligibility callback modality prevents responder acquisition");
+            modal.Close();
+            Check(focus(fixture.window) == JALIUM_OK, "fresh focus recovers after callback-created modality closes");
+            std::printf("PASS readiness %s during %s callback\n", sheet ? "sheet" : "app modal", boundary);
+        } catch (const std::exception& error) {
+            afterKey = {}; afterResponderRead = {}; observed = nil; ++failed;
+            std::fprintf(stderr, "FAIL readiness %s during %s callback: %s\n", sheet ? "sheet" : "app modal", boundary, error.what());
+        }
+    }
+    std::printf("native focus readiness callbacks: %d/8 passed\n", 8 - failed);
+    return failed;
+}
+
 int main()
 {
     @autoreleasepool {
@@ -88,10 +171,12 @@ int main()
         Method ignoring = class_getInstanceMethod(NSApplication.class, @selector(activateIgnoringOtherApps:));
         Method order = class_getInstanceMethod(NSWindow.class, @selector(orderFront:));
         Method key = class_getInstanceMethod(NSWindow.class, @selector(makeKeyWindow));
+        Method responder = class_getInstanceMethod(NSWindow.class, @selector(firstResponder));
         originalActivate = method_setImplementation(activate, (IMP)CountActivate);
         originalActivateIgnoring = method_setImplementation(ignoring, (IMP)CountActivateIgnoring);
         originalOrder = method_setImplementation(order, (IMP)CountOrder);
         originalKey = method_setImplementation(key, (IMP)CountKey);
+        originalResponder = method_setImplementation(responder, (IMP)ReadResponder);
         int code = 0;
         try {
             using SetFocus = int32_t(*)(JaliumPlatformWindow*);
@@ -192,6 +277,7 @@ int main()
                 Check(focus(fixture.window) == JALIUM_OK, "ordinary focus recovers after sheet closes");
                 observed = nil;
             }
+            if (CheckReadinessCallbacks(focus)) code = 1;
         } catch (const std::exception& error) {
             std::fprintf(stderr, "FAIL keyboard focus: %s\n", error.what()); code = 1;
         }
@@ -200,6 +286,7 @@ int main()
         method_setImplementation(ignoring, originalActivateIgnoring);
         method_setImplementation(order, originalOrder);
         method_setImplementation(key, originalKey);
+        method_setImplementation(responder, originalResponder);
         jalium_platform_shutdown();
         std::printf("keyboard focus: %d checks, result=%d\n", checks, code);
         return code;
