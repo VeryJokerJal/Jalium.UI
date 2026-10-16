@@ -189,6 +189,13 @@ std::atomic<uint64_t> g_nextAppleDragTargetId{1};
 NSMutableArray<NSMenu*>* g_trackingMenus;
 id g_menuTrackingBeginObserver;
 id g_menuTrackingEndObserver;
+struct AppleDisplayChangeState {
+    std::atomic<bool> active{true};
+    bool broadcasting = false; // Main thread only.
+    bool pending = false;
+};
+std::shared_ptr<AppleDisplayChangeState> g_displayChangeState;
+id g_displayChangeObserver;
 
 void ObserveNativeMenuTracking()
 {
@@ -258,6 +265,55 @@ bool IsLiveWindow(JaliumPlatformWindow* window, NSWindow* nativeWindow)
     // the same address. Retain the original AppKit object across the callback
     // and require both registration and native identity before continuing.
     return IsLiveWindow(window) && window->window == nativeWindow;
+}
+
+void BroadcastAppleDisplayChange(std::shared_ptr<AppleDisplayChangeState> state)
+{
+    if (!state->active.load(std::memory_order_acquire)) return;
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ BroadcastAppleDisplayChange(state); });
+        return;
+    }
+    if (state->broadcasting) {
+        state->pending = true;
+        return;
+    }
+    state->broadcasting = true;
+    struct Target {
+        JaliumPlatformWindow* window;
+        NSWindow* __strong nativeWindow;
+    };
+    std::vector<Target> targets;
+    {
+        std::scoped_lock lock(g_windowsMutex);
+        targets.reserve(g_windows.size());
+        for (auto* window : g_windows)
+            targets.push_back({window, window->window});
+    }
+    // A notification callback may destroy itself or another window, create a
+    // replacement at the same address, or shut down/reinitialize the platform.
+    // Never hold the registry lock across application callbacks.
+    for (const auto& target : targets) {
+        if (!state->active.load(std::memory_order_acquire)) break;
+        if (IsLiveWindow(target.window, target.nativeWindow) && !target.window->destroying)
+            DispatchSimple(target.window, JALIUM_EVENT_MONITORS_CHANGED);
+    }
+    state->broadcasting = false;
+    if (state->pending && state->active.load(std::memory_order_acquire)) {
+        state->pending = false;
+        dispatch_async(dispatch_get_main_queue(), ^{ BroadcastAppleDisplayChange(state); });
+    }
+}
+
+void ObserveAppleDisplayChanges()
+{
+    auto state = std::make_shared<AppleDisplayChangeState>();
+    g_displayChangeState = state;
+    g_displayChangeObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSApplicationDidChangeScreenParametersNotification
+        object:NSApp queue:nil usingBlock:^(NSNotification*) {
+            BroadcastAppleDisplayChange(state);
+        }];
 }
 
 CGFloat DesktopTop()
@@ -3551,6 +3607,7 @@ JaliumResult jalium_platform_init_impl()
     [NSApplication sharedApplication];
     [NSApp registerServicesMenuSendTypes:@[NSPasteboardTypeString] returnTypes:@[NSPasteboardTypeString]];
     ObserveNativeMenuTracking();
+    ObserveAppleDisplayChanges();
     AppleKeyboardMapSnapshot();
 #endif
     g_quit.store(false);return JALIUM_OK;
@@ -3559,6 +3616,10 @@ void jalium_platform_shutdown_impl()
 {
 #if TARGET_OS_OSX
     auto* notifications = NSNotificationCenter.defaultCenter;
+    if (g_displayChangeState) g_displayChangeState->active.store(false, std::memory_order_release);
+    g_displayChangeState.reset();
+    if (g_displayChangeObserver) [notifications removeObserver:g_displayChangeObserver];
+    g_displayChangeObserver = nil;
     if (g_menuTrackingBeginObserver) [notifications removeObserver:g_menuTrackingBeginObserver];
     if (g_menuTrackingEndObserver) [notifications removeObserver:g_menuTrackingEndObserver];
     g_menuTrackingBeginObserver = nil;

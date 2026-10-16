@@ -414,16 +414,20 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     target_link_libraries(jalium.native.platform.cursor.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
     add_test(NAME jalium.native.platform.macos.cursor COMMAND jalium.native.platform.cursor.tests)
     set_tests_properties(jalium.native.platform.macos.cursor PROPERTIES TIMEOUT 30)
-    add_executable(jalium.native.platform.window.tests tests/platform_apple_window_tests.mm)
+    add_executable(jalium.native.platform.window.tests tests/platform_apple_window_tests.mm
+        tests/platform_apple_display_configuration_tests.mm)
     target_include_directories(jalium.native.platform.window.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
     target_compile_options(jalium.native.platform.window.tests PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.platform.window.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos.window.display-configuration
+        COMMAND jalium.native.platform.window.tests --display-configuration-only)
+    set_tests_properties(jalium.native.platform.macos.window.display-configuration PROPERTIES TIMEOUT 30)
     # Foreground lifecycle contracts run as a real AppKit application. Keep the
     # plain executable for the property/input/menu modes below.
     add_executable(jalium.native.platform.window.app.tests MACOSX_BUNDLE
-        tests/platform_apple_window_tests.mm)
+        tests/platform_apple_window_tests.mm tests/platform_apple_display_configuration_tests.mm)
     target_include_directories(jalium.native.platform.window.app.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)

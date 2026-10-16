@@ -1543,9 +1543,13 @@ static int RunWindowContracts(int argc, char** argv)
     return 0;
 }
 
+int RunAppleDisplayConfigurationTests();
+
 int main(int argc, char** argv)
 {
     @autoreleasepool {
+        if (argc == 2 && std::strcmp(argv[1], "--display-configuration-only") == 0)
+            return RunAppleDisplayConfigurationTests();
         return UsesAutomatedWindowValidationHost() ?
             RunAutomatedWindowValidation(argc, argv, RunWindowContracts) : RunWindowContracts(argc, argv);
     }
