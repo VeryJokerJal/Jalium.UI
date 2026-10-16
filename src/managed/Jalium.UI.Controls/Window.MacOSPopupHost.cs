@@ -68,6 +68,10 @@ public partial class Window
         if (IsMacOSPopupHost) UpdateWindowStyle();
     }
 
+    internal void RetireMacOSPopupPointerInput(PopupRoot root, Func<bool> isCurrent) =>
+        _inputDispatcher.HandleSubtreeDetached(IsMacOSPopupHost ? this : root,
+            preserveKeyboardPressedState: true, isCurrent: isCurrent);
+
     internal static Window? GetMacOSPhysicalWindow(Visual? element)
     {
         int depth = 0;

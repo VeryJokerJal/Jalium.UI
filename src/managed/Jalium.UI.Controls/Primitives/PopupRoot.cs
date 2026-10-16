@@ -22,7 +22,7 @@ internal sealed class PopupRoot : Decorator, IInputRouteParentProvider
     /// <summary>
     /// Gets whether this popup root requires light-dismiss behavior.
     /// </summary>
-    internal bool IsLightDismiss { get; }
+    internal bool IsLightDismiss { get; set; }
 
     /// <summary>
     /// Gets whether pointer input is currently captured by popup content.

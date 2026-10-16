@@ -335,6 +335,456 @@ public sealed class MacOSExternalPopupHostTests
         Assert.Equal(500, h.Popup.Host!.Height);
     }
 
+
+    [Theory]
+    [InlineData(false, false)] [InlineData(false, true)]
+    [InlineData(true, false)] [InlineData(true, true)]
+    public void LivePolicy_HitTestingUpdatesTheOpenSurface(bool constrain, bool initial)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain, interactive: initial);
+        var host = h.Popup.Host;
+        var focus = Keyboard.FocusedElement;
+        h.Popup.IsHitTestVisible = !initial;
+        Assert.Equal(!initial, h.Root.IsHitTestVisible);
+        if (host != null)
+        {
+            Assert.Equal(!initial, host.IsHitTestVisible);
+            Assert.Equal(initial ? 1024u : 0u, PopupStyle(host) & 1024u);
+            Assert.Same(host, h.Popup.Host);
+        }
+        h.Popup.IsHitTestVisible = initial;
+        Assert.Equal(initial, h.Root.IsHitTestVisible);
+        if (host != null) Assert.Equal(initial, host.IsHitTestVisible);
+        Assert.Same(focus, Keyboard.FocusedElement);
+        Assert.True(h.Popup.IsOpen);
+    }
+
+    [Theory]
+    [InlineData(false, false)] [InlineData(false, true)]
+    [InlineData(true, false)] [InlineData(true, true)]
+    public void LivePolicy_InheritedPointerPolicyReachesTheDetachedSurface(bool constrain, bool local)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain, interactive: local);
+        h.Panel.Children.Add(h.Popup);
+        h.Panel.IsHitTestVisible = false;
+        Assert.False(h.Popup.IsHitTestVisible);
+        Assert.False(h.Root.IsHitTestVisible);
+        if (h.Popup.Host != null) Assert.False(h.Popup.Host.IsHitTestVisible);
+        h.Panel.IsHitTestVisible = true;
+        Assert.Equal(local, h.Root.IsHitTestVisible);
+        if (h.Popup.Host != null) Assert.Equal(local, h.Popup.Host.IsHitTestVisible);
+        Assert.True(h.Popup.IsOpen);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_ChildLocalPolicyAndKeyboardFocusSurvivePointerChanges(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        h.Target.IsHitTestVisible = false;
+        var focus = Keyboard.FocusedElement;
+        h.Popup.IsHitTestVisible = false;
+        h.Popup.IsHitTestVisible = true;
+        Assert.True(h.Root.IsHitTestVisible);
+        Assert.False(h.Target.IsHitTestVisible);
+        Assert.Same(focus, Keyboard.FocusedElement);
+        int keys = 0;
+        h.Target.KeyDown += (_, _) => keys++;
+        Send((Window?)h.Popup.Host ?? h.Window, new PlatformEvent { Type = PlatformEventType.KeyDown, KeyCode = 0x41 });
+        Assert.Equal(1, keys);
+    }
+
+    [Theory]
+    [InlineData(false, false)] [InlineData(false, true)]
+    [InlineData(true, false)] [InlineData(true, true)]
+    public void LivePolicy_StaysOpenControlsTheNextOutsideClick(bool constrain, bool initial)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain, staysOpen: initial);
+        h.Popup.StaysOpen = !initial;
+        Assert.Equal(initial, h.Root.IsLightDismiss);
+        Assert.Equal(initial, h.Popup.IsLightDismissEnabled);
+        Send(h.Window, new PlatformEvent { Type = PlatformEventType.MouseDown,
+            MouseX = 700, MouseY = 460, Button = 0, ClickCount = 1,
+            HasMouseButtonStates = true, MouseButtons = 1 });
+        Assert.Equal(!initial, h.Popup.IsOpen);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_RootCallbackCanReopenThePopup(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        var previousHost = h.Popup.Host;
+        h.Root.IsHitTestVisibleChanged += (_, e) =>
+        {
+            if (!Equals(e.NewValue, false)) return;
+            h.Popup.IsOpen = false;
+            h.Popup.IsHitTestVisible = true;
+            h.Popup.IsOpen = true;
+        };
+        h.Popup.IsHitTestVisible = false;
+        Assert.True(h.Popup.IsOpen);
+        Assert.True(h.Popup.IsHitTestVisible);
+        var root = Assert.IsType<PopupRoot>(h.Child.VisualParent);
+        Assert.NotSame(h.Root, root);
+        Assert.True(root.IsHitTestVisible);
+        if (!constrain)
+        {
+            Assert.NotSame(previousHost, h.Popup.Host);
+            Assert.True(h.Popup.Host!.IsHitTestVisible);
+        }
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_NestedPolicyChangeWinsOverTheOuterNotification(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        int changed = 0;
+        h.Root.IsHitTestVisibleChanged += (_, e) =>
+        {
+            changed++;
+            if (Equals(e.NewValue, false)) h.Popup.IsHitTestVisible = true;
+        };
+        h.Popup.IsHitTestVisible = false;
+        Assert.Equal(2, changed);
+        Assert.True(h.Popup.IsHitTestVisible);
+        Assert.True(h.Root.IsHitTestVisible);
+        if (h.Popup.Host != null) Assert.True(h.Popup.Host.IsHitTestVisible);
+    }
+
+    [Theory]
+    [InlineData(false, false)] [InlineData(true, false)] [InlineData(false, true)]
+    public void LivePolicy_ThrowingCallbacksStillSynchronizeTheCurrentSurface(bool constrain, bool fromHost)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        UIElement notifier = fromHost ? h.Popup.Host! : h.Root;
+        notifier.IsHitTestVisibleChanged += (_, e) =>
+        {
+            if (Equals(e.NewValue, false)) throw new InvalidOperationException("live pointer policy");
+        };
+        var error = Assert.Throws<InvalidOperationException>(() => h.Popup.IsHitTestVisible = false);
+        Assert.Equal("live pointer policy", error.Message);
+        Assert.False(h.Root.IsHitTestVisible);
+        if (h.Popup.Host != null) Assert.False(h.Popup.Host.IsHitTestVisible);
+        Assert.True(h.Popup.IsOpen);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_InteractivePromotionRevalidatesADisabledAnchor(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain, interactive: false);
+        h.Anchor.IsEnabled = false;
+        Dispatcher.CurrentDispatcher.ProcessQueue();
+        Assert.True(h.Popup.IsOpen);
+        h.Popup.IsHitTestVisible = true;
+        Dispatcher.CurrentDispatcher.ProcessQueue();
+        Assert.False(h.Popup.IsOpen);
+    }
+
+    private static uint PopupStyle(Window host) => (uint)typeof(Window)
+        .GetMethod("ApplyMacOSPopupStyle", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(host, [(uint)0x7f])!;
+
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_CompositionAndSelectionSurvivePointerChanges(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        h.Child.Children.Clear();
+        var editor = new TextBox { Text = "ab", Width = 100, Height = 30 };
+        h.Child.Children.Add(editor);
+        Assert.True(editor.Focus()); editor.Select(2, 0);
+        Window source = (Window?)h.Popup.Host ?? h.Window;
+        Send(source, new PlatformEvent { Type = PlatformEventType.CompositionStart });
+        Send(source, new PlatformEvent { Type = PlatformEventType.CompositionUpdate,
+            CompositionText = "zhong", CompositionCursor = 2 });
+        h.Popup.IsHitTestVisible = false;
+        h.Popup.IsHitTestVisible = true;
+        Assert.Same(editor, Keyboard.FocusedElement);
+        Assert.True(InputMethod.IsComposing); Assert.Same(editor, InputMethod.CurrentTarget);
+        Assert.Equal("zhong", InputMethod.CompositionString);
+        Assert.Equal("ab", editor.Text); Assert.Equal(2, editor.SelectionStart);
+        Send(source, new PlatformEvent { Type = PlatformEventType.CompositionEnd, CompositionText = "" });
+        Assert.Equal("ab", editor.Text);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_DisablingPointerInputClearsHoverCaptureAndMousePressButRetainsKeyboardPress(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        Window source = (Window?)h.Popup.Host ?? h.Window;
+        Move(h);
+        Assert.True(h.Target.IsMouseOver); Assert.True(h.Popup.IsMouseOver);
+        Send(source, new PlatformEvent { Type = PlatformEventType.KeyDown, KeyCode = 0x20 });
+        Assert.True(h.Target.IsPressed);
+        MousePacket(h, wheel: false);
+        Assert.True(h.Target.CaptureMouse());
+        h.Popup.IsHitTestVisible = false;
+        Assert.Null(UIElement.MouseCapturedElement);
+        Assert.False(h.Target.IsMouseOver); Assert.False(h.Popup.IsMouseOver);
+        Assert.True(h.Target.IsPressed);
+        Assert.Same(h.Target, Keyboard.FocusedElement);
+        Send(source, new PlatformEvent { Type = PlatformEventType.KeyUp, KeyCode = 0x20 });
+        Assert.False(h.Target.IsPressed);
+    }
+
+    [Theory]
+    [InlineData(false, false)] [InlineData(false, true)]
+    [InlineData(true, false)] [InlineData(true, true)]
+    public void LivePolicy_PolicyCyclesRetireMouseQueries(bool constrain, bool wheel)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        int queries = 0, executions = 0;
+        var command = new PolicyCommand(() =>
+        {
+            queries++;
+            if (queries == 1) { h.Popup.IsHitTestVisible = false; h.Popup.IsHitTestVisible = true; }
+            return true;
+        }, () => executions++);
+        h.Target.InputBindings.Add(new MouseBinding(command,
+            new MouseGesture(wheel ? MouseAction.WheelClick : MouseAction.LeftClick, ModifierKeys.Control)));
+        MousePacket(h, wheel);
+        Assert.Equal(1, queries); Assert.Equal(0, executions);
+        MousePacket(h, wheel);
+        Assert.Equal(2, queries); Assert.Equal(1, executions);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_HoverCallbackCannotResumeAnOldMove(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        int moves = 0, pointers = 0;
+        h.Target.MouseEnter += (_, _) => h.Popup.IsHitTestVisible = false;
+        h.Target.MouseMove += (_, _) => moves++;
+        h.Target.PointerMoved += (_, _) => pointers++;
+        Move(h);
+        Assert.Equal(0, moves); Assert.Equal(0, pointers);
+        Assert.False(h.Target.IsMouseOver);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_InverseDismissPropertyKeepsItsBinding(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        var source = new Control { Tag = true };
+        var binding = h.Popup.SetBinding(Popup.StaysOpenProperty, new Jalium.UI.Data.Binding(nameof(FrameworkElement.Tag))
+        { Source = source, Mode = Jalium.UI.Data.BindingMode.OneWay });
+        h.Popup.IsLightDismissEnabled = true;
+        Assert.False(h.Popup.StaysOpen); Assert.True(h.Root.IsLightDismiss);
+        Assert.Same(binding, h.Popup.GetBindingExpression(Popup.StaysOpenProperty));
+        source.Tag = false; source.Tag = true;
+        Assert.True(h.Popup.StaysOpen); Assert.False(h.Popup.IsLightDismissEnabled);
+        Assert.False(h.Root.IsLightDismiss);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_OverlayDismissRegistryTracksLiveStaysOpen(bool initial)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: true, staysOpen: initial);
+        h.Popup.StaysOpen = !initial;
+        Assert.Equal(initial, h.Window.OverlayLayer.HasLightDismissPopups);
+        Assert.Equal(initial, h.Window.OverlayLayer.TryHandleLightDismiss(new Point(350, 230)));
+        Assert.Equal(!initial, h.Popup.IsOpen);
+    }
+
+    [Fact]
+    public void LivePolicy_DismissBatchHonorsALaterPopupsNewPolicy()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: true, staysOpen: false);
+        var other = new Popup { Child = new Control { Width = 40, Height = 20 },
+            PlacementTarget = h.Anchor, ShouldConstrainToRootBounds = true, StaysOpen = false };
+        other.IsOpen = true;
+        h.Popup.Closed += (_, _) => other.StaysOpen = true;
+        other.Closed += (_, _) => h.Popup.StaysOpen = true;
+        try
+        {
+            Assert.Equal(1, h.Window.OverlayLayer.CloseLightDismissPopups());
+            Assert.NotEqual(h.Popup.IsOpen, other.IsOpen);
+        }
+        finally { other.IsOpen = false; }
+    }
+
+    private sealed class PolicyCommand(Func<bool> query, Action execute) : ICommand
+    {
+        public bool CanExecute(object? p) => query();
+        public void Execute(object? p) => execute();
+        public event EventHandler? CanExecuteChanged { add { } remove { } }
+    }
+
+    private static void Move(Host h)
+    {
+        Window source = (Window?)h.Popup.Host ?? h.Window;
+        Point point = h.Target.TranslatePoint(new Point(5, 5), source);
+        Send(source, new PlatformEvent { Type = PlatformEventType.MouseMove,
+            MouseX = (int)(point.X * source.DpiScale), MouseY = (int)(point.Y * source.DpiScale),
+            HasMouseButtonStates = true, MouseButtons = 0 });
+    }
+
+    private static void MousePacket(Host h, bool wheel)
+    {
+        Window source = (Window?)h.Popup.Host ?? h.Window;
+        Point point = h.Target.TranslatePoint(new Point(5, 5), source);
+        Send(source, new PlatformEvent { Type = wheel ? PlatformEventType.MouseWheel : PlatformEventType.MouseDown,
+            MouseX = (int)(point.X * source.DpiScale), MouseY = (int)(point.Y * source.DpiScale),
+            Button = 0, ClickCount = 1, Modifiers = 8, WheelDeltaY = 1,
+            HasMouseButtonStates = true, MouseButtons = wheel ? 0u : 1u });
+    }
+
+
+    [Theory]
+    [InlineData(false, "preview-mouse")] [InlineData(true, "preview-mouse")]
+    [InlineData(false, "mouse")] [InlineData(true, "mouse")]
+    [InlineData(false, "preview-pointer")] [InlineData(true, "preview-pointer")]
+    [InlineData(false, "pointer")] [InlineData(true, "pointer")]
+    [InlineData(false, "legacy-pointer")] [InlineData(true, "legacy-pointer")]
+    public void LivePolicy_MoveCallbacksCannotContinueTheRetiredPacket(bool constrain, string stage)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        bool changed = false, oldPacket = true;
+        int stale = 0;
+        void Change()
+        {
+            if (changed) return;
+            changed = true; h.Popup.IsHitTestVisible = false; h.Popup.IsHitTestVisible = true;
+        }
+        if (stage == "preview-mouse") h.Target.PreviewMouseMove += (_, _) => Change();
+        else if (stage == "mouse") h.Target.MouseMove += (_, _) => Change();
+        else if (stage == "preview-pointer") h.Target.PreviewPointerMove += (_, _) => Change();
+        else if (stage == "pointer") h.Target.PointerMove += (_, _) => Change();
+        else h.Target.PointerMoved += (_, _) => Change();
+        Window source = (Window?)h.Popup.Host ?? h.Window;
+        source.MouseMove += (_, _) => { if (oldPacket && changed) stale++; };
+        source.PointerMove += (_, _) => { if (oldPacket && changed) stale++; };
+        source.PointerMoved += (_, _) => { if (oldPacket && changed) stale++; };
+        Move(h);
+        Assert.True(changed); Assert.Equal(0, stale);
+        oldPacket = false; Move(h);
+        Assert.True(h.Target.IsMouseOver);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_CaptureCallbacksMayStartANewGesture(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        int downs = 0, ups = 0; bool restarted = false;
+        h.Target.PointerPressed += (_, _) => downs++;
+        h.Target.PointerReleased += (_, _) => ups++;
+        Move(h); MousePacket(h, wheel: false);
+        Assert.True(h.Target.CaptureMouse());
+        h.Target.LostMouseCapture += (_, _) =>
+        {
+            if (restarted) return;
+            restarted = true; h.Popup.IsHitTestVisible = true;
+            MousePacket(h, wheel: false); Assert.True(h.Target.CaptureMouse());
+        };
+        h.Popup.IsHitTestVisible = false;
+        Assert.True(restarted); Assert.True(h.Popup.IsHitTestVisible);
+        Assert.Same(h.Target, UIElement.MouseCapturedElement);
+        Assert.True(h.Target.IsPressed); Assert.Equal(2, downs);
+        Window source = (Window?)h.Popup.Host ?? h.Window;
+        var point = h.Target.TranslatePoint(new Point(5, 5), source);
+        Send(source, new PlatformEvent { Type = PlatformEventType.MouseUp,
+            MouseX = (int)(point.X * source.DpiScale), MouseY = (int)(point.Y * source.DpiScale),
+            Button = 0, HasMouseButtonStates = true, MouseButtons = 0 });
+        Assert.Equal(1, ups); Assert.False(h.Target.IsPressed);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_CaptureCallbackFailureDoesNotLeaveOldHoverOrPress(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        Move(h); MousePacket(h, wheel: false); Assert.True(h.Target.CaptureMouse());
+        h.Target.LostMouseCapture += (_, _) => throw new InvalidOperationException("retired capture");
+        var error = Assert.Throws<InvalidOperationException>(() => h.Popup.IsHitTestVisible = false);
+        Assert.Equal("retired capture", error.Message);
+        Assert.Null(UIElement.MouseCapturedElement);
+        Assert.False(h.Target.IsMouseOver); Assert.False(h.Target.IsPressed);
+        Assert.False(h.Root.IsHitTestVisible);
+        if (h.Popup.Host != null) Assert.False(h.Popup.Host.IsHitTestVisible);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_StaysOpenUpdatesRetainTheInversePropertyBinding(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        var source = new Control { Tag = false };
+        var binding = h.Popup.SetBinding(Popup.IsLightDismissEnabledProperty, new Jalium.UI.Data.Binding(nameof(FrameworkElement.Tag))
+        { Source = source, Mode = Jalium.UI.Data.BindingMode.OneWay });
+        h.Popup.StaysOpen = false;
+        Assert.True(h.Popup.IsLightDismissEnabled);
+        Assert.Same(binding, h.Popup.GetBindingExpression(Popup.IsLightDismissEnabledProperty));
+        source.Tag = true; source.Tag = false;
+        Assert.True(h.Popup.StaysOpen); Assert.False(h.Root.IsLightDismiss);
+    }
+
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_DisabledContentRetainsOrdinaryWindowMoveHandling(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        h.Target.IsEnabled = false; Dispatcher.CurrentDispatcher.ProcessQueue();
+        int moves = 0;
+        Window source = (Window?)h.Popup.Host ?? h.Window;
+        source.MouseMove += (_, _) => moves++;
+        Move(h);
+        Assert.False(h.Target.IsMouseOver);
+        Assert.Equal(1, moves);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void LivePolicy_AnIndependentChildSurfaceKeepsItsOwnPointerPolicy(bool constrain)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(constrain: constrain);
+        var target = new Control { Width = 80, Height = 30, Focusable = true };
+        var child = new ExternalPopup { Child = target, PlacementTarget = h.Target, StaysOpen = true };
+        child.IsOpen = true;
+        try
+        {
+            h.Popup.IsHitTestVisible = false;
+            Assert.True(child.IsHitTestVisible); Assert.True(child.Host!.IsHitTestVisible);
+            int ran = 0;
+            target.InputBindings.Add(new MouseBinding(new Counter(() => ran++),
+                new MouseGesture(MouseAction.LeftClick, ModifierKeys.Control)));
+            Send(child.Host, new PlatformEvent { Type = PlatformEventType.MouseDown,
+                MouseX = 5, MouseY = 5, Modifiers = 8, Button = 0, ClickCount = 1,
+                HasMouseButtonStates = true, MouseButtons = 1 });
+            Assert.Equal(1, ran);
+        }
+        finally { child.IsOpen = false; }
+    }
+
+    [Fact]
+    public void LivePolicy_TheNativeHostBackgroundAlsoRetiresItsOldInput()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host();
+        var host = h.Popup.Host!;
+        var input = ((IInputDispatcherHost)host).CaptureNativeMouseCommandInput(host, null)!;
+        Assert.True(input.IsHostCurrent());
+        h.Popup.IsHitTestVisible = false; h.Popup.IsHitTestVisible = true;
+        Assert.False(input.IsHostCurrent());
+        Assert.True(((IInputDispatcherHost)host).CaptureNativeMouseCommandInput(host, null)!.IsHostCurrent());
+    }
+
     private sealed class Counter(Action run) : ICommand
     {
         public bool CanExecute(object? p) => true;

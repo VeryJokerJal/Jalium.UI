@@ -208,7 +208,7 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty StaysOpenProperty =
         DependencyProperty.Register(nameof(StaysOpen), typeof(bool), typeof(Popup),
-            new PropertyMetadata(true));
+            new PropertyMetadata(true, (d, _) => ((Popup)d).OnMacOSStaysOpenChanged()));
 
     /// <summary>
     /// Identifies the IsLightDismissEnabled dependency property.
@@ -562,7 +562,7 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
     {
         if (d is Popup popup)
         {
-            popup.StaysOpen = !(bool)e.NewValue!;
+            popup.SetCurrentValue(StaysOpenProperty, !popup.IsLightDismissEnabled);
         }
     }
 

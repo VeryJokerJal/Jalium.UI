@@ -65,10 +65,22 @@ public partial class Window
         int generation = Volatile.Read(ref _renderLifecycleGeneration);
         int activationGeneration = _macOSActivationGeneration;
         int nativeActivationGeneration = _macOSNativeActivationGeneration;
+        var policies = InputRoute.Capture(target, owner).OfType<Popup>()
+            .Select(popup => (Popup: popup, Revision: popup.MacOSInteractionRevision)).ToArray();
+        Popup? sourcePopup = _macOSHostedPopup;
+        if (sourcePopup == null)
+        {
+            int depth = 0;
+            for (Visual? node = target; node != null && depth++ < 4096; node = node.VisualParent)
+                if (node is PopupRoot root) { sourcePopup = root.OwnerPopup; break; }
+        }
+        long sourceRevision = sourcePopup?.MacOSInteractionRevision ?? 0;
         return new MouseCommandInput(target, this, dialog ?? (UIElement)owner, dialog,
             () => isPacketCurrent?.Invoke() != false && !_isClosing && !_managedTeardownStarted && IsMacOSPopupHostCurrent && IsEnabled && Visibility == Visibility.Visible &&
                 generation == Volatile.Read(ref _renderLifecycleGeneration) && activationGeneration == _macOSActivationGeneration && nativeActivationGeneration == _macOSNativeActivationGeneration && ReferenceEquals(platform, _platformWindow) &&
-                handle == Handle && ReferenceEquals(dialog, owner.ActiveContentDialog));
+                handle == Handle && ReferenceEquals(dialog, owner.ActiveContentDialog) &&
+                (sourcePopup == null || sourcePopup.IsHitTestVisible && sourceRevision == sourcePopup.MacOSInteractionRevision) &&
+                policies.All(policy => policy.Revision == policy.Popup.MacOSInteractionRevision));
     }
 
     private Func<bool> CaptureMacOSInputLifetime(UIElement target, bool textInput)
