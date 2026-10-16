@@ -639,7 +639,8 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             return (systemResource, null);
         }
 
-        return SystemFonts.TryGetResource(resourceKey, out systemResource)
+        return (SystemFonts.TryGetResource(resourceKey, out systemResource) ||
+            SystemParameters.TryGetResource(resourceKey, out systemResource))
             ? (systemResource, null)
             : (null, null);
     }
@@ -662,7 +663,8 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             return systemResource;
         }
 
-        return SystemFonts.TryGetResource(resourceKey, out systemResource)
+        return (SystemFonts.TryGetResource(resourceKey, out systemResource) ||
+            SystemParameters.TryGetResource(resourceKey, out systemResource))
             ? systemResource
             : null;
     }

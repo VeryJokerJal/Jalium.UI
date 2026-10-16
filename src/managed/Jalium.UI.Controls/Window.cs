@@ -5241,6 +5241,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.ScrollBarSettingsChanged:
                 MacOSScrollBarSettings.Refresh(this);
+                if (OperatingSystem.IsMacOS())
+                {
+                    SystemParameters.NotifyMacOSAnimationPreferencesChanged();
+                    if (!IsCloseRequestedForPlatformTermination && !_managedTeardownStarted)
+                        RaisePlatformSystemSettingsChanged();
+                }
                 break;
 
             case PlatformEventType.Paint:
