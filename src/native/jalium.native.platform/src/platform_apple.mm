@@ -2450,6 +2450,8 @@ static BOOL IsAppleTextServiceType(NSPasteboardType type)
 @property(nonatomic) NSRange markedSelectionRange;
 @property(nonatomic) NSRect imeRect;
 @property(nonatomic) BOOL imeEnabled;
+@property(nonatomic) uint64_t textInputGeneration;
+@property(nonatomic) uint64_t markedTextRevision;
 @property(nonatomic) BOOL menuEscapeKeyDown;
 @property(nonatomic) JaliumCursorShape cursorShape;
 @property(nonatomic) BOOL cursorHidden;
@@ -2464,9 +2466,40 @@ static BOOL IsAppleTextServiceType(NSPasteboardType type)
 - (void)cancelMarkedText;
 @end
 
+// One NSView hosts multiple managed editors. Native callbacks may retire
+// and reenable that context before returning, including a round trip to the
+// same editor. Keep input operations bound to their original identity.
+struct AppleTextInputContext {
+    __strong JaliumAppleView* view;
+    __strong NSWindow* window;
+    JaliumPlatformWindow* owner;
+    uint64_t generation, selection;
+    explicit AppleTextInputContext(JaliumAppleView* client)
+        : view(client), window(client.window), owner(client.jaliumOwner),
+          generation(client.textInputGeneration),
+          selection(owner && IsLiveWindow(owner, window) ? owner->selectionGeneration : 0) {}
+    bool IsSameContext() const {
+        if (!owner || view.jaliumOwner != owner || !IsLiveWindow(owner, window) ||
+            generation != view.textInputGeneration) return false;
+        NSWindow* actualWindow = view.window;
+        return actualWindow == window && view.jaliumOwner == owner && IsLiveWindow(owner, window) &&
+            owner->view == view && selection == owner->selectionGeneration;
+    }
+    bool IsCurrent() const { return IsSameContext() && owner->enabled && view.imeEnabled; }
+};
+
 #include "platform_apple_accessibility.inc"
 
 @implementation JaliumAppleView
+@synthesize imeEnabled = _imeEnabled;
+@synthesize markedText = _markedText;
+- (void)setImeEnabled:(BOOL)value {
+    if (_imeEnabled != value) { ++_textInputGeneration; _imeEnabled = value; }
+}
+- (void)setMarkedText:(NSMutableAttributedString*)value {
+    ++_markedTextRevision;
+    _markedText = value;
+}
 // NSView geometry can change without an NSWindow notification. Track those
 // writes so a getter returning its old value cannot validate an obsolete query.
 #define JALIUM_TRACK_VIEW_GEOMETRY(setter, valueType, sameValue) \
@@ -2537,8 +2570,8 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     return bridge ? [bridge focusedElement] : [super accessibilityFocusedUIElement];
 }
 - (BOOL)acceptsFirstResponder { return _jaliumOwner && _jaliumOwner->enabled; }
-- (BOOL)becomeFirstResponder { DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_GAINED); return YES; }
-- (BOOL)resignFirstResponder { [self restoreCursor]; DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_LOST); return YES; }
+- (BOOL)becomeFirstResponder { ++_textInputGeneration; DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_GAINED); return YES; }
+- (BOOL)resignFirstResponder { ++_textInputGeneration; [self restoreCursor]; DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_LOST); return YES; }
 - (NSTextInputContext*)inputContext {
     return _jaliumOwner && _jaliumOwner->enabled && self.imeEnabled ? super.inputContext : nil;
 }
@@ -2853,6 +2886,9 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     DispatchWindowEvent(_jaliumOwner, event);
 }
 - (int32_t)requestTextRange:(NSRange)range replacement:(NSString*)replacement {
+    AppleTextInputContext context(self);
+    uint64_t markedRevision = self.markedTextRevision;
+    if (!context.IsCurrent()) return -1;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled ||
         !self.surroundingText || !ValidTextRange(range, self.surroundingText.length)) return -1;
     JaliumPlatformEvent event{}; event.type = JALIUM_EVENT_IME_TEXT_REQUEST;
@@ -2864,10 +2900,13 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     int32_t applied = 0;
     event.imeTextRequest.applied = &applied;
     DispatchWindowEvent(_jaliumOwner, event);
-    return _jaliumOwner && _jaliumOwner->enabled && self.imeEnabled ? applied : -1;
+    return context.IsCurrent() && markedRevision == self.markedTextRevision ? applied : -1;
 }
 - (int32_t)queryTextGeometry:(int32_t)kind range:(NSRange)range point:(NSPoint)point
     result:(JaliumImeGeometryResult*)result {
+    AppleTextInputContext context(self);
+    uint64_t markedRevision = self.markedTextRevision;
+    if (!context.IsCurrent()) return -1;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled ||
         range.location > INT32_MAX || range.length > INT32_MAX) return -1;
     JaliumPlatformEvent event{}; event.type = JALIUM_EVENT_IME_GEOMETRY_REQUEST;
@@ -2878,9 +2917,11 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     event.imeGeometryRequest.y = point.y * _jaliumOwner->scale;
     event.imeGeometryRequest.result = result;
     DispatchWindowEvent(_jaliumOwner, event);
-    return _jaliumOwner && _jaliumOwner->enabled && self.imeEnabled ? result->handled : -1;
+    return context.IsCurrent() && markedRevision == self.markedTextRevision ? result->handled : -1;
 }
 - (void)dispatchCommittedText:(NSString*)text composition:(BOOL)composition {
+    AppleTextInputContext context(self);
+    if (!context.IsCurrent()) return;
     if (composition) {
         JaliumPlatformEvent event{}; event.type = JALIUM_EVENT_COMPOSITION_END;
         std::string utf8 = text.UTF8String ?: ""; event.composition.utf8Text = utf8.c_str();
@@ -2894,8 +2935,10 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
             if (lo >= 0xdc00 && lo <= 0xdfff) { ++i; cp = 0x10000 + ((hi - 0xd800) << 10) + (lo - 0xdc00); }
         }
         JaliumPlatformEvent event{}; event.type = JALIUM_EVENT_CHAR_INPUT;
-        event.character.codepoint = cp; DispatchWindowEvent(_jaliumOwner, event);
-        if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
+        event.character.codepoint = cp;
+        if (!context.IsCurrent()) return;
+        DispatchWindowEvent(_jaliumOwner, event);
+        if (!context.IsCurrent()) return;
     }
 }
 - (NSAttributedString*)textStorageSnapshot {
@@ -2911,9 +2954,11 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     return storage;
 }
 - (void)insertText:(id)value replacementRange:(NSRange)range {
+    AppleTextInputContext context(self);
+    if (!context.IsCurrent()) return;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
     NSString* text = [value isKindOfClass:NSAttributedString.class] ? [value string] : value;
-    if (![text isKindOfClass:NSString.class]) return;
+    if (![text isKindOfClass:NSString.class] || !context.IsCurrent()) return;
     if (self.surroundingText) {
         BOOL hadMarkedText = self.markedText != nil;
         NSRange requested = range.location == NSNotFound
@@ -2939,7 +2984,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         int32_t applied = [self requestTextRange:committed replacement:replacement];
         // Preserve ordinary input for native clients which predate the range
         // request event. An explicit rejection never falls through to insertion.
-        if (applied == 0 && range.location == NSNotFound)
+        if (applied == 0 && range.location == NSNotFound && context.IsCurrent())
             [self dispatchCommittedText:text composition:hadMarkedText];
         return;
     }
@@ -2951,15 +2996,18 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     [self dispatchCommittedText:text composition:hadMarkedText];
 }
 - (void)setMarkedText:(id)value selectedRange:(NSRange)selected replacementRange:(NSRange)replacement {
+    AppleTextInputContext context(self);
+    if (!context.IsCurrent()) return;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
     NSString* text=[value isKindOfClass:[NSAttributedString class]]?[value string]:value;
-    if (![text isKindOfClass:NSString.class]) return;
+    if (![text isKindOfClass:NSString.class] || !context.IsCurrent()) return;
     if (self.markedText && replacement.location != NSNotFound &&
         !NSEqualRanges(replacement, self.markedRange)) {
         // A replacement of a different span ends the previous marked segment;
         // its preserved prefix/suffix become committed storage before re-anchoring.
+        uint64_t priorMarkedRevision = self.markedTextRevision;
         [self unmarkText];
-        if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
+        if (!context.IsCurrent() || self.markedTextRevision != priorMarkedRevision + 1) return;
     }
     BOOL starting=self.markedText==nil;
     if (starting) {
@@ -2978,13 +3026,15 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         ? [value mutableCopy] : [[NSMutableAttributedString alloc] initWithString:text];
     NSUInteger cursor = std::min(selected.location, text.length);
     self.markedSelectionRange = NSMakeRange(cursor, std::min(selected.length, text.length - cursor));
+    uint64_t markedRevision = self.markedTextRevision;
     if(starting)DispatchSimple(_jaliumOwner,JALIUM_EVENT_COMPOSITION_START);
-    if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
+    if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return;
     JaliumPlatformEvent event{};event.type=JALIUM_EVENT_COMPOSITION_UPDATE;
     std::string utf8=text.UTF8String?:"";event.composition.utf8Text=utf8.c_str();
     event.composition.cursor=static_cast<int32_t>(cursor);
     DispatchWindowEvent(_jaliumOwner,event);
-    if (text.length == 0 && _jaliumOwner) {
+    if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return;
+    if (text.length == 0) {
         self.markedText = nil;
         self.markedReplacementRange = NSMakeRange(NSNotFound, 0);
         DispatchSimple(_jaliumOwner, JALIUM_EVENT_COMPOSITION_END);
@@ -3012,18 +3062,24 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (NSAttributedString*)attributedString { return self.textStorageSnapshot ?: [[NSAttributedString alloc] initWithString:@""]; }
 - (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    AppleTextInputContext context(self);
+    uint64_t markedRevision = self.markedTextRevision;
+    if (!context.IsCurrent()) return NSNotFound;
     if (!self.window || !_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled ||
         !std::isfinite(point.x) || !std::isfinite(point.y)) return NSNotFound;
     NSPoint local = [self convertPoint:[self.window convertPointFromScreen:point] fromView:nil];
+    if (!context.IsCurrent()) return NSNotFound;
     NSRange marked = self.markedRange;
     if (marked.location != NSNotFound) {
         JaliumImeGeometryResult result{};
-        if ([self queryTextGeometry:3 range:NSMakeRange(0, 0) point:local result:&result] == 1 &&
-            result.characterIndex >= 0 && static_cast<NSUInteger>(result.characterIndex) <= marked.length)
+        int32_t handled = [self queryTextGeometry:3 range:NSMakeRange(0, 0) point:local result:&result];
+        if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return NSNotFound;
+        if (handled == 1 && result.characterIndex >= 0 && static_cast<NSUInteger>(result.characterIndex) <= marked.length)
             return marked.location + result.characterIndex;
     }
     JaliumImeGeometryResult result{};
     int32_t handled = [self queryTextGeometry:1 range:NSMakeRange(0, 0) point:local result:&result];
+    if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return NSNotFound;
     if (handled == 1 && self.surroundingText && result.characterIndex >= 0 &&
         static_cast<NSUInteger>(result.characterIndex) <= self.surroundingText.length) {
         NSUInteger index = result.characterIndex;
@@ -3039,6 +3095,9 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actual {
     if (actual) *actual = NSMakeRange(NSNotFound, 0);
+    AppleTextInputContext context(self);
+    uint64_t markedRevision = self.markedTextRevision;
+    if (!context.IsCurrent()) return NSZeroRect;
     if (!self.window || !_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return NSZeroRect;
     // A request with no document index asks for the current candidate anchor;
     // do not invent an absolute index for private editors or selected text.
@@ -3070,6 +3129,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     }
     JaliumImeGeometryResult result{};
     int32_t handled = [self queryTextGeometry:kind range:query point:NSZeroPoint result:&result];
+    if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return NSZeroRect;
     if (handled == 1 && result.start >= 0 && result.length >= 0 &&
         static_cast<NSUInteger>(result.start) >= query.location &&
         static_cast<NSUInteger>(result.start) <= NSMaxRange(query) &&
@@ -3106,14 +3166,18 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     (void)selector;
 }
 - (void)cancelMarkedText {
-    if (!self.markedText) return;
+    AppleTextInputContext lifetime(self);
+    if (!lifetime.IsCurrent() || !self.markedText) return;
     NSTextInputContext* context = self.inputContext;
+    if (!lifetime.IsCurrent()) return;
     self.markedText = nil;
     self.markedReplacementRange = NSMakeRange(NSNotFound, 0);
     self.markedSelectionRange = NSMakeRange(0, 0);
     // Clear the client first: discard can call back into the text-input client.
+    uint64_t markedRevision = self.markedTextRevision;
     [context discardMarkedText];
-    DispatchSimple(_jaliumOwner, JALIUM_EVENT_COMPOSITION_END);
+    if (lifetime.IsCurrent() && markedRevision == self.markedTextRevision)
+        DispatchSimple(_jaliumOwner, JALIUM_EVENT_COMPOSITION_END);
 }
 - (void)dispatchEditingKey:(int32_t)key modifiers:(uint32_t)modifiers {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
@@ -4891,6 +4955,7 @@ int32_t jalium_window_update_ime_context(JaliumPlatformWindow* w,int32_t enabled
 #if TARGET_OS_OSX
     NSWindow* nativeWindow = w->window;
     auto* context = w->view.inputContext;
+    if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
     w->view.imeEnabled = enabled && w->enabled;
     w->view.surroundingText = w->view.imeEnabled && surrounding ? [NSString stringWithUTF8String:surrounding] : nil;
     if (w->view.surroundingText) {
@@ -4901,16 +4966,18 @@ int32_t jalium_window_update_ime_context(JaliumPlatformWindow* w,int32_t enabled
     } else w->view.selectionRange = NSMakeRange(NSNotFound, 0);
     w->view.imeRect = NSMakeRect(x / w->scale, y / w->scale,
         std::max(1, width) / w->scale, std::max(1, height) / w->scale);
+    AppleTextInputContext update(w->view);
     if (!w->view.imeEnabled && w->view.markedText) {
         // The previously enabled context is needed after inputContext becomes
         // nil; clear its conversion session without changing first responder.
         w->view.markedText = nil;
         w->view.markedReplacementRange = NSMakeRange(NSNotFound, 0);
         w->view.markedSelectionRange = NSMakeRange(0, 0);
+        uint64_t markedRevision = w->view.markedTextRevision;
         [context discardMarkedText];
-        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
+        if (!update.IsSameContext() || markedRevision != update.view.markedTextRevision) return JALIUM_OK;
         DispatchSimple(w, JALIUM_EVENT_COMPOSITION_END);
-        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
+        if (!update.IsSameContext()) return JALIUM_OK;
     }
     [w->view.inputContext invalidateCharacterCoordinates];
 #else

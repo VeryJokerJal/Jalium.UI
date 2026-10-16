@@ -622,6 +622,15 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.platform.macos.window.style-input-focus
         COMMAND jalium.native.platform.window.accessibility.tests --style-input-focus-only)
     set_tests_properties(jalium.native.platform.macos.window.style-input-focus PROPERTIES TIMEOUT 90)
+    add_executable(jalium.native.platform.window.text-input-lifetime.tests tests/platform_apple_text_input_lifetime_tests.mm)
+    target_include_directories(jalium.native.platform.window.text-input-lifetime.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.text-input-lifetime.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.text-input-lifetime.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_test(NAME jalium.native.platform.macos.window.text-input-lifetime
+        COMMAND jalium.native.platform.window.text-input-lifetime.tests)
+    set_tests_properties(jalium.native.platform.macos.window.text-input-lifetime PROPERTIES TIMEOUT 30)
     add_executable(jalium.native.platform.window.keyboard-focus.tests tests/platform_apple_keyboard_focus_tests.mm)
     target_include_directories(jalium.native.platform.window.keyboard-focus.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
