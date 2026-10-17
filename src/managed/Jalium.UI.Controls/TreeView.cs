@@ -308,7 +308,15 @@ public class TreeView : ItemsControl
     }
 
     /// <summary>Raises the selected-item-changed routed event.</summary>
-    protected virtual void OnSelectedItemChanged(RoutedPropertyChangedEventArgs<object?> e) => RaiseEvent(e);
+    protected virtual void OnSelectedItemChanged(RoutedPropertyChangedEventArgs<object?> e)
+    {
+        try { RaiseEvent(e); }
+        finally
+        {
+            GetExistingAutomationPeer()?.RaiseAutomationEvent(
+                Jalium.UI.Automation.Peers.AutomationEvents.SelectionPatternOnInvalidated);
+        }
+    }
 
     internal void SelectItem(TreeViewItem? item)
     {
@@ -317,11 +325,12 @@ public class TreeView : ItemsControl
             return;
         }
 
+        var oldValue = SelectedItem;
+        var newValue = item?.ItemData;
         _isChangingSelection = true;
         try
         {
             var oldContainer = _selectedItem;
-            var oldValue = SelectedItem;
             _selectedItem = item;
 
             if (oldContainer != null && oldContainer.IsSelected)
@@ -334,16 +343,15 @@ public class TreeView : ItemsControl
                 item.SetCurrentValue(TreeViewItem.IsSelectedProperty, true);
             }
 
-            var newValue = item?.ItemData;
             SetValue(SelectedItemPropertyKey, newValue);
             UpdateSelectedValue(newValue);
-            OnSelectedItemChanged(new RoutedPropertyChangedEventArgs<object?>(
-                oldValue, newValue, SelectedItemChangedEvent));
         }
         finally
         {
             _isChangingSelection = false;
         }
+        OnSelectedItemChanged(new RoutedPropertyChangedEventArgs<object?>(
+            oldValue, newValue, SelectedItemChangedEvent));
     }
 
     internal void OnContainerSelectionChanged(TreeViewItem item, bool selected)

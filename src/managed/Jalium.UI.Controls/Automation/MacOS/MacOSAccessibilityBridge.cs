@@ -130,6 +130,8 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
             {
                 case AutomationEvents.AutomationFocusChanged: Notify(peer, MacOSAXNotification.Focus); break;
                 case AutomationEvents.TextPatternOnTextSelectionChanged: Notify(peer, MacOSAXNotification.Selection); break;
+                case AutomationEvents.SelectionPatternOnInvalidated:
+                    Notify(peer, MacOSAXNotification.SelectedItems); break;
                 case AutomationEvents.TextPatternOnTextChanged:
                 case AutomationEvents.SelectionItemPatternOnElementSelected:
                 case AutomationEvents.SelectionItemPatternOnElementAddedToSelection:

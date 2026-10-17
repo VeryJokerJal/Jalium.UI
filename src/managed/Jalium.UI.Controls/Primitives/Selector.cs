@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Specialized;
 using Jalium.UI.Controls;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -336,7 +337,12 @@ public abstract class Selector : ItemsControl
     /// </summary>
     protected new virtual void OnSelectionChanged(SelectionChangedEventArgs e)
     {
-        RaiseEvent(e);
+        try { RaiseEvent(e); }
+        finally
+        {
+            GetExistingAutomationPeer()?.RaiseAutomationEvent(
+                Jalium.UI.Automation.Peers.AutomationEvents.SelectionPatternOnInvalidated);
+        }
     }
 
     /// <summary>
@@ -382,103 +388,157 @@ public abstract class Selector : ItemsControl
         // Override in derived classes to update container selection state
     }
 
+    /// <inheritdoc />
+    protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
+    {
+        base.OnItemsChanged(e);
+
+        if (_isUpdatingSelection)
+        {
+            return;
+        }
+
+        SynchronizeSelectionWithItemsChange(e);
+    }
+
+    /// <summary>
+    /// Reconciles selection after the item containers have processed a collection change.
+    /// Multi-selection controls override this to retain every surviving selected item.
+    /// </summary>
+    protected virtual void SynchronizeSelectionWithItemsChange(NotifyCollectionChangedEventArgs e)
+    {
+        switch (e.Action)
+        {
+            case NotifyCollectionChangedAction.Reset:
+                if (Items.Count == 0 || (SelectedItem != null && GetIndexOf(SelectedItem) == -1))
+                {
+                    ClearSelectionOnReset();
+                }
+                else if (SelectedIndex >= Items.Count)
+                {
+                    SelectedIndex = Items.Count - 1;
+                }
+                break;
+
+            case NotifyCollectionChangedAction.Remove:
+                if (Items.Count == 0)
+                {
+                    ClearSelectionOnReset();
+                }
+                else if (e.OldItems != null && SelectedItem != null && e.OldItems.Contains(SelectedItem))
+                {
+                    ClearSelectionOnReset();
+                }
+                else if (e.OldStartingIndex >= 0 && e.OldStartingIndex <= SelectedIndex)
+                {
+                    var removedCount = e.OldItems?.Count ?? 1;
+                    var newIndex = Math.Max(0, SelectedIndex - removedCount);
+                    SelectedIndex = newIndex;
+                }
+                break;
+
+            case NotifyCollectionChangedAction.Add:
+                if (e.NewStartingIndex >= 0 && e.NewStartingIndex <= SelectedIndex)
+                {
+                    var addedCount = e.NewItems?.Count ?? 1;
+                    SelectedIndex += addedCount;
+                }
+                break;
+
+            case NotifyCollectionChangedAction.Replace:
+                if (e.OldItems != null && SelectedItem != null && e.OldItems.Contains(SelectedItem))
+                {
+                    if (e.NewStartingIndex >= 0 && e.NewStartingIndex < Items.Count)
+                    {
+                        SelectedItem = GetItemAt(e.NewStartingIndex);
+                    }
+                    else
+                    {
+                        ClearSelectionOnReset();
+                    }
+                }
+                break;
+        }
+    }
+
+    private void ClearSelectionOnReset()
+    {
+        _isUpdatingSelection = true;
+        var oldItem = SelectedItem;
+        try
+        {
+            SetCurrentValue(SelectedIndexProperty, -1);
+            SetCurrentValue(SelectedItemProperty, null);
+            UpdateSelectedValueFromSelection(null);
+            UpdateContainerSelection();
+        }
+        finally
+        {
+            _isUpdatingSelection = false;
+        }
+
+        if (oldItem != null)
+        {
+            RaiseSelectionChanged(oldItem, null);
+        }
+    }
+
     #endregion
 
     #region Property Changed Callbacks
 
     private static void OnSelectedIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is Selector selector && !selector._isUpdatingSelection)
+        if (d is not Selector selector || selector._isUpdatingSelection) return;
+        object? oldItem = selector.SelectedItem;
+        object? newItem = selector.GetItemAt((int)(e.NewValue ?? -1));
+        bool changed = selector.SelectedItem != newItem;
+        selector._isUpdatingSelection = true;
+        try
         {
-            selector._isUpdatingSelection = true;
-            try
+            if (changed)
             {
-                var newIndex = (int)(e.NewValue ?? -1);
-                var newItem = selector.GetItemAt(newIndex);
-
-                if (selector.SelectedItem != newItem)
-                {
-                    var oldItem = selector.SelectedItem;
-                    selector.SelectedItem = newItem;
-                    selector.UpdateSelectedValueFromSelection(newItem);
-                    selector.UpdateContainerSelection();
-                    selector.RaiseSelectionChanged(oldItem, newItem);
-                }
-            }
-            finally
-            {
-                selector._isUpdatingSelection = false;
+                selector.SelectedItem = newItem;
+                selector.UpdateSelectedValueFromSelection(newItem);
+                selector.UpdateContainerSelection();
             }
         }
+        finally { selector._isUpdatingSelection = false; }
+        if (changed) selector.RaiseSelectionChanged(oldItem, newItem);
     }
 
     private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is Selector selector && !selector._isUpdatingSelection)
+        if (d is not Selector selector || selector._isUpdatingSelection) return;
+        object? newItem = e.NewValue;
+        int newIndex = selector.GetIndexOf(newItem);
+        if (newIndex == -1) newItem = null;
+        selector._isUpdatingSelection = true;
+        try
         {
-            selector._isUpdatingSelection = true;
-            try
-            {
-                var newItem = e.NewValue;
-                var newIndex = selector.GetIndexOf(newItem);
-
-                // If item is not in the collection, clear selection
-                if (newIndex == -1 && newItem != null)
-                {
-                    selector.SelectedItem = null;
-                    selector.SelectedIndex = -1;
-                    selector.UpdateSelectedValueFromSelection(null);
-                    selector.UpdateContainerSelection();
-                    return;
-                }
-
-                if (selector.SelectedIndex != newIndex)
-                {
-                    selector.SelectedIndex = newIndex;
-                }
-
-                selector.UpdateSelectedValueFromSelection(newItem);
-                selector.UpdateContainerSelection();
-                selector.RaiseSelectionChanged(e.OldValue, e.NewValue);
-            }
-            finally
-            {
-                selector._isUpdatingSelection = false;
-            }
+            if (!Equals(selector.SelectedItem, newItem)) selector.SelectedItem = newItem;
+            if (selector.SelectedIndex != newIndex) selector.SelectedIndex = newIndex;
+            selector.UpdateSelectedValueFromSelection(newItem);
+            selector.UpdateContainerSelection();
         }
+        finally { selector._isUpdatingSelection = false; }
+        selector.RaiseSelectionChanged(e.OldValue, newItem);
     }
 
     private static void OnSelectedValueChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is Selector selector && !selector._isUpdatingSelection)
+        if (d is not Selector selector || selector._isUpdatingSelection) return;
+        object? oldItem = selector.SelectedItem;
+        var (matchedIndex, matchedItem) = selector.FindItemBySelectedValue(e.NewValue);
+        selector._isUpdatingSelection = true;
+        try
         {
-            selector._isUpdatingSelection = true;
-            try
-            {
-                var oldItem = selector.SelectedItem;
-                var (matchedIndex, matchedItem) = selector.FindItemBySelectedValue(e.NewValue);
-
-                if (selector.SelectedItem != matchedItem)
-                {
-                    selector.SelectedItem = matchedItem;
-                }
-
-                if (selector.SelectedIndex != matchedIndex)
-                {
-                    selector.SelectedIndex = matchedIndex;
-                }
-
-                selector.UpdateContainerSelection();
-                if (!Equals(oldItem, matchedItem))
-                {
-                    selector.RaiseSelectionChanged(oldItem, matchedItem);
-                }
-            }
-            finally
-            {
-                selector._isUpdatingSelection = false;
-            }
+            if (selector.SelectedItem != matchedItem) selector.SelectedItem = matchedItem;
+            if (selector.SelectedIndex != matchedIndex) selector.SelectedIndex = matchedIndex;
+            selector.UpdateContainerSelection();
         }
+        finally { selector._isUpdatingSelection = false; }
+        if (!Equals(oldItem, matchedItem)) selector.RaiseSelectionChanged(oldItem, matchedItem);
     }
 
     private static void OnSelectedValuePathChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

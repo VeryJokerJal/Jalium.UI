@@ -51,7 +51,7 @@ struct Client {
         NSMutableDictionary* errors = [NSMutableDictionary new];
         NSDictionary* attributes = @{@"id":@"AXIdentifier",@"role":@"AXRole",@"name":@"AXTitle",
             @"value":@"AXValue",@"enabled":@"AXEnabled",@"focused":@"AXFocused",
-            @"selection":@"AXSelectedTextRange",@"selectedText":@"AXSelectedText"};
+            @"selection":@"AXSelectedTextRange",@"selectedText":@"AXSelectedText",@"selected":@"AXSelected"};
         for (NSString* key in attributes) {
             AXError error = kAXErrorSuccess;
             result[key] = Scalar(Copy(element, (__bridge CFStringRef)attributes[key], &error));
@@ -63,6 +63,19 @@ struct Client {
         result[@"valueSettable"] = @(valueError == 0 && valueSettable);
         result[@"selectionSettable"] = @(selectionError == 0 && selectionSettable);
         result[@"errors"] = errors;
+        for (NSString* attribute in @[@"AXSelectedChildren", @"AXSelectedRows"]) {
+            AXError error = kAXErrorSuccess;
+            id children = Copy(element, (__bridge CFStringRef)attribute, &error);
+            if (![children isKindOfClass:NSArray.class]) continue;
+            NSMutableArray* selected = [NSMutableArray new];
+            for (id child in children) {
+                if (!IsElement(child)) continue;
+                AXUIElementRef node = (__bridge AXUIElementRef)child;
+                [selected addObject:@{@"token":@(Token(child)),@"id":Scalar(Copy(node,kAXIdentifierAttribute)),
+                    @"role":Scalar(Copy(node,kAXRoleAttribute)),@"index":Scalar(Copy(node,kAXIndexAttribute))}];
+            }
+            result[attribute] = selected;
+        }
         return result;
     }
     NSArray* Discover() {
@@ -116,6 +129,8 @@ int main(int argc, const char** argv) { @autoreleasepool {
                 if ([action isEqualToString:@"read"]) error = kAXErrorSuccess;
                 else if ([action isEqualToString:@"press"]) error = AXUIElementPerformAction(element,kAXPressAction);
                 else if ([action isEqualToString:@"focus"]) error = AXUIElementSetAttributeValue(element,kAXFocusedAttribute,kCFBooleanTrue);
+                else if ([action isEqualToString:@"set_selected"]) error = AXUIElementSetAttributeValue(element,kAXSelectedAttribute,
+                    [command[@"selected"] boolValue] ? kCFBooleanTrue : kCFBooleanFalse);
                 else if ([action isEqualToString:@"set_value"]) error = AXUIElementSetAttributeValue(element,kAXValueAttribute,
                     (__bridge CFStringRef)Text(command[@"value"]));
                 else if ([action isEqualToString:@"set_selection"]) {

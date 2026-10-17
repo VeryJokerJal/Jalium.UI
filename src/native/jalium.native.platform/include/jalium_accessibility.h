@@ -53,7 +53,7 @@ enum JaliumAccessibilityFlags {
 // and managed enum contract covered by end-to-end host checks.
 enum JaliumAccessibilityNotification {
     JALIUM_AX_NOTIFY_FOCUS, JALIUM_AX_NOTIFY_VALUE, JALIUM_AX_NOTIFY_SELECTION,
-    JALIUM_AX_NOTIFY_LAYOUT, JALIUM_AX_NOTIFY_TITLE
+    JALIUM_AX_NOTIFY_LAYOUT, JALIUM_AX_NOTIFY_TITLE, JALIUM_AX_NOTIFY_SELECTED_ITEMS
 };
 typedef struct JaliumAccessibilityRequest {
     uint64_t nodeId;

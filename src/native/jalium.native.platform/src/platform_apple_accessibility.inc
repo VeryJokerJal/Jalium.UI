@@ -494,7 +494,8 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     return rows;
 }
 - (NSArray*)accessibilityRows {
-    if (![self.accessibilityRole isEqual:NSAccessibilityOutlineRole]) return nil;
+    NSString* role = self.accessibilityRole;
+    if (![role isEqual:NSAccessibilityOutlineRole] && ![role isEqual:NSAccessibilityTableRole]) return nil;
     NSMutableArray* rows = [NSMutableArray new];
     NSMutableArray* pending = [self.accessibilityChildren mutableCopy];
     while (pending.count) {
@@ -765,8 +766,9 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     if (selector == @selector(isAccessibilityDisclosed) || selector == @selector(accessibilityDisclosedRows))
         return row && expandable;
     if (selector == @selector(accessibilityDisclosureLevel)) return row;
-    if (selector == @selector(accessibilityRows)) return request.role == 23;
-    if (selector == @selector(accessibilitySelectedRows)) return request.role == 23 && (request.flags & JALIUM_AX_SELECTION);
+    const bool rowContainer = request.role == 23 || request.role == 28 || request.role == 36;
+    if (selector == @selector(accessibilityRows)) return rowContainer;
+    if (selector == @selector(accessibilitySelectedRows)) return rowContainer && (request.flags & JALIUM_AX_SELECTION);
     if (selector == @selector(accessibilitySelectedChildren)) return (request.flags & JALIUM_AX_SELECTION) != 0;
     if (selector == @selector(accessibilityMinValue) || selector == @selector(accessibilityMaxValue))
         return (request.flags & JALIUM_AX_RANGE) != 0;
@@ -858,6 +860,13 @@ void jalium_apple_window_notify_accessibility(JaliumPlatformWindow* window, uint
         case JALIUM_AX_NOTIFY_SELECTION: name = NSAccessibilitySelectedTextChangedNotification; break;
         case JALIUM_AX_NOTIFY_LAYOUT: name = NSAccessibilityLayoutChangedNotification; break;
         case JALIUM_AX_NOTIFY_TITLE: name = NSAccessibilityTitleChangedNotification; break;
+        case JALIUM_AX_NOTIFY_SELECTED_ITEMS: {
+            JaliumAccessibilityRequest selectionInfo{};
+            if (![element info:&selectionInfo] || !hasOriginalContent()) return;
+            name = selectionInfo.role == 23 || selectionInfo.role == 28 || selectionInfo.role == 36
+                ? NSAccessibilitySelectedRowsChangedNotification : NSAccessibilitySelectedChildrenChangedNotification;
+            break;
+        }
     }
     if (name) NSAccessibilityPostNotification(element, name);
 }

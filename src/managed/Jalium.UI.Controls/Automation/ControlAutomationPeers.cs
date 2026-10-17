@@ -64,7 +64,8 @@ public class ListBoxAutomationPeer : SelectorAutomationPeer
         {
             object value = item is ListBoxItem container ? container.Content ?? container : item;
             bool isSelected = ListBoxOwner.SelectionMode == SelectionMode.Single
-                ? Equals(ListBoxOwner.SelectedItem, value) : ListBoxOwner.SelectedItems.Contains(value);
+                ? Equals(ListBoxOwner.SelectedItem, item) || Equals(ListBoxOwner.SelectedItem, value)
+                : ListBoxOwner.SelectedItems.Contains(item) || ListBoxOwner.SelectedItems.Contains(value);
             if (isSelected && values.Add(value))
                 selected.Add(FindOrCreateItemAutomationPeer(item));
         }
@@ -139,7 +140,8 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public override bool IsSelected => ListOwner is { } list
         ? list.SelectionMode == SelectionMode.Single
-            ? Equals(list.SelectedItem, SelectionValue) : list.SelectedItems.Contains(SelectionValue)
+            ? Equals(list.SelectedItem, Item) || Equals(list.SelectedItem, SelectionValue)
+            : list.SelectedItems.Contains(Item) || list.SelectedItems.Contains(SelectionValue)
         : Item is ListBoxItem item && item.IsSelected;
 
     /// <inheritdoc />

@@ -9,7 +9,7 @@ internal enum MacOSAXTextNavigation { LineForIndex, RangeForIndex, RangeForLine,
 internal enum MacOSAXWindowButton { Default, Cancel, Close, Minimize, Zoom }
 internal enum MacOSAXString { Name, Help, Identifier, Value, Placeholder }
 internal enum MacOSAXAction { Press, SetFocus, Increment, Decrement, Expand, Collapse, Deselect }
-internal enum MacOSAXNotification { Focus, Value, Selection, Layout, Title }
+internal enum MacOSAXNotification { Focus, Value, Selection, Layout, Title, SelectedItems }
 [Flags]
 internal enum MacOSAXFlags : uint
 {

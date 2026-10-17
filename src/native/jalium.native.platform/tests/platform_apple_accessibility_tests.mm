@@ -313,6 +313,74 @@ static int RunNotificationLifecycleCases(int onlyCase)
     return completed == (onlyCase >= 0 ? 1 : 22) ? 0 : 1;
 }
 
+struct TableSelectionFixture { int32_t role; bool selected; };
+template<class Operation>
+static int32_t TableSelectionQuery(JaliumAccessibilityRequest* request, void* context)
+{
+    auto& state = *static_cast<TableSelectionFixture*>(context);
+    if (request->nodeId < 1 || request->nodeId > 3) return 0;
+    const bool row = request->nodeId == 3;
+    // The two retained histories intentionally use different child protocols.
+    // Exercise the protocol declared by this tree without renumbering either.
+    if constexpr (requires { Operation::JALIUM_AX_BEGIN_CHILDREN; }) {
+        if (request->operation == Operation::JALIUM_AX_BEGIN_CHILDREN) {
+            request->resultId = request->nodeId; request->childCount = row ? 0 : 1; return 1;
+        }
+        if (request->operation == Operation::JALIUM_AX_READ_CHILDREN) {
+            if (row) { request->childCount = 0; return 1; }
+            if (!request->text || request->textCapacity < 1) return 0;
+            uint64_t child = request->nodeId + 1;
+            std::memcpy(request->text, &child, sizeof(child)); request->childCount = 1; return 1;
+        }
+        if (request->operation == Operation::JALIUM_AX_RELEASE_CHILDREN) return 1;
+    }
+    switch (request->operation) {
+        case JALIUM_AX_INFO:
+            request->role = request->nodeId == 1 ? 32 : request->nodeId == 2 ? state.role : 29;
+            request->parentId = request->nodeId == 1 ? 0 : request->nodeId - 1;
+            request->childCount = row ? 0 : 1;
+            request->flags = JALIUM_AX_ENABLED | (request->nodeId == 2 ? JALIUM_AX_SELECTION : 0);
+            if (row) request->flags |= JALIUM_AX_SELECTABLE | (state.selected ? JALIUM_AX_SELECTED : 0);
+            request->x = 10; request->y = 10; request->width = 100; request->height = 40;
+            return 1;
+        case JALIUM_AX_ATTACHED: return 1;
+        case JALIUM_AX_CHILD:
+            if (row || request->index != 0) return 0;
+            request->resultId = request->nodeId + 1; return 1;
+        default: return 0;
+    }
+}
+static void RunTableSelectionCases()
+{
+    int completed = 0;
+    for (int titlebar = 0; titlebar < 2; ++titlebar)
+        for (int role : { 28, 36 })
+            for (bool selected : { false, true }) {
+                JaliumWindowParams params{};
+                params.title = reinterpret_cast<const uint16_t*>(u"AX table selection contract");
+                params.x = params.y = JALIUM_DEFAULT_POS; params.width = 320; params.height = 220;
+                params.style = JALIUM_WINDOW_STYLE_CLOSABLE | JALIUM_WINDOW_STYLE_RESIZABLE |
+                    (titlebar ? JALIUM_WINDOW_STYLE_TITLEBAR : JALIUM_WINDOW_STYLE_BORDERLESS);
+                auto* window = jalium_window_create(&params);
+                Check(window != nullptr, "create table selection contract Window");
+                TableSelectionFixture fixture{role, selected};
+                jalium_apple_window_set_accessibility(window, TableSelectionQuery<JaliumAccessibilityOperation>, &fixture);
+                jalium_apple_window_show(window, 0);
+                NSView* view = (__bridge NSView*)reinterpret_cast<void*>(jalium_window_get_native_handle(window));
+                NSAccessibilityElement* root = view.accessibilityChildren.firstObject;
+                NSAccessibilityElement* table = root.accessibilityChildren.firstObject;
+                Check([table.accessibilityRole isEqual:NSAccessibilityTableRole], "data grid and table expose native table role");
+                Check([table isAccessibilitySelectorAllowed:@selector(accessibilityRows)], "table exposes native rows capability");
+                Check([table isAccessibilitySelectorAllowed:@selector(accessibilitySelectedRows)], "selectable table exposes selected rows capability");
+                Check(table.accessibilityRows.count == 1, "native table enumerates direct row objects");
+                NSArray* selectedRows = table.accessibilitySelectedRows;
+                Check(selectedRows.count == (selected ? 1u : 0u), "native selected rows follow provider selection flags");
+                if (selected) Check(selectedRows.firstObject == table.accessibilityRows.firstObject, "selected row retains row identity");
+                jalium_window_destroy(window); completed++;
+            }
+    std::printf("macOS AX table selection: %d/8 passed\n", completed);
+}
+
 int main(int argc, const char** argv)
 {
     @autoreleasepool {
@@ -526,7 +594,7 @@ int main(int argc, const char** argv)
             Check(nativeWindow.accessibilityCloseButton == nil && nativeWindow.accessibilityMinimizeButton == nil
                 && nativeWindow.accessibilityZoomButton == nil, "foreign caption queries never enter managed callback");
             for (int notification : { JALIUM_AX_NOTIFY_FOCUS, JALIUM_AX_NOTIFY_VALUE, JALIUM_AX_NOTIFY_SELECTION,
-                    JALIUM_AX_NOTIFY_LAYOUT, JALIUM_AX_NOTIFY_TITLE })
+                    JALIUM_AX_NOTIFY_LAYOUT, JALIUM_AX_NOTIFY_TITLE, JALIUM_AX_NOTIFY_SELECTED_ITEMS })
                 jalium_apple_window_notify_accessibility(platformWindow, 1, notification);
             jalium_apple_window_set_accessibility(platformWindow, nullptr, nullptr);
         }});
@@ -548,6 +616,7 @@ int main(int argc, const char** argv)
             "destroyed native Window does not retain managed button references");
         Check(nativeWindow.accessibilityCloseButton == nil && nativeWindow.accessibilityMinimizeButton == nil
             && nativeWindow.accessibilityZoomButton == nil, "destroyed Window does not retain caption references");
+        RunTableSelectionCases();
         Check(RunReadLifecycleCases(-1) == 0, "complete public read lifecycle regressions");
         Check(RunNotificationLifecycleCases(-1) == 0, "complete public notification lifecycle regressions");
         jalium_platform_shutdown();
