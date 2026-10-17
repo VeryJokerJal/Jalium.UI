@@ -10,7 +10,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that displays a list of items and allows the user to select one or more.
 /// </summary>
-public class ListBox : Selector
+public partial class ListBox : Selector
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -39,6 +39,7 @@ public class ListBox : Selector
     #region Fields
 
     private readonly List<object> _selectedItems;
+    private readonly SelectedItemsCollection _selectedItemsView;
 
     /// <summary>
     /// The anchor index for Extended selection range operations.
@@ -71,7 +72,7 @@ public class ListBox : Selector
     /// In Single mode, this contains at most one item.
     /// In Multiple and Extended modes, this contains all selected items.
     /// </summary>
-    public IList SelectedItems => _selectedItems;
+    public IList SelectedItems => _selectedItemsView;
 
     /// <summary>
     /// Gets or sets the anchor item used for extended range selection.
@@ -111,6 +112,8 @@ public class ListBox : Selector
     public ListBox()
     {
         _selectedItems = (List<object>)SelectedItemsImpl;
+        _selectedItemsView = new SelectedItemsCollection(this, _selectedItems);
+        SetSelectedItemsCollectionView(_selectedItemsView);
         SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
 
         if (ItemsPanel == null)
@@ -389,11 +392,16 @@ public class ListBox : Selector
 
         // User handlers run after the selection transaction closes so a newer
         // selection uses the same complete pipeline and remains authoritative.
-        if (removedItems.Count > 0 || addedItems.Count > 0)
-            OnSelectionChanged(new SelectionChangedEventArgs(SelectionChangedEvent, removedItems, addedItems));
-
-        if (publishToSource)
-            PublishSelectionToSource();
+        try
+        {
+            if (removedItems.Count > 0 || addedItems.Count > 0)
+                OnSelectionChanged(new SelectionChangedEventArgs(SelectionChangedEvent, removedItems, addedItems));
+        }
+        finally
+        {
+            try { _selectedItemsView.PublishCommittedSelection(); }
+            finally { if (publishToSource) PublishSelectionToSource(); }
+        }
         return true;
     }
 

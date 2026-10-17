@@ -32,7 +32,7 @@ def stop_owned_app(app):
             try: os.kill(int(pid), signal.SIGTERM)
             except ProcessLookupError: pass
 
-def run_case(work,app,client_binary,observer_binary,index,libraries,collection_writes=False):
+def run_case(work,app,client_binary,observer_binary,index,libraries,collection_writes=False,public_mutations=False):
     internal=work
     output=work/('case-'+str(index))
     output.mkdir(mode=0o700)
@@ -75,7 +75,7 @@ def run_case(work,app,client_binary,observer_binary,index,libraries,collection_w
      value=call('read',id='selection-container')['node'];require(len(value.get(attribute,[]))==len(indices) and selected_ids(value.get(attribute,[]))==expected,'AX selected collection matches public model')
     started=time.monotonic()
     try:
-     command=['/usr/bin/open','-n','-W','--env','JALIUM_SELECTION_OUTPUT='+str(output),'--env','TMPDIR='+str(internal/'tmp'),'--env','DYLD_PRINT_LIBRARIES=1','--stdout',str(output/'app.log'),'--stderr',str(output/'app.err'),str(app),'--args','--window-selection-notifications-case='+str(index)];p=subprocess.Popen(command,stdout=(output/'launch.log').open('w'),stderr=subprocess.STDOUT);initial=wait(lambda:state() if state().get('appRunning') else None,'host ready',5);pid=initial['processId']
+     command=['/usr/bin/open','-n','-W','--env','JALIUM_SELECTION_OUTPUT='+str(output),'--env','JALIUM_SELECTION_MUTATIONS='+('1' if public_mutations else '0'),'--env','TMPDIR='+str(internal/'tmp'),'--env','DYLD_PRINT_LIBRARIES=1','--stdout',str(output/'app.log'),'--stderr',str(output/'app.err'),str(app),'--args','--window-selection-notifications-case='+str(index)];p=subprocess.Popen(command,stdout=(output/'launch.log').open('w'),stderr=subprocess.STDOUT);initial=wait(lambda:state() if state().get('appRunning') else None,'host ready',5);pid=initial['processId']
      observer=subprocess.Popen([str(observer_binary),str(pid),'40'],stdout=eventsPath.open('w'),stderr=(output/'observer.err').open('w'))
      wait(lambda:any(e.get('kind')=='subscription' and e.get('identifier')=='selection-container' and e.get('results',{}).get(notificationName)==0 for e in events()),'selection notifications subscribed',4)
      client=subprocess.Popen([str(client_binary),str(pid)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,bufsize=1,stderr=(output/'client.err').open('w'))
@@ -131,7 +131,7 @@ def run_case(work,app,client_binary,observer_binary,index,libraries,collection_w
      if not all(loaded.values()):failures.append('host did not load all copied native libraries')
      for name,process in [('launcher',p),('observer',observer),('client',client)]:
       if process is not None and process.returncode!=0:failures.append(name+' exited unsuccessfully')
-     result={'index':index,'passed':not failures,'checks':checks,'failures':failures,'initial':initial,'final':final,'host':host,'commands':commands,'events':events(),'observerPID':None if observer is None else observer.pid,'clientPID':None if client is None else client.pid,'hostPID':pid,'loadedNative':loaded,'physicalInput':False,'externalAX':True,'seconds':round(time.monotonic()-started,3),'output':str(output)}
+     result={'index':index,'passed':not failures,'checks':checks,'failures':failures,'initial':initial,'final':final,'host':host,'commands':commands,'events':events(),'observerPID':None if observer is None else observer.pid,'clientPID':None if client is None else client.pid,'hostPID':pid,'loadedNative':loaded,'physicalInput':False,'externalAX':True,'publicMutations':public_mutations,'seconds':round(time.monotonic()-started,3),'output':str(output)}
      (output/'receipt.json').write_text(json.dumps(result,ensure_ascii=False))
     return result
 
@@ -139,6 +139,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--cases")
+    parser.add_argument("--mutations", action="store_true", help="drive public SelectedItems edits in the eight ListBox mode/chrome cases")
     parser.add_argument("--collections", action="store_true", help="also verify atomic selected-collection writes in ten control/chrome cases")
     parser.add_argument("--work-parent", type=Path, default=Path.home() / "Library/Caches")
     parser.add_argument("--results-file", type=Path)
@@ -146,10 +147,10 @@ def main():
     source = args.app.resolve()
     if not source.is_dir() or source.suffix != ".app":
         parser.error("--app must name a built HostSmoke .app directory")
-    case_text = args.cases or ("0,1,2,3,4,5,6,7,8,9" if args.collections else "0,1,2,3")
+    case_text = args.cases or ("0,1,4,5,6,7,8,9" if args.mutations else "0,1,2,3,4,5,6,7,8,9" if args.collections else "0,1,2,3")
     try: cases = [int(value) for value in case_text.split(",")]
     except ValueError: parser.error("--cases must contain integer indices")
-    if not cases or len(set(cases)) != len(cases) or any(index not in range(10 if args.collections else 4) for index in cases):
+    if not cases or len(set(cases)) != len(cases) or any(index not in (set((0,1,4,5,6,7,8,9)) if args.mutations else set(range(10 if args.collections else 4))) for index in cases):
         parser.error("--cases contains duplicates or indices outside the selected suite")
     receipts = []
     with tempfile.TemporaryDirectory(prefix="jalium-selection-notification-ax-", dir=args.work_parent) as name:
@@ -183,7 +184,7 @@ def main():
                 "-framework", "Foundation", "-framework", "ApplicationServices", "-o", str(output)], check=True)
         try:
             for index in cases:
-                receipt = run_case(work, app, client, observer, index, libraries, args.collections)
+                receipt = run_case(work, app, client, observer, index, libraries, args.collections, args.mutations)
                 receipts.append(receipt)
                 print(json.dumps({"case":index,"passed":receipt["passed"],"checks":len(receipt["checks"]),
                     "failures":receipt["failures"]}), flush=True)

@@ -19,6 +19,7 @@ internal static class WindowSelectionNotificationChecks
         const string prefix = "--window-selection-notifications-case=";
         if (!int.TryParse(argument.AsSpan(prefix.Length), out int index) || (uint)index >= 10) return 2;
         bool custom = index % 2 == 1, outline = index is 2 or 3, dataItems = index is 8 or 9;
+        bool mutateCollection = Environment.GetEnvironmentVariable("JALIUM_SELECTION_MUTATIONS") == "1";
         SelectionMode mode = index is 4 or 5 ? SelectionMode.Single : index is 6 or 7 ? SelectionMode.Extended : SelectionMode.Multiple;
         string output = Environment.GetEnvironmentVariable("JALIUM_SELECTION_OUTPUT")
             ?? throw new InvalidOperationException("JALIUM_SELECTION_OUTPUT is required.");
@@ -80,7 +81,7 @@ internal static class WindowSelectionNotificationChecks
                 selectedItems = list.SelectedItems.Cast<object>().Select(item => item.ToString()).ToArray(),
                 closed, timedOut, windowVisible = owner.IsVisible, active = owner.IsActive,
                 frontmostPID = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier,
-                appActive = app.Active, appRunning = app.Running, physicalInput = false, externalAX = true };
+                appActive = app.Active, appRunning = app.Running, physicalInput = false, externalAX = true, mutateCollection };
             string json = JsonSerializer.Serialize(value);
             File.WriteAllText(Path.Combine(output, "state.json.tmp"), json);
             File.Move(Path.Combine(output, "state.json.tmp"), Path.Combine(output, "state.json"), true);
@@ -89,6 +90,24 @@ internal static class WindowSelectionNotificationChecks
         void Select(int next)
         {
             phase = next;
+            if (mutateCollection && !outline)
+            {
+                object Item(int i) => dataItems ? labels[i] : listRows[i];
+                if (next == 1) { list.SelectedItems.Clear(); list.SelectedItems.Add(Item(1)); }
+                else if (next == 2)
+                {
+                    if (mode == SelectionMode.Single) list.SelectedItems[0] = Item(2);
+                    else { list.SelectedItems.Insert(0, Item(0)); list.SelectedItems[1] = Item(2); }
+                }
+                else if (next == 3)
+                {
+                    if (mode == SelectionMode.Single) { list.SelectedItems.Clear(); list.SelectedItems.Add(Item(2)); }
+                    else list.SelectedItems.Remove(Item(0));
+                }
+                else list.SelectedItems.Clear();
+                Record("public collection mutation");
+                return;
+            }
             if (outline)
             {
                 if (next == 4) foreach (var row in treeRows) row.IsSelected = false;
@@ -124,6 +143,7 @@ internal static class WindowSelectionNotificationChecks
         {
             phase = 5;
             if (outline) treeRows[1].IsSelected = true;
+            else if (mutateCollection) list.SelectedItems.Add(dataItems ? labels[1] : listRows[1]);
             else list.SelectedIndex = 1;
         };
         owner.Closed += (_, _) => { closed = true; Record("closed"); };

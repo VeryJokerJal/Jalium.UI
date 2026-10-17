@@ -4,6 +4,67 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v264：公开 SelectedItems 集合经过完整选择事务
+
+源码和合同复现确认：公开 `SelectedItems` 原先直接暴露普通 List，Add／Remove
+等修改绕过选择事务，已选集合与主选择、行状态、绑定和 AX 通知可以互相矛盾。
+现在公开属性与 Selector 的同一只读依赖属性返回稳定的可写集合视图，内部事务
+仍独占原有存储。IList／泛型 IList 的 Add、Insert、索引替换、Remove、RemoveAt、
+Clear 复用既有事务；未知项／null／越界请求在修改前拒绝，单选不能加入第二项，
+重复加入已有逻辑项不产生变化，原主选择仍在时予以保留。
+
+集合实现 INotifyCollectionChanged／INotifyPropertyChanged，在状态和行已提交后
+发布 Count、Item[] 和完整 Reset。使用重置而不是旧增删索引，是为了让重入
+观察者读取当前完整状态。SelectedIndex、保护的批量 API、项目变化及模式切换
+同样更新该视图；仅别名／对象引用变化也能通知，保持原有容器／内容表示契约。
+SelectionChanged 或集合 PropertyChanged 回调抛出后，已提交的集合通知和双向
+绑定仍得到发布；回调作出的较新选择保持权威。单选集合继续可读，
+公开写入遵守 Jalium 至多一项的约束。
+
+| v264 最终验证 | PR 历史 | 本地 master 历史 |
+| --- | --- | --- |
+| 完整托管回归 | **2560 通过，0 失败，2 项既有跳过** | **2477 通过，0 失败，2 项既有跳过** |
+| 本轮及相关选择合同 | **155/155** | **155/155** |
+| 独立系统 AX：公开集合修改 | **8/8，488 条断言** | **8/8，488 条断言** |
+| 既有整组 AX 写入 | **10/10，1170 条断言** | **10/10，1170 条断言** |
+| 既有文字通知 | **6/6，312 条断言** | **6/6，312 条断言** |
+
+公开集合宿主通过普通按钮执行公开 Add／Insert／索引替换／Remove／Clear，
+并由集合 Add 触发选择回调关闭窗口。覆盖 ListBox 三种模式、原生／自绘标题栏、
+自有容器和生成的数据容器。宿主、操作客户端与只读观察者为三个不同进程；
+检查实际行状态、AX 已选集合、通知及关闭后旧行引用失效，不注入物理输入。
+
+最终同一份 26 项新夹具在原始提交上 **25 失败／1 通过**，修复后全部通过。
+私有负对照只让公开 Add 改集合存储并发布集合通知，绕过选择提交；验证器以
+**0/1** 拒绝，不能用集合内容或 AX 返回成功掩盖行状态未更新。负对照不进入产品。
+
+两条完整冻结源码分别构建匹配的八库与三份程序集，核对实际加载路径、Mach-O
+UUID／代码和数据段、程序集哈希及 98 个平台 C 导出。两条历史的原生源码各
+546／545 个文件均与各自父提交一致；accessibility CTest 各 **1/1** 通过，
+沿用其 32 项整组写入、8 项表格读取、100 项读取生命周期及 22 项通知生命周期。
+本轮没有原生产品修改，不重跑 ASan，也不把上一轮结果计为本轮新运行。
+
+可复现入口：
+
+```sh
+python3 eng/apple/verify-selection-notifications.py --app /absolute/path/Jalium.UI.MacOS.HostSmoke.app --mutations
+```
+
+原有默认四场景及 `--collections` 十场景保持。验收读取共享只读属性与原有
+别名、标量和批量入口；两条历史原有 34 个差异的路径及精确增删内容保持，
+其他并行未提交改动没有纳入这些冻结构建。
+
+父提交 `17df43b1` 的 Apple 5/5 作业通过，包括 Window 与完整原生／包构建；
+本轮新提交 CI 另行跟进。桌面连接仍不可用，没有新增截图、物理输入／IME、
+VoiceOver、多屏／Spaces 或 Intel／最低系统运行验收。虚拟化滚动中的选择写入、
+其他选择控件、DataGrid 完整桌面行为、Writing Tools 界面及旧个别失败的归因
+继续保留；完整 macOS 目标仍在进行。
+
+参考 [WPF SelectedItems 文档](https://learn.microsoft.com/en-us/dotnet/api/system.windows.controls.listbox.selecteditems?view=windowsdesktop-10.0)
+和 [其公开集合实现](https://github.com/dotnet/wpf/blob/main/src/Microsoft.DotNet.Wpf/src/PresentationFramework/System/Windows/Controls/SelectedItemCollection.cs)。
+这里复用 Jalium 既有事务并保留自身 API 约定，不表示完成所有 WPF 行为。
+
+
 ## v263：辅助技术整组替换列表与树的选择
 
 原始列表宿主中，独立 AX 客户端写入 `AXSelectedChildren` 返回成功，但公开

@@ -274,6 +274,12 @@ public abstract class Selector : ItemsControl
     /// </summary>
     protected IList SelectedItemsImpl => (IList)GetValue(SelectedItemsImplProperty)!;
 
+    internal void SetSelectedItemsCollectionView(IList collection)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        SetValue(SelectedItemsPropertyKey, collection);
+    }
+
     #endregion
 
     #region Fields
