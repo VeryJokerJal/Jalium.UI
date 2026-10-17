@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-ax-notifications-case=", StringComparison.Ordinal))
+    return WindowAXNotificationAcceptanceChecks.RunCase(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-file-panel-acceptance-case=", StringComparison.Ordinal))
     return WindowFilePanelAcceptanceChecks.RunCase(args[0]);
 

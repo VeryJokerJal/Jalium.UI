@@ -432,6 +432,15 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                     if (!valueLifetime()) return false;
                     value.SetValue(new string(request.Text, 0, request.TextCount)); return true;
                 }
+                if (GetTextSource(peer) is { IsReadOnly: false } textSource
+                    && textSource is IAutomationTextValueSource textValue
+                    && request.TextCount >= 0 && request.TextCount <= request.TextCapacity
+                    && request.TextCount <= 16 * 1024 * 1024
+                    && (request.TextCount == 0 || request.Text != null))
+                {
+                    if (!valueLifetime()) return false;
+                    return textValue.TrySetValue(new string(request.Text, 0, request.TextCount));
+                }
                 return false;
             case MacOSAXOperation.TextSelection:
             case MacOSAXOperation.SetTextSelection:
@@ -535,6 +544,11 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         if (!password && GetTextSource(peer) is { } text)
         {
             flags |= MacOSAXFlags.Text;
+            if (text is IAutomationTextValueSource)
+            {
+                flags |= MacOSAXFlags.Value;
+                if (!text.IsReadOnly) flags |= MacOSAXFlags.Writable;
+            }
             if (text is IAutomationTextStyleSource) flags |= MacOSAXFlags.StyledText;
             if (text is IAutomationTextViewSource)
             {

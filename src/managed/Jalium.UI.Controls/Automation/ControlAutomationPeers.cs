@@ -58,8 +58,17 @@ public class ListBoxAutomationPeer : SelectorAutomationPeer
     /// <inheritdoc />
     public override AutomationPeer[] GetSelection()
     {
-        // Simplified - return empty if no way to get container
-        return Array.Empty<AutomationPeer>();
+        List<AutomationPeer> selected = [];
+        HashSet<object> values = [];
+        foreach (object item in ListBoxOwner.Items)
+        {
+            object value = item is ListBoxItem container ? container.Content ?? container : item;
+            bool isSelected = ListBoxOwner.SelectionMode == SelectionMode.Single
+                ? Equals(ListBoxOwner.SelectedItem, value) : ListBoxOwner.SelectedItems.Contains(value);
+            if (isSelected && values.Add(value))
+                selected.Add(FindOrCreateItemAutomationPeer(item));
+        }
+        return selected.ToArray();
     }
 
     /// <inheritdoc />
@@ -89,6 +98,8 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     }
 
     private ListBoxItem ItemOwner => (ListBoxItem)Owner;
+    private ListBox? ListOwner => ItemsControlAutomationPeer?.ItemsOwner as ListBox ?? (Item as ListBoxItem)?.ParentListBox;
+    private object SelectionValue => Item is ListBoxItem item ? item.Content ?? item : Item;
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -105,7 +116,7 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     protected override string GetNameCore()
     {
-        var content = ItemOwner.Content;
+        var content = Item is ListBoxItem item ? item.Content : Item;
         if (content is string text)
             return text;
         return content?.ToString() ?? base.GetNameCore();
@@ -126,13 +137,17 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     #region ISelectionItemProvider
 
     /// <inheritdoc />
-    public override bool IsSelected => ItemOwner.IsSelected;
+    public override bool IsSelected => ListOwner is { } list
+        ? list.SelectionMode == SelectionMode.Single
+            ? Equals(list.SelectedItem, SelectionValue) : list.SelectedItems.Contains(SelectionValue)
+        : Item is ListBoxItem item && item.IsSelected;
 
     /// <inheritdoc />
     public override AutomationPeer SelectionContainer
     {
         get
         {
+            if (ItemsControlAutomationPeer is { } peer) return peer;
             var listBox = ItemOwner.ParentListBox;
             if (listBox != null)
                 return listBox.GetAutomationPeer() ?? new ListBoxAutomationPeer(listBox);
@@ -143,6 +158,11 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public override void Select()
     {
+        if (Item is not ListBoxItem && ListOwner is { } dataList)
+        {
+            dataList.SetAutomationSelection(Item, selected: true, exclusive: true);
+            return;
+        }
         if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: true, exclusive: true);
         else ItemOwner.IsSelected = true;
     }
@@ -150,6 +170,11 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public override void AddToSelection()
     {
+        if (Item is not ListBoxItem && ListOwner is { } dataList)
+        {
+            dataList.SetAutomationSelection(Item, selected: true, exclusive: false);
+            return;
+        }
         if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: true, exclusive: false);
         else ItemOwner.IsSelected = true;
     }
@@ -157,6 +182,11 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public override void RemoveFromSelection()
     {
+        if (Item is not ListBoxItem && ListOwner is { } dataList)
+        {
+            dataList.SetAutomationSelection(Item, selected: false, exclusive: false);
+            return;
+        }
         if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: false, exclusive: false);
         else ItemOwner.IsSelected = false;
     }
@@ -168,6 +198,11 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public void ScrollIntoView()
     {
+        if (Item is not ListBoxItem && ListOwner is { } dataList)
+        {
+            dataList.ScrollIntoView(Item);
+            return;
+        }
         ItemOwner.BringIntoView();
     }
 

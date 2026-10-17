@@ -337,9 +337,10 @@ public class ListBox : Selector
     // Automation Select replaces the selection even in a multiple-selection
     // list. Use the existing atomic batch so collections, scalar properties,
     // realized containers and SelectionChanged stay synchronized.
-    internal void SetAutomationSelection(ListBoxItem item, bool selected, bool exclusive)
+    internal void SetAutomationSelection(object item, bool selected, bool exclusive)
     {
-        int index = GetItemIndex(item);
+        int index = item is ListBoxItem container ? GetItemIndex(container) : Items.IndexOf(item);
+        if (index < 0) index = Items.IndexOf(item);
         if (index < 0 || GetSelectionValueAtIndex(index) is not { } value) return;
         IEnumerable<object> requested = exclusive ? [value]
             : selected ? _selectedItems.Append(value)

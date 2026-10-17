@@ -53,5 +53,12 @@ internal interface IAutomationTextViewSource
     bool ReplaceSelection(string text);
 }
 
+// Native text APIs may expose whole-document value editing even when the
+// public UI Automation peer intentionally supports Text rather than Value.
+internal interface IAutomationTextValueSource
+{
+    bool TrySetValue(string text);
+}
+
 internal readonly record struct AutomationTextSpan(int Start, int Length);
 internal readonly record struct AutomationTextLine(int Start, int Length, Rect Bounds);
