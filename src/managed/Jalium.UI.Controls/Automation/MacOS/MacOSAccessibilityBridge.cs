@@ -267,7 +267,12 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         if (peer.Owner is UIElement element && Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element)) return true;
         if (peer.Owner is Visual visual)
             for (Visual? parent = visual; parent != null; parent = parent.VisualParent)
+            {
                 if (parent is UIElement { Visibility: not Visibility.Visible }) return true;
+                if (parent is ComboBoxItem item
+                    && ItemsControl.ItemsControlFromItemContainer(item) is ComboBox { IsDropDownOpen: false })
+                    return true;
+            }
         return false;
     }
 
@@ -302,6 +307,9 @@ internal sealed unsafe partial class MacOSAccessibilityTree
 
     private static bool CanExposeChildren(AutomationPeer peer, bool headerOnly = false)
     {
+        // Logical providers remain usable while collapsed; native discovery and
+        // retained row requests follow the actual dropdown presentation.
+        if (peer.Owner is ComboBox { IsDropDownOpen: false }) return false;
         // ItemsControl's logical peers include descendants even while their
         // TreeViewItem is collapsed. AX outline navigation must only disclose
         // rows in expanded branches, independent of template realization.

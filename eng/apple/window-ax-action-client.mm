@@ -58,7 +58,7 @@ struct Client {
         NSMutableDictionary* errors = [NSMutableDictionary new];
         NSDictionary* attributes = @{@"id":@"AXIdentifier",@"role":@"AXRole",@"name":@"AXTitle",
             @"value":@"AXValue",@"enabled":@"AXEnabled",@"focused":@"AXFocused",
-            @"selection":@"AXSelectedTextRange",@"selectedText":@"AXSelectedText",@"selected":@"AXSelected",@"position":@"AXPosition",@"size":@"AXSize"};
+            @"selection":@"AXSelectedTextRange",@"selectedText":@"AXSelectedText",@"selected":@"AXSelected",@"expanded":@"AXExpanded",@"position":@"AXPosition",@"size":@"AXSize"};
         for (NSString* key in attributes) {
             AXError error = kAXErrorSuccess;
             result[key] = Scalar(Copy(element, (__bridge CFStringRef)attributes[key], &error));
@@ -70,7 +70,7 @@ struct Client {
         result[@"valueSettable"] = @(valueError == 0 && valueSettable);
         result[@"selectionSettable"] = @(selectionError == 0 && selectionSettable);
         result[@"errors"] = errors;
-        for (NSString* attribute in @[@"AXSelected", @"AXSelectedRows", @"AXSelectedChildren"]) {
+        for (NSString* attribute in @[@"AXSelected", @"AXSelectedRows", @"AXSelectedChildren", @"AXExpanded"]) {
             Boolean settable = false;
             AXError error = AXUIElementIsAttributeSettable(element, (__bridge CFStringRef)attribute, &settable);
             result[[attribute stringByAppendingString:@"Settable"]] = @(error == 0 && settable);
@@ -145,6 +145,8 @@ int main(int argc, const char** argv) { @autoreleasepool {
                 if ([action isEqualToString:@"read"]) error = kAXErrorSuccess;
                 else if ([action isEqualToString:@"press"]) error = AXUIElementPerformAction(element,kAXPressAction);
                 else if ([action isEqualToString:@"focus"]) error = AXUIElementSetAttributeValue(element,kAXFocusedAttribute,kCFBooleanTrue);
+                else if ([action isEqualToString:@"set_expanded"]) error = AXUIElementSetAttributeValue(element,kAXExpandedAttribute,
+                    [command[@"expanded"] boolValue] ? kCFBooleanTrue : kCFBooleanFalse);
                 else if ([action isEqualToString:@"set_selected"]) error = AXUIElementSetAttributeValue(element,kAXSelectedAttribute,
                     [command[@"selected"] boolValue] ? kCFBooleanTrue : kCFBooleanFalse);
                 else if ([action isEqualToString:@"set_selected_items"]) {

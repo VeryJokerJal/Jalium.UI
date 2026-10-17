@@ -113,6 +113,10 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     private ListBox? ListOwner => ItemsControlAutomationPeer?.ItemsOwner as ListBox ?? (Item as ListBoxItem)?.ParentListBox;
     private object SelectionValue => Item is ListBoxItem item ? item.Content ?? item : Item;
 
+    private ComboBox? ComboBoxOwner => ItemContainer is ComboBoxItem comboItem
+        ? ItemsControl.ItemsControlFromItemContainer(comboItem) as ComboBox
+        : null;
+
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
     {
@@ -128,6 +132,12 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     protected override string GetNameCore()
     {
+        if (ComboBoxOwner?.GetAutomationPeer() is ComboBoxAutomationPeer combo)
+        {
+            var row = ItemOwner;
+            var value = combo.ItemsOwner.ItemContainerGenerator.ItemFromContainer(row);
+            return combo.ItemText(value is null || ReferenceEquals(value, DependencyProperty.UnsetValue) ? row : value, true);
+        }
         var content = Item is ListBoxItem item ? item.Content : Item;
         if (content is string text)
             return text;
@@ -161,6 +171,9 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
         get
         {
             if (ItemsControlAutomationPeer is { } peer) return peer;
+            if (ComboBoxOwner is { } combo)
+                return combo.GetAutomationPeer() ?? new ComboBoxAutomationPeer(combo);
+
             var listBox = ItemOwner.ParentListBox;
             if (listBox != null)
                 return listBox.GetAutomationPeer() ?? new ListBoxAutomationPeer(listBox);
@@ -176,7 +189,8 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
             dataList.SetAutomationSelection(Item, selected: true, exclusive: true);
             return;
         }
-        if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: true, exclusive: true);
+        if (ComboBoxOwner is { } combo) combo.SetAutomationSelection((ComboBoxItem)ItemOwner, selected: true);
+        else if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: true, exclusive: true);
         else ItemOwner.IsSelected = true;
     }
 
@@ -188,7 +202,8 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
             dataList.SetAutomationSelection(Item, selected: true, exclusive: false);
             return;
         }
-        if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: true, exclusive: false);
+        if (ComboBoxOwner is { } combo) combo.SetAutomationSelection((ComboBoxItem)ItemOwner, selected: true);
+        else if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: true, exclusive: false);
         else ItemOwner.IsSelected = true;
     }
 
@@ -200,7 +215,8 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
             dataList.SetAutomationSelection(Item, selected: false, exclusive: false);
             return;
         }
-        if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: false, exclusive: false);
+        if (ComboBoxOwner is { } combo) combo.SetAutomationSelection((ComboBoxItem)ItemOwner, selected: false);
+        else if (ItemOwner.ParentListBox is { } list) list.SetAutomationSelection(ItemOwner, selected: false, exclusive: false);
         else ItemOwner.IsSelected = false;
     }
 
@@ -238,7 +254,7 @@ public partial class ComboBoxAutomationPeer : SelectorAutomationPeer,
 
     private ComboBox ComboBoxOwner => (ComboBox)Owner;
 
-    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new SelectorItemAutomationPeer(item, this);
+    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new ComboBoxDataItemAutomationPeer(item, this);
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -294,32 +310,25 @@ public partial class ComboBoxAutomationPeer : SelectorAutomationPeer,
     #region ISelectionProvider
 
     /// <inheritdoc />
-    public override AutomationPeer[] GetSelection()
-    {
-        return Array.Empty<AutomationPeer>();
-    }
-
-    /// <inheritdoc />
     public override bool IsSelectionRequired => false;
 
     /// <inheritdoc />
     public override bool CanSelectMultiple => false;
 
-    string Jalium.UI.Automation.Provider.IValueProvider.Value =>
-        ComboBoxOwner.IsEditable
-            ? ComboBoxOwner.Text ?? string.Empty
-            : ComboBoxOwner.SelectedItem?.ToString() ?? ComboBoxOwner.Text ?? string.Empty;
+    string Jalium.UI.Automation.Provider.IValueProvider.Value => ComboBoxOwner.IsEditable
+        ? ComboBoxOwner.Text ?? string.Empty
+        : ComboBoxOwner.SelectedItem is { } selected ? ItemText(selected, false) : string.Empty;
 
-    bool Jalium.UI.Automation.Provider.IValueProvider.IsReadOnly => !ComboBoxOwner.IsEditable;
+    bool Jalium.UI.Automation.Provider.IValueProvider.IsReadOnly => !ComboBoxOwner.IsEditable || ComboBoxOwner.IsReadOnly;
 
     void Jalium.UI.Automation.Provider.IValueProvider.SetValue(string val)
     {
-        if (!ComboBoxOwner.IsEditable)
-            throw new InvalidOperationException("The ComboBox is not editable.");
+        if (!ComboBoxOwner.IsEditable || ComboBoxOwner.IsReadOnly)
+            throw new InvalidOperationException("The ComboBox value is read only.");
         if (!IsEnabled())
             throw new InvalidOperationException("Cannot set value on a disabled ComboBox.");
         ArgumentNullException.ThrowIfNull(val);
-        ComboBoxOwner.Text = val;
+        ComboBoxOwner.SetAutomationValue(ComboBox.TextProperty, val);
     }
 
     #endregion
