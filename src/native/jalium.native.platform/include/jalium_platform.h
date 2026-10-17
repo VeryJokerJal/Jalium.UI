@@ -660,6 +660,7 @@ JALIUM_PLATFORM_API void jalium_apple_window_notify_accessibility(
 /// Creates a new platform window.
 /// @param params Window creation parameters.
 /// @return The created window, or NULL on failure.
+/// On macOS, creation is restricted to the main thread; foreign threads return NULL.
 JALIUM_PLATFORM_API JaliumPlatformWindow* jalium_window_create(
     const JaliumWindowParams* params);
 
@@ -780,6 +781,8 @@ JALIUM_PLATFORM_API int32_t jalium_platform_run_message_loop(void);
 /// of events processed (0 if none were pending).
 /// On Linux, only the platform initialization thread processes events; calls
 /// from other threads return 0.
+/// On macOS, only the main thread processes AppKit events; foreign threads
+/// return JALIUM_ERROR_INVALID_STATE without accessing the AppKit queue.
 JALIUM_PLATFORM_API int32_t jalium_platform_poll_events(void);
 
 /// Signals the event loop to exit with the given exit code.

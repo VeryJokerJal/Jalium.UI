@@ -398,6 +398,18 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     target_link_libraries(jalium.native.platform.tests PRIVATE
         ${PROJECT_NAME} "-framework AppKit")
     add_test(NAME jalium.native.platform.macos COMMAND jalium.native.platform.tests)
+    add_executable(jalium.native.platform.thread-affinity.tests tests/platform_apple_thread_affinity_tests.mm)
+    target_include_directories(jalium.native.platform.thread-affinity.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.thread-affinity.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.thread-affinity.tests PRIVATE
+        ${PROJECT_NAME} "-framework AppKit")
+    foreach(_thread_case cold-create cold-poll initialized-create initialized-poll)
+        add_test(NAME jalium.native.platform.macos.thread-affinity.${_thread_case}
+            COMMAND jalium.native.platform.thread-affinity.tests --${_thread_case})
+        set_tests_properties(jalium.native.platform.macos.thread-affinity.${_thread_case}
+            PROPERTIES TIMEOUT 30)
+    endforeach()
     add_executable(jalium.native.platform.clipboard.tests tests/platform_apple_clipboard_tests.mm)
     target_include_directories(jalium.native.platform.clipboard.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

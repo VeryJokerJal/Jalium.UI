@@ -4,6 +4,51 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v256：AppKit 主线程与辅助 Dispatcher 的队列所有权
+
+macOS 的辅助 Dispatcher 可以处理自己的托管队列，不应读取 NSApplication
+主队列。原 NativePlatformEventPump 在 PushFrame／RunModalLoop 中无条件进入
+原生 poll；原生窗口创建和事件轮询也没有主线程入口保护。
+
+本轮在托管层先用 pthread_main_np 判断实际 OS 主线程，辅助线程直接返回，
+不加载或轮询 AppKit，也不将平台可用性锁成失败。主线程仍正常进入原生队列。
+原生层分别拒绝外来线程的 jalium_window_create（NULL）和 poll_events
+（JALIUM_ERROR_INVALID_STATE），并更新 C API 注释。没有限制跨线程投递托管
+工作或应用事件；辅助 Dispatcher 的本地回调仍在其所属线程执行。
+
+同一最终原生夹具换回前版产品，四个独立场景全部失败：冷启动和已初始化后的
+创建分别捕获 NSWindow 主线程异常，已初始化后的轮询捕获 nextEventMatchingMask
+主线程异常，冷启动轮询错误返回普通空队列结果。候选均通过。正向夹具在真实
+NSApplication 主循环中运行，使用本进程 ApplicationDefined 标记；它不是向系统
+投递键鼠输入。初版夹具在未运行主循环时无法读取标记的失败也保留，不归为产品
+线程回归；最终仍要求主线程实际消费原标记，并检查窗口／响应者／几何未受后台
+调用影响。
+
+| 本轮最终证据 | 结果 |
+| --- | --- |
+| 新增原生线程组 | 冷启动创建／轮询各 **6 项**，初始化后创建／轮询各 **23 项**；共 **58 项／4 场景**，后两组均覆盖原生／自绘标题栏。后台不构造窗口、不改变注册／几何／响应者、不消费标记；主线程创建与消费继续有效。 |
+| 托管入口对照 | 真实产品程序集配合独立原生入口计数，PR／本地各 **7 项**通过；辅助线程计数不变，两次主线程调用均增加计数。前版在辅助线程进入原生入口，被相同夹具拒绝。负载副本哈希匹配对应产品。 |
+| 完整托管回归 | PR **2394** 通过，本地 **2311** 通过；各 0 失败、2 项既有 opt-in 跳过。纳入已有辅助 Dispatcher PushFrame 回归。 |
+| 原生回归 | 每份历史 **44/44** 通过。共注册 45 项，依赖真实前台的 macos.window 整窗场景仍单独待验收，本轮未运行，不记作通过。 |
+| AddressSanitizer | 每份历史新增线程组 **4/4**，无地址错误；本次未检查泄漏，不将历史 ASAN 8/8 写成本轮新运行。 |
+| 实际 macOS SDK | 每份历史、每种 Metal／Software 后端，原有 Dock SDK 各 **64 项／2 标题栏场景**通过；使用正常渲染线程。确认平台窗口创建、队列更新、模型变化、菜单、隐藏／恢复、最小化和清理继续工作。 |
+| 负载及提交边界 | 各重建匹配八库和 SDK 宿主，核对实际加载路径／UUID／代码数据段与三份程序集哈希，保留 **98 个** C 导出。完整冻结树逐文件核对，保留 **34 处精确历史差异**。只纳入原有两处线程保护及其相关回归，同文件 sheet 编辑快捷键及其他并行改动保留。 |
+
+已查看最终两种标题栏／后端的四张自有 SDK 离屏图，确认既有布局及 tile 内容。
+它们不是桌面截图或真实 Dock／键鼠验收。托管计数夹具早期缺依赖、编译资产目录
+冲突的失败保留；修正的是私有夹具装配，未改变产品实现或降低入口计数断言。
+
+旧 v251 首次隐藏／重开、v254 显示通知多计数及更早手势 CI 精确归因仍开放；
+本轮通过不替代这些问题的定位。没有新增真实前台、物理设备／IME、外部 AX／
+VoiceOver、Spaces／混合 DPI、Intel／最低系统或 Writing Tools 服务界面验收。
+当前工作区另有 sheet／文件面板相关改动，尚未随本轮纳入 PR。完整目标继续进行。
+
+线程归属依据为 [Apple Thread Safety Summary](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/ThreadSafetySummary/ThreadSafetySummary.html)
+中的视图／事件处理规则；窗口创建同时建立 NSView，当前 SDK 的具体拒绝行为
+由上述前版实测记录。自有标记使用 [postEvent](https://developer.apple.com/documentation/appkit/nsapplication/postevent(_:atstart:))
+及 [nextEvent](https://developer.apple.com/documentation/appkit/nsapplication/nextevent(matching:until:inmode:dequeue:))，
+不把这些 SDK 调用当作物理输入。
+
 ## v255：验收宿主的结果目录、失败诊断与清理
 
 本轮复现验收应用写入外置盘结果目录时的 58 秒超时。自有 PID 的采样停在
