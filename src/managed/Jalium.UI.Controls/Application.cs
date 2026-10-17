@@ -134,6 +134,11 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
 
     private void ApplyCachedSystemThemePreference()
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            ThemeManager.ApplyTheme(SystemParameters.PrefersDarkColorScheme ? ThemeVariant.Dark : ThemeVariant.Light);
+            return;
+        }
         var scheme = Volatile.Read(ref _lastSystemColorScheme);
         if (scheme is 1 or 2)
         {

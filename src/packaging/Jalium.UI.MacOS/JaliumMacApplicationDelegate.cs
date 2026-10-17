@@ -17,6 +17,7 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
     private MacOSWindowCloseRequest? _windowCloseRequest;
     private bool _retryTerminationAfterClose;
     private NSMenu? _dockMenu;
+    private IDisposable? _themeMonitor;
 
     public override NSMenu ApplicationDockMenu(NSApplication sender) =>
         _dockMenu = MacOSTaskbar.CreateDockMenu();
@@ -26,11 +27,23 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
 
     public override void DidFinishLaunching(NSNotification notification)
     {
+        if (_hostedApp != null || _stopped) return;
         PlatformFileDialogs.Show = MacOSFileDialogs.Show;
         ConfigureNativeWindowMenu(NSApplication.SharedApplication);
-        _hostedApp = CreateHostedApp()
-            ?? throw new InvalidOperationException("CreateHostedApp returned null.");
-        _hostedApp.StartHosted();
+        _themeMonitor = MacOSWindowThemes.Monitor();
+        try
+        {
+            _hostedApp = CreateHostedApp()
+                ?? throw new InvalidOperationException("CreateHostedApp returned null.");
+            _hostedApp.StartHosted();
+        }
+        catch
+        {
+            try { StopHosted(1); }
+            catch (Exception cleanupError)
+            { System.Diagnostics.Debug.WriteLine($"Jalium.UI: failed-start cleanup: {cleanupError}"); }
+            throw;
+        }
     }
 
     /// <summary>Registers AppKit Window actions and supplies standard visibility and quit actions for an empty application menu.</summary>
@@ -215,6 +228,8 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
         _windowCloseRequest?.Dispose();
         _windowCloseRequest = null;
         _retryTerminationAfterClose = false;
+        _themeMonitor?.Dispose();
+        _themeMonitor = null;
         _hostedApp?.StopHosted(exitCode);
         _hostedApp = null;
     }

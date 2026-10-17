@@ -17,5 +17,6 @@
     <ProjectReference Include="../../src/managed/Jalium.UI.Xaml.SourceGenerator/Jalium.UI.Xaml.SourceGenerator.csproj"
                       OutputItemType="Analyzer" ReferenceOutputAssembly="true" Aliases="sg" />
     <AdditionalFiles Include="GeneratedTemplateLifetimeView.jalxaml" />
+    <AdditionalFiles Include="GeneratedWindowThemeView.jalxaml" />
   </ItemGroup>
 </Project>

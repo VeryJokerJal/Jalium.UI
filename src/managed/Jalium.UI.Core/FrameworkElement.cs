@@ -942,7 +942,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// 与直接访问 <see cref="Resources"/> 不同——本属性不会触发懒构造，
     /// 用于资源快照 / 诊断等场景，避免对每个元素都生成空字典污染查找。
     /// </summary>
-    internal bool HasResources => _resources != null && _resources.Count > 0;
+    internal bool HasResources => _resources?.HasLookupResources == true;
+    private bool HasResourceScope => HasResources || GetResourceThemeKeyOverride() != null;
 
     /// <summary>
     /// 本地 Resources 字典；未实例化时返回 <see langword="null"/>。
@@ -1034,6 +1035,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     {
         RaiseResourcesChangedInSubtree(reEvaluateImplicitStyles: false);
     }
+
+    // A root can select a palette without modifying shared application dictionaries.
+    // ResourceLookup follows the same ancestry redirects used by normal resources.
+    internal virtual object? GetResourceThemeKeyOverride() => null;
 
     private void RaiseResourcesChangedInSubtree(bool reEvaluateImplicitStyles = true)
     {
@@ -2525,12 +2530,12 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
         while (current != null && depth++ < 2048)
         {
-            if (current.HasResources)
+            if (current.HasResourceScope)
             {
                 return true;
             }
 
-            if (current.Style?.ResourcesOrNull is { Count: > 0 })
+            if (current.Style?.ResourcesOrNull is { HasLookupResources: true })
             {
                 return true;
             }
@@ -2626,8 +2631,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
             // 往下传递时把本节点自己的资源计入：对后代而言它也是祖先。
             chainHasResources = chainHasResources
-                || fe.HasResources
-                || fe.Style?.ResourcesOrNull is { Count: > 0 };
+                || fe.HasResourceScope
+                || fe.Style?.ResourcesOrNull is { HasLookupResources: true };
         }
 
         for (int i = 0; i < visual.InternalVisualChildrenCount; i++)

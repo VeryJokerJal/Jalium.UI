@@ -1802,6 +1802,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         _inputDispatcher = new WindowInputDispatcher(this);
         _ownedWindowCollection = new Jalium.UI.WindowCollection(() => _ownedWindows);
+        ResourcesChanged += OnWindowThemeResourcesChanged;
 
         if (PlatformFactory.IsWindows || PlatformFactory.IsLinux || PlatformFactory.IsMacOS)
             DragDropPlatform.EnsureInitialized();
@@ -4789,6 +4790,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (PlatformFactory.IsMacOS && _platformWindow is NativePlatformWindow native)
             _macOSAccessibility = new Controls.Automation.MacOS.MacOSAccessibilityBridge(this, native);
 
+        ApplyWindowThemeAppearance();
         OnSourceInitialized(EventArgs.Empty);
     }
 
@@ -16131,7 +16133,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             _themeMode = value;
-            InvalidateVisual();
+            UpdateWindowThemeResources();
         }
     }
 #pragma warning restore WPF0001

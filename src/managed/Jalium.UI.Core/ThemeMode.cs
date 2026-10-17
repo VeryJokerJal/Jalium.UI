@@ -6,6 +6,7 @@ namespace Jalium.UI;
 /// Describes the Fluent theme mode to apply to an application or window.
 /// </summary>
 [Experimental("WPF0001")]
+[System.ComponentModel.TypeConverter(typeof(ThemeModeConverter))]
 public readonly struct ThemeMode : IEquatable<ThemeMode>
 {
     private readonly string? _value;

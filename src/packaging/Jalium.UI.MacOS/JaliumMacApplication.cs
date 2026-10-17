@@ -30,6 +30,7 @@ public class JaliumMacApplication : NSApplication
             ?? throw new InvalidOperationException("AppKit did not create its principal application.");
         PlatformTextContextMenus.Show = MacOSTextContextMenus.Show;
         PlatformTaskbarIntegration.Attach = MacOSTaskbar.Attach;
+        MacOSWindowThemes.Configure();
         return _application;
     }
 

@@ -1123,6 +1123,8 @@ public static partial class SystemParameters
 
     private static bool GetHighContrast()
     {
+        if (OperatingSystem.IsMacOS())
+            return Controls.Platform.PlatformThemeIntegration.ReadHighContrast?.Invoke() ?? false;
         if (OperatingSystem.IsLinux())
             return LinuxDesktopSettings.HighContrast;
         if (!OperatingSystem.IsWindows())

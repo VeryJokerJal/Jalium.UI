@@ -1629,14 +1629,7 @@ public partial class XamlReader
                     }
                     else
                     {
-                        foreach (var merged in dictionaryValue.MergedDictionaries)
-                        {
-                            existing.MergedDictionaries.Add(merged);
-                        }
-                        foreach (System.Collections.DictionaryEntry entry in dictionaryValue)
-                        {
-                            existing[entry.Key] = entry.Value;
-                        }
+                        existing.MergeResourcesFrom(dictionaryValue);
                     }
                 }
                 else if (isCollection && propertyValue != null)
@@ -3849,14 +3842,7 @@ public partial class XamlReader
             }
             else
             {
-                foreach (var merged in dictionaryValue.MergedDictionaries)
-                {
-                    existing.MergedDictionaries.Add(merged);
-                }
-                foreach (System.Collections.DictionaryEntry entry in dictionaryValue)
-                {
-                    existing[entry.Key] = entry.Value;
-                }
+                existing.MergeResourcesFrom(dictionaryValue);
             }
             return;
         }
@@ -3915,11 +3901,11 @@ public partial class XamlReader
     internal static void BuilderSetStaticResource(object target, string propertyName, string key, XamlParserContext context)
     {
         var fe = target as FrameworkElement;
-        var value = ResourceLookup.FindResource(fe, key, out var sourceDictionary);
-        if (value == null && context.TryGetResource(key, out var ambient, out sourceDictionary))
-        {
-            value = ambient;
-        }
+        // The generated child may not have a parent yet. Match StaticResource's
+        // ambient-first path so component resources beat application resources.
+        object? value;
+        if (!context.TryGetResource(key, out value, out var sourceDictionary))
+            value = ResourceLookup.FindResource(fe, key, out sourceDictionary);
 
         if (value == null)
         {
@@ -4402,6 +4388,9 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         out object? value,
         out ResourceDictionary? sourceDictionary)
     {
+        using var themeScope = CodeBehindInstance is FrameworkElement component
+            ? ResourceLookup.EnterThemeLookup(component)
+            : (ResourceDictionary.ThemeLookupScope?)null;
         // Search through the parent stack for ResourceDictionaries
         // and FrameworkElements that have their own Resources property
         foreach (var parent in _parentStack)
@@ -4420,6 +4409,15 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
             {
                 return true;
             }
+        }
+
+        // Straight-line generated construction can resolve an attribute before
+        // its element has joined the parent stack or visual tree.
+        if (CodeBehindInstance is FrameworkElement owner &&
+            owner.ResourcesOrNull is { } ownerResources &&
+            ownerResources.TryGetValue(key, out value, out sourceDictionary))
+        {
+            return true;
         }
 
         // Search through the parent ResourceDictionary's MergedDictionaries
