@@ -1,11 +1,51 @@
 #include "jalium_platform.h"
 #include "platform_apple_gesture_test_event.h"
 #include <dlfcn.h>
+#import <objc/runtime.h>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+@interface JaliumGestureFallbackProbe : NSResponder {
+@public
+    int magnifies, rotations, begins, ends;
+    std::function<void()> action;
+}
+@end
+@implementation JaliumGestureFallbackProbe
+- (void)magnifyWithEvent:(NSEvent*)event { ++magnifies; auto call=std::move(action); action={}; if(call)call(); }
+- (void)rotateWithEvent:(NSEvent*)event { ++rotations; auto call=std::move(action); action={}; if(call)call(); }
+- (void)beginGestureWithEvent:(NSEvent*)event { ++begins; }
+- (void)endGestureWithEvent:(NSEvent*)event { ++ends; }
+@end
+@interface JaliumGestureBoundaryQueryEvent : JaliumGestureTestEvent
+@end
+@implementation JaliumGestureBoundaryQueryEvent
+- (NSTimeInterval)timestamp { auto call=std::move(getter); getter={}; if(call)call(); return self.sampleTime; }
+@end
+
+static __unsafe_unretained NSWindow* hookedWindow;
+static std::function<void()> readinessAction;
+static IMP originalVisible;
+static BOOL ReadinessVisible(id object, SEL selector) {
+    BOOL value=reinterpret_cast<BOOL(*)(id,SEL)>(originalVisible)(object,selector);
+    if(object==hookedWindow){auto action=std::move(readinessAction);readinessAction={};if(action)action();}
+    return value;
+}
+struct ReadinessHook {
+    NSWindow* window;
+    Class original;
+    explicit ReadinessHook(NSWindow* value):window(value),original(object_getClass(value)) {
+        Class probe=objc_getClass("JaliumGestureReadinessProbe");
+        if(!probe){probe=objc_allocateClassPair(original,"JaliumGestureReadinessProbe",0);
+            Method method=class_getInstanceMethod(original,@selector(isVisible));originalVisible=method_getImplementation(method);
+            class_addMethod(probe,@selector(isVisible),reinterpret_cast<IMP>(ReadinessVisible),method_getTypeEncoding(method));objc_registerClassPair(probe);}
+        hookedWindow=window;object_setClass(window,probe);
+    }
+    ~ReadinessHook(){readinessAction={};object_setClass(window,original);hookedWindow=nil;}
+};
 
 static int checks;
 static void Check(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); ++checks; }
@@ -80,10 +120,101 @@ static void Run(uint32_t style) {
       guard.End();f.Magnify(NSEventPhaseBegan,.1);Check(f.events.size()==1,"gesture input returns after native modal closes"); }
     { Fixture f(style);int result=0;std::thread t([&]{result=registerGesture(f.owner,nullptr,nullptr);});t.join();Check(result==JALIUM_ERROR_INVALID_STATE,"off-main registration is rejected"); }
 }
+static void RunFallback(uint32_t style) {
+    for(bool rotation:{false,true}) {
+        for(bool registered:{false,true}) {
+            Fixture f(style);f.accept=false;auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+            if(!registered)Check(registerGesture(f.owner,nullptr,nullptr)==0,"disable bridge for legacy fallback");
+            if(rotation)f.Rotate(NSEventPhaseBegan,8);else f.Magnify(NSEventPhaseBegan,.2);
+            Check((rotation?probe->rotations:probe->magnifies)==1,"live unhandled gesture reaches actual next responder once");
+        }
+        { Fixture f(style);auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+          if(rotation)f.Rotate(NSEventPhaseBegan,8);else f.Magnify(NSEventPhaseBegan,.2);
+          Check(probe->magnifies+probe->rotations==0,"handled gesture does not enter fallback"); }
+        for(int mutation=0;mutation<5;++mutation) {
+            Fixture f(style);f.accept=false;auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+            f.action=[&](auto&){f.action={};
+                if(mutation==0)jalium_window_hide(f.owner);
+                else if(mutation==1){jalium_window_hide(f.owner);jalium_apple_window_show(f.owner,0);}
+                else if(mutation==2){jalium_window_set_enabled(f.owner,0);jalium_window_set_enabled(f.owner,1);}
+                else if(mutation==3){auto* owner=f.owner;f.owner=nullptr;jalium_window_destroy(owner);}
+                else registerGesture(f.owner,nullptr,nullptr);
+                f.view.nextResponder=probe;
+            };
+            if(rotation)f.Rotate(NSEventPhaseBegan,8);else f.Magnify(NSEventPhaseBegan,.2);
+            if(probe->magnifies+probe->rotations)std::fprintf(stderr,"stale fallback mutation=%d rotation=%d\n",mutation,rotation);
+            Check(probe->magnifies+probe->rotations==0,"retired callback must not forward its gesture");
+        }
+    }
+    { Fixture f(style);f.accept=false;auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+      f.action=[&](auto&){f.action={};f.Begin();f.accept=true;f.Magnify(NSEventPhaseBegan,.1);f.accept=false;};
+      f.Magnify(NSEventPhaseBegan,.2);Check(f.events.size()==2&&f.events[0].sequence!=f.events[1].sequence,"callback starts a distinct newer gesture");
+      Check(probe->magnifies==0,"reentrant newer gesture prevents old responder fallback");
+      f.accept=true;auto sequence=f.events.back().sequence;f.Magnify(NSEventPhaseChanged,.1);
+      Check(f.events.back().sequence==sequence&&f.events.back().phase==2,"newer gesture remains usable after the retired callback");f.End(); }
+    { Fixture f(style);f.accept=false;auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+      auto* event=f.Event(NSEventPhaseBegan,.2);event->getter=[&]{jalium_window_hide(f.owner);jalium_apple_window_show(f.owner,0);};
+      [f.view magnifyWithEvent:event];Check(f.events.empty()&&probe->magnifies==0,"retired event getter cannot fall through"); }
+    { Fixture f(style);auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+      f.Begin();f.Magnify(NSEventPhaseBegan,.2);
+      f.action=[&](auto&){f.action={};auto* owner=f.owner;f.owner=nullptr;jalium_window_destroy(owner);f.view.nextResponder=probe;};
+      f.End();Check(probe->ends==0,"retired generic end cannot forward after completion callback"); }
+    { Fixture f(style);auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+      auto* event=[JaliumGestureBoundaryQueryEvent new];event.samplePhase=NSEventPhaseNone;event.sampleTime=1;
+      event->getter=[&]{jalium_window_hide(f.owner);jalium_apple_window_show(f.owner,0);};
+      [f.view beginGestureWithEvent:event];Check(probe->begins==0,"retired generic begin query cannot forward"); }
+    { Fixture f(style);f.accept=false;auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+      NSWindow* modal=[[NSWindow alloc]initWithContentRect:NSMakeRect(80,80,220,120) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+      modal.releasedWhenClosed=NO;NSModalSession session=nullptr;
+      f.action=[&](auto&){f.action={};session=[NSApp beginModalSessionForWindow:modal];[NSApp runModalSession:session];f.view.nextResponder=probe;};
+      struct EndModal { NSModalSession& session; NSWindow* modal; ~EndModal(){if(session)[NSApp endModalSession:session];[modal close];} } guard{session,modal};
+      f.Magnify(NSEventPhaseBegan,.2);Check(NSApp.modalWindow==modal,"callback installs real native modal scope");
+      Check(probe->magnifies==0,"callback modal blocks fallback into the old responder"); }
+    { Fixture f(style);f.accept=false;auto* probe=[JaliumGestureFallbackProbe new];f.view.nextResponder=probe;
+      __weak NSView* weakView=f.view;__weak NSWindow* weakWindow=f.view.window;
+      probe->action=[&]{auto* owner=f.owner;f.owner=nullptr;jalium_window_destroy(owner);f.view=nil;
+          Check(weakView!=nil&&weakWindow!=nil,"responder handoff keeps its original view and window alive");};
+      f.Magnify(NSEventPhaseBegan,.2);Check(probe->magnifies==1,"fallback can destroy its owner once"); }
+}
+
+static void RunPostReady(uint32_t style) {
+    for (bool rotate : {false, true}) {
+        Fixture f(style);
+        f.accept = false;
+        auto* probe = [JaliumGestureFallbackProbe new];
+        f.view.nextResponder = probe;
+        ReadinessHook hook(f.view.window);
+        f.action = [&](auto&) {
+            f.action = {};
+            readinessAction = [&] {
+                f.Begin();
+                f.accept = true;
+                f.Magnify(NSEventPhaseBegan, .1);
+                f.accept = false;
+            };
+        };
+        if (rotate) f.Rotate(NSEventPhaseBegan, 2);
+        else f.Magnify(NSEventPhaseBegan, .2);
+        Check(probe->magnifies == 0 && probe->rotations == 0,
+            "post-dispatch readiness reentry must not forward the older gesture");
+    }
+    {
+        Fixture f(style);
+        registerGesture(f.owner, nullptr, nullptr);
+        auto* probe = [JaliumGestureFallbackProbe new];
+        f.view.nextResponder = probe;
+        ReadinessHook hook(f.view.window);
+        readinessAction = [&] { f.Magnify(NSEventPhaseBegan, .1); };
+        f.Magnify(NSEventPhaseBegan, .2);
+        Check(probe->magnifies == 1,
+            "unregistered callback forwards the newer readiness gesture exactly once");
+    }
+}
+
 int main(){@autoreleasepool{try{[NSApplication sharedApplication];
     registerGesture=reinterpret_cast<RegisterGesture>(dlsym(RTLD_DEFAULT,"jalium_apple_window_set_gesture_callback"));
     Check(registerGesture!=nullptr,"optional native gesture entry point exists");
     static_assert(sizeof(JaliumAppleGestureEvent)==64);static_assert(sizeof(JaliumPlatformEvent)==72);
-    for(uint32_t style:{uint32_t(JALIUM_WINDOW_STYLE_TITLEBAR|JALIUM_WINDOW_STYLE_RESIZABLE),uint32_t(JALIUM_WINDOW_STYLE_BORDERLESS|JALIUM_WINDOW_STYLE_RESIZABLE)})Run(style);
+    for(uint32_t style:{uint32_t(JALIUM_WINDOW_STYLE_TITLEBAR|JALIUM_WINDOW_STYLE_RESIZABLE),uint32_t(JALIUM_WINDOW_STYLE_BORDERLESS|JALIUM_WINDOW_STYLE_RESIZABLE)}){Run(style);RunFallback(style);RunPostReady(style);}
     Pump();std::printf("PASS AppKit gestures: %d checks; own NSResponder SDK messages, no physical trackpad input\n",checks);return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL AppKit gestures: %s after %d checks\n",e.what(),checks);return 1;}}}

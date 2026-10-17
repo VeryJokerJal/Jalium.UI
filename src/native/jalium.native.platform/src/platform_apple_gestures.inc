@@ -44,23 +44,80 @@ void InvalidateAppleGestures(JaliumPlatformWindow* owner)
     });
 }
 
-bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int boundary)
+enum class AppleGestureDisposition { Unhandled, Handled, Retired };
+
+// The scope includes AppKit's super implementation, which can call another
+// responder and synchronously close the original window.
+struct AppleGestureDispatchContext {
+    __strong JaliumAppleView* view;
+    JaliumPlatformWindow* owner;
+    __strong NSWindow* window;
+    std::shared_ptr<AppleGestureState> state;
+    uint64_t selection = 0, geometry = 0, dispatch = 0;
+    bool valid = false;
+    explicit AppleGestureDispatchContext(JaliumAppleView* client)
+        : view(client), owner(view.jaliumOwner), window(nil)
+    {
+        if (!owner || !IsLiveWindow(owner) || owner->destroying) return;
+        // Capture input entry before any Cocoa query can synchronously deliver
+        // a newer gesture on this same window.
+        dispatch = ++owner->gestureDispatchGeneration;
+        window = view.window;
+        if (window && IsLiveWindow(owner, window) && view.jaliumOwner == owner &&
+            owner->view == view && !owner->destroying &&
+            owner->gestureDispatchGeneration == dispatch) {
+            state = owner->gestures; selection = owner->selectionGeneration;
+            geometry = view.geometryRevision; valid = true;
+        }
+    }
+    bool SameOwner() const
+    {
+        return valid && IsLiveWindow(owner, window) && view.jaliumOwner == owner &&
+            owner->view == view && owner->gestures == state && !owner->destroying;
+    }
+    bool IsCurrent() const
+    {
+        return SameOwner() && owner->selectionGeneration == selection &&
+            owner->gestureDispatchGeneration == dispatch && view.geometryRevision == geometry;
+    }
+    bool CanForward() const
+    {
+        if (!IsCurrent()) return false;
+        bool ready = [view canDispatchPointerForWindow:window owner:owner];
+        // Cocoa readiness getters can reenter. Do not read the owner again
+        // until its original identity has been checked after those queries.
+        if (!ready || !IsCurrent()) return false;
+        NSWindow* modal = NSApp.modalWindow;
+        bool allowed = modal == nil;
+        int depth = 0;
+        for (NSWindow* ancestor = window; modal && ancestor && !allowed && depth++ < 64;) {
+            if (ancestor == modal) { allowed = true; break; }
+            NSWindow* next = ancestor.parentWindow;
+            if (next == ancestor) break;
+            ancestor = next;
+        }
+        return allowed && IsCurrent() && !owner->fullScreenTransition &&
+            !(owner->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT);
+    }
+};
+
+AppleGestureDisposition SendAppleGesture(const AppleGestureDispatchContext& context, NSEvent* input, int kind, int boundary)
 {
-    JaliumAppleView* __attribute__((objc_precise_lifetime)) view = client;
-    NSWindow* __attribute__((objc_precise_lifetime)) window = view.window;
-    JaliumPlatformWindow* owner = view.jaliumOwner;
-    if (!owner || !IsLiveWindow(owner, window) || !owner->gestures) return false;
+    if (!context.IsCurrent()) return AppleGestureDisposition::Retired;
+    JaliumAppleView* view = context.view;
+    NSWindow* window = context.window;
+    JaliumPlatformWindow* owner = context.owner;
+    if (!owner->gestures) return AppleGestureDisposition::Unhandled;
     auto state = owner->gestures;
-    if (!state->callback) return false;
-    auto live = [&] { return IsLiveWindow(owner, window) && owner->gestures == state &&
-        view.jaliumOwner == owner && owner->view == view && view.window == window; };
-    if (!live() || owner->destroying) return false;
+    if (!state->callback) return AppleGestureDisposition::Unhandled;
+    auto live = [&] { return context.SameOwner() && owner->gestures == state &&
+        view.window == window && context.SameOwner(); };
+    if (!live() || owner->destroying) return AppleGestureDisposition::Retired;
     auto callback = state->callback;
     void* userData = state->userData;
     uint64_t selection = owner->selectionGeneration;
     uint64_t operation = state->revision;
-    bool initiallyClaimed = state->claimed || state->kinds != 0;
-    if (!live() || state->callback != callback) return false;
+    if (!live() || state->callback != callback) return AppleGestureDisposition::Retired;
     NSWindow* modal = NSApp.modalWindow;
     bool modalAllows = modal == nil;
     int ancestors = 0;
@@ -70,15 +127,21 @@ bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int bou
         if (next == ancestor) break;
         ancestor = next;
     }
-    if (!live() || operation != state->revision || selection != owner->selectionGeneration) return initiallyClaimed;
-    if (!modalAllows) { InvalidateAppleGestures(owner); return initiallyClaimed; }
+    if (!live() || !context.IsCurrent() || operation != state->revision || selection != owner->selectionGeneration) return AppleGestureDisposition::Retired;
+    if (!modalAllows) { InvalidateAppleGestures(owner); return AppleGestureDisposition::Retired; }
     if (!owner->enabled || !owner->visible || owner->miniaturizing || owner->fullScreenTransition ||
-        (owner->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT) ||
-        ![view canDispatchPointerForWindow:window owner:owner]) {
-        if (live()) InvalidateAppleGestures(owner);
-        return false;
+        (owner->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT)) {
+        InvalidateAppleGestures(owner);
+        return AppleGestureDisposition::Retired;
     }
-    if (!live() || selection != owner->selectionGeneration || state->callback != callback) return false;
+    bool ready = [view canDispatchPointerForWindow:window owner:owner];
+    if (!live() || !context.IsCurrent() || operation != state->revision ||
+        selection != owner->selectionGeneration || state->callback != callback)
+        return AppleGestureDisposition::Retired;
+    if (!ready) {
+        InvalidateAppleGestures(owner);
+        return AppleGestureDisposition::Retired;
+    }
     uint64_t geometry = view.geometryRevision;
     NSPoint point = [view convertPoint:input.locationInWindow fromView:nil];
     double scale = kind == JALIUM_APPLE_GESTURE_MAGNIFY ? 1.0 + input.magnification : 1.0;
@@ -88,28 +151,27 @@ bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int bou
     double timestamp = input.timestamp;
     NSEventPhase phase = input.phase;
     double dpi = window.backingScaleFactor;
-    if (!live() || callback != state->callback || operation != state->revision ||
-        selection != owner->selectionGeneration) return initiallyClaimed;
+    if (!live() || !context.IsCurrent() || callback != state->callback || operation != state->revision ||
+        selection != owner->selectionGeneration) return AppleGestureDisposition::Retired;
     if (geometry != view.geometryRevision || !std::isfinite(point.x) || !std::isfinite(point.y) ||
         !std::isfinite(dpi) || dpi <= 0 || !std::isfinite(scale) || scale <= 0 ||
         !std::isfinite(rotation) || !std::isfinite(timestamp) || timestamp < 0 || timestamp > 1e12) {
         InvalidateAppleGestures(owner);
-        return initiallyClaimed;
+        return AppleGestureDisposition::Retired;
     }
     if (state->sequence && state->selection != selection) {
-        bool claimed = state->claimed;
         InvalidateAppleGestures(owner);
-        if (boundary != 1 && !(phase & NSEventPhaseBegan)) return claimed;
+        if (boundary != 1 && !(phase & NSEventPhaseBegan)) return AppleGestureDisposition::Retired;
     }
     if (boundary == 1) {
         InvalidateAppleGestures(owner);
         ClearAppleGesture(state);
         state->generic = true;
         state->selection = selection;
-        return true;
+        return AppleGestureDisposition::Handled;
     }
     if (boundary == 2) {
-        if (!state->sequence || state->rejected) { bool suppress = state->suppress; ClearAppleGesture(state); return suppress; }
+        if (!state->sequence || state->rejected) { bool suppress = state->suppress; ClearAppleGesture(state); return suppress ? AppleGestureDisposition::Handled : AppleGestureDisposition::Unhandled; }
         kind = 0; phase = NSEventPhaseEnded;
     }
     const uint32_t bit = kind > 0 ? (1u << (kind - 1)) : 0;
@@ -121,7 +183,7 @@ bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int bou
         bool suppress = state->suppress;
         if (state->generic || !began) {
             if (cancelled || (ended && !state->generic)) ClearAppleGesture(state);
-            return suppress;
+            return suppress ? AppleGestureDisposition::Handled : AppleGestureDisposition::Unhandled;
         }
         ClearAppleGesture(state);
     }
@@ -130,7 +192,7 @@ bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int bou
         ClearAppleGesture(state);
     }
     if (!state->sequence) {
-        if (!kind || cancelled || ended || (!began && phase != NSEventPhaseNone)) return false;
+        if (!kind || cancelled || ended || (!began && phase != NSEventPhaseNone)) return AppleGestureDisposition::Unhandled;
         state->sequence = gAppleGestureSequence.fetch_add(1);
         state->selection = selection;
         state->rejected = false;
@@ -139,7 +201,7 @@ bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int bou
         began = true;
     }
     if (kind && began) state->kinds |= bit;
-    if (kind && !(state->kinds & bit)) return state->claimed;
+    if (kind && !(state->kinds & bit)) return state->claimed ? AppleGestureDisposition::Handled : AppleGestureDisposition::Unhandled;
     JaliumAppleGestureEvent event{};
     event.size = sizeof(event); event.kind = kind; event.sequence = state->sequence;
     event.phase = cancelled ? JALIUM_APPLE_GESTURE_CANCEL : ended ? JALIUM_APPLE_GESTURE_END :
@@ -150,12 +212,12 @@ bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int bou
     uint64_t revision = ++state->revision;
     bool claimed = state->claimed;
     bool handled = callback(&event, userData) != 0;
-    if (!live() || state->callback != callback || state->userData != userData) return claimed || handled;
+    if (!live() || state->callback != callback || state->userData != userData) return AppleGestureDisposition::Retired;
     if (state->sequence != event.sequence) {
         // A phase-less packet is a complete operation even if its callback
         // invalidated it. A newer sequence/generic begin remains untouched.
         if (single && !state->sequence && !state->generic) ClearAppleGesture(state);
-        return claimed || handled;
+        return AppleGestureDisposition::Retired;
     }
     if (state->revision != revision) {
         // Reentrant updates of this same bounded operation must not suppress
@@ -166,12 +228,12 @@ bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int bou
             ClearAppleGesture(state);
             callback(&event, userData);
         }
-        return claimed || handled;
+        return AppleGestureDisposition::Retired;
     }
     state->claimed |= handled;
     if (!handled && !claimed) {
         state->kinds = 0; state->rejected = true;
-        return false;
+        return AppleGestureDisposition::Unhandled;
     }
     if (kind && ended) state->kinds &= ~bit;
     if (cancelled || boundary == 2 || (ended && !state->generic && !state->kinds)) ClearAppleGesture(state);
@@ -183,6 +245,6 @@ bool SendAppleGesture(JaliumAppleView* client, NSEvent* input, int kind, int bou
         ClearAppleGesture(state);
         callback(&event, userData);
     }
-    return true;
+    return AppleGestureDisposition::Handled;
 }
 } // namespace

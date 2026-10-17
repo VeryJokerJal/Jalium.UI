@@ -75,6 +75,7 @@ struct JaliumPlatformWindow {
 #if TARGET_OS_OSX
     NSWindow* window = nil;
     std::shared_ptr<AppleGestureState> gestures;
+    uint64_t gestureDispatchGeneration = 0;
     JaliumAppleWindowDelegate* delegate = nil;
     NSArray* stateCompletionObservers = nil;
     NSVisualEffectView* backdropView = nil;
@@ -2511,10 +2512,34 @@ struct AppleTextInputContext {
         InvalidateAppleGestures(owner);
     [super viewWillMoveToWindow:window];
 }
-- (void)beginGestureWithEvent:(NSEvent*)event { if (!NSThread.isMainThread) return; SendAppleGesture(self,event,0,1); [super beginGestureWithEvent:event]; }
-- (void)endGestureWithEvent:(NSEvent*)event { if (!NSThread.isMainThread) return; SendAppleGesture(self,event,0,2); [super endGestureWithEvent:event]; }
-- (void)magnifyWithEvent:(NSEvent*)event { if (!NSThread.isMainThread) return; if (!SendAppleGesture(self,event,JALIUM_APPLE_GESTURE_MAGNIFY,0)) [super magnifyWithEvent:event]; }
-- (void)rotateWithEvent:(NSEvent*)event { if (!NSThread.isMainThread) return; if (!SendAppleGesture(self,event,JALIUM_APPLE_GESTURE_ROTATE,0)) [super rotateWithEvent:event]; }
+- (void)beginGestureWithEvent:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleGestureDispatchContext context(self);
+    auto result = SendAppleGesture(context, event, 0, 1);
+    if (result != AppleGestureDisposition::Retired && context.CanForward())
+        [super beginGestureWithEvent:event];
+}
+- (void)endGestureWithEvent:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleGestureDispatchContext context(self);
+    auto result = SendAppleGesture(context, event, 0, 2);
+    if (result != AppleGestureDisposition::Retired && context.CanForward())
+        [super endGestureWithEvent:event];
+}
+- (void)magnifyWithEvent:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleGestureDispatchContext context(self);
+    auto result = SendAppleGesture(context, event, JALIUM_APPLE_GESTURE_MAGNIFY, 0);
+    if (result == AppleGestureDisposition::Unhandled && context.CanForward())
+        [super magnifyWithEvent:event];
+}
+- (void)rotateWithEvent:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleGestureDispatchContext context(self);
+    auto result = SendAppleGesture(context, event, JALIUM_APPLE_GESTURE_ROTATE, 0);
+    if (result == AppleGestureDisposition::Unhandled && context.CanForward())
+        [super rotateWithEvent:event];
+}
 @synthesize imeEnabled = _imeEnabled;
 @synthesize markedText = _markedText;
 - (void)setImeEnabled:(BOOL)value {
