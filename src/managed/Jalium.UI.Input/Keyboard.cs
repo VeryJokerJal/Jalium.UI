@@ -30,8 +30,13 @@ public static partial class Keyboard
     /// </summary>
     public static IInputElement? FocusedElement => _provider.FocusedElement;
 
-    internal static void UpdatePrimaryFocusedElement(IInputElement? element) =>
+    internal static long FocusRevision { get; private set; }
+
+    internal static void UpdatePrimaryFocusedElement(IInputElement? element)
+    {
+        unchecked { FocusRevision++; }
         _primaryDevice.FocusedElement = element;
+    }
 
     /// <summary>Gets the primary logical keyboard device.</summary>
     public static KeyboardDevice PrimaryDevice => _primaryDevice;
@@ -349,6 +354,10 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
 
     public IInputElement? Focus(IInputElement? element)
     {
+        long intent = FocusService.FocusIntentRevision;
+        var provider = FocusService.Provider;
+        bool Current() => !OperatingSystem.IsMacOS() || intent == FocusService.FocusIntentRevision &&
+            ReferenceEquals(provider, FocusService.Provider);
         // Check if element can receive focus
         if (element != null)
         {
@@ -359,7 +368,8 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
         }
 
         var oldFocus = _focusedElement;
-        if (oldFocus == element)
+        if (!Current()) return null;
+        if (!OperatingSystem.IsMacOS() && oldFocus == element)
             return element;
 
         // Handle re-entrancy: if we're already changing focus, queue this request
@@ -369,6 +379,9 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
             _hasPendingFocus = true;
             return element;
         }
+
+        if (!TryAcquireNativeFocus(element) || !Current()) return null;
+        if (_focusedElement == element) return element;
 
         _isChangingFocus = true;
         try
@@ -384,8 +397,10 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
                 _hasPendingFocus = false;
                 _pendingFocusElement = null;
 
-                if (pending != _focusedElement)
+                if (OperatingSystem.IsMacOS() || pending != _focusedElement)
                 {
+                    if (!TryAcquireNativeFocus(pending) || _hasPendingFocus) continue;
+                    if (pending == _focusedElement) continue;
                     var currentFocus = _focusedElement;
                     _focusedElement = pending;
                     Keyboard.UpdatePrimaryFocusedElement(pending);
@@ -396,6 +411,13 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
         finally
         {
             _isChangingFocus = false;
+            if (OperatingSystem.IsMacOS())
+            {
+                // A failed callback ends this batch. Its queued targets must
+                // not escape into a later, unrelated focus request.
+                _hasPendingFocus = false;
+                _pendingFocusElement = null;
+            }
         }
 
         // Report that the requested element accepted focus even if an event handler
@@ -404,6 +426,10 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
         // still exposes the final element after re-entrant processing.
         return element;
     }
+
+    private static bool TryAcquireNativeFocus(IInputElement? element) =>
+        !OperatingSystem.IsMacOS() || element is not UIElement target ||
+        KeyboardFocusHost.Find(target) is not { } host || host.TryAcquireKeyboardFocus(target);
 
     public void ClearFocus()
     {
@@ -452,41 +478,7 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
 
     private void UpdateIsKeyboardFocusWithin(UIElement? oldFocus, UIElement? newFocus)
     {
-        var oldChain = GetVisualAncestorChain(oldFocus);
-        var newChain = GetVisualAncestorChain(newFocus);
-        var newSet = new HashSet<UIElement>(newChain);
-        var oldSet = new HashSet<UIElement>(oldChain);
-
-        // Clear IsKeyboardFocusWithin only for ancestors that no longer contain the focused element.
-        foreach (var element in oldChain)
-        {
-            if (!newSet.Contains(element))
-            {
-                element.UpdateIsKeyboardFocusWithin(false);
-            }
-        }
-
-        // Set IsKeyboardFocusWithin only for ancestors newly entered by the focused element.
-        foreach (var element in newChain)
-        {
-            if (!oldSet.Contains(element))
-            {
-                element.UpdateIsKeyboardFocusWithin(true);
-            }
-        }
-    }
-
-    private static List<UIElement> GetVisualAncestorChain(UIElement? element)
-    {
-        var chain = new List<UIElement>();
-        var current = element;
-        while (current != null)
-        {
-            chain.Add(current);
-            current = current.VisualParent as UIElement;
-        }
-
-        return chain;
+        KeyboardFocusWithinState.Update(oldFocus, newFocus);
     }
 }
 // Key and ModifierKeys enums moved to Jalium.UI.Core/Input/KeyboardEnums.cs

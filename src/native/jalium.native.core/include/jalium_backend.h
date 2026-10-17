@@ -1524,6 +1524,15 @@ protected:
     ~TextParagraphNavigationProvider() = default;
 };
 
+// Optional render-target capability. Ranges address UTF-16 source positions;
+// filtering happens after shaping, without changing advance widths or glyphs.
+class TextGlyphRangeRenderProvider {
+public:
+    virtual JaliumResult SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode) = 0;
+protected:
+    ~TextGlyphRangeRenderProvider() = default;
+};
+
 class TextParagraphRenderProvider {
 public:
     virtual void RenderParagraphLine(TextParagraph* paragraph, uint32_t line,

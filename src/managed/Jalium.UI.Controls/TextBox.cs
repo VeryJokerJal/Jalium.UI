@@ -1778,6 +1778,14 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
     {
+        Point offset = HasContentHost ? GetTextContentOrigin() : Point.Zero;
+        using (MacOSWritingToolsPresentation.PushTextClip(this, dc, offset))
+            DrawTextCore(dc, contentRect, lineHeight);
+        MacOSWritingToolsPresentation.DrawInactive(this, dc, offset);
+    }
+
+    private void DrawTextCore(DrawingContext dc, Rect contentRect, double lineHeight)
+    {
         if (FontSize == 0) return;
         var text = Text;
         var textBrush = ResolveTextForegroundBrush();
@@ -1872,11 +1880,13 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                     Math.Max(1, lineWidth) + 2 * FontSize, lineBlockHeight + 2 * FontSize));
             try
             {
+                MacOSWritingToolsPresentation.ApplyGlyphRanges(this, formattedText, line.StartIndex);
                 dc.DrawText(formattedText, new Point(x, y));
-                DrawTextDecorations(dc, x, y, lineWidth, wrapWidth, visualRows, lineHeight,
-                    textBrush, wrapMode, decorationSizePrefix?[^1] ?? -1,
-                    i == firstDecoratedLine, i == lastDecoratedLine,
-                    decorationSizePrefix?[i] ?? -1);
+                using (MacOSWritingToolsPresentation.PushDecorationRanges(this, dc, HasContentHost ? GetTextContentOrigin() : Point.Zero))
+                    DrawTextDecorations(dc, x, y, lineWidth, wrapWidth, visualRows, lineHeight,
+                        textBrush, wrapMode, decorationSizePrefix?[^1] ?? -1,
+                        i == firstDecoratedLine, i == lastDecoratedLine,
+                        decorationSizePrefix?[i] ?? -1);
             }
             finally
             {
@@ -2087,6 +2097,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight)
     {
+        using var presentation = MacOSWritingToolsPresentation.PushHidden(this, dc, HasContentHost ? GetTextContentOrigin() : Point.Zero);
         var selectionBrush = ResolveSelectionBrush();
         if (selectionBrush == null)
             return;
@@ -2288,6 +2299,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void DrawCaret(DrawingContext dc, Rect contentRect, double lineHeight)
     {
+        if (MacOSWritingToolsPresentation.IsPresenting(this)) return;
         // Update and get the current caret opacity first (needed for animation to progress)
         var caretOpacity = UpdateCaretAnimation();
 

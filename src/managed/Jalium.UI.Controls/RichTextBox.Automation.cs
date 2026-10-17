@@ -110,4 +110,6 @@ public partial class RichTextBox
 
     internal bool ReplaceAutomationSelection(string text) => TryReplaceImeText(
         Selection.Start.DocumentOffset, Selection.End.DocumentOffset - Selection.Start.DocumentOffset, text);
+
+    internal bool ReplaceAutomationText(string text) => TryReplaceImeText(0, _document.GetText().Length, text);
 }

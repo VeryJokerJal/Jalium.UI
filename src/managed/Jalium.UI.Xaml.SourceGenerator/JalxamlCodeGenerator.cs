@@ -1333,12 +1333,8 @@ internal static class JalxamlCodeGenerator
     /// / <see cref="Jalium.UI.DataTemplate"/>.
     /// </summary>
     /// <remarks>
-    /// The lambda captures the outer <c>__ctx</c> via a normal C# closure. Markup-extension
-    /// fast paths (<c>SetDynamicResource</c>) and runtime <c>SetProperty</c> reuse the
-    /// captured context, which is fine because the build session has finished by the time
-    /// templates are instantiated and the parent stack is empty. Resource resolution
-    /// (DynamicResource subscription, ResourceLookup) doesn't depend on the build context's
-    /// parent stack — it walks the FE's live ancestor chain at apply time.
+    /// Every template invocation gets an isolated build scope. The long-lived factory
+    /// captures only a metadata seed, so its name table cannot retain a retired visual.
     /// </remarks>
     private static void EmitTemplateVisualTree(
         StringBuilder sb,
@@ -1373,49 +1369,34 @@ internal static class JalxamlCodeGenerator
         EmitContext ctx)
     {
         var pad = new string(' ', indent);
-
-        sb.AppendLine($"{pad}{templateVar}.SetVisualTree(() =>");
-        sb.AppendLine($"{pad}{{");
-
-        var inner = indent + 4;
-        var innerPad = new string(' ', inner);
         var rootIndex = counter.Next();
         var rootVar = $"__t{rootIndex}";
-
-        // Re-prime the build context's ambient resource stack with the captured
-        // codebehind / dictionary instance so {StaticResource X} markup-extension
-        // resolution inside the template body can walk back into the owning view's
-        // Resources. Without this push the lambda runs with an empty parent stack
-        // (BeginComponent/EndComponent already finished by template instantiation
-        // time), so any nested {Binding ..., Converter={StaticResource Y}} fails its
-        // ambient lookup and lands on Binding.PendingConverterKey for late resolution
-        // — which works for templated FEs that get parented, but is brittle for
-        // non-FE Converter resources or initial paint scenarios. Pushing the codebehind
-        // here lets the parser hit the resource directly on first try, mirroring the
-        // streaming XAML reader's behaviour where ambient parents are always available.
-        // We push/pop strictly around the body so concurrent LoadContent calls don't
-        // accumulate stack entries.
-        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, {ctx.ContextExpression});");
+        var seed = $"__templateSeed{rootIndex}";
+        var context = $"__templateCtx{rootIndex}";
+        // Copy metadata before capturing a factory. A nested template must not
+        // capture its creator's mutable name table either.
+        sb.AppendLine($"{pad}var {seed} = global::Jalium.UI.Markup.XamlBuilder.CreateTemplateContext({ctx.ContextExpression});");
+        sb.AppendLine($"{pad}{templateVar}.SetVisualTree(() =>");
+        sb.AppendLine($"{pad}{{");
+        var innerPad = new string(' ', indent + 4);
+        var bodyPad = new string(' ', indent + 8);
+        sb.AppendLine($"{innerPad}var {context} = global::Jalium.UI.Markup.XamlBuilder.CreateTemplateContext({seed});");
+        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, {context});");
         sb.AppendLine($"{innerPad}try");
         sb.AppendLine($"{innerPad}{{");
-
-        var bodyInner = inner + 4;
-        var bodyPad = new string(' ', bodyInner);
-
-        // Build the visual root inside the lambda body. EmitElementBody recurses into
-        // child elements; we use a fresh named-alreday set so x:Name fields declared
-        // outside the template don't collide with names inside. Templates expose names
-        // via FrameworkTemplate.FindName at apply time, not via codebehind fields.
+        var templateContext = new EmitContext(ctx.Symbols, ctx.RootPrefixes, ctx.XmlnsResolver,
+            ownerExpression: ctx.OwnerExpression, contextExpression: context)
+        {
+            DeferredStyles = ctx.DeferredStyles,
+        };
         sb.AppendLine($"{bodyPad}var {rootVar} = new global::{rootChild.ResolvedClrTypeName!}();");
-        EmitElementBody(sb, rootChild, rootVar, counter, new HashSet<string>(StringComparer.Ordinal), bodyInner, ctx);
+        EmitElementBody(sb, rootChild, rootVar, counter, new HashSet<string>(StringComparer.Ordinal), indent + 8, templateContext);
         sb.AppendLine($"{bodyPad}return {rootVar};");
-
         sb.AppendLine($"{innerPad}}}");
         sb.AppendLine($"{innerPad}finally");
         sb.AppendLine($"{innerPad}{{");
-        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent({ctx.ContextExpression});");
+        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent({context});");
         sb.AppendLine($"{innerPad}}}");
-
         sb.AppendLine($"{pad}}});");
     }
 

@@ -77,7 +77,7 @@ public sealed class CommandBinding
     /// </summary>
     internal void OnPreviewExecuted(object sender, ExecutedRoutedEventArgs e)
     {
-        PreviewExecuted?.Invoke(sender, e);
+        if (!e.Handled) PreviewExecuted?.Invoke(sender, e);
     }
 
     /// <summary>
@@ -85,7 +85,9 @@ public sealed class CommandBinding
     /// </summary>
     internal void OnExecuted(object sender, ExecutedRoutedEventArgs e)
     {
-        Executed?.Invoke(sender, e);
+        if (e.Handled || Executed == null) return;
+        Executed.Invoke(sender, e);
+        e.Handled = true;
     }
 
     /// <summary>
@@ -93,7 +95,9 @@ public sealed class CommandBinding
     /// </summary>
     internal void OnPreviewCanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        PreviewCanExecute?.Invoke(sender, e);
+        if (e.Handled || PreviewCanExecute == null) return;
+        PreviewCanExecute.Invoke(sender, e);
+        if (e.CanExecute) e.Handled = true;
     }
 
     /// <summary>
@@ -101,7 +105,13 @@ public sealed class CommandBinding
     /// </summary>
     internal void OnCanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        CanExecute?.Invoke(sender, e);
+        if (e.Handled) return;
+        if (CanExecute != null) CanExecute.Invoke(sender, e);
+        else
+        {
+            if (e.CanExecute || Executed == null) return;
+            e.CanExecute = true;
+        }
         if (e.CanExecute)
         {
             e.Handled = true;

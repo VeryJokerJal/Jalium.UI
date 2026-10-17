@@ -1,0 +1,264 @@
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using Jalium.UI.Media;
+using DocList = Jalium.UI.Documents.List;
+
+namespace Jalium.UI.Documents;
+
+/// <summary>Imports AppKit's already-parsed attributed text without treating RTF syntax as text.</summary>
+internal sealed class WritingToolsDocumentFragment
+{
+    internal readonly List<Block> Blocks = new();
+    internal bool EndsWithParagraphBreak { get; private init; }
+    private sealed record Row(Paragraph Paragraph, JsonElement Lists, JsonElement Tables);
+    internal static WritingToolsDocumentFragment Parse(JsonElement packet)
+    {
+        if (packet.GetProperty("version").GetInt32() != 1) throw new FormatException("Unsupported text fragment.");
+        byte[] bytes = Convert.FromBase64String(packet.GetProperty("text16").GetString()!);
+        if (bytes.Length % 2 != 0 || bytes.Length > 32 * 1024 * 1024) throw new FormatException("Invalid UTF-16 fragment.");
+        string text = new(MemoryMarshal.Cast<byte, char>(bytes));
+        var runs = packet.GetProperty("runs").EnumerateArray().ToArray();
+        int through = 0;
+        foreach (var run in runs)
+        {
+            int start = run.GetProperty("start").GetInt32(), length = run.GetProperty("length").GetInt32();
+            if (start != through || length <= 0 || length > text.Length - start) throw new FormatException("Invalid style range.");
+            through += length;
+        }
+        if (through != text.Length || runs.Length > 100000) throw new FormatException("Incomplete style ranges.");
+        var rows = new List<Row>();
+        through = 0;
+        foreach (var record in packet.GetProperty("paragraphs").EnumerateArray())
+        {
+            int start = record.GetProperty("start").GetInt32(), length = record.GetProperty("length").GetInt32();
+            if (start != through || length <= 0 || length > text.Length - start || rows.Count >= 100000)
+                throw new FormatException("Invalid paragraph range.");
+            through += length;
+            int end = start + length;
+            var tables = record.GetProperty("tables"); var lists = record.GetProperty("lists");
+            if (tables.GetArrayLength() > 32 || lists.GetArrayLength() > 32) throw new FormatException("Excessive nesting.");
+            if (end > start && text[end - 1] is '\n' or '\r' or '\u2029')
+            {
+                --end;
+                if (end > start && text[end] == '\n' && text[end - 1] == '\r') --end;
+            }
+            if (tables.GetArrayLength() != 0 && end > start && text[end - 1] == '\t') --end;
+            int skip = record.TryGetProperty("skipPrefix", out var marker) ? marker.GetInt32() : 0;
+            if (skip < 0 || skip > end - start) throw new FormatException("Invalid list marker.");
+            start += skip;
+            var paragraph = new Paragraph();
+            int alignment = record.GetProperty("alignment").GetInt32();
+            paragraph.TextAlignment = alignment switch
+            {
+                1 => TextAlignment.Right, 2 => TextAlignment.Center, 3 => TextAlignment.Justify,
+                _ => TextAlignment.Left
+            };
+            int direction = record.GetProperty("direction").GetInt32();
+            if (direction is 0 or 1) paragraph.FlowDirection = (FlowDirection)direction;
+            foreach (var style in runs)
+            {
+                int from = Math.Max(start, style.GetProperty("start").GetInt32());
+                int to = Math.Min(end, style.GetProperty("start").GetInt32() + style.GetProperty("length").GetInt32());
+                if (to <= from) continue;
+                var run = new Run(text.Substring(from, to - from));
+                ApplyStyle(run, style);
+                paragraph.Inlines.Add(run);
+            }
+            if (paragraph.Inlines.Count == 0) paragraph.Inlines.Add(new Run());
+            rows.Add(new(paragraph, lists, tables));
+        }
+        if (through != text.Length) throw new FormatException("Incomplete paragraph ranges.");
+        var fragment = new WritingToolsDocumentFragment
+        { EndsWithParagraphBreak = text.Length > 0 && text[^1] is '\n' or '\r' or '\u2029' };
+        fragment.Blocks.AddRange(Build(rows, 0, 0));
+        return fragment;
+    }
+
+    private static IEnumerable<Block> Build(IReadOnlyList<Row> rows, int tableDepth, int listDepth)
+    {
+        for (int index = 0; index < rows.Count;)
+        {
+            Row row = rows[index];
+            if (row.Tables.GetArrayLength() > tableDepth)
+            {
+                string id = row.Tables[tableDepth].GetProperty("id").GetString()!;
+                int end = index + 1;
+                while (end < rows.Count && rows[end].Tables.GetArrayLength() > tableDepth &&
+                    rows[end].Tables[tableDepth].GetProperty("id").GetString() == id) ++end;
+                yield return BuildTable(rows.Skip(index).Take(end - index).ToArray(), tableDepth, listDepth);
+                index = end; continue;
+            }
+            if (row.Lists.GetArrayLength() > listDepth)
+            {
+                var metadata = row.Lists[listDepth]; string id = metadata.GetProperty("id").GetString()!;
+                var list = new DocList
+                {
+                    MarkerStyle = Marker(metadata.GetProperty("format").GetString()!),
+                    StartIndex = metadata.GetProperty("start").GetInt32()
+                };
+                while (index < rows.Count && rows[index].Tables.GetArrayLength() == tableDepth &&
+                    rows[index].Lists.GetArrayLength() > listDepth &&
+                    rows[index].Lists[listDepth].GetProperty("id").GetString() == id)
+                {
+                    var item = new ListItem();
+                    item.Blocks.Add(rows[index].Paragraph);
+                    ++index;
+                    int nestedEnd = index;
+                    while (nestedEnd < rows.Count && rows[nestedEnd].Tables.GetArrayLength() == tableDepth &&
+                        rows[nestedEnd].Lists.GetArrayLength() > listDepth + 1 &&
+                        rows[nestedEnd].Lists[listDepth].GetProperty("id").GetString() == id) ++nestedEnd;
+                    foreach (var block in Build(rows.Skip(index).Take(nestedEnd - index).ToArray(), tableDepth, listDepth + 1))
+                        item.Blocks.Add(block);
+                    index = nestedEnd; list.ListItems.Add(item);
+                }
+                yield return list; continue;
+            }
+            yield return row.Paragraph; ++index;
+        }
+    }
+    private static Table BuildTable(IReadOnlyList<Row> paragraphs, int depth, int listDepth)
+    {
+        int columns = paragraphs[0].Tables[depth].GetProperty("tableColumns").GetInt32();
+        if (columns is < 1 or > 256) throw new FormatException("Invalid table dimensions.");
+        var table = new Table();
+        for (int i = 0; i < columns; ++i) table.Columns.Add(new TableColumn());
+        var group = new TableRowGroup(); table.RowGroups.Add(group);
+        var occupied = new HashSet<(int Row, int Column)>();
+        var rowGroups = paragraphs.GroupBy(row => row.Tables[depth].GetProperty("row").GetInt32()).OrderBy(row => row.Key).ToArray();
+        if (rowGroups.Length > 4096) throw new FormatException("Excessive table rows.");
+        int firstRow = rowGroups[0].Key;
+        foreach (var rowGroup in rowGroups)
+        {
+            int rowIndex = rowGroup.Key - firstRow;
+            if (rowIndex is < 0 or > 4095) throw new FormatException("Invalid table row.");
+            while (group.Rows.Count <= rowIndex) group.Rows.Add(new TableRow());
+            var row = group.Rows[rowIndex];
+            var cells = rowGroup.GroupBy(value => value.Tables[depth].GetProperty("column").GetInt32())
+                .ToDictionary(value => value.Key, value => value.ToArray());
+            if (cells.Keys.Any(column => column < 0 || column >= columns)) throw new FormatException("Invalid table column.");
+            for (int column = 0; column < columns;)
+            {
+                if (occupied.Contains((rowIndex, column)))
+                {
+                    if (cells.ContainsKey(column)) throw new FormatException("Cell starts inside another span.");
+                    ++column; continue;
+                }
+                if (!cells.TryGetValue(column, out var content))
+                { row.Cells.Add(new TableCell(new Paragraph())); ++column; continue; }
+                var metadata = content[0].Tables[depth];
+                int rowSpan = metadata.GetProperty("rows").GetInt32(), columnSpan = metadata.GetProperty("columns").GetInt32();
+                if (rowSpan is < 1 or > 4096 || columnSpan < 1 || columnSpan > columns - column)
+                    throw new FormatException("Invalid table span.");
+                if (rowSpan > 4096 - rowIndex || cells.Keys.Any(other => other > column && other < column + columnSpan))
+                    throw new FormatException("Overlapping table spans.");
+                foreach (var value in content)
+                {
+                    var details = value.Tables[depth];
+                    if (details.GetProperty("rows").GetInt32() != rowSpan ||
+                        details.GetProperty("columns").GetInt32() != columnSpan ||
+                        details.GetProperty("tableColumns").GetInt32() != columns)
+                        throw new FormatException("Inconsistent table cell.");
+                }
+                var cell = new TableCell { RowSpan = rowSpan, ColumnSpan = columnSpan };
+                for (int y = 0; y < rowSpan; ++y) for (int x = 0; x < columnSpan; ++x)
+                    if (!occupied.Add((rowIndex + y, column + x))) throw new FormatException("Overlapping table spans.");
+                foreach (var block in Build(content, depth + 1, listDepth)) cell.Blocks.Add(block);
+                row.Cells.Add(cell); column += columnSpan;
+            }
+        }
+        int requiredRows = occupied.Count == 0 ? group.Rows.Count : occupied.Max(cell => cell.Row) + 1;
+        while (group.Rows.Count < requiredRows) group.Rows.Add(new TableRow());
+        return table;
+    }
+    private static TextMarkerStyle Marker(string format)
+    {
+        format = format.ToLowerInvariant();
+        if (format.Contains("{decimal}", StringComparison.Ordinal)) return TextMarkerStyle.Decimal;
+        if (format.Contains("{lower-alpha}", StringComparison.Ordinal)) return TextMarkerStyle.LowerLatin;
+        if (format.Contains("{upper-alpha}", StringComparison.Ordinal)) return TextMarkerStyle.UpperLatin;
+        if (format.Contains("{lower-roman}", StringComparison.Ordinal)) return TextMarkerStyle.LowerRoman;
+        if (format.Contains("{upper-roman}", StringComparison.Ordinal)) return TextMarkerStyle.UpperRoman;
+        if (format.Contains("{circle}", StringComparison.Ordinal)) return TextMarkerStyle.Circle;
+        if (format.Contains("{square}", StringComparison.Ordinal) || format.Contains("{box}", StringComparison.Ordinal)) return TextMarkerStyle.Square;
+        return TextMarkerStyle.Disc;
+    }
+    private static void ApplyStyle(Run run, JsonElement style)
+    {
+        string family = style.GetProperty("family").GetString()!;
+        double size = style.GetProperty("size").GetDouble();
+        int weight = style.GetProperty("weight").GetInt32();
+        if (string.IsNullOrEmpty(family) || family.Length > 4 * 1024 * 1024 || !double.IsFinite(size) ||
+            size <= 0 || size > 65536 || weight is < 1 or > 1000) throw new FormatException("Invalid font.");
+        run.FontFamily = new FontFamily(family); run.FontSize = size;
+        run.FontWeight = FontWeight.FromOpenTypeWeight(weight);
+        run.FontStyle = style.GetProperty("italic").GetBoolean() ? FontStyles.Italic : FontStyles.Normal;
+        if (style.TryGetProperty("foreground", out var foreground)) run.Foreground = Brush(foreground);
+        if (style.TryGetProperty("background", out var background)) run.Background = Brush(background);
+        var decorations = new TextDecorationCollection();
+        if (style.GetProperty("underline").GetInt32() != 0) decorations.Add(new TextDecoration { Location = TextDecorationLocation.Underline });
+        if (style.GetProperty("strike").GetInt32() != 0) decorations.Add(new TextDecoration { Location = TextDecorationLocation.Strikethrough });
+        if (decorations.Count != 0) run.TextDecorations = decorations;
+    }
+    private static SolidColorBrush Brush(JsonElement value)
+    {
+        uint argb = value.GetUInt32();
+        return new SolidColorBrush(Color.FromArgb((byte)(argb >> 24), (byte)(argb >> 16), (byte)(argb >> 8), (byte)argb));
+    }
+
+    internal TextPointer Insert(FlowDocument document, int start, int length, Func<bool> current)
+    {
+        string original = document.GetText();
+        if (start < 0 || length < 0 || start > original.Length || length > original.Length - start)
+            throw new ArgumentOutOfRangeException(nameof(start));
+        if (!current()) return document.ContentStart;
+        if (!(start == 0 && length == original.Length) &&
+            document.GetPositionAtOffset(start, LogicalDirection.Forward) is { } insertion &&
+            DocumentTextEditing.HasNonMergeableAncestor(insertion))
+            throw new InvalidOperationException("A formatted fragment cannot split a non-mergeable inline.");
+        if (start == 0 && length == original.Length)
+        {
+            document.Blocks.Clear();
+            foreach (var block in Blocks) { if (!current()) return document.ContentStart; document.Blocks.Add(block); }
+            return document.ContentEnd;
+        }
+        TextPointer position = DocumentTextEditing.Replace(document, start, length, string.Empty);
+        if (!current() || Blocks.Count == 0) return position;
+        Paragraph prefix = position.Paragraph ?? throw new InvalidOperationException("No insertion paragraph.");
+        BlockCollection collection = prefix.OwnerCollection ?? throw new InvalidOperationException("Detached insertion paragraph.");
+        TextPointer split = document.InsertParagraphBreak(position);
+        Paragraph suffix = split.Paragraph!;
+        int at = collection.IndexOf(suffix);
+        var incoming = Blocks.ToList();
+        if (incoming[0] is Paragraph first)
+        {
+            MoveInlines(first, prefix);
+            incoming.RemoveAt(0);
+        }
+        else if (TextElement.GetContentLength(prefix) == 0)
+        {
+            collection.Remove(prefix);
+            at = collection.IndexOf(suffix);
+        }
+        foreach (var block in incoming)
+        { if (!current()) return document.ContentStart; collection.Insert(at++, block); }
+        Block last = incoming.LastOrDefault() ?? prefix;
+        TextPointer caret = last.ContentEnd;
+        if (!EndsWithParagraphBreak && last is Paragraph final)
+        {
+            MoveInlines(suffix, final);
+            collection.Remove(suffix);
+        }
+        else caret = suffix.ContentStart;
+        return caret;
+    }
+    private static void MoveInlines(Paragraph source, Paragraph destination)
+    {
+        foreach (var inline in source.Inlines.ToArray())
+        {
+            var formatting = DocumentTextEditing.CaptureCharacterFormatting(inline);
+            source.Inlines.Remove(inline); destination.Inlines.Add(inline);
+            DocumentTextEditing.ApplyCharacterFormatting(inline, formatting, preserveLocalValues: true);
+        }
+    }
+}
+

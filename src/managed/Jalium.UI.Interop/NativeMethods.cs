@@ -1019,6 +1019,9 @@ internal static partial class NativeMethods
     /// <summary>
     /// Draws text.
     /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_text_glyph_ranges")]
+    internal static unsafe partial JaliumResult SetTextGlyphRanges(nint renderTarget, uint* pairs, uint count, int mode);
+
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_text")]
     internal static unsafe partial void DrawTextRaw(nint renderTarget, char* text, int textLength, nint textFormat, float x, float y, float width, float height, nint brush);
 
@@ -1958,6 +1961,9 @@ internal static partial class NativeMethods
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_activate")]
     internal static partial int WindowActivate(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_apple_window_set_keyboard_focus")]
+    internal static partial int AppleWindowSetKeyboardFocus(nint window);
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_show_system_menu")]
     internal static partial int WindowShowSystemMenu(nint window, int x, int y);

@@ -17,7 +17,6 @@
     <None Remove="Info.plist" />
     <None Include="Info.plist" />
     <ProjectReference Include="../../src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj" ExcludeAssets="build;buildTransitive" />
-    <ProjectReference Include="../../src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj" />
     <BundleResource Include="$(JaliumMacNativeRoot)/*.metallib" LogicalName="%(Filename)%(Extension)" />
     <BundleResource Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" LogicalName="jalium_metal_manifest.json" />
   </ItemGroup>

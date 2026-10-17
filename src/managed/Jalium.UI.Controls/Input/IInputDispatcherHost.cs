@@ -15,6 +15,7 @@ internal interface IInputDispatcherHost
 
     /// <summary>The host window itself, used as a fallback event target.</summary>
     Window Self { get; }
+    UIElement KeyboardScopeRoot => Self;
 
     /// <summary>Native window handle (HWND on Win32, or platform handle).</summary>
     nint Handle { get; }
@@ -28,6 +29,10 @@ internal interface IInputDispatcherHost
 
     OverlayLayer OverlayLayer { get; }
     IReadOnlyList<Popup> ActiveExternalPopups { get; }
+    IReadOnlyList<Popup> MouseDismissPopups => ActiveExternalPopups;
+    IReadOnlyList<Popup> BlockingExternalPopups => ActiveExternalPopups;
+    PopupRoot? HostedPopupRoot => null;
+    bool TryDismissPopupOnEscape(UIElement target) => false;
     ContentDialog? ActiveContentDialog { get; }
     IReadOnlyList<ContentDialog> ActiveInPlaceDialogs { get; }
 
@@ -42,8 +47,13 @@ internal interface IInputDispatcherHost
 
     UIElement GetKeyboardEventTarget();
     UIElement? GetTextInputTarget();
+    Func<bool>? CaptureNativeInputLifetime(UIElement target, bool textInput) => null;
+    MouseCommandInput? CaptureNativeMouseCommandInput(UIElement target, Func<bool>? isPacketCurrent = null) => null;
     ContentDialog? FindContainingInPlaceDialog();
     Button? FindButton(UIElement root, Func<Button, bool> predicate);
+    Button? FindDefaultOrCancelButton(bool cancel) => FindButton(
+        (UIElement?)ActiveContentDialog ?? (UIElement?)FindContainingInPlaceDialog() ?? KeyboardScopeRoot,
+        button => cancel ? button.IsCancel : button.IsDefault);
 
     // ── DevTools ──
 

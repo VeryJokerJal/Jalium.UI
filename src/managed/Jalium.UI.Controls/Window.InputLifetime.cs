@@ -42,6 +42,7 @@ public partial class Window
     void IInputTreeLifetimeHost.OnInputSubtreeDetached(UIElement subtree)
     {
         if (_isClosing || _managedTeardownStarted) return;
+        if (OperatingSystem.IsMacOS()) MacOSInputSubtreeDetached?.Invoke(subtree);
         if (_hitMemoElement != null && Controls.WindowInputDispatcher.IsDescendantOf(_hitMemoElement, subtree))
         {
             _hitMemoElement = null;

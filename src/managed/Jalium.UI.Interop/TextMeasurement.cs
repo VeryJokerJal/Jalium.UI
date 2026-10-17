@@ -896,7 +896,7 @@ public static partial class TextMeasurement
         fontFamily = Jalium.UI.Styling.CssFontFaces.Unblock(fontFamily);
         float width = FontWidthRenderingSource.TryUnwrap(fontFamily, out var percentage, out var source)
             ? (float)Math.Min(percentage, float.MaxValue) : 100;
-        if (context.Backend != RenderBackend.Metal) width = 100;
+        if (context.Backend != RenderBackend.Metal && !(OperatingSystem.IsMacOS() && context.Backend == RenderBackend.Software)) width = 100;
         fontFamily = source;
         if (OperatingSystem.IsMacOS() && Jalium.UI.Styling.CssFontRenderingPlan.TryDecode(fontFamily, out var plan))
             return CreateCssTextFormat(context, plan, fontSize, fontWeight, fontStyle, width);
@@ -977,7 +977,7 @@ public static partial class TextMeasurement
     {
         supported = new byte[characters.Length];
         var context = RenderContext.Current;
-        if (!OperatingSystem.IsMacOS() || context is not { IsValid: true, Backend: RenderBackend.Metal }) return false;
+        if (!OperatingSystem.IsMacOS() || context is not { IsValid: true, Backend: RenderBackend.Metal or RenderBackend.Software }) return false;
         var format = GetOrCreateFormat(context, family, 20, weight, style);
         if (format is null) return false;
         try
@@ -1002,7 +1002,7 @@ public static partial class TextMeasurement
     internal static RenderingFont? GetRenderingFont(string family, string text, double size, int weight, int style)
     {
         var context = RenderContext.Current;
-        if (context is null || !context.IsValid || context.Backend != RenderBackend.Metal) return null;
+        if (!OperatingSystem.IsMacOS() || context is not { IsValid: true, Backend: RenderBackend.Metal or RenderBackend.Software }) return null;
         family = Jalium.UI.Styling.CssFontFaces.MaterializeSource(family, text);
         var format = GetOrCreateFormat(context, family, (float)size, weight, style);
         return format is null ? null : new(format.FontFamily, format.FontSize, format.FontWeight, format.FontStyle, format.FontWidthPercentage);

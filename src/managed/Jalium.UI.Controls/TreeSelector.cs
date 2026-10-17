@@ -1837,8 +1837,8 @@ public class TreeSelectorItem : HeaderedItemsControl
 
         Focus();
 
-        var modifiers = Keyboard.Modifiers;
-        bool isCtrl = (modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+        var modifiers = e.KeyboardModifiers;
+        bool isCtrl = PointerSelectionModifiers.IsToggle(modifiers);
         bool isShift = (modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
 
         ParentSelector?.HandleItemActivated(this, isCtrl, isShift);
@@ -1878,7 +1878,7 @@ public class TreeSelectorItem : HeaderedItemsControl
             Key.End => ParentSelector?.FocusBoundary(last: true) == true,
             Key.Right => HandleRightArrow(),
             Key.Left => HandleLeftArrow(),
-            Key.Enter or Key.Space => HandleSelectionKey(),
+            Key.Enter or Key.Space => HandleSelectionKey(e.KeyboardModifiers),
             _ => false
         };
 
@@ -1919,10 +1919,9 @@ public class TreeSelectorItem : HeaderedItemsControl
         return ParentItem != null && ParentItem.Focus();
     }
 
-    private bool HandleSelectionKey()
+    private bool HandleSelectionKey(ModifierKeys modifiers)
     {
         if (ParentSelector == null) return false;
-        var modifiers = Keyboard.Modifiers;
         bool isCtrl = (modifiers & ModifierKeys.Control) == ModifierKeys.Control;
         bool isShift = (modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
         ParentSelector.HandleItemActivated(this, isCtrl, isShift);

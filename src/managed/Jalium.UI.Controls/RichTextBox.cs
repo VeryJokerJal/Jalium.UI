@@ -1437,6 +1437,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         {
             // Render document content
             RenderDocument(dc, contentBounds);
+            MacOSWritingToolsPresentation.DrawInactive(this, dc);
 
             if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
             {
@@ -1516,6 +1517,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderLine(DrawingContext dc, LineLayoutInfo lineLayout, double x, double y)
     {
+        using var presentation = MacOSWritingToolsPresentation.PushTextClip(this, dc);
         var pad = Math.Max(1, lineLayout.Height);
         var bounds = new Rect(x - pad, y - pad,
             Math.Max(1, lineLayout.Width) + 2 * pad, lineLayout.Height + 2 * pad);
@@ -1532,6 +1534,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                     MaxTextWidth = Math.Max(1, lineLayout.Width),
                     MaxTextHeight = Math.Max(1, lineLayout.Height)
                 };
+                MacOSWritingToolsPresentation.ApplyGlyphRanges(this, formatted, lineLayout.ParagraphOffset, nativeLine.Paragraph.Text.Length);
                 dc.DrawText(formatted, new Point(x, y));
             }
             Dictionary<TextElement, DecorationSegment>? decorations = null;
@@ -1560,6 +1563,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                             FontWeight = fontWeight.ToOpenTypeWeight(),
                             FontStyle = fontStyle.ToOpenTypeStyle()
                         };
+                        MacOSWritingToolsPresentation.ApplyGlyphRanges(this, formattedText, runLayout.StartOffset);
                         dc.DrawText(formattedText, new Point(runX, y));
                     }
                     CollectRunTextDecorations(runLayout, runX, fontFamily, fontSize,
@@ -1567,6 +1571,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 }
             }
             if (decorations is not null)
+                using (MacOSWritingToolsPresentation.PushDecorationRanges(this, dc))
                 foreach (var segment in decorations.Values.OrderBy(static item => item.Depth))
                     DrawTextDecorationSegment(dc, segment, lineLayout.NativeLine is null
                         ? y : y + lineLayout.Baseline - segment.Ascent);
@@ -1768,6 +1773,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderSelection(DrawingContext dc, Rect contentBounds)
     {
+        using var presentation = MacOSWritingToolsPresentation.PushHidden(this, dc);
         var selBrush = ResolveSelectionBrush();
         if (selBrush == null || _selection == null || _selection.IsEmpty)
             return;
@@ -1887,6 +1893,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderCaret(DrawingContext dc, Rect contentBounds)
     {
+        if (MacOSWritingToolsPresentation.IsPresenting(this)) return;
         if (_isImeComposing)
             return;
 
@@ -2359,7 +2366,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     private bool TryLayoutNativeParagraph(Paragraph paragraph, BlockLayoutInfo blockLayout,
         double maxWidth, ref int currentOffset)
     {
-        if (!OperatingSystem.IsMacOS() || RenderContext.Current?.Backend != RenderBackend.Metal)
+        if (!OperatingSystem.IsMacOS() || RenderContext.Current?.Backend is not (RenderBackend.Metal or RenderBackend.Software))
             return false;
         var spans = new List<NativeTextParagraph.Span>();
         var sources = new List<Run?>();
@@ -2727,7 +2734,9 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
         if (e.ImeReplacementRange is { } range)
         {
-            e.Handled = TryReplaceImeText(range.Start, range.Length, e.Text);
+            e.Handled = e.NativeTextServicesPayload is { } payload
+                ? TryReplaceWritingToolsText(range.Start, range.Length, payload, e.NativeEditLifetime ?? (() => true))
+                : TryReplaceImeText(range.Start, range.Length, e.Text);
             return;
         }
 

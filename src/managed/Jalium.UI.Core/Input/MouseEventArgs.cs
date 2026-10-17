@@ -62,6 +62,8 @@ public readonly struct MouseButtonStates
 /// </summary>
 public class MouseEventArgs : InputEventArgs
 {
+    internal MouseCommandInput? CommandInput { get; set; }
+
     private readonly StylusDevice? _associatedStylusDevice;
 
     /// <summary>
@@ -98,6 +100,13 @@ public class MouseEventArgs : InputEventArgs
     /// Gets the modifier keys that were pressed during the event.
     /// </summary>
     public ModifierKeys KeyboardModifiers { get; }
+
+    /// <summary>
+    /// Gets the physical modifier snapshot supplied by native input, when available.
+    /// On macOS this distinguishes physical Control from Command even when Command
+    /// is exposed as logical Control for portable input bindings.
+    /// </summary>
+    public ModifierKeys? PhysicalModifiers { get; internal init; }
 
     /// <summary>
     /// Gets or sets a value indicating whether downstream pointer promotion should be canceled.

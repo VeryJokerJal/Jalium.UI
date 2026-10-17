@@ -32,6 +32,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     private bool _sortedIndexCacheDirty = true;
     private readonly List<int> _sortedIndices = new();
     private Type? _preferredContainerType;
+    private ulong _nextRealizationId;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ItemContainerGenerator"/> class.
@@ -660,9 +661,19 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         }
     }
 
+    // A physical container may represent the same item again after recycling.
+    // Indices and data equality cannot distinguish that new realization.
+    internal ulong GetRealizationId(DependencyObject container) =>
+        _containerToIndex.TryGetValue(container, out int index)
+        && _realizedItems.TryGetValue(index, out var map)
+        && ReferenceEquals(map.Container, container) ? map.RealizationId : 0;
+
     private void MapContainer(int index, object item, DependencyObject container, bool isOwnContainer)
     {
-        _realizedItems[index] = new ItemContainerMap(index, item, container, isOwnContainer);
+        _realizedItems[index] = new ItemContainerMap(index, item, container, isOwnContainer)
+        {
+            RealizationId = checked(++_nextRealizationId)
+        };
         _containerToIndex[container] = index;
         MarkSortedCacheDirty();
     }
@@ -774,6 +785,8 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
             Container = container;
             IsOwnContainer = isOwnContainer;
         }
+
+        internal ulong RealizationId { get; init; }
 
         public int ItemIndex { get; set; }
 

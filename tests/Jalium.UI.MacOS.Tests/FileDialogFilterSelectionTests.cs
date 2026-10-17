@@ -57,6 +57,18 @@ public class FileDialogFilterSelectionTests
     public void OpenFileMatchingRetainsCompoundExtensionsAndFileNamePatterns(string pattern, string name, bool expected)
         => Assert.Equal(expected, new FileDialogFilterSelection([("Files", pattern)], 1, null).MatchesFileName(name));
 
+    [Theory]
+    [InlineData("*.json;.editorconfig", ".editorconfig")]
+    [InlineData("*.json;report-*.txt", "report-owned.txt")]
+    public void NativeTypeProjectionCannotRejectAnAllowedFilename(string pattern, string accepted)
+    {
+        var selection = new FileDialogFilterSelection([("Files", pattern)], 1, null);
+        Assert.True(selection.MatchesFileName(accepted));
+        Assert.False(selection.MatchesFileName("owned.zip"));
+        Assert.Empty(selection.NativeExtensions);
+        Assert.Equal("owned.json", selection.AppendExtension("owned", true));
+    }
+
     [Fact]
     public void ChangingFiltersUpdatesTheExtensionAndMatchingTogether()
     {

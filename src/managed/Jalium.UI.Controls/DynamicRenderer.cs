@@ -17,6 +17,7 @@ public class DynamicRenderer : StylusPlugIn
     private DrawingAttributes _drawingAttributes = new();
     private InkStylusPointCollection? _previewPoints;
     private Stroke? _previewStroke;
+    private uint? _previewPointerId;
     private InkPresenter? _inkPresenter;
 
     // NOTE: DynamicRenderer intentionally stays UI-thread (IsRealTimeCapable=false).
@@ -78,7 +79,10 @@ public class DynamicRenderer : StylusPlugIn
         ArgumentNullException.ThrowIfNull(stylusPoints);
         ClearPreview();
         if (stylusPoints.Count != 0)
+        {
             StartPreview(stylusPoints);
+            _previewPointerId = unchecked((uint)stylusDevice.Id);
+        }
         Element?.InvalidateVisual();
     }
 
@@ -126,6 +130,7 @@ public class DynamicRenderer : StylusPlugIn
     protected override void OnStylusDown(RawStylusInput rawStylusInput)
     {
         StartPreview(rawStylusInput.GetStylusPoints());
+        _previewPointerId = rawStylusInput.PointerId;
         rawStylusInput.NotifyWhenProcessed(rawStylusInput);
     }
 
@@ -140,6 +145,14 @@ public class DynamicRenderer : StylusPlugIn
         AppendPreview(rawStylusInput.GetStylusPoints());
         ClearPreview();
         rawStylusInput.NotifyWhenProcessed(rawStylusInput);
+    }
+
+    protected override void OnStylusLeave(RawStylusInput rawStylusInput, bool confirmed)
+    {
+        if (!rawStylusInput.IsCanceled || _previewPointerId != rawStylusInput.PointerId) return;
+        ClearPreview();
+        RedrawPreviewVisual();
+        Element?.InvalidateVisual();
     }
 
     protected override void OnStylusDownProcessed(object callbackData, bool targetVerified) => Element?.InvalidateVisual();
@@ -183,6 +196,7 @@ public class DynamicRenderer : StylusPlugIn
     {
         _previewPoints = null;
         _previewStroke = null;
+        _previewPointerId = null;
 
         if (_inkPresenter != null)
         {

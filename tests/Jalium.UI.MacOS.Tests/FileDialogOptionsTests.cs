@@ -26,6 +26,40 @@ public sealed class FileDialogOptionsTests
     }
 
     [Fact]
+    public void ConfirmationIdentityResolvesDirectoryAliasesAndKeepsDifferentLeavesDistinct()
+    {
+        using var files = new Files();
+        string alias = files.Root + "-confirmation-alias";
+        Directory.CreateSymbolicLink(alias, files.Root);
+        try
+        {
+            Assert.True(FileDialogNavigation.IsSamePath(files.Inside, files.Inside + Path.DirectorySeparatorChar));
+            Assert.Equal(OperatingSystem.IsMacOS(), FileDialogNavigation.IsSamePath(files.Inside, Path.Combine(alias, "inside")));
+            Assert.Equal(OperatingSystem.IsMacOS(), FileDialogNavigation.IsSamePath(files.File, Path.Combine(alias, "inside", "chosen.txt")));
+            Assert.False(FileDialogNavigation.IsSamePath(files.File, Path.Combine(alias, "inside", "different.txt")));
+            Assert.False(FileDialogNavigation.IsSamePath(files.Inside, files.Outside));
+        }
+        finally { Directory.Delete(alias); }
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", "")]
+    [InlineData("bad\0path", "bad\0path")]
+    public void ConfirmationIdentityRejectsUnusablePaths(string? first, string? second)
+        => Assert.False(FileDialogNavigation.IsSamePath(first, second));
+
+    [Fact]
+    public void ConfirmationIdentityDoesNotDereferenceAFileLinkLeaf()
+    {
+        using var files = new Files();
+        string link = Path.Combine(files.Inside, "selected-link.txt");
+        System.IO.File.CreateSymbolicLink(link, files.File);
+        Assert.True(FileDialogNavigation.IsSamePath(link, link));
+        Assert.False(FileDialogNavigation.IsSamePath(link, files.File));
+    }
+
+    [Fact]
     public void MacDirectoryAliasesPreserveRootIdentityInitialLocationAndPlaceDeduplication()
     {
         if (!OperatingSystem.IsMacOS()) return;

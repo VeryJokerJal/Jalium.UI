@@ -6,6 +6,33 @@ on:
   pull_request:
 
 jobs:
+  media-availability:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - name: Build and verify macOS media behavior
+        run: |
+          cmake -S src/native -B "$RUNNER_TEMP/jalium-media-macos" \
+            -DCMAKE_BUILD_TYPE=Release -DJALIUM_MEDIA_APPLE_BUILD_TESTS=ON \
+            -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
+          cmake --build "$RUNNER_TEMP/jalium-media-macos" --parallel 4 \
+            --target jalium.native.media.apple.tests
+          ctest --test-dir "$RUNNER_TEMP/jalium-media-macos" \
+            -R '^jalium[.]native[.]media[.]apple[.]availability$' --output-on-failure -V
+      - name: Compile Apple media device and simulator archives
+        run: |
+          for slice in ios iossimulator tvos tvossimulator visionos visionossimulator; do
+            cmake --preset "apple-$slice-arm64" -S src/native \
+              -B "$RUNNER_TEMP/jalium-media-$slice" \
+              -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+            cmake --build "$RUNNER_TEMP/jalium-media-$slice" --config Release \
+              --target jalium.native.media.apple --parallel 4
+          done
+
   native-and-packages:
     runs-on: macos-26
     timeout-minutes: 360
@@ -16,11 +43,16 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.300
+      - name: Verify generated template lifetimes
+        run: >-
+          dotnet test tests/Jalium.UI.Template.Tests/Jalium.UI.Template.Tests.csproj
+          -c Release --nologo --disable-build-servers
+          -p:UseSharedCompilation=false -m:1 --logger trx
       - name: Cache pinned Apple shader compiler slices
         uses: actions/cache@v4
         with:
           path: src/native/out/apple-deps
-          key: apple-shader-toolchain-${{ runner.os }}-xcode-26.6-${{ hashFiles('eng/apple/dependencies.lock.json', 'eng/apple/prepare-shader-toolchain.sh') }}
+          key: apple-shader-toolchain-${{ runner.os }}-xcode-26.6-${{ hashFiles('eng/apple/dependencies.lock.json', 'eng/apple/prepare-shader-toolchain.sh', 'eng/apple/patch-shader-toolchain.py') }}
       - name: Install pinned Apple workloads
         run: dotnet workload install ios tvos macos --version 10.0.300.2
       - name: Build Apple native slices
@@ -83,6 +115,8 @@ jobs:
           jalium.native.platform.clipboard.tests
           jalium.native.platform.window.tests
           jalium.native.platform.window.accessibility.tests
+          jalium.native.platform.window.popup-keyboard.tests
+          jalium.native.platform.window.keyboard-focus.tests
           jalium.native.platform.window.resize.tests
           jalium.native.platform.window.menu.tests
           jalium.native.platform.window.startup.tests
@@ -105,9 +139,9 @@ jobs:
       - name: Configure focused readback and regression tests
         run: >-
           cmake -S src/native -B /tmp/jalium-readback-tests
-          -DCMAKE_BUILD_TYPE=Release -DJALIUM_METAL_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=Release -DJALIUM_METAL_BUILD_TESTS=ON -DJALIUM_SOFTWARE_BUILD_TESTS=ON
           -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
       - name: Build focused readback and regression tests
-        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback jalium.native.metal.regression --parallel 4
+        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback jalium.native.metal.regression jalium.native.metal.text-glyph-ranges jalium.native.software.apple.text --parallel 4
       - name: Verify GPU resources, readback and Window rendering regressions
-        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium[.]native[.]metal[.](gpu-.*baseline|readback(-no-resize)?|regression)$' --output-on-failure -V
+        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium[.]native[.](metal[.](gpu-.*baseline|readback(-no-resize)?|regression|text-glyph-ranges)|software[.]apple[.](text-glyph-ranges|coretext))$' --output-on-failure -V

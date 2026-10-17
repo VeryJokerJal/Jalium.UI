@@ -604,6 +604,13 @@ JALIUM_API void jalium_stroke_path_at(JaliumRenderTarget* rt, float offsetX, flo
     float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount,
     float dashOffset, int32_t edgeMode);
 
+/// Select shaped glyph clusters for subsequent text draws on this target.
+/// mode: 0 = reset (count must be zero), 1 = include, 2 = exclude. Each pair
+/// is (UTF-16 start, length). Empty include draws no glyphs. At most 4096 pairs.
+/// Unsupported backends return JALIUM_ERROR_NOT_SUPPORTED without changing state.
+JALIUM_API JaliumResult jalium_render_target_set_text_glyph_ranges(
+    JaliumRenderTarget* rt, const uint32_t* pairs, uint32_t count, int32_t mode);
+
 /// Draws text.
 /// @param rt The render target.
 /// @param text The text to draw.

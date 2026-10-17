@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,10 @@ import sys
 mode = os.environ["JALIUM_WINDOW_PROTOCOL_CASE"]
 directory = Path(sys.argv[sys.argv.index("--window-validation-directory") + 1])
 nonce = sys.argv[sys.argv.index("--window-validation-nonce") + 1]
+observation = os.environ.get("JALIUM_WINDOW_PROTOCOL_OBSERVATION")
+if observation:
+    Path(observation).write_text(json.dumps({"directory": str(directory), "nonce": nonce,
+        "permissions": directory.stat().st_mode & 0o777}))
 if mode == "launch_error":
     sys.exit(9)
 if mode == "missing":
@@ -59,19 +64,56 @@ def main():
             " " + shlex.quote(str(actor)) + ' "$@"\n')
         launcher.chmod(0o700)
         runs = directory / "runs"
-        for case in cases:
-            environment = dict(os.environ, JALIUM_WINDOW_PROTOCOL_CASE=case)
-            result = subprocess.run([
-                cmake, "-DHOST_APP=" + application, "-DHOST_WORK_DIR=" + str(runs),
-                "-DHOST_LAUNCHER=" + str(launcher), "-P", verifier,
-            ], capture_output=True, text=True, env=environment, timeout=10)
-            if (result.returncode == 0) != (case == "valid"):
-                print(result.stdout + result.stderr, file=sys.stderr)
-                raise AssertionError(case)
-            if list(runs.iterdir()):
-                raise AssertionError("Completion files leaked: " + case)
-            print("PASS completion protocol: " + case)
-    print("macOS Window completion protocol: 15/15 passed")
+        cache_root = Path.home() / "Library/Caches/Jalium.UI/WindowValidation"
+        cache_existed = cache_root.exists()
+        cache_parent_existed = cache_root.parent.exists()
+        observation = directory / "observation.json"
+        seen_directories = set()
+        try:
+            for work_mode in ("explicit", "cache"):
+                for case in cases:
+                    environment = dict(os.environ, JALIUM_WINDOW_PROTOCOL_CASE=case,
+                        JALIUM_WINDOW_PROTOCOL_OBSERVATION=str(observation))
+                    command = [cmake, "-DHOST_APP=" + application,
+                        "-DHOST_LAUNCHER=" + str(launcher)]
+                    if work_mode == "explicit":
+                        command.append("-DHOST_WORK_DIR=" + str(runs))
+                    command.extend(["-P", verifier])
+                    result = subprocess.run(command, capture_output=True, text=True,
+                        env=environment, timeout=10)
+                    if (result.returncode == 0) != (case == "valid"):
+                        print(result.stdout + result.stderr, file=sys.stderr)
+                        raise AssertionError(work_mode + "/" + case)
+                    observed = json.loads(observation.read_text())
+                    chosen = Path(observed["directory"])
+                    expected_parent = runs if work_mode == "explicit" else cache_root
+                    if chosen.parent.resolve() != expected_parent.resolve() or chosen.name != observed["nonce"]:
+                        raise AssertionError("Unexpected completion directory: " + str(chosen))
+                    try:
+                        if observed["permissions"] != 0o700:
+                            raise AssertionError("Completion directory is not private")
+                        if str(chosen) in seen_directories:
+                            raise AssertionError("Completion directory was reused")
+                        seen_directories.add(str(chosen))
+                        if case == "valid":
+                            if chosen.exists():
+                                raise AssertionError("Successful completion files leaked")
+                        else:
+                            if not (chosen / "failure.txt").is_file():
+                                raise AssertionError("Failure diagnostics missing: " + case)
+                            if case not in ("launch_error", "missing") and not (chosen / "host.log").is_file():
+                                raise AssertionError("Host failure log missing: " + case)
+                    finally:
+                        if chosen.exists():
+                            shutil.rmtree(chosen)
+                    if work_mode == "explicit" and list(runs.iterdir()):
+                        raise AssertionError("Unclaimed completion files leaked")
+                    print("PASS completion protocol: " + work_mode + "/" + case)
+        finally:
+            for path, existed in ((cache_root, cache_existed), (cache_root.parent, cache_parent_existed)):
+                if not existed and path.is_dir() and not any(path.iterdir()):
+                    path.rmdir()
+    print("macOS Window completion protocol: 30/30 passed")
 
 if __name__ == "__main__":
     main()

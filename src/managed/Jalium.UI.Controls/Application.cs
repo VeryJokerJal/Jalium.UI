@@ -35,7 +35,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     private static Assembly? _resourceAssembly;
     private readonly WorkingSetTrimController? _workingSetTrimController;
     private readonly IDictionary _properties = new Hashtable();
-    private readonly WindowCollection _windows = new(Window.SnapshotOpenWindows);
+    private readonly WindowCollection _windows = new(Window.SnapshotApplicationWindows);
     private bool _isActive;
     private IDisposable? _linuxSessionMonitor;
     private int _cleanupStarted;
@@ -639,7 +639,8 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             return (systemResource, null);
         }
 
-        return SystemFonts.TryGetResource(resourceKey, out systemResource)
+        return (SystemFonts.TryGetResource(resourceKey, out systemResource) ||
+            SystemParameters.TryGetResource(resourceKey, out systemResource))
             ? (systemResource, null)
             : (null, null);
     }
@@ -662,7 +663,8 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             return systemResource;
         }
 
-        return SystemFonts.TryGetResource(resourceKey, out systemResource)
+        return (SystemFonts.TryGetResource(resourceKey, out systemResource) ||
+            SystemParameters.TryGetResource(resourceKey, out systemResource))
             ? systemResource
             : null;
     }
@@ -672,7 +674,8 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         // External Popup windows are detached from the owning window's visual tree.
         // Bridge lookup to PlacementTarget first so window/page-level custom resources
         // (for example OnePopup*) still resolve in popup content.
-        if (element is PopupRoot popupRoot && popupRoot.VisualParent is PopupWindow)
+        if (element is PopupRoot popupRoot && (popupRoot.VisualParent is PopupWindow ||
+            OperatingSystem.IsMacOS() && Window.GetMacOSPhysicalWindow(popupRoot)?.IsMacOSPopupHost == true))
         {
             if (popupRoot.OwnerPopup.PlacementTarget is FrameworkElement placementTarget)
             {

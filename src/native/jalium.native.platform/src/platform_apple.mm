@@ -14,6 +14,8 @@
 #include <pthread.h>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
 
 #import <TargetConditionals.h>
 #import <CoreFoundation/CoreFoundation.h>
@@ -53,8 +55,11 @@ struct JaliumTimer {
 
 @class JaliumAppleView;
 #if TARGET_OS_OSX
+struct AppleGestureState;
+struct AppleTabletState;
 @class JaliumAppleWindowDelegate;
 @class JaliumAppleAccessibilityBridge;
+namespace { struct AppleContentFocus; }
 struct JaliumAppleDragSource {
     NSWindow* window = nil;
     NSDraggingSession* session = nil;
@@ -72,7 +77,12 @@ struct JaliumAppleDragSource {
 struct JaliumPlatformWindow {
 #if TARGET_OS_OSX
     NSWindow* window = nil;
+    std::shared_ptr<AppleGestureState> gestures;
+    uint64_t gestureDispatchGeneration = 0;
+    std::shared_ptr<AppleTabletState> tablets;
+    uint64_t tabletDispatchGeneration = 0;
     JaliumAppleWindowDelegate* delegate = nil;
+    NSArray* stateCompletionObservers = nil;
     NSVisualEffectView* backdropView = nil;
     NSMenu* systemMenu = nil;
     JaliumEditingCommandQuery editingCommandQuery = nullptr;
@@ -92,13 +102,16 @@ struct JaliumPlatformWindow {
     bool interactiveResize = false;
     bool nativeClosing = false;
     bool fullScreenTransition = false;
-    bool fullScreenHadContentFocus = false;
+    std::shared_ptr<AppleContentFocus> fullScreenContentFocus;
     uint64_t stateRequestSequence = 0;
     uint64_t geometrySequence = 0;
     uint64_t fullScreenRequestSequence = 0;
     bool miniaturizing = false;
     uint64_t miniaturizationSequence = 0;
     uint64_t pendingMiniaturizationRequest = 0;
+    uint64_t deminiaturizationSequence = 0;
+    uint64_t pendingDeminiaturizationRequest = 0;
+    bool pendingDeminiaturizationStart = false;
     bool pendingActivation = false;
     bool pendingMainSelection = false;
     uint64_t selectionGeneration = 0;
@@ -185,6 +198,17 @@ std::atomic<uint64_t> g_nextAppleDragTargetId{1};
 NSMutableArray<NSMenu*>* g_trackingMenus;
 id g_menuTrackingBeginObserver;
 id g_menuTrackingEndObserver;
+struct AppleDisplayChangeTarget {
+    JaliumPlatformWindow* window;
+    NSWindow* __weak nativeWindow;
+};
+struct AppleDisplayChangeState {
+    std::atomic<bool> active{true};
+    bool broadcasting = false; // Main thread only.
+    std::vector<AppleDisplayChangeTarget> pending; // Main thread only.
+};
+std::shared_ptr<AppleDisplayChangeState> g_displayChangeState;
+id g_displayChangeObserver;
 
 void ObserveNativeMenuTracking()
 {
@@ -254,6 +278,83 @@ bool IsLiveWindow(JaliumPlatformWindow* window, NSWindow* nativeWindow)
     // the same address. Retain the original AppKit object across the callback
     // and require both registration and native identity before continuing.
     return IsLiveWindow(window) && window->window == nativeWindow;
+}
+
+std::vector<AppleDisplayChangeTarget> CaptureAppleDisplayChangeTargets()
+{
+    // The notification may arrive off the main thread. Capture registration
+    // and native identity together before later windows can enter its scope.
+    // Weak native identities do not extend an AppKit object's lifetime on the
+    // posting thread; each actual callback retains its native target on main.
+    std::scoped_lock lock(g_windowsMutex);
+    std::vector<AppleDisplayChangeTarget> targets;
+    targets.reserve(g_windows.size());
+    for (auto* window : g_windows)
+        targets.push_back({window, window->window});
+    return targets;
+}
+
+void BroadcastAppleDisplayChange(std::shared_ptr<AppleDisplayChangeState> state,
+    std::vector<AppleDisplayChangeTarget> targets);
+
+void QueueAppleDisplayChange(std::shared_ptr<AppleDisplayChangeState> state,
+    std::vector<AppleDisplayChangeTarget> targets)
+{
+    // A host can pump AppKit from within a main-dispatch-queue callback.
+    // Another block on that same serial queue cannot run until it returns.
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+        BroadcastAppleDisplayChange(state, targets);
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
+void BroadcastAppleDisplayChange(std::shared_ptr<AppleDisplayChangeState> state,
+    std::vector<AppleDisplayChangeTarget> targets)
+{
+    if (!state->active.load(std::memory_order_acquire)) return;
+    if (!NSThread.isMainThread) {
+        QueueAppleDisplayChange(state, std::move(targets));
+        return;
+    }
+    if (state->broadcasting) {
+        for (const auto& target : targets) {
+            NSWindow* nativeWindow = target.nativeWindow;
+            if (!nativeWindow) continue;
+            const bool known = std::any_of(state->pending.begin(), state->pending.end(),
+                [&](const auto& pending) {
+                    return pending.window == target.window && pending.nativeWindow == nativeWindow;
+                });
+            if (!known) state->pending.push_back(target);
+        }
+        return;
+    }
+    state->broadcasting = true;
+    // A notification callback may destroy itself or another window, create a
+    // replacement at the same address, or shut down/reinitialize the platform.
+    // Never hold the registry lock across application callbacks.
+    for (const auto& target : targets) {
+        if (!state->active.load(std::memory_order_acquire)) break;
+        NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = target.nativeWindow;
+        if (nativeWindow && IsLiveWindow(target.window, nativeWindow) && !target.window->destroying)
+            DispatchSimple(target.window, JALIUM_EVENT_MONITORS_CHANGED);
+    }
+    state->broadcasting = false;
+    if (!state->pending.empty() && state->active.load(std::memory_order_acquire)) {
+        auto pending = std::move(state->pending);
+        state->pending.clear();
+        QueueAppleDisplayChange(state, std::move(pending));
+    }
+}
+
+void ObserveAppleDisplayChanges()
+{
+    auto state = std::make_shared<AppleDisplayChangeState>();
+    g_displayChangeState = state;
+    g_displayChangeObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSApplicationDidChangeScreenParametersNotification
+        object:NSApp queue:nil usingBlock:^(NSNotification*) {
+            BroadcastAppleDisplayChange(state, CaptureAppleDisplayChangeTargets());
+        }];
 }
 
 CGFloat DesktopTop()
@@ -340,6 +441,7 @@ void ApplyAppleSurfaceAppearance(JaliumPlatformWindow* window)
     bool reduceTransparency = hasBackdrop &&
         NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
     bool transparent = (explicitTransparency || hasBackdrop) && !reduceTransparency;
+    window->window.ignoresMouseEvents = (window->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT) != 0;
     window->window.opaque = !transparent;
     window->window.backgroundColor = transparent ? NSColor.clearColor : NSColor.windowBackgroundColor;
     window->window.hasShadow = hasBackdrop || !explicitTransparency;
@@ -731,28 +833,51 @@ bool BeginFullScreenTransition(JaliumPlatformWindow* window)
 {
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
     NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
-    window->fullScreenRequestSequence = window->stateRequestSequence;
+    uint64_t request = window->stateRequestSequence;
+    window->fullScreenRequestSequence = request;
     window->fullScreenTransition = true;
-    NSResponder* responder = nativeWindow.firstResponder;
-    if (!IsLiveWindow(window, nativeWindow)) return false;
-    window->fullScreenHadContentFocus = responder == view;
+    auto live = [&] {
+        return IsLiveWindow(window, nativeWindow) && !window->destroying &&
+            (NSView*)window->view == view && window->fullScreenTransition &&
+            window->fullScreenRequestSequence == request;
+    };
+    NSView* __attribute__((objc_precise_lifetime)) inputRoot = nativeWindow.contentView;
+    if (!live()) return false;
+    auto focus = std::make_shared<AppleContentFocus>();
+    if (!focus->Capture(nativeWindow, inputRoot, window->visible, live)) return false;
+    window->fullScreenContentFocus = std::move(focus);
     return true;
 }
 
-void RestoreFullScreenContentFocus(JaliumPlatformWindow* window, bool hadContentFocus)
+void RestoreFullScreenContentFocus(JaliumPlatformWindow* window,
+    const std::shared_ptr<AppleContentFocus>& focus)
 {
-    if (!hadContentFocus || !IsLiveWindow(window) || window->destroying || !window->enabled ||
-        !window->visible || !window->window.visible || window->fullScreenTransition) return;
-    NSResponder* responder = window->window.firstResponder;
-    // AppKit can replace our input view with its default window responder.
-    // Preserve a newer native input target and never activate the window here.
-    if (!responder || responder == window->window)
-        [window->window makeFirstResponder:(NSView*)window->view];
+    if (!focus || !IsLiveWindow(window) || window->destroying || !window->enabled ||
+        !window->visible || window->fullScreenTransition) return;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
+    auto live = [&] {
+        return IsLiveWindow(window, nativeWindow) && !window->destroying &&
+            (NSView*)window->view == view && window->enabled && window->visible &&
+            !window->fullScreenTransition;
+    };
+    bool visible = nativeWindow.visible;
+    if (!live() || !visible) return;
+    NSView* __attribute__((objc_precise_lifetime)) inputRoot = nativeWindow.contentView;
+    if (!live()) return;
+    // Reuse style-transition ownership, newer-responder and shared-field-editor
+    // checks. A completion never activates the window or reuses stale ranges.
+    focus->Restore(nativeWindow, inputRoot, window->enabled, window->visible, live);
 }
 
-void CancelPendingWindowSelection(JaliumPlatformWindow* window)
+void InvalidateAppleGestures(JaliumPlatformWindow* window);
+void InvalidateAppleTablets(JaliumPlatformWindow* window);
+
+void CancelPendingWindowSelection(JaliumPlatformWindow* window, bool retireTablets = true)
 {
     ++window->selectionGeneration;
+    InvalidateAppleGestures(window);
+    if (retireTablets) InvalidateAppleTablets(window);
     window->pendingActivation = false;
     window->pendingMainSelection = false;
 }
@@ -789,6 +914,162 @@ void RequestWindowSelection(JaliumPlatformWindow* window, bool activate)
     if (window->miniaturizing || nativeWindow.miniaturized)
         ApplyWindowState(window, window->beforeMinimize);
     if (IsLiveWindow(window, nativeWindow)) ApplyPendingWindowSelection(window);
+}
+
+void CompleteWindowMinimization(JaliumPlatformWindow* window, NSWindow* nativeWindow)
+{
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying) return;
+    if (!window->miniaturizing && window->state == JALIUM_WINDOW_STATE_MINIMIZED) return;
+    uint64_t sequence = window->miniaturizationSequence;
+    bool minimized = nativeWindow.miniaturized;
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+        window->miniaturizationSequence != sequence || !minimized) return;
+    // Late completions cannot put an already restored window back into the
+    // minimized state. Share this acknowledgement with native-state recovery.
+    if (!window->miniaturizing) window->beforeMinimize = window->state;
+    window->miniaturizing = true;
+    window->pendingMiniaturizationRequest = 0;
+    sequence = ++window->miniaturizationSequence;
+    PublishWindowState(window, JALIUM_WINDOW_STATE_MINIMIZED);
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+        window->miniaturizationSequence != sequence || !window->miniaturizing) return;
+    window->miniaturizing = false;
+    if (window->requestedState != window->state || window->requestedNativeZoom ||
+        window->pendingActivation || window->pendingMainSelection) {
+        __weak NSWindow* weakWindow = nativeWindow;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSWindow* __attribute__((objc_precise_lifetime)) currentWindow = weakWindow;
+            if (currentWindow && IsLiveWindow(window, currentWindow) && !window->destroying &&
+                window->miniaturizationSequence == sequence) ApplyQueuedWindowState(window);
+        });
+    }
+}
+
+void ScheduleWindowMinimizationRecovery(JaliumPlatformWindow* window)
+{
+    __weak NSWindow* weakWindow = window->window;
+    uint64_t sequence = window->miniaturizationSequence;
+    uint64_t request = window->pendingMiniaturizationRequest;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = weakWindow;
+        auto current = [&] {
+            return nativeWindow && IsLiveWindow(window, nativeWindow) && !window->destroying &&
+                window->miniaturizationSequence == sequence &&
+                window->pendingMiniaturizationRequest == request && window->miniaturizing;
+        };
+        if (!current()) return;
+        bool minimized = nativeWindow.miniaturized;
+        if (!current()) return;
+        // The native bit can change before AppKit finishes its animation.
+        // Completion comes from the delegate or our independent observer;
+        // treating this timer as completion can cancel the SDK's did event.
+        if (minimized) return;
+        window->miniaturizing = false;
+        // Retain a pending request identity for a late start. Do not retry a
+        // silent minimize; drain the latest explicit state or selection.
+        if (window->requestedState != JALIUM_WINDOW_STATE_MINIMIZED)
+            ApplyQueuedWindowState(window);
+    });
+}
+
+void CompleteWindowDeminiaturization(JaliumPlatformWindow* window, NSWindow* nativeWindow)
+{
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying) return;
+    if (!window->deminiaturizing && !window->pendingDeminiaturizationRequest &&
+        window->state != JALIUM_WINDOW_STATE_MINIMIZED) return;
+    uint64_t sequence = window->deminiaturizationSequence;
+    bool minimized = nativeWindow.miniaturized;
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+        window->deminiaturizationSequence != sequence || minimized) return;
+    // Native restorations retain AppKit's previous normal/maximized state.
+    // An outstanding request retains any newer state queued by its callbacks.
+    if (!window->deminiaturizing && !window->pendingDeminiaturizationRequest)
+        window->requestedState = window->beforeMinimize;
+    window->miniaturizing = false;
+    window->pendingMiniaturizationRequest = 0;
+    ++window->miniaturizationSequence;
+    window->deminiaturizing = true;
+    window->pendingDeminiaturizationStart = false;
+    window->pendingDeminiaturizationRequest = 0;
+    sequence = ++window->deminiaturizationSequence;
+    if (window->beforeMinimize == JALIUM_WINDOW_STATE_NORMAL &&
+        !ApplyPendingStartupPlacement(window)) return;
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+        window->deminiaturizationSequence != sequence) return;
+    PublishWindowState(window, window->beforeMinimize);
+    if (!IsLiveWindow(window, nativeWindow) || window->destroying ||
+        window->deminiaturizationSequence != sequence || !window->deminiaturizing) return;
+    window->deminiaturizing = false;
+    if (window->pendingStartupPlacement || window->requestedState != window->state ||
+        window->requestedNativeZoom || window->pendingActivation || window->pendingMainSelection) {
+        __weak NSWindow* weakWindow = nativeWindow;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSWindow* __attribute__((objc_precise_lifetime)) currentWindow = weakWindow;
+            if (currentWindow && IsLiveWindow(window, currentWindow) && !window->destroying &&
+                window->deminiaturizationSequence == sequence) ApplyQueuedWindowState(window);
+        });
+    }
+}
+
+void ScheduleWindowDeminiaturizationRecovery(JaliumPlatformWindow* window)
+{
+    __weak NSWindow* weakWindow = window->window;
+    uint64_t sequence = window->deminiaturizationSequence;
+    uint64_t request = window->pendingDeminiaturizationRequest;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = weakWindow;
+        auto current = [&] {
+            return nativeWindow && IsLiveWindow(window, nativeWindow) && !window->destroying &&
+                window->deminiaturizationSequence == sequence &&
+                window->pendingDeminiaturizationRequest == request && window->deminiaturizing;
+        };
+        if (!current()) return;
+        bool minimized = nativeWindow.miniaturized;
+        if (!current()) return;
+        // A cleared native bit does not acknowledge the end of restoration.
+        // Wait for the actual notification before applying queued work/focus.
+        if (!minimized) return;
+        window->deminiaturizing = false;
+        window->pendingDeminiaturizationStart = false;
+        // Preserve identity for a late completion, without retrying the same
+        // request automatically when the SDK made no observable progress.
+        if (window->stateRequestSequence != request) ApplyQueuedWindowState(window);
+    });
+}
+
+void ObserveWindowStateCompletions(JaliumPlatformWindow* window)
+{
+    __weak NSWindow* weakWindow = window->window;
+    NSMutableArray* observers = [NSMutableArray new];
+    for (NSNotificationName name : {NSWindowDidMiniaturizeNotification, NSWindowDidDeminiaturizeNotification}) {
+        id observer = [NSNotificationCenter.defaultCenter addObserverForName:name
+            object:window->window queue:nil usingBlock:^(NSNotification* note) {
+                // AppKit window transitions run on the main thread. Ignore a
+                // foreign off-thread post rather than mutating window state.
+                if (!NSThread.isMainThread) return;
+                NSWindow* nativeWindow = weakWindow;
+                if (!nativeWindow || note.object != nativeWindow) return;
+                if ([note.name isEqual:NSWindowDidMiniaturizeNotification])
+                    CompleteWindowMinimization(window, nativeWindow);
+                else
+                    CompleteWindowDeminiaturization(window, nativeWindow);
+            }];
+        [observers addObject:observer];
+    }
+    window->stateCompletionObservers = observers.copy;
+}
+
+void RequestWindowDeminiaturization(JaliumPlatformWindow* window)
+{
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    window->deminiaturizing = true;
+    window->pendingDeminiaturizationStart = true;
+    window->pendingDeminiaturizationRequest = window->stateRequestSequence;
+    uint64_t sequence = ++window->deminiaturizationSequence;
+    [nativeWindow deminiaturize:nil];
+    if (IsLiveWindow(window, nativeWindow) && !window->destroying &&
+        window->deminiaturizationSequence == sequence && window->deminiaturizing)
+        ScheduleWindowDeminiaturizationRecovery(window);
 }
 
 bool BeginWindowMinimize(JaliumPlatformWindow* window)
@@ -895,8 +1176,7 @@ void ApplyWindowState(JaliumPlatformWindow* window, JaliumWindowState state)
         // AppKit may finish deminiaturizing in a later event. Reapplying Zoom
         // before that acknowledgement mistakes the maximized frame for a new
         // normal frame and destroys RestoreBounds.
-        window->deminiaturizing = true;
-        [nativeWindow deminiaturize:nil];
+        RequestWindowDeminiaturization(window);
         return;
     }
     if (state == JALIUM_WINDOW_STATE_FULLSCREEN) {
@@ -956,8 +1236,7 @@ void ApplyQueuedWindowState(JaliumPlatformWindow* window)
             // A minimized window is natively invisible. Restore it before
             // replaying best-fit Zoom or completing a paired cancellation.
             window->requestedNativeZoom = true;
-            window->deminiaturizing = true;
-            [nativeWindow deminiaturize:nil];
+            RequestWindowDeminiaturization(window);
             return;
         }
     }
@@ -1560,6 +1839,7 @@ void ReleaseRootView(UIView* view)
 
 static bool QueryWindowAccessibilityInfo(JaliumPlatformWindow* window, JaliumAccessibilityRequest* request);
 static id QueryWindowAccessibilityButton(JaliumPlatformWindow* window, int32_t kind);
+static bool QueryWindowPopupKeyboard(JaliumPlatformWindow* window);
 
 static bool CanWriteWindowAccessibility(JaliumPlatformWindow* window)
 {
@@ -1586,8 +1866,94 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
 
 @interface JaliumAppleWindow : NSWindow
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
+@property(nonatomic) BOOL queryingPopupKeyboard;
+@property(nonatomic) uint64_t responderFocusSequence;
+@property(nonatomic, weak) NSView* responderFocusView;
+@property(nonatomic) BOOL responderFocusState;
 @end
+
+static BOOL PerformNativeSheetEditingEquivalent(JaliumAppleWindow* owner, NSWindow* sheet, NSEvent* event)
+{
+    JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = owner;
+    if (event.type != NSEventTypeKeyDown || !(event.modifierFlags & NSEventModifierFlagCommand) ||
+        (event.modifierFlags & (NSEventModifierFlagControl | NSEventModifierFlagOption))) return NO;
+    NSString* key = event.charactersIgnoringModifiers.lowercaseString;
+    bool shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+    SEL action = nullptr;
+    if ([key isEqualToString:@"z"]) action = shift ? @selector(redo:) : @selector(undo:);
+    else if (!shift) {
+        if ([key isEqualToString:@"a"]) action = @selector(selectAll:);
+        else if ([key isEqualToString:@"c"]) action = @selector(copy:);
+        else if ([key isEqualToString:@"x"]) action = @selector(cut:);
+        else if ([key isEqualToString:@"v"]) action = @selector(paste:);
+    }
+    if (!action) return NO;
+    NSResponder* firstResponder = sheet.firstResponder;
+    NSResponder* target = firstResponder;
+    while (target && target != sheet && ![target respondsToSelector:action]) target = target.nextResponder;
+    if (!target || target == sheet) return NO;
+    NSWindow* targetWindow = [target isKindOfClass:NSView.class] ? [(NSView*)target window] :
+        [target isKindOfClass:NSWindow.class] ? (NSWindow*)target : nil;
+    if (targetWindow != sheet || [targetWindow isKindOfClass:JaliumAppleWindow.class]) return NO;
+    JaliumPlatformWindow* platform = owner.jaliumOwner;
+    auto current = [&] {
+        if (!IsLiveWindow(platform, owner) || !platform->enabled) return false;
+        NSWindow* leaf = owner.attachedSheet;
+        while (leaf.attachedSheet) leaf = leaf.attachedSheet;
+        if (leaf != sheet || sheet.firstResponder != firstResponder) return false;
+        NSResponder* responder = firstResponder;
+        while (responder && responder != sheet && responder != target) responder = responder.nextResponder;
+        return responder == target && (![target isKindOfClass:NSView.class] || [(NSView*)target window] == sheet);
+    };
+    if (!current()) return YES;
+    // Bound owner events bypass NSApplication's menu pass, and the panel need
+    // not be the application's key window. Resolve only its native responder
+    // chain and preserve AppKit's editing validation; never reach the document
+    // or file commands behind the panel as a fallback.
+    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:@"" action:action keyEquivalent:key];
+    item.target = target;
+    BOOL allowed = YES;
+    if ([target respondsToSelector:@selector(validateMenuItem:)])
+        allowed = [(id<NSMenuItemValidation>)target validateMenuItem:item];
+    else if ([target respondsToSelector:@selector(validateUserInterfaceItem:)])
+        allowed = [(id<NSUserInterfaceValidations>)target validateUserInterfaceItem:item];
+    // Validation may replace focus, detach the sheet, disable or destroy the
+    // owner. Retire this key rather than executing or rerouting its old action.
+    if (!current()) return YES;
+    if (!allowed) return NO;
+    return [NSApp sendAction:action to:target from:sheet];
+}
+
 @implementation JaliumAppleWindow
+- (BOOL)makeFirstResponder:(NSResponder*)responder {
+    JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    ++_responderFocusSequence;
+    JaliumPlatformWindow* owner = _jaliumOwner;
+    NSView* view = owner && IsLiveWindow(owner, self) && !owner->destroying ? (NSView*)owner->view : nil;
+    auto current = [&](uint64_t sequence) {
+        NSWindow* actualWindow = view.window;
+        return sequence == _responderFocusSequence && _jaliumOwner == owner && owner &&
+            IsLiveWindow(owner, self) && !owner->destroying && (NSView*)owner->view == view && actualWindow == self;
+    };
+    if (view && _responderFocusView != view) {
+        uint64_t sequence = _responderFocusSequence;
+        bool before = self.firstResponder == view;
+        if (current(sequence)) { _responderFocusView = view; _responderFocusState = before; }
+    }
+    BOOL accepted = [super makeFirstResponder:responder];
+    uint64_t sequence = _responderFocusSequence;
+    if (!view || !current(sequence)) return accepted;
+    bool after = self.firstResponder == view;
+    if (current(sequence)) {
+        // NSTextField may select its field editor through a nested call. Keep
+        // the last acknowledged surface state across that SDK handover.
+        bool changed = _responderFocusState != after;
+        _responderFocusView = view; _responderFocusState = after;
+        if (changed) DispatchSimple(owner, after ? JALIUM_EVENT_RESPONDER_FOCUS_GAINED : JALIUM_EVENT_RESPONDER_FOCUS_LOST);
+    }
+    (void)keepAlive;
+    return accepted;
+}
 - (void)layoutIfNeeded {
     JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
     (void)keepAlive;
@@ -1807,7 +2173,29 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     }
     return [super accessibilityRoleDescription];
 }
-- (BOOL)canBecomeKeyWindow { return _jaliumOwner && _jaliumOwner->enabled; }
+- (BOOL)canBecomeKeyWindow {
+    auto* owner = _jaliumOwner;
+    if (!owner || !owner->enabled) return NO;
+    if (!(owner->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT)) return YES;
+    if (!(owner->style & JALIUM_WINDOW_STYLE_POPUP) || !NSThread.isMainThread ||
+        _queryingPopupKeyboard || !IsLiveWindow(owner, self) || owner->destroying || !owner->visible) return NO;
+    JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    (void)keepAlive;
+    JaliumAppleView* view = owner->view;
+    NSWindow* key = NSApp.keyWindow;
+    auto style = owner->style;
+    auto generation = owner->selectionGeneration;
+    BOOL eligible = NO;
+    _queryingPopupKeyboard = YES;
+    @try { eligible = QueryWindowPopupKeyboard(owner); }
+    @catch (NSException*) { eligible = NO; }
+    @finally { _queryingPopupKeyboard = NO; }
+    // The managed query can hide, disable, reparent, or destroy its host.
+    // Never dereference the original owner until its identity is revalidated.
+    return eligible && _jaliumOwner == owner && IsLiveWindow(owner, self) &&
+        !owner->destroying && owner->enabled && owner->visible && owner->view == view &&
+        owner->style == style && owner->selectionGeneration == generation && NSApp.keyWindow == key;
+}
 - (BOOL)canBecomeMainWindow { return _jaliumOwner && _jaliumOwner->enabled &&
     !(_jaliumOwner->style & JALIUM_WINDOW_STYLE_POPUP); }
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
@@ -1854,26 +2242,35 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     [super miniaturize:sender];
     if (!IsLiveWindow(owner, nativeWindow) || sequence != owner->miniaturizationSequence ||
         request != owner->pendingMiniaturizationRequest) return;
-    // AppKit can return before will-miniaturize, even before the next main
-    // queue turn. Keep new requests queued until that acknowledgement. A
-    // primitive that makes no observable progress must not block forever.
-    __weak JaliumAppleWindow* weakWindow = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        JaliumAppleWindow* __attribute__((objc_precise_lifetime)) currentWindow = weakWindow;
-        auto* current = currentWindow.jaliumOwner;
-        if (!current || !IsLiveWindow(current, currentWindow) ||
-            current->pendingMiniaturizationRequest != request ||
-            current->miniaturizationSequence != sequence || !current->miniaturizing) return;
-        bool nativeMinimized = currentWindow.miniaturized;
-        if (!IsLiveWindow(current, currentWindow) ||
-            current->pendingMiniaturizationRequest != request ||
-            current->miniaturizationSequence != sequence || !current->miniaturizing || nativeMinimized) return;
-        current->miniaturizing = false;
-        // Retain the request identity for a late start. Do not retry a silent
-        // minimize automatically; drain any newer state or selection instead.
-        if (current->requestedState != JALIUM_WINDOW_STATE_MINIMIZED)
-            ApplyQueuedWindowState(current);
-    });
+    // AppKit may return before either acknowledgement. Recover from the real
+    // native state if no start notification was delivered to our delegate.
+    ScheduleWindowMinimizationRecovery(owner);
+}
+- (void)deminiaturize:(id)sender {
+    auto* owner = _jaliumOwner;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = self;
+    if (!owner || !IsLiveWindow(owner, nativeWindow) || owner->destroying ||
+        (owner->deminiaturizing && !owner->pendingDeminiaturizationStart)) return;
+    if (!owner->pendingDeminiaturizationStart) {
+        uint64_t request = owner->stateRequestSequence;
+        bool minimized = nativeWindow.miniaturized;
+        if (!IsLiveWindow(owner, nativeWindow) || owner->destroying || owner->deminiaturizing ||
+            owner->stateRequestSequence != request) return;
+        if (!minimized) {
+            [super deminiaturize:sender];
+            return;
+        }
+        owner->requestedState = owner->beforeMinimize;
+        owner->pendingDeminiaturizationRequest = ++owner->stateRequestSequence;
+        ++owner->deminiaturizationSequence;
+        owner->deminiaturizing = true;
+    }
+    owner->pendingDeminiaturizationStart = false;
+    uint64_t sequence = owner->deminiaturizationSequence;
+    [super deminiaturize:sender];
+    if (IsLiveWindow(owner, nativeWindow) && !owner->destroying &&
+        owner->deminiaturizationSequence == sequence && owner->deminiaturizing)
+        ScheduleWindowDeminiaturizationRecovery(owner);
 }
 - (void)performMiniaturize:(id)sender {
     if (!_jaliumOwner || !_jaliumOwner->enabled ||
@@ -1965,11 +2362,13 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
         // Keep its keyboard session inside AppKit rather than dispatching to
         // the document responder behind it. Mouse coordinates stay untouched.
         NSWindow* sheet = self.attachedSheet;
+        while (sheet.attachedSheet) sheet = sheet.attachedSheet;
         NSEvent* key = [NSEvent keyEventWithType:event.type location:event.locationInWindow
             modifierFlags:event.modifierFlags timestamp:event.timestamp windowNumber:sheet.windowNumber
             context:nil characters:event.type == NSEventTypeFlagsChanged ? @"" : event.characters
             charactersIgnoringModifiers:event.type == NSEventTypeFlagsChanged ? @"" : event.charactersIgnoringModifiers
             isARepeat:event.type == NSEventTypeKeyDown && event.isARepeat keyCode:event.keyCode];
+        if (PerformNativeSheetEditingEquivalent(self, sheet, key)) return;
         [sheet sendEvent:key];
         return;
     }
@@ -1979,11 +2378,12 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     if (!_jaliumOwner || !_jaliumOwner->enabled) return NO;
     if (self.attachedSheet) {
         NSWindow* sheet = self.attachedSheet;
+        while (sheet.attachedSheet) sheet = sheet.attachedSheet;
         NSEvent* key = [NSEvent keyEventWithType:event.type location:event.locationInWindow
             modifierFlags:event.modifierFlags timestamp:event.timestamp windowNumber:sheet.windowNumber
             context:nil characters:event.characters charactersIgnoringModifiers:event.charactersIgnoringModifiers
             isARepeat:event.isARepeat keyCode:event.keyCode];
-        return [sheet performKeyEquivalent:key];
+        return [sheet performKeyEquivalent:key] || PerformNativeSheetEditingEquivalent(self, sheet, key);
     }
     NSString* key = event.charactersIgnoringModifiers.lowercaseString;
     NSUInteger flags = event.modifierFlags;
@@ -2103,6 +2503,12 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
     return NSCursor.arrowCursor;
 }
 
+static BOOL IsAppleTextServiceType(NSPasteboardType type)
+{
+    // AppKit still passes the legacy alias when invoking system Services.
+    return [type isEqualToString:NSPasteboardTypeString] || [type isEqualToString:@"NSStringPboardType"];
+}
+
 @interface JaliumAppleView : NSView <NSTextInputClient,NSDraggingDestination,NSDraggingSource,NSUserInterfaceValidations>
 @property(nonatomic, readonly) uint64_t geometryRevision;
 @property(nonatomic, assign) JaliumPlatformWindow* jaliumOwner;
@@ -2113,6 +2519,11 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 @property(nonatomic) NSRange markedSelectionRange;
 @property(nonatomic) NSRect imeRect;
 @property(nonatomic) BOOL imeEnabled;
+@property(nonatomic) uint64_t textInputGeneration;
+@property(nonatomic) uint64_t markedTextRevision;
+@property(nonatomic, strong) id writingToolsAdapter;
+@property(nonatomic) BOOL textServicesEnabled;
+@property(nonatomic) uint64_t writingToolsGeneration;
 @property(nonatomic) BOOL menuEscapeKeyDown;
 @property(nonatomic) JaliumCursorShape cursorShape;
 @property(nonatomic) BOOL cursorHidden;
@@ -2123,13 +2534,88 @@ static NSCursor* CursorForShape(JaliumCursorShape shape)
 - (void)applyCursor;
 - (BOOL)canApplyCursorForWindow:(NSWindow*)window;
 - (void)restoreCursor;
+- (void)noteTabletCursorButton:(NSInteger)button type:(NSEventType)type active:(BOOL)active;
+- (BOOL)canDispatchPointerForWindow:(NSWindow*)window owner:(JaliumPlatformWindow*)owner;
 - (void)cancelCursorTracking;
 - (void)cancelMarkedText;
 @end
 
+// One NSView hosts multiple managed editors. Native callbacks may retire
+// and reenable that context before returning, including a round trip to the
+// same editor. Keep input operations bound to their original identity.
+struct AppleTextInputContext {
+    __strong JaliumAppleView* view;
+    __strong NSWindow* window;
+    JaliumPlatformWindow* owner;
+    uint64_t generation, selection;
+    explicit AppleTextInputContext(JaliumAppleView* client)
+        : view(client), window(client.window), owner(client.jaliumOwner),
+          generation(client.textInputGeneration),
+          selection(owner && IsLiveWindow(owner, window) ? owner->selectionGeneration : 0) {}
+    bool IsSameContext() const {
+        if (!owner || view.jaliumOwner != owner || !IsLiveWindow(owner, window) ||
+            generation != view.textInputGeneration) return false;
+        NSWindow* actualWindow = view.window;
+        return actualWindow == window && view.jaliumOwner == owner && IsLiveWindow(owner, window) &&
+            owner->view == view && selection == owner->selectionGeneration;
+    }
+    bool IsCurrent() const { return IsSameContext() && owner->enabled && view.imeEnabled; }
+};
+
 #include "platform_apple_accessibility.inc"
+#include "platform_apple_writing_tools.inc"
+#include "platform_apple_gestures.inc"
+#include "platform_apple_tablets.inc"
 
 @implementation JaliumAppleView
+- (void)viewWillMoveToWindow:(NSWindow*)window {
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    (void)keepAlive;
+    auto* owner = _jaliumOwner;
+    NSWindow* __attribute__((objc_precise_lifetime)) previous = self.window;
+    if (owner && _jaliumOwner == owner && previous != window && IsLiveWindow(owner, previous)) {
+        InvalidateAppleGestures(owner);
+        InvalidateAppleTablets(owner);
+    }
+    [super viewWillMoveToWindow:window];
+}
+- (void)beginGestureWithEvent:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleGestureDispatchContext context(self);
+    auto result = SendAppleGesture(context, event, 0, 1);
+    if (result != AppleGestureDisposition::Retired && context.CanForward())
+        [super beginGestureWithEvent:event];
+}
+- (void)endGestureWithEvent:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleGestureDispatchContext context(self);
+    auto result = SendAppleGesture(context, event, 0, 2);
+    if (result != AppleGestureDisposition::Retired && context.CanForward())
+        [super endGestureWithEvent:event];
+}
+- (void)magnifyWithEvent:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleGestureDispatchContext context(self);
+    auto result = SendAppleGesture(context, event, JALIUM_APPLE_GESTURE_MAGNIFY, 0);
+    if (result == AppleGestureDisposition::Unhandled && context.CanForward())
+        [super magnifyWithEvent:event];
+}
+- (void)rotateWithEvent:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleGestureDispatchContext context(self);
+    auto result = SendAppleGesture(context, event, JALIUM_APPLE_GESTURE_ROTATE, 0);
+    if (result == AppleGestureDisposition::Unhandled && context.CanForward())
+        [super rotateWithEvent:event];
+}
+@synthesize imeEnabled = _imeEnabled;
+@synthesize markedText = _markedText;
+- (void)setImeEnabled:(BOOL)value {
+    if (_imeEnabled != value) { ++_textInputGeneration; _imeEnabled = value; }
+}
+- (void)setMarkedText:(NSMutableAttributedString*)value {
+    ++_markedTextRevision;
+    _markedText = value;
+}
 // NSView geometry can change without an NSWindow notification. Track those
 // writes so a getter returning its old value cannot validate an obsolete query.
 #define JALIUM_TRACK_VIEW_GEOMETRY(setter, valueType, sameValue) \
@@ -2200,8 +2686,14 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     return bridge ? [bridge focusedElement] : [super accessibilityFocusedUIElement];
 }
 - (BOOL)acceptsFirstResponder { return _jaliumOwner && _jaliumOwner->enabled; }
-- (BOOL)becomeFirstResponder { DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_GAINED); return YES; }
-- (BOOL)resignFirstResponder { [self restoreCursor]; DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_LOST); return YES; }
+- (BOOL)becomeFirstResponder { ++_textInputGeneration; DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_GAINED); return YES; }
+- (BOOL)resignFirstResponder {
+    AppleTextInputContext lifetime(self);
+    InvalidateAppleWritingTools(self);
+    if (!lifetime.IsSameContext()) return YES;
+    ++_textInputGeneration; [self restoreCursor];
+    DispatchSimple(_jaliumOwner, JALIUM_EVENT_FOCUS_LOST); return YES;
+}
 - (NSTextInputContext*)inputContext {
     return _jaliumOwner && _jaliumOwner->enabled && self.imeEnabled ? super.inputContext : nil;
 }
@@ -2312,7 +2804,38 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     }
     return YES;
 }
+
+- (void)noteTabletCursorButton:(NSInteger)button type:(NSEventType)type active:(BOOL)active {
+    if (button < 0 || button > 4) return;
+    NSUInteger bit = NSUInteger(1) << button;
+    if (active && (type == NSEventTypeLeftMouseDown || type == NSEventTypeRightMouseDown ||
+        type == NSEventTypeOtherMouseDown || type == NSEventTypeLeftMouseDragged ||
+        type == NSEventTypeRightMouseDragged || type == NSEventTypeOtherMouseDragged)) _cursorMouseButtons |= bit;
+    else if (type == NSEventTypeLeftMouseUp || type == NSEventTypeRightMouseUp || type == NSEventTypeOtherMouseUp)
+        _cursorMouseButtons &= ~bit;
+}
+- (void)tabletPoint:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleTabletDispatchContext context(self);
+    auto result = SendAppleTablet(context, event);
+    if (result == AppleTabletDisposition::Unhandled && context.Ready()) [super tabletPoint:event];
+}
+- (void)tabletProximity:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleTabletDispatchContext context(self);
+    auto result = SendAppleTablet(context, event);
+    if (result == AppleTabletDisposition::Unhandled && context.Ready()) [super tabletProximity:event];
+}
 - (void)dispatchMouse:(NSEvent*)native type:(JaliumEventType)type button:(int32_t)button {
+    if (!NSThread.isMainThread) return;
+    AppleTabletDispatchContext tabletContext(self);
+    auto tablet = SendAppleTablet(tabletContext, native, type, button);
+    if (tablet != AppleTabletDisposition::Unhandled) {
+        if (tablet == AppleTabletDisposition::Handled && tabletContext.Current() &&
+            (type == JALIUM_EVENT_MOUSE_MOVE || type == JALIUM_EVENT_MOUSE_UP)) [self applyCursor];
+        return;
+    }
+
     JaliumAppleView* __attribute__((objc_precise_lifetime)) client = self;
     JaliumPlatformWindow* owner = client.jaliumOwner;
     NSWindow* __attribute__((objc_precise_lifetime)) window = client.window;
@@ -2516,6 +3039,9 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     DispatchWindowEvent(_jaliumOwner, event);
 }
 - (int32_t)requestTextRange:(NSRange)range replacement:(NSString*)replacement {
+    AppleTextInputContext context(self);
+    uint64_t markedRevision = self.markedTextRevision;
+    if (!context.IsCurrent()) return -1;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled ||
         !self.surroundingText || !ValidTextRange(range, self.surroundingText.length)) return -1;
     JaliumPlatformEvent event{}; event.type = JALIUM_EVENT_IME_TEXT_REQUEST;
@@ -2527,10 +3053,13 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     int32_t applied = 0;
     event.imeTextRequest.applied = &applied;
     DispatchWindowEvent(_jaliumOwner, event);
-    return _jaliumOwner && _jaliumOwner->enabled && self.imeEnabled ? applied : -1;
+    return context.IsCurrent() && markedRevision == self.markedTextRevision ? applied : -1;
 }
 - (int32_t)queryTextGeometry:(int32_t)kind range:(NSRange)range point:(NSPoint)point
     result:(JaliumImeGeometryResult*)result {
+    AppleTextInputContext context(self);
+    uint64_t markedRevision = self.markedTextRevision;
+    if (!context.IsCurrent()) return -1;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled ||
         range.location > INT32_MAX || range.length > INT32_MAX) return -1;
     JaliumPlatformEvent event{}; event.type = JALIUM_EVENT_IME_GEOMETRY_REQUEST;
@@ -2541,9 +3070,11 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     event.imeGeometryRequest.y = point.y * _jaliumOwner->scale;
     event.imeGeometryRequest.result = result;
     DispatchWindowEvent(_jaliumOwner, event);
-    return _jaliumOwner && _jaliumOwner->enabled && self.imeEnabled ? result->handled : -1;
+    return context.IsCurrent() && markedRevision == self.markedTextRevision ? result->handled : -1;
 }
 - (void)dispatchCommittedText:(NSString*)text composition:(BOOL)composition {
+    AppleTextInputContext context(self);
+    if (!context.IsCurrent()) return;
     if (composition) {
         JaliumPlatformEvent event{}; event.type = JALIUM_EVENT_COMPOSITION_END;
         std::string utf8 = text.UTF8String ?: ""; event.composition.utf8Text = utf8.c_str();
@@ -2557,8 +3088,10 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
             if (lo >= 0xdc00 && lo <= 0xdfff) { ++i; cp = 0x10000 + ((hi - 0xd800) << 10) + (lo - 0xdc00); }
         }
         JaliumPlatformEvent event{}; event.type = JALIUM_EVENT_CHAR_INPUT;
-        event.character.codepoint = cp; DispatchWindowEvent(_jaliumOwner, event);
-        if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
+        event.character.codepoint = cp;
+        if (!context.IsCurrent()) return;
+        DispatchWindowEvent(_jaliumOwner, event);
+        if (!context.IsCurrent()) return;
     }
 }
 - (NSAttributedString*)textStorageSnapshot {
@@ -2574,9 +3107,11 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     return storage;
 }
 - (void)insertText:(id)value replacementRange:(NSRange)range {
+    AppleTextInputContext context(self);
+    if (!context.IsCurrent()) return;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
     NSString* text = [value isKindOfClass:NSAttributedString.class] ? [value string] : value;
-    if (![text isKindOfClass:NSString.class]) return;
+    if (![text isKindOfClass:NSString.class] || !context.IsCurrent()) return;
     if (self.surroundingText) {
         BOOL hadMarkedText = self.markedText != nil;
         NSRange requested = range.location == NSNotFound
@@ -2602,7 +3137,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         int32_t applied = [self requestTextRange:committed replacement:replacement];
         // Preserve ordinary input for native clients which predate the range
         // request event. An explicit rejection never falls through to insertion.
-        if (applied == 0 && range.location == NSNotFound)
+        if (applied == 0 && range.location == NSNotFound && context.IsCurrent())
             [self dispatchCommittedText:text composition:hadMarkedText];
         return;
     }
@@ -2614,15 +3149,19 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     [self dispatchCommittedText:text composition:hadMarkedText];
 }
 - (void)setMarkedText:(id)value selectedRange:(NSRange)selected replacementRange:(NSRange)replacement {
+    AppleTextInputContext context(self);
+    InvalidateAppleWritingTools(self);
+    if (!context.IsCurrent()) return;
     if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
     NSString* text=[value isKindOfClass:[NSAttributedString class]]?[value string]:value;
-    if (![text isKindOfClass:NSString.class]) return;
+    if (![text isKindOfClass:NSString.class] || !context.IsCurrent()) return;
     if (self.markedText && replacement.location != NSNotFound &&
         !NSEqualRanges(replacement, self.markedRange)) {
         // A replacement of a different span ends the previous marked segment;
         // its preserved prefix/suffix become committed storage before re-anchoring.
+        uint64_t priorMarkedRevision = self.markedTextRevision;
         [self unmarkText];
-        if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
+        if (!context.IsCurrent() || self.markedTextRevision != priorMarkedRevision + 1) return;
     }
     BOOL starting=self.markedText==nil;
     if (starting) {
@@ -2641,13 +3180,15 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         ? [value mutableCopy] : [[NSMutableAttributedString alloc] initWithString:text];
     NSUInteger cursor = std::min(selected.location, text.length);
     self.markedSelectionRange = NSMakeRange(cursor, std::min(selected.length, text.length - cursor));
+    uint64_t markedRevision = self.markedTextRevision;
     if(starting)DispatchSimple(_jaliumOwner,JALIUM_EVENT_COMPOSITION_START);
-    if (!_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return;
+    if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return;
     JaliumPlatformEvent event{};event.type=JALIUM_EVENT_COMPOSITION_UPDATE;
     std::string utf8=text.UTF8String?:"";event.composition.utf8Text=utf8.c_str();
     event.composition.cursor=static_cast<int32_t>(cursor);
     DispatchWindowEvent(_jaliumOwner,event);
-    if (text.length == 0 && _jaliumOwner) {
+    if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return;
+    if (text.length == 0) {
         self.markedText = nil;
         self.markedReplacementRange = NSMakeRange(NSNotFound, 0);
         DispatchSimple(_jaliumOwner, JALIUM_EVENT_COMPOSITION_END);
@@ -2675,18 +3216,24 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (NSAttributedString*)attributedString { return self.textStorageSnapshot ?: [[NSAttributedString alloc] initWithString:@""]; }
 - (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    AppleTextInputContext context(self);
+    uint64_t markedRevision = self.markedTextRevision;
+    if (!context.IsCurrent()) return NSNotFound;
     if (!self.window || !_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled ||
         !std::isfinite(point.x) || !std::isfinite(point.y)) return NSNotFound;
     NSPoint local = [self convertPoint:[self.window convertPointFromScreen:point] fromView:nil];
+    if (!context.IsCurrent()) return NSNotFound;
     NSRange marked = self.markedRange;
     if (marked.location != NSNotFound) {
         JaliumImeGeometryResult result{};
-        if ([self queryTextGeometry:3 range:NSMakeRange(0, 0) point:local result:&result] == 1 &&
-            result.characterIndex >= 0 && static_cast<NSUInteger>(result.characterIndex) <= marked.length)
+        int32_t handled = [self queryTextGeometry:3 range:NSMakeRange(0, 0) point:local result:&result];
+        if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return NSNotFound;
+        if (handled == 1 && result.characterIndex >= 0 && static_cast<NSUInteger>(result.characterIndex) <= marked.length)
             return marked.location + result.characterIndex;
     }
     JaliumImeGeometryResult result{};
     int32_t handled = [self queryTextGeometry:1 range:NSMakeRange(0, 0) point:local result:&result];
+    if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return NSNotFound;
     if (handled == 1 && self.surroundingText && result.characterIndex >= 0 &&
         static_cast<NSUInteger>(result.characterIndex) <= self.surroundingText.length) {
         NSUInteger index = result.characterIndex;
@@ -2702,6 +3249,9 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actual {
     if (actual) *actual = NSMakeRange(NSNotFound, 0);
+    AppleTextInputContext context(self);
+    uint64_t markedRevision = self.markedTextRevision;
+    if (!context.IsCurrent()) return NSZeroRect;
     if (!self.window || !_jaliumOwner || !_jaliumOwner->enabled || !self.imeEnabled) return NSZeroRect;
     // A request with no document index asks for the current candidate anchor;
     // do not invent an absolute index for private editors or selected text.
@@ -2733,6 +3283,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     }
     JaliumImeGeometryResult result{};
     int32_t handled = [self queryTextGeometry:kind range:query point:NSZeroPoint result:&result];
+    if (!context.IsCurrent() || markedRevision != self.markedTextRevision) return NSZeroRect;
     if (handled == 1 && result.start >= 0 && result.length >= 0 &&
         static_cast<NSUInteger>(result.start) >= query.location &&
         static_cast<NSUInteger>(result.start) <= NSMaxRange(query) &&
@@ -2769,14 +3320,18 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     (void)selector;
 }
 - (void)cancelMarkedText {
-    if (!self.markedText) return;
+    AppleTextInputContext lifetime(self);
+    if (!lifetime.IsCurrent() || !self.markedText) return;
     NSTextInputContext* context = self.inputContext;
+    if (!lifetime.IsCurrent()) return;
     self.markedText = nil;
     self.markedReplacementRange = NSMakeRange(NSNotFound, 0);
     self.markedSelectionRange = NSMakeRange(0, 0);
     // Clear the client first: discard can call back into the text-input client.
+    uint64_t markedRevision = self.markedTextRevision;
     [context discardMarkedText];
-    DispatchSimple(_jaliumOwner, JALIUM_EVENT_COMPOSITION_END);
+    if (lifetime.IsCurrent() && markedRevision == self.markedTextRevision)
+        DispatchSimple(_jaliumOwner, JALIUM_EVENT_COMPOSITION_END);
 }
 - (void)dispatchEditingKey:(int32_t)key modifiers:(uint32_t)modifiers {
     if (!_jaliumOwner || !_jaliumOwner->enabled) return;
@@ -2806,6 +3361,18 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     // Custom CanExecute handlers can close or replace this window while queried.
     return allowed && IsLiveWindow(owner, nativeWindow) && owner->enabled && owner->visible &&
         nativeWindow.visible && !nativeWindow.miniaturized;
+}
+// Services retain the specific managed text peer, not the shared input view.
+- (id)validRequestorForSendType:(NSPasteboardType)sendType returnType:(NSPasteboardType)returnType {
+    const BOOL sends = sendType.length != 0, receives = returnType.length != 0;
+    if ((sends || receives) && (!sends || IsAppleTextServiceType(sendType)) &&
+        (!receives || IsAppleTextServiceType(returnType))) {
+        JaliumAppleAccessibilityElement* peer = [self.accessibilityBridge focusedElement];
+        if ([peer canServeTextService:receives] &&
+            (!sends || peer.accessibilitySelectedTextRange.length != 0) &&
+            [peer canServeTextService:receives]) return peer;
+    }
+    return [super validRequestorForSendType:sendType returnType:returnType];
 }
 // Standard AppKit responder actions let native menus, services and automation
 // invoke the same managed editing commands as keyboard gestures.
@@ -3062,6 +3629,8 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (void)windowDidChangeBackingProperties:(NSNotification*)note {
     if (!_owner) return;
+    InvalidateAppleGestures(_owner);
+    InvalidateAppleTablets(_owner);
     JaliumAppleWindowDelegate* __attribute__((objc_precise_lifetime)) keepAlive = self;
     (void)keepAlive;
     auto* owner = _owner;
@@ -3090,7 +3659,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     DispatchSimple(_owner,JALIUM_EVENT_ACTIVATE);
     if (_owner) [_owner->view applyCursor];
 }
-- (void)windowDidResignKey:(NSNotification*)note {if(_owner)[_owner->view cancelCursorTracking];DispatchSimple(_owner,JALIUM_EVENT_DEACTIVATE);}
+- (void)windowDidResignKey:(NSNotification*)note {InvalidateAppleGestures(_owner);InvalidateAppleTablets(_owner);if(_owner)[_owner->view cancelCursorTracking];DispatchSimple(_owner,JALIUM_EVENT_DEACTIVATE);}
 - (void)windowWillMiniaturize:(NSNotification*)note {
     if (!_owner) return;
     [_owner->view cancelCursorTracking];
@@ -3110,49 +3679,21 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     // Stop custom resize tracking at the start of AppKit's animation, before
     // miniaturized and the framework state change at its completion.
     _owner->interactiveResize = false;
+    ScheduleWindowMinimizationRecovery(_owner);
 }
 - (void)windowDidMiniaturize:(NSNotification*)note {
     if (!_owner) return;
-    auto* window = _owner;
-    NSWindow* nativeWindow = window->window;
-    if (!window->miniaturizing && window->state != JALIUM_WINDOW_STATE_MINIMIZED)
-        window->beforeMinimize = window->state;
-    window->miniaturizing = true;
-    PublishWindowState(window, JALIUM_WINDOW_STATE_MINIMIZED);
-    if (!IsLiveWindow(window, nativeWindow)) return;
-    window->miniaturizing = false;
-    if (window->requestedState != window->state || window->requestedNativeZoom ||
-        window->pendingActivation || window->pendingMainSelection) {
-        __weak JaliumAppleWindow* weakWindow = (JaliumAppleWindow*)nativeWindow;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            auto* current = weakWindow.jaliumOwner;
-            if (current && IsLiveWindow(current, weakWindow)) ApplyQueuedWindowState(current);
-        });
-    }
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = _owner->window;
+    CompleteWindowMinimization(_owner, nativeWindow);
 }
 - (void)windowDidDeminiaturize:(NSNotification*)note {
     if (!_owner) return;
-    auto* window = _owner;
-    NSWindow* nativeWindow = window->window;
-    window->miniaturizing = false;
-    if (!window->deminiaturizing) window->requestedState = window->beforeMinimize;
-    window->deminiaturizing = true;
-    if (window->beforeMinimize == JALIUM_WINDOW_STATE_NORMAL &&
-        !ApplyPendingStartupPlacement(window)) return;
-    PublishWindowState(window, window->beforeMinimize);
-    if (!IsLiveWindow(window, nativeWindow)) return;
-    window->deminiaturizing = false;
-    if (window->pendingStartupPlacement || window->requestedState != window->state || window->requestedNativeZoom ||
-        window->pendingActivation || window->pendingMainSelection) {
-        __weak JaliumAppleWindow* weakWindow = (JaliumAppleWindow*)window->window;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            JaliumPlatformWindow* current = weakWindow.jaliumOwner;
-            if (current && IsLiveWindow(current) && !current->destroying)
-                ApplyQueuedWindowState(current);
-        });
-    }
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = _owner->window;
+    CompleteWindowDeminiaturization(_owner, nativeWindow);
 }
 - (void)windowWillEnterFullScreen:(NSNotification*)note {
+    InvalidateAppleGestures(_owner);
+    InvalidateAppleTablets(_owner);
     if (!_owner) return;
     _owner->beforeFullScreen = _owner->state;
     if (!_owner->fullScreenTransition) {
@@ -3163,6 +3704,8 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     if (_owner->state == JALIUM_WINDOW_STATE_NORMAL) CaptureNormalFrame(_owner);
 }
 - (void)windowWillExitFullScreen:(NSNotification*)note {
+    InvalidateAppleGestures(_owner);
+    InvalidateAppleTablets(_owner);
     if (!_owner) return;
     if (!_owner->fullScreenTransition) {
         _owner->requestedState = _owner->beforeFullScreen;
@@ -3180,13 +3723,12 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         JaliumPlatformWindow* window = weakView.jaliumOwner;
         if (!IsLiveWindow(window) || !window->fullScreenTransition ||
             window->fullScreenRequestSequence != completedRequest) return;
-        bool hadContentFocus = window->fullScreenHadContentFocus;
-        window->fullScreenHadContentFocus = false;
+        auto inputFocus = std::move(window->fullScreenContentFocus);
         window->fullScreenTransition = false;
         window->applyingWindowState = true;
         PublishWindowState(window, JALIUM_WINDOW_STATE_FULLSCREEN);
         if (weakView.jaliumOwner != window) return;
-        RestoreFullScreenContentFocus(window, hadContentFocus);
+        RestoreFullScreenContentFocus(window, inputFocus);
         if (weakView.jaliumOwner != window) return;
         window->applyingWindowState = false;
         ApplyQueuedWindowState(window);
@@ -3202,8 +3744,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         JaliumPlatformWindow* window = weakView.jaliumOwner;
         if (!IsLiveWindow(window) || !window->fullScreenTransition ||
             window->fullScreenRequestSequence != completedRequest) return;
-        bool hadContentFocus = window->fullScreenHadContentFocus;
-        window->fullScreenHadContentFocus = false;
+        auto inputFocus = std::move(window->fullScreenContentFocus);
         window->fullScreenTransition = false;
         window->applyingWindowState = true;
         ApplyAppleStyle(window);
@@ -3224,7 +3765,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         }
         PublishWindowState(window, window->beforeFullScreen);
         if (weakView.jaliumOwner != window) return;
-        RestoreFullScreenContentFocus(window, hadContentFocus);
+        RestoreFullScreenContentFocus(window, inputFocus);
         if (weakView.jaliumOwner != window) return;
         window->applyingWindowState = false;
         ApplyQueuedWindowState(window);
@@ -3254,8 +3795,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
             current->requestedState = actualState;
             current->requestedNativeZoom = false;
         }
-        bool hadContentFocus = current->fullScreenHadContentFocus;
-        current->fullScreenHadContentFocus = false;
+        auto inputFocus = std::move(current->fullScreenContentFocus);
         current->fullScreenTransition = false;
         current->applyingWindowState = true;
         current->state = actualState;
@@ -3267,7 +3807,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
         JaliumPlatformEvent e{}; e.type = JALIUM_EVENT_STATE_CHANGED;
         e.stateChanged.newState = actualState; DispatchWindowEvent(current, e);
         if (weakView.jaliumOwner != current || !IsLiveWindow(current)) return;
-        RestoreFullScreenContentFocus(current, hadContentFocus);
+        RestoreFullScreenContentFocus(current, inputFocus);
         if (weakView.jaliumOwner != current || !IsLiveWindow(current)) return;
         current->applyingWindowState = false;
         ApplyQueuedWindowState(current);
@@ -3343,7 +3883,9 @@ JaliumResult jalium_platform_init_impl()
 {
 #if TARGET_OS_OSX
     [NSApplication sharedApplication];
+    [NSApp registerServicesMenuSendTypes:@[NSPasteboardTypeString] returnTypes:@[NSPasteboardTypeString]];
     ObserveNativeMenuTracking();
+    ObserveAppleDisplayChanges();
     AppleKeyboardMapSnapshot();
 #endif
     g_quit.store(false);return JALIUM_OK;
@@ -3352,6 +3894,10 @@ void jalium_platform_shutdown_impl()
 {
 #if TARGET_OS_OSX
     auto* notifications = NSNotificationCenter.defaultCenter;
+    if (g_displayChangeState) g_displayChangeState->active.store(false, std::memory_order_release);
+    g_displayChangeState.reset();
+    if (g_displayChangeObserver) [notifications removeObserver:g_displayChangeObserver];
+    g_displayChangeObserver = nil;
     if (g_menuTrackingBeginObserver) [notifications removeObserver:g_menuTrackingBeginObserver];
     if (g_menuTrackingEndObserver) [notifications removeObserver:g_menuTrackingEndObserver];
     g_menuTrackingBeginObserver = nil;
@@ -3577,6 +4123,9 @@ void jalium_apple_notify_lifecycle(int32_t eventType)
 JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
 {
     if(!params||params->width<=0||params->height<=0)return nullptr;
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread) return nullptr;
+#endif
     auto result=std::make_unique<JaliumPlatformWindow>();
     result->width=params->width;result->height=params->height;
     result->x=params->x;result->y=params->y;result->style=params->style;
@@ -3633,7 +4182,56 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     result->height=lround(root.bounds.size.height*result->scale);
 #endif
     {std::scoped_lock lock(g_windowsMutex);g_windows.push_back(result.get());}
+#if TARGET_OS_OSX
+    ObserveWindowStateCompletions(result.get());
+#endif
     return result.release();
+}
+
+int32_t jalium_apple_window_set_tablet_callback(JaliumPlatformWindow* window, JaliumAppleTabletCallback callback, void* userData)
+{
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread) return JALIUM_ERROR_INVALID_STATE;
+    if (!window || !IsLiveWindow(window) || window->destroying) return JALIUM_ERROR_INVALID_ARGUMENT;
+    InvalidateAppleTablets(window);
+    auto state = std::make_shared<AppleTabletState>();
+    state->callback = callback; state->userData = userData;
+    state->owner = window; state->window = window->window;
+    window->tablets = state;
+    gAppleTabletStates.erase(std::remove_if(gAppleTabletStates.begin(), gAppleTabletStates.end(),
+        [](const auto& weak) { return weak.expired(); }), gAppleTabletStates.end());
+    gAppleTabletStates.push_back(state);
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_apple_window_set_gesture_callback(JaliumPlatformWindow* window,
+    JaliumAppleGestureCallback callback, void* userData)
+{
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread) return JALIUM_ERROR_INVALID_STATE;
+    if (!window || !IsLiveWindow(window) || window->destroying) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto previous = window->gestures;
+    auto state = std::make_shared<AppleGestureState>();
+    state->callback = callback; state->userData = userData;
+    window->gestures = state;
+    if (previous) {
+        auto oldCallback = previous->callback; void* oldData = previous->userData;
+        uint64_t sequence = previous->sequence; bool claimed = previous->claimed || previous->kinds != 0;
+        previous->callback = nullptr; ClearAppleGesture(previous);
+        // Install first: a cancellation callback's newer registration wins.
+        if (oldCallback && claimed && sequence) {
+            JaliumAppleGestureEvent event{}; event.size = sizeof(event);
+            event.sequence = sequence; event.phase = JALIUM_APPLE_GESTURE_CANCEL; event.scale = 1;
+            oldCallback(&event, oldData);
+        }
+    }
+    return JALIUM_OK;
+#else
+    (void)window; (void)callback; (void)userData; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
 }
 
 void jalium_window_destroy(JaliumPlatformWindow* window)
@@ -3641,6 +4239,11 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
     if(!window || window->destroying)return;
     window->destroying = true;
     #if TARGET_OS_OSX
+    InvalidateAppleTablets(window);
+    InvalidateAppleWritingTools(window->view);
+    for (id observer in window->stateCompletionObservers)
+        [NSNotificationCenter.defaultCenter removeObserver:observer];
+    window->stateCompletionObservers = nil;
     CancelAppleDrag(window);
     [window->systemMenu cancelTrackingWithoutAnimation];
     [window->view.accessibilityBridge detach];
@@ -4002,8 +4605,26 @@ int32_t jalium_apple_window_set_system_backdrop(JaliumPlatformWindow* w, int32_t
     return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
 }
+int32_t jalium_apple_window_enable_text_services(JaliumPlatformWindow* w, int32_t enabled)
+{
+    if (!w) return JALIUM_ERROR_INVALID_ARGUMENT;
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread || !IsLiveWindow(w) || w->destroying)
+        return JALIUM_ERROR_INVALID_STATE;
+    w->view.textServicesEnabled = enabled != 0;
+    if (enabled) RefreshAppleWritingTools(w->view);
+    else InvalidateAppleWritingTools(w->view);
+    return JALIUM_OK;
+#else
+    (void)enabled;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
 void jalium_window_hide(JaliumPlatformWindow* w){if(!w)return;w->visible=false;
 #if TARGET_OS_OSX
+    NSWindow* __strong originalWindow = w->window;
+    InvalidateAppleWritingTools(w->view);
+    if (!IsLiveWindow(w, originalWindow) || w->visible) return;
     CancelAppleDrag(w);
     NSWindow* nativeWindow = w->window;
     CancelPendingWindowSelection(w);
@@ -4143,6 +4764,7 @@ int32_t jalium_platform_run_message_loop(void){
 }
 int32_t jalium_platform_poll_events(void){
 #if TARGET_OS_OSX
+    if (!NSThread.isMainThread) return JALIUM_ERROR_INVALID_STATE;
     int count=0;for(;;){NSEvent* e=[NSApp nextEventMatchingMask:NSEventMaskAny untilDate:NSDate.date inMode:NSDefaultRunLoopMode dequeue:YES];if(!e)break;[NSApp sendEvent:e];++count;}return count;
 #else
     return CFRunLoopRunInMode(kCFRunLoopDefaultMode,0,true)==kCFRunLoopRunHandledSource?1:0;
@@ -4387,6 +5009,8 @@ int32_t jalium_window_set_enabled(JaliumPlatformWindow* w,int32_t enabled){if(!w
 #if TARGET_OS_OSX
     JaliumAppleWindow* nativeWindow = (JaliumAppleWindow*)w->window;
     if (!w->enabled) {
+        InvalidateAppleWritingTools(w->view);
+        if (!IsLiveWindow(w, nativeWindow) || w->enabled) return JALIUM_OK;
         CancelAppleDrag(w);
         CancelPendingWindowSelection(w);
         [w->systemMenu cancelTrackingWithoutAnimation];
@@ -4466,6 +5090,63 @@ int32_t jalium_window_set_owner(JaliumPlatformWindow* w,intptr_t owner){if(!w)re
     (void)owner;return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
 }
+int32_t jalium_apple_window_set_keyboard_focus(JaliumPlatformWindow* w)
+{
+    if (!w) return JALIUM_ERROR_INVALID_ARGUMENT;
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread || !IsLiveWindow(w) || w->destroying || !w->enabled || !w->visible)
+        return JALIUM_ERROR_INVALID_STATE;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = w->view;
+    static uint64_t sequence = 0;
+    const auto request = ++sequence;
+    auto generation = w->selectionGeneration;
+    const auto style = w->style;
+    auto current = [&] {
+        NSWindow* actualWindow = view.window;
+        return sequence == request && IsLiveWindow(w, nativeWindow) && !w->destroying &&
+            w->enabled && w->visible && w->view == view && w->style == style &&
+            w->selectionGeneration == generation && actualWindow == nativeWindow;
+    };
+    auto ready = [&] {
+        NSWindow* modal = NSApp.modalWindow;
+        bool available = nativeWindow.visible && !nativeWindow.miniaturized && !nativeWindow.attachedSheet &&
+            (!modal || modal == nativeWindow);
+        // AppKit getters and responder/key callbacks may run application code.
+        // Revalidate the retained objects before reading the platform owner.
+        return current() && available && !w->miniaturizing && !w->deminiaturizing &&
+            !w->fullScreenTransition && !w->appKitZooming && !w->applyingWindowState &&
+            w->requestedState == w->state;
+    };
+    @try {
+        if (!ready()) return JALIUM_ERROR_INVALID_STATE;
+        // A pen press can focus a managed control through this same content
+        // responder. Replacing a pending keyboard request does not terminate
+        // the physical contact; actual key loss still retires tablet input.
+        CancelPendingWindowSelection(w, false);
+        generation = w->selectionGeneration;
+        bool eligible = nativeWindow.canBecomeKeyWindow;
+        if (!ready() || !eligible) return JALIUM_ERROR_INVALID_STATE;
+        NSWindow* previousKey = NSApp.keyWindow;
+        // A native editor may refuse to end editing. Obtain its responder
+        // acknowledgement before changing which window receives keyboard input.
+        bool accepted = [nativeWindow makeFirstResponder:view];
+        if (!ready() || !accepted) return JALIUM_ERROR_INVALID_STATE;
+        NSWindow* afterResponder = NSApp.keyWindow;
+        if (afterResponder != previousKey && afterResponder != nativeWindow) return JALIUM_ERROR_INVALID_STATE;
+        bool alreadyKey = nativeWindow.keyWindow;
+        if (!ready()) return JALIUM_ERROR_INVALID_STATE;
+        if (!alreadyKey) [nativeWindow makeKeyWindow];
+        if (!ready()) return JALIUM_ERROR_INVALID_STATE;
+        NSWindow* key = NSApp.keyWindow;
+        if (key != nativeWindow && (NSApp.active || key != previousKey)) return JALIUM_ERROR_INVALID_STATE;
+        NSResponder* responder = nativeWindow.firstResponder;
+        return ready() && responder == view ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
+    } @catch (NSException*) { return JALIUM_ERROR_INVALID_STATE; }
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
 int32_t jalium_window_activate(JaliumPlatformWindow* w){if(!w)return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
     if (!NSThread.isMainThread || !IsLiveWindow(w)) return JALIUM_ERROR_INVALID_STATE;
@@ -4509,6 +5190,7 @@ int32_t jalium_window_update_ime_context(JaliumPlatformWindow* w,int32_t enabled
 #if TARGET_OS_OSX
     NSWindow* nativeWindow = w->window;
     auto* context = w->view.inputContext;
+    if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
     w->view.imeEnabled = enabled && w->enabled;
     w->view.surroundingText = w->view.imeEnabled && surrounding ? [NSString stringWithUTF8String:surrounding] : nil;
     if (w->view.surroundingText) {
@@ -4519,18 +5201,21 @@ int32_t jalium_window_update_ime_context(JaliumPlatformWindow* w,int32_t enabled
     } else w->view.selectionRange = NSMakeRange(NSNotFound, 0);
     w->view.imeRect = NSMakeRect(x / w->scale, y / w->scale,
         std::max(1, width) / w->scale, std::max(1, height) / w->scale);
+    AppleTextInputContext update(w->view);
     if (!w->view.imeEnabled && w->view.markedText) {
         // The previously enabled context is needed after inputContext becomes
         // nil; clear its conversion session without changing first responder.
         w->view.markedText = nil;
         w->view.markedReplacementRange = NSMakeRange(NSNotFound, 0);
         w->view.markedSelectionRange = NSMakeRange(0, 0);
+        uint64_t markedRevision = w->view.markedTextRevision;
         [context discardMarkedText];
-        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
+        if (!update.IsSameContext() || markedRevision != update.view.markedTextRevision) return JALIUM_OK;
         DispatchSimple(w, JALIUM_EVENT_COMPOSITION_END);
-        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
+        if (!update.IsSameContext()) return JALIUM_OK;
     }
     [w->view.inputContext invalidateCharacterCoordinates];
+    if (update.IsSameContext()) RefreshAppleWritingTools(w->view);
 #else
     if(enabled)[w->view becomeFirstResponder];else [w->view resignFirstResponder];
 #endif

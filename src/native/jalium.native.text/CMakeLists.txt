@@ -171,3 +171,24 @@ if(JALIUM_TEXT_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
     add_test(NAME jalium.native.text.font-parser-boundaries
              COMMAND jalium.native.font-parser-fuzz.tests)
 endif()
+
+# CoreText layout and CPU glyph rasterization are shared by Metal and Software.
+# No Metal device or GPU resource is created by this target's Apple text path.
+if(APPLE)
+    target_sources(${PROJECT_NAME} PRIVATE
+        ../jalium.native.metal/src/metal_backend.cpp
+        ../jalium.native.metal/src/metal_text_paragraph.cpp
+        ../jalium.native.metal/src/metal_word_navigation.mm)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE JALIUM_APPLE_TEXT_ONLY)
+    target_include_directories(${PROJECT_NAME} PRIVATE ../jalium.native.metal/include)
+    target_include_directories(${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.metal/src>)
+    install(FILES ../jalium.native.metal/src/metal_font_visibility.h DESTINATION include)
+    set_source_files_properties(../jalium.native.metal/src/metal_backend.cpp ../jalium.native.metal/src/metal_text_paragraph.cpp PROPERTIES LANGUAGE OBJCXX)
+    target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework CoreGraphics")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework AppKit")
+    else()
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework UIKit")
+    endif()
+endif()

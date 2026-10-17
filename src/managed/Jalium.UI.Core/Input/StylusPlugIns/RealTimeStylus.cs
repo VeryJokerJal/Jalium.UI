@@ -68,11 +68,43 @@ public sealed class RealTimeStylus : IDisposable
         bool eraserPressed,
         bool inverted,
         bool pointerCanceled)
+        => ProcessCore(pointerId, target, action, stylusPoints, timestamp, inAir, inRange, barrelButtonPressed, eraserPressed, inverted, pointerCanceled, preserveRangeAfterUp: false);
+
+    internal RealTimeStylusProcessResult ProcessTablet(
+        uint pointerId,
+        UIElement target,
+        StylusInputAction action,
+        StylusPointCollection stylusPoints,
+        int timestamp,
+        bool inAir,
+        bool inRange,
+        bool barrelButtonPressed,
+        bool eraserPressed,
+        bool inverted,
+        bool pointerCanceled,
+        Func<bool>? current = null)
+        => ProcessCore(pointerId, target, action, stylusPoints, timestamp, inAir, inRange, barrelButtonPressed, eraserPressed, inverted, pointerCanceled, preserveRangeAfterUp: true, current);
+
+    private RealTimeStylusProcessResult ProcessCore(
+        uint pointerId,
+        UIElement target,
+        StylusInputAction action,
+        StylusPointCollection stylusPoints,
+        int timestamp,
+        bool inAir,
+        bool inRange,
+        bool barrelButtonPressed,
+        bool eraserPressed,
+        bool inverted,
+        bool pointerCanceled,
+        bool preserveRangeAfterUp,
+        Func<bool>? current = null)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(stylusPoints);
 
         StylusSession session;
+        long revision;
         UIElement? previousTarget;
         bool enteredRange, exitedRange, targetChanged, enteredElement, leftElement, barrelButtonDown, barrelButtonUp;
         lock (_sessionsGate)
@@ -83,6 +115,7 @@ public sealed class RealTimeStylus : IDisposable
                 _sessions[pointerId] = session;
             }
 
+            revision = ++session.Revision;
             previousTarget = session.Target;
             enteredRange = !session.InRange && inRange;
             exitedRange = session.InRange && !inRange;
@@ -109,10 +142,11 @@ public sealed class RealTimeStylus : IDisposable
         // not race with layout). Split into RTS and UI buckets up front so the
         // background thread can run without touching the visual tree.
         var path = BuildPathFromRootToTarget(target);
-        NotifyBoundaryTransitions(rawStylusInput, previousTarget, path, enteredRange, exitedRange);
+        NotifyBoundaryTransitions(rawStylusInput, previousTarget, path, enteredRange, exitedRange, current);
         var (rtsPlugIns, uiPlugIns) = PartitionPlugIns(path);
+        bool inputCurrent = CanContinueInput(rawStylusInput, current);
 
-        if (UseRealTimeThread && rtsPlugIns.Count > 0 && !IsDisposed)
+        if (inputCurrent && UseRealTimeThread && rtsPlugIns.Count > 0 && !IsDisposed)
         {
             // Hand the RTS-capable plug-ins to the dedicated thread and block
             // until it completes. This keeps the public API synchronous (the
@@ -128,39 +162,41 @@ public sealed class RealTimeStylus : IDisposable
             else
             {
                 // Disposal may have won the race before the work was queued.
-                ExecutePlugInList(rawStylusInput, rtsPlugIns);
+                ExecutePlugInList(rawStylusInput, rtsPlugIns, current);
             }
         }
-        else if (rtsPlugIns.Count > 0)
+        else if (inputCurrent && rtsPlugIns.Count > 0)
         {
-            ExecutePlugInList(rawStylusInput, rtsPlugIns);
+            ExecutePlugInList(rawStylusInput, rtsPlugIns, current);
         }
 
         if (!rawStylusInput.IsCanceled)
         {
-            ExecutePlugInList(rawStylusInput, uiPlugIns);
+            ExecutePlugInList(rawStylusInput, uiPlugIns, current);
         }
 
+        CanContinueInput(rawStylusInput, current);
         if (pointerCanceled)
         {
             rawStylusInput.Cancel();
         }
 
-        bool sessionEnded = rawStylusInput.IsCanceled || action == StylusInputAction.Up || !inRange;
+        bool sessionEnded = rawStylusInput.IsCanceled || (!preserveRangeAfterUp && action == StylusInputAction.Up) || !inRange;
         lock (_sessionsGate)
         {
-            if (sessionEnded)
+            if (_sessions.TryGetValue(pointerId, out var active) &&
+                ReferenceEquals(active, session) && session.Revision == revision)
             {
-                _sessions.Remove(pointerId);
-            }
-            else
-            {
-                session.Target = target;
-                session.InRange = inRange;
-                session.InAir = inAir;
-                session.BarrelButtonPressed = barrelButtonPressed;
-                session.Inverted = inverted;
-                session.EraserPressed = eraserPressed;
+                if (sessionEnded) _sessions.Remove(pointerId);
+                else
+                {
+                    session.Target = target;
+                    session.InRange = inRange;
+                    session.InAir = inAir;
+                    session.BarrelButtonPressed = barrelButtonPressed;
+                    session.Inverted = inverted;
+                    session.EraserPressed = eraserPressed;
+                }
             }
         }
 
@@ -328,6 +364,41 @@ public sealed class RealTimeStylus : IDisposable
         }
     }
 
+    internal Action? PrepareTabletCancellation(uint pointerId, UIElement? target, StylusPointCollection points,
+        int timestamp, bool inverted, Func<UIElement, bool> retired)
+    {
+        StylusSession? session;
+        lock (_sessionsGate)
+            _sessions.Remove(pointerId, out session);
+        target ??= session?.Target;
+        if (target == null) return null;
+
+        var input = new RawStylusInput(pointerId, target, StylusInputAction.InAirMove,
+            points, timestamp, true, false, inverted, false, false);
+        input.Cancel();
+        // Snapshot the old branch before capture or routed-event callbacks can
+        // change it. Cancellation must also reach inactive plug-ins so hidden
+        // or disabled ink surfaces can discard their in-flight previews.
+        var plugIns = BuildPathFromRootToTarget(target).AsEnumerable().Reverse()
+            .SelectMany(element => (element.GetStylusPlugIns(createIfMissing: false)?.Snapshot() ?? [])
+                .Select(plugIn => (Element: element, PlugIn: plugIn)))
+            .ToArray();
+        return () =>
+        {
+            Exception? failure = null;
+            foreach (var plugIn in plugIns)
+            {
+                // A reentrant packet may already own a shared ancestor. The
+                // old branch still needs cleanup when the new target differs.
+                if (!retired(plugIn.Element)) continue;
+                try { plugIn.PlugIn.InvokeStylusLeave(input, confirmed: true); }
+                catch (Exception exception) { failure ??= exception; }
+            }
+            if (failure != null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+        };
+    }
+
     public void CancelSession(uint pointerId)
     {
         lock (_sessionsGate)
@@ -391,16 +462,27 @@ public sealed class RealTimeStylus : IDisposable
         return worker.TryAdd(work);
     }
 
-    private static void ExecutePlugInList(RawStylusInput rawStylusInput, List<StylusPlugIn> plugIns)
+    private static bool CanContinueInput(RawStylusInput input, Func<bool>? current)
+    {
+        if (input.IsCanceled) return false;
+        if (current == null || current()) return true;
+        input.Cancel();
+        return false;
+    }
+
+    private static void ExecutePlugInList(RawStylusInput rawStylusInput, List<StylusPlugIn> plugIns,
+        Func<bool>? current = null)
     {
         for (int i = 0; i < plugIns.Count; i++)
         {
+            if (!CanContinueInput(rawStylusInput, current)) return;
             var plugIn = plugIns[i];
             if (!plugIn.ShouldProcess(rawStylusInput))
             {
                 continue;
             }
 
+            if (!CanContinueInput(rawStylusInput, current)) return;
             try
             {
                 plugIn.InvokeInput(rawStylusInput);
@@ -411,7 +493,7 @@ public sealed class RealTimeStylus : IDisposable
                 return;
             }
 
-            if (rawStylusInput.IsCanceled)
+            if (!CanContinueInput(rawStylusInput, current))
             {
                 return;
             }
@@ -464,7 +546,8 @@ public sealed class RealTimeStylus : IDisposable
         UIElement? previousTarget,
         List<UIElement> currentPath,
         bool enteredRange,
-        bool exitedRange)
+        bool exitedRange,
+        Func<bool>? current = null)
     {
         List<UIElement> previousPath = previousTarget is null
             ? []
@@ -491,6 +574,7 @@ public sealed class RealTimeStylus : IDisposable
                 continue;
             foreach (StylusPlugIn plugIn in plugIns.Snapshot())
             {
+                if (current != null && !CanContinueInput(rawStylusInput, current)) return;
                 if (plugIn.IsActiveForInput)
                     plugIn.InvokeStylusLeave(rawStylusInput, confirmed: true);
             }
@@ -509,6 +593,7 @@ public sealed class RealTimeStylus : IDisposable
                 continue;
             foreach (StylusPlugIn plugIn in plugIns.Snapshot())
             {
+                if (current != null && !CanContinueInput(rawStylusInput, current)) return;
                 if (plugIn.IsActiveForInput)
                     plugIn.InvokeStylusEnter(rawStylusInput, confirmed: true);
             }
@@ -529,6 +614,7 @@ public sealed class RealTimeStylus : IDisposable
 
     private sealed class StylusSession
     {
+        public long Revision { get; set; }
         public UIElement? Target { get; set; }
         public bool InRange { get; set; }
         public bool InAir { get; set; }

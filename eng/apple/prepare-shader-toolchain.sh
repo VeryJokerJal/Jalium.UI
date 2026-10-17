@@ -32,7 +32,9 @@ lock_file="$repo_root/eng/apple/dependencies.lock.json"
 
 dxc_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependencies"]["DirectXShaderCompiler"]["revision"])' "$lock_file")"
 spirv_cross_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependencies"]["SPIRV-Cross"]["revision"])' "$lock_file")"
-fingerprint="static-runtime-v4:$dxc_revision:$spirv_cross_revision:$sdk:$deployment:$configuration:$(xcodebuild -version | tr '\n' ' ')"
+patch_file="$repo_root/eng/apple/patch-shader-toolchain.py"
+patch_hash="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$patch_file")"
+fingerprint="static-runtime-v5:$patch_hash:$dxc_revision:$spirv_cross_revision:$sdk:$deployment:$configuration:$(xcodebuild -version | tr '\n' ' ')"
 
 if [[ -f "$slice_root/.complete" ]] && [[ "$(cat "$slice_root/.complete")" == "$fingerprint" ]] && [[ -f "$env_file" ]]; then
   echo "$env_file"
@@ -62,22 +64,8 @@ git -C "$dxc_source" submodule update --init --depth 1 \
 # Upstream explicitly declares dxcompiler SHARED, independently of
 # BUILD_SHARED_LIBS. Give the pinned checkout a static-target option rather
 # than merging archives which omit dxcapi.cpp and its initialization code.
-python3 - "$dxc_source/tools/clang/tools/dxcompiler/CMakeLists.txt" <<'PY'
-import pathlib
-import sys
-path = pathlib.Path(sys.argv[1])
-source = path.read_text(encoding="utf-8-sig")
-original = "add_clang_library(dxcompiler SHARED ${SOURCES})"
-replacement = '''if (JALIUM_DXC_STATIC_RUNTIME)
-  add_clang_library(dxcompiler STATIC ${SOURCES})
-else()
-  add_clang_library(dxcompiler SHARED ${SOURCES})
-endif()'''
-if "if (JALIUM_DXC_STATIC_RUNTIME)" not in source:
-    if original not in source:
-        raise SystemExit("pinned DXC target declaration changed")
-    path.write_text(source.replace(original, replacement), encoding="utf-8")
-PY
+# Apply the SDK availability adjustments before building host or target code.
+python3 "$patch_file" "$dxc_source"
 
 # Build the host compiler once. It is used by the offline shader pipeline; the
 # target slice below is linked into Jalium for dynamic SourceHlsl compilation.

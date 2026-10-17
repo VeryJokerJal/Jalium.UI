@@ -11,7 +11,7 @@ namespace Jalium.UI.Controls;
 /// translate their platform-specific data into normalized calls on this class,
 /// ensuring identical behavior across all platforms.
 /// </summary>
-internal sealed class WindowInputDispatcher
+internal sealed partial class WindowInputDispatcher
 {
     private readonly IInputDispatcherHost _host;
     private readonly MouseWheelGestureRouting _wheelGestureRouting = new();
@@ -26,6 +26,8 @@ internal sealed class WindowInputDispatcher
     private long _mouseOverGeneration;
     private readonly List<UIElement> _mousePressedChain = [];
     private MouseButton? _suppressMouseUpButton;
+    private readonly HashSet<MouseButton> _suppressedMousePointerReleases = [];
+    private long _mouseInputGeneration;
     private TitleBarButton? _hoveredTitleBarButton;
     private TitleBarButton? _pressedTitleBarButton;
     private bool _isClientMouseLeaveTracking;
@@ -108,11 +110,16 @@ internal sealed class WindowInputDispatcher
     /// <summary>Handles mouse move from both Win32 and cross-platform paths.</summary>
     public void HandleMouseMove(Point position, MouseButtonStates buttons, ModifierKeys modifiers, int timestamp)
     {
+        long packet = OperatingSystem.IsMacOS() ? unchecked(++_mouseInputGeneration) : _mouseInputGeneration;
+        Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
+        var physicalModifiers = modifiers;
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseMove(position))
             return;
+        if (packetLifetime?.Invoke() == false) return;
 
         // A popup promoted to its own top-level window cannot hold the subtree mouse
         // capture that keeps content under an in-window popup inert, so the parent
@@ -167,17 +174,25 @@ internal sealed class WindowInputDispatcher
         }
         Mouse.UpdateState(position, hitElement, buttons);
         var target = (UIElement?)capturedThumb ?? Mouse.GetMouseTarget(hitElement) ?? _host.Self;
+        var commandInput = OperatingSystem.IsMacOS() ? _host.CaptureNativeMouseCommandInput(target, packetLifetime) : null;
+        // Raw movement also covers disabled content and modal backdrops. Keep
+        // its physical route without imposing command-eligibility checks.
+        Func<bool>? inputLifetime = commandInput == null ? packetLifetime :
+            () => commandInput.IsHostCurrent() && target.IsVisible && !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(target);
+        if (inputLifetime?.Invoke() == false) return;
 
         // Track mouse over state and raise MouseEnter/MouseLeave events
         if (capturedThumb == null)
             UpdateMouseOverState(hitElement, timestamp);
+        if (inputLifetime?.Invoke() == false) return;
 
         // Raise tunnel event (PreviewMouseMove)
         MouseEventArgs tunnelArgs = new(
             UIElement.PreviewMouseMoveEvent, position,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp);
-        target.RaiseEvent(tunnelArgs);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
+        InputRoute.Raise(target, tunnelArgs, inputLifetime);
+        if (inputLifetime?.Invoke() == false) return;
 
         bool sourceHandled = tunnelArgs.Handled;
         bool sourceCanceled = tunnelArgs.Cancel;
@@ -188,11 +203,12 @@ internal sealed class WindowInputDispatcher
             MouseEventArgs bubbleArgs = new(
                 UIElement.MouseMoveEvent, position,
                 buttons.Left, buttons.Middle, buttons.Right,
-                buttons.XButton1, buttons.XButton2, modifiers, timestamp);
-            target.RaiseEvent(bubbleArgs);
+                buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
+            InputRoute.Raise(target, bubbleArgs, inputLifetime);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
         }
+        if (inputLifetime?.Invoke() == false) return;
 
         if (!SuppressMouseToPointerPromotion)
         {
@@ -202,10 +218,11 @@ internal sealed class WindowInputDispatcher
             _lastPointerPoints[MousePointerId] = pointerPoint;
 
             if (sourceCanceled)
-                RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp, inputLifetime);
             else if (!sourceHandled)
-                RaisePointerMovePipeline(target, pointerPoint, modifiers, timestamp);
+                RaisePointerMovePipeline(target, pointerPoint, modifiers, timestamp, inputLifetime: inputLifetime);
         }
+        if (inputLifetime?.Invoke() == false) return;
 
         // Update cursor based on hit element. A disabled element shows the
         // standard arrow — its Cursor (including any inherited cursor) must not
@@ -238,7 +255,7 @@ internal sealed class WindowInputDispatcher
     /// </summary>
     private bool HasBlockingExternalPopup()
     {
-        var popups = _host.ActiveExternalPopups;
+        var popups = _host.BlockingExternalPopups;
         for (int i = 0; i < popups.Count; i++)
         {
             if (!popups[i].StaysOpen)
@@ -265,11 +282,18 @@ internal sealed class WindowInputDispatcher
     public void HandleMouseDown(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int clickCount, int timestamp)
     {
+        unchecked { _mousePressEpoch++; }
+        long packet = unchecked(++_mouseInputGeneration);
+        Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
+        var physicalModifiers = modifiers;
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
+        _suppressedMousePointerReleases.Remove(button);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseDown(button, position, clickCount))
             return;
+        if (packetLifetime?.Invoke() == false) return;
 
         var topLevelMenuItemBehindOverlay = _host.OverlayLayer.HasLightDismissPopups
             ? HitTopLevelMenuItemBehindOverlay(position)
@@ -277,7 +301,7 @@ internal sealed class WindowInputDispatcher
 
         // 按下点落在覆盖层的哪个弹窗里（没有则 null）。下面两段 light dismiss 都要用它：
         // 落在弹窗里的按下不是「点到外面」，既不关它的祖先、也不吞掉点击。
-        var hitOverlayRoot = _host.OverlayLayer.FindPopupRootAt(position);
+        var hitOverlayRoot = _host.OverlayLayer.FindPopupRootAt(position) ?? _host.HostedPopupRoot;
 
         // Check light dismiss via OverlayLayer — clicks outside popups close them
         bool dismissed = topLevelMenuItemBehindOverlay == null
@@ -286,15 +310,16 @@ internal sealed class WindowInputDispatcher
         // Light dismiss for external popup windows (rendered outside the parent window).
         // 与覆盖层那一段同一次按下里一起判：点在所有弹窗之外时两种宿主形态一起关（和非客户区按下、
         // 窗口失活走的 CloseAllLightDismissPopups 一致），不再是先关覆盖层、外飞的留到下一次点击。
-        if (_host.ActiveExternalPopups.Count > 0)
+        if (_host.MouseDismissPopups.Count > 0)
         {
             // 链感知：按下落在覆盖层的某个弹窗里时（典型是外飞菜单里级联出来、又落回主窗口覆盖层的
             // 子菜单/下拉），它的祖先外飞弹窗不算「被点到外面」——保持打开，点击照常派发给弹窗内容；
             // 只有与按下点无关的外飞弹窗才关。否则父菜单被关、点击被吞、子菜单却留着还能继续点。
-            var popupsToClose = _host.ActiveExternalPopups
+            var popupsToClose = _host.MouseDismissPopups
                 .Where(p => !p.StaysOpen
                             && !p.HasPointerCaptureWithin
-                            && (hitOverlayRoot == null || !p.IsAncestorOfPopupRoot(hitOverlayRoot)))
+                            && (hitOverlayRoot == null || !ReferenceEquals(p, hitOverlayRoot.OwnerPopup) &&
+                                !p.IsAncestorOfPopupRoot(hitOverlayRoot)))
                 .ToList();
             foreach (var popup in popupsToClose)
                 popup.IsOpen = false;
@@ -302,6 +327,7 @@ internal sealed class WindowInputDispatcher
                 dismissed = true;
         }
 
+        if (packetLifetime?.Invoke() == false) return;
         if (dismissed)
         {
             _suppressMouseUpButton = button;
@@ -324,8 +350,10 @@ internal sealed class WindowInputDispatcher
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var hitElement = topLevelMenuItemBehindOverlay ?? _host.HitTestElement(position, "mouse-down");
+        if (packetLifetime?.Invoke() == false) return;
         hitElement = RedirectInputBlocked(hitElement);
         UpdateMouseOverState(hitElement, timestamp);
+        if (packetLifetime?.Invoke() == false) return;
         Mouse.UpdateState(position, hitElement, buttons);
         Mouse.RaiseOutsideCapturedElementEvent(
             true,
@@ -337,11 +365,14 @@ internal sealed class WindowInputDispatcher
             buttons,
             modifiers,
             timestamp);
+        if (packetLifetime?.Invoke() == false) return;
         var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
+        var commandInput = _host.CaptureNativeMouseCommandInput(target, packetLifetime);
         if (button == MouseButton.Left)
         {
             ActivateMousePressedChain(target);
+            if (packetLifetime?.Invoke() == false) return;
 
             // Activate the DockTabPanel that contains the click target
             UIElement? walk = target;
@@ -362,22 +393,38 @@ internal sealed class WindowInputDispatcher
         MouseButtonEventArgs tunnelArgs = new(
             UIElement.PreviewMouseDownEvent, position, button, currentState, clickCount,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp);
-        target.RaiseEvent(tunnelArgs);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
+        MouseCommandInput.Raise(target, tunnelArgs, commandInput);
 
         bool sourceHandled = tunnelArgs.Handled;
         bool sourceCanceled = tunnelArgs.Cancel;
 
         // Raise bubble event (MouseDown) if not handled
-        if (!tunnelArgs.Handled)
+        if (!tunnelArgs.Handled && commandInput?.IsCurrent() != false)
         {
             MouseButtonEventArgs bubbleArgs = new(
                 UIElement.MouseDownEvent, position, button, currentState, clickCount,
                 buttons.Left, buttons.Middle, buttons.Right,
-                buttons.XButton1, buttons.XButton2, modifiers, timestamp);
-            target.RaiseEvent(bubbleArgs);
+                buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
+            MouseCommandInput.Raise(target, bubbleArgs, commandInput);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
+        }
+
+        if (packetLifetime?.Invoke() == false) return;
+        if (commandInput?.IsCurrent() == false)
+        {
+            if (button == MouseButton.Left) ClearMousePressedChain();
+            _suppressedMousePointerReleases.Add(button);
+            return;
+        }
+
+        // A handled mouse press never started a pointer session. In particular,
+        // a command may have detached or closed this target during dispatch.
+        if (sourceHandled && !sourceCanceled)
+        {
+            _suppressedMousePointerReleases.Add(button);
+            return;
         }
 
         if (!SuppressMouseToPointerPromotion)
@@ -389,9 +436,10 @@ internal sealed class WindowInputDispatcher
             _lastPointerPoints[MousePointerId] = pointerPoint;
 
             if (sourceCanceled)
-                RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp, packetLifetime);
             else if (!sourceHandled)
-                RaisePointerDownPipeline(target, pointerPoint, modifiers, timestamp);
+                RaisePointerDownPipeline(target, pointerPoint, modifiers, timestamp,
+                    inputLifetime: commandInput == null ? null : commandInput.IsCurrent);
         }
     }
 
@@ -399,6 +447,11 @@ internal sealed class WindowInputDispatcher
     public void HandleMouseUp(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int timestamp)
     {
+        long packet = unchecked(++_mouseInputGeneration);
+        Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
+        var physicalModifiers = modifiers;
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
+        bool suppressPointerRelease = _suppressedMousePointerReleases.Remove(button);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         if (_suppressMouseUpButton == button)
@@ -412,6 +465,7 @@ internal sealed class WindowInputDispatcher
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseUp(button, position))
             return;
+        if (packetLifetime?.Invoke() == false) return;
 
         // Handle title bar button release (for custom title bar)
         if (_host.IsTitleBarVisible() && button == MouseButton.Left && _pressedTitleBarButton != null)
@@ -436,6 +490,7 @@ internal sealed class WindowInputDispatcher
                 }
             }
 
+            if (packetLifetime?.Invoke() == false) return;
             _pressedTitleBarButton = null;
             ClearMousePressedChain();
             return;
@@ -448,10 +503,12 @@ internal sealed class WindowInputDispatcher
         var hitElement = capturedThumb != null
             ? _lastMouseOverElement ?? UIElement.MouseDirectlyOverElement
             : RedirectInputBlocked(_host.HitTestElement(position, "mouse-up"));
+        if (packetLifetime?.Invoke() == false) return;
         if (capturedThumb == null)
         {
             UpdateMouseOverState(hitElement, timestamp);
         }
+        if (packetLifetime?.Invoke() == false) return;
         Mouse.UpdateState(position, hitElement, buttons);
         if (capturedThumb == null)
         {
@@ -467,30 +524,35 @@ internal sealed class WindowInputDispatcher
                 timestamp);
         }
         var target = (UIElement?)capturedThumb ?? Mouse.GetMouseTarget(hitElement) ?? _host.Self;
+        if (packetLifetime?.Invoke() == false) return;
+        var buttonInput = _host.CaptureNativeMouseCommandInput(target, packetLifetime);
+        Func<bool>? inputLifetime = buttonInput == null ? packetLifetime : buttonInput.IsHostCurrent;
 
         var currentState = MouseButtonState.Released;
 
         MouseButtonEventArgs tunnelArgs = new(
             UIElement.PreviewMouseUpEvent, position, button, currentState, clickCount: 1,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp);
-        target.RaiseEvent(tunnelArgs);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
+        InputRoute.Raise(target, tunnelArgs, inputLifetime);
 
         bool sourceHandled = tunnelArgs.Handled;
         bool sourceCanceled = tunnelArgs.Cancel;
 
-        if (!tunnelArgs.Handled)
+        if (!tunnelArgs.Handled && inputLifetime?.Invoke() != false)
         {
             MouseButtonEventArgs bubbleArgs = new(
                 UIElement.MouseUpEvent, position, button, currentState, clickCount: 1,
                 buttons.Left, buttons.Middle, buttons.Right,
-                buttons.XButton1, buttons.XButton2, modifiers, timestamp);
-            target.RaiseEvent(bubbleArgs);
+                buttons.XButton1, buttons.XButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
+            InputRoute.Raise(target, bubbleArgs, inputLifetime);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
         }
 
-        if (!SuppressMouseToPointerPromotion)
+        if (inputLifetime?.Invoke() == false) return;
+        if (suppressPointerRelease) CleanupPointerSession(MousePointerId);
+        if (!SuppressMouseToPointerPromotion && !suppressPointerRelease)
         {
             PointerPoint pointerPoint = CreateMousePointerPoint(
                 position, buttons, modifiers, timestamp,
@@ -498,10 +560,11 @@ internal sealed class WindowInputDispatcher
             _lastPointerPoints[MousePointerId] = pointerPoint;
 
             if (sourceCanceled)
-                RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp, inputLifetime);
             else if (!sourceHandled)
-                RaisePointerUpPipeline(target, pointerPoint, modifiers, timestamp);
+                RaisePointerUpPipeline(target, pointerPoint, modifiers, timestamp, inputLifetime: inputLifetime);
 
+            if (inputLifetime?.Invoke() == false) return;
             _activePointerTargets.Remove(MousePointerId);
         }
 
@@ -529,44 +592,54 @@ internal sealed class WindowInputDispatcher
         bool hasPreciseScrollingDeltas, MouseButtonStates buttons, ModifierKeys modifiers, int timestamp,
         MouseWheelPhase phase = MouseWheelPhase.None, MouseWheelPhase momentumPhase = MouseWheelPhase.None)
     {
+        long packet = _mouseInputGeneration;
+        Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
+        var physicalModifiers = modifiers;
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         int delta = MouseWheelEventArgs.ToLegacyDelta(verticalDelta);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseWheel(delta, position))
             return;
+        if (packetLifetime?.Invoke() == false) return;
 
         var hitElement = RedirectInputBlocked(_host.HitTestElement(position, "mouse-wheel"));
+        if (packetLifetime?.Invoke() == false) return;
         Mouse.UpdateState(position, hitElement, buttons);
         var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         target = _wheelGestureRouting.ResolveTarget(target, _host.Self, phase, momentumPhase);
+        if (packetLifetime?.Invoke() == false) return;
+        var commandInput = _host.CaptureNativeMouseCommandInput(target, packetLifetime);
 
         // Raise tunnel event (PreviewMouseWheel)
         MouseWheelEventArgs tunnelArgs = new(
             UIElement.PreviewMouseWheelEvent, position, horizontalDelta, verticalDelta, hasPreciseScrollingDeltas,
             buttons.Left, buttons.Middle, buttons.Right,
-            buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase);
-        target.RaiseEvent(tunnelArgs);
+            buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase) { PhysicalModifiers = physicalModifiers };
+        MouseCommandInput.Raise(target, tunnelArgs, commandInput);
 
         bool sourceHandled = tunnelArgs.Handled;
         bool sourceCanceled = tunnelArgs.Cancel;
 
-        if (!tunnelArgs.Handled)
+        if (!tunnelArgs.Handled && commandInput?.IsCurrent() != false)
         {
             MouseWheelEventArgs bubbleArgs = new(
                 UIElement.MouseWheelEvent, position, horizontalDelta, verticalDelta, hasPreciseScrollingDeltas,
                 buttons.Left, buttons.Middle, buttons.Right,
                 buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase)
             {
+                PhysicalModifiers = physicalModifiers,
                 IsHorizontalDeltaHandled = tunnelArgs.IsHorizontalDeltaHandled,
                 IsVerticalDeltaHandled = tunnelArgs.IsVerticalDeltaHandled
             };
-            target.RaiseEvent(bubbleArgs);
+            MouseCommandInput.Raise(target, bubbleArgs, commandInput);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
         }
 
+        if (commandInput?.IsCurrent() == false) return;
         if (!SuppressMouseToPointerPromotion)
         {
             PointerPoint pointerPoint = CreateMousePointerPoint(
@@ -577,7 +650,8 @@ internal sealed class WindowInputDispatcher
             if (sourceCanceled)
                 RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
             else if (!sourceHandled)
-                RaisePointerWheelPipeline(target, pointerPoint, modifiers, timestamp);
+                RaisePointerWheelPipeline(target, pointerPoint, modifiers, timestamp,
+                    inputLifetime: commandInput == null ? null : commandInput.IsCurrent);
         }
     }
 
@@ -645,6 +719,8 @@ internal sealed class WindowInputDispatcher
         }
 
         var target = _host.GetKeyboardEventTarget();
+        var inputLifetime = physicalModifiers.HasValue ? _host.CaptureNativeInputLifetime(target, textInput: false) : null;
+        if (inputLifetime?.Invoke() == false) return true;
 
         if (!isRepeat && (key == Key.Space || key == Key.Enter))
             ActivateKeyboardPressedChain(target);
@@ -652,14 +728,18 @@ internal sealed class WindowInputDispatcher
         // Raise tunnel event (PreviewKeyDown)
         KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp)
             { PhysicalModifiers = physicalModifiers };
-        target.RaiseEvent(tunnelArgs);
+        RaiseNativeInput(target, tunnelArgs, inputLifetime);
+        if (inputLifetime?.Invoke() == false)
+        { ClearKeyboardPressedChain(); return true; }
 
         // Raise bubble event (KeyDown) if not handled
         if (!tunnelArgs.Handled)
         {
             KeyEventArgs bubbleArgs = new(UIElement.KeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp)
                 { PhysicalModifiers = physicalModifiers };
-            target.RaiseEvent(bubbleArgs);
+            RaiseNativeInput(target, bubbleArgs, inputLifetime);
+            if (inputLifetime?.Invoke() == false)
+            { ClearKeyboardPressedChain(); return true; }
 
             // Auto Tab/Shift+Tab focus navigation
             if (!bubbleArgs.Handled && key == Key.Tab)
@@ -695,8 +775,7 @@ internal sealed class WindowInputDispatcher
             {
                 if (key == Key.Enter)
                 {
-                    var buttonSearchRoot = (UIElement?)_host.ActiveContentDialog ?? (UIElement?)_host.FindContainingInPlaceDialog() ?? _host.Self;
-                    var defaultButton = _host.FindButton(buttonSearchRoot, b => b.IsDefault);
+                    var defaultButton = _host.FindDefaultOrCancelButton(cancel: false);
                     if (defaultButton != null)
                     {
                         defaultButton.PerformClick();
@@ -705,8 +784,12 @@ internal sealed class WindowInputDispatcher
                 }
                 else if (key == Key.Escape)
                 {
-                    var buttonSearchRoot = (UIElement?)_host.ActiveContentDialog ?? (UIElement?)_host.FindContainingInPlaceDialog() ?? _host.Self;
-                    var cancelButton = _host.FindButton(buttonSearchRoot, b => b.IsCancel);
+                    if (_host.TryDismissPopupOnEscape(target))
+                    {
+                        bubbleArgs.Handled = true;
+                        return true;
+                    }
+                    var cancelButton = _host.FindDefaultOrCancelButton(cancel: true);
                     if (cancelButton != null)
                     {
                         cancelButton.PerformClick();
@@ -741,24 +824,30 @@ internal sealed class WindowInputDispatcher
         var target = OperatingSystem.IsMacOS()
             ? _host.GetKeyboardEventTarget()
             : Keyboard.FocusedElement as UIElement ?? _host.Self;
+        var inputLifetime = physicalModifiers.HasValue ? _host.CaptureNativeInputLifetime(target, textInput: false) : null;
+        if (inputLifetime?.Invoke() == false)
+        {
+            if (key is Key.Space or Key.Enter) ClearKeyboardPressedChain();
+            return true;
+        }
 
         KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp)
             { PhysicalModifiers = physicalModifiers };
-        target.RaiseEvent(tunnelArgs);
+        RaiseNativeInput(target, tunnelArgs, inputLifetime);
         bool handled = tunnelArgs.Handled;
 
-        if (!handled)
+        if (!handled && inputLifetime?.Invoke() != false)
         {
             KeyEventArgs bubbleArgs = new(UIElement.KeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp)
                 { PhysicalModifiers = physicalModifiers };
-            target.RaiseEvent(bubbleArgs);
+            RaiseNativeInput(target, bubbleArgs, inputLifetime);
             handled = bubbleArgs.Handled;
         }
 
         if (key == Key.Space || key == Key.Enter)
             ClearKeyboardPressedChain();
 
-        return handled;
+        return handled || inputLifetime?.Invoke() == false;
     }
 
     /// <summary>Handles character input (WM_CHAR or PlatformEvent.CharInput).</summary>
@@ -773,16 +862,21 @@ internal sealed class WindowInputDispatcher
         var target = _host.GetTextInputTarget();
         if (target == null)
             return;
+        var inputLifetime = _host.CaptureNativeInputLifetime(target, textInput: true);
+        if (inputLifetime?.Invoke() == false) return;
 
         TextCompositionEventArgs tunnelArgs = new(UIElement.PreviewTextInputEvent, text, timestamp);
-        target.RaiseEvent(tunnelArgs);
+        RaiseNativeInput(target, tunnelArgs, inputLifetime);
 
-        if (!tunnelArgs.Handled)
+        if (!tunnelArgs.Handled && inputLifetime?.Invoke() != false)
         {
             TextCompositionEventArgs bubbleArgs = new(UIElement.TextInputEvent, text, timestamp);
-            target.RaiseEvent(bubbleArgs);
+            RaiseNativeInput(target, bubbleArgs, inputLifetime);
         }
     }
+
+    private static void RaiseNativeInput(UIElement target, RoutedEventArgs args, Func<bool>? inputLifetime)
+        => InputRoute.Raise(target, args, inputLifetime);
 
     private bool ShouldSuppressReactivatedEscape(Key key, bool isKeyDown)
     {
@@ -832,6 +926,7 @@ internal sealed class WindowInputDispatcher
     /// <summary>Window was deactivated — reset transient input state.</summary>
     public void HandleWindowDeactivated(nint newForegroundWindow, bool clearKeyboardFocus)
     {
+        unchecked { _mouseInputGeneration++; }
         CloseLightDismissPopupsOnDeactivate(newForegroundWindow);
         ResetTransientInputStateOnDeactivate();
 
@@ -840,6 +935,42 @@ internal sealed class WindowInputDispatcher
 
         _host.UpdateInputMethodAssociation();
         _host.WakeRenderPipeline();
+    }
+
+    // Called only for native macOS activation, whose notifications can reenter
+    // synchronously through focus, popup, capture and dependency-property handlers.
+    internal Action PrepareMacOSWindowDeactivation()
+    {
+        long generation = unchecked(++_mouseInputGeneration);
+        UIElement[] mousePressed = DetachPressedChain(_mousePressedChain);
+        UIElement[] keyboardPressed = DetachPressedChain(_keyboardPressedChain);
+        UIElement? capture = UIElement.MouseCapturedElement is { } captured &&
+            (IsDescendantOf(captured, _host.Self) || captured.GetWindowHostOrNull() == null)
+            ? captured : null;
+        UIElement? wheelTarget = _wheelGestureRouting.DetachCancellationTarget();
+        TitleBarButton? hovered = _hoveredTitleBarButton, pressed = _pressedTitleBarButton;
+        _hoveredTitleBarButton = _pressedTitleBarButton = null;
+        ResetClientMouseLeaveTracking();
+        _suppressMouseUpButton = null;
+        _suppressedMousePointerReleases.Clear();
+        return () =>
+        {
+            if (capture != null && generation == _mouseInputGeneration &&
+                ReferenceEquals(capture, UIElement.MouseCapturedElement)) capture.ReleaseMouseCapture();
+            ClearDetachedPressedChain(mousePressed, _mousePressedChain, _keyboardPressedChain);
+            ClearDetachedPressedChain(keyboardPressed, _keyboardPressedChain, _mousePressedChain);
+            if (hovered != null && !ReferenceEquals(hovered, _hoveredTitleBarButton)) hovered.SetIsMouseOver(false);
+            if (pressed != null && !ReferenceEquals(pressed, _pressedTitleBarButton) &&
+                !_mousePressedChain.Contains(pressed) && !_keyboardPressedChain.Contains(pressed)) pressed.SetIsPressed(false);
+            if (wheelTarget != null) MouseWheelGestureRouting.RaiseCancellation(wheelTarget);
+        };
+    }
+
+    internal void CompleteMacOSWindowDeactivation(Func<bool> isCurrent)
+    {
+        CloseLightDismissPopupsOnDeactivate(nint.Zero, isCurrent);
+        if (isCurrent()) _host.Self.CloseMacOSPopupGroupOnDeactivate(isCurrent);
+        if (isCurrent()) _host.WakeRenderPipeline();
     }
 
     /// <summary>WM_CANCELMODE — cancel all modal input state.</summary>
@@ -863,12 +994,12 @@ internal sealed class WindowInputDispatcher
             : 0;
     }
 
-    private void CloseLightDismissPopupsOnDeactivate(nint newForegroundWindow)
+    private void CloseLightDismissPopupsOnDeactivate(nint newForegroundWindow, Func<bool>? isCurrent = null)
     {
         if (_host.IsPopupWindow(newForegroundWindow))
             return;
 
-        _ = _host.OverlayLayer.CloseLightDismissPopups();
+        _ = _host.OverlayLayer.CloseLightDismissPopups(isCurrent);
 
         if (_host.ActiveExternalPopups.Count == 0)
             return;
@@ -877,7 +1008,10 @@ internal sealed class WindowInputDispatcher
             .Where(p => !p.StaysOpen)
             .ToList();
         foreach (var popup in popupsToClose)
+        {
+            if (isCurrent?.Invoke() == false) break;
             popup.IsOpen = false;
+        }
     }
 
     private void ResetTransientInputStateOnDeactivate()
@@ -887,6 +1021,7 @@ internal sealed class WindowInputDispatcher
         UIElement.ForceReleaseMouseCapture();
         ClearPressedChains();
         _suppressMouseUpButton = null;
+        _suppressedMousePointerReleases.Clear();
 
         if (_host.TitleBarStyle == WindowTitleBarStyle.Custom)
             ClearTitleBarInteractionState();
@@ -894,14 +1029,25 @@ internal sealed class WindowInputDispatcher
 
     /// <summary>
     /// Ends input sessions that still reference <paramref name="root"/> after that
-    /// subtree has left this window. State is detached before routed notifications
+    /// subtree has left this window or stopped accepting pointer input. State is detached before routed notifications
     /// are raised so a handler may synchronously establish input on the replacement
     /// tree (including reusing the same pointer id) without the old cleanup erasing it.
     /// </summary>
-    internal void HandleSubtreeDetached(UIElement root)
+    internal void HandleSubtreeDetached(UIElement root, bool preserveKeyboardPressedState = false, Func<bool>? isCurrent = null)
     {
         ArgumentNullException.ThrowIfNull(root);
-        _wheelGestureRouting.ClearWithin(root);
+        Exception? notificationFailure = null;
+        void Notify(Action action)
+        {
+            try { action(); }
+            catch (Exception error) when (preserveKeyboardPressedState) { notificationFailure ??= error; }
+        }
+        Notify(() => _wheelGestureRouting.ClearWithin(root));
+        if (isCurrent?.Invoke() == false)
+        {
+            if (notificationFailure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(notificationFailure).Throw();
+            return;
+        }
 
         int timestamp = Environment.TickCount;
         bool detachingWholeWindow = ReferenceEquals(root, _host.Self);
@@ -930,7 +1076,7 @@ internal sealed class WindowInputDispatcher
         UIElement[] detachedMousePressedChain = ChainIntersectsSubtree(_mousePressedChain, root)
             ? DetachPressedChain(_mousePressedChain)
             : [];
-        UIElement[] detachedKeyboardPressedChain = ChainIntersectsSubtree(_keyboardPressedChain, root)
+        UIElement[] detachedKeyboardPressedChain = !preserveKeyboardPressedState && ChainIntersectsSubtree(_keyboardPressedChain, root)
             ? DetachPressedChain(_keyboardPressedChain)
             : [];
 
@@ -1057,8 +1203,9 @@ internal sealed class WindowInputDispatcher
 
         if (detachingWholeWindow)
         {
+            _suppressedMousePointerReleases.Clear();
             ResetClientMouseLeaveTracking();
-            _suppressEscapeUntilTick = 0;
+            if (!preserveKeyboardPressedState) _suppressEscapeUntilTick = 0;
         }
 
         // Remove each old touch device from the global id registry before its
@@ -1092,30 +1239,33 @@ internal sealed class WindowInputDispatcher
         // are free to create replacement state; all remaining work is snapshot-only.
         if (detachedMouseCapture != null)
         {
-            detachedMouseCapture.ReleaseMouseCapture();
+            Notify(() => detachedMouseCapture.ReleaseMouseCapture());
             if (Mouse.Captured == null)
-                _host.Self.ReleaseNativeCaptureIfOwned();
+                Notify(() => _host.Self.ReleaseNativeCaptureIfOwned());
         }
 
         if (detachedStylusCapture != null)
-            detachedStylusCapture.ReleaseStylusCapture();
+            Notify(() => detachedStylusCapture.ReleaseStylusCapture());
 
-        ClearDetachedPressedChain(detachedMousePressedChain, _mousePressedChain);
-        ClearDetachedPressedChain(detachedKeyboardPressedChain, _keyboardPressedChain);
+        if (preserveKeyboardPressedState)
+            Notify(() => ClearDetachedPressedChain(detachedMousePressedChain, _mousePressedChain, _keyboardPressedChain));
+        else
+            Notify(() => ClearDetachedPressedChain(detachedMousePressedChain, _mousePressedChain));
+        Notify(() => ClearDetachedPressedChain(detachedKeyboardPressedChain, _keyboardPressedChain));
 
         if (detachedHoveredTitleBarButton != null
             && !ReferenceEquals(_hoveredTitleBarButton, detachedHoveredTitleBarButton))
         {
-            detachedHoveredTitleBarButton.SetIsMouseOver(false);
+            Notify(() => detachedHoveredTitleBarButton.SetIsMouseOver(false));
         }
         if (detachedPressedTitleBarButton != null
             && !ReferenceEquals(_pressedTitleBarButton, detachedPressedTitleBarButton))
         {
-            detachedPressedTitleBarButton.SetIsPressed(false);
+            Notify(() => detachedPressedTitleBarButton.SetIsPressed(false));
         }
 
         if (detachedMouseOver != null)
-            RaiseDetachedMouseLeaveChain(detachedMouseOverChain);
+            Notify(() => RaiseDetachedMouseLeaveChain(detachedMouseOverChain));
 
         foreach (DetachedPointerState state in detachedPointers)
         {
@@ -1123,7 +1273,7 @@ internal sealed class WindowInputDispatcher
             if (touchDevice != null)
             {
                 if (state.TouchOverChain.Length > 0)
-                    RaiseDetachedTouchLeaveChain(state.TouchOverChain, touchDevice, timestamp);
+                    Notify(() => RaiseDetachedTouchLeaveChain(state.TouchOverChain, touchDevice, timestamp));
             }
 
             StylusDevice? stylusDevice = state.StylusDevice;
@@ -1133,16 +1283,16 @@ internal sealed class WindowInputDispatcher
                 {
                     stylusDevice.DirectlyOver = null;
                     if (ReferenceEquals(Tablet.CurrentStylusDevice, stylusDevice))
-                        stylusDevice.Synchronize();
+                        Notify(() => stylusDevice.Synchronize());
                 }
 
                 if (state.StylusOver != null)
-                    RaiseStylusSimpleEvent(state.StylusOver, stylusDevice, timestamp, UIElement.StylusLeaveEvent);
+                    Notify(() => RaiseStylusSimpleEvent(state.StylusOver, stylusDevice, timestamp, UIElement.StylusLeaveEvent));
 
                 if (ReferenceEquals(Tablet.CurrentStylusDevice, stylusDevice))
                 {
                     if (IsWithinSubtree(stylusDevice.Captured, root))
-                        stylusDevice.Capture(null);
+                        Notify(() => stylusDevice.Capture(null));
 
                     // A LostStylusCapture handler may have re-captured this device to
                     // the replacement tree. Preserve that new capture/current device.
@@ -1158,10 +1308,10 @@ internal sealed class WindowInputDispatcher
 
         foreach (PointerManipulationSession session in detachedManipulations)
         {
-            TerminateManipulationSession(
+            Notify(() => TerminateManipulationSession(
                 session,
                 isInertial: detachedInertialManipulations.Contains(session),
-                timestamp);
+                timestamp));
         }
 
         foreach (DetachedPointerState state in detachedPointers)
@@ -1176,8 +1326,9 @@ internal sealed class WindowInputDispatcher
                     : PointerDeviceType.Pen;
             PointerPoint point = state.Point
                 ?? CreateCanceledPointerPoint(state.PointerId, deviceType, timestamp);
-            RaisePointerCancelPipeline(state.CancelTarget, point, ModifierKeys.None, timestamp);
+            Notify(() => RaisePointerCancelPipeline(state.CancelTarget, point, ModifierKeys.None, timestamp));
         }
+        if (notificationFailure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(notificationFailure).Throw();
     }
 
     internal bool HasInputStateInSubtree(UIElement root)
@@ -1405,11 +1556,12 @@ internal sealed class WindowInputDispatcher
 
     private static void ClearDetachedPressedChain(
         UIElement[] previous,
-        List<UIElement> currentChain)
+        List<UIElement> currentChain,
+        List<UIElement>? additionalChain = null)
     {
         foreach (UIElement element in previous)
         {
-            if (!currentChain.Contains(element))
+            if (!currentChain.Contains(element) && additionalChain?.Contains(element) != true)
                 element.SetIsPressed(false);
         }
     }
@@ -1472,14 +1624,17 @@ internal sealed class WindowInputDispatcher
     //  Pointer Pipeline Methods
     // ══════════════════════════════════════════════════════════════
 
-    internal void RaisePointerMovePipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
+    internal void RaisePointerMovePipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp,
+        StylusPointCollection? stylusPoints = null, Func<bool>? inputLifetime = null)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         point.SourceElement = target;
         PointerMoveEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerMoveEvent, StylusPoints = stylusPoints };
-        target.RaiseEvent(previewArgs);
+        InputRoute.Raise(target, previewArgs, inputLifetime);
+        if (inputLifetime?.Invoke() == false) return;
         if (previewArgs.Cancel)
         {
-            RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+            RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
             return;
         }
 
@@ -1487,11 +1642,12 @@ internal sealed class WindowInputDispatcher
         if (!previewArgs.Handled)
         {
             PointerMoveEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerMoveEvent, StylusPoints = stylusPoints };
-            target.RaiseEvent(bubbleArgs);
+            InputRoute.Raise(target, bubbleArgs, inputLifetime);
+            if (inputLifetime?.Invoke() == false) return;
             handled = handled || bubbleArgs.Handled || bubbleArgs.Cancel;
             if (bubbleArgs.Cancel)
             {
-                RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
                 return;
             }
         }
@@ -1499,32 +1655,38 @@ internal sealed class WindowInputDispatcher
         if (!handled)
         {
             PointerMovedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerMovedEvent, StylusPoints = stylusPoints };
-            target.RaiseEvent(legacyArgs);
+            InputRoute.Raise(target, legacyArgs, inputLifetime);
+            if (inputLifetime?.Invoke() == false) return;
             if (legacyArgs.Cancel)
-                RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
         }
     }
 
-    internal void RaisePointerCancelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
+    internal void RaisePointerCancelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp,
+        Func<bool>? inputLifetime = null)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         point.SourceElement = target;
         PointerCancelEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerCancelEvent };
-        target.RaiseEvent(previewArgs);
-        if (!previewArgs.Handled)
+        InputRoute.Raise(target, previewArgs, inputLifetime);
+        if (!previewArgs.Handled && inputLifetime?.Invoke() != false)
         {
             PointerCancelEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerCancelEvent };
-            target.RaiseEvent(bubbleArgs);
+            InputRoute.Raise(target, bubbleArgs, inputLifetime);
         }
     }
 
-    internal void RaisePointerDownPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
+    internal void RaisePointerDownPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp,
+        StylusPointCollection? stylusPoints = null, Func<bool>? inputLifetime = null)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         point.SourceElement = target;
         PointerDownEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerDownEvent, StylusPoints = stylusPoints };
-        target.RaiseEvent(previewArgs);
+        InputRoute.Raise(target, previewArgs, inputLifetime);
+        if (inputLifetime?.Invoke() == false) return;
         if (previewArgs.Cancel)
         {
-            RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+            RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
             return;
         }
 
@@ -1532,11 +1694,12 @@ internal sealed class WindowInputDispatcher
         if (!previewArgs.Handled)
         {
             PointerDownEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerDownEvent, StylusPoints = stylusPoints };
-            target.RaiseEvent(bubbleArgs);
+            InputRoute.Raise(target, bubbleArgs, inputLifetime);
+            if (inputLifetime?.Invoke() == false) return;
             handled = handled || bubbleArgs.Handled || bubbleArgs.Cancel;
             if (bubbleArgs.Cancel)
             {
-                RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
                 return;
             }
         }
@@ -1544,20 +1707,23 @@ internal sealed class WindowInputDispatcher
         if (!handled)
         {
             PointerPressedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerPressedEvent, StylusPoints = stylusPoints };
-            target.RaiseEvent(legacyArgs);
+            InputRoute.Raise(target, legacyArgs, inputLifetime);
             if (legacyArgs.Cancel)
-                RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
         }
     }
 
-    internal void RaisePointerUpPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
+    internal void RaisePointerUpPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp,
+        StylusPointCollection? stylusPoints = null, Func<bool>? inputLifetime = null)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         point.SourceElement = target;
         PointerUpEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerUpEvent, StylusPoints = stylusPoints };
-        target.RaiseEvent(previewArgs);
+        InputRoute.Raise(target, previewArgs, inputLifetime);
+        if (inputLifetime?.Invoke() == false) return;
         if (previewArgs.Cancel)
         {
-            RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+            RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
             return;
         }
 
@@ -1565,11 +1731,12 @@ internal sealed class WindowInputDispatcher
         if (!previewArgs.Handled)
         {
             PointerUpEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerUpEvent, StylusPoints = stylusPoints };
-            target.RaiseEvent(bubbleArgs);
+            InputRoute.Raise(target, bubbleArgs, inputLifetime);
+            if (inputLifetime?.Invoke() == false) return;
             handled = handled || bubbleArgs.Handled || bubbleArgs.Cancel;
             if (bubbleArgs.Cancel)
             {
-                RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
                 return;
             }
         }
@@ -1577,16 +1744,18 @@ internal sealed class WindowInputDispatcher
         if (!handled)
         {
             PointerReleasedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerReleasedEvent, StylusPoints = stylusPoints };
-            target.RaiseEvent(legacyArgs);
+            InputRoute.Raise(target, legacyArgs, inputLifetime);
             if (legacyArgs.Cancel)
-                RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, point, modifiers, timestamp, inputLifetime);
         }
     }
 
-    internal static void RaisePointerWheelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
+    internal static void RaisePointerWheelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp,
+        Func<bool>? inputLifetime = null)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         PointerWheelChangedEventArgs args = new(point, modifiers, timestamp) { RoutedEvent = PointerEvents.PointerWheelChangedEvent };
-        target.RaiseEvent(args);
+        InputRoute.Raise(target, args, inputLifetime);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -2442,7 +2611,7 @@ internal sealed class WindowInputDispatcher
         target.RaiseEvent(args);
     }
 
-    private static void RaiseStylusSimpleEventPair(
+    private static bool RaiseStylusSimpleEventPair(
         UIElement target,
         StylusDevice stylusDevice,
         int timestamp,
@@ -2451,10 +2620,10 @@ internal sealed class WindowInputDispatcher
     {
         var previewArgs = new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = previewEvent };
         target.RaiseEvent(previewArgs);
-        if (!previewArgs.Handled)
-        {
-            target.RaiseEvent(new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = bubbleEvent });
-        }
+        if (previewArgs.Handled) return true;
+        var bubbleArgs = new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = bubbleEvent };
+        target.RaiseEvent(bubbleArgs);
+        return bubbleArgs.Handled;
     }
 
     private static void RaiseStylusSystemGestureEvent(UIElement target, StylusDevice stylusDevice, int timestamp, SystemGesture gesture)
@@ -2598,7 +2767,7 @@ internal sealed class WindowInputDispatcher
         return true;
     }
 
-    private static void RaiseStylusButtonEvent(
+    private static bool RaiseStylusButtonEvent(
         UIElement target,
         StylusDevice stylusDevice,
         int timestamp,
@@ -2606,20 +2775,22 @@ internal sealed class WindowInputDispatcher
         RoutedEvent bubbleEvent)
     {
         StylusButton? button = GetBarrelButton(stylusDevice);
-        if (button == null) return;
+        if (button == null) return false;
 
         var previewArgs = new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = previewEvent };
         target.RaiseEvent(previewArgs);
-        if (!previewArgs.Handled)
-        {
-            target.RaiseEvent(new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = bubbleEvent });
-        }
+        if (previewArgs.Handled) return true;
+        var bubbleArgs = new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = bubbleEvent };
+        target.RaiseEvent(bubbleArgs);
+        return bubbleArgs.Handled;
     }
 
-    private static void RaiseStylusExtendedEvents(
+    private static bool RaiseStylusExtendedEvents(
         UIElement target, StylusDevice stylusDevice, int timestamp,
-        StylusInputAction inputAction, RealTimeStylusProcessResult processResult)
+        StylusInputAction inputAction, RealTimeStylusProcessResult processResult,
+        UIElement? rangeExitTarget = null)
     {
+        bool handled = false;
         if (processResult.LeftElement && processResult.PreviousTarget != null)
             RaiseStylusSimpleEvent(processResult.PreviousTarget, stylusDevice, timestamp, UIElement.StylusLeaveEvent);
 
@@ -2635,18 +2806,18 @@ internal sealed class WindowInputDispatcher
 
         if (processResult.ExitedRange)
         {
-            UIElement rangeTarget = processResult.PreviousTarget ?? target;
+            UIElement rangeTarget = rangeExitTarget ?? processResult.PreviousTarget ?? target;
             RaiseStylusSimpleEventPair(rangeTarget, stylusDevice, timestamp,
                 UIElement.PreviewStylusOutOfRangeEvent, UIElement.StylusOutOfRangeEvent);
             RaiseStylusSystemGestureEvent(rangeTarget, stylusDevice, timestamp, SystemGesture.HoverLeave);
         }
 
         if (processResult.BarrelButtonDown)
-            RaiseStylusButtonEvent(target, stylusDevice, timestamp,
+            handled |= RaiseStylusButtonEvent(target, stylusDevice, timestamp,
                 UIElement.PreviewStylusButtonDownEvent, UIElement.StylusButtonDownEvent);
 
         if (processResult.BarrelButtonUp)
-            RaiseStylusButtonEvent(target, stylusDevice, timestamp,
+            handled |= RaiseStylusButtonEvent(target, stylusDevice, timestamp,
                 UIElement.PreviewStylusButtonUpEvent, UIElement.StylusButtonUpEvent);
 
         switch (inputAction)
@@ -2663,13 +2834,14 @@ internal sealed class WindowInputDispatcher
                         ? SystemGesture.RightDrag : SystemGesture.Drag);
                 break;
             case StylusInputAction.InAirMove:
-                RaiseStylusSimpleEventPair(target, stylusDevice, timestamp,
+                handled |= RaiseStylusSimpleEventPair(target, stylusDevice, timestamp,
                     UIElement.PreviewStylusInAirMoveEvent, UIElement.StylusInAirMoveEvent);
                 break;
             case StylusInputAction.Up:
                 RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoldLeave);
                 break;
         }
+        return handled;
     }
 
     // ── Manipulation Pipeline ──

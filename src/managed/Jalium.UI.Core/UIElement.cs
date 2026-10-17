@@ -58,7 +58,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         EventManager.RegisterClassHandler(typeof(UIElement), MouseEnterEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseEnter(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), MouseLeaveEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseLeave(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseWheelEvent, new MouseWheelEventHandler((s, e) => ((UIElement)s).OnPreviewMouseWheel(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), MouseWheelEvent, new MouseWheelEventHandler((s, e) => ((UIElement)s).OnMouseWheel(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelThunk));
 
         // Touch
         TouchDevice.CaptureChanged += OnTouchDeviceCaptureChanged;
@@ -128,9 +128,34 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     private static void OnMouseDownThunk(object sender, MouseButtonEventArgs e)
     {
         var element = (UIElement)sender;
+        if (element.ProcessMouseInputCommand(e))
+        {
+            e.Handled = true;
+            return;
+        }
         element.OnMouseDown(e);
         if (e.Handled) return;
         ReRaiseButtonEvent(element, e, MouseLeftButtonDownEvent, MouseRightButtonDownEvent);
+    }
+
+    // Controls can handle platform gestures before portable command matching,
+    // without changing routed class-handler registration order.
+    internal virtual bool ProcessMouseInputCommand(MouseEventArgs e) =>
+        CommandManager.ProcessInput(this, e);
+
+    private static void OnMouseWheelThunk(object sender, MouseWheelEventArgs e)
+    {
+        var element = (UIElement)sender;
+        // Phase-only packets still carry gesture lifetime, but do not invoke a
+        // wheel command. Preserve precise movement below the legacy integer delta.
+        if (((e.HorizontalDelta != 0 && !e.IsHorizontalDeltaHandled) ||
+             (e.VerticalDelta != 0 && !e.IsVerticalDeltaHandled)) &&
+            element.ProcessMouseInputCommand(e))
+        {
+            e.Handled = true;
+            return;
+        }
+        element.OnMouseWheel(e);
     }
 
     private static void OnPreviewMouseUpThunk(object sender, MouseButtonEventArgs e)
@@ -182,6 +207,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             source.Timestamp)
         {
             Source = source.Source,
+            PhysicalModifiers = source.PhysicalModifiers,
         };
         // WPF 一贯行为：OriginalSource 在整个事件路由过程中保持为 hit test 最初命中的元素。
         // 不复制 OriginalSource 会让 element.RaiseEvent 里的 SetOriginalSource(this) 把
@@ -189,7 +215,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // 命中元素的可追溯性 —— 任何按 OriginalSource 判断"用户点了哪个真实元素"的 handler
         // 都会拿到错误的祖先节点而不是叶子。
         args.SetOriginalSource(source.OriginalSource);
-        element.RaiseEvent(args);
+        args.CommandInputLifetime = source.CommandInputLifetime;
+        try { element.RaiseEvent(args); }
+        finally { args.CommandInputLifetime = null; }
         if (args.Handled) source.Handled = true;
     }
 
@@ -322,29 +350,35 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     private void RaiseEventBubble(RoutedEventArgs e)
     {
+        bool inputRoute = UsesInputRoute(e);
+        HashSet<UIElement>? visited = inputRoute ? [] : null;
         UIElement? current = this;
-        while (current != null)
+        while (current != null && (visited == null || visited.Add(current)))
         {
             current.InvokeHandlers(current, e);
+            if (ReferenceEquals(current, e.CommandInputScope)) break;
             // 沿 visual parent 链向上找下一个 UIElement 祖先。如果中间夹了非 UIElement
             // 的 Visual（比如 ContainerVisual / DrawingVisual / HostVisual），用 `as UIElement`
             // 直接返回 null 会让 bubble 在那里中断、无法到达真正的 UIElement 祖先（例如
             // 模板根之上的控件本体）。改为穿透非 UIElement 节点继续向上寻找。
-            current = NextUIElementAncestor(current);
+            current = NextUIElementAncestor(current, inputRoute);
         }
     }
 
+    private static bool UsesInputRoute(RoutedEventArgs e) => e is KeyEventArgs or TextCompositionEventArgs
+        or CanExecuteRoutedEventArgs or ExecutedRoutedEventArgs;
+
     /// <summary>
-    /// 沿 <see cref="Visual.VisualParent"/> 链向上找下一个 <see cref="UIElement"/> 祖先；
-    /// 中间夹的纯 <see cref="Visual"/> 节点会被穿透。链尽头返回 null。
+    /// Finds the next UIElement in the visual or popup input route, skipping plain Visual nodes.
     /// </summary>
-    private static UIElement? NextUIElementAncestor(Visual node)
+    private static UIElement? NextUIElementAncestor(Visual node, bool inputRoute = false)
     {
-        Visual? cur = node.VisualParent;
-        while (cur != null)
+        Visual? cur = inputRoute ? InputRoute.GetParent(node) : node.VisualParent;
+        int depth = 0;
+        while (cur != null && depth++ < 4096)
         {
             if (cur is UIElement ui) return ui;
-            cur = cur.VisualParent;
+            cur = inputRoute ? InputRoute.GetParent(cur) : cur.VisualParent;
         }
         return null;
     }
@@ -375,11 +409,14 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
         // Build the path from root to source. 同 RaiseEventBubble：穿透中间的非 UIElement
         // 节点（ContainerVisual 等），否则 tunnel 会丢失模板控件本体之上的祖先。
+        bool inputRoute = UsesInputRoute(e);
+        HashSet<UIElement>? visited = inputRoute ? [] : null;
         UIElement? current = this;
-        while (current != null)
+        while (current != null && (visited == null || visited.Add(current)))
         {
             path.Add(current);
-            current = NextUIElementAncestor(current);
+            if (ReferenceEquals(current, e.CommandInputScope)) break;
+            current = NextUIElementAncestor(current, inputRoute);
         }
 
         // Tunnel from root to source
@@ -403,6 +440,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     private void InvokeHandlers(object sender, RoutedEventArgs e)
     {
+        if (!e.IsCommandInputCurrent) return;
         var routedEvent = e.RoutedEvent!;
 
         // Invoke class handlers first
@@ -410,6 +448,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         {
             if (!e.Handled || classHandler.HandledEventsToo)
             {
+                if (!e.IsCommandInputCurrent) return;
                 e.InvokeHandler(classHandler.Handler, sender);
             }
         }
@@ -422,59 +461,14 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             {
                 if (!e.Handled || handler.InvokeHandledEventsToo)
                 {
+                    if (!e.IsCommandInputCurrent) return;
                     e.InvokeHandler(handler.Handler, sender);
                 }
             }
         }
 
-        // Check CommandBindings for RoutedCommand events
-        if (_commandBindings != null && _commandBindings.Count > 0)
-        {
-            if (routedEvent == Input.RoutedCommand.CanExecuteEvent && e is Input.CanExecuteRoutedEventArgs canExecArgs)
-            {
-                foreach (Input.CommandBinding binding in _commandBindings)
-                {
-                    if (binding.Command == canExecArgs.Command)
-                    {
-                        binding.OnCanExecute(sender, canExecArgs);
-                        if (canExecArgs.Handled) break;
-                    }
-                }
-            }
-            else if (routedEvent == Input.RoutedCommand.ExecutedEvent && e is Input.ExecutedRoutedEventArgs execArgs)
-            {
-                foreach (Input.CommandBinding binding in _commandBindings)
-                {
-                    if (binding.Command == execArgs.Command)
-                    {
-                        binding.OnExecuted(sender, execArgs);
-                        if (execArgs.Handled) break;
-                    }
-                }
-            }
-            else if (routedEvent == Input.RoutedCommand.PreviewCanExecuteEvent && e is Input.CanExecuteRoutedEventArgs previewCanExecArgs)
-            {
-                foreach (Input.CommandBinding binding in _commandBindings)
-                {
-                    if (binding.Command == previewCanExecArgs.Command)
-                    {
-                        binding.OnPreviewCanExecute(sender, previewCanExecArgs);
-                        if (previewCanExecArgs.Handled) break;
-                    }
-                }
-            }
-            else if (routedEvent == Input.RoutedCommand.PreviewExecutedEvent && e is Input.ExecutedRoutedEventArgs previewExecArgs)
-            {
-                foreach (Input.CommandBinding binding in _commandBindings)
-                {
-                    if (binding.Command == previewExecArgs.Command)
-                    {
-                        binding.OnPreviewExecuted(sender, previewExecArgs);
-                        if (previewExecArgs.Handled) break;
-                    }
-                }
-            }
-        }
+        if (e is Input.CanExecuteRoutedEventArgs or Input.ExecutedRoutedEventArgs)
+            Input.CommandManager.InvokeCommandBindings(this, sender, e, _commandBindings);
     }
 
     #endregion

@@ -112,6 +112,14 @@ internal sealed class RealTimeInkPreviewStylusPlugIn : StylusPlugIn
 
     // ── UI thread (Processed) ──────────────────────────────────────────────
 
+    protected override void OnStylusLeave(RawStylusInput rawStylusInput, bool confirmed)
+    {
+        if (!rawStylusInput.IsCanceled) return;
+        RealTimePreviewSession? session;
+        lock (_gate) _sessions.Remove(rawStylusInput.PointerId, out session);
+        if (session != null) _owner.NotifyRealTimePreviewInvalidate(session);
+    }
+
     protected override void OnStylusDownProcessed(object callbackData, bool targetVerified)
     {
         if (callbackData is not RawStylusInput rawStylusInput) return;

@@ -256,7 +256,10 @@ JALIUM_BROWSER_API int jalium_webview2_set_zoom_factor(JaliumWebView2ControllerH
 #else
     return kNotImplemented;
 #endif
-    c->zoom=zoom;if(c->zoomChanged)c->zoomChanged(c->userData,zoom);return kOk;}
+#if !TARGET_OS_TV
+    c->zoom=zoom;if(c->zoomChanged)c->zoomChanged(c->userData,zoom);return kOk;
+#endif
+}
 JALIUM_BROWSER_API int jalium_webview2_get_zoom_factor(JaliumWebView2ControllerHandle* c,double* out){if(!c||!out)return kInvalidArgument;*out=c->zoom;return TARGET_OS_TV?kNotImplemented:kOk;}
 JALIUM_BROWSER_API int jalium_webview2_set_default_background_color(JaliumWebView2ControllerHandle* c,uint32_t argb){if(!c)return kInvalidArgument;c->background=argb;
 #if TARGET_OS_OSX

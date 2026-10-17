@@ -12,8 +12,10 @@
     <DefineConstants Condition="'$(JaliumMacNativeGeometryTests)' == 'true'">$(DefineConstants);JALIUM_MAC_NATIVE_GEOMETRY_TESTS</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/HierarchicalDataTemplateParityTests.cs" Link="HierarchicalDataTemplateParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/MouseWheelSignConsumerTests.cs" Link="MouseWheelSignConsumerTests.cs" />
     <Compile Include="../../src/packaging/Jalium.UI.MacOS/FileDialogFilterSelection.cs" Link="FileDialogFilterSelection.cs" />
+    <Compile Include="../../src/packaging/Jalium.UI.MacOS/MacOSSessionEndReason.cs" Link="MacOSSessionEndReason.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockNoWrapInheritanceTests.cs" Link="TextBlockNoWrapInheritanceTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockParityTests.cs" Link="TextBlockParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockRenderCacheTests.cs" Link="TextBlockRenderCacheTests.cs" />
@@ -29,6 +31,8 @@
   <ItemGroup>
     <Compile Remove="MacOSTextGeometryIntegrationTests.cs" />
     <Compile Include="MacOSTextGeometryIntegrationTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
+    <Compile Remove="MacOSEditControlImeGeometryTests.cs" />
+    <Compile Include="MacOSEditControlImeGeometryTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
     <Compile Remove="MacOSWindowVisualLineTests.cs" />
     <Compile Include="MacOSWindowVisualLineTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
     <Compile Remove="MacOSRichParagraphTests.cs" />
@@ -68,6 +72,7 @@
     <ProjectReference Include="../../src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj" />
     <Compile Include="../Jalium.UI.Tests/MacOSWindowBehaviorTests.cs" Link="MacOSWindowBehaviorTests.cs" />
     <Compile Include="../Jalium.UI.Tests/MacOSWindowVisibilityTests.cs" Link="MacOSWindowVisibilityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/Manipulation*Tests.cs" Link="Shared/%(Filename)%(Extension)" />
     <Compile Include="../Jalium.UI.Tests/DependencyPropertyClearingTests.cs" Link="DependencyPropertyClearingTests.cs" />
     <Compile Include="../Jalium.UI.Tests/DependencyPropertyCoercionFailureTests.cs" Link="DependencyPropertyCoercionFailureTests.cs" />
     <Compile Include="../Jalium.UI.Tests/LinuxWindowBehaviorTests.cs" Link="LinuxWindowBehaviorTests.cs" />

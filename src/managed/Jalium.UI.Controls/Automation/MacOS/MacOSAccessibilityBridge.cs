@@ -130,6 +130,8 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
             {
                 case AutomationEvents.AutomationFocusChanged: Notify(peer, MacOSAXNotification.Focus); break;
                 case AutomationEvents.TextPatternOnTextSelectionChanged: Notify(peer, MacOSAXNotification.Selection); break;
+                case AutomationEvents.SelectionPatternOnInvalidated:
+                    Notify(peer, MacOSAXNotification.SelectedItems); break;
                 case AutomationEvents.TextPatternOnTextChanged:
                 case AutomationEvents.SelectionItemPatternOnElementSelected:
                 case AutomationEvents.SelectionItemPatternOnElementAddedToSelection:
@@ -162,10 +164,10 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
     }
 }
 
-/// <summary>Renderer-neutral adapter; IDs remain stable while a peer lives.</summary>
+/// <summary>Renderer-neutral adapter; IDs remain stable for one peer realization.</summary>
 internal sealed unsafe partial class MacOSAccessibilityTree
 {
-    private sealed record NodeId(ulong Value);
+    private sealed record NodeId(ulong Value, ItemIdentity Identity);
     private readonly Window _window;
     private readonly AutomationPeer _root;
     private readonly ConditionalWeakTable<AutomationPeer, NodeId> _ids = new();
@@ -196,7 +198,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         id = 0;
         if (_disposed) return false;
         peer = RealizedPeer(peer);
-        if (!BelongsToWindow(peer)) return false;
+        if (_disposed || !BelongsToWindow(peer)) return false;
         id = GetId(peer);
         return true;
     }
@@ -204,9 +206,14 @@ internal sealed unsafe partial class MacOSAccessibilityTree
     private ulong GetId(AutomationPeer peer)
     {
         peer = RealizedPeer(peer);
-        if (_ids.TryGetValue(peer, out var value)) return value.Value;
+        if (_ids.TryGetValue(peer, out var value))
+        {
+            if (value.Identity.IsCurrent(peer)) return value.Value;
+            _peers.Remove(value.Value);
+            _ids.Remove(peer);
+        }
         ulong id = _nextId++;
-        _ids.Add(peer, new(id));
+        _ids.Add(peer, new(id, ItemIdentity.Capture(peer)));
         _peers.Add(id, new(peer));
         if (id >= _nextPruneId)
         {
@@ -243,13 +250,14 @@ internal sealed unsafe partial class MacOSAccessibilityTree
 
     private bool IsVisible(AutomationPeer peer)
     {
-        if (!BelongsToWindow(peer)) return false;
+        if (_disposed || !BelongsToWindow(peer)) return false;
         // Clipped descendants remain readable and scrollable in the AX tree.
         // Their geometric visibility is reported separately in Info.
         if (peer.Owner is not UIElement && peer.IsOffscreen() || peer is ItemAutomationPeer && peer.IsOffscreen()) return false;
         if (peer is MacOSFallbackAutomationPeer && !peer.IsControlElement()) return false;
         if (peer.Owner is UIElement { IsVisible: false }) return false;
-        return !HasHiddenSubtree(peer);
+        return !HasHiddenSubtree(peer) && (GetActionTarget(peer) is not { } target ||
+            _window.IsMacOSAccessibilityTargetVisible(target));
     }
 
     private static bool HasHiddenSubtree(AutomationPeer peer)
@@ -259,15 +267,29 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         if (peer.Owner is UIElement element && Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element)) return true;
         if (peer.Owner is Visual visual)
             for (Visual? parent = visual; parent != null; parent = parent.VisualParent)
+            {
                 if (parent is UIElement { Visibility: not Visibility.Visible }) return true;
+                if (parent is ComboBoxItem item
+                    && ItemsControl.ItemsControlFromItemContainer(item) is ComboBox { IsDropDownOpen: false })
+                    return true;
+            }
         return false;
     }
 
     private List<AutomationPeer> Children(AutomationPeer peer)
     {
-        if (!CanExposeChildren(peer)) return [];
         var children = new List<AutomationPeer>();
         var seen = new HashSet<AutomationPeer> { peer };
+        // Collapsing a branch hides its nested rows, not the controls in its
+        // own header. A virtualizing items host likewise owns only child rows.
+        if (peer is TreeViewItemAutomationPeer treeItem && CanExposeChildren(peer, headerOnly: true))
+            foreach (var child in treeItem.GetHeaderChildren()) AddVisibleChild(child, children, seen);
+        if (!CanExposeChildren(peer)) return children;
+        if (peer is ListBoxItemAutomationPeer listItem)
+        {
+            foreach (var child in listItem.GetMacOSContentChildren()) AddVisibleChild(child, children, seen);
+            return children;
+        }
         if (peer is ItemsControlAutomationPeer itemsPeer
             && itemsPeer.ItemsOwner.ItemsHostInternal is VirtualizingPanel panel
             && VirtualizingPanel.GetIsVirtualizing(itemsPeer.ItemsOwner))
@@ -283,12 +305,15 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         return children;
     }
 
-    private static bool CanExposeChildren(AutomationPeer peer)
+    private static bool CanExposeChildren(AutomationPeer peer, bool headerOnly = false)
     {
+        // Logical providers remain usable while collapsed; native discovery and
+        // retained row requests follow the actual dropdown presentation.
+        if (peer.Owner is ComboBox { IsDropDownOpen: false }) return false;
         // ItemsControl's logical peers include descendants even while their
         // TreeViewItem is collapsed. AX outline navigation must only disclose
         // rows in expanded branches, independent of template realization.
-        if (peer.GetAutomationControlType() == AutomationControlType.TreeItem
+        if (!headerOnly && peer.GetAutomationControlType() == AutomationControlType.TreeItem
             && peer.GetPattern(PatternInterface.ExpandCollapse) is IExpandCollapseProvider
                 { ExpandCollapseState: ExpandCollapseState.Collapsed }) return false;
         // Atomic controls already provide their text via Name/Value. Exposing
@@ -327,7 +352,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         return 1;
     }
 
-    internal bool Handle(ref MacOSAXRequest request)
+    private bool HandleCurrent(ref MacOSAXRequest request)
     {
         if (_disposed) return false;
         // Cleanup must work even after the parent was detached or hidden.
@@ -354,6 +379,10 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         if (!IsVisible(peer)) return false;
         switch (request.Operation)
         {
+            case MacOSAXOperation.PopupCanBecomeKey:
+                if (!ReferenceEquals(peer, _root) || !_window.IsMacOSPopupHost) return false;
+                request.ResultId = _window.CanMacOSPopupReceiveKeyboardInput() ? 1ul : 0;
+                return !_disposed;
             case MacOSAXOperation.Info: Describe(peer, ref request); return true;
             case MacOSAXOperation.WindowButton:
                 if (!ReferenceEquals(peer, _root) || (uint)request.Index > (uint)MacOSAXWindowButton.Zoom) return false;
@@ -364,9 +393,8 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 UIElement? button;
                 if (request.Index < (int)MacOSAXWindowButton.Close)
                 {
-                    var scope = (UIElement?)host.ActiveContentDialog ?? (UIElement?)host.FindContainingInPlaceDialog() ?? _window;
                     bool cancelButton = request.Index == (int)MacOSAXWindowButton.Cancel;
-                    button = host.FindButton(scope, candidate => cancelButton ? candidate.IsCancel : candidate.IsDefault);
+                    button = _window.FindMacOSDefaultOrCancelButton(cancelButton, physicalOnly: true);
                 }
                 else
                 {
@@ -406,28 +434,43 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 var hit = HitTest(peer, new(request.X, request.Y), []);
                 request.ResultId = hit == null ? 0 : GetId(hit); return true;
             case MacOSAXOperation.Action: return PerformAction(peer, (MacOSAXAction)request.Index);
+            case MacOSAccessibilityNative.SetSelectedItems: return ReplaceSelectedItems(peer, ref request);
             case MacOSAXOperation.TextNavigation:
                 return NavigateText(peer, ref request);
             case MacOSAXOperation.TextStyles:
             case MacOSAXOperation.TextStyleRange:
                 return ReadTextStyles(peer, ref request);
             case MacOSAXOperation.SetValue:
-                if (!peer.IsEnabled()) return false;
+                var valueLifetime = CaptureActionLifetime(peer);
+                if (!valueLifetime()) return false;
                 if (peer.GetPattern(PatternInterface.RangeValue) is IRangeValueProvider { IsReadOnly: false } range)
                 {
                     if (!double.IsFinite(request.Value)) return false;
-                    range.SetValue(Math.Clamp(request.Value, range.Minimum, range.Maximum)); return true;
+                    double requestedValue = Math.Clamp(request.Value, range.Minimum, range.Maximum);
+                    if (!valueLifetime()) return false;
+                    range.SetValue(requestedValue); return true;
                 }
                 if (peer.GetPattern(PatternInterface.Value) is IValueProvider { IsReadOnly: false } value
                     && request.TextCount >= 0 && request.TextCount <= request.TextCapacity
                     && (request.TextCount == 0 || request.Text != null))
                 {
+                    if (!valueLifetime()) return false;
                     value.SetValue(new string(request.Text, 0, request.TextCount)); return true;
+                }
+                if (GetTextSource(peer) is { IsReadOnly: false } textSource
+                    && textSource is IAutomationTextValueSource textValue
+                    && request.TextCount >= 0 && request.TextCount <= request.TextCapacity
+                    && request.TextCount <= 16 * 1024 * 1024
+                    && (request.TextCount == 0 || request.Text != null))
+                {
+                    if (!valueLifetime()) return false;
+                    return textValue.TrySetValue(new string(request.Text, 0, request.TextCount));
                 }
                 return false;
             case MacOSAXOperation.TextSelection:
             case MacOSAXOperation.SetTextSelection:
             case MacOSAXOperation.TextBounds:
+                var selectionLifetime = request.Operation == MacOSAXOperation.SetTextSelection ? CaptureActionLifetime(peer) : null;
                 if (peer.IsPassword() || GetTextSource(peer) is not { } source) return false;
                 if (request.Operation == MacOSAXOperation.TextSelection)
                 {
@@ -440,7 +483,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                     return false;
                 if (request.Operation == MacOSAXOperation.SetTextSelection)
                 {
-                    if (!peer.IsEnabled()) return false;
+                    if (selectionLifetime?.Invoke() != true) return false;
                     source.Select(request.TextStart, request.TextLength); return true;
                 }
                 var rectangles = source.GetBoundingRectangles(request.TextStart, request.TextLength);
@@ -470,9 +513,13 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         SetBounds(peer.GetBoundingRectangle(), ref request);
         MacOSAXFlags flags = 0;
         if (peer.IsOffscreen()) flags |= MacOSAXFlags.Offscreen;
-        if (peer.IsEnabled()) flags |= MacOSAXFlags.Enabled;
-        if (peer.IsKeyboardFocusable()) flags |= MacOSAXFlags.Focusable;
-        if (peer.HasKeyboardFocus()) flags |= MacOSAXFlags.Focused;
+        bool enabled = ReferenceEquals(peer, _root) && !_window.IsMacOSPopupHost
+            ? peer.IsEnabled() : CanMutate(peer);
+        if (enabled) flags |= MacOSAXFlags.Enabled;
+        bool keyboardEligible = GetActionTarget(peer) is { } focusTarget &&
+            _window.IsMacOSKeyboardInputTargetEligible(focusTarget);
+        if (enabled && keyboardEligible && peer.IsKeyboardFocusable()) flags |= MacOSAXFlags.Focusable;
+        if (enabled && keyboardEligible && peer.HasKeyboardFocus()) flags |= MacOSAXFlags.Focused;
         if (peer.IsDialog()) flags |= MacOSAXFlags.Dialog;
         if (ReferenceEquals(peer, _root) && _window.IsModal) flags |= MacOSAXFlags.Modal;
         if (peer.Owner is TitleBarButton caption)
@@ -506,7 +553,11 @@ internal sealed unsafe partial class MacOSAccessibilityTree
             flags |= MacOSAXFlags.Toggle;
             request.Value = toggle.ToggleState == ToggleState.Indeterminate ? 2 : toggle.ToggleState == ToggleState.On ? 1 : 0;
         }
-        if (peer.GetPattern(PatternInterface.Selection) is ISelectionProvider) flags |= MacOSAXFlags.Selection;
+        if (peer.GetPattern(PatternInterface.Selection) is ISelectionProvider)
+        {
+            flags |= MacOSAXFlags.Selection;
+            if (peer.Owner is ListBox or TreeView) flags |= MacOSAXFlags.SelectionWritable;
+        }
         if (peer.GetPattern(PatternInterface.SelectionItem) is ISelectionItemProvider selection)
         {
             flags |= MacOSAXFlags.Selectable;
@@ -522,6 +573,11 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         if (!password && GetTextSource(peer) is { } text)
         {
             flags |= MacOSAXFlags.Text;
+            if (text is IAutomationTextValueSource)
+            {
+                flags |= MacOSAXFlags.Value;
+                if (!text.IsReadOnly) flags |= MacOSAXFlags.Writable;
+            }
             if (text is IAutomationTextStyleSource) flags |= MacOSAXFlags.StyledText;
             if (text is IAutomationTextViewSource)
             {
@@ -542,16 +598,19 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         _ => null
     };
 
-    private static bool NavigateText(AutomationPeer peer, ref MacOSAXRequest request)
+    private bool NavigateText(AutomationPeer peer, ref MacOSAXRequest request)
     {
+        var operation = (MacOSAXTextNavigation)request.Index;
+        var lifetime = operation is MacOSAXTextNavigation.ReplaceSelection or MacOSAXTextNavigation.SetInsertionLine
+            ? CaptureActionLifetime(peer) : null;
         if (peer.IsPassword() || GetTextSource(peer) is not { } source
             || source is not IAutomationTextViewSource view) return false;
-        var operation = (MacOSAXTextNavigation)request.Index;
         string text = source.Text;
         if (operation == MacOSAXTextNavigation.ReplaceSelection)
         {
-            if (!peer.IsEnabled() || source.IsReadOnly || request.TextCount < 0 || request.TextCount > request.TextCapacity
+            if (source.IsReadOnly || request.TextCount < 0 || request.TextCount > request.TextCapacity
                 || request.TextCount > 16 * 1024 * 1024 || (request.TextCount != 0 && request.Text == null)) return false;
+            if (lifetime?.Invoke() != true) return false;
             return view.ReplaceSelection(new string(request.Text, 0, request.TextCount));
         }
         AutomationTextSpan range;
@@ -590,8 +649,10 @@ internal sealed unsafe partial class MacOSAccessibilityTree
             var row = lines[request.TextStart]; range = new(row.Start, row.Length);
             if (operation == MacOSAXTextNavigation.SetInsertionLine)
             {
-                if (!peer.IsEnabled()) return false;
-                source.Select(range.Start, 0); source.ScrollIntoView(range.Start, 0); return true;
+                if (lifetime?.Invoke() != true) return false;
+                source.Select(range.Start, 0);
+                if (lifetime()) source.ScrollIntoView(range.Start, 0);
+                return true;
             }
         }
         request.TextStart = range.Start; request.TextLength = range.Length; return true;
@@ -676,14 +737,18 @@ internal sealed unsafe partial class MacOSAccessibilityTree
 
     private bool PerformAction(AutomationPeer peer, MacOSAXAction action)
     {
-        if (!peer.IsEnabled()) return false;
+        var activationLifetime = action == MacOSAXAction.SetFocus ? _window.CaptureMacOSAccessibilityActivationLifetime() : null;
+        var focusRequest = action == MacOSAXAction.SetFocus ? CaptureFocusRequest() : default;
+        var lifetime = CaptureActionLifetime(peer);
+        if (!lifetime()) return false;
         switch (action)
         {
-            case MacOSAXAction.SetFocus when peer.IsKeyboardFocusable(): peer.SetFocus(); return peer.HasKeyboardFocus();
+            case MacOSAXAction.SetFocus when peer.IsKeyboardFocusable():
+                return RequestFocus(peer, lifetime, focusRequest, activationLifetime!);
             case MacOSAXAction.Press:
                 if (peer.GetPattern(PatternInterface.Invoke) is IInvokeProvider)
                 {
-                    if (_window.Handle == 0 || _window.Dispatcher.HasShutdownStarted) return false;
+                    if (!lifetime() || _window.Handle == 0 || _window.Dispatcher.HasShutdownStarted) return false;
                     // User code can enter ShowDialog. Return the native AX request
                     // before running it so a modal loop does not hold that request
                     // open and interfere with subsequent AppKit queries/updates.
@@ -691,8 +756,8 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                     {
                         try
                         {
-                            if (_window.Handle != 0 && IsVisible(peer) && peer.IsEnabled()
-                                && peer.GetPattern(PatternInterface.Invoke) is IInvokeProvider invoke)
+                            if (_window.Handle != 0 && lifetime()
+                                && peer.GetPattern(PatternInterface.Invoke) is IInvokeProvider invoke && lifetime())
                                 invoke.Invoke();
                         }
                         catch (Exception error)
@@ -704,21 +769,25 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                     });
                     return true;
                 }
-                if (peer.GetPattern(PatternInterface.SelectionItem) is ISelectionItemProvider select) { select.Select(); return true; }
-                if (peer.GetPattern(PatternInterface.Toggle) is IToggleProvider toggle) { toggle.Toggle(); return true; }
+                if (peer.GetPattern(PatternInterface.SelectionItem) is ISelectionItemProvider select) { if (!lifetime()) return false; select.Select(); return true; }
+                if (peer.GetPattern(PatternInterface.Toggle) is IToggleProvider toggle) { if (!lifetime()) return false; toggle.Toggle(); return true; }
                 return false;
             case MacOSAXAction.Deselect:
                 if (peer.GetPattern(PatternInterface.SelectionItem) is not ISelectionItemProvider selection) return false;
+                if (!lifetime()) return false;
                 selection.RemoveFromSelection(); return true;
             case MacOSAXAction.Increment:
             case MacOSAXAction.Decrement:
                 if (peer.GetPattern(PatternInterface.RangeValue) is not IRangeValueProvider { IsReadOnly: false } range
                     || !double.IsFinite(range.SmallChange) || range.SmallChange <= 0) return false;
-                range.SetValue(Math.Clamp(range.Value + (action == MacOSAXAction.Increment ? range.SmallChange : -range.SmallChange),
-                    range.Minimum, range.Maximum)); return true;
+                double nextValue = Math.Clamp(range.Value + (action == MacOSAXAction.Increment ? range.SmallChange : -range.SmallChange),
+                    range.Minimum, range.Maximum);
+                if (!lifetime()) return false;
+                range.SetValue(nextValue); return true;
             case MacOSAXAction.Expand:
             case MacOSAXAction.Collapse:
                 if (peer.GetPattern(PatternInterface.ExpandCollapse) is not IExpandCollapseProvider expand) return false;
+                if (!lifetime()) return false;
                 if (action == MacOSAXAction.Expand) expand.Expand(); else expand.Collapse();
                 return true;
             default: return false;
@@ -730,7 +799,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         if (!seen.Add(peer)) return null;
         foreach (var child in Children(peer))
             if (FindFocus(child, seen) is { } found) return found;
-        return peer.HasKeyboardFocus() ? peer : null;
+        return CanMutate(peer) && peer.HasKeyboardFocus() ? peer : null;
     }
 
     private AutomationPeer? HitTest(AutomationPeer peer, Point point, HashSet<AutomationPeer> seen)

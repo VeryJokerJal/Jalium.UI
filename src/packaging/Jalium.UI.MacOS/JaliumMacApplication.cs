@@ -1,6 +1,7 @@
 using AppKit;
 using Foundation;
 using ObjCRuntime;
+using Jalium.UI.Controls.Platform;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
@@ -27,6 +28,8 @@ public class JaliumMacApplication : NSApplication
         if (nativeClass == 0) throw new InvalidOperationException($"Unknown AppKit principal class '{principal}'.");
         _application = Runtime.GetNSObject<NSApplication>(SharedApplicationForClass(nativeClass, Selector.GetHandle("sharedApplication")))
             ?? throw new InvalidOperationException("AppKit did not create its principal application.");
+        PlatformTextContextMenus.Show = MacOSTextContextMenus.Show;
+        PlatformTaskbarIntegration.Attach = MacOSTaskbar.Attach;
         return _application;
     }
 

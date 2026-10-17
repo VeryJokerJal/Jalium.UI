@@ -1,6 +1,7 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -8,8 +9,11 @@ namespace Jalium.UI.Controls.Primitives;
 /// Wrapper element that hosts Popup.Child content within the OverlayLayer.
 /// Routes DataContext/resources back to the Popup and supports light-dismiss.
 /// </summary>
-internal sealed class PopupRoot : Decorator
+internal sealed class PopupRoot : Decorator, IInputRouteParentProvider
 {
+    Visual? IInputRouteParentProvider.InputRouteParent => OperatingSystem.IsMacOS()
+        ? OwnerPopup.GetMacOSInputRouteParent(this) : VisualParent as Visual;
+
     /// <summary>
     /// Gets the owning Popup control.
     /// </summary>
@@ -18,7 +22,7 @@ internal sealed class PopupRoot : Decorator
     /// <summary>
     /// Gets whether this popup root requires light-dismiss behavior.
     /// </summary>
-    internal bool IsLightDismiss { get; }
+    internal bool IsLightDismiss { get; set; }
 
     /// <summary>
     /// Gets whether pointer input is currently captured by popup content.
@@ -38,6 +42,11 @@ internal sealed class PopupRoot : Decorator
 
         // PopupRoot itself should not capture focus — let child elements receive it
         Focusable = false;
+        if (OperatingSystem.IsMacOS())
+        {
+            KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Cycle);
+            KeyboardNavigation.SetDirectionalNavigation(this, KeyboardNavigationMode.Cycle);
+        }
 
         // Mirror the owner's hit-test policy onto the hosted surface. A tooltip popup is
         // declared non-hit-testable precisely so it cannot steal hover from the element it
@@ -77,6 +86,17 @@ internal sealed class PopupRoot : Decorator
     private void OnPreviewMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         OwnerPopup.SetIsMouseOver(true);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (OperatingSystem.IsMacOS() && !e.Handled && e.Key == Key.Escape &&
+            OwnerPopup.IsOpen && !OwnerPopup.StaysOpen)
+        {
+            OwnerPopup.SetCurrentValue(Popup.IsOpenProperty, false);
+            e.Handled = true;
+        }
     }
 
     protected override Size MeasureOverride(Size constraint)

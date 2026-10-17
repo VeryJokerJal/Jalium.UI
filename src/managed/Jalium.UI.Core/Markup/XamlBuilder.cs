@@ -54,6 +54,13 @@ public static class XamlBuilder
     /// <summary>Registered by Jalium.UI.Xaml: creates a build context attached to the codebehind component.</summary>
     public static Func<object, Uri?, Assembly?, XamlBuildContext>? BeginComponentImpl { get; set; }
 
+    /// <summary>Registered by Jalium.UI.Xaml: copies template metadata into an empty build scope.</summary>
+    public static Func<XamlBuildContext, XamlBuildContext>? CreateTemplateContextImpl { get; set; }
+
+    /// <summary>Creates an independent template build scope without names or mutable parse state.</summary>
+    public static XamlBuildContext CreateTemplateContext(XamlBuildContext context)
+        => Required(CreateTemplateContextImpl, nameof(CreateTemplateContextImpl))(context);
+
     /// <summary>Registered by Jalium.UI.Xaml: pushes an element onto the build context's parent stack.</summary>
     public static Action<object, XamlBuildContext>? PushParentImpl { get; set; }
 
