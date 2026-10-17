@@ -135,17 +135,36 @@ internal sealed partial class WindowInputDispatcher
         _lastPointerPoints.Remove(id, out var last);
         _activeStylusDevices.Remove(id, out var device);
         InvalidatePointerSession(id);
-        _host.RealTimeStylus.CancelSession(id);
+        bool Current() => !_activeStylusDevices.ContainsKey(id);
+        bool RetiredAt(UIElement element) => !_activePointerTargets.TryGetValue(id, out var next) ||
+            !IsDescendantOf(next, element);
+        Action? notifyLeave = _host.RealTimeStylus.PrepareTabletCancellation(id,
+            data.StylusPoints, timestamp, RetiredAt);
         _gestureTrackers.Remove(id);
+        bool wasInRange = device?.InRange == true;
         if (ReferenceEquals(Tablet.CurrentStylusDevice, device)) Tablet.CurrentStylusDevice = null;
         if (device != null)
             device.UpdateState(data.Position, data.StylusPoints, true, data.Point.Properties.IsInverted,
                 false, false, false, null);
         // The old slots are detached before any user callback. A newly created
         // packet for this ID is never removed by the old cancellation.
-        CancelManipulationSession(id, timestamp);
-        device?.Capture(null);
-        if (target != null) RaisePointerCancelPipeline(target, last ?? data.Point, data.Modifiers, timestamp);
+        try
+        {
+            CancelManipulationSession(id, timestamp);
+            device?.Capture(null);
+            if (wasInRange && target != null && device != null && Current())
+                RaiseStylusSimpleEventPair(target, device, timestamp,
+                    UIElement.PreviewStylusOutOfRangeEvent, UIElement.StylusOutOfRangeEvent);
+        }
+        finally
+        {
+            try { notifyLeave?.Invoke(); }
+            finally
+            {
+                if (target != null && Current())
+                    RaisePointerCancelPipeline(target, last ?? data.Point, data.Modifiers, timestamp);
+            }
+        }
     }
 
     internal void TrackMacOSTabletMouse(uint id, int type, int button, long precedingEpoch)

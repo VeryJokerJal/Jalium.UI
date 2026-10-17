@@ -66,7 +66,7 @@ internal static class WindowTabletChecks
             if(item.Kind=="owner"){area.Children.Add(subject);Canvas.SetLeft(subject,10);Canvas.SetTop(subject,8);}
             var panel=new StackPanel{Margin=new Thickness(16),Spacing=8};panel.Children.Add(new TextBlock{Text="窗口与数位板",FontSize=18});panel.Children.Add(area);
             panel.Children.Add(new TextBlock{Text="检查笔事件、单次点击、墨迹压力及取消恢复。",TextWrapping=TextWrapping.Wrap});
-            owner=new Window{Title="Jalium Window v249 · 数位板",Width=680,Height=620,MinWidth=560,MinHeight=560,
+            owner=new Window{Title="Jalium Window v250 · 数位板",Width=680,Height=620,MinWidth=560,MinHeight=560,
                 TitleBarStyle=item.Custom?WindowTitleBarStyle.Custom:WindowTitleBarStyle.Native,Content=panel};
             Application.Current!.MainWindow=owner;owner.Show();owner.UpdateLayout();
             if(item.Kind!="owner")
@@ -299,7 +299,49 @@ internal static class WindowTabletChecks
                             device+=100;Send(0,currentEdit,Center(currentEdit));Send(1,currentEdit,Center(currentEdit));
                             string original=currentEdit.Text;Send(2,currentEdit,Center(currentEdit),1,.4f);Send(4,currentEdit,Center(currentEdit));
                             Require(ReferenceEquals(Keyboard.FocusedElement,currentEdit)&&currentEdit.Text==original,"pen click focuses the editor without changing its text");
-                            Finish();
+                            var preview=(RealTimeInkPreviewStylusPlugIn)typeof(InkCanvas).GetField("_realTimePreviewPlugIn",
+                                System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.GetValue(currentInk)!;
+                            var renderer=(Jalium.UI.Input.StylusPlugIns.DynamicRenderer)typeof(InkCanvas).GetField("_dynamicRenderer",
+                                System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.GetValue(currentInk)!;
+                            device+=100;
+                            Send(0,currentInk,new(250,25),tool:3);
+                            Send(1,currentInk,new(250,25),tool:3);
+                            Send(2,currentInk,new(250,25),1,.6f,tool:3);
+                            Require(currentInk.ActiveEditingMode==currentInk.EditingModeInverted,
+                                "inverted contact selects the configured eraser mode");
+                            int beforeExit=rangeOut,beforeCancel=cancel;
+                            Send(0,currentInk,new(250,25),tool:3,entering:0);
+                            continuation=()=>
+                            {
+                                Require(rangeOut==beforeExit+1&&cancel==beforeCancel+1,
+                                    "contact proximity exit produces one range exit and one cancellation");
+                                Require(currentInk.ActiveEditingMode==currentInk.EditingMode&&Tablet.CurrentStylusDevice==null,
+                                    "physical range exit restores ink mode and current device");
+                                Require(!preview.HasActiveSessions&&renderer.CurrentPreviewStroke==null,
+                                    "canceled eraser leaves no ink preview");
+                                device+=100;int strokes=currentInk.Strokes.Count;
+                                Send(0,currentInk,new(20,35));Send(1,currentInk,new(20,35));
+                                Send(2,currentInk,new(20,35),1,.3f);Send(3,currentInk,new(90,55),1,.8f);
+                                Require(preview.HasActiveSessions&&renderer.CurrentPreviewStroke!=null,
+                                    "normal contact has both real-time and fallback previews");
+                                beforeExit=rangeOut;beforeCancel=cancel;
+                                Send(0,currentInk,new(90,55),entering:0);
+                                continuation=()=>
+                                {
+                                    Require(rangeOut==beforeExit+1&&cancel==beforeCancel+1,
+                                        "incomplete ink contact ends its range exactly once");
+                                    Require(!preview.HasActiveSessions&&renderer.CurrentPreviewStroke==null,
+                                        "incomplete ink contact discards both previews");
+                                    Require(currentInk.Strokes.Count==strokes,
+                                        "cancellation never commits the incomplete stroke");
+                                    device+=100;Send(0,currentInk,new(20,160));Send(1,currentInk,new(20,160));
+                                    Send(2,currentInk,new(20,160),1,.3f);Send(3,currentInk,new(110,165),1,.7f);
+                                    Send(4,currentInk,new(180,165));
+                                    Require(currentInk.Strokes.Count==strokes+1&&!preview.HasActiveSessions&&
+                                        renderer.CurrentPreviewStroke==null,"fresh stroke after cancellation commits once");
+                                    Finish();
+                                };
+                            };
                         };
                     }
                     continuation=Restored;

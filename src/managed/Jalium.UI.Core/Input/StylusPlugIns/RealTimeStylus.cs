@@ -357,6 +357,40 @@ public sealed class RealTimeStylus : IDisposable
         }
     }
 
+    internal Action? PrepareTabletCancellation(uint pointerId, StylusPointCollection points,
+        int timestamp, Func<UIElement, bool> retired)
+    {
+        StylusSession? session;
+        lock (_sessionsGate)
+            _sessions.Remove(pointerId, out session);
+        if (session?.Target is not { } target) return null;
+
+        var input = new RawStylusInput(pointerId, target, StylusInputAction.InAirMove,
+            points, timestamp, true, false, session.Inverted, false, false);
+        input.Cancel();
+        // Snapshot the old branch before capture or routed-event callbacks can
+        // change it. Cancellation must also reach inactive plug-ins so hidden
+        // or disabled ink surfaces can discard their in-flight previews.
+        var plugIns = BuildPathFromRootToTarget(target).AsEnumerable().Reverse()
+            .SelectMany(element => (element.GetStylusPlugIns(createIfMissing: false)?.Snapshot() ?? [])
+                .Select(plugIn => (Element: element, PlugIn: plugIn)))
+            .ToArray();
+        return () =>
+        {
+            Exception? failure = null;
+            foreach (var plugIn in plugIns)
+            {
+                // A reentrant packet may already own a shared ancestor. The
+                // old branch still needs cleanup when the new target differs.
+                if (!retired(plugIn.Element)) continue;
+                try { plugIn.PlugIn.InvokeStylusLeave(input, confirmed: true); }
+                catch (Exception exception) { failure ??= exception; }
+            }
+            if (failure != null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+        };
+    }
+
     public void CancelSession(uint pointerId)
     {
         lock (_sessionsGate)
