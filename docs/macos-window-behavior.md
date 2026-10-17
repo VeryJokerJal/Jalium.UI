@@ -4,6 +4,71 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v260：独立 AX 客户端确认原生保存与多选面板
+
+桌面客户端仍未连接，但本轮独立系统 AX 进程取得 trusted=true，并从另一个 PID
+读取自有 AppKit 窗口、写入中文／emoji、执行按钮 AXPress。初次参考宿主在动作内
+立即退出，动作已执行但调用返回 CannotComplete；延后退出的参考对照完整成功。
+验证器对传输错误不重放动作，以宿主结果和客户端应答分别判定。
+
+新增可重复的 opt-in 入口，验证应用只发布就绪状态；独立进程通过
+AXUIElementCreateApplication 查找该应用的真实 sheet、OKButton／CancelButton、
+文件名字段和文件列表。保存重试使用 AXValue 写入并读回文件名；多选使用
+AXSelectedRows 设置并核对真实行集合，再执行原生按钮 AXPress。没有直调
+FileOk／ValidateUrl，没有发送 NSEvent Return，也没有系统键鼠注入。
+
+| 两种标题栏分别覆盖的场景 | 核对行为 |
+| --- | --- |
+| 保存确认 | FileOk 看到当前 Unicode 文件名，ShowDialog=true，面板解除，选择路径不创建文件。 |
+| 保存校验取消后重试 | 第一次 FileOk.Cancel 保持同一 sheet、恢复原对话框发布状态；外部修改文件名，第二次只接受新名字。 |
+| 多选打开 | 外部选择两个真实自有文件，读回行集合；FileOk 与返回的 FileNames 恰好包含所选两项。 |
+| 多选校验取消后重试 | 第一次取消保留面板并恢复原发布状态；换选另一组文件，最终集合与新选区一致，不混入已移除的旧文件。 |
+| 保存原生取消并重开 | AXPress Cancel 返回 false、不触发 FileOk、面板解除；同一对话框对象再次显示并确认。 |
+| 多选原生取消并重开 | 取消保留原 FileNames／FileName／FilterIndex，同一对象重开后选择并接受文件。 |
+
+最终两份完整源码分别构建八库与匹配应用，串行使用同一验证器：
+
+| 最终结果 | PR 历史 | 本地 master 历史 |
+| --- | --- | --- |
+| 外部 AX 接受场景 | **12/12，124 条宿主断言，36.229 秒** | **12/12，124 条，33.839 秒** |
+| 实际外部动作 | 各 **20 次** AXPress，含 4 次 Cancel；16 次 FileOk；8 次多选行设置及核对、2 次文件名写入及读回 | 相同 |
+| 身份及负载 | 20 次均为不同的客户端／宿主 PID；八库实际加载路径、Mach-O UUID／代码数据段和三份程序集匹配；平台原有 **98 个** C 导出保持 | 相同 |
+| 系统前台观测 | **17/20** 阶段 PID、active／running 均匹配；case 8 重开、case 9 两阶段前台为另一个 PID 5344，active=false | **20/20** 匹配 |
+
+PR 的三个后台阶段仍完成 AX 动作与宿主协议，但不作为前台交互通过的证据；没有
+重跑已通过的场景来覆盖这些观察。owner 的文本修改和 Focus 检查属于进程内 SDK，
+不是物理键盘验证。保留原始 **8 秒**宿主总预算及 **25 秒**启动／退出预算；
+首个面板已失败时立即停止，避免错误后再打开新的面板。缺少系统 AX 授权不弹出
+授权请求，也不将后续未执行场景计为通过。
+
+可复验入口（先构建与源码匹配的 HostSmoke.app）：
+
+```sh
+python3 eng/apple/verify-file-panel-acceptance.py --app /path/to/Jalium.UI.MacOS.HostSmoke.app
+```
+
+可用 --cases 指定 0–11，--results-file 保存 JSON。验证器在专属本机缓存里复制应用、
+编译 AX 客户端并串行运行，结束时移除临时应用、文件和日志；本轮两次完整运行均
+确认其临时根目录已消失。多选当前验证原生列表／表格行模式，未覆盖图标／分栏
+视图。只读树结构探针未执行确认，按原预算超时，单独保留为未完成接受的检查。
+
+本轮仅新增验证入口、驱动与本文，**产品原生和托管运行时代码未改变**。所有原生
+源文件匹配各自前置提交，未重跑完整托管／原生／ASAN 套件。原有 34 处差异的路径
+和精确增删内容保持；工作区 owner-modal-loop 实验继续留作未提交工作。提交中的
+panel 模态循环已通过此次保存、多选和两类取消重试，先前“默认按钮 getter=nil”及
+自有 Return 的四次失败不再被当作原生确认不工作的证明，也不据此采用该实验。
+
+前置 a0d513c7 的固定 Xcode 26.6 媒体 CI 已通过 **47/47** 与六份静态库构建，
+包括 XROS 26.5；Window CI **36/36 分组、529.25 秒**，显示通知 **34/34**，正式
+宿主 PID 24533 有 FINISHED／EXIT result=0。图像、Metal、D3D12 同头 CI 已通过；
+完整 Apple 包最后观察仍在构建，后续提交 CI 独立跟进。
+
+这是外部 AX 驱动的真实原生面板动作，不是物理输入、VoiceOver 或桌面截图。
+更广无障碍通知、真实键鼠／IME、菜单导航、多屏／Spaces、Intel／最低系统和
+Writing Tools 服务 UI 等仍保留各自待验范围；完整 macOS／Window 目标继续进行。
+接口含义参考 [Apple AXIsProcessTrusted](https://developer.apple.com/documentation/applicationservices/1460720-axisprocesstrusted)
+与 [AXUIElementPerformAction](https://developer.apple.com/documentation/applicationservices/1462091-axuielementperformaction)。
+
 ## v259：Apple 包构建的 visionOS 媒体 API 兼容性
 
 [Apple CI 39022075017](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/39022075017/job/117365717199)
