@@ -66,7 +66,7 @@ internal static class WindowTabletChecks
             if(item.Kind=="owner"){area.Children.Add(subject);Canvas.SetLeft(subject,10);Canvas.SetTop(subject,8);}
             var panel=new StackPanel{Margin=new Thickness(16),Spacing=8};panel.Children.Add(new TextBlock{Text="窗口与数位板",FontSize=18});panel.Children.Add(area);
             panel.Children.Add(new TextBlock{Text="检查笔事件、单次点击、墨迹压力及取消恢复。",TextWrapping=TextWrapping.Wrap});
-            owner=new Window{Title="Jalium Window v248 · 数位板",Width=680,Height=620,MinWidth=560,MinHeight=560,
+            owner=new Window{Title="Jalium Window v249 · 数位板",Width=680,Height=620,MinWidth=560,MinHeight=560,
                 TitleBarStyle=item.Custom?WindowTitleBarStyle.Custom:WindowTitleBarStyle.Native,Content=panel};
             Application.Current!.MainWindow=owner;owner.Show();owner.UpdateLayout();
             if(item.Kind!="owner")
@@ -152,12 +152,119 @@ internal static class WindowTabletChecks
                 status.Text=$"笔点击 {clicks} 次 · 墨迹 {currentInk.Strokes.Count} 条 · 压力 {point.Properties.Pressure:F3}";
                 void Finish()
                 {
-                currentOwner.Width=currentOwner.MinWidth;currentOwner.Height=currentOwner.MinHeight;currentOwner.UpdateLayout();currentSource.UpdateLayout();
-                Require(currentOwner.ActualWidth>=currentOwner.MinWidth&&currentOwner.ActualHeight>=currentOwner.MinHeight,"minimum window remains usable");
-                var dpi=currentSource.DpiScale;var bitmap=MacOSWritingToolsBitmapCapture.Capture((int)Math.Ceiling(currentSource.ActualWidth*dpi),(int)Math.Ceiling(currentSource.ActualHeight*dpi),dpi,dc=>currentSource.Render(dc),()=>currentSource.Handle!=0);
-                Require(bitmap!=null,"real backend renders resulting ink and controls");var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap!));using(var file=File.Create(Path.Combine(output,$"{completed}-tablet.png")))encoder.Save(file);
-                states.Add(new{label,clicks,penDown,penUp,mouseDown,mouseUp,rangeIn,rangeOut,cancel,strokes=currentInk.Strokes.Count});
-                completed++;
+                    currentOwner.Width=currentOwner.MinWidth;
+                    currentOwner.Height=currentOwner.MinHeight;
+                    currentOwner.UpdateLayout();
+                    currentSource.UpdateLayout();
+                    wait.Restart();
+                    var currentPopup=popup;
+                    var currentSubject=subject!;
+                    var editorText=currentEdit.Text;
+                    int selectionStart=currentEdit.SelectionStart,selectionLength=currentEdit.SelectionLength;
+                    CoreGraphics.CGPoint Screen(UIElement element,Point point,Window physical)
+                    {
+                        var local=element.TranslatePoint(point,physical);
+                        var view=ObjCRuntime.Runtime.GetNSObject<NSView>(physical.Handle)!;
+                        var windowPoint=view.ConvertPointToView(new CoreGraphics.CGPoint(local.X,local.Y),null);
+                        return view.Window!.ConvertPointToScreen(windowPoint);
+                    }
+                    void VerifyAnchor(string phase)
+                    {
+                        var anchor=(FrameworkElement)currentPopup!.PlacementTarget!;
+                        var expected=Screen(anchor,new Point(anchor.ActualWidth,0),currentOwner);
+                        var actual=Screen(currentSubject,new Point(),currentSource);
+                        states.Add(new{label,phase,expectedX=(double)expected.X,expectedY=(double)expected.Y,
+                            actualX=(double)actual.X,actualY=(double)actual.Y});
+                        Require(Math.Abs((double)(expected.X-actual.X))<=1&&Math.Abs((double)(expected.Y-actual.Y))<=1,
+                            "popup screen origin follows the visible anchor after "+phase);
+                        Require(ReferenceEquals(Keyboard.FocusedElement,currentEdit)&&currentEdit.Text==editorText&&
+                            currentEdit.SelectionStart==selectionStart&&currentEdit.SelectionLength==selectionLength,
+                            "popup layout preserves editor focus text and selection");
+                    }
+                    void AwaitLayout(Action next)
+                    {
+                        var root=currentSubject.VisualParent as FrameworkElement;
+                        bool pending=currentPopup!=null&&typeof(Popup).GetField("_macOSOwnerCheckToken",
+                            System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.GetValue(currentPopup)!=null;
+                        bool ready=currentOwner.IsMeasureValid&&currentOwner.IsArrangeValid&&
+                            currentSource.IsMeasureValid&&currentSource.IsArrangeValid&&
+                            currentSubject.IsMeasureValid&&currentSubject.IsArrangeValid&&
+                            root is {IsMeasureValid:true,IsArrangeValid:true}&&!pending;
+                        if(ready){next();return;}
+                        if(wait.Elapsed.TotalSeconds>=10)throw new InvalidOperationException("popup layout did not settle within the existing readiness budget");
+                        continuation=()=>AwaitLayout(next);
+                    }
+                    void Capture()
+                    {
+                        status.Text=$"笔点击 {clicks} 次 · 墨迹 {currentInk.Strokes.Count} 条 · 压力 {point.Properties.Pressure:F3}";
+                        currentSource.UpdateLayout();
+                        if(Environment.GetEnvironmentVariable("JALIUM_POPUP_LAYOUT_OBSERVE")=="1"&&
+                            label=="custom=True,kind=overlay"&&!File.Exists(Path.Combine(output,"continue.flag")))
+                        {
+                            string ready=Path.Combine(output,"observe-ready.json");
+                            if(!File.Exists(ready))
+                            {
+                                var view=ObjCRuntime.Runtime.GetNSObject<NSView>(currentOwner.Handle)!;
+                                File.WriteAllText(ready,JsonSerializer.Serialize(new{label,pid=Environment.ProcessId,
+                                    windowTitle=currentOwner.Title,windowNumber=(long)view.Window!.WindowNumber,
+                                    ownerWidth=currentOwner.ActualWidth,ownerHeight=currentOwner.ActualHeight}));
+                            }
+                            continuation=Capture;return;
+                        }
+                        var dpi=currentSource.DpiScale;
+                        var bitmap=MacOSWritingToolsBitmapCapture.Capture(
+                            (int)Math.Ceiling(currentSource.ActualWidth*dpi),(int)Math.Ceiling(currentSource.ActualHeight*dpi),
+                            dpi,dc=>currentSource.Render(dc),()=>currentSource.Handle!=0);
+                        Require(bitmap!=null,"real backend renders resulting ink and controls");
+                        var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap!));
+                        using(var file=File.Create(Path.Combine(output,$"{completed}-tablet.png")))encoder.Save(file);
+                        states.Add(new{label,clicks,penDown,penUp,mouseDown,mouseUp,rangeIn,rangeOut,cancel,strokes=currentInk.Strokes.Count});
+                        completed++;
+                    }
+                    continuation=()=>AwaitLayout(()=>
+                    {
+                        Require(currentOwner.ActualWidth>=currentOwner.MinWidth&&currentOwner.ActualHeight>=currentOwner.MinHeight,
+                            "minimum window remains usable");
+                        if(currentPopup?.ShouldConstrainToRootBounds==true)
+                        {
+                            var origin=currentSubject.TranslatePoint(new Point(),currentOwner);
+                            states.Add(new{label,phase="minimum-settled",x=origin.X,y=origin.Y,
+                                width=currentSubject.ActualWidth,height=currentSubject.ActualHeight,
+                                ownerWidth=currentOwner.ActualWidth,ownerHeight=currentOwner.ActualHeight,
+                                rootLeft=Canvas.GetLeft((UIElement)currentSubject.VisualParent!),
+                                rootWidth=((FrameworkElement)currentSubject.VisualParent!).Width,
+                                rootActualWidth=((FrameworkElement)currentSubject.VisualParent!).ActualWidth,
+                                childX=currentSubject.VisualBounds.X,childY=currentSubject.VisualBounds.Y});
+                            Require(origin.X>=-.01&&origin.Y>=-.01&&
+                                origin.X+currentSubject.ActualWidth<=currentOwner.ActualWidth+.01&&
+                                origin.Y+currentSubject.ActualHeight<=currentOwner.ActualHeight+.01,
+                                "constrained popup stays inside the settled minimum window");
+                        }
+                        if(currentPopup?.PlacementTarget is not FrameworkElement anchor)
+                        {Capture();return;}
+                        Canvas.SetLeft(anchor,-32);Canvas.SetTop(anchor,100);
+                        currentOwner.UpdateLayout();wait.Restart();
+                        continuation=()=>AwaitLayout(()=>
+                        {
+                            VerifyAnchor("anchor layout movement");
+                            anchor.RenderTransform=new TranslateTransform(18,12);
+                            currentOwner.UpdateLayout();wait.Restart();
+                            continuation=()=>AwaitLayout(()=>
+                            {
+                                VerifyAnchor("anchor render transform");
+                                int before=clicks;
+                                var edge=new Point(currentButton.ActualWidth-2,currentButton.ActualHeight/2);
+                                Send(1,currentButton,edge);
+                                Send(2,currentButton,edge,1,.45f);
+                                Send(4,currentButton,edge);
+                                Require(clicks==before+1&&!currentButton.IsPressed,
+                                    "the moved popup right edge remains hit testable and clicks once");
+                                Require(Mouse.Captured is null,"popup click releases its mouse capture");
+                                wait.Restart();
+                                continuation=()=>AwaitLayout(Capture);
+                            });
+                        });
+                    });
                 }
                 continuation=()=>
                 {

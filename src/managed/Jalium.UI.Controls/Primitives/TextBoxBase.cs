@@ -2491,6 +2491,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
                 if ((e.KeyboardModifiers & ModifierKeys.Shift) != 0)
                 {
+                    _isWordSelecting = false;
                     ExtendSelection(newCaretIndex);
                 }
                 else
@@ -2512,9 +2513,11 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
                         OnSelectionChanged();
                     }
 
-                    _isSelecting = true;
                 }
 
+                // Shift-click also starts a selection drag. Its matching Up
+                // must release the capture acquired above.
+                _isSelecting = true;
                 ResetCaretBlink();
             }
 

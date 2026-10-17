@@ -966,54 +966,70 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         UpdatePosition();
     }
 
+    private long _placementUpdateRevision;
+
     /// <summary>
     /// Updates the position of the popup.
     /// </summary>
     public void UpdatePosition()
     {
-        if (Child == null || _popupRoot == null || _parentWindow == null)
-            return;
+        var root = _popupRoot;
+        var parent = _parentWindow;
+        if (Child == null || root == null || parent == null) return;
+        long update = unchecked(++_placementUpdateRevision);
+        long ownerRevision = _macOSOwnerRevision;
+        bool Current() => IsOpen && update == _placementUpdateRevision &&
+            ownerRevision == _macOSOwnerRevision && ReferenceEquals(root, _popupRoot) &&
+            ReferenceEquals(parent, _parentWindow);
 
-        var popupSize = new Size(_popupRoot.Width, _popupRoot.Height);
+        var popupSize = new Size(root.Width, root.Height);
         var windowLocalPos = CalculateWindowLocalPosition(popupSize);
-        var windowSize = new Size(_parentWindow.ActualWidth, _parentWindow.ActualHeight);
+        if (!Current()) return;
+        var windowSize = new Size(parent.ActualWidth, parent.ActualHeight);
         var supportsExternalPopup = Platform.PlatformFactory.IsWindows || Platform.PlatformFactory.IsLinux ||
             OperatingSystem.IsMacOS() && CanCreateMacOSPopupHost;
+        if (!Current()) return;
         var shouldPromote = ResolveHostPlacement(
             windowLocalPos, popupSize, windowSize, supportsExternalPopup, out var overlayPos);
+        // Custom placement and screen queries can close, retarget or reopen
+        // this Popup. Never apply an old size/position to the replacement root.
+        if (!Current()) return;
 
-        if (_isUsingExternalWindow && _macOSPopupWindow != null)
+        if (_isUsingExternalWindow && _macOSPopupWindow is { } macHost)
         {
             var screen = ApplyScreenAutoFlip(WindowLocalToScreen(windowLocalPos), popupSize);
-            var scale = _parentWindow.DpiScale;
-            _macOSPopupWindow.MoveTo(new Point(screen.X / scale, screen.Y / scale), popupSize);
+            var scale = parent.DpiScale;
+            if (!Current() || !ReferenceEquals(macHost, _macOSPopupWindow)) return;
+            macHost.MoveTo(new Point(screen.X / scale, screen.Y / scale), popupSize);
         }
-        else if (_isUsingExternalWindow && _popupWindow != null)
+        else if (_isUsingExternalWindow && _popupWindow is { } nativeHost)
         {
             var screenPos = WindowLocalToScreen(windowLocalPos);
-            // Keep this symmetric with OpenAsExternalWindow: Linux popup
-            // coordinates are owner-relative (and Wayland compositor
-            // constrained), while Win32 receives global screen coordinates.
+            // Linux popup coordinates remain owner-relative; Win32 receives
+            // global coordinates with screen work-area constraints applied.
             if (Platform.PlatformFactory.IsWindows)
                 screenPos = ApplyScreenAutoFlip(screenPos, popupSize);
-            var dpiScale = _parentWindow!.DpiScale;
-            _popupWindow.MoveTo(
+            var dpiScale = parent.DpiScale;
+            if (!Current() || !ReferenceEquals(nativeHost, _popupWindow)) return;
+            nativeHost.MoveTo(
                 ToNativeHostOffset(screenPos.X), ToNativeHostOffset(screenPos.Y),
                 ToNativeHostSize(popupSize.Width, dpiScale), ToNativeHostSize(popupSize.Height, dpiScale));
         }
         else if (shouldPromote)
         {
-            // Content can grow after opening. Promote an existing overlay as soon
-            // as its requested bounds cross the owner instead of clamping it back.
-            _overlayLayer?.RemovePopupRoot(_popupRoot);
+            _overlayLayer?.RemovePopupRoot(root);
+            if (!Current()) return;
             _overlayLayer = null;
             OpenAsExternalWindow(windowLocalPos, popupSize);
         }
-        else if (_overlayLayer != null)
+        else if (_overlayLayer is { } layer)
         {
-            Canvas.SetLeft(_popupRoot, overlayPos.X);
-            Canvas.SetTop(_popupRoot, overlayPos.Y);
-            _overlayLayer.InvalidateVisual();
+            if (Canvas.GetLeft(root) == overlayPos.X && Canvas.GetTop(root) == overlayPos.Y) return;
+            Canvas.SetLeft(root, overlayPos.X);
+            if (!Current()) return;
+            Canvas.SetTop(root, overlayPos.Y);
+            if (!Current()) return;
+            layer.InvalidateVisual();
             RequestHostRender();
         }
     }
@@ -1723,6 +1739,18 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
 
     private Rect GetPlacementBounds(UIElement target)
     {
+        if (OperatingSystem.IsMacOS() && _parentWindow != null)
+        {
+            // The popup and its anchor share the physical Window, including
+            // anchors inside an independent native popup. Use the same affine
+            // transform as rendering so scale, rotation, RTL and animation
+            // offsets place the popup at the visible anchor.
+            var local = PlacementRectangle;
+            if (local.IsEmpty)
+                local = new Rect(new Point(), target.RenderSize);
+            if (target.TransformToVisual(_parentWindow) is { } transform)
+                return transform.TransformBounds(local);
+        }
         var targetBounds = GetElementWindowBounds(target);
         var rectangle = PlacementRectangle;
         if (rectangle.IsEmpty)

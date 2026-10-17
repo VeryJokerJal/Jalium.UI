@@ -12,6 +12,12 @@ public partial class Popup
     private long _macOSOwnerRevision;
     private object? _macOSOwnerCheckToken;
     private bool _macOSOwnerPositionDirty;
+    private bool _macOSOwnerLayoutDirty;
+    private long _macOSOwnerLayoutRevision;
+    private MacOSPopupPlacementLayout? _macOSOwnerPlacementLayout;
+
+    private readonly record struct MacOSPopupPlacementLayout(
+        Rect AnchorBounds, Size OwnerSize, Size PopupSize, double DpiScale);
 
     private void OnMacOSPlacementTargetChanged()
     {
@@ -62,6 +68,9 @@ public partial class Popup
         unchecked { _macOSOwnerRevision++; }
         _macOSOwnerCheckToken = null;
         _macOSOwnerPositionDirty = false;
+        _macOSOwnerLayoutDirty = false;
+        _macOSOwnerPlacementLayout = null;
+        unchecked { _macOSOwnerLayoutRevision++; }
         foreach (var element in _macOSObservedAncestors.OfType<UIElement>())
         {
             element.IsEnabledChanged -= OnMacOSPopupOwnerStateChanged;
@@ -116,7 +125,12 @@ public partial class Popup
     }
 
     private void OnMacOSPopupOwnerStateChanged(object? sender, DependencyPropertyChangedEventArgs e) => QueueMacOSPopupOwnerCheck();
-    private void OnMacOSPopupOwnerLayoutUpdated(object? sender, EventArgs e) => QueueMacOSPopupOwnerCheck();
+    private void OnMacOSPopupOwnerLayoutUpdated(object? sender, EventArgs e)
+    {
+        _macOSOwnerLayoutDirty = true;
+        unchecked { _macOSOwnerLayoutRevision++; }
+        QueueMacOSPopupOwnerCheck();
+    }
     private void OnMacOSPopupOwnerSubtreeDetached(UIElement subtree)
     {
         if (!_macOSObservedAncestors.Contains(subtree)) return;
@@ -166,7 +180,26 @@ public partial class Popup
                 SetCurrentValue(IsOpenProperty, false);
                 return;
             }
+            if (revision != _macOSOwnerRevision || !ReferenceEquals(root, _popupRoot) ||
+                !ReferenceEquals(owner, _macOSObservedOwner)) return;
             CaptureMacOSPopupOwnerAncestors();
+            if (_macOSOwnerLayoutDirty)
+            {
+                _macOSOwnerLayoutDirty = false;
+                var layoutRevision = _macOSOwnerLayoutRevision;
+                var placement = new MacOSPopupPlacementLayout(
+                    GetPlacementBounds(PlacementTarget ?? this),
+                    new Size(owner!.ActualWidth, owner.ActualHeight),
+                    new Size(root.Width, root.Height), owner.DpiScale);
+                // Transform/placement queries may run application code. A newer
+                // layout or reopened popup owns its own pending notification.
+                if (revision != _macOSOwnerRevision || !ReferenceEquals(root, _popupRoot) ||
+                    !ReferenceEquals(owner, _macOSObservedOwner) || !IsOpen ||
+                    layoutRevision != _macOSOwnerLayoutRevision) return;
+                if (_macOSOwnerPlacementLayout != placement)
+                    _macOSOwnerPositionDirty = true;
+                _macOSOwnerPlacementLayout = placement;
+            }
             if (_macOSOwnerPositionDirty)
             {
                 _macOSOwnerPositionDirty = false;
