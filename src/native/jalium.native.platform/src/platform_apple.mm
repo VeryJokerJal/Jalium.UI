@@ -1871,6 +1871,59 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
 @property(nonatomic, weak) NSView* responderFocusView;
 @property(nonatomic) BOOL responderFocusState;
 @end
+
+static BOOL PerformNativeSheetEditingEquivalent(JaliumAppleWindow* owner, NSWindow* sheet, NSEvent* event)
+{
+    JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = owner;
+    if (event.type != NSEventTypeKeyDown || !(event.modifierFlags & NSEventModifierFlagCommand) ||
+        (event.modifierFlags & (NSEventModifierFlagControl | NSEventModifierFlagOption))) return NO;
+    NSString* key = event.charactersIgnoringModifiers.lowercaseString;
+    bool shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+    SEL action = nullptr;
+    if ([key isEqualToString:@"z"]) action = shift ? @selector(redo:) : @selector(undo:);
+    else if (!shift) {
+        if ([key isEqualToString:@"a"]) action = @selector(selectAll:);
+        else if ([key isEqualToString:@"c"]) action = @selector(copy:);
+        else if ([key isEqualToString:@"x"]) action = @selector(cut:);
+        else if ([key isEqualToString:@"v"]) action = @selector(paste:);
+    }
+    if (!action) return NO;
+    NSResponder* firstResponder = sheet.firstResponder;
+    NSResponder* target = firstResponder;
+    while (target && target != sheet && ![target respondsToSelector:action]) target = target.nextResponder;
+    if (!target || target == sheet) return NO;
+    NSWindow* targetWindow = [target isKindOfClass:NSView.class] ? [(NSView*)target window] :
+        [target isKindOfClass:NSWindow.class] ? (NSWindow*)target : nil;
+    if (targetWindow != sheet || [targetWindow isKindOfClass:JaliumAppleWindow.class]) return NO;
+    JaliumPlatformWindow* platform = owner.jaliumOwner;
+    auto current = [&] {
+        if (!IsLiveWindow(platform, owner) || !platform->enabled) return false;
+        NSWindow* leaf = owner.attachedSheet;
+        while (leaf.attachedSheet) leaf = leaf.attachedSheet;
+        if (leaf != sheet || sheet.firstResponder != firstResponder) return false;
+        NSResponder* responder = firstResponder;
+        while (responder && responder != sheet && responder != target) responder = responder.nextResponder;
+        return responder == target && (![target isKindOfClass:NSView.class] || [(NSView*)target window] == sheet);
+    };
+    if (!current()) return YES;
+    // Bound owner events bypass NSApplication's menu pass, and the panel need
+    // not be the application's key window. Resolve only its native responder
+    // chain and preserve AppKit's editing validation; never reach the document
+    // or file commands behind the panel as a fallback.
+    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:@"" action:action keyEquivalent:key];
+    item.target = target;
+    BOOL allowed = YES;
+    if ([target respondsToSelector:@selector(validateMenuItem:)])
+        allowed = [(id<NSMenuItemValidation>)target validateMenuItem:item];
+    else if ([target respondsToSelector:@selector(validateUserInterfaceItem:)])
+        allowed = [(id<NSUserInterfaceValidations>)target validateUserInterfaceItem:item];
+    // Validation may replace focus, detach the sheet, disable or destroy the
+    // owner. Retire this key rather than executing or rerouting its old action.
+    if (!current()) return YES;
+    if (!allowed) return NO;
+    return [NSApp sendAction:action to:target from:sheet];
+}
+
 @implementation JaliumAppleWindow
 - (BOOL)makeFirstResponder:(NSResponder*)responder {
     JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
@@ -2309,11 +2362,13 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
         // Keep its keyboard session inside AppKit rather than dispatching to
         // the document responder behind it. Mouse coordinates stay untouched.
         NSWindow* sheet = self.attachedSheet;
+        while (sheet.attachedSheet) sheet = sheet.attachedSheet;
         NSEvent* key = [NSEvent keyEventWithType:event.type location:event.locationInWindow
             modifierFlags:event.modifierFlags timestamp:event.timestamp windowNumber:sheet.windowNumber
             context:nil characters:event.type == NSEventTypeFlagsChanged ? @"" : event.characters
             charactersIgnoringModifiers:event.type == NSEventTypeFlagsChanged ? @"" : event.charactersIgnoringModifiers
             isARepeat:event.type == NSEventTypeKeyDown && event.isARepeat keyCode:event.keyCode];
+        if (PerformNativeSheetEditingEquivalent(self, sheet, key)) return;
         [sheet sendEvent:key];
         return;
     }
@@ -2323,11 +2378,12 @@ static NSSize ConstrainAccessibilityFrameSize(NSWindow* window, NSSize requested
     if (!_jaliumOwner || !_jaliumOwner->enabled) return NO;
     if (self.attachedSheet) {
         NSWindow* sheet = self.attachedSheet;
+        while (sheet.attachedSheet) sheet = sheet.attachedSheet;
         NSEvent* key = [NSEvent keyEventWithType:event.type location:event.locationInWindow
             modifierFlags:event.modifierFlags timestamp:event.timestamp windowNumber:sheet.windowNumber
             context:nil characters:event.characters charactersIgnoringModifiers:event.charactersIgnoringModifiers
             isARepeat:event.isARepeat keyCode:event.keyCode];
-        return [sheet performKeyEquivalent:key];
+        return [sheet performKeyEquivalent:key] || PerformNativeSheetEditingEquivalent(self, sheet, key);
     }
     NSString* key = event.charactersIgnoringModifiers.lowercaseString;
     NSUInteger flags = event.modifierFlags;

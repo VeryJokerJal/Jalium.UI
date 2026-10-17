@@ -84,7 +84,7 @@ internal static class MacOSFileDialogs
             currentDelegate?.ResetSelection();
             // A save panel appends its first content type even with AllowsOtherFileTypes.
             // The delegate owns AddExtension and runs before AppKit's overwrite prompt.
-            UTType[] types = options.Save ? [] : filters.Extensions.Select(extension => UTType.CreateFromExtension(extension))
+            UTType[] types = options.Save ? [] : filters.NativeExtensions.Select(extension => UTType.CreateFromExtension(extension))
                 .Where(type => type != null).Cast<UTType>().ToArray();
             panel.AllowedContentTypes = types;
             panel.AllowsOtherFileTypes = options.Save || types.Length == 0;
@@ -342,7 +342,7 @@ internal static class MacOSFileDialogs
             }
             // AppKit validates each selected URL. The last selected path is the
             // single confirmation point, independent of callback ordering.
-            if (path != paths[^1]) return true;
+            if (!FileDialogNavigation.IsSamePath(path, paths[^1])) return true;
             try
             {
                 options.ReadOnlyChecked = readOnlyChecked();

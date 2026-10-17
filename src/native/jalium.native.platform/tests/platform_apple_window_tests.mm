@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <thread>
 #include <vector>
 #include "platform_apple_foreground_validation.h"
 #include "platform_apple_window_validation_app.h"
@@ -52,6 +53,18 @@ static void Capture(const JaliumPlatformEvent* event, void* context)
     [super sendEvent:event];
 }
 - (void)resetKeyEvents { _equivalents = 0; _keyEvents = 0; }
+@end
+
+@interface JaliumWindowTestEditingView : NSView <NSMenuItemValidation, NSUserInterfaceValidations>
+@property(nonatomic) BOOL menuAllowed;
+@property(nonatomic) NSUInteger selections;
+@property(nonatomic, copy) void (^validationAction)(void);
+@end
+@implementation JaliumWindowTestEditingView
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)validateMenuItem:(NSMenuItem*)item { if (_validationAction) _validationAction(); return _menuAllowed; }
+- (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item { return !_menuAllowed; }
+- (void)selectAll:(id)sender { ++_selections; }
 @end
 
 struct TextDocument {
@@ -937,6 +950,49 @@ static bool CheckSheetKeyboardRouting(uint32_t style)
             type == NSEventTypeKeyDown ? "sheet responder keyDown" : type == NSEventTypeKeyUp ?
                 "sheet responder keyUp" : "sheet responder modifier event");
     }
+    // File panels can attach another sheet for Go to Folder. Bound owner input
+    // must reach that active leaf rather than the disabled browser beneath it.
+    auto* nested = [[JaliumWindowTestKeyboardSheet alloc] initWithContentRect:NSMakeRect(0, 0, 240, 120)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    [sheet beginSheet:nested completionHandler:nil];
+    Check(WaitUntil([&] { return sheet.attachedSheet == nested; }), "keyboard fixture attaches a nested sheet");
+    for (NSString* text : @[@"a", @"v", @"\x1b"]) {
+        events.clear(); [sheet resetKeyEvents]; [nested resetKeyEvents];
+        NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:[text isEqualToString:@"\x1b"] ? 0 : NSEventModifierFlagCommand
+            timestamp:0 windowNumber:native.windowNumber context:nil characters:text
+            charactersIgnoringModifiers:text isARepeat:NO keyCode:0];
+        verify([native performKeyEquivalent:event] && nested.equivalents == 1 &&
+            nested.lastWindowNumber == nested.windowNumber && sheet.equivalents == 0 && events.empty(),
+            "nested sheet receives its key equivalent");
+    }
+    for (NSEventType type : {NSEventTypeKeyDown, NSEventTypeKeyUp, NSEventTypeFlagsChanged}) {
+        NSEvent* event = [NSEvent keyEventWithType:type location:NSZeroPoint modifierFlags:0
+            timestamp:0 windowNumber:native.windowNumber context:nil characters:@"a"
+            charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
+        events.clear(); [sheet resetKeyEvents]; [nested resetKeyEvents];
+        [native sendEvent:event];
+        verify(nested.keyEvents == 1 && nested.lastKeyType == type &&
+            nested.lastWindowNumber == nested.windowNumber && sheet.keyEvents == 0 && events.empty(),
+            "nested sheet receives owner keyboard input");
+        events.clear(); [sheet resetKeyEvents]; [nested resetKeyEvents];
+        if (type == NSEventTypeKeyDown) [view keyDown:event];
+        else if (type == NSEventTypeKeyUp) [view keyUp:event];
+        else [view flagsChanged:event];
+        verify(nested.keyEvents == 1 && nested.lastKeyType == type &&
+            nested.lastWindowNumber == nested.windowNumber && sheet.keyEvents == 0 && events.empty(),
+            "nested sheet receives responder keyboard input");
+    }
+    [sheet endSheet:nested returnCode:NSModalResponseCancel];
+    [nested orderOut:nil];
+    Check(WaitUntil([&] { return sheet.attachedSheet == nil; }), "keyboard fixture detaches nested sheet");
+    events.clear(); [sheet resetKeyEvents]; [nested resetKeyEvents];
+    NSEvent* parentKey = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:native.windowNumber
+        context:nil characters:@"a" charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
+    verify([native performKeyEquivalent:parentKey] && sheet.equivalents == 1 &&
+        sheet.lastWindowNumber == sheet.windowNumber && nested.equivalents == 0 && events.empty(),
+        "detached nested sheet restores parent input");
     NSEvent* close = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
         modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:native.windowNumber context:nil
         characters:@"w" charactersIgnoringModifiers:@"w" isARepeat:NO keyCode:13];
@@ -966,6 +1022,112 @@ static bool CheckSheetKeyboardRouting(uint32_t style)
     return passed;
 }
 
+static bool CheckSheetEditingRouting(uint32_t style)
+{
+    auto* window = Create(style);
+    NSView* view = View(window);
+    NSWindow* native = view.window;
+    std::vector<JaliumPlatformEvent> events;
+    jalium_window_set_event_callback(window, Capture, &events);
+    jalium_apple_window_show(window, 0);
+    NSMenu* previousMenu = NSApp.mainMenu;
+    NSMenu* menu = [NSMenu new];
+    NSMenuItem* edit = [[NSMenuItem alloc] initWithTitle:@"Edit" action:nil keyEquivalent:@""];
+    edit.submenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [edit.submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"]];
+    [menu addItem:edit];
+    NSApp.mainMenu = menu;
+    NSPanel* sheet = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 320, 180)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 60, 260, 28)];
+    field.stringValue = @"original";
+    [sheet.contentView addSubview:field];
+    [native beginSheet:sheet completionHandler:nil];
+    [sheet makeKeyAndOrderFront:nil];
+    Check([sheet makeFirstResponder:field], "native sheet text field accepts focus");
+    NSText* editor = field.currentEditor;
+    Check(editor != nil, "native sheet creates a field editor");
+    bool passed = true;
+    for (int route = 0; route != 3; ++route) {
+        [editor setSelectedRange:NSMakeRange(8, 0)];
+        events.clear();
+        NSEvent* key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:native.windowNumber
+            context:nil characters:@"a" charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
+        if (route == 0) [native sendEvent:key];
+        else if (route == 1) [view keyDown:key];
+        else [native performKeyEquivalent:key];
+        bool value = editor.selectedRange.length == 8 && [editor.string isEqualToString:@"original"] && events.empty();
+        passed = value && passed;
+        std::printf("%s %s native field Command-A route %d\n", value ? "PASS" : "FAIL",
+            style & JALIUM_WINDOW_STYLE_BORDERLESS ? "Custom" : "Native", route);
+    }
+    [sheet makeFirstResponder:nil];
+    [field removeFromSuperview];
+    auto* validated = [[JaliumWindowTestEditingView alloc] initWithFrame:NSMakeRect(0, 0, 200, 100)];
+    [sheet.contentView addSubview:validated];
+    Check([sheet makeFirstResponder:validated], "native validated editing view accepts focus");
+    for (BOOL menuAllowed : {YES, NO}) {
+        validated.menuAllowed = menuAllowed;
+        validated.selections = 0;
+        events.clear();
+        NSEvent* key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:native.windowNumber
+            context:nil characters:@"a" charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
+        BOOL handled = [native performKeyEquivalent:key];
+        bool value = handled == menuAllowed && validated.selections == (menuAllowed ? 1 : 0) && events.empty();
+        passed = value && passed;
+        std::printf("%s %s native editing menu validation wins (%d)\n", value ? "PASS" : "FAIL",
+            style & JALIUM_WINDOW_STYLE_BORDERLESS ? "Custom" : "Native", (int)menuAllowed);
+    }
+    auto* replacement = [[JaliumWindowTestEditingView alloc] initWithFrame:NSMakeRect(0, 0, 200, 100)];
+    replacement.menuAllowed = YES;
+    __weak JaliumWindowTestEditingView* weakValidated = validated;
+    [sheet.contentView addSubview:replacement];
+    for (int mutation = 0; mutation != 3; ++mutation) {
+        for (int route = 0; route != 3; ++route) {
+            validated.menuAllowed = YES;
+            validated.selections = replacement.selections = 0;
+            Check([sheet makeFirstResponder:validated], "reentrant editing fixture restores original responder");
+            __block NSUInteger validations = 0;
+            validated.validationAction = ^{
+                ++validations;
+                if (mutation == 0) [sheet makeFirstResponder:replacement];
+                else if (mutation == 1) [weakValidated removeFromSuperview];
+                else jalium_window_set_enabled(window, 0);
+            };
+            events.clear();
+            NSEvent* key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:native.windowNumber
+                context:nil characters:@"a" charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
+            if (route == 0) [native sendEvent:key];
+            else if (route == 1) [view keyDown:key];
+            else [native performKeyEquivalent:key];
+            // Disabling can legitimately publish window and responder focus loss.
+            // No keyboard, text, close or other document event may escape.
+            bool permittedEvents = mutation == 2 ? std::all_of(events.begin(), events.end(), [](const auto& event) {
+                return event.type == JALIUM_EVENT_FOCUS_LOST || event.type == JALIUM_EVENT_RESPONDER_FOCUS_LOST;
+            }) : events.empty();
+            bool value = validations == 1 && validated.selections == 0 && replacement.selections == 0 && permittedEvents;
+            if (mutation == 0) value = value && sheet.firstResponder == replacement;
+            else if (mutation == 1) value = value && validated.window == nil;
+            passed = value && passed;
+            std::printf("%s %s validation retires old editing action mutation %d route %d; old=%lu new=%lu validations=%lu\n",
+                value ? "PASS" : "FAIL", style & JALIUM_WINDOW_STYLE_BORDERLESS ? "Custom" : "Native", mutation, route,
+                (unsigned long)validated.selections, (unsigned long)replacement.selections, (unsigned long)validations);
+            validated.validationAction = nil;
+            if (mutation == 1) [sheet.contentView addSubview:validated];
+            if (mutation == 2) jalium_window_set_enabled(window, 1);
+        }
+    }
+    [native endSheet:sheet returnCode:NSModalResponseCancel];
+    [sheet orderOut:nil];
+    Check(WaitUntil([&] { return native.attachedSheet == nil; }), "text editing fixture detaches native sheet");
+    NSApp.mainMenu = previousMenu;
+    jalium_window_destroy(window);
+    return passed;
+}
+
 static int RunWindowContracts(int argc, char** argv)
 {
     bool propertiesOnly = argc == 2 && std::strcmp(argv[1], "--properties-only") == 0;
@@ -975,6 +1137,17 @@ static int RunWindowContracts(int argc, char** argv)
     Check(argc == 1 || propertiesOnly || menuTrackingOnly || documentMenuOnly || sheetKeyboardOnly, "supported validation mode");
     @autoreleasepool {
         Check(jalium_platform_init() == JALIUM_OK, "initialize platform");
+        int32_t workerPollResult = JALIUM_OK;
+        bool workerCreateRejected = false;
+        std::thread worker([&] {
+            workerPollResult = jalium_platform_poll_events();
+            JaliumWindowParams params{};
+            params.width = 640; params.height = 480;
+            workerCreateRejected = jalium_window_create(&params) == nullptr;
+        });
+        worker.join();
+        Check(workerPollResult == JALIUM_ERROR_INVALID_STATE, "event polling rejects a non-main thread");
+        Check(workerCreateRejected, "window creation rejects a non-main thread");
         bool foregroundHost = UsesForegroundValidationHost();
         bool automatedHost = UsesAutomatedWindowValidationHost();
         [NSApp setActivationPolicy:(foregroundHost || automatedHost) ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
@@ -994,6 +1167,9 @@ static int RunWindowContracts(int argc, char** argv)
         if (sheetKeyboardOnly) {
             bool passed = CheckSheetKeyboardRouting(regular);
             passed = CheckSheetKeyboardRouting(JALIUM_WINDOW_STYLE_BORDERLESS | JALIUM_WINDOW_STYLE_CLOSABLE |
+                JALIUM_WINDOW_STYLE_RESIZABLE | JALIUM_WINDOW_STYLE_MINIMIZABLE | JALIUM_WINDOW_STYLE_MAXIMIZABLE) && passed;
+            passed = CheckSheetEditingRouting(regular) && passed;
+            passed = CheckSheetEditingRouting(JALIUM_WINDOW_STYLE_BORDERLESS | JALIUM_WINDOW_STYLE_CLOSABLE |
                 JALIUM_WINDOW_STYLE_RESIZABLE | JALIUM_WINDOW_STYLE_MINIMIZABLE | JALIUM_WINDOW_STYLE_MAXIMIZABLE) && passed;
             jalium_platform_shutdown();
             return passed ? 0 : 1;
