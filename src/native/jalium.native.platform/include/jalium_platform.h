@@ -444,6 +444,23 @@ typedef struct JaliumPlatformEvent {
     };
 } JaliumPlatformEvent;
 
+/// Optional AppKit tablet input. The shared 72-byte event remains unchanged.
+/// mouseType is zero for native tablet/proximity packets; otherwise it carries
+/// the original mouse move/down/up type, driver button mapping and click count.
+/// A nonzero callback return consumes the original responder input. A current
+/// declined mouse subtype keeps its ordinary mouse fallback. A negative return
+/// consumes the packet and retires that tablet contact.
+typedef struct JaliumAppleTabletEvent {
+    uint32_t size;
+    JaliumPlatformEvent pointer;
+    int32_t mouseType;
+    int32_t mouseButton;
+    int32_t mouseClickCount;
+    uint32_t mouseButtonStates;
+} JaliumAppleTabletEvent;
+typedef int32_t (*JaliumAppleTabletCallback)(const JaliumAppleTabletEvent* event, void* userData);
+
+
 /// One representation supplied by a native drag source. The native backend
 /// copies both MIME names and bytes before this call returns or enters a nested
 /// protocol loop; callers retain ownership of every pointer.
@@ -583,6 +600,12 @@ typedef int32_t (*JaliumAppleGestureCallback)(const JaliumAppleGestureEvent* eve
 /// Opt in to AppKit gestures; return nonzero to consume a sequence. Null disables.
 JALIUM_PLATFORM_API int32_t jalium_apple_window_set_gesture_callback(
     JaliumPlatformWindow* window, JaliumAppleGestureCallback callback, void* userData);
+
+/// Optional macOS-only tablet callback. Registration and removal require the
+/// AppKit main thread. Existing callers without it keep ordinary mouse input.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_tablet_callback(
+    JaliumPlatformWindow* window, JaliumAppleTabletCallback callback, void* userData);
+
 
 /// Selects the AppKit content responder/key window without activating the app,
 /// ordering a hidden window, or restoring a minimized window.

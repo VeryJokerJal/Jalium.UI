@@ -632,7 +632,7 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     set_tests_properties(jalium.native.platform.macos.window.writing-tools PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
     # Optional bridge for the packaged managed protocol host. Keep test support
     # out of the production native payload and the default build graph.
-    add_library(jalium.native.platform.window.gesture-bridge SHARED EXCLUDE_FROM_ALL tests/platform_apple_gesture_bridge.mm)
+    add_library(jalium.native.platform.window.gesture-bridge SHARED EXCLUDE_FROM_ALL tests/platform_apple_gesture_bridge.mm tests/platform_apple_tablet_bridge.mm)
     target_compile_options(jalium.native.platform.window.gesture-bridge PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.platform.window.gesture-bridge PRIVATE "-framework AppKit")
     set_target_properties(jalium.native.platform.window.gesture-bridge PROPERTIES
@@ -640,6 +640,14 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
         LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/gesture-test-support"
         LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/gesture-test-support"
         LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/gesture-test-support")
+    add_executable(jalium.native.platform.window.tablets.tests tests/platform_apple_tablets_tests.mm)
+    target_include_directories(jalium.native.platform.window.tablets.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.tablets.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.tablets.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.tablets.tests)
+    add_test(NAME jalium.native.platform.macos.window.tablets COMMAND jalium.native.platform.window.tablets.tests)
+    set_tests_properties(jalium.native.platform.macos.window.tablets PROPERTIES TIMEOUT 30)
     add_executable(jalium.native.platform.window.gestures.tests tests/platform_apple_gestures_tests.mm)
     target_include_directories(jalium.native.platform.window.gestures.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)

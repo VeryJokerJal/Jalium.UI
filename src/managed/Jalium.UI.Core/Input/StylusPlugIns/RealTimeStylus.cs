@@ -68,6 +68,35 @@ public sealed class RealTimeStylus : IDisposable
         bool eraserPressed,
         bool inverted,
         bool pointerCanceled)
+        => ProcessCore(pointerId, target, action, stylusPoints, timestamp, inAir, inRange, barrelButtonPressed, eraserPressed, inverted, pointerCanceled, preserveRangeAfterUp: false);
+
+    internal RealTimeStylusProcessResult ProcessTablet(
+        uint pointerId,
+        UIElement target,
+        StylusInputAction action,
+        StylusPointCollection stylusPoints,
+        int timestamp,
+        bool inAir,
+        bool inRange,
+        bool barrelButtonPressed,
+        bool eraserPressed,
+        bool inverted,
+        bool pointerCanceled)
+        => ProcessCore(pointerId, target, action, stylusPoints, timestamp, inAir, inRange, barrelButtonPressed, eraserPressed, inverted, pointerCanceled, preserveRangeAfterUp: true);
+
+    private RealTimeStylusProcessResult ProcessCore(
+        uint pointerId,
+        UIElement target,
+        StylusInputAction action,
+        StylusPointCollection stylusPoints,
+        int timestamp,
+        bool inAir,
+        bool inRange,
+        bool barrelButtonPressed,
+        bool eraserPressed,
+        bool inverted,
+        bool pointerCanceled,
+        bool preserveRangeAfterUp)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(stylusPoints);
@@ -146,7 +175,7 @@ public sealed class RealTimeStylus : IDisposable
             rawStylusInput.Cancel();
         }
 
-        bool sessionEnded = rawStylusInput.IsCanceled || action == StylusInputAction.Up || !inRange;
+        bool sessionEnded = rawStylusInput.IsCanceled || (!preserveRangeAfterUp && action == StylusInputAction.Up) || !inRange;
         lock (_sessionsGate)
         {
             if (sessionEnded)

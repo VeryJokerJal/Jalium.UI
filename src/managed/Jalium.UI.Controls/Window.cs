@@ -5520,6 +5520,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 break;
 
+            case PlatformEventType.MacOSTablet:
+                if (evt.MacOSTablet is { } tablet) HandleMacOSTablet(tablet);
+                break;
+
             case PlatformEventType.MacOSGesture:
                 if (evt.MacOSGesture is { } gesture) HandleMacOSGesture(gesture);
                 break;

@@ -84,6 +84,7 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                 Marshal.GetFunctionPointerForDelegate(_nativeCallback),
                 GCHandle.ToIntPtr(_selfHandle));
             InitializeMacOSGestures();
+            InitializeMacOSTablets();
         }
         catch
         {
@@ -734,6 +735,7 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         if (_handle != nint.Zero)
         {
             // Unregister callback before destroying
+            DisposeMacOSTablets();
             DisposeMacOSGestures();
             WindowSetEventCallback(_handle, nint.Zero, nint.Zero);
             NativeMethods.WindowDestroy(_handle);

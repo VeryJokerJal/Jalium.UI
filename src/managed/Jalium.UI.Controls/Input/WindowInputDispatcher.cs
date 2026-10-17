@@ -11,7 +11,7 @@ namespace Jalium.UI.Controls;
 /// translate their platform-specific data into normalized calls on this class,
 /// ensuring identical behavior across all platforms.
 /// </summary>
-internal sealed class WindowInputDispatcher
+internal sealed partial class WindowInputDispatcher
 {
     private readonly IInputDispatcherHost _host;
     private readonly MouseWheelGestureRouting _wheelGestureRouting = new();
@@ -282,6 +282,7 @@ internal sealed class WindowInputDispatcher
     public void HandleMouseDown(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int clickCount, int timestamp)
     {
+        unchecked { _mousePressEpoch++; }
         long packet = unchecked(++_mouseInputGeneration);
         Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
         var physicalModifiers = modifiers;
@@ -2610,7 +2611,7 @@ internal sealed class WindowInputDispatcher
         target.RaiseEvent(args);
     }
 
-    private static void RaiseStylusSimpleEventPair(
+    private static bool RaiseStylusSimpleEventPair(
         UIElement target,
         StylusDevice stylusDevice,
         int timestamp,
@@ -2619,10 +2620,10 @@ internal sealed class WindowInputDispatcher
     {
         var previewArgs = new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = previewEvent };
         target.RaiseEvent(previewArgs);
-        if (!previewArgs.Handled)
-        {
-            target.RaiseEvent(new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = bubbleEvent });
-        }
+        if (previewArgs.Handled) return true;
+        var bubbleArgs = new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = bubbleEvent };
+        target.RaiseEvent(bubbleArgs);
+        return bubbleArgs.Handled;
     }
 
     private static void RaiseStylusSystemGestureEvent(UIElement target, StylusDevice stylusDevice, int timestamp, SystemGesture gesture)
@@ -2766,7 +2767,7 @@ internal sealed class WindowInputDispatcher
         return true;
     }
 
-    private static void RaiseStylusButtonEvent(
+    private static bool RaiseStylusButtonEvent(
         UIElement target,
         StylusDevice stylusDevice,
         int timestamp,
@@ -2774,20 +2775,22 @@ internal sealed class WindowInputDispatcher
         RoutedEvent bubbleEvent)
     {
         StylusButton? button = GetBarrelButton(stylusDevice);
-        if (button == null) return;
+        if (button == null) return false;
 
         var previewArgs = new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = previewEvent };
         target.RaiseEvent(previewArgs);
-        if (!previewArgs.Handled)
-        {
-            target.RaiseEvent(new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = bubbleEvent });
-        }
+        if (previewArgs.Handled) return true;
+        var bubbleArgs = new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = bubbleEvent };
+        target.RaiseEvent(bubbleArgs);
+        return bubbleArgs.Handled;
     }
 
-    private static void RaiseStylusExtendedEvents(
+    private static bool RaiseStylusExtendedEvents(
         UIElement target, StylusDevice stylusDevice, int timestamp,
-        StylusInputAction inputAction, RealTimeStylusProcessResult processResult)
+        StylusInputAction inputAction, RealTimeStylusProcessResult processResult,
+        UIElement? rangeExitTarget = null)
     {
+        bool handled = false;
         if (processResult.LeftElement && processResult.PreviousTarget != null)
             RaiseStylusSimpleEvent(processResult.PreviousTarget, stylusDevice, timestamp, UIElement.StylusLeaveEvent);
 
@@ -2803,18 +2806,18 @@ internal sealed class WindowInputDispatcher
 
         if (processResult.ExitedRange)
         {
-            UIElement rangeTarget = processResult.PreviousTarget ?? target;
+            UIElement rangeTarget = rangeExitTarget ?? processResult.PreviousTarget ?? target;
             RaiseStylusSimpleEventPair(rangeTarget, stylusDevice, timestamp,
                 UIElement.PreviewStylusOutOfRangeEvent, UIElement.StylusOutOfRangeEvent);
             RaiseStylusSystemGestureEvent(rangeTarget, stylusDevice, timestamp, SystemGesture.HoverLeave);
         }
 
         if (processResult.BarrelButtonDown)
-            RaiseStylusButtonEvent(target, stylusDevice, timestamp,
+            handled |= RaiseStylusButtonEvent(target, stylusDevice, timestamp,
                 UIElement.PreviewStylusButtonDownEvent, UIElement.StylusButtonDownEvent);
 
         if (processResult.BarrelButtonUp)
-            RaiseStylusButtonEvent(target, stylusDevice, timestamp,
+            handled |= RaiseStylusButtonEvent(target, stylusDevice, timestamp,
                 UIElement.PreviewStylusButtonUpEvent, UIElement.StylusButtonUpEvent);
 
         switch (inputAction)
@@ -2831,13 +2834,14 @@ internal sealed class WindowInputDispatcher
                         ? SystemGesture.RightDrag : SystemGesture.Drag);
                 break;
             case StylusInputAction.InAirMove:
-                RaiseStylusSimpleEventPair(target, stylusDevice, timestamp,
+                handled |= RaiseStylusSimpleEventPair(target, stylusDevice, timestamp,
                     UIElement.PreviewStylusInAirMoveEvent, UIElement.StylusInAirMoveEvent);
                 break;
             case StylusInputAction.Up:
                 RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoldLeave);
                 break;
         }
+        return handled;
     }
 
     // ── Manipulation Pipeline ──

@@ -14,6 +14,8 @@
 #include <pthread.h>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
 
 #import <TargetConditionals.h>
 #import <CoreFoundation/CoreFoundation.h>
@@ -54,6 +56,7 @@ struct JaliumTimer {
 @class JaliumAppleView;
 #if TARGET_OS_OSX
 struct AppleGestureState;
+struct AppleTabletState;
 @class JaliumAppleWindowDelegate;
 @class JaliumAppleAccessibilityBridge;
 namespace { struct AppleContentFocus; }
@@ -76,6 +79,8 @@ struct JaliumPlatformWindow {
     NSWindow* window = nil;
     std::shared_ptr<AppleGestureState> gestures;
     uint64_t gestureDispatchGeneration = 0;
+    std::shared_ptr<AppleTabletState> tablets;
+    uint64_t tabletDispatchGeneration = 0;
     JaliumAppleWindowDelegate* delegate = nil;
     NSArray* stateCompletionObservers = nil;
     NSVisualEffectView* backdropView = nil;
@@ -866,11 +871,13 @@ void RestoreFullScreenContentFocus(JaliumPlatformWindow* window,
 }
 
 void InvalidateAppleGestures(JaliumPlatformWindow* window);
+void InvalidateAppleTablets(JaliumPlatformWindow* window);
 
-void CancelPendingWindowSelection(JaliumPlatformWindow* window)
+void CancelPendingWindowSelection(JaliumPlatformWindow* window, bool retireTablets = true)
 {
     ++window->selectionGeneration;
     InvalidateAppleGestures(window);
+    if (retireTablets) InvalidateAppleTablets(window);
     window->pendingActivation = false;
     window->pendingMainSelection = false;
 }
@@ -2471,6 +2478,7 @@ static BOOL IsAppleTextServiceType(NSPasteboardType type)
 - (void)applyCursor;
 - (BOOL)canApplyCursorForWindow:(NSWindow*)window;
 - (void)restoreCursor;
+- (void)noteTabletCursorButton:(NSInteger)button type:(NSEventType)type active:(BOOL)active;
 - (BOOL)canDispatchPointerForWindow:(NSWindow*)window owner:(JaliumPlatformWindow*)owner;
 - (void)cancelCursorTracking;
 - (void)cancelMarkedText;
@@ -2501,6 +2509,7 @@ struct AppleTextInputContext {
 #include "platform_apple_accessibility.inc"
 #include "platform_apple_writing_tools.inc"
 #include "platform_apple_gestures.inc"
+#include "platform_apple_tablets.inc"
 
 @implementation JaliumAppleView
 - (void)viewWillMoveToWindow:(NSWindow*)window {
@@ -2508,8 +2517,10 @@ struct AppleTextInputContext {
     (void)keepAlive;
     auto* owner = _jaliumOwner;
     NSWindow* __attribute__((objc_precise_lifetime)) previous = self.window;
-    if (owner && _jaliumOwner == owner && previous != window && IsLiveWindow(owner, previous))
+    if (owner && _jaliumOwner == owner && previous != window && IsLiveWindow(owner, previous)) {
         InvalidateAppleGestures(owner);
+        InvalidateAppleTablets(owner);
+    }
     [super viewWillMoveToWindow:window];
 }
 - (void)beginGestureWithEvent:(NSEvent*)event {
@@ -2737,7 +2748,38 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     }
     return YES;
 }
+
+- (void)noteTabletCursorButton:(NSInteger)button type:(NSEventType)type active:(BOOL)active {
+    if (button < 0 || button > 4) return;
+    NSUInteger bit = NSUInteger(1) << button;
+    if (active && (type == NSEventTypeLeftMouseDown || type == NSEventTypeRightMouseDown ||
+        type == NSEventTypeOtherMouseDown || type == NSEventTypeLeftMouseDragged ||
+        type == NSEventTypeRightMouseDragged || type == NSEventTypeOtherMouseDragged)) _cursorMouseButtons |= bit;
+    else if (type == NSEventTypeLeftMouseUp || type == NSEventTypeRightMouseUp || type == NSEventTypeOtherMouseUp)
+        _cursorMouseButtons &= ~bit;
+}
+- (void)tabletPoint:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleTabletDispatchContext context(self);
+    auto result = SendAppleTablet(context, event);
+    if (result == AppleTabletDisposition::Unhandled && context.Ready()) [super tabletPoint:event];
+}
+- (void)tabletProximity:(NSEvent*)event {
+    if (!NSThread.isMainThread) return;
+    AppleTabletDispatchContext context(self);
+    auto result = SendAppleTablet(context, event);
+    if (result == AppleTabletDisposition::Unhandled && context.Ready()) [super tabletProximity:event];
+}
 - (void)dispatchMouse:(NSEvent*)native type:(JaliumEventType)type button:(int32_t)button {
+    if (!NSThread.isMainThread) return;
+    AppleTabletDispatchContext tabletContext(self);
+    auto tablet = SendAppleTablet(tabletContext, native, type, button);
+    if (tablet != AppleTabletDisposition::Unhandled) {
+        if (tablet == AppleTabletDisposition::Handled && tabletContext.Current() &&
+            (type == JALIUM_EVENT_MOUSE_MOVE || type == JALIUM_EVENT_MOUSE_UP)) [self applyCursor];
+        return;
+    }
+
     JaliumAppleView* __attribute__((objc_precise_lifetime)) client = self;
     JaliumPlatformWindow* owner = client.jaliumOwner;
     NSWindow* __attribute__((objc_precise_lifetime)) window = client.window;
@@ -3532,6 +3574,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 - (void)windowDidChangeBackingProperties:(NSNotification*)note {
     if (!_owner) return;
     InvalidateAppleGestures(_owner);
+    InvalidateAppleTablets(_owner);
     JaliumAppleWindowDelegate* __attribute__((objc_precise_lifetime)) keepAlive = self;
     (void)keepAlive;
     auto* owner = _owner;
@@ -3560,7 +3603,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     DispatchSimple(_owner,JALIUM_EVENT_ACTIVATE);
     if (_owner) [_owner->view applyCursor];
 }
-- (void)windowDidResignKey:(NSNotification*)note {InvalidateAppleGestures(_owner);if(_owner)[_owner->view cancelCursorTracking];DispatchSimple(_owner,JALIUM_EVENT_DEACTIVATE);}
+- (void)windowDidResignKey:(NSNotification*)note {InvalidateAppleGestures(_owner);InvalidateAppleTablets(_owner);if(_owner)[_owner->view cancelCursorTracking];DispatchSimple(_owner,JALIUM_EVENT_DEACTIVATE);}
 - (void)windowWillMiniaturize:(NSNotification*)note {
     if (!_owner) return;
     [_owner->view cancelCursorTracking];
@@ -3594,6 +3637,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (void)windowWillEnterFullScreen:(NSNotification*)note {
     InvalidateAppleGestures(_owner);
+    InvalidateAppleTablets(_owner);
     if (!_owner) return;
     _owner->beforeFullScreen = _owner->state;
     if (!_owner->fullScreenTransition) {
@@ -3605,6 +3649,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (void)windowWillExitFullScreen:(NSNotification*)note {
     InvalidateAppleGestures(_owner);
+    InvalidateAppleTablets(_owner);
     if (!_owner) return;
     if (!_owner->fullScreenTransition) {
         _owner->requestedState = _owner->beforeFullScreen;
@@ -4084,6 +4129,25 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     return result.release();
 }
 
+int32_t jalium_apple_window_set_tablet_callback(JaliumPlatformWindow* window, JaliumAppleTabletCallback callback, void* userData)
+{
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread) return JALIUM_ERROR_INVALID_STATE;
+    if (!window || !IsLiveWindow(window) || window->destroying) return JALIUM_ERROR_INVALID_ARGUMENT;
+    InvalidateAppleTablets(window);
+    auto state = std::make_shared<AppleTabletState>();
+    state->callback = callback; state->userData = userData;
+    state->owner = window; state->window = window->window;
+    window->tablets = state;
+    gAppleTabletStates.erase(std::remove_if(gAppleTabletStates.begin(), gAppleTabletStates.end(),
+        [](const auto& weak) { return weak.expired(); }), gAppleTabletStates.end());
+    gAppleTabletStates.push_back(state);
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
 int32_t jalium_apple_window_set_gesture_callback(JaliumPlatformWindow* window,
     JaliumAppleGestureCallback callback, void* userData)
 {
@@ -4116,6 +4180,7 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
     if(!window || window->destroying)return;
     window->destroying = true;
     #if TARGET_OS_OSX
+    InvalidateAppleTablets(window);
     InvalidateAppleWritingTools(window->view);
     for (id observer in window->stateCompletionObservers)
         [NSNotificationCenter.defaultCenter removeObserver:observer];
@@ -4995,7 +5060,10 @@ int32_t jalium_apple_window_set_keyboard_focus(JaliumPlatformWindow* w)
     };
     @try {
         if (!ready()) return JALIUM_ERROR_INVALID_STATE;
-        CancelPendingWindowSelection(w);
+        // A pen press can focus a managed control through this same content
+        // responder. Replacing a pending keyboard request does not terminate
+        // the physical contact; actual key loss still retires tablet input.
+        CancelPendingWindowSelection(w, false);
         generation = w->selectionGeneration;
         bool eligible = nativeWindow.canBecomeKeyWindow;
         if (!ready() || !eligible) return JALIUM_ERROR_INVALID_STATE;
