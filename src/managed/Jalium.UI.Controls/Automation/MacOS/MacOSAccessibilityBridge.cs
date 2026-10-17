@@ -273,9 +273,18 @@ internal sealed unsafe partial class MacOSAccessibilityTree
 
     private List<AutomationPeer> Children(AutomationPeer peer)
     {
-        if (!CanExposeChildren(peer)) return [];
         var children = new List<AutomationPeer>();
         var seen = new HashSet<AutomationPeer> { peer };
+        // Collapsing a branch hides its nested rows, not the controls in its
+        // own header. A virtualizing items host likewise owns only child rows.
+        if (peer is TreeViewItemAutomationPeer treeItem && CanExposeChildren(peer, headerOnly: true))
+            foreach (var child in treeItem.GetHeaderChildren()) AddVisibleChild(child, children, seen);
+        if (!CanExposeChildren(peer)) return children;
+        if (peer is ListBoxItemAutomationPeer listItem)
+        {
+            foreach (var child in listItem.GetMacOSContentChildren()) AddVisibleChild(child, children, seen);
+            return children;
+        }
         if (peer is ItemsControlAutomationPeer itemsPeer
             && itemsPeer.ItemsOwner.ItemsHostInternal is VirtualizingPanel panel
             && VirtualizingPanel.GetIsVirtualizing(itemsPeer.ItemsOwner))
@@ -291,12 +300,12 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         return children;
     }
 
-    private static bool CanExposeChildren(AutomationPeer peer)
+    private static bool CanExposeChildren(AutomationPeer peer, bool headerOnly = false)
     {
         // ItemsControl's logical peers include descendants even while their
         // TreeViewItem is collapsed. AX outline navigation must only disclose
         // rows in expanded branches, independent of template realization.
-        if (peer.GetAutomationControlType() == AutomationControlType.TreeItem
+        if (!headerOnly && peer.GetAutomationControlType() == AutomationControlType.TreeItem
             && peer.GetPattern(PatternInterface.ExpandCollapse) is IExpandCollapseProvider
                 { ExpandCollapseState: ExpandCollapseState.Collapsed }) return false;
         // Atomic controls already provide their text via Name/Value. Exposing

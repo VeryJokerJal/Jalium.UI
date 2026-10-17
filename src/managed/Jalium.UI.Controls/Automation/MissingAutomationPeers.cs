@@ -114,6 +114,8 @@ public class TreeViewDataItemAutomationPeer : ItemAutomationPeer
 {
     public TreeViewDataItemAutomationPeer(object item, ItemsControlAutomationPeer parent) : base(item, parent) { }
     protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.TreeItem;
+    protected override List<AutomationPeer> GetChildrenCore() =>
+        ItemContainer?.GetAutomationPeer() is TreeViewItemAutomationPeer peer ? peer.GetChildren() : [];
 }
 
 public class GridViewItemAutomationPeer : ListBoxItemAutomationPeer

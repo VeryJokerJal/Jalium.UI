@@ -259,7 +259,7 @@ public class TreeView : ItemsControl
         tvi.ParentTreeView = this;
         tvi.ParentItem = null;
         tvi.Level = 0;
-        tvi.SetItemData(item);
+        tvi.PrepareItemData(item, this);
 
         if (item is TreeViewItem)
         {
@@ -269,13 +269,14 @@ public class TreeView : ItemsControl
         tvi.Header = item;
         tvi.DataContext = item;
 
-        if (ItemTemplate is HierarchicalDataTemplate hdt)
+        var template = ResolveItemTemplate(item);
+        if (template is HierarchicalDataTemplate hdt)
         {
             TreeViewItem.ApplyHierarchicalDataTemplate(tvi, item, hdt);
         }
-        else if (ItemTemplate != null)
+        else
         {
-            tvi.HeaderTemplate = ItemTemplate;
+            tvi.HeaderTemplate = template;
         }
     }
 
@@ -560,6 +561,7 @@ public class TreeViewItem : HeaderedItemsControl
 
     private object? _itemData;
     private bool _hasItemData;
+    private WeakReference<ItemsControl>? _templateDataOwner;
 
     internal object? ItemData => _hasItemData ? _itemData : this;
 
@@ -567,6 +569,16 @@ public class TreeViewItem : HeaderedItemsControl
     {
         _itemData = item;
         _hasItemData = true;
+    }
+
+    // Deferred HDT rows enter Items as UI containers, but their logical item
+    // remains the source data. A different owner treats an explicit row normally.
+    internal void PrepareItemData(object? item, ItemsControl owner)
+    {
+        if (ReferenceEquals(item, this) && _templateDataOwner?.TryGetTarget(out var source) == true
+            && ReferenceEquals(source, owner)) return;
+        _templateDataOwner = null;
+        SetItemData(item);
     }
 
     private int _level;
@@ -859,11 +871,11 @@ public class TreeViewItem : HeaderedItemsControl
             return;
         }
 
+        childTvi.PrepareItemData(item, this);
         // Set hierarchy metadata (like WPF's PrepareItemContainer)
         childTvi.ParentTreeView = ParentTreeView;
         childTvi.ParentItem = this;
         childTvi.Level = Level + 1;
-        childTvi.SetItemData(item);
 
         // Pre-apply cached style to avoid per-item implicit style lookup
         if (childTvi.Style == null && ParentTreeView?._cachedTreeViewItemStyle != null)
@@ -879,18 +891,19 @@ public class TreeViewItem : HeaderedItemsControl
         childTvi.Header = item;
         childTvi.DataContext = item;
 
-        if (ItemTemplate is HierarchicalDataTemplate hdt)
+        var template = ResolveItemTemplate(item);
+        if (template is HierarchicalDataTemplate hdt)
         {
             TreeViewItem.ApplyHierarchicalDataTemplate(childTvi, item, hdt);
         }
-        else if (ParentTreeView?.ItemTemplate is HierarchicalDataTemplate parentHdt)
+        else if (template == null && ParentTreeView?.ItemTemplate is HierarchicalDataTemplate parentHdt)
         {
             var childTemplate = parentHdt.ItemTemplate as HierarchicalDataTemplate ?? parentHdt;
             TreeViewItem.ApplyHierarchicalDataTemplate(childTvi, item, childTemplate);
         }
-        else if (ItemTemplate != null)
+        else
         {
-            childTvi.HeaderTemplate = ItemTemplate;
+            childTvi.HeaderTemplate = template;
         }
     }
 
@@ -1907,7 +1920,7 @@ public class TreeViewItem : HeaderedItemsControl
         if (hdt.ItemTemplate != null)
             tvi.ItemTemplate = hdt.ItemTemplate;
         else
-            tvi.ItemTemplate = hdt; // Recursive: same template for children
+            tvi.ItemTemplate = hdt.ItemTemplateSelector == null ? hdt : null; // Recursive fallback only without a selector
 
         tvi.ItemTemplateSelector = hdt.ItemTemplateSelector;
         tvi.ItemContainerStyle = hdt.ItemContainerStyle;
@@ -2114,31 +2127,7 @@ public class TreeViewItem : HeaderedItemsControl
         var childContainers = new List<object>();
         foreach (var childItem in enumerable)
         {
-            if (childItem is TreeViewItem childTvi)
-            {
-                childContainers.Add(childTvi);
-            }
-            else
-            {
-                var childContainer = new TreeViewItem
-                {
-                    Header = childItem,
-                    DataContext = childItem
-                };
-
-                // Pre-apply cached style to avoid implicit style lookup overhead
-                if (cachedStyle != null && childContainer.Style == null)
-                {
-                    childContainer.Style = cachedStyle;
-                }
-
-                if (template != null)
-                {
-                    ApplyHierarchicalDataTemplate(childContainer, childItem, template);
-                }
-
-                childContainers.Add(childContainer);
-            }
+            childContainers.Add(CreateChildContainer(childItem, template, cachedStyle));
         }
 
         if (childContainers.Count == 0)
@@ -2383,14 +2372,20 @@ public class TreeViewItem : HeaderedItemsControl
             container.Style = cachedStyle;
         }
 
-        if (template != null)
-        {
-            ApplyHierarchicalDataTemplate(container, childItem, template);
-        }
-
+        container.SetItemData(childItem);
+        container._templateDataOwner = new(this);
         container.ParentTreeView = ParentTreeView;
         container.ParentItem = this;
         container.Level = Level + 1;
+        var selected = ItemTemplate ?? ItemTemplateSelector?.SelectTemplate(childItem, this) ?? template;
+        if (selected is HierarchicalDataTemplate hierarchy)
+        {
+            ApplyHierarchicalDataTemplate(container, childItem, hierarchy);
+        }
+        else
+        {
+            container.HeaderTemplate = selected;
+        }
         return container;
     }
 
@@ -2468,6 +2463,8 @@ public class TreeViewItem : HeaderedItemsControl
     /// </summary>
     internal void ResetContainerState()
     {
+        // Retire the old generated-data scope before callbacks can reattach the row.
+        _templateDataOwner = null;
         if (_bridgedDataItem is System.ComponentModel.INotifyPropertyChanged oldInpc &&
             _bridgedINPCHandler != null)
         {
@@ -2491,6 +2488,7 @@ public class TreeViewItem : HeaderedItemsControl
         {
             ClearValue(IsSelectedProperty);
         }
+
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("HierarchicalDataTemplate ItemsSource path is resolved against runtime types via PropertyAccessorRegistry.")]

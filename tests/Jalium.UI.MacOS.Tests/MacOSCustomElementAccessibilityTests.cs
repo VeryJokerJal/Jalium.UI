@@ -3,12 +3,172 @@ using Jalium.UI.Automation.Peers;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Automation.MacOS;
 using Jalium.UI.Input;
+using Jalium.UI.Data;
 
 namespace Jalium.UI.Tests;
 
 [Collection("macOS Window globals")]
 public sealed unsafe class MacOSCustomElementAccessibilityTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void TreeHeaderCheckboxKeepsFocusToggleAndParentIdentity(bool virtualizing, bool collapsedBranch)
+    {
+        using var fixture = new Fixture();
+        var treeTemplate = new ControlTemplate(typeof(TreeView));
+        treeTemplate.SetVisualTree(static () => new ItemsPresenter());
+        var rowTemplate = HeaderTemplate();
+        var check = new CheckBox { Height = 26 };
+        AutomationProperties.SetName(check, "勾选测试：中文用例🙂");
+        var row = new TreeViewItem { Header = new Border { Child = check }, Template = rowTemplate };
+        AutomationProperties.SetName(row, "中文用例🙂，通过");
+        if (collapsedBranch)
+            row.Items.Add(new TreeViewItem { Header = "折叠内的用例", Template = rowTemplate });
+        var tree = new TreeView { Template = treeTemplate };
+        VirtualizingPanel.SetIsVirtualizing(tree, virtualizing);
+        tree.Items.Add(row);
+        fixture.SetContent(tree);
+
+        ulong treeId = Assert.Single(fixture.Children(1));
+        ulong rowId = Assert.Single(fixture.Children(treeId));
+        ulong checkId = Assert.Single(fixture.Children(rowId));
+        Assert.Equal((int)AutomationControlType.CheckBox, fixture.Request(checkId, MacOSAXOperation.Info).Role);
+        Assert.Equal("勾选测试：中文用例🙂", fixture.Text(checkId, MacOSAXString.Name));
+        Assert.Equal(rowId, fixture.Request(checkId, MacOSAXOperation.Info).ParentId);
+        Assert.True(fixture.Request(checkId, MacOSAXOperation.Info).Flags.HasFlag(MacOSAXFlags.Toggle));
+        Assert.True(fixture.Action(checkId, MacOSAXAction.SetFocus));
+        Assert.Equal(checkId, fixture.Request(1, MacOSAXOperation.Focus).ResultId);
+        Assert.True(fixture.Action(checkId, MacOSAXAction.Press));
+        Assert.True(check.IsChecked);
+        Assert.Equal(1, fixture.Request(checkId, MacOSAXOperation.Info).Value);
+        Assert.False(row.IsSelected);
+        Assert.True(fixture.Action(checkId, MacOSAXAction.Press));
+        Assert.False(check.IsChecked);
+        Assert.Equal(0, fixture.Request(checkId, MacOSAXOperation.Info).Value);
+        Assert.Equal(checkId, Assert.Single(fixture.Children(rowId)));
+    }
+
+    [Fact]
+    public void LogicalTreeItemPeerExposesHeaderActionsAndRetainsNestedItemPeers()
+    {
+        var button = new Button { Content = "行内动作" };
+        var nested = new TreeViewItem { Header = "子项" };
+        var row = new TreeViewItem { Header = new Border { Child = button }, Items = { nested } };
+        var tree = new TreeView { Items = { row } };
+        var logicalRow = Assert.IsType<TreeViewDataItemAutomationPeer>(Assert.Single(tree.GetAutomationPeer()!.GetChildren()));
+        var children = logicalRow.GetChildren();
+        Assert.Contains(button.GetAutomationPeer(), children);
+        Assert.Single(children.OfType<TreeViewDataItemAutomationPeer>());
+        Assert.Equal(2, children.Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CollapsingTreeBranchRetainsItsHeaderAndHidesOnlyNestedRows(bool virtualizing)
+    {
+        using var fixture = new Fixture();
+        var treeTemplate = new ControlTemplate(typeof(TreeView));
+        treeTemplate.SetVisualTree(static () => new ItemsPresenter());
+        var check = new CheckBox { Content = "勾选分组", Height = 26 };
+        var child = new TreeViewItem { Header = "子测试", Template = HeaderTemplate() };
+        var row = new TreeViewItem { Header = check, Template = HeaderTemplate(), IsExpanded = true, Items = { child } };
+        var tree = new TreeView { Template = treeTemplate, Items = { row } };
+        VirtualizingPanel.SetIsVirtualizing(tree, virtualizing);
+        fixture.SetContent(tree);
+        ulong treeId = Assert.Single(fixture.Children(1));
+        ulong rowId = Assert.Single(fixture.Children(treeId));
+        var expanded = fixture.Children(rowId);
+        ulong checkId = Assert.Single(expanded, id => fixture.Request(id, MacOSAXOperation.Info).Role == (int)AutomationControlType.CheckBox);
+        Assert.Single(expanded, id => fixture.Request(id, MacOSAXOperation.Info).Role == (int)AutomationControlType.TreeItem);
+
+        Assert.True(fixture.Action(rowId, MacOSAXAction.Collapse));
+        fixture.Layout();
+        Assert.Equal(checkId, Assert.Single(fixture.Children(rowId)));
+        Assert.True(fixture.Action(checkId, MacOSAXAction.Press));
+        Assert.True(check.IsChecked);
+        Assert.False(child.IsSelected);
+        Assert.True(fixture.Action(rowId, MacOSAXAction.Expand));
+        fixture.Layout();
+        Assert.Contains(checkId, fixture.Children(rowId));
+        Assert.Equal(2, fixture.Children(rowId).Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReplacingTreeHeaderDoesNotRetainRemovedControlsInAccessibility(bool virtualizing)
+    {
+        using var fixture = new Fixture();
+        var treeTemplate = new ControlTemplate(typeof(TreeView));
+        treeTemplate.SetVisualTree(static () => new ItemsPresenter());
+        var original = new CheckBox { Content = "原勾选", Height = 26 };
+        var row = new TreeViewItem { Header = original, Template = HeaderTemplate() };
+        var tree = new TreeView { Template = treeTemplate, Items = { row } };
+        VirtualizingPanel.SetIsVirtualizing(tree, virtualizing);
+        fixture.SetContent(tree);
+        ulong rowId = Assert.Single(fixture.Children(Assert.Single(fixture.Children(1))));
+        ulong oldId = Assert.Single(fixture.Children(rowId));
+        var replacement = new Button { Content = "替换动作", Height = 26 };
+        row.Header = replacement;
+        fixture.Layout();
+        ulong newId = Assert.Single(fixture.Children(rowId));
+        Assert.NotEqual(oldId, newId);
+        Assert.Equal("替换动作", fixture.Text(newId, MacOSAXString.Name));
+        Assert.False(fixture.TryRequest(oldId, MacOSAXOperation.Info, out _));
+        Assert.False(fixture.Action(oldId, MacOSAXAction.Press));
+        Assert.False(original.IsChecked);
+        Assert.Equal(rowId, fixture.Request(newId, MacOSAXOperation.Info).ParentId);
+    }
+
+    private static ControlTemplate HeaderTemplate()
+    {
+        var template = new ControlTemplate(typeof(TreeViewItem));
+        template.SetVisualTree(static () =>
+        {
+            var presenter = new ContentPresenter();
+            presenter.SetTemplateBinding(ContentPresenter.ContentProperty, HeaderedItemsControl.HeaderProperty);
+            return new StackPanel { Children =
+            {
+                new Border { Name = "PART_HeaderBorder", Child = presenter },
+                new ItemsPresenter { Name = "PART_ItemsHost" }
+            } };
+        });
+        return template;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TreeRowsExposeRealizedContainerBoundsAcrossVirtualizationModes(bool virtualizing)
+    {
+        using var fixture = new Fixture();
+        // Geometry contracts use local templates, without creating a process-wide AppKit
+        // application or leaving theme resources owned by this test's worker thread.
+        var treeTemplate = new ControlTemplate(typeof(TreeView));
+        treeTemplate.SetVisualTree(static () => new ItemsPresenter());
+        var rowTemplate = new ControlTemplate(typeof(TreeViewItem));
+        rowTemplate.SetVisualTree(static () =>
+        {
+            var presenter = new ContentPresenter();
+            presenter.SetTemplateBinding(ContentPresenter.ContentProperty, HeaderedItemsControl.HeaderProperty);
+            return presenter;
+        });
+        var tree = new TreeView { Template = treeTemplate };
+        VirtualizingPanel.SetIsVirtualizing(tree, virtualizing);
+        tree.Items.Add(new TreeViewItem { Header = "Visible row", Template = rowTemplate });
+        fixture.SetContent(tree);
+        var treeId = Assert.Single(fixture.Children(1));
+        var rowId = Assert.Single(fixture.Children(treeId));
+        var info = fixture.Request(rowId, MacOSAXOperation.Info);
+        Assert.Equal((int)AutomationControlType.TreeItem, info.Role);
+        Assert.True(info.Width > 0 && info.Height > 0);
+        Assert.True(info.Flags.HasFlag(MacOSAXFlags.Selectable));
+    }
+
     [Fact]
     public void NamedFocusableSourceHasItsOwnFocusAndGroupIdentity()
     {

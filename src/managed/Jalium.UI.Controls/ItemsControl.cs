@@ -334,14 +334,10 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
             return;
         }
 
-        // Determine the template to use
-        var template = ItemTemplate;
-        if (template == null && ItemTemplateSelector != null)
-        {
-            template = ItemTemplateSelector.SelectTemplate(item, this);
-        }
-
-        template ??= GetDisplayMemberTemplate();
+        // Headered containers resolve their template after installing their
+        // hierarchy metadata. Do not invoke their selector a second time here.
+        if (element is not (ContentPresenter or ContentControl)) return;
+        var template = ResolveItemTemplate(item);
 
         if (element is ContentPresenter presenter)
         {
@@ -354,6 +350,9 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
             contentControl.ContentTemplate = template;
         }
     }
+
+    internal DataTemplate? ResolveItemTemplate(object item) =>
+        ItemTemplate ?? ItemTemplateSelector?.SelectTemplate(item, this) ?? GetDisplayMemberTemplate();
 
     /// <summary>
     /// Refreshes all items in the control.

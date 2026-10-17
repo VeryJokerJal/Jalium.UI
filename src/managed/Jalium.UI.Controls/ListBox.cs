@@ -197,7 +197,6 @@ public partial class ListBox : Selector
             if (!ReferenceEquals(element, item))
             {
                 listBoxItem.Content = item;
-                listBoxItem.ContentTemplate = ItemTemplate;
             }
 
             listBoxItem.ParentListBox = this;

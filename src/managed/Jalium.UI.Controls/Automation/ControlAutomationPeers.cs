@@ -99,6 +99,17 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     }
 
     private ListBoxItem ItemOwner => (ListBoxItem)Owner;
+
+    internal List<AutomationPeer> GetContentChildren() => ItemContainer is ListBoxItem item
+        ? ItemContentAutomation.Children(item, item.Content) : [];
+
+    protected override List<AutomationPeer> GetChildrenCore() => GetContentChildren();
+
+    internal List<AutomationPeer> GetMacOSContentChildren()
+    {
+        ResetChildrenCache();
+        return GetChildren();
+    }
     private ListBox? ListOwner => ItemsControlAutomationPeer?.ItemsOwner as ListBox ?? (Item as ListBoxItem)?.ParentListBox;
     private object SelectionValue => Item is ListBoxItem item ? item.Content ?? item : Item;
 
@@ -389,6 +400,15 @@ public class TreeViewItemAutomationPeer : ItemsControlAutomationPeer,
     }
 
     private TreeViewItem ItemOwner => (TreeViewItem)Owner;
+
+    internal List<AutomationPeer> GetHeaderChildren() => ItemContentAutomation.Children(ItemOwner, ItemOwner.Header);
+
+    protected override List<AutomationPeer> GetChildrenCore()
+    {
+        var children = GetHeaderChildren();
+        children.AddRange(base.GetChildrenCore());
+        return children;
+    }
 
     protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new TreeViewDataItemAutomationPeer(item, this);
 

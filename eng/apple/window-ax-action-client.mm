@@ -23,6 +23,13 @@ static id Scalar(id value) {
     if (!value) return NSNull.null;
     if ([value isKindOfClass:NSString.class] || [value isKindOfClass:NSNumber.class]) return value;
     if (CFGetTypeID((__bridge CFTypeRef)value) == AXValueGetTypeID()) {
+        CGPoint point{}; CGSize size{};
+        if (AXValueGetType((__bridge AXValueRef)value) == kAXValueTypeCGPoint &&
+            AXValueGetValue((__bridge AXValueRef)value,kAXValueTypeCGPoint,&point))
+            return @{@"x":@(point.x),@"y":@(point.y)};
+        if (AXValueGetType((__bridge AXValueRef)value) == kAXValueTypeCGSize &&
+            AXValueGetValue((__bridge AXValueRef)value,kAXValueTypeCGSize,&size))
+            return @{@"width":@(size.width),@"height":@(size.height)};
         CFRange range{};
         if (AXValueGetType((__bridge AXValueRef)value) == kAXValueTypeCFRange &&
             AXValueGetValue((__bridge AXValueRef)value, kAXValueTypeCFRange, &range))
@@ -51,7 +58,7 @@ struct Client {
         NSMutableDictionary* errors = [NSMutableDictionary new];
         NSDictionary* attributes = @{@"id":@"AXIdentifier",@"role":@"AXRole",@"name":@"AXTitle",
             @"value":@"AXValue",@"enabled":@"AXEnabled",@"focused":@"AXFocused",
-            @"selection":@"AXSelectedTextRange",@"selectedText":@"AXSelectedText",@"selected":@"AXSelected"};
+            @"selection":@"AXSelectedTextRange",@"selectedText":@"AXSelectedText",@"selected":@"AXSelected",@"position":@"AXPosition",@"size":@"AXSize"};
         for (NSString* key in attributes) {
             AXError error = kAXErrorSuccess;
             result[key] = Scalar(Copy(element, (__bridge CFStringRef)attributes[key], &error));
@@ -81,6 +88,10 @@ struct Client {
             }
             result[attribute] = selected;
         }
+        id parent = Copy(element,kAXParentAttribute);
+        if (IsElement(parent)) result[@"parent"] = @{@"token":@(Token(parent)),
+            @"id":Scalar(Copy((__bridge AXUIElementRef)parent,kAXIdentifierAttribute)),
+            @"role":Scalar(Copy((__bridge AXUIElementRef)parent,kAXRoleAttribute))};
         return result;
     }
     NSArray* Discover() {
