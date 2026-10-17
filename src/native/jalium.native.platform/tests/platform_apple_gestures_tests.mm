@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #import <objc/runtime.h>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <stdexcept>
 #include <thread>
@@ -52,6 +53,17 @@ static void Check(bool condition, const char* message) { if (!condition) throw s
 using RegisterGesture = int32_t(*)(JaliumPlatformWindow*,JaliumAppleGestureCallback,void*);
 static RegisterGesture registerGesture;
 static void Pump() { [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.025]]; }
+static void AwaitMainQueueTurn()
+{
+    // Retirements are queued, so an elapsed run-loop slice is not proof of
+    // delivery. A later FIFO marker proves the earlier cancel ran or was
+    // filtered; the event assertions below still detect a missing cancel.
+    __block bool reached = false;
+    dispatch_async(dispatch_get_main_queue(), ^{ reached = true; });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!reached && std::chrono::steady_clock::now() < deadline) Pump();
+    Check(reached, "main queue reaches the queued cancellation boundary");
+}
 struct Fixture {
     JaliumPlatformWindow* owner = nullptr;
     NSView* view;
@@ -98,7 +110,10 @@ static void Run(uint32_t style) {
     { Fixture f(style);f.accept=false;f.Begin();f.Magnify(NSEventPhaseBegan,.2);f.Magnify(NSEventPhaseChanged,.2);f.Rotate(NSEventPhaseBegan,2);Check(f.events.size()==1,"declined sequence does not retarget");f.End();f.accept=true;f.Magnify(NSEventPhaseBegan,.2);Check(f.events.size()==2,"new sequence can be accepted"); }
     for(bool hide:{false,true}) { Fixture f(style);f.Begin();f.Magnify(NSEventPhaseBegan,.2);auto first=f.events[0].sequence;
       if(hide){jalium_window_hide(f.owner);jalium_apple_window_show(f.owner,0);}else{jalium_window_set_enabled(f.owner,0);jalium_window_set_enabled(f.owner,1);}
-      f.Magnify(NSEventPhaseChanged,.2);Pump();Check(f.events.size()==2&&f.events.back().phase==4,"visibility/enabled roundtrip cancels old sequence");
+      auto beforeHeld=f.events.size();f.Magnify(NSEventPhaseChanged,.2);
+      Check(f.events.size()==beforeHeld,"held gesture cannot revive the retired sequence");
+      AwaitMainQueueTurn();
+      Check(f.events.size()==2&&f.events.back().phase==4&&f.events.back().sequence==first,"visibility/enabled roundtrip cancels old sequence");
       f.Begin();f.Magnify(NSEventPhaseBegan,.1);Check(f.events.back().sequence!=first,"fresh gesture survives cancelled predecessor"); }
     { Fixture f(style);f.action=[&](auto&){f.action={};auto* owner=f.owner;f.owner=nullptr;jalium_window_destroy(owner);};f.Magnify(NSEventPhaseBegan,.2);Check(f.events.size()==1,"callback destroys window safely"); }
     { Fixture f(style);f.action=[&](auto&){f.action={};registerGesture(f.owner,nullptr,nullptr);};f.Magnify(NSEventPhaseBegan,.2);Check(f.events.size()==2&&f.events.back().phase==4,"registration replacement cancels an in-flight begin");auto n=f.events.size();f.Magnify(NSEventPhaseChanged,.1);Check(f.events.size()==n,"disabled callback remains retired"); }
@@ -110,7 +125,9 @@ static void Run(uint32_t style) {
     { Fixture f(style);auto* event=f.Event(NSEventPhaseBegan,.2);std::thread worker([&]{[f.view magnifyWithEvent:event];});worker.join();Check(f.events.empty(),"background SDK gesture is rejected before AppKit queries"); }
     { Fixture f(style|JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT);f.Magnify(NSEventPhaseBegan,.2);Check(f.events.empty(),"input-transparent surface does not claim gestures"); }
     { Fixture f(style);f.Begin();f.Magnify(NSEventPhaseBegan,.2);NSWindow* original=f.view.window;
-      [original setContentView:[NSView new]];Pump();Check(f.events.back().phase==4,"native view detachment cancels the original sequence");
+      auto sequence=f.events.back().sequence;
+      [original setContentView:[NSView new]];AwaitMainQueueTurn();
+      Check(f.events.size()==2&&f.events.back().phase==4&&f.events.back().sequence==sequence,"native view detachment cancels the original sequence");
       [original setContentView:f.view];f.Begin();f.Magnify(NSEventPhaseBegan,.1);Check(f.events.back().phase==1,"reattached view accepts a fresh sequence"); }
     { Fixture f(style);NSWindow* modal=[[NSWindow alloc]initWithContentRect:NSMakeRect(90,90,220,120) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
       modal.releasedWhenClosed=NO;
