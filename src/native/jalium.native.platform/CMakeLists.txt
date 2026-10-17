@@ -528,7 +528,6 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     set_tests_properties(jalium.native.platform.macos.window.input-state PROPERTIES TIMEOUT 10)
     add_test(NAME jalium.native.platform.macos.window COMMAND "${CMAKE_COMMAND}"
         "-DHOST_APP=$<TARGET_BUNDLE_DIR:jalium.native.platform.window.app.tests>"
-        "-DHOST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/window-app-runs"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_apple_window_validation.cmake")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
