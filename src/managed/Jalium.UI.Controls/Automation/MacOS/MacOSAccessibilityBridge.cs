@@ -412,6 +412,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 var hit = HitTest(peer, new(request.X, request.Y), []);
                 request.ResultId = hit == null ? 0 : GetId(hit); return true;
             case MacOSAXOperation.Action: return PerformAction(peer, (MacOSAXAction)request.Index);
+            case MacOSAccessibilityNative.SetSelectedItems: return ReplaceSelectedItems(peer, ref request);
             case MacOSAXOperation.TextNavigation:
                 return NavigateText(peer, ref request);
             case MacOSAXOperation.TextStyles:
@@ -530,7 +531,11 @@ internal sealed unsafe partial class MacOSAccessibilityTree
             flags |= MacOSAXFlags.Toggle;
             request.Value = toggle.ToggleState == ToggleState.Indeterminate ? 2 : toggle.ToggleState == ToggleState.On ? 1 : 0;
         }
-        if (peer.GetPattern(PatternInterface.Selection) is ISelectionProvider) flags |= MacOSAXFlags.Selection;
+        if (peer.GetPattern(PatternInterface.Selection) is ISelectionProvider)
+        {
+            flags |= MacOSAXFlags.Selection;
+            if (peer.Owner is ListBox or TreeView) flags |= MacOSAXFlags.SelectionWritable;
+        }
         if (peer.GetPattern(PatternInterface.SelectionItem) is ISelectionItemProvider selection)
         {
             flags |= MacOSAXFlags.Selectable;

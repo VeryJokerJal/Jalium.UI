@@ -313,13 +313,19 @@ static int RunNotificationLifecycleCases(int onlyCase)
     return completed == (onlyCase >= 0 ? 1 : 22) ? 0 : 1;
 }
 
-struct TableSelectionFixture { int32_t role; bool selected; };
+struct TableSelectionFixture {
+    int32_t role; bool selected;
+    bool writable = false, rowEnabled = true;
+    int writes = 0;
+    std::function<void(JaliumAccessibilityRequest*)> duringQuery;
+};
 template<class Operation>
 static int32_t TableSelectionQuery(JaliumAccessibilityRequest* request, void* context)
 {
     auto& state = *static_cast<TableSelectionFixture*>(context);
     if (request->nodeId < 1 || request->nodeId > 3) return 0;
     const bool row = request->nodeId == 3;
+    if (state.duringQuery) state.duringQuery(request);
     // The two retained histories intentionally use different child protocols.
     // Exercise the protocol declared by this tree without renumbering either.
     if constexpr (requires { Operation::JALIUM_AX_BEGIN_CHILDREN; }) {
@@ -339,10 +345,19 @@ static int32_t TableSelectionQuery(JaliumAccessibilityRequest* request, void* co
             request->role = request->nodeId == 1 ? 32 : request->nodeId == 2 ? state.role : 29;
             request->parentId = request->nodeId == 1 ? 0 : request->nodeId - 1;
             request->childCount = row ? 0 : 1;
-            request->flags = JALIUM_AX_ENABLED | (request->nodeId == 2 ? JALIUM_AX_SELECTION : 0);
+            request->flags = (row && !state.rowEnabled ? 0 : JALIUM_AX_ENABLED)
+                | (request->nodeId == 2 ? JALIUM_AX_SELECTION | (state.writable ? JALIUM_AX_SELECTION_WRITABLE : 0) : 0);
             if (row) request->flags |= JALIUM_AX_SELECTABLE | (state.selected ? JALIUM_AX_SELECTED : 0);
             request->x = 10; request->y = 10; request->width = 100; request->height = 40;
             return 1;
+        case JALIUM_AX_SET_SELECTED_ITEMS: {
+            Check(request->nodeId == 2 && state.writable, "batch write reaches only a qualified selection container");
+            NSString* text = [[NSString alloc] initWithCharacters:request->text length:request->textCount];
+            NSArray* ids = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+            Check([ids isKindOfClass:NSArray.class], "batch payload is a UTF-16 JSON array");
+            for (NSNumber* id in ids) Check(id.unsignedLongLongValue == 3, "batch payload retains exact uint64 row identity");
+            state.selected = ids.count > 0; state.writes++; return 1;
+        }
         case JALIUM_AX_ATTACHED: return 1;
         case JALIUM_AX_CHILD:
             if (row || request->index != 0) return 0;
@@ -380,6 +395,8 @@ static void RunTableSelectionCases()
             }
     std::printf("macOS AX table selection: %d/8 passed\n", completed);
 }
+
+#include "platform_apple_selection_collection_tests.inc"
 
 int main(int argc, const char** argv)
 {
@@ -617,6 +634,7 @@ int main(int argc, const char** argv)
         Check(nativeWindow.accessibilityCloseButton == nil && nativeWindow.accessibilityMinimizeButton == nil
             && nativeWindow.accessibilityZoomButton == nil, "destroyed Window does not retain caption references");
         RunTableSelectionCases();
+        RunSelectionCollectionCases();
         Check(RunReadLifecycleCases(-1) == 0, "complete public read lifecycle regressions");
         Check(RunNotificationLifecycleCases(-1) == 0, "complete public notification lifecycle regressions");
         jalium_platform_shutdown();

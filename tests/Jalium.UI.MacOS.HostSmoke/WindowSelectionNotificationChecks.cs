@@ -17,8 +17,9 @@ internal static class WindowSelectionNotificationChecks
     internal static int RunCase(string argument)
     {
         const string prefix = "--window-selection-notifications-case=";
-        if (!int.TryParse(argument.AsSpan(prefix.Length), out int index) || (uint)index >= 4) return 2;
-        bool custom = index % 2 == 1, outline = index / 2 == 1;
+        if (!int.TryParse(argument.AsSpan(prefix.Length), out int index) || (uint)index >= 10) return 2;
+        bool custom = index % 2 == 1, outline = index is 2 or 3, dataItems = index is 8 or 9;
+        SelectionMode mode = index is 4 or 5 ? SelectionMode.Single : index is 6 or 7 ? SelectionMode.Extended : SelectionMode.Multiple;
         string output = Environment.GetEnvironmentVariable("JALIUM_SELECTION_OUTPUT")
             ?? throw new InvalidOperationException("JALIUM_SELECTION_OUTPUT is required.");
         Directory.CreateDirectory(output);
@@ -33,7 +34,7 @@ internal static class WindowSelectionNotificationChecks
         Jalium.UI.Controls.Themes.ThemeManager.Initialize(Application.Current!);
 
         string[] labels = ["Alpha", "中文🙂", "Gamma"];
-        var list = new SelectionList { SelectionMode = SelectionMode.Multiple, Height = 240 };
+        var list = new SelectionList { SelectionMode = mode, Height = 240 };
         var tree = new TreeView { Height = 240 };
         ListBoxItem[] listRows = labels.Select(text => new ListBoxItem { Content = text, MinHeight = 40 }).ToArray();
         TreeViewItem[] treeRows = labels.Select(text => new TreeViewItem { Header = text }).ToArray();
@@ -41,23 +42,24 @@ internal static class WindowSelectionNotificationChecks
         {
             Name(listRows[i], labels[i], "selection-row-" + i);
             Name(treeRows[i], labels[i], "selection-row-" + i);
-            list.Items.Add(listRows[i]);
+            list.Items.Add(dataItems ? labels[i] : listRows[i]);
         }
         var group = new TreeViewItem { Header = "展开的分组", IsExpanded = true };
         foreach (var row in treeRows) group.Items.Add(row);
         tree.Items.Add(group);
         Control selection = outline ? tree : list;
-        Name(selection, outline ? "嵌套树" : "多选列表", "selection-container");
+        Name(selection, outline ? "嵌套树" : mode == SelectionMode.Single ? "单选列表" : "多选列表", "selection-container");
         var panel = new StackPanel { Margin = new Thickness(24), Spacing = 12 };
         panel.Children.Add(Label("选择通知", 24));
         panel.Children.Add(Label("修改选择后，辅助技术应立即读到新的已选集合。", 15));
         panel.Children.Add(selection);
         var second = Button("选择第二项", "selection-second");
-        var change = Button(outline ? "选择第三项" : "选择第一及第三项", "selection-change");
+        var change = Button(outline || mode == SelectionMode.Single ? "选择第三项" : "选择第一及第三项", "selection-change");
         var shrink = Button(outline ? "选择第一项" : "只保留第三项", "selection-shrink");
         var clear = Button("清空选择", "selection-clear");
         var finish = Button("结束检查", "selection-finish");
-        foreach (var button in new[] { second, change, shrink, clear, finish }) panel.Children.Add(button);
+        var closeNext = Button("选择后关闭", "selection-close-next");
+        foreach (var button in new[] { second, change, shrink, clear, closeNext, finish }) panel.Children.Add(button);
         var owner = new Window
         {
             Title = "Jalium Selection Notifications " + index,
@@ -98,7 +100,8 @@ internal static class WindowSelectionNotificationChecks
                 if (next == 1) list.SelectedIndex = 1;
                 else if (next == 2)
                 {
-                    list.Choose(labels[0], labels[2]);
+                    if (mode == SelectionMode.Single) list.SelectedIndex = 2;
+                    else list.Choose(labels[0], labels[2]);
                 }
                 else if (next == 3) list.SelectedIndex = 2;
             }
@@ -116,6 +119,7 @@ internal static class WindowSelectionNotificationChecks
         }
         list.SelectionChanged += (_, _) => CloseOnSelection();
         tree.SelectedItemChanged += (_, _) => CloseOnSelection();
+        closeNext.Click += (_, _) => phase = 5;
         finish.Click += (_, _) =>
         {
             phase = 5;
@@ -123,7 +127,14 @@ internal static class WindowSelectionNotificationChecks
             else list.SelectedIndex = 1;
         };
         owner.Closed += (_, _) => { closed = true; Record("closed"); };
-        owner.Show(); owner.UpdateLayout(); Record("ready");
+        owner.Show(); owner.UpdateLayout();
+        if (dataItems)
+            for (int i = 0; i < 3; i++)
+            {
+                listRows[i] = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(i)!;
+                Name(listRows[i], labels[i], "selection-row-" + i);
+            }
+        Record("ready");
         using var pulse = NSTimer.CreateRepeatingScheduledTimer(.1, _ =>
         {
             Record("observed state");

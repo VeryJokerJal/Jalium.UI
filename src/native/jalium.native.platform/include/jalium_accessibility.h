@@ -9,6 +9,10 @@ enum JaliumAccessibilityOperation {
     // Root-only, read-only capability; resultId is 0 or 1. Existing operation
     // numbers stay stable, including on hosts without child snapshots.
     JALIUM_AX_POPUP_CAN_BECOME_KEY = 64,
+    // Atomic selection replacement. text/textCount/textCapacity contain a JSON
+    // array of decimal uint64 node IDs in caller-owned UTF-16, at most 65536 IDs
+    // and 2 Mi UTF-16 units. Existing operation numbers and request ABI stay stable.
+    JALIUM_AX_SET_SELECTED_ITEMS = 65,
     JALIUM_AX_INFO = 0, JALIUM_AX_CHILD, JALIUM_AX_STRING, JALIUM_AX_FOCUS,
     JALIUM_AX_HIT_TEST, JALIUM_AX_ACTION, JALIUM_AX_SET_VALUE,
     JALIUM_AX_TEXT_SELECTION, JALIUM_AX_SET_TEXT_SELECTION, JALIUM_AX_TEXT_BOUNDS,
@@ -47,7 +51,8 @@ enum JaliumAccessibilityFlags {
     JALIUM_AX_SELECTION = 1 << 16, JALIUM_AX_HAS_VALUE = 1 << 17,
     JALIUM_AX_CLOSE = 1 << 18, JALIUM_AX_MINIMIZE = 1 << 19, JALIUM_AX_ZOOM = 1 << 20,
     JALIUM_AX_NAVIGABLE_TEXT = 1 << 21, JALIUM_AX_EDITABLE_TEXT = 1 << 22,
-    JALIUM_AX_OFFSCREEN = 1 << 23, JALIUM_AX_STYLED_TEXT = 1 << 24
+    JALIUM_AX_OFFSCREEN = 1 << 23, JALIUM_AX_STYLED_TEXT = 1 << 24,
+    JALIUM_AX_SELECTION_WRITABLE = 1 << 25
 };
 // Values deliberately match AutomationControlType. Keep the native role map
 // and managed enum contract covered by end-to-end host checks.

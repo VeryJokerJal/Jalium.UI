@@ -63,6 +63,11 @@ struct Client {
         result[@"valueSettable"] = @(valueError == 0 && valueSettable);
         result[@"selectionSettable"] = @(selectionError == 0 && selectionSettable);
         result[@"errors"] = errors;
+        for (NSString* attribute in @[@"AXSelected", @"AXSelectedRows", @"AXSelectedChildren"]) {
+            Boolean settable = false;
+            AXError error = AXUIElementIsAttributeSettable(element, (__bridge CFStringRef)attribute, &settable);
+            result[[attribute stringByAppendingString:@"Settable"]] = @(error == 0 && settable);
+        }
         for (NSString* attribute in @[@"AXSelectedChildren", @"AXSelectedRows"]) {
             AXError error = kAXErrorSuccess;
             id children = Copy(element, (__bridge CFStringRef)attribute, &error);
@@ -131,6 +136,20 @@ int main(int argc, const char** argv) { @autoreleasepool {
                 else if ([action isEqualToString:@"focus"]) error = AXUIElementSetAttributeValue(element,kAXFocusedAttribute,kCFBooleanTrue);
                 else if ([action isEqualToString:@"set_selected"]) error = AXUIElementSetAttributeValue(element,kAXSelectedAttribute,
                     [command[@"selected"] boolValue] ? kCFBooleanTrue : kCFBooleanFalse);
+                else if ([action isEqualToString:@"set_selected_items"]) {
+                    NSString* attribute = Text(command[@"attribute"]);
+                    id tokens = command[@"tokens"];
+                    bool valid = ([attribute isEqualToString:@"AXSelectedRows"] || [attribute isEqualToString:@"AXSelectedChildren"])
+                        && [tokens isKindOfClass:NSArray.class] && [tokens count] <= 65536;
+                    NSMutableArray* selected = [NSMutableArray new];
+                    if (valid) for (id token in tokens) {
+                        if (![token isKindOfClass:NSNumber.class]) { valid = false; break; }
+                        id item = client.Resolve(@{@"token":token});
+                        if (!item) { valid = false; break; }
+                        [selected addObject:item];
+                    }
+                    if (valid) error = AXUIElementSetAttributeValue(element, (__bridge CFStringRef)attribute, (__bridge CFArrayRef)selected);
+                }
                 else if ([action isEqualToString:@"set_value"]) error = AXUIElementSetAttributeValue(element,kAXValueAttribute,
                     (__bridge CFStringRef)Text(command[@"value"]));
                 else if ([action isEqualToString:@"set_selection"]) {

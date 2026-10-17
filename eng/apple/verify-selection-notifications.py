@@ -32,12 +32,13 @@ def stop_owned_app(app):
             try: os.kill(int(pid), signal.SIGTERM)
             except ProcessLookupError: pass
 
-def run_case(work,app,client_binary,observer_binary,index,libraries):
+def run_case(work,app,client_binary,observer_binary,index,libraries,collection_writes=False):
     internal=work
     output=work/('case-'+str(index))
     output.mkdir(mode=0o700)
     eventsPath=output/'events.jsonl';eventsPath.touch();commands=[];checks=[];failures=[];observer=None;client=None;initial={};final={};pid=None;p=None
-    attribute='AXSelectedRows' if index//2 else 'AXSelectedChildren';notificationName='AXSelectedRowsChanged' if index//2 else 'AXSelectedChildrenChanged'
+    outline=index in (2,3);single=outline or index in (4,5)
+    attribute='AXSelectedRows' if outline else 'AXSelectedChildren';notificationName='AXSelectedRowsChanged' if outline else 'AXSelectedChildrenChanged'
     def state():
      try:return json.loads((output/'state.json').read_text())
      except (FileNotFoundError,json.JSONDecodeError):return {}
@@ -79,11 +80,34 @@ def run_case(work,app,client_binary,observer_binary,index,libraries):
      wait(lambda:any(e.get('kind')=='subscription' and e.get('identifier')=='selection-container' and e.get('results',{}).get(notificationName)==0 for e in events()),'selection notifications subscribed',4)
      client=subprocess.Popen([str(client_binary),str(pid)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,bufsize=1,stderr=(output/'client.err').open('w'))
      nodes=call('discover')['nodes'];identified={x['id']:x for x in nodes if isinstance(x.get('id'),str) and x['id']};require('selection-container' in identified and all('selection-row-'+str(i) in identified for i in range(3)),'container and live rows are exposed');require(len({pid,client.pid,observer.pid})==3,'host, observer and client are separate processes')
-     for button,indices in [('selection-second',[1]),('selection-change',[2] if index//2 else [0,2]),('selection-shrink',[0] if index//2 else [2]),('selection-clear',[])]:
+     for button,indices in [('selection-second',[1]),('selection-change',[2] if single else [0,2]),('selection-shrink',[0] if outline else [2]),('selection-clear',[])]:
       before=len(events());call('press',id=button);wait_selection(before,indices)
      before=len(events());call('set_selected',id='selection-row-1',selected=True);wait_selection(before,[1])
      before=len(events());call('set_selected',id='selection-row-1',selected=False);wait_selection(before,[])
-     oldRow=identified['selection-row-1']['token'];call('press',id='selection-finish');wait(lambda:state().get('closed'),'window closes')
+     oldRow=identified['selection-row-1']['token']
+     if collection_writes:
+      container=call('read',id='selection-container')['node']
+      require(container.get(attribute+'Settable') is True,'container advertises writable '+attribute)
+      other='AXSelectedChildren' if outline else 'AXSelectedRows'
+      require(container.get(other+'Settable') is False,'unrelated selection relationship stays read-only')
+      def replace(indices):
+       return call('set_selected_items',id='selection-container',attribute=attribute,tokens=[identified['selection-row-'+str(i)]['token'] for i in indices])
+      def stable(indices):
+       time.sleep(.15)
+       require(state().get('selected')==indices,'unchanged batch leaves public selection intact')
+       node=call('read',id='selection-container')['node']
+       require(len(node.get(attribute,[]))==len(indices) and selected_ids(node.get(attribute,[]))==sorted('selection-row-'+str(i) for i in indices),'unchanged batch retains complete AX selection')
+      before=len(events());replace([1]);wait_selection(before,[1])
+      replace([1,1]);stable([1])
+      before=len(events());replace([0,2])
+      if single:stable([1])
+      else:wait_selection(before,[0,2])
+      before=len(events());replace([2]);wait_selection(before,[2])
+      call('set_selected_items',id='selection-container',attribute=attribute,tokens=[identified['selection-row-0']['token'],identified['selection-second']['token']]);stable([2])
+      before=len(events());replace([]);wait_selection(before,[])
+      call('press',id='selection-close-next');replace([1])
+     else:call('press',id='selection-finish')
+     wait(lambda:state().get('closed'),'window closes')
      stale=call('read',token=oldRow)['node'];require(stale['errors']['role']!=0,'closed window row rejects stale reads');final=state()
     except Exception as error:failures.append(str(error));print('FAIL',str(error),flush=True);final=state()
     finally:
@@ -114,17 +138,19 @@ def run_case(work,app,client_binary,observer_binary,index,libraries):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, required=True)
-    parser.add_argument("--cases", default="0,1,2,3")
+    parser.add_argument("--cases")
+    parser.add_argument("--collections", action="store_true", help="also verify atomic selected-collection writes in ten control/chrome cases")
     parser.add_argument("--work-parent", type=Path, default=Path.home() / "Library/Caches")
     parser.add_argument("--results-file", type=Path)
     args = parser.parse_args()
     source = args.app.resolve()
     if not source.is_dir() or source.suffix != ".app":
         parser.error("--app must name a built HostSmoke .app directory")
-    try: cases = [int(value) for value in args.cases.split(",")]
+    case_text = args.cases or ("0,1,2,3,4,5,6,7,8,9" if args.collections else "0,1,2,3")
+    try: cases = [int(value) for value in case_text.split(",")]
     except ValueError: parser.error("--cases must contain integer indices")
-    if not cases or len(set(cases)) != len(cases) or any(index not in range(4) for index in cases):
-        parser.error("--cases must contain unique indices from 0 to 3")
+    if not cases or len(set(cases)) != len(cases) or any(index not in range(10 if args.collections else 4) for index in cases):
+        parser.error("--cases contains duplicates or indices outside the selected suite")
     receipts = []
     with tempfile.TemporaryDirectory(prefix="jalium-selection-notification-ax-", dir=args.work_parent) as name:
         work = Path(name)
@@ -157,7 +183,7 @@ def main():
                 "-framework", "Foundation", "-framework", "ApplicationServices", "-o", str(output)], check=True)
         try:
             for index in cases:
-                receipt = run_case(work, app, client, observer, index, libraries)
+                receipt = run_case(work, app, client, observer, index, libraries, args.collections)
                 receipts.append(receipt)
                 print(json.dumps({"case":index,"passed":receipt["passed"],"checks":len(receipt["checks"]),
                     "failures":receipt["failures"]}), flush=True)

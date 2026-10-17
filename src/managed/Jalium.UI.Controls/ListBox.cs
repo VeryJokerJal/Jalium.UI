@@ -449,6 +449,9 @@ public class ListBox : Selector
         }
     }
 
+    internal bool SetAutomationSelectedItems(IEnumerable<object> items) =>
+        ApplySelectedItems(items, preferredIndex: null, publishToSource: true);
+
     // Automation Select replaces the selection even in a multiple-selection
     // list. Use the existing atomic batch so collections, scalar properties,
     // realized containers and SelectionChanged stay synchronized.

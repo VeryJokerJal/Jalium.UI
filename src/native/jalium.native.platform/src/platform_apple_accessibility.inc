@@ -243,7 +243,8 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     NSWindow* window = view.window;
     // Mutations report whether the provider accepted the action, including a
     // close button. Reads must not publish a snapshot of a retired tree.
-    const bool mutation = request->operation == JALIUM_AX_ACTION || request->operation == JALIUM_AX_SET_VALUE ||
+    const bool mutation = request->operation == JALIUM_AX_ACTION || request->operation == JALIUM_AX_SET_SELECTED_ITEMS ||
+        request->operation == JALIUM_AX_SET_VALUE ||
         request->operation == JALIUM_AX_SET_TEXT_SELECTION || (request->operation == JALIUM_AX_TEXT_NAVIGATION &&
         (request->index == JALIUM_AX_SET_INSERTION_LINE || request->index == JALIUM_AX_REPLACE_SELECTION));
     const BOOL accepted = bridge.callback(request, bridge.userData) != 0;
@@ -515,6 +516,41 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
         if ([row isAccessibilitySelected]) [rows addObject:row];
     return rows;
 }
+- (void)replaceSelectedItems:(NSArray*)items fromRows:(BOOL)fromRows {
+    if (items && ![items isKindOfClass:[NSArray class]]) return;
+    if (items.count > 65536) return;
+    JaliumAppleAccessibilityBridge* bridge = _bridge;
+    JaliumAccessibilityRequest request{};
+    if (![self info:&request] || !(request.flags & JALIUM_AX_ENABLED)
+        || !(request.flags & JALIUM_AX_SELECTION_WRITABLE)) return;
+    const bool rowContainer = request.role == 23 || request.role == 28 || request.role == 36;
+    if (fromRows != rowContainer) return;
+    NSArray* availableItems = fromRows ? self.accessibilityRows : self.accessibilityChildren;
+    if (!availableItems || _bridge != bridge) return;
+    NSSet* available = [NSSet setWithArray:availableItems];
+    NSMutableArray* ids = [NSMutableArray new];
+    for (id value in items) {
+        if (![value isKindOfClass:[JaliumAppleAccessibilityElement class]]) return;
+        JaliumAppleAccessibilityElement* child = value;
+        JaliumAccessibilityRequest childInfo{};
+        if (child.bridge != bridge || ![available containsObject:child]
+            || ![child info:&childInfo] || !(childInfo.flags & JALIUM_AX_ENABLED)
+            || !(childInfo.flags & JALIUM_AX_SELECTABLE)) return;
+        [ids addObject:@(child.nodeId)];
+    }
+    NSData* data = [NSJSONSerialization dataWithJSONObject:ids options:0 error:nil];
+    NSString* payload = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!payload || payload.length > 2 * 1024 * 1024 || _bridge != bridge
+        || ![self info:&request] || !(request.flags & JALIUM_AX_ENABLED)
+        || !(request.flags & JALIUM_AX_SELECTION_WRITABLE)) return;
+    std::vector<uint16_t> characters(payload.length);
+    [payload getCharacters:characters.data() range:NSMakeRange(0, payload.length)];
+    request.operation = JALIUM_AX_SET_SELECTED_ITEMS;
+    request.text = characters.data(); request.textCount = request.textCapacity = (int32_t)characters.size();
+    [bridge query:&request];
+}
+- (void)setAccessibilitySelectedChildren:(NSArray*)children { [self replaceSelectedItems:children fromRows:NO]; }
+- (void)setAccessibilitySelectedRows:(NSArray*)rows { [self replaceSelectedItems:rows fromRows:YES]; }
 - (NSInteger)accessibilityDisclosureLevel {
     NSInteger level = 0;
     for (id parent = self.accessibilityParent; parent && level < 128
@@ -783,7 +819,10 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
         return enabled && (request.flags & JALIUM_AX_RANGE) && (request.flags & JALIUM_AX_WRITABLE) && request.step > 0;
     if (selector == @selector(setAccessibilityExpanded:)) return enabled && expandable;
     if (selector == @selector(setAccessibilityDisclosed:)) return enabled && row && expandable;
-    if (selector == @selector(setAccessibilitySelectedRows:)) return NO;
+    if (selector == @selector(setAccessibilitySelectedRows:))
+        return enabled && rowContainer && (request.flags & JALIUM_AX_SELECTION_WRITABLE);
+    if (selector == @selector(setAccessibilitySelectedChildren:))
+        return enabled && !rowContainer && (request.flags & JALIUM_AX_SELECTION_WRITABLE);
     if (selector == @selector(setAccessibilitySelected:))
         return enabled && selectable;
     if (selector == @selector(setAccessibilitySelectedTextRange:) || selector == @selector(setAccessibilitySelectedTextRanges:))
