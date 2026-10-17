@@ -36,7 +36,9 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         foreach (ulong id in ids)
         {
             if (!seen.Add(id)) continue;
-            if (!_peers.TryGetValue(id, out var weak) || !weak.TryGetTarget(out var member)) return false;
+            if (!_peers.TryGetValue(id, out var weak) || !weak.TryGetTarget(out var member)
+                || !_ids.TryGetValue(member, out var identity) || identity.Value != id
+                || !HasCurrentIdentity(member, identity)) return false;
             var memberLifetime = CaptureActionLifetime(member);
             if (!memberLifetime()
                 || member.GetPattern(PatternInterface.SelectionItem) is not ISelectionItemProvider item

@@ -12,7 +12,7 @@ namespace Jalium.UI.MacOS;
 
 // Only public/protected selection APIs and ordinary buttons are used. Notifications are
 // observed from another process; this host never posts accessibility events.
-internal static class WindowSelectionNotificationChecks
+internal static partial class WindowSelectionNotificationChecks
 {
     internal static int RunCase(string argument)
     {

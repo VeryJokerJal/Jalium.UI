@@ -19,7 +19,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
     private Func<bool> CaptureActionLifetime(AutomationPeer peer)
     {
         var target = GetActionTarget(peer);
-        if (target == null) return () => false;
+        if (target == null || !_ids.TryGetValue(peer, out var identity)) return () => false;
         var windowLifetime = _window.CaptureMacOSAccessibilityLifetime(target);
         // Nonvisual providers can be detached or reparented independently of
         // their nearest UIElement. Preserve that provider ancestry as well.
@@ -31,7 +31,8 @@ internal sealed unsafe partial class MacOSAccessibilityTree
             route.Add(current);
             if (ReferenceEquals(current.Owner, target)) break;
         }
-        return () => CanMutate(peer) && IsProviderRouteCurrent() && !_disposed && windowLifetime();
+        return () => HasCurrentIdentity(peer, identity) && CanMutate(peer)
+            && IsProviderRouteCurrent() && !_disposed && windowLifetime();
 
         bool IsProviderRouteCurrent()
         {

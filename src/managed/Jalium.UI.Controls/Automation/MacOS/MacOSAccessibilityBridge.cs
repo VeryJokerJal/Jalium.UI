@@ -164,10 +164,10 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
     }
 }
 
-/// <summary>Renderer-neutral adapter; IDs remain stable while a peer lives.</summary>
+/// <summary>Renderer-neutral adapter; IDs remain stable for one peer realization.</summary>
 internal sealed unsafe partial class MacOSAccessibilityTree
 {
-    private sealed record NodeId(ulong Value);
+    private sealed record NodeId(ulong Value, ItemIdentity Identity);
     private readonly Window _window;
     private readonly AutomationPeer _root;
     private readonly ConditionalWeakTable<AutomationPeer, NodeId> _ids = new();
@@ -206,9 +206,14 @@ internal sealed unsafe partial class MacOSAccessibilityTree
     private ulong GetId(AutomationPeer peer)
     {
         peer = RealizedPeer(peer);
-        if (_ids.TryGetValue(peer, out var value)) return value.Value;
+        if (_ids.TryGetValue(peer, out var value))
+        {
+            if (value.Identity.IsCurrent(peer)) return value.Value;
+            _peers.Remove(value.Value);
+            _ids.Remove(peer);
+        }
         ulong id = _nextId++;
-        _ids.Add(peer, new(id));
+        _ids.Add(peer, new(id, ItemIdentity.Capture(peer)));
         _peers.Add(id, new(peer));
         if (id >= _nextPruneId)
         {
@@ -330,7 +335,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         return 1;
     }
 
-    internal bool Handle(ref MacOSAXRequest request)
+    private bool HandleCurrent(ref MacOSAXRequest request)
     {
         if (_disposed) return false;
         // Cleanup must work even after the parent was detached or hidden.

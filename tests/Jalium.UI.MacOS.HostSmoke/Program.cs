@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-virtualized-selection-case=", StringComparison.Ordinal))
+    return WindowSelectionNotificationChecks.RunVirtualizedCase(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-selection-notifications-case=", StringComparison.Ordinal))
     return WindowSelectionNotificationChecks.RunCase(args[0]);
 
