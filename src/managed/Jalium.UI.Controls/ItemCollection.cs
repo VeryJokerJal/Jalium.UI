@@ -287,6 +287,27 @@ public sealed partial class ItemCollection : Jalium.UI.Data.CollectionView, ILis
     }
 
     /// <inheritdoc />
+    // Invalidate logical accessibility leases before any collection subscriber
+    // can query, reenter or throw. Source/view notifications can exclude the
+    // owning control, so both publication paths share this boundary.
+    protected override void OnCollectionChanged(NotifyCollectionChangedEventArgs args)
+    {
+        InvalidateItemPeers(args);
+        base.OnCollectionChanged(args);
+    }
+
+    private new void OnCollectionChanged(NotifyCollectionChangedEventArgs args, object excludedHandlerTarget)
+    {
+        InvalidateItemPeers(args);
+        base.OnCollectionChanged(args, excludedHandlerTarget);
+    }
+
+    private void InvalidateItemPeers(NotifyCollectionChangedEventArgs args)
+    {
+        if (_owner?.GetExistingAutomationPeer() is Jalium.UI.Automation.Peers.ItemsControlAutomationPeer peer)
+            peer.OnItemsCollectionChanging(args);
+    }
+
     protected override void RefreshOverride()
     {
         if (_activeView == null)

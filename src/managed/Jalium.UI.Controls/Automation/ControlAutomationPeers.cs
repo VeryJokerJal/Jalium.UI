@@ -159,11 +159,11 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     #region ISelectionItemProvider
 
     /// <inheritdoc />
-    public override bool IsSelected => ListOwner is { } list
+    public override bool IsSelected => !IsRetired && (ListOwner is { } list
         ? list.SelectionMode == SelectionMode.Single
             ? Equals(list.SelectedItem, Item) || Equals(list.SelectedItem, SelectionValue)
             : list.SelectedItems.Contains(Item) || list.SelectedItems.Contains(SelectionValue)
-        : Item is ListBoxItem item && item.IsSelected;
+        : Item is ListBoxItem item && item.IsSelected);
 
     /// <inheritdoc />
     public override AutomationPeer SelectionContainer
@@ -184,6 +184,7 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public override void Select()
     {
+        ThrowIfRetired();
         if (Item is not ListBoxItem && ListOwner is { } dataList)
         {
             dataList.SetAutomationSelection(Item, selected: true, exclusive: true);
@@ -197,6 +198,7 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public override void AddToSelection()
     {
+        ThrowIfRetired();
         if (Item is not ListBoxItem && ListOwner is { } dataList)
         {
             dataList.SetAutomationSelection(Item, selected: true, exclusive: false);
@@ -210,6 +212,7 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     public override void RemoveFromSelection()
     {
+        ThrowIfRetired();
         if (Item is not ListBoxItem && ListOwner is { } dataList)
         {
             dataList.SetAutomationSelection(Item, selected: false, exclusive: false);

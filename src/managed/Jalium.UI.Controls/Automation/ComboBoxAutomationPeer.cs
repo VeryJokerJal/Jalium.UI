@@ -28,13 +28,13 @@ public partial class ComboBoxAutomationPeer
         : SelectorItemAutomationPeer(item, parent)
     {
         private ComboBox Combo => parent.ComboBoxOwner;
-        public override bool IsSelected => Combo.SelectedIndex >= 0 && Combo.SelectedIndex < Combo.Items.Count
+        public override bool IsSelected => !IsRetired && Combo.SelectedIndex >= 0 && Combo.SelectedIndex < Combo.Items.Count
             && Equals(Combo.Items[Combo.SelectedIndex], Item);
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.ListItem;
         protected override string GetNameCore() => parent.ItemText(Item, true);
         protected override bool IsEnabledCore() => Combo.IsEnabled && base.IsEnabledCore();
-        public override void Select() => Combo.SetAutomationSelection(Item, true);
-        public override void AddToSelection() => Combo.SetAutomationSelection(Item, true);
-        public override void RemoveFromSelection() => Combo.SetAutomationSelection(Item, false);
+        public override void Select() { ThrowIfRetired(); Combo.SetAutomationSelection(Item, true); }
+        public override void AddToSelection() { ThrowIfRetired(); Combo.SetAutomationSelection(Item, true); }
+        public override void RemoveFromSelection() { ThrowIfRetired(); Combo.SetAutomationSelection(Item, false); }
     }
 }

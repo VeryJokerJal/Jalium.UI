@@ -1,0 +1,16 @@
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Jalium.UI.Tests.GeneratedTemplateLifetimeView">
+    <UserControl.Resources>
+        <SolidColorBrush x:Key="LifetimeBrush" Color="#FF123456" />
+        <DataTemplate x:Key="data">
+            <Border x:Name="DataRoot" Background="{StaticResource LifetimeBrush}" />
+        </DataTemplate>
+        <ControlTemplate x:Key="control" TargetType="Button">
+            <Border x:Name="ControlRoot" Background="{StaticResource LifetimeBrush}" />
+        </ControlTemplate>
+        <ItemsPanelTemplate x:Key="panel">
+            <StackPanel x:Name="PanelRoot" Background="{StaticResource LifetimeBrush}" />
+        </ItemsPanelTemplate>
+    </UserControl.Resources>
+</UserControl>

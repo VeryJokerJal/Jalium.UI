@@ -43,6 +43,11 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.300
+      - name: Verify generated template lifetimes
+        run: >-
+          dotnet test tests/Jalium.UI.Template.Tests/Jalium.UI.Template.Tests.csproj
+          -c Release --nologo --disable-build-servers
+          -p:UseSharedCompilation=false -m:1 --logger trx
       - name: Cache pinned Apple shader compiler slices
         uses: actions/cache@v4
         with:

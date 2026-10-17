@@ -94,11 +94,11 @@ public class DataGridItemAutomationPeer : ItemAutomationPeer,
     public override object? GetPattern(PatternInterface patternInterface) =>
         patternInterface == PatternInterface.SelectionItem ? this : base.GetPattern(patternInterface);
 
-    public bool IsSelected => DataGridOwner.SelectedItems.Contains(Item);
+    public bool IsSelected => !IsRetired && DataGridOwner.SelectedItems.Contains(Item);
     public AutomationPeer SelectionContainer => _parent;
-    public void Select() => _ = DataGridOwner.AutomationSelectItem(Item, addToSelection: false);
-    public void AddToSelection() => _ = DataGridOwner.AutomationSelectItem(Item, addToSelection: true);
-    public void RemoveFromSelection() => _ = DataGridOwner.AutomationRemoveItemFromSelection(Item);
+    public void Select() { ThrowIfRetired(); _ = DataGridOwner.AutomationSelectItem(Item, addToSelection: false); }
+    public void AddToSelection() { ThrowIfRetired(); _ = DataGridOwner.AutomationSelectItem(Item, addToSelection: true); }
+    public void RemoveFromSelection() { ThrowIfRetired(); _ = DataGridOwner.AutomationRemoveItemFromSelection(Item); }
 
     bool Jalium.UI.Automation.Provider.ISelectionItemProvider.IsSelected => IsSelected;
     Jalium.UI.Automation.Provider.IRawElementProviderSimple Jalium.UI.Automation.Provider.ISelectionItemProvider.SelectionContainer =>

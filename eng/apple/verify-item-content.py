@@ -17,7 +17,7 @@ import time
 
 LIBRARIES = tuple('libjalium.native.' + name + '.dylib' for name in
                   ('core', 'text', 'metal', 'software', 'platform', 'media.core', 'media', 'browser'))
-ASSEMBLIES = ('Jalium.UI.MacOS.HostSmoke.dll', 'Jalium.UI.Managed.dll', 'Jalium.UI.MacOS.dll')
+ASSEMBLIES = ('Jalium.UI.MacOS.HostSmoke.dll', 'Jalium.UI.Managed.dll', 'Jalium.UI.MacOS.dll', 'Jalium.UI.Xaml.dll')
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -153,6 +153,10 @@ def run_case(work, app, client_binary, index, libraries):
         result = {'index': index, 'passed': not failures, 'checks': checks, 'failures': failures,
                   'initial': initial, 'final': final, 'failureState': locals().get('failure_state'), 'commands': commands, 'hostPID': pid,
                   'clientPID': None if client is None else client.pid, 'loadedNative': loaded,
+                  'launcherExitCode': None if launcher is None else launcher.poll(),
+                  'hostErrorTail': log[-12000:] if failures else None,
+                  'hostOutputTail': (output / 'app.log').read_text(errors='replace')[-12000:] if failures and (output / 'app.log').exists() else None,
+                  'launcherOutputTail': (output / 'launch.log').read_text(errors='replace')[-12000:] if failures and (output / 'launch.log').exists() else None,
                   'externalAX': True, 'physicalInput': False, 'seconds': round(time.monotonic() - started, 3)}
         (output / 'receipt.json').write_text(json.dumps(result, ensure_ascii=False))
     return result

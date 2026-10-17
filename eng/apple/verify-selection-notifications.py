@@ -18,7 +18,7 @@ import time
 
 LIBRARIES = tuple("libjalium.native." + name + ".dylib" for name in
                   ("core", "text", "metal", "software", "platform", "media.core", "media", "browser"))
-ASSEMBLIES = ("Jalium.UI.MacOS.HostSmoke.dll", "Jalium.UI.Managed.dll", "Jalium.UI.MacOS.dll")
+ASSEMBLIES = ("Jalium.UI.MacOS.HostSmoke.dll", "Jalium.UI.Managed.dll", "Jalium.UI.MacOS.dll", 'Jalium.UI.Xaml.dll')
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()

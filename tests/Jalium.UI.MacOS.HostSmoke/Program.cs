@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-item-lifetime-case=", StringComparison.Ordinal))
+    return WindowSelectionNotificationChecks.RunItemLifetimeCase(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-combo-selection-case=", StringComparison.Ordinal))
     return WindowSelectionNotificationChecks.RunComboSelectionCase(args[0]);
 
