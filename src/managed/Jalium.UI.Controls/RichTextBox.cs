@@ -2366,7 +2366,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     private bool TryLayoutNativeParagraph(Paragraph paragraph, BlockLayoutInfo blockLayout,
         double maxWidth, ref int currentOffset)
     {
-        if (!OperatingSystem.IsMacOS() || RenderContext.Current?.Backend != RenderBackend.Metal)
+        if (!OperatingSystem.IsMacOS() || RenderContext.Current?.Backend is not (RenderBackend.Metal or RenderBackend.Software))
             return false;
         var spans = new List<NativeTextParagraph.Span>();
         var sources = new List<Run?>();

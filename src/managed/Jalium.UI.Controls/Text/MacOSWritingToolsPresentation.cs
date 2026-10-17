@@ -13,7 +13,7 @@ namespace Jalium.UI;
 internal static class MacOSWritingToolsPresentation
 {
     private static readonly ConditionalWeakTable<UIElement, State> States = new();
-    internal static bool UsesShapedGlyphRanges => OperatingSystem.IsMacOS() && Jalium.UI.Interop.RenderContext.Current?.Backend == Jalium.UI.Interop.RenderBackend.Metal;
+    internal static bool UsesShapedGlyphRanges => OperatingSystem.IsMacOS() && Jalium.UI.Interop.RenderContext.Current?.Backend is Jalium.UI.Interop.RenderBackend.Metal or Jalium.UI.Interop.RenderBackend.Software;
     [ThreadStatic] private static int _previewDepth;
     [ThreadStatic] private static UIElement? _previewOwner;
     [ThreadStatic] private static IAutomationTextProviderSource? _previewSource;

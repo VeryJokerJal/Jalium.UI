@@ -86,6 +86,14 @@ internal static class WindowWritingToolsGlyphChecks
             var normal=Pixels(PaintTransformed());
             var whole=MacOSWritingToolsPresentation.CreatePreview(e,source,0,text.Length,transform,dpi,null,()=>true)??throw new Exception("Whole preview failed");
             var all=Canvas(new(whole.Png,whole.Frame),width,height,dpi);
+            if(!all.SequenceEqual(normal) && !File.Exists(Path.Combine(Output,"first-difference.json")))
+            {
+                var samples=new List<object>();int changed=0,max=0;
+                for(int index=0;index<normal.Length;index+=4)
+                    if(!normal.AsSpan(index,4).SequenceEqual(all.AsSpan(index,4)))
+                    {++changed;for(int c=0;c<4;++c)max=Math.Max(max,Math.Abs(normal[index+c]-all[index+c]));if(samples.Count<12)samples.Add(new{x=index/4%width,y=index/4/width,actual=normal[index..(index+4)],preview=all[index..(index+4)]});}
+                File.WriteAllText(Path.Combine(Output,"first-difference.json"),JsonSerializer.Serialize(new{label,changed,max,samples}));
+            }
             Check(all.SequenceEqual(normal),label+" whole preview preserves actual BGRA ink including overhang");
             var left=MacOSWritingToolsPresentation.CreatePreview(e,source,0,3,transform,dpi,null,()=>true)??throw new Exception("Partial preview failed");
             var selected=Canvas(new(left.Png,left.Frame),width,height,dpi);
@@ -108,14 +116,15 @@ internal static class WindowWritingToolsGlyphChecks
         catch(Exception ex){++failures;Console.WriteLine("ERROR "+label+": "+ex);}
         finally{if(e is not null)MacOSWritingToolsPresentation.Clear(e);w?.Close();Pump(15);}
     }
-    internal static int Run()
+    internal static int Run(bool software = false)
     {
+        Jalium.UI.Interop.RenderContext.GetOrCreateCurrent(software ? Jalium.UI.Interop.RenderBackend.Software : Jalium.UI.Interop.RenderBackend.Metal,forceReplace:true);
         Directory.CreateDirectory(Output);nint pool=PushPool();nint app=Send(Class("NSApplication"),Selector("sharedApplication"));Integer(app,Selector("setActivationPolicy:"),1);Send(app,Selector("finishLaunching"));
         var application=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};
         foreach(string font in new[]{"Helvetica Neue","Times New Roman","Baskerville","Georgia"})foreach(string text in new[]{"Miii","fff","jfjf","中文🙂"})for(int kind=0;kind<4;++kind)Case(kind,font,text);
         foreach(double dpi in new[]{1.0,2.0}) foreach(var transform in new[]{Matrix.Identity,new Matrix(1.15,0.1,0.15,1.1,12,8)})
             for(int kind=0;kind<4;++kind)foreach(string tail in new[]{"Miii","سلام","中文🙂"})Partition(kind,dpi,transform,tail);
-        File.WriteAllText(Path.Combine(Output,"checks.json"),JsonSerializer.Serialize(new{passed,failures,rows,physicalInput=false,realService=false,nativeLibraries=NativeLibraries()}));PopPool(pool);return failures==0?0:1;
+        File.WriteAllText(Path.Combine(Output,"checks.json"),JsonSerializer.Serialize(new{passed,failures,rows,physicalInput=false,realService=false,backend=Jalium.UI.Interop.RenderContext.Current?.Backend.ToString(),nativeLibraries=NativeLibraries()}));PopPool(pool);return failures==0?0:1;
     }
     static Dictionary<string,string> NativeLibraries()
     {

@@ -19,14 +19,15 @@ namespace Jalium.UI.MacOS;
 // not invoke Apple Intelligence or inject operating-system input events.
 internal static class WindowWritingToolsChecks
 {
-    internal static int Run()
+    internal static int Run(bool software = false)
     {
         if (!OperatingSystem.IsMacOSVersionAtLeast(15, 2)) return 77;
         var app = NSApplication.SharedApplication;
         app.ActivationPolicy = NSApplicationActivationPolicy.Regular;
         using var host = new ValidationDelegate(); app.Delegate = host; app.FinishLaunching();
         using (var launch = NSNotification.FromName(NSApplication.DidFinishLaunchingNotification, app)) host.DidFinishLaunching(launch);
-        RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
+        if (software) RenderContext.GetOrCreateCurrent(RenderBackend.Software,forceReplace:true);
+        else RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         Jalium.UI.Controls.Themes.ThemeManager.Initialize(Application.Current!);
         var failures = new List<string>(); var checks = new List<string>();
         var cases = new Queue<(bool Custom, int Editor)>();

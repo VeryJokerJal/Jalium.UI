@@ -99,7 +99,7 @@ internal sealed class NativeTextParagraph : IDisposable
         TextAlignment alignment, FlowDirection direction, bool naturalDirection = false, bool noWrap = false)
     {
         var context = RenderContext.Current;
-        if (!OperatingSystem.IsMacOS() || context is not { IsValid: true, Backend: RenderBackend.Metal } ||
+        if (!OperatingSystem.IsMacOS() || context is not { IsValid: true, Backend: RenderBackend.Metal or RenderBackend.Software } ||
             !double.IsFinite(width) || width <= 0) return null;
         RenderContext.BackendResourceLease? lease = null;
         var formats = new List<NativeTextFormat>();

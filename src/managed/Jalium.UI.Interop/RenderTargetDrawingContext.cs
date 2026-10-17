@@ -1881,7 +1881,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public override void DrawText(FormattedText formattedText, Point origin)
     {
         if (_closed || formattedText is null) return;
-        if (formattedText.GlyphVisibility == 0 || !OperatingSystem.IsMacOS() || _renderTarget.Backend != RenderBackend.Metal)
+        if (formattedText.GlyphVisibility == 0 || !OperatingSystem.IsMacOS() || _renderTarget.Backend is not (RenderBackend.Metal or RenderBackend.Software))
         {
             DrawTextCore(formattedText, origin);
             return;

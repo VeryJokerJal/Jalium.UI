@@ -1,4 +1,8 @@
 #include "software_backend.h"
+#ifdef __APPLE__
+#include "apple_text_format.h"
+#include "apple_text_paragraph.h"
+#endif
 #include "jalium_scanline_rasterizer.h"   // PixelRect / RasterizePathToRects
 #include "jalium_impeller_stroke.h"       // ExpandStrokePath (collect-contours mode)
 #include "jalium_triangulate.h"           // FlattenPathToContours
@@ -4628,7 +4632,7 @@ JaliumResult SoftwareRenderTarget::EndDraw()
         CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGImageRef image = provider ? CGImageCreate(width_, height_, 8, 32,
             static_cast<size_t>(width_) * 4, colorSpace,
-            kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+            static_cast<CGBitmapInfo>(kCGImageAlphaFirst) | kCGBitmapByteOrder32Little,
             provider, nullptr, false, kCGRenderingIntentDefault) : nullptr;
         if (image) {
             [CATransaction begin];
@@ -7835,6 +7839,54 @@ void SoftwareRenderTarget::DestroyRetainedLayer(void* layer)
     }
 }
 
+#ifdef __APPLE__
+JaliumResult SoftwareRenderTarget::SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode)
+{
+    std::vector<std::pair<uint32_t, uint32_t>> sorted;
+    for (uint32_t i = 0; i < count; ++i)
+        if (pairs[2 * i + 1]) sorted.emplace_back(pairs[2 * i], pairs[2 * i] + pairs[2 * i + 1]);
+    std::sort(sorted.begin(), sorted.end());
+    std::vector<uint32_t> merged;
+    for (const auto& span : sorted) {
+        if (!merged.empty() && span.first <= merged[merged.size() - 2] + merged.back())
+            merged.back() = std::max(merged.back(), span.second - merged[merged.size() - 2]);
+        else { merged.push_back(span.first); merged.push_back(span.second - span.first); }
+    }
+    glyphRanges_.swap(merged); glyphVisibility_ = mode;
+    return JALIUM_OK;
+}
+
+void SoftwareRenderTarget::CompositeAppleGlyphs(const std::vector<uint8_t>& pixels,
+    uint32_t width, uint32_t height, float x, float y)
+{
+    const int32_t left = static_cast<int32_t>(x), top = static_cast<int32_t>(y);
+    for (uint32_t row = 0; row < height; ++row) for (uint32_t col = 0; col < width; ++col) {
+        int32_t dx = left + static_cast<int32_t>(col), dy = top + static_cast<int32_t>(row);
+        if (dx < 0 || dy < 0 || dx >= width_ || dy >= height_ || IsClipped(dx + .5f, dy + .5f)) continue;
+        size_t i = (static_cast<size_t>(row) * width + col) * 4;
+        uint32_t alpha = pixels[i + 3]; if (!alpha) continue;
+        // CoreText emits premultiplied BGRA; the Software framebuffer stores
+        // straight BGRA and its common compositor performs the alpha blend.
+        auto straight = [&](int c) { return static_cast<uint8_t>(std::min(255u, (pixels[i + c] * 255u + alpha / 2) / alpha)); };
+        const size_t destination = (static_cast<size_t>(dy) * width_ + dx) * 4;
+        if (fb_.pixels[destination + 3] == 0)
+            fb_.SetPixel(dx, dy, straight(2), straight(1), straight(0), static_cast<uint8_t>(alpha));
+        else
+            fb_.BlendPixel(dx, dy, straight(2), straight(1), straight(0), static_cast<uint8_t>(alpha));
+    }
+}
+
+void SoftwareRenderTarget::RenderParagraphLine(TextParagraph* paragraph, uint32_t line, float x, float y, float opacity)
+{
+    auto* apple = dynamic_cast<AppleTextParagraph*>(paragraph);
+    if (!apple || opacity <= 0 || !isDrawing_) return;
+    std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
+    if (apple->RasterizeLine(line, x, y, opacity * currentOpacity_, currentTransform_.m, width_, height_,
+        pixels, width, height, left, top, glyphRanges_.data(), static_cast<uint32_t>(glyphRanges_.size() / 2), glyphVisibility_))
+        CompositeAppleGlyphs(pixels, width, height, left, top);
+}
+#endif
+
 void SoftwareRenderTarget::RenderText(
     const wchar_t* text, uint32_t textLength,
     TextFormat* format,
@@ -7846,8 +7898,19 @@ void SoftwareRenderTarget::RenderText(
     auto* solid = dynamic_cast<SoftwareSolidBrush*>(brush);
     if (!solid) return;
 
+#ifdef __APPLE__
+    if (auto* apple = dynamic_cast<AppleTextFormat*>(format)) {
+        std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
+        if (apple->Rasterize(text, textLength, x, y, w, h, currentTransform_.m, 0, 0, width_, height_,
+            solid->r, solid->g, solid->b, solid->a * currentOpacity_, pixels, width, height, left, top,
+            glyphRanges_.data(), static_cast<uint32_t>(glyphRanges_.size() / 2), glyphVisibility_))
+            CompositeAppleGlyphs(pixels, width, height, left, top);
+        return;
+    }
+#endif
+
 #ifdef JALIUM_HAS_TEXT_ENGINE
-    // Path 1: FreeType glyph atlas rendering (preferred on all platforms)
+    // Self-hosted glyph atlas on platforms with a discovery provider.
     auto* ftFormat = dynamic_cast<JaliumTextFormat*>(format);
     if (ftFormat && backend_ && backend_->GetTextEngine()) {
         RenderTextWithGlyphAtlas(text, textLength, ftFormat, x, y, w, h, solid);
@@ -11433,12 +11496,27 @@ TextFormat* SoftwareBackend::CreateTextFormat(
     int32_t fontWeight,
     int32_t fontStyle)
 {
+#ifdef __APPLE__
+    auto* format = new AppleTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+    if (!format->IsValid()) { delete format; return nullptr; }
+    return format;
+#else
 #ifdef JALIUM_HAS_TEXT_ENGINE
     if (textEngine_)
         return textEngine_->CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
 #endif
     return new SoftwareTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+#endif
 }
+#ifdef __APPLE__
+TextFormat* SoftwareBackend::CreateTextFormatWithWidth(const wchar_t* family, float size,
+    int32_t weight, int32_t style, float percentage)
+{
+    auto* format = new AppleTextFormat(family, size, weight, style, percentage);
+    if (!format->IsValid()) { delete format; return nullptr; }
+    return format;
+}
+#endif
 
 Bitmap* SoftwareBackend::CreateBitmapFromMemory(const uint8_t* data, uint32_t dataSize)
 {

@@ -10,11 +10,12 @@
 
 namespace {
 int checks = 0;
+JaliumBackend selectedBackend = JALIUM_BACKEND_METAL;
 void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); ++checks; }
 const wchar_t* Managed(const char16_t* text) { return reinterpret_cast<const wchar_t*>(text); }
 template<class T, void (*Destroy)(T*)> using Handle = std::unique_ptr<T, decltype(Destroy)>;
 struct Surface {
-    Handle<JaliumContext, jalium_context_destroy> context{jalium_context_create(JALIUM_BACKEND_METAL), jalium_context_destroy};
+    Handle<JaliumContext, jalium_context_destroy> context{jalium_context_create(selectedBackend), jalium_context_destroy};
     Handle<JaliumRenderTarget, jalium_render_target_destroy> target{nullptr, jalium_render_target_destroy};
     Handle<JaliumTextFormat, jalium_text_format_destroy> font{nullptr, jalium_text_format_destroy};
     Handle<JaliumBrush, jalium_brush_destroy> brush{nullptr, jalium_brush_destroy};
@@ -23,7 +24,7 @@ struct Surface {
     explicit Surface(int scale) : width(420 * scale), height(140 * scale) {
         Check(context != nullptr, "Metal context");
         view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 140)];
-        view.wantsLayer = YES; view.layer = [CAMetalLayer layer];
+        view.wantsLayer = YES; view.layer = selectedBackend == JALIUM_BACKEND_METAL ? [CAMetalLayer layer] : [CALayer layer];
         JaliumSurfaceDescriptor descriptor{}; descriptor.platform = JALIUM_PLATFORM_MACOS;
         descriptor.kind = JALIUM_SURFACE_KIND_NATIVE_WINDOW;
         descriptor.handle0 = reinterpret_cast<intptr_t>((__bridge void*)view);
@@ -98,7 +99,8 @@ void Clusters(Surface& s, bool paragraph) {
     }
 }
 }
-int main() {
+int main(int argc, const char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--software") selectedBackend = JALIUM_BACKEND_SOFTWARE;
     @autoreleasepool {
         try {
             [NSApplication sharedApplication];
@@ -110,7 +112,7 @@ int main() {
                 other.Filter({}, 1); Check(Empty(other.Draw(u"fff      Miii")), "Independent target filter");
                 Check(s.Draw(u"fff      Miii") == expected, "Interleaving targets preserves visibility");
             }
-            std::printf("PASS shaped glyph ranges: %d checks at 1x/2x; real Metal readback; no desktop input\n", checks); return 0;
+            std::printf("PASS shaped glyph ranges: %d checks at 1x/2x; native readback; no desktop input\n", checks); return 0;
         } catch (const std::exception& error) { std::fprintf(stderr,"FAIL shaped glyph ranges: %s\n",error.what()); return 1; }
     }
 }

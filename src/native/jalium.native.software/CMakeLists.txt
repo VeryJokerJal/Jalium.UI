@@ -256,3 +256,12 @@ if(JALIUM_TEXT_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID AND TARGET jal
     add_test(NAME jalium.native.software.fallback-hit-testing
              COMMAND jalium.native.software.text.tests --fallback-hit-testing)
 endif()
+
+if(JALIUM_SOFTWARE_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    add_executable(jalium.native.software.apple.text tests/software_apple_text.mm)
+    target_compile_options(jalium.native.software.apple.text PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.software.apple.text PRIVATE jalium.native.software jalium.native.core
+        "-framework AppKit" "-framework CoreText" "-framework CoreGraphics")
+    add_test(NAME jalium.native.software.apple.coretext COMMAND jalium.native.software.apple.text)
+    set_tests_properties(jalium.native.software.apple.coretext PROPERTIES TIMEOUT 60)
+endif()

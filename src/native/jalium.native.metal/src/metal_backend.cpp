@@ -1,7 +1,9 @@
 #include "metal_backend.h"
 #include "metal_text_paragraph.h"
+#ifndef JALIUM_APPLE_TEXT_ONLY
 #include "metal_internal.h"
 #include "metal_shader_compiler.h"
+#endif
 #include "jalium_string_util.h"
 #include "jalium_font_math.h"
 #include "metal_font_visibility.h"
@@ -33,14 +35,20 @@ namespace jalium {
 
 namespace {
 
+#ifdef JALIUM_APPLE_TEXT_ONLY
 std::atomic<uint64_t> gMetalTextFormatId{1};
+#endif
 
+#ifndef JALIUM_APPLE_TEXT_ONLY
 uint32_t NormalizeSpread(uint32_t value) noexcept
 {
     return value <= 2 ? value : 0;
 }
 
+#endif
+
 #ifdef __APPLE__
+#ifdef JALIUM_APPLE_TEXT_ONLY
 CFStringRef CreateCFString(const wchar_t* value, uint32_t length)
 {
     if (!value) return nullptr;
@@ -102,11 +110,14 @@ CFIndex WideIndexToUtf16(const wchar_t* text, uint32_t length, uint32_t wideInde
     return result;
 }
 
+#endif
+
 void ReleaseCF(const void* object)
 {
     if (object) CFRelease(object);
 }
 
+#ifndef JALIUM_APPLE_TEXT_ONLY
 constexpr const char* kInkShaderSource = R"METAL(
 #include <metal_stdlib>
 using namespace metal;
@@ -177,9 +188,11 @@ kernel void jalium_ink(
 }
 )METAL";
 #endif
+#endif
 
 } // namespace
 
+#ifndef JALIUM_APPLE_TEXT_ONLY
 MetalLinearGradientBrush::MetalLinearGradientBrush(float sx, float sy, float ex,
     float ey, const JaliumGradientStop* values, uint32_t count, uint32_t spread)
     : startX(sx), startY(sy), endX(ex), endY(ey),
@@ -197,6 +210,9 @@ MetalRadialGradientBrush::MetalRadialGradientBrush(float cx, float cy, float rx,
     if (values && count) stops.assign(values, values + count);
 }
 
+#endif
+
+#ifdef JALIUM_APPLE_TEXT_ONLY
 struct MetalTextFormat::Impl {
     FontResourceReference registeredFont;
     std::vector<FontResourceReference> fallbackResources;
@@ -1201,6 +1217,9 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
 #endif
 }
 
+#endif
+
+#ifndef JALIUM_APPLE_TEXT_ONLY
 struct MetalBitmap::Impl {
     uint32_t width = 0;
     uint32_t height = 0;
@@ -1948,5 +1967,7 @@ void MetalBackend::NoteDeviceError(int64_t code)
 { if (code != 0) impl_->deviceError.store(code, std::memory_order_release); }
 
 IRenderBackend* CreateMetalBackend() { return new MetalBackend(); }
+
+#endif // !JALIUM_APPLE_TEXT_ONLY
 
 } // namespace jalium

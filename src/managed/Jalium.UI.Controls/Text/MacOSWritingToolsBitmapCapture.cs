@@ -34,8 +34,10 @@ internal static partial class MacOSWritingToolsBitmapCapture
             byte[] pixels = new byte[checked(stride * height)];
             if (target.FetchReadback(pixels, (uint)stride, out int capturedWidth, out int capturedHeight) != JaliumResult.Ok ||
                 capturedWidth != width || capturedHeight != height || !current()) return null;
-            // Composition surfaces contain premultiplied BGRA. Bitmap encoders
-            // and NSTextPreview consume straight alpha; never multiply it twice.
+            // Metal composition surfaces contain premultiplied BGRA; Software
+            // already supplies straight BGRA. Encoders/NSTextPreview use straight
+            // alpha, so convert exactly once at this boundary.
+            if (context.Backend != RenderBackend.Software)
             for (int index = 0; index < pixels.Length; index += 4)
             {
                 int alpha = pixels[index + 3];
