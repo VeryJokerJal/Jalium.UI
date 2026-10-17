@@ -4,6 +4,44 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v259：Apple 包构建的 visionOS 媒体 API 兼容性
+
+[Apple CI 39022075017](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/39022075017/job/117365717199)
+在 visionOS 媒体编译阶段失败，退出 65；后续 XCFramework、包和上传步骤未执行。
+日志指向 AVAsset.tracksWithMediaType、AVCaptureDeviceInput 的工厂方法及
+AVCaptureSession.sessionPreset／四个 preset 常量在 visionOS 不可用。
+本机 Xcode 27.0／SDK 27.0 的原始源码对照重现相同错误；CI 使用 Xcode 26.6／
+XROS 26.5，两个工具链的结果分别记录。
+
+visionOS 视频路径改用 AVAsset 的异步轨道加载，保留同步 C API：等待最多 30 秒，
+分别返回加载错误、无视频轨道及超时；超时取消加载，回调状态由共享所有权保留到
+晚到回调结束。摄像头改用该平台仍支持的 initWithDevice:error:，通过设备公开格式
+选择受支持的尺寸与帧率，锁定配置期间应用格式和帧时长。未指定格式时保留设备
+默认值；不支持的请求、配置锁失败与格式变化异常分别返回错误。视频和摄像头
+实现保留，未替换为 NOT_IMPLEMENTED；其他 Apple 平台维持原有调用路径。
+
+| 本轮新增验证 | 结果与边界 |
+| --- | --- |
+| 原始源码 SDK 对照 | macOS arm64／x64、iOS／tvOS 设备与模拟器共 6 项通过；visionOS 设备／模拟器 2 项因上述 API 编译失败。 |
+| 最终源码 SDK 检查 | 相同 8 个目标全部通过，实际 error 数为 0。弃用警告不计为错误；iOS／tvOS 语法检查采用 17.0，正式媒体静态库按仓库 preset 的 18.0 构建。 |
+| 媒体静态库 | 使用仓库真实 CMake target 串行构建 iOS、tvOS、visionOS 的设备／模拟器共 **6/6**；包含共享音频源及 media.core 依赖。仅媒体目标，不表示完整 AOT、着色器工具链、XCFramework 或 NuGet 包通过。 |
+| macOS 运行合同 | PR 与本地历史各 **47/47**，各 1 个 CTest 分组。覆盖异步成功／空轨道／错误／超时后晚到回调；摄像头尺寸／帧率／默认值／不支持请求及锁和异常清理；实际自有 H.264 文件的主／后台轨道加载、两种像素通道、解码、跳转和关闭后的帧资源寿命。 |
+| 摄像头证据 | 格式配置使用确定性设备协议替身和真实 CMVideoFormatDescription，不枚举摄像头、不申请权限、不算物理设备验收。实际视频解码使用 AVAssetWriter 创建并清理的本地文件。 |
+| AddressSanitizer | PR 媒体组 **47/47、1/1**，无地址访问错误；detect_leaks=0，未做泄漏检查。 |
+| macOS 产品与 ABI | 同参数编译前版与最终 apple_media.mm，**21 个对象代码／数据段完全相同**；PR 与本地最终 Apple 对象一致。该对象原有 **36 个** C 导出、最终媒体库 **55 个** C 导出保持；本轮未重建其他六个原生库或重跑完整托管／Window 组。 |
+| CI 防回归 | 增加独立 media-availability 作业，在固定 Xcode 26.6 下执行 macOS 运行组与六份媒体静态库构建；默认 macOS 原生测试也注册新组。工作流 YAML 已解析，真实新提交 CI 单独跟进。 |
+
+两份完整冻结树、七个提交路径及原有 **34 处差异的路径和精确增删内容**分别核对。
+现有 master／PR 分支保持，owner-modal-loop 实验及其他并行改动继续保留。
+旧提交 2650ed7e 的 Window、Metal 和图像 CI 已通过；完整 Apple 包最后观察仍运行。
+本轮没有新的桌面截图、物理输入、真实 IME、外部 AX／VoiceOver、Spaces／混合 DPI、
+Intel／最低系统运行或 visionOS 设备验收。v258 前台整窗结果和 v257 完整回归仍按
+原来源保留；文件面板真实确认等未决项及完整 macOS／Window 目标继续进行。
+
+API 依据为对应 Xcode SDK 头文件，以及
+[Apple 轨道异步加载](https://developer.apple.com/documentation/avfoundation/avasset/loadtracks(withmediatype:completionhandler:))
+与 [设备输入 API](https://developer.apple.com/documentation/avfoundation/avcapturedeviceinput/deviceinputwithdevice:error:)。
+
 ## v258：当前前台整窗合同与文件面板确认对照
 
 两种模态循环的自有 SDK 探针均在真实 NSApplication 主循环中运行，确认

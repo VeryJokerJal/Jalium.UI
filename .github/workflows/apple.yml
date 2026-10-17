@@ -6,6 +6,33 @@ on:
   pull_request:
 
 jobs:
+  media-availability:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - name: Build and verify macOS media behavior
+        run: |
+          cmake -S src/native -B "$RUNNER_TEMP/jalium-media-macos" \
+            -DCMAKE_BUILD_TYPE=Release -DJALIUM_MEDIA_APPLE_BUILD_TESTS=ON \
+            -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
+          cmake --build "$RUNNER_TEMP/jalium-media-macos" --parallel 4 \
+            --target jalium.native.media.apple.tests
+          ctest --test-dir "$RUNNER_TEMP/jalium-media-macos" \
+            -R '^jalium[.]native[.]media[.]apple[.]availability$' --output-on-failure -V
+      - name: Compile Apple media device and simulator archives
+        run: |
+          for slice in ios iossimulator tvos tvossimulator visionos visionossimulator; do
+            cmake --preset "apple-$slice-arm64" -S src/native \
+              -B "$RUNNER_TEMP/jalium-media-$slice" \
+              -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+            cmake --build "$RUNNER_TEMP/jalium-media-$slice" --config Release \
+              --target jalium.native.media.apple --parallel 4
+          done
+
   native-and-packages:
     runs-on: macos-26
     timeout-minutes: 360
