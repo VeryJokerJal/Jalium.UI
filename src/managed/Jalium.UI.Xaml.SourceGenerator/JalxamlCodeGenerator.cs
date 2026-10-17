@@ -1134,7 +1134,7 @@ internal static class JalxamlCodeGenerator
         return false;
     }
 
-    private static bool IsTemplateClrType(string? clrTypeName)
+    internal static bool IsTemplateClrType(string? clrTypeName)
     {
         if (string.IsNullOrEmpty(clrTypeName))
             return false;

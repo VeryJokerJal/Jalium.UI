@@ -503,10 +503,12 @@ public static class JalxamlParser
         // A @section body is registered as a compiled factory invoked by RazorSectionHost
         // — its x:Names are scoped to that subtree (like a template), NOT codebehind
         // fields on the defining component, matching the runtime which parses the section
-        // separately. Suppress name capture for everything inside a __RazorSection.
+        // separately. Template bodies also define instance-local scopes: preserve
+        // their AST names and AOT references, but never declare component fields.
         var childSuppressNames = suppressNames ||
                                  localName == RazorSectionElementName ||
-                                 localName == RazorVirtualizeElementName;
+                                 localName == RazorVirtualizeElementName ||
+                                 JalxamlCodeGenerator.IsTemplateClrType(resolved);
 
         if (reader.IsEmptyElement)
         {
@@ -603,7 +605,7 @@ public static class JalxamlParser
                     // we still walk them to keep metadata collection running, but for now
                     // they don't get reflected back into the AST (the SG falls back if it
                     // cannot represent them). Skip the body without adding to the tree.
-                    SkipPropertyElementBody(reader, result);
+                    SkipPropertyElementBody(reader, result, suppressNames);
                 }
                 else
                 {
@@ -619,7 +621,7 @@ public static class JalxamlParser
         return pe;
     }
 
-    private static void SkipPropertyElementBody(XmlReader reader, JalxamlParseResult result)
+    private static void SkipPropertyElementBody(XmlReader reader, JalxamlParseResult result, bool suppressNames)
     {
         if (reader.IsEmptyElement)
         {
@@ -640,12 +642,12 @@ public static class JalxamlParser
                 AddReferencedElement(result, reader.LocalName, reader.NamespaceURI);
                 if (reader.LocalName.Contains('.'))
                 {
-                    SkipPropertyElementBody(reader, result);
+                    SkipPropertyElementBody(reader, result, suppressNames);
                 }
                 else
                 {
                     // Walk the regular tree (still side-effecting metadata).
-                    _ = ParseElementTree(reader, result);
+                    _ = ParseElementTree(reader, result, suppressNames);
                 }
             }
         }
@@ -686,6 +688,7 @@ public static class JalxamlParser
                     {
                         Name = value,
                         TypeName = node.FallbackClrTypeName,
+                        DeclaringNode = node,
                     });
                 }
                 if (string.Equals(local, "Class", StringComparison.Ordinal))
@@ -746,6 +749,7 @@ public static class JalxamlParser
                 {
                     Name = value,
                     TypeName = node.ResolvedClrTypeName ?? "Jalium.UI.FrameworkElement",
+                    DeclaringNode = node,
                 });
             }
 

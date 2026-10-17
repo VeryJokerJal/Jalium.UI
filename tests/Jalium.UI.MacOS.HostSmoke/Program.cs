@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-template-names")
+    return WindowTemplateScopeChecks.Run();
+
 if (args.Length == 1 && args[0].StartsWith("--window-item-lifetime-case=", StringComparison.Ordinal))
     return WindowSelectionNotificationChecks.RunItemLifetimeCase(args[0]);
 
