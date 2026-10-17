@@ -26,6 +26,7 @@ internal static class WindowTabletChecks
     {
         string output = Environment.GetEnvironmentVariable("JALIUM_TABLET_OUTPUT") ?? throw new InvalidOperationException("JALIUM_TABLET_OUTPUT is required.");
         string bridge = Environment.GetEnvironmentVariable("JALIUM_GESTURE_TEST_BRIDGE") ?? throw new InvalidOperationException("The test-only SDK bridge is required.");
+        bool reopenWithoutKey=Environment.GetEnvironmentVariable("JALIUM_TABLET_REOPEN_WITHOUT_KEY")=="1";
         Directory.CreateDirectory(output);
         nint helper = NativeLibrary.Load(bridge);
         var send = Marshal.GetDelegateForFunctionPointer<SendSample>(NativeLibrary.GetExport(helper,"jalium_test_apple_tablet_send"));
@@ -45,7 +46,7 @@ internal static class WindowTabletChecks
             if(popup!=null)popup.IsOpen=false;popup=null;owner?.Close();owner=source=null;
             if(!cases.TryDequeue(out var item))
             {
-                File.WriteAllText(Path.Combine(output,"host-result.json"),JsonSerializer.Serialize(new{completed,expected=6,passed=checks.Count,failures,checks,states,
+                File.WriteAllText(Path.Combine(output,"host-result.json"),JsonSerializer.Serialize(new{completed,expected=6,reopenWithoutKey,passed=checks.Count,failures,checks,states,
                     physicalInput=false,backend=software?"Software":"Metal",nativeLibraries=NativeLibraries(),pid=Environment.ProcessId}));
                 app.Stop(app);
                 // A timer does not dispatch an NSEvent, so Stop alone cannot
@@ -67,7 +68,7 @@ internal static class WindowTabletChecks
             if(item.Kind=="owner"){area.Children.Add(subject);Canvas.SetLeft(subject,10);Canvas.SetTop(subject,8);}
             var panel=new StackPanel{Margin=new Thickness(16),Spacing=8};panel.Children.Add(new TextBlock{Text="窗口与数位板",FontSize=18});panel.Children.Add(area);
             panel.Children.Add(new TextBlock{Text="检查笔事件、单次点击、墨迹压力及取消恢复。",TextWrapping=TextWrapping.Wrap});
-            owner=new Window{Title="Jalium Window v251 · 数位板",Width=680,Height=620,MinWidth=560,MinHeight=560,
+            owner=new Window{Title="Jalium Window v252 · 数位板",Width=680,Height=620,MinWidth=560,MinHeight=560,
                 TitleBarStyle=item.Custom?WindowTitleBarStyle.Custom:WindowTitleBarStyle.Native,Content=panel};
             Application.Current!.MainWindow=owner;owner.Show();owner.UpdateLayout();
             if(item.Kind!="owner")
@@ -292,12 +293,50 @@ internal static class WindowTabletChecks
                             original=DispatchState(source!),physical=DispatchState(currentSource),owner=DispatchState(currentOwner)};
                         states.Add(state);Console.WriteLine("TABLET-RESTORE "+JsonSerializer.Serialize(state));
                     }
+                    var focusableBefore=new List<(UIElement Element,bool Focusable)>();
+                    IEnumerable<UIElement> Elements(DependencyObject root)
+                    {
+                        if(root is UIElement element)yield return element;
+                        for(int i=0;i<VisualTreeHelper.GetChildrenCount(root);i++)
+                        {
+                            var child=VisualTreeHelper.GetChild(root,i);
+                            if(child!=null)foreach(var descendant in Elements(child))yield return descendant;
+                        }
+                    }
+                    bool pointerOnly=reopenWithoutKey&&label.EndsWith("kind=native",StringComparison.Ordinal);
+                    if(pointerOnly)
+                    {
+                        foreach(var element in Elements(subject!))
+                        {focusableBefore.Add((element,element.Focusable));element.Focusable=false;}
+                        var native=ObjCRuntime.Runtime.GetNSObject<NSView>(currentSource.Handle)!.Window!;
+                        var parent=ObjCRuntime.Runtime.GetNSObject<NSView>(currentOwner.Handle)!.Window!;
+                        native.ResignKeyWindow();parent.MakeKeyWindow();
+                        states.Add(new{label,phase="pointer-only-before",canBecomeKey=native.CanBecomeKeyWindow,
+                            isKey=native.IsKeyWindow,ownerIsKey=parent.IsKeyWindow,
+                            formerFocusable=focusableBefore.Where(x=>x.Focusable).Select(x=>x.Element.GetType().Name).ToArray()});
+                        Require(!native.IsKeyWindow,"pointer-only popup is not native key before pen contact");
+                    }
                     Send(2,currentButton,Center(currentButton),1,.5f);
+                    if(pointerOnly)
+                        Require(!ObjCRuntime.Runtime.GetNSObject<NSView>(currentSource.Handle)!.Window!.IsKeyWindow,
+                            "pointer-only pen contact preserves owner native key");
                     Require(currentButton.IsPressed,"compatibility press is active before hide");
                     TraceRestore("before-hide");
                     currentOwner.Hide();TraceRestore("after-hide");
                     currentOwner.Show();currentOwner.UpdateLayout();TraceRestore("after-show");
                     if(popup!=null&&!popup.IsOpen){popup.IsOpen=true;currentOwner.UpdateLayout();}
+                    if(pointerOnly)
+                    {
+                        currentSource=Window.GetMacOSPhysicalWindow(subject)!;
+                        var immediate=ObjCRuntime.Runtime.GetNSObject<NSView>(currentSource.Handle)!;
+                        Require(immediate.Window is {IsVisible:true},"pointer-only popup is visible for same-turn restored input");
+                        int immediateDown=penDown,immediatePackets=points.Count;
+                        Send(3,currentButton,Center(currentButton),1,.7f);
+                        TraceRestore("same-turn-held-drag");
+                        Require(penDown==immediateDown&&points.Count==immediatePackets&&
+                            !currentButton.IsPressed&&clicks==expectedClicks,
+                            "same-turn held drag remains retired before queued cancellation");
+                    }
                     wait.Restart();
                     void Restored()
                     {
@@ -308,7 +347,15 @@ internal static class WindowTabletChecks
                         var restored=ObjCRuntime.Runtime.GetNSObject<NSView>(currentSource.Handle)!;
                         if(restored.Window==null||!restored.Window.IsVisible)
                         {if(wait.Elapsed.TotalSeconds<10){continuation=Restored;return;}Require(false,"restored native window is visible");}
-                        restored.Window!.MakeKeyWindow();Require(restored.Window.MakeFirstResponder(restored),"restored SDK responder ready");
+                        if(pointerOnly)
+                        {
+                            var parent=ObjCRuntime.Runtime.GetNSObject<NSView>(currentOwner.Handle)!.Window!;
+                            parent.MakeKeyWindow();
+                            Require(!restored.Window!.IsKeyWindow,
+                                "restored pointer-only popup preserves owner native key");
+                        }
+                        else
+                        {restored.Window!.MakeKeyWindow();Require(restored.Window.MakeFirstResponder(restored),"restored SDK responder ready");}
                         TraceRestore("before-held-drag");
                         int before=penDown;Send(3,currentButton,Center(currentButton),1,.7f);
                         TraceRestore("after-held-drag");
@@ -320,6 +367,15 @@ internal static class WindowTabletChecks
                             Require(currentButton.IsPressed,"older queued cancellation cannot release the newer press");
                             Send(4,currentButton,Center(currentButton));
                             Require(clicks==expectedClicks+1&&!currentButton.IsPressed,"fresh press releases and clicks once after recovery");
+                            if(pointerOnly)
+                            {
+                                foreach(var entry in focusableBefore)entry.Element.Focusable=entry.Focusable;
+                                var native=ObjCRuntime.Runtime.GetNSObject<NSView>(currentSource.Handle)!.Window!;
+                                Require(native.CanBecomeKeyWindow,"restored focusable controls permit native key again");
+                                native.MakeKeyWindow();
+                                Require(native.MakeFirstResponder(ObjCRuntime.Runtime.GetNSObject<NSView>(currentSource.Handle)!),
+                                    "SDK responder restored after pointer-only checks");
+                            }
                             device+=100;Send(0,currentEdit,Center(currentEdit));Send(1,currentEdit,Center(currentEdit));
                             string original=currentEdit.Text;Send(2,currentEdit,Center(currentEdit),1,.4f);Send(4,currentEdit,Center(currentEdit));
                             Require(ReferenceEquals(Keyboard.FocusedElement,currentEdit)&&currentEdit.Text==original,"pen click focuses the editor without changing its text");

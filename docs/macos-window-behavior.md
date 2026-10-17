@@ -4,6 +4,51 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v252：Window 完成审计与非 key Popup 的重开检查
+
+本轮先区分尚未实现的能力与已经实现但缺少实际验收的能力。以下项目仍属于原
+macOS／Window 目标；现有自动合同及局部用户实测不作为整个目标完成的证明。
+
+| 要求 | 当前证据与状态 | 完成所需证据／工作 |
+| --- | --- | --- |
+| 窗口状态、几何、关系、焦点、关闭与会话结束 | 已有 AppKit 和托管实现，范围与各轮合同见本文；本轮产品代码未变。 | 继续核查组合行为；实际 Dock／Spaces、混合 DPI／热插拔和最低系统／Intel 验收仍缺。 |
+| 指针、笔、手势与取消所有权 | v251 的托管及 SDK 合同通过；隐藏／重开仍有一次未归因失败。 | 本轮补上实际非 key Popup、同调用栈 Hide→Show→旧拖动，保留原失败并继续定位。 |
+| 普通／富文本、IME、菜单与系统文本服务 | 既有 CoreText／AppKit 实现及 v208／v209 用户实测保留原范围。 | 更广编辑器／文档、系统服务及 Writing Tools 服务界面验收；不把协议调用当作实际服务 UI。 |
+| 无障碍 | 既有进程内 AX 合同与历史外部读取各保留原范围。 | 当前外部 AX 通知、写入与 VoiceOver 的完整验收。 |
+| 文件／系统集成及完整 Apple 包 | 已有实现与各轮证据分别记录；CI 以对应提交为准。 | 剩余实际交互和完整打包结果；构建启动不计作通过。 |
+| Window.TaskbarItemInfo | **确认缺少平台实现。** Window 属性仅注册／存储对象，没有附着与更新回调；TaskbarItemInfo 的进度状态、进度值、Overlay、Description、ThumbnailClipMargin 更新函数均为空，ThumbButtonInfos 没有 Window 平台消费者。 | 补齐适合 macOS Dock／最小化窗口的原生映射、变更通知、窗口／应用所有权、恢复清理、命令动作及相应验证。单纯设置模型属性不能算实现。 |
+
+本轮重开控制场景请求 owner 为 key，临时保存并关闭 Popup 内容子树的全部焦点
+资格，明确读取实际 IsKeyWindow。可交互 Popup 的 CanBecomeKeyWindow 可以为
+true，它与当前是否为 key 是不同条件。笔按下及恢复期间 Popup 保持非 key，
+随后恢复原焦点配置，继续原有编辑器、取消和布局检查。额外验证同一调用栈中
+Hide→Show 后立即投递旧拖动，检查指针包、Down、按钮按下及点击计数均未复活；
+该步骤在下一轮排队取消交付前进行，原断言和就绪预算保持。
+
+最终冻结 PR 与本地两份历史，并分别运行 Metal／Software 后端；所有构建与
+AppKit 场景串行结束。本轮仅修改 SDK 夹具和本文，产品实现未变。
+
+| 范围 | 结果 |
+| --- | --- |
+| 普通重开模式 | 每份历史、每种后端各 **788 项／6 场景**，0 失败。 |
+| 非 key 重开控制 | 每份历史、每种后端各 **802 项／6 场景**，0 失败；两种标题栏的独立 Popup 均实际保持非 key，owner 为 key。同调用栈旧拖动时排队取消计数为 0，但不生成新 Down／指针包，不恢复按钮按下，不增加点击；后续排队取消和明确新按下仍通过。 |
+| 其他 AppKit 回归 | 每份历史、每种后端，手势各 **206 项／6 场景**，Writing Tools SDK 各 **132 项／6 场景**，均 0 失败。 |
+| 负载与提交边界 | 两份历史各重建匹配八库及 SDK 宿主；逐个入口核对实际加载路径、Mach-O UUID／代码数据段和托管程序集哈希。两份完整冻结树逐文件核对，保留 **34 处精确历史差异**与并行未提交修改。 |
+| 沿用证据 | 产品、托管测试及其链接输入、原生生产和夹具均未改变。本轮没有重跑完整托管回归、RTS 组、原生测试、ASAN 或语法检查；沿用 v251 的 PR **2367 通过**／本地 **2284 通过**、各 2 项既有跳过，取消 **46/46** 与既有 RTS **32/32**，及来源绑定的原生 **41/41**、ASAN **8/8**、语法／ABI **20/20**。 |
+
+已实际查看非 key 控制模式下两种标题栏、两种后端的四张独立 Popup 离屏图：
+内容及右缘完整，按钮显示四次点击，六条压力笔画与底部状态一致。它们是进程内
+AppKit／后端捕获，不是桌面截图或真实设备验收。桌面客户端仍未连接；本轮没有
+新增物理输入、真实 IME、外部 AX／VoiceOver、多屏／Spaces 或 Intel／最低系统
+运行验收。Writing Tools 系统服务 UI 仍未验收。
+
+TaskbarItemInfo 的下一步原生设计依据为 Apple 的
+[NSDockTile](https://developer.apple.com/documentation/appkit/nsdocktile)、
+[miniwindowTitle](https://developer.apple.com/documentation/appkit/nswindow/miniwindowtitle)
+及 [miniwindowImage](https://developer.apple.com/documentation/appkit/nswindow/miniwindowimage)
+接口；本轮仅确认缺口，尚未实现这些模型属性的 Dock 映射。完整目标继续进行。
+v251 的首次间歇失败仍开放；新控制场景通过不作为该失败已修复的证明。
+
 ## v251：统一插件取消、回调退役和较新笔输入的所有权
 
 插件在 Down／Move／Up 主动取消或抛出输入异常时，旧路径直接结束会话，仍派发
