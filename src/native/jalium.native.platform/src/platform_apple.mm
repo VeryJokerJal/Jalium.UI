@@ -53,6 +53,7 @@ struct JaliumTimer {
 
 @class JaliumAppleView;
 #if TARGET_OS_OSX
+struct AppleGestureState;
 @class JaliumAppleWindowDelegate;
 @class JaliumAppleAccessibilityBridge;
 namespace { struct AppleContentFocus; }
@@ -73,6 +74,7 @@ struct JaliumAppleDragSource {
 struct JaliumPlatformWindow {
 #if TARGET_OS_OSX
     NSWindow* window = nil;
+    std::shared_ptr<AppleGestureState> gestures;
     JaliumAppleWindowDelegate* delegate = nil;
     NSArray* stateCompletionObservers = nil;
     NSVisualEffectView* backdropView = nil;
@@ -862,9 +864,12 @@ void RestoreFullScreenContentFocus(JaliumPlatformWindow* window,
     focus->Restore(nativeWindow, inputRoot, window->enabled, window->visible, live);
 }
 
+void InvalidateAppleGestures(JaliumPlatformWindow* window);
+
 void CancelPendingWindowSelection(JaliumPlatformWindow* window)
 {
     ++window->selectionGeneration;
+    InvalidateAppleGestures(window);
     window->pendingActivation = false;
     window->pendingMainSelection = false;
 }
@@ -2465,6 +2470,7 @@ static BOOL IsAppleTextServiceType(NSPasteboardType type)
 - (void)applyCursor;
 - (BOOL)canApplyCursorForWindow:(NSWindow*)window;
 - (void)restoreCursor;
+- (BOOL)canDispatchPointerForWindow:(NSWindow*)window owner:(JaliumPlatformWindow*)owner;
 - (void)cancelCursorTracking;
 - (void)cancelMarkedText;
 @end
@@ -2493,8 +2499,22 @@ struct AppleTextInputContext {
 
 #include "platform_apple_accessibility.inc"
 #include "platform_apple_writing_tools.inc"
+#include "platform_apple_gestures.inc"
 
 @implementation JaliumAppleView
+- (void)viewWillMoveToWindow:(NSWindow*)window {
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) keepAlive = self;
+    (void)keepAlive;
+    auto* owner = _jaliumOwner;
+    NSWindow* __attribute__((objc_precise_lifetime)) previous = self.window;
+    if (owner && _jaliumOwner == owner && previous != window && IsLiveWindow(owner, previous))
+        InvalidateAppleGestures(owner);
+    [super viewWillMoveToWindow:window];
+}
+- (void)beginGestureWithEvent:(NSEvent*)event { if (!NSThread.isMainThread) return; SendAppleGesture(self,event,0,1); [super beginGestureWithEvent:event]; }
+- (void)endGestureWithEvent:(NSEvent*)event { if (!NSThread.isMainThread) return; SendAppleGesture(self,event,0,2); [super endGestureWithEvent:event]; }
+- (void)magnifyWithEvent:(NSEvent*)event { if (!NSThread.isMainThread) return; if (!SendAppleGesture(self,event,JALIUM_APPLE_GESTURE_MAGNIFY,0)) [super magnifyWithEvent:event]; }
+- (void)rotateWithEvent:(NSEvent*)event { if (!NSThread.isMainThread) return; if (!SendAppleGesture(self,event,JALIUM_APPLE_GESTURE_ROTATE,0)) [super rotateWithEvent:event]; }
 @synthesize imeEnabled = _imeEnabled;
 @synthesize markedText = _markedText;
 - (void)setImeEnabled:(BOOL)value {
@@ -3486,6 +3506,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
 }
 - (void)windowDidChangeBackingProperties:(NSNotification*)note {
     if (!_owner) return;
+    InvalidateAppleGestures(_owner);
     JaliumAppleWindowDelegate* __attribute__((objc_precise_lifetime)) keepAlive = self;
     (void)keepAlive;
     auto* owner = _owner;
@@ -3514,7 +3535,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     DispatchSimple(_owner,JALIUM_EVENT_ACTIVATE);
     if (_owner) [_owner->view applyCursor];
 }
-- (void)windowDidResignKey:(NSNotification*)note {if(_owner)[_owner->view cancelCursorTracking];DispatchSimple(_owner,JALIUM_EVENT_DEACTIVATE);}
+- (void)windowDidResignKey:(NSNotification*)note {InvalidateAppleGestures(_owner);if(_owner)[_owner->view cancelCursorTracking];DispatchSimple(_owner,JALIUM_EVENT_DEACTIVATE);}
 - (void)windowWillMiniaturize:(NSNotification*)note {
     if (!_owner) return;
     [_owner->view cancelCursorTracking];
@@ -3547,6 +3568,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     CompleteWindowDeminiaturization(_owner, nativeWindow);
 }
 - (void)windowWillEnterFullScreen:(NSNotification*)note {
+    InvalidateAppleGestures(_owner);
     if (!_owner) return;
     _owner->beforeFullScreen = _owner->state;
     if (!_owner->fullScreenTransition) {
@@ -3557,6 +3579,7 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     if (_owner->state == JALIUM_WINDOW_STATE_NORMAL) CaptureNormalFrame(_owner);
 }
 - (void)windowWillExitFullScreen:(NSNotification*)note {
+    InvalidateAppleGestures(_owner);
     if (!_owner) return;
     if (!_owner->fullScreenTransition) {
         _owner->requestedState = _owner->beforeFullScreen;
@@ -4034,6 +4057,33 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     ObserveWindowStateCompletions(result.get());
 #endif
     return result.release();
+}
+
+int32_t jalium_apple_window_set_gesture_callback(JaliumPlatformWindow* window,
+    JaliumAppleGestureCallback callback, void* userData)
+{
+#if TARGET_OS_OSX
+    if (!NSThread.isMainThread) return JALIUM_ERROR_INVALID_STATE;
+    if (!window || !IsLiveWindow(window) || window->destroying) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto previous = window->gestures;
+    auto state = std::make_shared<AppleGestureState>();
+    state->callback = callback; state->userData = userData;
+    window->gestures = state;
+    if (previous) {
+        auto oldCallback = previous->callback; void* oldData = previous->userData;
+        uint64_t sequence = previous->sequence; bool claimed = previous->claimed || previous->kinds != 0;
+        previous->callback = nullptr; ClearAppleGesture(previous);
+        // Install first: a cancellation callback's newer registration wins.
+        if (oldCallback && claimed && sequence) {
+            JaliumAppleGestureEvent event{}; event.size = sizeof(event);
+            event.sequence = sequence; event.phase = JALIUM_APPLE_GESTURE_CANCEL; event.scale = 1;
+            oldCallback(&event, oldData);
+        }
+    }
+    return JALIUM_OK;
+#else
+    (void)window; (void)callback; (void)userData; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
 }
 
 void jalium_window_destroy(JaliumPlatformWindow* window)

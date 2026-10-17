@@ -630,6 +630,24 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.writing-tools.tests)
     add_test(NAME jalium.native.platform.macos.window.writing-tools COMMAND jalium.native.platform.window.writing-tools.tests)
     set_tests_properties(jalium.native.platform.macos.window.writing-tools PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+    # Optional bridge for the packaged managed protocol host. Keep test support
+    # out of the production native payload and the default build graph.
+    add_library(jalium.native.platform.window.gesture-bridge SHARED EXCLUDE_FROM_ALL tests/platform_apple_gesture_bridge.mm)
+    target_compile_options(jalium.native.platform.window.gesture-bridge PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.gesture-bridge PRIVATE "-framework AppKit")
+    set_target_properties(jalium.native.platform.window.gesture-bridge PROPERTIES
+        OUTPUT_NAME "JaliumWindowGestureBridge" LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/gesture-test-support"
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/gesture-test-support"
+        LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/gesture-test-support"
+        LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/gesture-test-support")
+    add_executable(jalium.native.platform.window.gestures.tests tests/platform_apple_gestures_tests.mm)
+    target_include_directories(jalium.native.platform.window.gestures.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.gestures.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.gestures.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.gestures.tests)
+    add_test(NAME jalium.native.platform.macos.window.gestures COMMAND jalium.native.platform.window.gestures.tests)
+    set_tests_properties(jalium.native.platform.macos.window.gestures PROPERTIES TIMEOUT 30)
     add_executable(jalium.native.platform.window.text-input-lifetime.tests tests/platform_apple_text_input_lifetime_tests.mm)
     target_include_directories(jalium.native.platform.window.text-input-lifetime.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

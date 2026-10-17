@@ -265,3 +265,12 @@ if(JALIUM_SOFTWARE_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.software.apple.coretext COMMAND jalium.native.software.apple.text)
     set_tests_properties(jalium.native.software.apple.coretext PROPERTIES TIMEOUT 60)
 endif()
+
+if(JALIUM_SOFTWARE_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    add_executable(jalium.native.software.apple.affine-rectangles tests/software_apple_affine_rectangles.mm)
+    target_compile_options(jalium.native.software.apple.affine-rectangles PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.software.apple.affine-rectangles PRIVATE
+        jalium.native.software jalium.native.core "-framework AppKit" "-framework CoreGraphics")
+    add_test(NAME jalium.native.software.apple.affine-rectangles COMMAND jalium.native.software.apple.affine-rectangles)
+    set_tests_properties(jalium.native.software.apple.affine-rectangles PROPERTIES TIMEOUT 60)
+endif()

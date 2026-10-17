@@ -5372,8 +5372,61 @@ void SoftwareRenderTarget::RasterizeCoverageAA(
     }
 }
 
+namespace {
+bool NeedsAffineRectanglePath(const SoftwareTransform& transform)
+{
+    return std::abs(transform.m[1]) > 1e-6f || std::abs(transform.m[2]) > 1e-6f ||
+        transform.m[0] < 0 || transform.m[3] < 0;
+}
+
+std::array<float, 4> CircularSoftwareRectangleRadii(float w, float h,
+    float tl, float tr, float br, float bl)
+{
+    const float limit = std::min(w, h) * .5f;
+    return {std::clamp(tl,0.0f,limit),std::clamp(tr,0.0f,limit),
+        std::clamp(br,0.0f,limit),std::clamp(bl,0.0f,limit)};
+}
+
+struct SoftwareRectanglePath {
+    float x, y;
+    std::vector<float> commands;
+};
+
+SoftwareRectanglePath MakeSoftwareRectanglePath(float x, float y, float w, float h,
+    std::array<float, 4> rx, std::array<float, 4> ry)
+{
+    for (auto& radius : rx) radius = std::clamp(radius, 0.0f, w * .5f);
+    for (auto& radius : ry) radius = std::clamp(radius, 0.0f, h * .5f);
+    SoftwareRectanglePath path{x + rx[0], y, {}};
+    constexpr float k = .5522847498307936f;
+    auto line = [&](float a, float b) { path.commands.insert(path.commands.end(), {static_cast<float>(kTagLineTo), a, b}); };
+    auto curve = [&](float a, float b, float c, float d, float e, float f) {
+        path.commands.insert(path.commands.end(), {static_cast<float>(kTagCubicTo), a, b, c, d, e, f});
+    };
+    line(x+w-rx[1],y);
+    curve(x+w-rx[1]+k*rx[1],y,x+w,y+ry[1]-k*ry[1],x+w,y+ry[1]);
+    line(x+w,y+h-ry[2]);
+    curve(x+w,y+h-ry[2]+k*ry[2],x+w-rx[2]+k*rx[2],y+h,x+w-rx[2],y+h);
+    line(x+rx[3],y+h);
+    curve(x+rx[3]-k*rx[3],y+h,x,y+h-ry[3]+k*ry[3],x,y+h-ry[3]);
+    line(x,y+ry[0]);
+    curve(x,y+ry[0]-k*ry[0],x+rx[0]-k*rx[0],y,x+rx[0],y);
+    path.commands.push_back(static_cast<float>(kTagClosePath));
+    return path;
+}
+} // namespace
+
 void SoftwareRenderTarget::FillScanlineRect(float x, float y, float w, float h, Brush* brush)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {0,0,0,0}, {0,0,0,0});
+        FillPath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, 1);
+        return;
+    }
+
     PreparedPaint paint = PreparePaint(brush);
     if (!paint.IsValid()) return;
 
@@ -5842,6 +5895,15 @@ void SoftwareRenderTarget::DrawRectangle(float x, float y, float w, float h, Bru
 
 void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {rx,rx,rx,rx}, {ry,ry,ry,ry});
+        FillPath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, 1);
+        return;
+    }
+
     if (!brush) return;
     rx = std::min(rx, w * 0.5f);
     ry = std::min(ry, h * 0.5f);
@@ -5973,6 +6035,15 @@ void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float
 
 void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {rx,rx,rx,rx}, {ry,ry,ry,ry});
+        StrokePath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, strokeWidth, true);
+        return;
+    }
+
     if (!brush) return;
     rx = std::min(rx, w * 0.5f);
     ry = std::min(ry, h * 0.5f);
@@ -6051,6 +6122,16 @@ void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float
 void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto radii = CircularSoftwareRectangleRadii(w, h, tl, tr, br, bl);
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, radii, radii);
+        FillPath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, 1);
+        return;
+    }
+
     if (!brush) return;
     tl = std::min(tl, std::min(w, h) * 0.5f);
     tr = std::min(tr, std::min(w, h) * 0.5f);
@@ -6235,6 +6316,16 @@ void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float
 void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush, float strokeWidth)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto radii = CircularSoftwareRectangleRadii(w, h, tl, tr, br, bl);
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, radii, radii);
+        StrokePath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, strokeWidth, true);
+        return;
+    }
+
     if (!brush) return;
     tl = std::min(tl, std::min(w, h) * 0.5f);
     tr = std::min(tr, std::min(w, h) * 0.5f);
@@ -8791,6 +8882,16 @@ void SoftwareRenderTarget::PopTransform()
 
 void SoftwareRenderTarget::PushClip(float x, float y, float w, float h)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (w <= 0 || h <= 0) { clipStack_.push({0,0,0,0}); return; }
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {0,0,0,0}, {0,0,0,0});
+        if (PushPathClip(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), 1) != JALIUM_OK)
+            clipStack_.push({0,0,0,0});
+        return;
+    }
+
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
 
@@ -8974,6 +9075,14 @@ JaliumResult SoftwareTextFormat::GetFontMathConstants(JaliumFontMathConstants* c
 
 void SoftwareRenderTarget::PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry)
 {
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (w <= 0 || h <= 0) { clipStack_.push({0,0,0,0}); return; }
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {rx,rx,rx,rx}, {ry,ry,ry,ry});
+        if (PushPathClip(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), 1) != JALIUM_OK)
+            clipStack_.push({0,0,0,0});
+        return;
+    }
+
     // Symmetric variant: all four corners get the smaller of the two radii so
     // the SDF stays circular, then forward to the per-corner path.
     float r = std::min(rx, ry);
@@ -9001,6 +9110,17 @@ JaliumResult SoftwareRenderTarget::PushEllipticalRectClip(const JaliumElliptical
 void SoftwareRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float w, float h,
     float tl, float tr, float br, float bl)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (w <= 0 || h <= 0) { clipStack_.push({0,0,0,0}); return; }
+        auto radii = CircularSoftwareRectangleRadii(w, h, tl, tr, br, bl);
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, radii, radii);
+        if (PushPathClip(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), 1) != JALIUM_OK)
+            clipStack_.push({0,0,0,0});
+        return;
+    }
+
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
 

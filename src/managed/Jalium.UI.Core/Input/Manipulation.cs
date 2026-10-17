@@ -3,7 +3,19 @@ using Jalium.UI.Input.Manipulations;
 
 namespace Jalium.UI.Input;
 
-/// <summary>Provides imperative access to active touch manipulations.</summary>
+// Native indirect gesture providers have no raw touch contacts. Connect them
+// to the same imperative API without inventing IManipulator finger identities.
+internal interface IManipulationSession
+{
+    bool IsActive { get; }
+    IInputElement Container { get; set; }
+    ManipulationModes Mode { get; set; }
+    ManipulationPivot? Pivot { get; set; }
+    void Complete();
+    void StartInertia();
+}
+
+/// <summary>Provides imperative access to active manipulations.</summary>
 public static class Manipulation
 {
     private static readonly ConditionalWeakTable<UIElement, ManipulationState> s_states = new();
@@ -30,16 +42,19 @@ public static class Manipulation
             return;
 
         bool removed;
-        bool empty;
         lock (state.Gate)
         {
             removed = state.Manipulators.Remove(manipulator);
-            empty = state.Manipulators.Count == 0;
         }
         if (removed)
             manipulator.ManipulationEnded(cancel: false);
-        if (empty)
-            s_states.Remove(element);
+        lock (state.Gate)
+        {
+            // Ended callbacks may add a contact or start a native session.
+            if (state.Manipulators.Count == 0 && state.Session == null &&
+                s_states.TryGetValue(element, out var current) && ReferenceEquals(current, state))
+                s_states.Remove(element);
+        }
     }
 
     public static void CompleteManipulation(UIElement element)
@@ -47,6 +62,8 @@ public static class Manipulation
         ArgumentNullException.ThrowIfNull(element);
         if (!s_states.TryGetValue(element, out ManipulationState? state))
             return;
+
+        if (state.Session is { } session) { session.Complete(); return; }
 
         RaiseCompleted(element, state, isInertial: false);
         EndManipulators(element, state, cancel: false);
@@ -57,6 +74,8 @@ public static class Manipulation
         ArgumentNullException.ThrowIfNull(element);
         if (!s_states.TryGetValue(element, out ManipulationState? state))
             throw new InvalidOperationException("No active manipulation is associated with the element.");
+
+        if (state.Session is { } session) { session.StartInertia(); return; }
 
         var preview = new ManipulationInertiaStartingEventArgs
         {
@@ -93,14 +112,14 @@ public static class Manipulation
         if (!s_states.TryGetValue(element, out ManipulationState? state))
             return false;
         lock (state.Gate)
-            return state.Manipulators.Count != 0;
+            return state.Session?.IsActive == true || state.Manipulators.Count != 0;
     }
 
     public static IInputElement GetManipulationContainer(UIElement element)
     {
         ArgumentNullException.ThrowIfNull(element);
         return s_states.TryGetValue(element, out ManipulationState? state)
-            ? state.Container
+            ? state.Session?.Container ?? state.Container
             : element;
     }
 
@@ -108,14 +127,16 @@ public static class Manipulation
     {
         ArgumentNullException.ThrowIfNull(element);
         ArgumentNullException.ThrowIfNull(container);
-        s_states.GetValue(element, static owner => new(owner)).Container = container;
+        var state = s_states.GetValue(element, static owner => new(owner));
+        if (state.Session is { } session) session.Container = container;
+        state.Container = container;
     }
 
     public static ManipulationModes GetManipulationMode(UIElement element)
     {
         ArgumentNullException.ThrowIfNull(element);
         return s_states.TryGetValue(element, out ManipulationState? state)
-            ? state.Mode
+            ? state.Session?.Mode ?? state.Mode
             : ManipulationModes.All;
     }
 
@@ -128,19 +149,23 @@ public static class Manipulation
         if ((mode & ~supported) != 0)
             throw new System.ComponentModel.InvalidEnumArgumentException(
                 nameof(mode), (int)mode, typeof(ManipulationModes));
-        s_states.GetValue(element, static owner => new(owner)).Mode = mode;
+        var state = s_states.GetValue(element, static owner => new(owner));
+        if (state.Session is { } session) session.Mode = mode;
+        state.Mode = mode;
     }
 
     public static ManipulationPivot? GetManipulationPivot(UIElement element)
     {
         ArgumentNullException.ThrowIfNull(element);
-        return s_states.TryGetValue(element, out ManipulationState? state) ? state.Pivot : null;
+        return s_states.TryGetValue(element, out ManipulationState? state) ? state.Session?.Pivot ?? state.Pivot : null;
     }
 
     public static void SetManipulationPivot(UIElement element, ManipulationPivot? pivot)
     {
         ArgumentNullException.ThrowIfNull(element);
-        s_states.GetValue(element, static owner => new(owner)).Pivot = pivot;
+        var state = s_states.GetValue(element, static owner => new(owner));
+        if (state.Session is { } session) session.Pivot = pivot;
+        state.Pivot = pivot;
     }
 
     [System.ComponentModel.Browsable(false)]
@@ -159,6 +184,24 @@ public static class Manipulation
             return [];
         lock (state.Gate)
             return state.Manipulators.ToArray();
+    }
+
+    internal static bool TryAttachSession(UIElement element, IManipulationSession session)
+    {
+        var state = s_states.GetValue(element, static owner => new(owner));
+        lock (state.Gate)
+        {
+            if (state.Session is not null || state.Manipulators.Count != 0) return false;
+            state.Session = session;
+            return true;
+        }
+    }
+
+    internal static void DetachSession(UIElement element, IManipulationSession session)
+    {
+        if (!s_states.TryGetValue(element, out var state)) return;
+        lock (state.Gate)
+            if (ReferenceEquals(state.Session, session)) state.Session = null;
     }
 
     private static void RaiseCompleted(UIElement element, ManipulationState state, bool isInertial)
@@ -201,6 +244,7 @@ public static class Manipulation
     private sealed class ManipulationState(UIElement owner)
     {
         public object Gate { get; } = new();
+        public IManipulationSession? Session { get; set; }
         public HashSet<IManipulator> Manipulators { get; } = [];
         public List<ManipulationParameters2D> Parameters { get; } = [];
         public IInputElement Container { get; set; } = owner;

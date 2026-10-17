@@ -4,6 +4,58 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v246：AppKit 捏合与旋转接入 Window Manipulation
+
+AppKit 识别的 magnify／rotate 现在通过可选回调传入 Window，接入现有
+ManipulationStarting／Started／Delta／Completed 的预览与冒泡路由。缩放采用每包
+倍率累乘，旋转转换为框架屏幕坐标中的顺时针角度；同一次原生通用序列中的缩放和
+旋转共用会话。原生取消、分阶段结束及旧式无 phase 的有限操作分别收尾，不伪造
+触摸点、手指标识或 OS 动量。只有启用 IsManipulationEnabled 的有效目标接收。
+参考 [Apple 的触控板事件约定](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/HandlingTouchEvents/HandlingTouchEvents.html)。
+
+已有 Manipulation 静态入口可查询和结束实际原生会话、选择 Mode／Container，
+并通过既有惯性处理器处理显式 StartInertia。预览的 Cancel／Complete、边界反馈、
+惯性结束及异常清理保留同一会话身份。原生间接手势没有触摸接触跨度，Expansion
+保持零；不从指针位置推导虚构接触半径。系统未提供的自然缩放惯性不自行合成。
+
+坐标通过实际物理宿主和容器转换，支持普通窗口、覆盖层及独立 Popup、DPI、
+变换和镜像方向。原生对象及上下文在回调后重验；隐藏、禁用、原生模态、全屏／
+DPI 过渡、原生视图换窗及目标移除往返使旧序列退役。属性资格查询、事件处理器
+和完成回调中新建的手势不被旧操作续行或清理覆盖。独立 Popup 的非 Focusable
+手势内容只在实际桥接支持时取得 key 资格；Tooltip 与穿透内容继续拒绝。
+
+新增一个可选 C 导出 jalium_apple_window_set_gesture_callback，既有平台事件结构
+仍为 72 字节，独立手势记录为 64 字节。旧原生负载没有该入口时，托管窗口继续
+使用原能力。原生 CI 的 Window 显式目标依赖新夹具；打包 SDK 测试助手单独输出
+到构建目录的 gesture-test-support，不属于生产八库负载。
+
+离屏视觉核验发现 Software 旋转矩形会因对角点算出的高度为负而消失。矩形与圆角
+填充、描边及裁剪现在对旋转、错切和镜像复用既有路径栅格器；保留常规轴向快速
+路径。每角圆形半径继续按较短边归一化，嵌套裁剪在弹出后恢复父状态。
+
+冻结源码分别验收，原生构建、托管测试和 AppKit 运行串行执行。跨目标资格查询
+反例在旧实现第 1 次读取后丢失新手势，修正后通过多阶段回归；托管及打包检查
+随后重跑。原生 platform、Core、Text 子树与根构建输入逐份相同，40 项平台结果
+保留；Software 改动另行构建并运行独立像素对照：
+
+| 范围 | 结果 |
+| --- | --- |
+| 原生全套 | PR 与本地历史各 **40/40**，0 失败／跳过，包含 Window、剪贴板、光标、进程内 AX、文本、输入和拖放；每套新手势夹具共 **247 项**，覆盖两种标题栏、阶段、组合序列、无 phase、拒绝尾包、取消及 getter／处理器重入、销毁、换窗和真实 AppKit 应用模态。 |
+| 托管回归 | PR **2301 通过**，本地历史 **2218 通过**；各 0 失败、2 项既有 opt-in 跳过，以 TRX outcome 核对；同时链接既有 Manipulation 专项回归。 |
+| 手势打包入口 | 每套历史、每种 Metal／Software 后端均 **206 项／6 场景通过**：两种标题栏 × 普通窗口／覆盖层／独立原生 Popup。核对实际后端、与独立 Cocoa 转换一致的原点、控件变换、取消与尾包拒绝、禁用往返、新序列、焦点保持及最小窗口尺寸；检查离屏控件图像。 |
+| Software 原生像素 | 每套历史 **2/2**：原 CoreText **75 项**，新仿射矩形 **96 场景／772 项**，由独立 CoreGraphics 的形状、仿射和稳定像素分类对照，含 1x／2x、旋转、错切、镜像、不同圆角、描边、嵌套裁剪和大半径归一化。相同最终夹具在前置 Software 上因 **1405 个**稳定像素错误而失败。 |
+| SDK 回归 | 每套历史、每种后端，Writing Tools 的实际打包入口各 **132 项／6 场景通过**；使用本进程 SDK 协调器委托，未调用 Apple Intelligence 服务 UI。 |
+| 前置负载反例 | 同一最终托管宿主程序集、替换完整前置八库，两种后端均 **0/6 场景完成，6 项预期路由失败**，失败点均为“实际 NSView 到达托管 manipulation”；其他前置宿主检查仍执行。逐一核对被加载的库位于独立 .app 内，Mach-O UUID 与代码／数据段和对应输入一致。 |
+| 内存与可移植性 | AddressSanitizer **9/9** 夹具通过，包含 247 项手势检查及属性、Writing Tools、文本输入生命期、键盘和 Popup 焦点、文本服务及 Software 的 CoreText／仿射矩形，detect_leaks=0:halt_on_error=1。当前 SDK 对八个 Apple 架构／平台目标的生产单元及 ABI、两个 macOS 目标的测试单元共 **30/30** 语法／布局检查通过。 |
+| 负载与历史 | platform 原有 **96 个** jalium_ C 导出全部保留，仅新增一个可选入口；platform 与 Software 变更，其他六库的 UUID 与代码／数据段一致。两份冻结 Git 树逐文件核对，原有 **34 处精确历史差异**及工作区并行修改保留。 |
+
+真实触控板、硬件输入、外部 AX／VoiceOver、混合 DPI／Spaces、Intel 与最低系统
+仍需独立验收；当前桌面工具返回 tunnel-client 超过 300 秒未连接。本进程
+NSResponder 消息、控件离屏图像、系统前台 PID 观察和原生 key 资格查询不代替
+物理设备或系统投递路径。
+前置提交 949d9ad 的 Apple CI：native-and-packages 在 visionOS 的媒体轨道查询、摄像头输入及 sessionPreset API 因不可用而编译失败；对应 apple_media.mm 与云端 master 的 Git blob 均为 f195ffada84f32393d432c9e23f19fde988b2d43，本轮未改此文件。该跨平台打包失败单列，未计为本轮 macOS 验收通过。
+Writing Tools 服务可用性：本轮四次打包 SDK 运行均报告不可用。
+
 ## v245：Software 使用共享 CoreText 实现
 
 修复 Apple Software 后端的文字占位路径：此前未接入 Apple 字体栈，原生 Miii

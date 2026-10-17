@@ -11,6 +11,12 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-trackpad-gestures-software")
+    return WindowTrackpadGestureChecks.Run(software: true);
+
+if (args.Length == 1 && args[0] == "--window-trackpad-gestures")
+    return WindowTrackpadGestureChecks.Run();
+
 if (args.Length == 1 && args[0] == "--window-writing-tools-glyphs-software")
     return WindowWritingToolsGlyphChecks.Run(true);
 if (args.Length == 1 && args[0] == "--window-writing-tools-software")

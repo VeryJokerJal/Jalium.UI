@@ -26,12 +26,18 @@ public partial class Window
                 if (visual is UIElement element)
                 {
                     if (element.Visibility != Visibility.Visible || CssDisplayProperties.IsExitInert(element)) continue;
-                    if (element.Focusable && element.IsEnabled && element.IsVisible)
+                    // AppKit delivers recognized trackpad gestures to the key
+                    // window. A gesture surface can be non-focusable; allowing
+                    // its host to become key does not focus that element.
+                    bool ReceivesKeyInput() => element.Focusable ||
+                        _platformWindow is Controls.Platform.IPlatformGestureInput { SupportsIndirectGestures: true } &&
+                        _macOSHostedPopup?.IsHitTestVisible == true && element.IsHitTestVisible && element.IsManipulationEnabled;
+                    if (ReceivesKeyInput() && element.IsEnabled && element.IsVisible)
                     {
                         var candidate = CaptureMacOSAccessibilityLifetime(element);
                         // IsEnabledCore may run user code. Recheck the captured
                         // target after those reads, including a detached child.
-                        if (element.Focusable && element.IsEnabled && current() && candidate() &&
+                        if (ReceivesKeyInput() && element.IsEnabled && current() && candidate() &&
                             IsMacOSKeyboardInputTargetEligible(element)) return true;
                     }
                 }

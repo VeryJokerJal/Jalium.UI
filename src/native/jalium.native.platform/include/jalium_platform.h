@@ -561,6 +561,29 @@ JALIUM_PLATFORM_API void jalium_apple_window_show(
 JALIUM_PLATFORM_API int32_t jalium_apple_window_enable_text_services(
     JaliumPlatformWindow* window, int32_t enabled);
 
+/// Native indirect gestures, separate from the stable platform-event union.
+/// Coordinates are physical client pixels. Scale is an incremental factor;
+/// rotation is clockwise degrees. flags bit 0 retains the generic sequence.
+typedef struct JaliumAppleGestureEvent {
+    uint32_t size;
+    int32_t kind;   // 0 boundary, 1 magnify, 2 rotate
+    int32_t phase;  // 1 begin, 2 update, 3 end, 4 cancel
+    uint32_t flags;
+    uint64_t sequence;
+    double x, y, scale, rotation, timestamp;
+} JaliumAppleGestureEvent;
+typedef enum JaliumAppleGestureKind {
+    JALIUM_APPLE_GESTURE_MAGNIFY = 1, JALIUM_APPLE_GESTURE_ROTATE = 2
+} JaliumAppleGestureKind;
+typedef enum JaliumAppleGesturePhase {
+    JALIUM_APPLE_GESTURE_BEGIN = 1, JALIUM_APPLE_GESTURE_UPDATE = 2,
+    JALIUM_APPLE_GESTURE_END = 3, JALIUM_APPLE_GESTURE_CANCEL = 4
+} JaliumAppleGesturePhase;
+typedef int32_t (*JaliumAppleGestureCallback)(const JaliumAppleGestureEvent* event, void* userData);
+/// Opt in to AppKit gestures; return nonzero to consume a sequence. Null disables.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_gesture_callback(
+    JaliumPlatformWindow* window, JaliumAppleGestureCallback callback, void* userData);
+
 /// Selects the AppKit content responder/key window without activating the app,
 /// ordering a hidden window, or restoring a minimized window.
 JALIUM_PLATFORM_API int32_t jalium_apple_window_set_keyboard_focus(JaliumPlatformWindow* window);

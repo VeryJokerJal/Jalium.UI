@@ -12,6 +12,7 @@ namespace Jalium.UI.Media;
 public abstract class Visual : DependencyObject
 {
     private Visual? _parent;
+    internal ulong InputParentRevision { get; private set; }
     private readonly List<Visual> _children = new();
     private bool _isRenderDirty;
     private bool _isSubtreeDirty;
@@ -456,6 +457,7 @@ public abstract class Visual : DependencyObject
         }
 
         var oldParent = child._parent;
+        child.InputParentRevision++;
         child._parent = this;
         ((DependencyObject)child).VisualParent = this;
         _children.Add(child);
@@ -523,6 +525,7 @@ public abstract class Visual : DependencyObject
         }
 
         var oldParent = child._parent;
+        child.InputParentRevision++;
         child._parent = null;
         ((DependencyObject)child).VisualParent = null;
         _children.Remove(child);

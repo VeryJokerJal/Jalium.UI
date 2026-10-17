@@ -312,6 +312,8 @@ internal struct PlatformEvent
     public uint PointerButtons;
     public long PointerTimestampMillis;
 
+    public MacOSGestureRequest? MacOSGesture;
+
     // State
     public int NewState;
 
@@ -378,6 +380,7 @@ internal enum PlatformEventType
     PointerUp = 51,
     PointerMove = 52,
     PointerCancel = 53,
+    MacOSGesture = 54,
 
     AppPause = 60,
     AppResume = 61,

@@ -1772,7 +1772,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <summary>
     /// Gets or sets the active modal content dialog hosted by this window (Popup mode only).
     /// </summary>
-    internal ContentDialog? ActiveContentDialog { get; set; }
+    private ContentDialog? _activeContentDialog;
+    private ulong _modalInputRevision;
+    internal ContentDialog? ActiveContentDialog
+    {
+        get => _activeContentDialog;
+        set
+        {
+            if (ReferenceEquals(_activeContentDialog, value)) return;
+            _activeContentDialog = value;
+            unchecked { _modalInputRevision++; }
+        }
+    }
 
     /// <summary>
     /// Tracks in-place content dialogs that are currently open in this window.
@@ -5507,6 +5518,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     _hasLastPlatformImeContext = false;
                     RefreshLinuxImeContext();
                 }
+                break;
+
+            case PlatformEventType.MacOSGesture:
+                if (evt.MacOSGesture is { } gesture) HandleMacOSGesture(gesture);
                 break;
 
             case PlatformEventType.TextServicesRequest:

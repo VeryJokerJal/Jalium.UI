@@ -30,6 +30,10 @@ internal sealed class ManipulationInertiaProcessor
 
     private readonly UIElement _target;
     private readonly Point _origin;
+    private readonly Func<bool>? _lifetime;
+    private readonly Action? _faulted;
+    private readonly Func<(IInputElement Container, Point Origin)>? _coordinates;
+    private readonly Action<ManipulationDelta, ManipulationVelocities>? _completion;
     private readonly DispatcherTimer _timer;
 
     private Vector _linearVelocity;
@@ -48,12 +52,17 @@ internal sealed class ManipulationInertiaProcessor
         UIElement target,
         Point origin,
         ManipulationDelta cumulativeBefore,
-        Dispatcher dispatcher)
+        Dispatcher dispatcher,
+        Func<bool>? lifetime = null,
+        Func<(IInputElement Container, Point Origin)>? coordinates = null,
+        Action<ManipulationDelta, ManipulationVelocities>? completion = null,
+        Action? faulted = null)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(dispatcher);
         _target = target;
         _origin = origin;
+        _lifetime = lifetime; _coordinates = coordinates; _completion = completion; _faulted = faulted;
         _cumulative = cumulativeBefore;
         _timer = new DispatcherTimer(
             TimeSpan.FromMilliseconds(TickIntervalMs),
@@ -66,6 +75,19 @@ internal sealed class ManipulationInertiaProcessor
     }
 
     public bool IsRunning => _running;
+    internal ManipulationDelta Cumulative => _cumulative;
+    internal ManipulationVelocities CurrentVelocities => new()
+    {
+        LinearVelocity = _linearVelocity, AngularVelocity = _angularVelocity, ExpansionVelocity = _expansionVelocity
+    };
+    private bool IsCurrent => _lifetime?.Invoke() != false;
+    private (IInputElement Container, Point Origin) Coordinates => _coordinates?.Invoke() ?? (_target, _origin);
+    private bool Dispatch(InputEventArgs args)
+    {
+        if (!_running || !IsCurrent) return false;
+        InputRoute.Raise(_target, args, () => _running && IsCurrent);
+        return _running && IsCurrent;
+    }
 
     /// <summary>
     /// Begins integrating velocity. Returns false (and raises nothing) if the
@@ -146,6 +168,13 @@ internal sealed class ManipulationInertiaProcessor
 
     private void AdvanceTick(long nowTicks)
     {
+        try { AdvanceTickCore(nowTicks); }
+        catch { Cancel(); _faulted?.Invoke(); throw; }
+    }
+
+    private void AdvanceTickCore(long nowTicks)
+    {
+        if (!IsCurrent) { Cancel(); _completion?.Invoke(_cumulative, CurrentVelocities); return; }
         double dt = Math.Max(1.0, nowTicks - _lastTickTicks);
         _lastTickTicks = nowTicks;
 
@@ -189,6 +218,7 @@ internal sealed class ManipulationInertiaProcessor
         };
 
         bool handlerHaltsInertia = RaiseDeltaTick(deltaThisTick, velocities);
+        if (!_running || !IsCurrent) { Cancel(); _completion?.Invoke(_cumulative, CurrentVelocities); return; }
 
         // Stop conditions: handler asked to stop, or all three axes below their threshold.
         bool linearStopped = _linearVelocity.Length < LinearStopDipsPerMs;
@@ -197,39 +227,41 @@ internal sealed class ManipulationInertiaProcessor
         if (handlerHaltsInertia || (linearStopped && angularStopped && expansionStopped))
         {
             Cancel();
-            RaiseCompleted();
+            if (_completion is { } completion) completion(_cumulative, CurrentVelocities);
+            else RaiseCompleted();
         }
     }
 
     /// <returns>True if the handler asked the engine to stop (Complete/Cancel).</returns>
     private bool RaiseDeltaTick(ManipulationDelta deltaThisTick, ManipulationVelocities velocities)
     {
+        var coordinates = Coordinates;
         ManipulationDeltaEventArgs previewArgs = new()
         {
             RoutedEvent = UIElement.PreviewManipulationDeltaEvent,
-            ManipulationContainer = _target,
-            ManipulationOrigin = _origin,
+            ManipulationContainer = coordinates.Container,
+            ManipulationOrigin = coordinates.Origin,
             DeltaManipulation = deltaThisTick,
             CumulativeManipulation = _cumulative,
             Velocities = velocities,
             IsInertial = true
         };
-        _target.RaiseEvent(previewArgs);
+        if (!Dispatch(previewArgs)) return true;
 
         ManipulationDeltaEventArgs bubbleArgs = previewArgs;
-        if (!previewArgs.Handled)
+        if (!previewArgs.Handled && !previewArgs.CompleteRequested && !previewArgs.CancelRequested)
         {
             bubbleArgs = new()
             {
                 RoutedEvent = UIElement.ManipulationDeltaEvent,
-                ManipulationContainer = _target,
-                ManipulationOrigin = _origin,
+                ManipulationContainer = coordinates.Container,
+                ManipulationOrigin = coordinates.Origin,
                 DeltaManipulation = deltaThisTick,
                 CumulativeManipulation = _cumulative,
                 Velocities = velocities,
                 IsInertial = true
             };
-            _target.RaiseEvent(bubbleArgs);
+            if (!Dispatch(bubbleArgs)) return true;
         }
 
         // Boundary feedback: if either handler reported an unused portion of the
@@ -245,22 +277,23 @@ internal sealed class ManipulationInertiaProcessor
 
     private void RaiseBoundaryFeedback(ManipulationDelta unused)
     {
+        var coordinates = Coordinates;
         ManipulationBoundaryFeedbackEventArgs previewArgs = new()
         {
             RoutedEvent = UIElement.PreviewManipulationBoundaryFeedbackEvent,
-            ManipulationContainer = _target,
+            ManipulationContainer = coordinates.Container,
             BoundaryFeedback = unused
         };
-        _target.RaiseEvent(previewArgs);
+        if (!Dispatch(previewArgs)) return;
         if (!previewArgs.Handled)
         {
             ManipulationBoundaryFeedbackEventArgs bubbleArgs = new()
             {
                 RoutedEvent = UIElement.ManipulationBoundaryFeedbackEvent,
-                ManipulationContainer = _target,
+                ManipulationContainer = coordinates.Container,
                 BoundaryFeedback = unused
             };
-            _target.RaiseEvent(bubbleArgs);
+            _ = Dispatch(bubbleArgs);
         }
     }
 
