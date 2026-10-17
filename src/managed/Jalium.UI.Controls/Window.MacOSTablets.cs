@@ -50,7 +50,7 @@ public partial class Window
         }
         try
         {
-            _inputDispatcher.HandleMacOSTabletInput(data,
+            bool retired = _inputDispatcher.HandleMacOSTabletInput(data,
                 pointer.Type == PlatformEventType.PointerDown, pointer.Type == PlatformEventType.PointerUp,
                 timestamp, Current, snapshot.MouseType == 0 ? null : () =>
                 {
@@ -59,6 +59,12 @@ public partial class Window
                     _inputDispatcher.TrackMacOSTabletMouse(pointer.PointerId,
                         snapshot.MouseType, snapshot.MouseButton, precedingEpoch);
                 });
+            if (retired && SamePacket())
+            {
+                request.Retire = true;
+                _macOSTabletPackets.Remove(pointer.PointerId);
+                return;
+            }
             if (data.Point.IsInContact && SamePacket() && !Current())
             {
                 request.Retire = true;

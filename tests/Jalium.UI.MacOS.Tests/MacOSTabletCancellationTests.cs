@@ -141,6 +141,127 @@ public sealed class MacOSTabletCancellationTests
         Assert.Empty(host.Ink.Strokes);
     }
 
+    [Theory]
+    [InlineData(false, false, 0)]
+    [InlineData(false, false, 1)]
+    [InlineData(false, false, 2)]
+    [InlineData(false, true, 0)]
+    [InlineData(false, true, 1)]
+    [InlineData(false, true, 2)]
+    [InlineData(true, false, 0)]
+    [InlineData(true, false, 1)]
+    [InlineData(true, false, 2)]
+    [InlineData(true, true, 0)]
+    [InlineData(true, true, 1)]
+    [InlineData(true, true, 2)]
+    public void PluginCancellationEndsTheRangeWithoutRoutingOrCommitting(bool custom, bool threaded, int phase)
+    {
+        using var host = new Host(custom, threaded);
+        var plugIn = new CallbackPlugIn();
+        host.Ink.GetStylusPlugIns(createIfMissing: true)!.Add(plugIn);
+        int rangeOut = 0, pointerCancel = 0, stylus = 0;
+        host.Ink.AddHandler(UIElement.StylusOutOfRangeEvent, new StylusEventHandler((_, _) => rangeOut++), true);
+        host.Ink.AddHandler(UIElement.PointerCancelEvent, new RoutedEventHandler((_, _) => pointerCancel++));
+        foreach (var routedEvent in new[] { UIElement.PreviewStylusDownEvent, UIElement.PreviewStylusMoveEvent,
+            UIElement.PreviewStylusUpEvent, UIElement.StylusDownEvent, UIElement.StylusMoveEvent, UIElement.StylusUpEvent })
+            host.Ink.AddHandler(routedEvent, new StylusEventHandler((_, _) => stylus++), true);
+        if (phase > 0) host.Send(true, inverted: false);
+        if (phase == 2) host.Send(true, inverted: false, move: true);
+        int before = stylus;
+        plugIn.Input = input => input.Cancel();
+        if (phase == 0) host.Send(true, inverted: false);
+        else if (phase == 1) host.Send(true, inverted: false, move: true);
+        else host.Up();
+        Assert.Equal(1, rangeOut);
+        Assert.Equal(1, pointerCancel);
+        Assert.Equal(before, stylus);
+        Assert.False(host.Preview.HasActiveSessions);
+        Assert.Null(host.Renderer.CurrentPreviewStroke);
+        Assert.Null(Tablet.CurrentStylusDevice);
+        Assert.Empty(host.Ink.Strokes);
+        plugIn.Input = null;
+        host.Send(true, inverted: false);
+        host.Send(true, inverted: false, move: true);
+        host.Up();
+        Assert.Single(host.Ink.Strokes);
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public void CancellationInsideBoundaryOrInputCannotStartLaterPreviews(bool custom, bool threaded, bool boundary)
+    {
+        using var host = new Host(custom, threaded);
+        if (boundary) host.PlugIn.Entering = host.Cancel;
+        else host.Ink.GetStylusPlugIns(createIfMissing: true)!.Add(new CallbackPlugIn { Input = _ => host.Cancel() });
+        host.Send(true, inverted: false);
+        Assert.False(host.Preview.HasActiveSessions);
+        Assert.Null(host.Renderer.CurrentPreviewStroke);
+        Assert.Null(Tablet.CurrentStylusDevice);
+        Assert.Empty(host.Ink.Strokes);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void InputFailureRetiresPreviewAndDeviceAsCancellation(bool custom, bool threaded)
+    {
+        using var host = new Host(custom, threaded);
+        host.Ink.GetStylusPlugIns(createIfMissing: true)!.Add(new CallbackPlugIn
+        {
+            Input = _ => throw new InvalidOperationException("input observer")
+        });
+        host.Send(true, inverted: false);
+        Assert.False(host.Preview.HasActiveSessions);
+        Assert.Null(host.Renderer.CurrentPreviewStroke);
+        Assert.Null(Tablet.CurrentStylusDevice);
+        Assert.Empty(host.Ink.Strokes);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void OlderCanceledInputCannotRemoveAReentrantNewSession(bool custom, bool threaded)
+    {
+        using var host = new Host(custom, threaded);
+        int ranges = 0;
+        host.Ink.AddHandler(UIElement.StylusInRangeEvent, new StylusEventHandler((_, _) => ranges++), true);
+        var plugIn = new CallbackPlugIn();
+        host.Ink.GetStylusPlugIns(createIfMissing: true)!.Add(plugIn);
+        plugIn.Input = input =>
+        {
+            plugIn.Input = null;
+            host.Send(true, inverted: false);
+            host.Send(true, inverted: false, move: true);
+            input.Cancel();
+        };
+        host.Send(true, inverted: false);
+        Assert.True(host.Preview.HasActiveSessions);
+        Assert.True(Tablet.CurrentStylusDevice?.InRange);
+        Assert.Equal(1, ranges);
+        host.Up();
+        Assert.Equal(1, ranges);
+        Assert.Single(host.Ink.Strokes);
+    }
+
+    private sealed class CallbackPlugIn : StylusPlugIn
+    {
+        internal Action<RawStylusInput>? Input;
+        protected override void OnStylusDown(RawStylusInput input) => Input?.Invoke(input);
+        protected override void OnStylusMove(RawStylusInput input) => Input?.Invoke(input);
+        protected override void OnStylusUp(RawStylusInput input) => Input?.Invoke(input);
+    }
+
     private sealed class ThrowingPlugIn : StylusPlugIn
     {
         protected override void OnStylusLeave(RawStylusInput input, bool confirmed)
@@ -154,7 +275,12 @@ public sealed class MacOSTabletCancellationTests
         internal int Entered, Left;
         internal bool LastLeaveInRange = true;
         internal Action? Leaving;
-        protected override void OnStylusEnter(RawStylusInput input, bool confirmed) => Entered++;
+        internal Action? Entering;
+        protected override void OnStylusEnter(RawStylusInput input, bool confirmed)
+        {
+            Entered++;
+            Entering?.Invoke();
+        }
         protected override void OnStylusLeave(RawStylusInput input, bool confirmed)
         {
             Left++;
@@ -174,7 +300,7 @@ public sealed class MacOSTabletCancellationTests
         internal DynamicRenderer Renderer => (DynamicRenderer)typeof(InkCanvas)
             .GetField("_dynamicRenderer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(Ink)!;
         private readonly WindowInputDispatcher _input;
-        internal Host(bool custom)
+        internal Host(bool custom, bool threaded = false)
         {
             Window = new Window { Width = 240, Height = 180, Content = Ink,
                 TitleBarStyle = custom ? WindowTitleBarStyle.Custom : WindowTitleBarStyle.Native };
@@ -183,7 +309,7 @@ public sealed class MacOSTabletCancellationTests
             Window.Measure(new Size(240, 180));
             Window.Arrange(new Rect(0, 0, 240, 180));
             _input = new WindowInputDispatcher(Window);
-            ((IInputDispatcherHost)Window).RealTimeStylus.UseRealTimeThread = false;
+            ((IInputDispatcherHost)Window).RealTimeStylus.UseRealTimeThread = threaded;
             Ink.GetStylusPlugIns(createIfMissing: true)!.Add(PlugIn);
         }
         private PointerInputData Data(bool contact, bool cancel = false, bool inverted = true, bool move = false, bool up = false) =>

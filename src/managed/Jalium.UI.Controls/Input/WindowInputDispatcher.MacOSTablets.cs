@@ -15,10 +15,10 @@ internal sealed partial class WindowInputDispatcher
     // AppKit mouse subtypes require a synchronous consumption decision. Reuse
     // the RTS processor (including its worker thread), then promote the actual
     // driver mouse packet only after the matching Stylus handlers decline it.
-    internal void HandleMacOSTabletInput(PointerInputData data, bool isDown, bool isUp,
+    internal bool HandleMacOSTabletInput(PointerInputData data, bool isDown, bool isUp,
         int timestamp, Func<bool> current, Action? mouse)
     {
-        if (!current()) return;
+        if (!current()) return true;
         uint id = data.PointerId;
         _activeStylusDevices.TryGetValue(id, out var device);
         UIElement? captured = device?.Captured as UIElement;
@@ -38,30 +38,36 @@ internal sealed partial class WindowInputDispatcher
             properties.IsInverted, data.IsInRange, properties.IsBarrelButtonPressed,
             properties.IsEraser, data.IsInRange ? target : null);
         RealTimeStylusProcessResult? result = null;
-        bool cancel = false;
         try
         {
             StylusInputAction action = ResolveStylusInputAction(isDown, isUp, data.Point.IsInContact);
             if (isDown) { TrackGestureDown(data, timestamp); TryEmitDoubleTap(target, device, data, timestamp); }
             else if (!isUp && data.IsInRange) TrackGestureMove(data, timestamp);
-            if (!Current()) return;
+            if (!Current()) return true;
             result = _host.RealTimeStylus.ProcessTablet(id, target, action,
                 device.GetStylusPoints(target), timestamp, !data.Point.IsInContact,
                 data.IsInRange, properties.IsBarrelButtonPressed, properties.IsEraser,
-                properties.IsInverted, data.IsCanceled);
-            if (!Current()) return;
+                properties.IsInverted, data.IsCanceled, Current);
+            if (!Current()) return true;
             device.UpdateState(data.Position, result.RawStylusInput.GetStylusPoints(),
                 !data.Point.IsInContact, properties.IsInverted, data.IsInRange,
                 properties.IsBarrelButtonPressed, properties.IsEraser, data.IsInRange ? target : null);
+            if (result.Canceled)
+            {
+                Action mouseCancel = PrepareMacOSTabletMouseCancellation(id);
+                try { HandleMacOSTabletCancel(data with { IsCanceled = true }, timestamp); }
+                finally { mouseCancel(); }
+                return true;
+            }
             // A compatibility click may replace a Button's text presenter.
             // Its detached old leaf cannot carry a later physical range exit
             // back to the window, so route that exit through the current hit.
             UIElement? rangeExitTarget = result.PreviousTarget is { } previousTarget &&
                 !IsDescendantOf(previousTarget, _host.Self) ? target : null;
             bool handled = RaiseStylusExtendedEvents(target, device, timestamp, action, result, rangeExitTarget);
-            if (!Current()) return;
+            if (!Current()) return true;
             if (isUp) TrackGestureUpAndEmit(target, device, data, timestamp);
-            if (!Current()) return;
+            if (!Current()) return true;
             if (data.IsInRange)
             {
                 RoutedEvent previewEvent = isDown ? UIElement.PreviewStylusDownEvent :
@@ -70,32 +76,24 @@ internal sealed partial class WindowInputDispatcher
                     isUp ? UIElement.StylusUpEvent : UIElement.StylusMoveEvent;
                 var preview = CreateStylusEventArgs(device, timestamp, previewEvent, isDown);
                 target.RaiseEvent(preview);
-                if (!Current()) return;
+                if (!Current()) return true;
                 handled |= preview.Handled;
                 if (!preview.Handled && !result.Canceled)
                 {
                     var bubble = CreateStylusEventArgs(device, timestamp, bubbleEvent, isDown);
                     target.RaiseEvent(bubble);
-                    if (!Current()) return;
+                    if (!Current()) return true;
                     handled |= bubble.Handled;
                 }
-            }
-            if (result.Canceled)
-            {
-                cancel = true;
-                CancelManipulationSession(id, timestamp);
-                if (Current()) RaisePointerCancelPipeline(target, data.Point, data.Modifiers, timestamp);
-                CancelMacOSTabletMouse(id);
-                return;
             }
             if (data.IsInRange)
             {
                 DispatchManipulationPipeline(target, data, isDown, isUp, handled, timestamp);
-                if (!Current()) return;
+                if (!Current()) return true;
                 if (isDown) RaisePointerDownPipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints);
                 else if (isUp) RaisePointerUpPipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints);
                 else RaisePointerMovePipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints);
-                if (!Current()) return;
+                if (!Current()) return true;
             }
             if (handled) CancelMacOSTabletMouse(id);
             else if (mouse != null && Current())
@@ -105,6 +103,7 @@ internal sealed partial class WindowInputDispatcher
                 try { mouse(); }
                 finally { SuppressMouseToPointerPromotion = previous; }
             }
+            return false;
         }
         finally
         {
@@ -121,7 +120,7 @@ internal sealed partial class WindowInputDispatcher
                 }
                 if (Current())
                 {
-                    if (cancel || !data.IsInRange) CleanupPointerSession(id);
+                    if (!data.IsInRange) CleanupPointerSession(id);
                     if (isUp || result.SessionEnded) CompletePointerSession(id, token);
                 }
             }
@@ -138,8 +137,8 @@ internal sealed partial class WindowInputDispatcher
         bool Current() => !_activeStylusDevices.ContainsKey(id);
         bool RetiredAt(UIElement element) => !_activePointerTargets.TryGetValue(id, out var next) ||
             !IsDescendantOf(next, element);
-        Action? notifyLeave = _host.RealTimeStylus.PrepareTabletCancellation(id,
-            data.StylusPoints, timestamp, RetiredAt);
+        Action? notifyLeave = _host.RealTimeStylus.PrepareTabletCancellation(id, target,
+            data.StylusPoints, timestamp, data.Point.Properties.IsInverted, RetiredAt);
         _gestureTrackers.Remove(id);
         bool wasInRange = device?.InRange == true;
         if (ReferenceEquals(Tablet.CurrentStylusDevice, device)) Tablet.CurrentStylusDevice = null;

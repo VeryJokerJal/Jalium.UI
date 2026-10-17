@@ -4,6 +4,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Ink;
 using Jalium.UI.Input;
+using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
@@ -66,7 +67,7 @@ internal static class WindowTabletChecks
             if(item.Kind=="owner"){area.Children.Add(subject);Canvas.SetLeft(subject,10);Canvas.SetTop(subject,8);}
             var panel=new StackPanel{Margin=new Thickness(16),Spacing=8};panel.Children.Add(new TextBlock{Text="窗口与数位板",FontSize=18});panel.Children.Add(area);
             panel.Children.Add(new TextBlock{Text="检查笔事件、单次点击、墨迹压力及取消恢复。",TextWrapping=TextWrapping.Wrap});
-            owner=new Window{Title="Jalium Window v250 · 数位板",Width=680,Height=620,MinWidth=560,MinHeight=560,
+            owner=new Window{Title="Jalium Window v251 · 数位板",Width=680,Height=620,MinWidth=560,MinHeight=560,
                 TitleBarStyle=item.Custom?WindowTitleBarStyle.Custom:WindowTitleBarStyle.Native,Content=panel};
             Application.Current!.MainWindow=owner;owner.Show();owner.UpdateLayout();
             if(item.Kind!="owner")
@@ -272,9 +273,30 @@ internal static class WindowTabletChecks
                     Require(Tablet.CurrentStylusDevice?.Id==unchecked((int)eraserPoint.PointerId),"an older proximity exit preserves the newer active pen");
                     device+=100;Send(0,currentButton,Center(currentButton));Send(1,currentButton,Center(currentButton));
                     int expectedClicks=clicks;
+                    object? DispatchState(Window window)
+                    {
+                        var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+                        var input=typeof(Window).GetField("_inputDispatcher",flags)!.GetValue(window) as WindowInputDispatcher;
+                        if(input==null)return null;
+                        object? Field(string name)=>typeof(WindowInputDispatcher).GetField(name,flags)!.GetValue(input);
+                        return new{epoch=input.MousePressEpoch,pointer=Field("_macOSTabletMousePointer"),
+                            tabletEpoch=Field("_macOSTabletMouseEpoch"),buttons=Field("_macOSTabletMouseButtons"),
+                            pressed=((System.Collections.IEnumerable)Field("_mousePressedChain")!).Cast<object>().Count()};
+                    }
+                    void TraceRestore(string phase)
+                    {
+                        var state=new{label,phase="restore-"+phase,device,penDown,penUp,clicks,expectedClicks,
+                            pressed=currentButton.IsPressed,mouseDown,mouseUp,cancel,
+                            mouseLeft=Mouse.LeftButton.ToString(),capture=Mouse.Captured?.GetType().Name,
+                            stylus=Tablet.CurrentStylusDevice?.Id,sourceChanged=!ReferenceEquals(currentSource,source),
+                            original=DispatchState(source!),physical=DispatchState(currentSource),owner=DispatchState(currentOwner)};
+                        states.Add(state);Console.WriteLine("TABLET-RESTORE "+JsonSerializer.Serialize(state));
+                    }
                     Send(2,currentButton,Center(currentButton),1,.5f);
                     Require(currentButton.IsPressed,"compatibility press is active before hide");
-                    currentOwner.Hide();currentOwner.Show();currentOwner.UpdateLayout();
+                    TraceRestore("before-hide");
+                    currentOwner.Hide();TraceRestore("after-hide");
+                    currentOwner.Show();currentOwner.UpdateLayout();TraceRestore("after-show");
                     if(popup!=null&&!popup.IsOpen){popup.IsOpen=true;currentOwner.UpdateLayout();}
                     wait.Restart();
                     void Restored()
@@ -287,7 +309,9 @@ internal static class WindowTabletChecks
                         if(restored.Window==null||!restored.Window.IsVisible)
                         {if(wait.Elapsed.TotalSeconds<10){continuation=Restored;return;}Require(false,"restored native window is visible");}
                         restored.Window!.MakeKeyWindow();Require(restored.Window.MakeFirstResponder(restored),"restored SDK responder ready");
+                        TraceRestore("before-held-drag");
                         int before=penDown;Send(3,currentButton,Center(currentButton),1,.7f);
+                        TraceRestore("after-held-drag");
                         Require(penDown==before&&!currentButton.IsPressed&&clicks==expectedClicks,"held tip after hide/reopen cannot revive an old press");
                         Send(2,currentButton,Center(currentButton),1,.6f);
                         Require(currentButton.IsPressed,"fresh pen down recovers after hide/reopen");
@@ -339,7 +363,58 @@ internal static class WindowTabletChecks
                                     Send(4,currentInk,new(180,165));
                                     Require(currentInk.Strokes.Count==strokes+1&&!preview.HasActiveSessions&&
                                         renderer.CurrentPreviewStroke==null,"fresh stroke after cancellation commits once");
-                                    Finish();
+                                    var cancelPacket=new CancelPacketPlugIn();
+                                    var plugIns=currentInk.GetStylusPlugIns(createIfMissing:true)!;
+                                    plugIns.Add(cancelPacket);
+                                    var phases=new Queue<StylusInputAction>([StylusInputAction.Down,
+                                        StylusInputAction.Move,StylusInputAction.Up]);
+                                    int phaseIndex=0;
+                                    void CheckConsumerCancellation()
+                                    {
+                                        if(!phases.TryDequeue(out var phase))
+                                        {
+                                            Require(cancelPacket.CanceledPackets==3,"each consumer phase cancels once");
+                                            plugIns.Remove(cancelPacket);Finish();return;
+                                        }
+                                        device+=100;int completedStrokes=currentInk.Strokes.Count;
+                                        Send(0,currentInk,new(240,30));Send(1,currentInk,new(240,30));
+                                        int exit=rangeOut,cancellations=cancel,downs=penDown,ups=penUp;
+                                        if(phase!=StylusInputAction.Down)Send(2,currentInk,new(240,30),1,.3f);
+                                        if(phase==StylusInputAction.Up)Send(3,currentInk,new(300,45),1,.8f);
+                                        cancelPacket.CancelAction=phase;
+                                        if(phase==StylusInputAction.Down)Send(2,currentInk,new(240,30),1,.3f);
+                                        else if(phase==StylusInputAction.Move)Send(3,currentInk,new(300,45),1,.8f);
+                                        else Send(4,currentInk,new(360,55));
+                                        Require(rangeOut==exit+1&&cancel==cancellations+1,
+                                            "plugin cancellation ends the range exactly once: "+phase);
+                                        Require(!preview.HasActiveSessions&&renderer.CurrentPreviewStroke==null&&
+                                            currentInk.Strokes.Count==completedStrokes&&Tablet.CurrentStylusDevice==null,
+                                            "plugin cancellation discards previews without committing: "+phase);
+                                        Require(penDown==downs+(phase==StylusInputAction.Down?0:1)&&penUp==ups,
+                                            "canceled packet has no routed down or up: "+phase);
+                                        int packets=points.Count;
+                                        Send(3,currentInk,new(330,60),1,.7f);
+                                        Require(points.Count==packets&&!preview.HasActiveSessions,
+                                            "held drag cannot revive a consumer-canceled native contact: "+phase);
+                                        continuation=()=>
+                                        {
+                                            Require(rangeOut==exit+1&&cancel==cancellations+1,
+                                                "queued native retirement never repeats cancellation: "+phase);
+                                            double y=30+phaseIndex++*45;
+                                            Send(2,currentInk,new(230,y),1,.3f);
+                                            Send(3,currentInk,new(300,y+5),1,.7f);
+                                            Send(4,currentInk,new(390,y+10));
+                                            Require(currentInk.Strokes.Count==completedStrokes+1&&
+                                                !preview.HasActiveSessions&&renderer.CurrentPreviewStroke==null,
+                                                "new explicit contact commits once after consumer cancellation: "+phase);
+                                            states.Add(new{label,phase="consumer-"+phase,
+                                                canceledPackets=cancelPacket.CanceledPackets,
+                                                rangeExits=rangeOut-exit,cancellations=cancel-cancellations,
+                                                completedBefore=completedStrokes,completedAfter=currentInk.Strokes.Count});
+                                            CheckConsumerCancellation();
+                                        };
+                                    }
+                                    CheckConsumerCancellation();
                                 };
                             };
                         };
@@ -351,6 +426,19 @@ internal static class WindowTabletChecks
             if(continuation==null)Next();
         });
         app.BeginInvokeOnMainThread(Next);app.Run();return failures.Count==0&&completed==6?0:1;
+    }
+    private sealed class CancelPacketPlugIn : StylusPlugIn
+    {
+        internal StylusInputAction? CancelAction;
+        internal int CanceledPackets;
+        private void Apply(RawStylusInput input)
+        {
+            if(CancelAction!=input.Action)return;
+            CancelAction=null;CanceledPackets++;input.Cancel();
+        }
+        protected override void OnStylusDown(RawStylusInput input)=>Apply(input);
+        protected override void OnStylusMove(RawStylusInput input)=>Apply(input);
+        protected override void OnStylusUp(RawStylusInput input)=>Apply(input);
     }
     private static Dictionary<string,string> NativeLibraries(){var result=new Dictionary<string,string>();for(uint i=0;i<ImageCount();i++){string? path=Marshal.PtrToStringUTF8(ImageName(i));if(path!=null&&Path.GetFileName(path).StartsWith("libjalium.native.",StringComparison.Ordinal))result[Path.GetFileName(path)]=Path.GetFullPath(path);}return result;}
     [DllImport("/usr/lib/libSystem.B.dylib",EntryPoint="_dyld_image_count")]private static extern uint ImageCount();
