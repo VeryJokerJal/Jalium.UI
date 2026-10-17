@@ -1466,7 +1466,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
 
 
-    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e) => base.OnPropertyChanged(e);
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == VisibilityProperty || e.Property == IsEnabledProperty)
+            _platformTaskbarIntegration?.Refresh();
+    }
     internal override void OnEffectiveValueSourceChanged(DependencyProperty property)
     {
         base.OnEffectiveValueSourceChanged(property);
@@ -1676,6 +1681,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
                     _nativeWindowHidden = false;
                     UpdateRenderableRegistration();
+                    _platformTaskbarIntegration?.Refresh();
                 }
                 return;
             }
@@ -3283,6 +3289,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // for OnStateChanged), so we cannot rely on the state-changed path here.
         _nativeWindowHidden = false;
         UpdateRenderableRegistration();
+        _platformTaskbarIntegration?.Refresh();
 
         // Hidden startup suppresses asynchronous present owners so the initial
         // frame has one synchronous owner. Start steady-state scheduling only
@@ -3542,6 +3549,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Track the native hidden state as well as the Visibility property.
         // Other backends retain their existing Hide() property semantics.
         _nativeWindowHidden = true;
+        _platformTaskbarIntegration?.Refresh();
         UpdateRenderableRegistration();
         EndMacOSDialogOnHide();
     }
@@ -4075,6 +4083,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void CompleteManagedTeardownCore(nint nativeHandle, bool nativeDestroyed)
     {
+        DetachPlatformTaskbarIntegration();
 
         if (!nativeDestroyed)
         {
@@ -4722,6 +4731,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             _ = _platformWindow.SetOpacity(Opacity);
         if (PlatformFactory.IsMacOS)
             _ = _platformWindow.SetSystemBackdrop((int)SystemBackdrop);
+        AttachPlatformTaskbarIntegration();
 
         if (PlatformFactory.IsAndroid)
         {
@@ -7168,6 +7178,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     _ = SetWindowText(window.Handle, (string?)e.NewValue ?? "");
             }
 
+            window._platformTaskbarIntegration?.Refresh();
             window.ApplyTitleBarPresentation();
         }
     }
@@ -7450,6 +7461,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (window._platformWindow != null)
             {
                 _ = window._platformWindow.SetShowInTaskbar(show);
+                window._platformTaskbarIntegration?.Refresh();
                 return;
             }
 
@@ -16093,7 +16105,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             nameof(TaskbarItemInfo),
             typeof(Jalium.UI.Shell.TaskbarItemInfo),
             typeof(Window),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnTaskbarItemInfoChanged));
 
     /// <summary>Identifies the routed <see cref="DpiChanged"/> event.</summary>
     public static readonly RoutedEvent DpiChangedEvent =

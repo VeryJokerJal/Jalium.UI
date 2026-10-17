@@ -4,6 +4,64 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v253：TaskbarItemInfo 的 AppKit Dock 接入
+
+`Window.TaskbarItemInfo` 现在由现有 macOS SDK 包接入 AppKit。普通窗口在设置
+模型后按需建立注册；未设置模型及内部 Popup 不创建任务栏资源。模型替换、清空、
+窗口销毁时解除订阅、通知观察者与位图缓存。原生生产代码和 ABI 本轮未改变。
+
+| 模型能力 | macOS 行为 |
+| --- | --- |
+| ProgressState／ProgressValue | 应用与窗口 Dock tile 显示确定／不确定、错误、暂停进度；错误／暂停另有形状标记与语义值，颜色不是唯一信号。不确定动画遵守系统减少动态设置；NaN 归零，进度限制到 0–1。 |
+| Overlay | 复用真实 Metal／Software 位图捕获，将 BitmapSource、DrawingImage 等 ImageSource 绘制成保留比例的原生图像；跟踪子属性变化和位图内容版本。菜单图像使用 18-point 尺寸。 |
+| Description | 更新 native miniwindowTitle、Dock 命令分组名及自定义 tile 的进程内标签／语义值。应用图标的系统悬停名称仍由 Dock 管理，不声称任意替换其 tooltip。 |
+| ThumbnailClipMargin | 从窗口客户区按 DIP 裁剪并生成保留比例的缩略图；实际最小化前更新，最小化期间有界刷新。非法非有限／负边距按零处理；空裁剪不显示客户区图像。 |
+| ThumbButtonInfos | 在应用 Dock 菜单中按窗口分组，保留 Click、ICommand／RoutedCommand 与 CommandTarget 语义。隐藏／折叠项不出现，禁用和非交互项不能执行。Native menu 遵守系统背景与选择后关闭规则，不模拟 Windows 缩略图工具栏的 IsBackgroundVisible／DismissWhenClicked 外观。 |
+
+应用 Dock 图标属于整个应用：具有进度或叠加图像的合资格窗口中，优先选择 key
+窗口，其次最近激活的窗口；隐藏、ShowInTaskbar=false、关闭及清空模型后重新选择
+或恢复原视图。其他窗口各保留自己的最小化 tile。既有 badgeLabel 保持；清理仅
+恢复本模块仍持有的视图／标题，保留另一组件后续设置的 contentView。
+
+TaskbarItemInfo／ThumbButtonInfo 现在发送 Freezable 变更，并传播图像、按钮属性和
+集合变化。绘制代次与命令身份分离，进度更新不会让打开的菜单失效；模型／集合
+替换、按钮移除后重加、命令或参数／目标替换、禁用／隐藏、关闭会使旧动作失效。
+Click 和 CanExecute 回调返回后再次检查，旧动作不继续调用较新目标。旧菜单使用
+弱引用，释放注册后不保持模型上下文。图像回调中关闭窗口或重入替换模型时，
+正在建立的较旧注册不会重新附到已关闭的窗口。
+
+当前 .NET SDK 的 NSDockTile.ContentView setter 拒绝 null，而 AppKit 允许 nil；
+清空时使用同一 SDK 对象上的公开 Objective-C setter，恢复默认视图。没有替换
+应用代理、注入系统事件或修改主界面样式。
+
+最终分别冻结两份历史，全部构建、测试与 AppKit 运行串行执行：
+
+| 范围 | 结果 |
+| --- | --- |
+| 完整托管回归 | PR **2393 通过**，本地 **2310 通过**，各 0 失败、2 项既有 opt-in 跳过。 |
+| 新增任务栏组 | 每份历史 **26/26**：直接／嵌套属性、集合和模型替换、移除后重加、冻结克隆、进度边界、Click／CanExecute 重入、旧菜单及释放上下文。 |
+| Dock AppKit SDK | 每份历史、每种 Metal／Software 后端，各 **64 项／2 场景**，0 失败；两种标题栏，进度语义、叠加图像与原地像素更新、菜单动作和失效、两个窗口的归属、实际最小化、隐藏／恢复、清空和外部视图恢复、图像回调关闭。 |
+| 既有 AppKit 回归 | 每份历史、每种后端，数位板／Popup **788 项／6 场景**，手势 **206 项／6 场景**，Writing Tools SDK **132 项／6 场景**，均 0 失败。 |
+| 前版对照 | 相同最终公共 SDK 夹具运行前版产品，在首个原生标题栏场景即检出 Description 没有到达 native miniwindowTitle；0 场景完成、1 项失败。不把提前退出或未执行的后续场景记作通过。 |
+| 负载及历史 | 两份历史重新构建匹配八库及宿主；核对实际加载路径、Mach-O UUID／代码数据段和三份程序集（HostSmoke、Managed、macOS SDK）。完整冻结树逐文件核对，保留 **34 处精确历史差异**及并行未提交修改。 |
+| 原生证据 | 原生生产／夹具完整子树未变，沿用来源绑定的各 **41/41**、ASAN **8/8**、语法／ABI **20/20**；本轮未重跑这些完整原生、ASAN 或语法组。额外串行复查原生手势夹具三次，各 **515 项通过**。 |
+
+已查看最终两种后端、两种标题栏的四张 AppKit 离屏图：错误／暂停标记、图像及
+进度位置可辨认，窗口缩略图保持比例。它们是自有 SDK 对象的进程内捕获，不是
+真实 Dock、鼠标／键盘、物理设备、IME、外部 AX 或 VoiceOver 的验收。
+桌面工具仍报告 tunnel-client 未连接，既有用户实测保留原范围。
+
+**继续开放的失败：** v251 首次隐藏／重开间歇失败没有归因或修复证明。提交
+`27097631` 的 Apple CI `window-contracts` 为 **35/36 通过**，原生手势在
+“visibility/enabled roundtrip cancels old sequence”处失败（已完成 59 个成功检查）；
+本地三次原夹具复查通过不作为该 CI 失败已修复的证明。它与本轮 Dock 组合分别
+记录。Writing Tools 服务 UI、外部无障碍、混合 DPI／Spaces、Intel／最低系统及
+完整 Apple 包仍按各自证据继续验收；完整 macOS／Window 目标保持进行中。
+
+接口依据：[Apple NSDockTile](https://developer.apple.com/documentation/appkit/nsdocktile)、
+[contentView](https://developer.apple.com/documentation/appkit/nsdocktile/contentview)、
+[applicationDockMenu](https://developer.apple.com/documentation/appkit/nsapplicationdelegate/applicationdockmenu(_:))。
+
 ## v252：Window 完成审计与非 key Popup 的重开检查
 
 本轮先区分尚未实现的能力与已经实现但缺少实际验收的能力。以下项目仍属于原

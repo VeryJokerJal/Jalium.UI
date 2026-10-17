@@ -16,6 +16,10 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
     private bool _handlingReopen;
     private MacOSWindowCloseRequest? _windowCloseRequest;
     private bool _retryTerminationAfterClose;
+    private NSMenu? _dockMenu;
+
+    public override NSMenu ApplicationDockMenu(NSApplication sender) =>
+        _dockMenu = MacOSTaskbar.CreateDockMenu();
 
     /// <summary>Creates and configures the Jalium host and application.</summary>
     protected abstract JaliumApp CreateHostedApp();

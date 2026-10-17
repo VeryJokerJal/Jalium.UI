@@ -11,6 +11,11 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0] == "--window-taskbar-software")
+    return WindowTaskbarChecks.Run(software: true);
+if (args.Length == 1 && args[0] == "--window-taskbar")
+    return WindowTaskbarChecks.Run();
+
 if (args.Length == 1 && args[0] == "--window-tablets-software")
     return WindowTabletChecks.Run(software: true);
 if (args.Length == 1 && args[0] == "--window-tablets")

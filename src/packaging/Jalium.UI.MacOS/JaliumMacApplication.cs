@@ -29,6 +29,7 @@ public class JaliumMacApplication : NSApplication
         _application = Runtime.GetNSObject<NSApplication>(SharedApplicationForClass(nativeClass, Selector.GetHandle("sharedApplication")))
             ?? throw new InvalidOperationException("AppKit did not create its principal application.");
         PlatformTextContextMenus.Show = MacOSTextContextMenus.Show;
+        PlatformTaskbarIntegration.Attach = MacOSTaskbar.Attach;
         return _application;
     }
 
