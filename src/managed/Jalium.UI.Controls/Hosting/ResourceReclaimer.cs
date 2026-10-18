@@ -270,7 +270,11 @@ internal sealed class ResourceReclaimer : IDisposable
         // Not reachable from any presentation surface: nothing can be displaying it, so no witness
         // is needed. This is the common case the reclaimer was written for — a view that has been
         // navigated away from and detached.
-        var host = Window.GetWindow(visual);
+        // Popup input follows its logical owner, while render timestamps belong
+        // to the native surface that actually presented this visual.
+        var host = OperatingSystem.IsMacOS()
+            ? Window.GetMacOSPhysicalWindow(visual)
+            : Window.GetWindow(visual);
         if (host is null)
             return true;
 

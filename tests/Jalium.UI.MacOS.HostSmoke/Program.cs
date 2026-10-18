@@ -23,6 +23,9 @@ if (args.Length == 1 && args[0].StartsWith("--window-explicit-list-case=", Strin
 if (args.Length == 1 && args[0].StartsWith("--window-appearance-case=", StringComparison.Ordinal))
     return WindowAppearanceLifetimeChecks.Run(args[0]);
 
+if (args.Length == 1 && args[0].StartsWith("--window-popup-resource-case=", StringComparison.Ordinal))
+    return WindowPopupResourceChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-input-lifetime-case=", StringComparison.Ordinal))
     return WindowInputLifetimeChecks.Run(args[0]);
 
