@@ -1723,13 +1723,22 @@ public class ComboBox : Selector
         int index = item is ComboBoxItem container
             ? ItemContainerGenerator.IndexFromContainer(container) : -1;
         if (index < 0) index = GetIndexOf(item);
-        if (index < 0 || index >= GetItemCount())
+        SetAutomationSelectionAt(index, selected);
+    }
+
+    internal void SetAutomationSelectionAt(int index, bool selected)
+    {
+        if (!IsEnabled) throw new InvalidOperationException("Cannot select a disabled ComboBox.");
+        var row = Items.GetOccurrenceAt(index);
+        var item = row?.Item;
+        if (row is null || !row.IsAlive || item is null)
             throw new InvalidOperationException("The item no longer belongs to this ComboBox.");
-        var realized = ItemContainerGenerator.ContainerFromIndex(index) as UIElement ?? item as UIElement;
+        var realized = ItemContainerGenerator.ContainerFromOccurrence(row) as UIElement ?? item as UIElement;
         if (realized is { IsEnabled: false })
             throw new InvalidOperationException("Cannot select a disabled ComboBox item.");
-        if (selected) SetAutomationValue(SelectedIndexProperty, index);
-        else if (SelectedIndex == index) SetAutomationValue(SelectedIndexProperty, -1);
+        if (!row.IsAlive) throw new InvalidOperationException("The item no longer belongs to this ComboBox.");
+        if (selected) SetAutomationValue(SelectedIndexProperty, row.Index);
+        else if (SelectedIndex == row.Index) SetAutomationValue(SelectedIndexProperty, -1);
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(

@@ -39,6 +39,7 @@ internal static class WindowSelectionTransactionChecks
         var actions=new WrapPanel{ItemWidth=150,ItemHeight=42};
         Button Action(string text,string id){var b=new Button{Content=text,Width=144,Height=38};Name(b,text,id);actions.Children.Add(b);return b;}
         var add=Action("添加第二行","tx-add");var insert=Action("插入第二行","tx-insert");var reentry=Action("键盘与回调","tx-reentry");var duplicate=Action("重复项高亮","tx-duplicate");
+        var repeatOpen=Action("下拉行检查","tx-repeat-open");var repeatReset=Action("选回第二行","tx-repeat-reset");var repeatRebuild=Action("替换下拉项目","tx-repeat-rebuild");
         var getter=Action("值读取回调","tx-getter");var throwing=Action("异常后继续","tx-throw");var capture=Action("记录画面","tx-capture");var next=Action("下一组项目","tx-next");body.Children.Add(actions);
         var subject=new Border{Width=660,Height=620,Child=body,CornerRadius=new CornerRadius(8),BorderThickness=new Thickness(1)};subject.SetResourceReference(Border.BackgroundProperty,"LayerFillColorDefaultBrush");subject.SetResourceReference(Border.BorderBrushProperty,"ControlStrokeColorDefaultBrush");
         var anchor=new Button{Content="展开检查区域",Width=160,Height=40};var area=new Canvas{Height=640};area.Children.Add(kind==0?subject:anchor);Canvas.SetLeft(subject,5);Canvas.SetTop(subject,5);Canvas.SetLeft(anchor,5);Canvas.SetTop(anchor,5);
@@ -46,7 +47,7 @@ internal static class WindowSelectionTransactionChecks
         var owner=new Window{Title="Jalium Selection Transactions "+index,Left=40,Top=40,Width=740,Height=780,MinWidth=720,MinHeight=760,TitleBarStyle=custom?WindowTitleBarStyle.Custom:WindowTitleBarStyle.Native,Content=panel};owner.SetResourceReference(Window.BackgroundProperty,"SolidBackgroundFillColorBaseBrush");Application.Current!.MainWindow=owner;
         Popup? popup=kind==0?null:new Popup{Child=subject,PlacementTarget=anchor,Placement=PlacementMode.Bottom,PreferExternalWindow=kind==2,ShouldConstrainToRootBounds=kind==1,StaysOpen=true,PopupAnimation=PopupAnimation.None};
         var getSurface=typeof(Window).GetMethod("GetMacOSPhysicalWindow",BindingFlags.Static|BindingFlags.NonPublic)!;
-        var checks=new List<string>();var failures=new List<string>();var scenarios=new List<object>();ObservableCollection<object> source=new();object? alias=null;object[] comboRows=[];
+        var checks=new List<string>();var failures=new List<string>();var scenarios=new List<object>();ObservableCollection<object> source=new(),repeatSource=new();object? alias=null;object[] comboRows=[];
         int dataKind=-1,pendingKind=0,pendingAction=0,phase=0,captures=0,addResult=-1,coherentEvents=0,keyPackets=0;bool running=false,closed=false,validateEvents=false;Window? surface=null;NSView? view=null;var watch=Stopwatch.StartNew();
         void Trace(string text)=>File.AppendAllText(Path.Combine(output,"progress.log"),watch.Elapsed.TotalSeconds.ToString("F3")+" "+text+Environment.NewLine);
         void Require(bool condition,string text){if(!condition)throw new InvalidOperationException(text);checks.Add(text);}
@@ -56,13 +57,25 @@ internal static class WindowSelectionTransactionChecks
         int[] Selected(){var rows=Rows();var selected=Peer().GetSelection();return rows.Select((row,i)=>(row,i)).Where(x=>selected.Any(p=>ReferenceEquals(p,x.row))).Select(x=>x.i).ToArray();}
         void ReadSurface(){surface=(Window?)getSurface.Invoke(null,[editor]);view=surface is {Handle:var h}&&h!=0?Runtime.GetNSObject<NSView>(h):null;}
         void Layout(){owner.UpdateLayout();ReadSurface();if(surface!=null&&!ReferenceEquals(surface,owner))surface.UpdateLayout();}
-        void PrepareRows(){if(closed)return;for(int i=0;i<source.Count;i++)if(list.ItemContainerGenerator.ContainerFromIndex(i)is FrameworkElement row)Name(row,i<2?"重复条目🙂":"普通项目","tx-row-"+i);}
+        void PrepareRows(){if(closed)return;for(int i=0;i<repeatSource.Count;i++)if(repeat.ItemContainerGenerator.ContainerFromIndex(i)is FrameworkElement item)Name(item,"第 "+i+" 行 · 重复条目🙂 Miii","tx-repeat-row-"+i);for(int i=0;i<source.Count;i++)if(list.ItemContainerGenerator.ContainerFromIndex(i)is FrameworkElement row)Name(row,i<2?"重复条目🙂":"普通项目","tx-row-"+i);}
         void Record()
         {
-            ReadSurface();PrepareRows();var state=new{index,custom,software,kind,dataKind,pendingKind,pendingAction,running,closed,phase,captures,addResult,coherentEvents,keyPackets,processId=Environment.ProcessId,appRunning=app.Running,selectedRows=Selected(),selectedCount=list.SelectedItems.Count,
+            ReadSurface();PrepareRows();var state=new{recordedUnixMicros=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()*1000,repeatIndex=repeat.SelectedIndex,repeatSelected=RepeatRows().Select(row=>row.IsSelected).ToArray(),repeatOpen=repeat.IsDropDownOpen,repeatNames=RepeatRows().Select(row=>row.GetName()).ToArray(),index,custom,software,kind,dataKind,pendingKind,pendingAction,running,closed,phase,captures,addResult,coherentEvents,keyPackets,processId=Environment.ProcessId,appRunning=app.Running,selectedRows=Selected(),selectedCount=list.SelectedItems.Count,
                 realizedSelected=Enumerable.Range(0,source.Count).Select(i=>list.ItemContainerGenerator.ContainerFromIndex(i)is ListBoxItem row&&row.IsSelected).ToArray(),comboIndex=combo.SelectedIndex,comboValue=combo.SelectedValue,comboText=combo.SelectionBoxItem?.ToString(),text=editor.Text,selectionStart=editor.SelectionStart,selectionLength=editor.SelectionLength,
                 focused=editor.IsKeyboardFocused,ownerNativeKey=closed||owner.Handle==0?null:Runtime.GetNSObject<NSView>(owner.Handle)?.Window?.IsKeyWindow,surfaceNativeKey=view?.Window?.IsKeyWindow,appActive=app.Active,frontmostPID=NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier,
                 ownerBackend=owner.RenderTarget?.Backend.ToString(),surfaceBackend=surface?.RenderTarget?.Backend.ToString(),checks,failures,scenarios,ownNSViewSDK=true,physicalInput=false,desktopScreenshot=false};File.WriteAllText(Path.Combine(output,"state.tmp"),JsonSerializer.Serialize(state));File.Move(Path.Combine(output,"state.tmp"),Path.Combine(output,"state.json"),true);
+        }
+        ComboBoxAutomationPeer RepeatPeer()=>(ComboBoxAutomationPeer)repeat.GetAutomationPeer()!;
+        SelectorItemAutomationPeer[] RepeatRows()=>RepeatPeer().GetChildren().Cast<SelectorItemAutomationPeer>().ToArray();
+        ObservableCollection<object> RepeatSource()
+        {
+            var item=new Row(7);return dataKind==1?new(){new EqualComboItem{Key=7,Content=item},new EqualComboItem{Key=7,Content=item},new EqualComboItem{Key=9,Content=new Row(9)}}:new(){item,dataKind==2?new Row(7):item,new Row(9)};
+        }
+        void RepeatSelection(int expected)
+        {
+            var rows=RepeatRows();Require(repeat.SelectedIndex==expected,"combo selects the independently requested occurrence");
+            var selected=RepeatPeer().GetSelection();Require(expected<0?selected.Length==0:selected.Length==1&&ReferenceEquals(selected[0],rows[expected]),"combo selection provider returns the requested row peer");
+            Require(rows.Select(row=>row.IsSelected).SequenceEqual(Enumerable.Range(0,rows.Length).Select(i=>i==expected)),"only the requested combo occurrence reports selected");
         }
         static int Key(object? row)=>row is Row normal?normal.Key:row is GetterRow getter?getter.Key:-1;
         void CheckCombo(int index){Require(combo.SelectedIndex==index&&ReferenceEquals(combo.SelectedItem,comboRows[index])&&Equals(combo.SelectedValue,Key(comboRows[index])),"index, item and value agree with the newest request");Require(ReferenceEquals(combo.SelectionBoxItem,comboRows[index]),"displayed combo value follows the newest row");}
@@ -77,7 +90,7 @@ internal static class WindowSelectionTransactionChecks
         void SwitchData(int shape)
         {
             dataKind=shape;var shared=new Row(7);alias=shape==2?new Row(7):shared;source=shape==1?new ObservableCollection<object>{new ListBoxItem{Content=shared},new ListBoxItem{Content=shared},new ListBoxItem{Content=new Row(9)}}:new ObservableCollection<object>{shared,shape==2?new Row(7):shared,new Row(9)};
-            list.ItemsSource=source;list.SelectionMode=SelectionMode.Extended;ResetCombo([new Row(1),new Row(2),new Row(3)]);repeat.ItemsSource=new ObservableCollection<object>{shared,shared,new Row(9)};repeat.SelectedIndex=1;Layout();
+            list.ItemsSource=source;list.SelectionMode=SelectionMode.Extended;ResetCombo([new Row(1),new Row(2),new Row(3)]);repeat.IsDropDownOpen=false;repeatSource=RepeatSource();repeat.ItemsSource=repeatSource;repeat.SelectedIndex=1;Layout();
             Attempt("actual-backend",()=>Require(owner.RenderTarget?.Backend==(software?RenderBackend.Software:RenderBackend.Metal)&&surface?.RenderTarget?.Backend==(software?RenderBackend.Software:RenderBackend.Metal)&&(surface!=owner)==(kind==2),"owner and surface use the requested backend and hosting mode"));
             Attempt("first-public-add-positive",()=>{list.SelectedItems.Add(alias);Require(Selected().SequenceEqual(new[]{0})&&list.SelectedItems.Count==1,"first public add selects exactly one occurrence");});
             editor.Select(1,2);editor.Focus();next.IsEnabled=shape<2;status.Text="准备验证第 "+(shape+1)+" 组";phase++;
@@ -93,14 +106,31 @@ internal static class WindowSelectionTransactionChecks
             else if(action==4)Attempt("duplicate-combo-positive",()=>{repeat.IsDropDownOpen=true;try{Layout();repeat.SelectedIndex=1;var first=repeat.ItemContainerGenerator.ContainerFromIndex(0)as ComboBoxItem;var second=repeat.ItemContainerGenerator.ContainerFromIndex(1)as ComboBoxItem;Require(first!=null&&second!=null&&!ReferenceEquals(first,second)&&!first.IsSelected&&second.IsSelected,"actual dropdown highlights only the selected repeated row; first="+first?.IsSelected+" second="+second?.IsSelected+" selectedIndex="+repeat.SelectedIndex+" firstIndex="+(first==null?-1:repeat.ItemContainerGenerator.IndexFromContainer(first))+" secondIndex="+(second==null?-1:repeat.ItemContainerGenerator.IndexFromContainer(second)));}finally{repeat.IsDropDownOpen=false;}});
             else if(action==5)Attempt("value-getter-reentry",()=>{var rows=new[]{new GetterRow(1),new GetterRow(2),new GetterRow(3)};ResetCombo(rows);bool invoked=false;rows[1].Read=()=>{if(!invoked){invoked=true;combo.SelectedIndex=2;}};combo.SelectedIndex=1;Require(invoked,"selected value getter issues a new request");CheckCombo(2);});
             else if(action==6)Attempt("throwing-property-reentry",()=>{ResetCombo([new Row(1),new Row(2),new Row(3)]);bool invoked=false;var expected=new MarkerException();combo.Hook=property=>{if(!invoked&&property==Selector.SelectedItemProperty){invoked=true;combo.SelectedValue=3;throw expected;}};Exception? caught=null;try{combo.SelectedIndex=1;}catch(Exception e){caught=e;}finally{combo.Hook=null;}Require(invoked&&ReferenceEquals(caught,expected),"first callback exception reaches the caller");CheckCombo(2);combo.SelectedIndex=0;CheckCombo(0);combo.SelectedIndex=2;});
+            else if(action==8)
+            {
+                repeat.IsDropDownOpen=true;Layout();PrepareRows();
+                Attempt("combo-provider-state",()=>{repeat.SelectedIndex=1;RepeatSelection(1);});
+                Attempt("combo-provider-select",()=>{repeat.SelectedIndex=0;RepeatRows()[1].Select();RepeatSelection(1);});
+                Attempt("combo-provider-add",()=>{repeat.SelectedIndex=-1;RepeatRows()[1].AddToSelection();RepeatSelection(1);});
+                Attempt("combo-provider-remove",()=>{repeat.SelectedIndex=1;RepeatRows()[1].RemoveFromSelection();RepeatSelection(-1);});
+                repeat.SelectedIndex=1;
+            }
+            else if(action==9){repeat.SelectedIndex=1;repeat.IsDropDownOpen=true;Layout();PrepareRows();}
+            else if(action==10)Attempt("combo-provider-view-replacement",()=>
+            {
+                var old=RepeatRows();repeat.IsDropDownOpen=false;repeatSource=RepeatSource();repeat.ItemsSource=repeatSource;repeat.SelectedIndex=1;repeat.IsDropDownOpen=true;Layout();PrepareRows();var rows=RepeatRows();
+                Require(rows.Length==3&&!old.Any(peer=>rows.Contains(peer)),"replacing combo items creates three current row identities");
+                foreach(var peer in old){bool rejected=false;try{peer.Select();}catch(InvalidOperationException){rejected=true;}Require(rejected,"removed combo peer does not target a replacement row");}
+            });
             else if(action==7)
             {
                 void Save(Window window,string name){var bitmap=MacOSWritingToolsBitmapCapture.Capture((int)Math.Ceiling(window.ActualWidth*window.DpiScale),(int)Math.Ceiling(window.ActualHeight*window.DpiScale),window.DpiScale,drawing=>{drawing.DrawRectangle(window.Background,null,new Rect(0,0,window.ActualWidth,window.ActualHeight));window.Render(drawing);},()=>window.Handle!=0)??throw new InvalidOperationException("backend readback unavailable");var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));using var file=File.Create(Path.Combine(output,name+".png"));encoder.Save(file);}
-                Layout();Save(owner,"kind-"+dataKind+"-owner");if(surface!=null&&!ReferenceEquals(surface,owner))Save(surface,"kind-"+dataKind+"-surface");captures++;
+                Layout();Save(owner,"kind-"+dataKind+"-owner");var row=repeat.ItemContainerGenerator.ContainerFromIndex(0)as UIElement;var menu=row==null?null:(Window?)getSurface.Invoke(null,[row]);if(repeat.IsDropDownOpen&&menu!=null&&!ReferenceEquals(menu,owner)&&!ReferenceEquals(menu,surface)){menu.UpdateLayout();Save(menu,"kind-"+dataKind+"-combo");}if(surface!=null&&!ReferenceEquals(surface,owner))Save(surface,"kind-"+dataKind+"-surface");captures++;
             }
-            editor.Select(1,2);editor.Focus();status.Text="当前选择 "+list.SelectedItems.Count+" 行，回调目标 "+combo.SelectedIndex;phase++;
+            if(action<8){editor.Select(1,2);editor.Focus();}status.Text="当前选择 "+list.SelectedItems.Count+" 行，回调目标 "+combo.SelectedIndex;phase++;
         }
         add.Click+=(_,_)=>pendingAction=1;insert.Click+=(_,_)=>pendingAction=2;reentry.Click+=(_,_)=>pendingAction=3;duplicate.Click+=(_,_)=>pendingAction=4;getter.Click+=(_,_)=>pendingAction=5;throwing.Click+=(_,_)=>pendingAction=6;capture.Click+=(_,_)=>pendingAction=7;next.Click+=(_,_)=>{if(dataKind<2)pendingKind=dataKind+1;};
+        repeatOpen.Click+=(_,_)=>pendingAction=8;repeatReset.Click+=(_,_)=>pendingAction=9;repeatRebuild.Click+=(_,_)=>pendingAction=10;
         owner.Show();owner.UpdateLayout();if(popup!=null)popup.IsOpen=true;Layout();Trace("owner ready");
         using var pulse=NSTimer.CreateRepeatingScheduledTimer(.03,_=>
         {
@@ -119,6 +149,7 @@ internal static class WindowSelectionTransactionChecks
     }
     private static void Name(DependencyObject value,string name,string id){AutomationProperties.SetName(value,name);AutomationProperties.SetAutomationId(value,id);}
     private sealed record Row(int Key){public override string ToString()=>Key==7?"重复条目🙂 Miii":"项目 "+Key+" · 中文🙂";}
+    private sealed class EqualComboItem:ComboBoxItem{internal EqualComboItem(){SetValue(DefaultStyleKeyProperty,typeof(ComboBoxItem));}internal int Key;public override bool Equals(object? other)=>other is EqualComboItem item&&Key==item.Key;public override int GetHashCode()=>Key;}
     private sealed class GetterRow(int key){internal Action? Read;public int Key{get{Read?.Invoke();return key;}}public override string ToString()=>"值读取项目 "+key;}
     private sealed class MarkerException:Exception;
     private sealed class CallbackCombo:ComboBox

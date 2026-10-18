@@ -99,4 +99,7 @@
     <Compile Include="../Jalium.UI.Tests/DragDropPreviewSourceParityTests.cs" Link="DragDropPreviewSourceParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/DataObjectParityTests.cs" Link="DataObjectParityTests.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/ComboBoxOccurrenceAutomationTests.cs" Link="ComboBoxOccurrenceAutomationTests.cs" />
+  </ItemGroup>
 </Project>

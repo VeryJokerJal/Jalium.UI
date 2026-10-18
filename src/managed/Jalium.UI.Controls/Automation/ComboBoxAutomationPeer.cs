@@ -28,13 +28,13 @@ public partial class ComboBoxAutomationPeer
         : SelectorItemAutomationPeer(item, parent)
     {
         private ComboBox Combo => parent.ComboBoxOwner;
-        public override bool IsSelected => !IsRetired && Combo.SelectedIndex >= 0 && Combo.SelectedIndex < Combo.Items.Count
-            && Equals(Combo.Items[Combo.SelectedIndex], Item);
+        public override bool IsSelected => !IsRetired && OccurrenceIndex >= 0 && Combo.SelectedIndex == OccurrenceIndex;
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.ListItem;
-        protected override string GetNameCore() => parent.ItemText(Item, true);
+        protected override string GetNameCore() => ItemContainer is { } container
+            && AutomationProperties.GetName(container) is { Length: > 0 } name ? name : parent.ItemText(Item, false);
         protected override bool IsEnabledCore() => Combo.IsEnabled && base.IsEnabledCore();
-        public override void Select() { ThrowIfRetired(); Combo.SetAutomationSelection(Item, true); }
-        public override void AddToSelection() { ThrowIfRetired(); Combo.SetAutomationSelection(Item, true); }
-        public override void RemoveFromSelection() { ThrowIfRetired(); Combo.SetAutomationSelection(Item, false); }
+        public override void Select() { ThrowIfRetired(); Combo.SetAutomationSelectionAt(OccurrenceIndex, true); }
+        public override void AddToSelection() { ThrowIfRetired(); Combo.SetAutomationSelectionAt(OccurrenceIndex, true); }
+        public override void RemoveFromSelection() { ThrowIfRetired(); Combo.SetAutomationSelectionAt(OccurrenceIndex, false); }
     }
 }
