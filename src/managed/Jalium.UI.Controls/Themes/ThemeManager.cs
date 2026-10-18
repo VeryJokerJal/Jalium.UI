@@ -1116,7 +1116,8 @@ public static class ThemeManager
         }
 
 #pragma warning disable WPF0001
-        if (systemAppearanceChanged && _application?.ThemeMode == ThemeMode.System)
+        if (systemAppearanceChanged &&
+            (_application?.ThemeMode == ThemeMode.System || _application?.ThemeMode == ThemeMode.None))
         {
             var requested = SystemParameters.PrefersDarkColorScheme ? ThemeVariant.Dark : ThemeVariant.Light;
             if (requested != CurrentTheme)

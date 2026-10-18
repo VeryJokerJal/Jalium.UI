@@ -16,7 +16,16 @@ public partial class Application
         {
             var monitor = PlatformThemeIntegration.MonitorAppearance?.Invoke();
             if (IsHostedStopping || !ReferenceEquals(Current, this)) monitor?.Dispose();
-            else _platformAppearanceMonitor = monitor;
+            else
+            {
+                _platformAppearanceMonitor = monitor;
+#pragma warning disable WPF0001
+                // The first monitor refreshes cached native preferences. Apply
+                // them before the application's first window can paint.
+                if (monitor != null && (_themeMode == ThemeMode.None || _themeMode == ThemeMode.System))
+                    ApplyCachedSystemThemePreference();
+#pragma warning restore WPF0001
+            }
         }
         finally { _startingAppearanceMonitor = false; }
     }

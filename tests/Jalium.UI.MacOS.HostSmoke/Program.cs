@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-appearance-default-case=", StringComparison.Ordinal))
+    return WindowAppearanceDefaultsChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-explicit-list-case=", StringComparison.Ordinal))
     return WindowSelectionNotificationChecks.RunExplicitOwnershipCase(args[0]);
 
