@@ -25,11 +25,12 @@ internal static class MacOSWindowThemes
         PlatformThemeIntegration.ReadColorScheme = () => Volatile.Read(ref _scheme);
         PlatformThemeIntegration.ReadHighContrast = () => Volatile.Read(ref _increaseContrast);
         PlatformThemeIntegration.ApplyWindowAppearance = Apply;
-        bool changed = ReadPreferences();
+        bool changed = ReadPreferences(out bool motionChanged);
         PlatformThemeIntegration.MonitorAppearance = Monitor;
         Application.Current?.EnsurePlatformAppearanceMonitoring();
         foreach (var window in Window.SnapshotOpenWindows())
             window.EnsurePlatformAppearanceMonitoring();
+        if (motionChanged) SystemParameters.NotifyMacOSAnimationPreferencesChanged();
         if (changed && _leases != 0) ScheduleRefresh(_generation, forceNotification: true);
     }
 
@@ -40,7 +41,7 @@ internal static class MacOSWindowThemes
             try
             {
                 int generation = ++_generation;
-                bool changed = ReadPreferences();
+                bool changed = ReadPreferences(out bool motionChanged);
                 var app = NSApplication.SharedApplication;
                 _appearanceObserver = app.AddObserver("effectiveAppearance", NSKeyValueObservingOptions.New,
                     _ => ScheduleRefresh(generation));
@@ -49,6 +50,7 @@ internal static class MacOSWindowThemes
                 _accessibilityObserver = NSWorkspace.SharedWorkspace.NotificationCenter.AddObserver(
                     new NSString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification"),
                     _ => ScheduleRefresh(generation));
+                if (motionChanged) SystemParameters.NotifyMacOSAnimationPreferencesChanged();
                 ScheduleRefresh(generation, forceNotification: changed);
             }
             catch
@@ -75,13 +77,20 @@ internal static class MacOSWindowThemes
                 _pending = false;
                 bool notify = _forceNotification;
                 _forceNotification = false;
-                if (ReadPreferences() || notify)
+                bool appearanceChanged = ReadPreferences(out bool motionChanged);
+                if (motionChanged)
+                {
+                    SystemParameters.NotifyMacOSAnimationPreferencesChanged();
+                    // A preference subscriber may stop hosting or retire this lease.
+                    if (generation != _generation || _leases == 0) return;
+                }
+                if (appearanceChanged || notify)
                     SystemParameters.NotifyPlatformAppearanceChanged(Volatile.Read(ref _scheme));
             });
         });
     }
 
-    private static bool ReadPreferences()
+    private static bool ReadPreferences(out bool motionChanged)
     {
         var appearance = NSApplication.SharedApplication.EffectiveAppearance;
         string? match = appearance.FindBestMatch([NSAppearance.NameAqua, NSAppearance.NameDarkAqua]);
@@ -89,6 +98,7 @@ internal static class MacOSWindowThemes
         var workspace = NSWorkspace.SharedWorkspace;
         bool contrast = workspace.AccessibilityDisplayShouldIncreaseContrast;
         bool transparency = workspace.AccessibilityDisplayShouldReduceTransparency;
+        motionChanged = MacOSScrollBarSettings.RefreshPreferences();
         bool changed = scheme != _scheme || contrast != _increaseContrast || transparency != _reduceTransparency;
         Volatile.Write(ref _scheme, scheme);
         _increaseContrast = contrast;

@@ -1378,6 +1378,11 @@ public static partial class ResourceLookup
         ApplicationResourceLookupWithSource { get; set; }
 
     /// <summary>
+    /// Last-resort system resources supplied by Controls, independently of an Application lifetime.
+    /// </summary>
+    internal static Func<object, object?>? SystemResourceLookup { get; set; }
+
+    /// <summary>
     /// Gets or sets an optional callback that can redirect resource lookup
     /// to a non-visual ancestor when the visual tree is split across hosts
     /// (for example, Popup content rendered in a separate native window).
@@ -1575,13 +1580,10 @@ public static partial class ResourceLookup
             current = next;
         }
 
-        // Check application resources via callback
-        if (ApplicationResourceLookup != null)
-        {
-            return ResolveDynamicResourceValue(element, ApplicationResourceLookup.Invoke(resourceKey), resourceChain);
-        }
-
-        return null;
+        // System resources remain available before the first Application and after shutdown.
+        var globalValue = ApplicationResourceLookup?.Invoke(resourceKey)
+            ?? SystemResourceLookup?.Invoke(resourceKey);
+        return ResolveDynamicResourceValue(element, globalValue, resourceChain);
     }
 
     private static object? FindResourceCoreWithSource(
@@ -1663,11 +1665,18 @@ public static partial class ResourceLookup
                     out sourceDictionary);
             }
 
-            return applicationResult.Value;
+            if (applicationResult.Value is not null || sourceDictionary is not null)
+            {
+                return applicationResult.Value;
+            }
+
+            return SystemResourceLookup?.Invoke(resourceKey);
         }
 
         sourceDictionary = null;
-        return ApplicationResourceLookup?.Invoke(resourceKey);
+        return ResolveDynamicResourceValue(element,
+            ApplicationResourceLookup?.Invoke(resourceKey) ?? SystemResourceLookup?.Invoke(resourceKey),
+            resourceChain);
     }
 
     private static object? ResolveDynamicResourceValue(

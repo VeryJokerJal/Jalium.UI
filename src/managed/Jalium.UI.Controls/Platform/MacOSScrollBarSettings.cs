@@ -34,10 +34,20 @@ internal static partial class MacOSScrollBarSettings
         catch (EntryPointNotFoundException) { return false; }
     }
 
+    // Refresh cached native values even when the application has no visual root.
+    // A previously unread value has no stale subscribers to invalidate.
+    internal static bool RefreshPreferences()
+    {
+        bool? previousMotion = s_prefersReducedMotion;
+        s_prefersOverlayScrollBars = ReadPreferredStyle();
+        bool reducedMotion = ReadReducedMotion();
+        s_prefersReducedMotion = reducedMotion;
+        return previousMotion.HasValue && previousMotion.Value != reducedMotion;
+    }
+
     internal static void Refresh(Visual root)
     {
-        s_prefersOverlayScrollBars = ReadPreferredStyle();
-        s_prefersReducedMotion = ReadReducedMotion();
+        RefreshPreferences();
         ApplyToTree(root);
     }
 

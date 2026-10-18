@@ -674,7 +674,8 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
             }
         }
 
-        return ResourceLookup.ApplicationResourceLookup?.Invoke(resourceKey);
+        return ResourceLookup.ApplicationResourceLookup?.Invoke(resourceKey)
+            ?? ResourceLookup.SystemResourceLookup?.Invoke(resourceKey);
     }
 
     public void UnregisterName(string name)

@@ -19,6 +19,7 @@ internal static class WindowAppearanceLifetimeChecks
     internal static int Run(string argument)
     {
         int index = int.Parse(argument.Split('=').Last());
+        if (index >= 8) return WindowMotionPreferenceChecks.Run(index - 8);
         if (index is < 0 or >= 8) return 2;
         string output = Environment.GetEnvironmentVariable("JALIUM_APPEARANCE_OUTPUT")
             ?? throw new InvalidOperationException("Set the owned appearance output directory.");

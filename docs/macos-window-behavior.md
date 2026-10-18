@@ -4,6 +4,71 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v286：无窗口时同步动态效果偏好与独立系统资源
+
+应用仍运行但没有原生窗口时，NSWorkspace 的无障碍显示偏好通知现在会刷新 Reduce
+Motion 缓存，并定向发布系统动画键、动态资源和 CSS media 的变化。启动及首次取得
+观察者时也刷新旧缓存；相同偏好不重复发布，最后一个 owner 退出后旧队列退役。
+偏好订阅回调停止宿主时，再次核对观察者代次，避免继续发布旧外观事件。
+这修复评审 4306887231 指出的应用级观察者缺口，保留原有每窗口滚动条更新路径。
+原生 API 对照 [Apple Reduce Motion](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayshouldreducemotion)
+及其 [NSWorkspace 通知](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayoptionsdidchangenotification)。
+
+独立窗口补验另外发现，没有 Application 时系统资源查找也会中断。Controls 现在用
+不捕获应用的静态委托接入 Core 的末级系统资源提供者；普通元素、文档元素、带来源
+的查找和 XAML ambient context 均能得到 SystemColors、SystemFonts、SystemParameters。
+模块初始化只登记委托，不提前读原生偏好。应用退出仍清除应用回调，系统提供者不
+保留应用；本地、样式、父级及应用资源的原有优先级保持，局部显式 null 也保留。
+资源链对照 [Microsoft FindResource](https://learn.microsoft.com/en-us/dotnet/api/system.windows.frameworkelement.findresource?view=windowsdesktop-10.0)。
+
+| 当前冻结源码验收 | PR 历史 | 本地 master 历史 |
+| --- | --- | --- |
+| 完整 macOS 托管套件 | 3344 通过、2 项既有跳过、0 失败 | 3261 通过、2 项既有跳过、0 失败 |
+| 新增系统资源回归 | 39/39 | 39/39 |
+| 完整模板套件 | 56/56 | 56/56 |
+| AppKit 功能场景 | 16 组、256 场景、5097 项断言 | 16 组、256 场景、5104 项断言 |
+| 前台条件完整的组 | 13/16 | 16/16 |
+| 前台焦点观察 | 82/96；14 次不可用 | 96/96；0 次不可用 |
+| 既有外观生命周期 | 8/8、392 项 SDK 断言 | 8/8、392 项 SDK 断言 |
+
+同一最终诊断夹具在未修改产品的父提交 284a9ba6f56d7d413bceb56f5991b8fddcac7a0f 上，39 项资源用例有
+31 项失败、8 项正对照通过；AppKit 有 160/256 场景失败，96 项正对照通过。
+更早的两文件候选虽然通过原 240 场景，新增独立窗口阶段仍失败于系统资源值；本轮
+继续补齐资源回退后，两条历史均重跑全部功能场景，没有删除该独立窗口断言。
+导入命名空间、tuple 推断等夹具编译错误保留，不计为产品反例。
+
+AppKit 矩阵覆盖 Native／Custom × Metal／Software × 应用 None／System／Light／Dark，
+测试无窗口通知、双向切换、不变值、合并通知、启动及停止重启、首窗、关闭最后窗口、
+重开、订阅回调停止宿主和无 Application 的独立窗口。核对七个动画布尔值、三个弹窗
+策略、自动过渡、CSS media、动态系统键、应用覆盖值及中文、emoji、选区的保持。
+测试进程只替换共享 NSWorkspace 对象实际类型的 getter，随后恢复原实现；通知通过
+实际 workspace notification center 投递，不修改系统偏好，不投递物理输入。
+
+PR 组 10、12、13 出现 AppKit active/key 为真但系统前台 PID 不同的 14 次观察。
+原始退出码 3、三组 passed=false 及所有取样保留，原因尚未确定；它们只通过独立于
+前台的功能断言，不能计为完整焦点验收。本轮未通过反复启动消除这项缺口。
+本地 master 的前台条件见上表，不能用另一条历史或旧轮次替代当前缺失项。
+
+104 份当前后端读回图像、77 份不同图像均已查看，包含窄窗口、首窗、偏好
+切换、重开及独立窗口；它们不是桌面截图。两份完整冻结树、12 个代码/诊断输入、
+八个实际加载原生库及签名 Mach-O 内容、四份程序集和 98 个平台导出均核对。
+本轮改动六个托管产品文件；各自父版本的全部原生源码保持，原生构建串行执行。
+保留 master、现有 PR 分支、并行脏修改、39 份共享原生产物，以及历史 34 条差异的
+逐条增删行哈希；被保留的并行代码不属于本轮冻结验收。
+
+排查还记录两项独立未修问题：嵌套 x:Static 资源键目前在 ParseResourceKey 中作为
+字符串处理；对已订阅属性直接 SetValue 后，旧动态资源订阅仍会在定向刷新时覆盖。
+最初六项失败保留，最终 39 项明确验证带类型的系统键、真实 XAML ambient context
+及公开资源扩展，不宣称验证嵌套字符串语法或旧订阅替换。本轮不扩大到这两项修复。
+
+父提交全部五项 Apple 作业通过，Window 作业 117683873608 为 41/41、无失败/跳过；
+父 Linux 四项中 musl arm64 通过，其余三项在本轮发布前的最新读取仍进行中。
+新提交 CI 另行记录，不把父提交成功作为新头成功。桌面工具当前返回 tunnel-client
+未连接，无法完成实际截图、真实键鼠/触控板/数位板、IME、VoiceOver、多屏/Spaces、
+最低系统/Intel、完整 Writing Tools UI 或生产包验收。历史间歇性首窗及意外 AX 失效
+仍未关闭；此前 v208/v209 用户验收及 v211 全选呈现时序保持原记录。
+本轮验证范围可提交到保持打开的 PR，完整 macOS 目标及上述缺项继续；PR 不合并。
+
 ## v285：ComboBox 数据项目的具体行身份
 
 同一对象重复出现、不同对象内容相等，或显式 ComboBoxItem 的内容相等时，数据项目

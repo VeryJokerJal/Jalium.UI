@@ -4452,9 +4452,9 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
             }
         }
 
-        value = null;
+        value = ResourceLookup.SystemResourceLookup?.Invoke(key);
         sourceDictionary = null;
-        return false;
+        return value is not null;
     }
 
     /// <summary>
