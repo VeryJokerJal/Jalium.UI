@@ -18,13 +18,19 @@ internal static class MacOSWindowThemes
     private static bool _increaseContrast;
     private static bool _reduceTransparency;
     private static bool _pending;
+    private static bool _forceNotification;
 
     internal static void Configure()
     {
         PlatformThemeIntegration.ReadColorScheme = () => Volatile.Read(ref _scheme);
         PlatformThemeIntegration.ReadHighContrast = () => Volatile.Read(ref _increaseContrast);
         PlatformThemeIntegration.ApplyWindowAppearance = Apply;
-        ReadPreferences();
+        bool changed = ReadPreferences();
+        PlatformThemeIntegration.MonitorAppearance = Monitor;
+        Application.Current?.EnsurePlatformAppearanceMonitoring();
+        foreach (var window in Window.SnapshotOpenWindows())
+            window.EnsurePlatformAppearanceMonitoring();
+        if (changed && _leases != 0) ScheduleRefresh(_generation, forceNotification: true);
     }
 
     internal static IDisposable Monitor()
@@ -34,7 +40,7 @@ internal static class MacOSWindowThemes
             try
             {
                 int generation = ++_generation;
-                ReadPreferences();
+                bool changed = ReadPreferences();
                 var app = NSApplication.SharedApplication;
                 _appearanceObserver = app.AddObserver("effectiveAppearance", NSKeyValueObservingOptions.New,
                     _ => ScheduleRefresh(generation));
@@ -43,6 +49,7 @@ internal static class MacOSWindowThemes
                 _accessibilityObserver = NSWorkspace.SharedWorkspace.NotificationCenter.AddObserver(
                     new NSString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification"),
                     _ => ScheduleRefresh(generation));
+                ScheduleRefresh(generation, forceNotification: changed);
             }
             catch
             {
@@ -53,18 +60,22 @@ internal static class MacOSWindowThemes
         return new MonitorLease();
     }
 
-    private static void ScheduleRefresh(int generation)
+    private static void ScheduleRefresh(int generation, bool forceNotification = false)
     {
         var app = NSApplication.SharedApplication;
         app.BeginInvokeOnMainThread(() =>
         {
-            if (generation != _generation || _leases == 0 || _pending) return;
+            if (generation != _generation || _leases == 0) return;
+            _forceNotification |= forceNotification;
+            if (_pending) return;
             _pending = true;
             app.BeginInvokeOnMainThread(() =>
             {
                 if (generation != _generation || _leases == 0) return;
                 _pending = false;
-                if (ReadPreferences())
+                bool notify = _forceNotification;
+                _forceNotification = false;
+                if (ReadPreferences() || notify)
                     SystemParameters.NotifyPlatformAppearanceChanged(Volatile.Read(ref _scheme));
             });
         });
@@ -116,6 +127,7 @@ internal static class MacOSWindowThemes
             if (--_leases != 0) return;
             ++_generation;
             _pending = false;
+            _forceNotification = false;
             _appearanceObserver?.Dispose();
             _appearanceObserver = null;
             if (_colorsObserver != null)

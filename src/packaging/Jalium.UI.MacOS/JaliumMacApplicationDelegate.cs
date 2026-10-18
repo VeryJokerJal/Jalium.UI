@@ -17,7 +17,6 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
     private MacOSWindowCloseRequest? _windowCloseRequest;
     private bool _retryTerminationAfterClose;
     private NSMenu? _dockMenu;
-    private IDisposable? _themeMonitor;
 
     public override NSMenu ApplicationDockMenu(NSApplication sender) =>
         _dockMenu = MacOSTaskbar.CreateDockMenu();
@@ -30,7 +29,6 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
         if (_hostedApp != null || _stopped) return;
         PlatformFileDialogs.Show = MacOSFileDialogs.Show;
         ConfigureNativeWindowMenu(NSApplication.SharedApplication);
-        _themeMonitor = MacOSWindowThemes.Monitor();
         try
         {
             _hostedApp = CreateHostedApp()
@@ -234,8 +232,6 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
         _windowCloseRequest?.Dispose();
         _windowCloseRequest = null;
         _retryTerminationAfterClose = false;
-        _themeMonitor?.Dispose();
-        _themeMonitor = null;
         var hostedApp = _hostedApp;
         _hostedApp = null;
         hostedApp?.StopHosted(exitCode);

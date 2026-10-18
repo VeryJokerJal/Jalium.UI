@@ -1134,6 +1134,11 @@ public static class ThemeManager
         }
 
         ResourceDictionary.CurrentThemeKey = effectiveThemeKey;
+        if (OperatingSystem.IsMacOS() && _application == null)
+        {
+            Window.RefreshAppearanceWithoutApplication();
+            return;
+        }
         ForceThemeRefresh(notifyLiveRoots: true);
 
         if (_application != null)

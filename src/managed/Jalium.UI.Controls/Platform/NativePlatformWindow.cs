@@ -21,6 +21,8 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     private nint _handle;
     private Action<PlatformEvent>? _eventHandler;
     private bool _disposed;
+    private IDisposable? _appearanceMonitor;
+    private bool _startingAppearanceMonitor;
 
     // Event callback delegate must be pinned to prevent GC collection
     private readonly NativeEventCallbackDelegate _nativeCallback;
@@ -85,6 +87,7 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                 GCHandle.ToIntPtr(_selfHandle));
             InitializeMacOSGestures();
             InitializeMacOSTablets();
+            EnsureAppearanceMonitoring();
         }
         catch
         {
@@ -99,6 +102,19 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                 _callbackHandle.Free();
             throw;
         }
+    }
+
+    internal void EnsureAppearanceMonitoring()
+    {
+        if (!OperatingSystem.IsMacOS() || _disposed || _handle == 0 || _appearanceMonitor != null || _startingAppearanceMonitor) return;
+        _startingAppearanceMonitor = true;
+        try
+        {
+            var monitor = PlatformThemeIntegration.MonitorAppearance?.Invoke();
+            if (_disposed || _handle == 0) monitor?.Dispose();
+            else _appearanceMonitor = monitor;
+        }
+        finally { _startingAppearanceMonitor = false; }
     }
 
     public nint NativeHandle => _handle != nint.Zero
@@ -731,21 +747,21 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     {
         if (_disposed) return;
         _disposed = true;
-
+        ExceptionDispatchInfo? failure = null;
         if (_handle != nint.Zero)
         {
-            // Unregister callback before destroying
-            DisposeMacOSTablets();
-            DisposeMacOSGestures();
-            WindowSetEventCallback(_handle, nint.Zero, nint.Zero);
-            NativeMethods.WindowDestroy(_handle);
-            _handle = nint.Zero;
+            HostedLifecycleCleanup.Attempt(DisposeMacOSTablets, ref failure);
+            HostedLifecycleCleanup.Attempt(DisposeMacOSGestures, ref failure);
+            HostedLifecycleCleanup.Attempt(() => WindowSetEventCallback(_handle, nint.Zero, nint.Zero), ref failure);
+            var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+            HostedLifecycleCleanup.Attempt(() => NativeMethods.WindowDestroy(handle), ref failure);
         }
-
         if (_selfHandle.IsAllocated)
-            _selfHandle.Free();
+            HostedLifecycleCleanup.Attempt(() => _selfHandle.Free(), ref failure);
         if (_callbackHandle.IsAllocated)
-            _callbackHandle.Free();
+            HostedLifecycleCleanup.Attempt(() => _callbackHandle.Free(), ref failure);
+        HostedLifecycleCleanup.Attempt(() => Interlocked.Exchange(ref _appearanceMonitor, null)?.Dispose(), ref failure);
+        failure?.Throw();
     }
 
     // P/Invoke for event callback registration

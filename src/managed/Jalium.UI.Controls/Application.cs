@@ -479,6 +479,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         {
             ThemeManager.Initialize(this);
         }
+        EnsurePlatformAppearanceMonitoring();
 
         // Initialize validation adorner integration
         using (StartupDiagnostics.Begin("Application.ControlServicesInitialize", blocksUiThread: true))
@@ -1073,6 +1074,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             AndroidActivityBridge.Destroying -= OnAndroidDestroy;
             AndroidActivityBridge.LowMemory -= OnAndroidLowMemory;
         }
+        HostedLifecycleCleanup.Attempt(StopPlatformAppearanceMonitoring, ref failure);
         HostedLifecycleCleanup.Attempt(() => _workingSetTrimController?.Dispose(), ref failure);
         // A replacement can be installed by a cleanup callback. Shared rendering,
         // timers and lookup callbacks belong to the currently installed application.

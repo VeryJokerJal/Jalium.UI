@@ -3184,6 +3184,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         // SourceInitialized may close or hide the newly created window.
         if (!CanContinueShow(showGeneration) || Handle == nint.Zero) return;
+        if (OperatingSystem.IsMacOS() && Application.Current == null)
+        {
+            // The first native window starts appearance monitoring. Resolve its
+            // resources against that current palette before painting or showing.
+            UpdateWindowThemeResources();
+            if (!CanContinueShow(showGeneration) || Handle == nint.Zero) return;
+        }
         RefreshMacOSShowStateRequest(ref desiredState, ref desiredStateRequestVersion);
 
         SetFrameStartingSubscription(true);

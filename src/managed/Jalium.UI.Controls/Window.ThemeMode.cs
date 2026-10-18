@@ -55,6 +55,16 @@ public partial class Window
         return false;
     }
 
+    internal static void RefreshAppearanceWithoutApplication()
+    {
+        foreach (var window in SnapshotOpenWindows()) window.UpdateWindowThemeResources();
+    }
+
+    internal void EnsurePlatformAppearanceMonitoring()
+    {
+        if (_platformWindow is NativePlatformWindow native) native.EnsureAppearanceMonitoring();
+    }
+
     private void OnWindowThemeResourcesChanged(object? sender, EventArgs args) => ApplyWindowThemeAppearance();
 
     private void ApplyWindowThemeAppearance()

@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-appearance-case=", StringComparison.Ordinal))
+    return WindowAppearanceLifetimeChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-hosted-failure-case=", StringComparison.Ordinal))
     return WindowHostedFailureChecks.Run(args[0]);
 
