@@ -44,7 +44,8 @@ internal static class WindowAppearanceLifetimeChecks
                 native.Appearance = original;
             }
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
-            { index, passed = failure == null, checks = scene.Checks, failure = failure?.ToString(), scene.Observed,
+            { index, passed = failure == null && scene.ForegroundUnavailable == 0, qualifiedWithoutForeground = failure == null,
+                checks = scene.Checks, failure = failure?.ToString(), scene.Observed, scene.FocusObservations, scene.ForegroundUnavailable,
                 processId = Environment.ProcessId, physicalInput = false, desktopScreenshot = false, offscreenRendering = true }));
             host.AllowQuit = true;
             native.Terminate(native);
@@ -58,6 +59,7 @@ internal static class WindowAppearanceLifetimeChecks
         private readonly List<Window> _windows = [];
         private TextBox? _editor;
         private nint _responder;
+        private Window? _focusWindow;
         private ResourceDictionary[] _dictionaries = [];
         private ResourceDictionary _expected = new();
         private bool Custom => index % 2 == 1;
@@ -65,6 +67,8 @@ internal static class WindowAppearanceLifetimeChecks
         private RenderBackend Backend => index % 4 < 2 ? RenderBackend.Metal : RenderBackend.Software;
         internal List<string> Checks { get; } = [];
         internal Dictionary<string, object?> Observed { get; } = [];
+        internal List<object> FocusObservations { get; } = [];
+        internal int ForegroundUnavailable;
 
         internal void Execute()
         {
@@ -79,6 +83,12 @@ internal static class WindowAppearanceLifetimeChecks
             Focus(system);
             WaitPalette(system, "Light"); Verify(pinned, "Dark");
             Observed["leasesBeforeChanges"] = Leases();
+            if (Environment.GetEnvironmentVariable("JALIUM_APPEARANCE_BACKGROUND_CONTROL") == "1")
+            {
+                native.Hide(native);
+                Until(() => !native.Active, "programmatic application hide control");
+                Observed["intentionalBackgroundControl"] = true;
+            }
             Switch(system, pinned, dark: true);
             Require(Leases() >= 3, "custom host application and two native windows own appearance leases");
             Capture(system, "host-dark");
@@ -184,6 +194,7 @@ internal static class WindowAppearanceLifetimeChecks
 
         private void Focus(Window window)
         {
+            _focusWindow = window;
             _editor = ((StackPanel)window.Content!).Children.OfType<TextBox>().Single();
             window.Activate();
             Until(() => _editor.Focus() && Native(window).FirstResponder != null, "native editor focus");
@@ -225,8 +236,29 @@ internal static class WindowAppearanceLifetimeChecks
         }
         private void Preserved()
         {
+            var own = Native(_focusWindow!);
+            bool active = native.Active;
+            int? frontmostPID = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier;
+            bool available = active && frontmostPID == Environment.ProcessId;
+            if (!available) ForegroundUnavailable++;
+            FocusObservations.Add(new
+            {
+                phase = Observed.GetValueOrDefault("lastPhase"), available, appActive = active, frontmostPID,
+                ownWindow = own.Handle.ToString(), keyWindow = native.KeyWindow?.Handle.ToString(),
+                ownIsKey = own.IsKeyWindow, expectedResponder = _responder.ToString("x"),
+                ownResponder = own.FirstResponder?.Handle.ToString(), keyResponder = native.KeyWindow?.FirstResponder?.Handle.ToString(),
+                ownMatches = own.FirstResponder?.Handle == _responder,
+                keyMatches = native.KeyWindow?.FirstResponder?.Handle == _responder
+            });
             Require(ReferenceEquals(Keyboard.FocusedElement, _editor), "appearance changes preserve logical editing focus");
-            Require(native.KeyWindow?.FirstResponder?.Handle == _responder, "appearance changes preserve native first responder");
+            Require(own.FirstResponder?.Handle == _responder, "appearance changes preserve the subject window native first responder");
+            // A background application may have no global key window. Its own
+            // responder must still survive; key-window assertions require actual foreground ownership.
+            if (available)
+            {
+                Require(own.IsKeyWindow && native.KeyWindow?.Handle == own.Handle, "foreground appearance subject remains the key window");
+                Require(native.KeyWindow?.FirstResponder?.Handle == _responder, "foreground appearance changes preserve the key window first responder");
+            }
             Require(_editor!.Text == "中文🙂，继续编辑" && _editor.SelectionStart == 2 && _editor.SelectionLength == 2, "appearance changes preserve Chinese text and UTF-16 selection");
         }
         private void Until(Func<bool> condition, string phase)
@@ -261,7 +293,14 @@ internal static class WindowAppearanceLifetimeChecks
     private static NSWindow Native(Window window) => Runtime.GetNSObject<NSView>(window.Handle)?.Window ?? throw new InvalidOperationException("Native window is unavailable.");
     private static NSAppearance Appearance(string name)
     { using var value = new NSString(name); return NSAppearance.GetAppearance(value) ?? throw new InvalidOperationException("Appearance unavailable."); }
-    private static void Pump(double seconds) => NSRunLoop.Main.RunUntil(NSDate.FromTimeIntervalSinceNow(seconds));
+    private static void Pump(double seconds)
+    {
+        NSRunLoop.Main.RunUntil(NSDate.FromTimeIntervalSinceNow(seconds));
+        // This callback is already inside NSApplication.Run. Service AppKit's
+        // pending events during the nested wait using the framework's normal pump.
+        typeof(Window).Assembly.GetType("Jalium.UI.Core.Platform.NativePlatformEventPump")!
+            .GetMethod("PollEvents", BindingFlags.Static | BindingFlags.Public)!.Invoke(null, null);
+    }
 
     private sealed class ExternalDelegate(bool pinned) : NSApplicationDelegate
     {

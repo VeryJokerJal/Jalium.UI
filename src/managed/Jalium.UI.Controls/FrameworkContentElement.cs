@@ -111,7 +111,8 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
 
     private readonly List<object> _logicalChildren = [];
     private readonly Dictionary<string, object> _registeredNames = new(StringComparer.Ordinal);
-    private readonly Dictionary<DependencyProperty, object> _dynamicResourceKeys = [];
+    private sealed class ContentResourceExpression(object key) { internal object Key { get; } = key; }
+    private readonly Dictionary<DependencyProperty, ContentResourceExpression> _dynamicResourceKeys = [];
     private DependencyObject? _logicalParent;
     private DependencyObject? _templatedParent;
     private ResourceDictionary? _resources;
@@ -640,8 +641,11 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
     {
         ArgumentNullException.ThrowIfNull(dp);
         ArgumentNullException.ThrowIfNull(name);
-        _dynamicResourceKeys[dp] = name;
-        RefreshDynamicResource(dp, name);
+        VerifyResourceReferenceAccess(dp);
+        ClearBinding(dp);
+        var expression = new ContentResourceExpression(name);
+        _dynamicResourceKeys[dp] = expression;
+        RefreshDynamicResource(dp, expression);
     }
 
     public bool ShouldSerializeResources() => _resources is { Count: > 0 };
@@ -792,24 +796,31 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
         }
     }
 
+    internal override void ClearLocalResourceReference(DependencyProperty property)
+    {
+        _dynamicResourceKeys.Remove(property);
+        base.ClearLocalResourceReference(property);
+    }
+
     private void RefreshDynamicResources()
     {
-        foreach ((DependencyProperty property, object resourceKey) in _dynamicResourceKeys.ToArray())
+        foreach ((DependencyProperty property, ContentResourceExpression expression) in _dynamicResourceKeys.ToArray())
         {
-            RefreshDynamicResource(property, resourceKey);
+            RefreshDynamicResource(property, expression);
         }
     }
 
-    private void RefreshDynamicResource(DependencyProperty property, object resourceKey)
+    private void RefreshDynamicResource(DependencyProperty property, ContentResourceExpression expression)
     {
-        object? value = TryFindResource(resourceKey);
+        object? value = TryFindResource(expression.Key);
+        if (!_dynamicResourceKeys.TryGetValue(property, out var current) || !ReferenceEquals(current, expression)) return;
         if (value is null)
         {
-            ClearValue(property);
+            ClearValueFromResource(property);
         }
         else
         {
-            SetValue(property, value);
+            SetValueFromResource(property, value);
         }
     }
 

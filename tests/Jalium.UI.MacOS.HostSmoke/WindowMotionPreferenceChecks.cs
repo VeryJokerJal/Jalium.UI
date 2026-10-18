@@ -54,7 +54,8 @@ internal static class WindowMotionPreferenceChecks
                 scene.Checks, scene.Scenarios, scene.Failures, scene.Observed, scene.Focus,
                 scene.ForegroundUnavailable, processId = Environment.ProcessId, appKitPreferenceOverride = true,
                 nativeWorkspaceNotifications = true, systemPreferencesWritten = false, overrideRestored = restored,
-                physicalInput = false, desktopScreenshot = false, backendReadback = true
+                physicalInput = false, desktopScreenshot = false, backendReadback = true,
+                renderThreadOverride = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD")
             }));
             host.AllowQuit = true;
             native.Terminate(native);
@@ -70,7 +71,13 @@ internal static class WindowMotionPreferenceChecks
     private static bool Pending => (bool)Monitor.GetField("_pending", HiddenStatic)!.GetValue(null)!;
     private static int OpenWindows => ((IEnumerable<Window>)typeof(Window).GetMethod("SnapshotOpenWindows", HiddenStatic)!.Invoke(null, null)!).Count();
     private static NSWindow Native(Window window) => Runtime.GetNSObject<NSView>(window.Handle)?.Window ?? throw new InvalidOperationException("Missing native window.");
-    private static void Pump(double seconds) => NSRunLoop.Main.RunUntil(NSDate.FromTimeIntervalSinceNow(seconds));
+    private static void Pump(double seconds)
+    {
+        NSRunLoop.Main.RunUntil(NSDate.FromTimeIntervalSinceNow(seconds));
+        // Nested SDK waits must also drain AppKit events, as the normal dispatcher does.
+        typeof(Window).Assembly.GetType("Jalium.UI.Core.Platform.NativePlatformEventPump")!
+            .GetMethod("PollEvents", BindingFlags.Static | BindingFlags.Public)!.Invoke(null, null);
+    }
     private static void Barrier()
     {
         bool done = false;
@@ -91,6 +98,7 @@ internal static class WindowMotionPreferenceChecks
         private readonly List<string> _events = [];
         private Border? _probe;
         private Border? _authored;
+        private object? _staticResourceValue;
         private TextBox? _editor;
         private TextBlock? _status;
         private nint _responder;
@@ -116,6 +124,7 @@ internal static class WindowMotionPreferenceChecks
             _witness = workspace.NotificationCenter.AddObserver(new NSString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification"), _ => _workspaceNotes++);
             _dictionaries = Application.Current!.Resources.MergedDictionaries.ToArray();
             Observed["mode"] = Mode(index).ToString(); Observed["backend"] = Backend.ToString(); Observed["custom"] = Custom;
+            Observed["resourceForms"] = new { kinds = new[] { "StaticResource", "DynamicResource", "ThemeResource" }, wpf = index >= 8, namedKey = index % 4 >= 2, actualXamlStrings = true };
             Observed["startupNative"] = preference.Read(); Observed["startupCache"] = Cached;
             Attempt("application-only-owner", () => Require(Leases == 1 && OpenWindows == 0, "the application owns the only appearance lease without a Jalium native window"));
             Attempt("startup-refresh", () => Require(Cached == preference.Read(), "application startup refreshes the stale native motion preference before its first window"));
@@ -167,6 +176,32 @@ internal static class WindowMotionPreferenceChecks
             Capture(window, "first-window");
             Attempt("visible-window-change", () => { Transition(root, exactSingleNotification: false); Preserved(window); });
             Capture(window, "changed-window");
+            Attempt("parsed-static-resource-is-a-snapshot", () => Require(Equals(_authored!.Tag, _staticResourceValue), "a parsed x:Static system key in StaticResource keeps its initial value"));
+            Attempt("equal-local-value-replaces-resource", () => WithResource(() =>
+            {
+                object? literal = _probe!.Tag; _probe.Tag = literal; bool reduced = ChangeNativePreference();
+                Require(Equals(_probe.Tag, literal), "an equal local SetValue retires the resource before the next native preference change");
+                Verify(reduced, root, includeDynamic: false); Preserved(window);
+            }));
+            Attempt("authored-local-value-replaces-resource", () => WithResource(() =>
+            {
+                _probe!.Tag = "保留设置🙂"; _status!.Text = "保留当前设置，系统变化不会覆盖。";
+                bool reduced = ChangeNativePreference();
+                Require(Equals(_probe.Tag, "保留设置🙂"), "a user-authored local value survives the next native preference change");
+                Verify(reduced, root, includeDynamic: false); Preserved(window); Capture(window, "literal-window");
+            }));
+            Attempt("clear-local-value-retires-resource", () => WithResource(() =>
+            {
+                _probe!.ClearValue(FrameworkElement.TagProperty); bool reduced = ChangeNativePreference();
+                Require(_probe.Tag is null, "ClearValue does not allow an old resource to revive after a native preference notification");
+                Verify(reduced, root, includeDynamic: false); Preserved(window);
+            }));
+            Attempt("current-value-keeps-resource", () => WithResource(() =>
+            {
+                _probe!.SetCurrentValue(FrameworkElement.TagProperty, "暂时值"); bool reduced = ChangeNativePreference();
+                Require(Equals(_probe.Tag, !reduced), "SetCurrentValue keeps the expression live for the next native preference change");
+                Verify(reduced, root, includeDynamic: true); Preserved(window);
+            }));
             window.Close(); Barrier(); root = MakeRoot();
             Attempt("closed-window-application-owner", () =>
             {
@@ -223,6 +258,23 @@ internal static class WindowMotionPreferenceChecks
             Observed["workspaceNotifications"] = _workspaceNotes; Observed["finalCache"] = Cached;
         }
 
+        private bool ChangeNativePreference()
+        {
+            bool reduced = !Cached; preference.Set(reduced); Post(); Barrier();
+            Require(Cached == reduced && preference.Read() == reduced, "native preference publication completed for the local-expression scenario");
+            return reduced;
+        }
+        private void WithResource(Action action)
+        {
+            _probe!.SetResourceReference(FrameworkElement.TagProperty, SystemParameters.ClientAreaAnimationKey);
+            try { action(); }
+            finally
+            {
+                _probe.SetResourceReference(FrameworkElement.TagProperty, SystemParameters.ClientAreaAnimationKey);
+                _status!.Text = "窗口与控件跟随当前动态效果偏好。";
+                Require(Equals(_probe.Tag, SystemParameters.ClientAreaAnimation), "an explicitly restored resource resumes following the current preference");
+            }
+        }
         private void Transition(StackPanel root, bool exactSingleNotification, bool? applicationOverride = null)
         {
             bool target = !Cached; preference.Set(!target); _events.Clear(); int before = _workspaceNotes;
@@ -252,6 +304,16 @@ internal static class WindowMotionPreferenceChecks
             Require(provider != null && provider() == !reduced, "automatic transition policy follows the native preference");
             Require(_probe!.Opacity == (reduced ? .25 : 1), "existing CSS reduced-motion media queries update in both directions");
             if (includeDynamic) Require(Equals(_probe.Tag, applicationOverride ?? !reduced), "existing dynamic system-key bindings refresh without a window");
+            Require(Equals(_editor!.Tag, applicationOverride ?? !reduced), "a parsed ThemeResource system key keeps following preference changes");
+        }
+        private T ParseResourceElement<T>(string kind) where T : FrameworkElement
+        {
+            string ns = index >= 8 ? "http://schemas.microsoft.com/winfx/2006/xaml/presentation" : "http://schemas.jalium.com/jalxaml";
+            string named = index % 4 >= 2 ? "ResourceKey=" : string.Empty;
+            string markup = "<" + typeof(T).Name + " xmlns='" + ns + "' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' "
+                + "xmlns:ui='clr-namespace:Jalium.UI;assembly=Jalium.UI.Controls' Tag='{"
+                + kind + " " + named + "{x:Static ui:SystemParameters.ClientAreaAnimationKey}}' />";
+            return (T)Jalium.UI.Markup.XamlReader.Parse(markup);
         }
         private StackPanel MakeRoot()
         {
@@ -260,11 +322,12 @@ internal static class WindowMotionPreferenceChecks
             heading.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorPrimaryBrush"); root.Children.Add(heading);
             _status = new TextBlock { Text = "窗口与控件跟随当前动态效果偏好。", FontSize = 15, TextWrapping = TextWrapping.Wrap };
             _status.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorPrimaryBrush"); root.Children.Add(_status);
-            _probe = new Border { Height = 20 }; Css.SetClass(_probe, "motion");
+            _probe = ParseResourceElement<Border>("DynamicResource"); _probe.Height = 20; Css.SetClass(_probe, "motion");
             _probe.SetResourceReference(Border.BackgroundProperty, "AccentFillColorDefaultBrush");
-            _probe.SetResourceReference(FrameworkElement.TagProperty, SystemParameters.ClientAreaAnimationKey); root.Children.Add(_probe);
-            _authored = new Border { Height = 8 }; Css.SetClass(_authored, "motion"); root.Children.Add(_authored);
-            _editor = new TextBox { Text = "保留中文🙂 Miii", Height = 42 }; root.Children.Add(_editor);
+            root.Children.Add(_probe);
+            _staticResourceValue = SystemParameters.ClientAreaAnimation;
+            _authored = ParseResourceElement<Border>("StaticResource"); _authored.Height = 8; Css.SetClass(_authored, "motion"); root.Children.Add(_authored);
+            _editor = ParseResourceElement<TextBox>("ThemeResource"); _editor.Text = "保留中文🙂 Miii"; _editor.Height = 42; root.Children.Add(_editor);
             var button = new Button { Content = "继续编辑", Height = 44 }; button.Click += (_, _) => _editor.Focus(); root.Children.Add(button);
             Css.SetStyleSheet(root, ".motion { opacity: 1; } @media (prefers-reduced-motion: reduce) { .motion { opacity: .25; } }");
             Barrier(); return root;
@@ -285,13 +348,18 @@ internal static class WindowMotionPreferenceChecks
         {
             Require(_editor!.Text == "保留中文🙂 Miii" && _editor.SelectionStart == 1 && _editor.SelectionLength == 2, "preference changes retain Unicode text and selection");
             Require(ReferenceEquals(Keyboard.FocusedElement, _editor), "preference changes retain logical editing focus");
-            if (ObserveForeground(window)) Require(_responder != 0 && Native(window).FirstResponder?.Handle == _responder, "preference changes retain the native editor responder");
+            Require(_responder != 0 && Native(window).FirstResponder?.Handle == _responder, "preference changes retain the subject window native editor responder");
+            ObserveForeground(window);
         }
         private bool ObserveForeground(Window window)
         {
-            bool available = native.Active && NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier == Environment.ProcessId && Native(window).IsKeyWindow;
+            bool active = native.Active;
+            int? frontmostPID = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier;
+            bool available = active && frontmostPID == Environment.ProcessId;
+            bool nativeKey = Native(window).IsKeyWindow;
             if (!available) ForegroundUnavailable++;
-            Focus.Add(new { available, appActive = native.Active, frontmostPID = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier, nativeKey = Native(window).IsKeyWindow });
+            Focus.Add(new { available, appActive = active, frontmostPID, nativeKey });
+            if (available) Require(nativeKey && native.KeyWindow?.Handle == Native(window).Handle, "foreground preference subject remains the key window");
             return available;
         }
         private void Post()

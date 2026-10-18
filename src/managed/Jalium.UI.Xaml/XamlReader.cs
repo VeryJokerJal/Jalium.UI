@@ -792,6 +792,7 @@ public partial class XamlReader
 
     private static object ParseElement(XmlReader reader, XamlParserContext context, object? existingInstance = null)
     {
+        using var markupScope = context.EnterMarkupReader(reader);
         if (context.IsRestrictive && reader.Depth > RestrictiveMaxDepth)
         {
             throw new XamlParseException(
@@ -832,6 +833,11 @@ public partial class XamlReader
                     ?? throw new XamlParseException($"Failed to create instance of type '{resolvedType.FullName}'.");
             }
         }
+
+        if (instance is StaticExtension staticExtension)
+            staticExtension.TypeResolver = context.CaptureMarkupTypeResolver();
+        else if (instance is TypeExtension typeExtension)
+            typeExtension.TypeResolver = context.CaptureMarkupTypeResolver();
 
         XamlBuilder.SetXmlIdentity(instance,namespaceUri,elementName,resetAttributes:true);
 
@@ -1032,6 +1038,12 @@ public partial class XamlReader
                     if (extensionResult is BindingExpressionBase)
                         return;
 
+                    if (extensionResult is IDynamicResourceReference reference && instance is FrameworkElement elementTarget && attachedProperty is not null)
+                    {
+                        DynamicResourceBindingOperations.SetDynamicResource(elementTarget, attachedProperty, reference.ResourceKey);
+                        return;
+                    }
+
                     if (extensionResult is BindingBase)
                     {
                         throw new XamlParseException(
@@ -1093,6 +1105,12 @@ public partial class XamlReader
             {
                 if (extensionResult is BindingExpressionBase)
                     return;
+
+                if (extensionResult is IDynamicResourceReference reference && depObj is FrameworkElement elementTarget)
+                {
+                    DynamicResourceBindingOperations.SetDynamicResource(elementTarget, attachedProperty, reference.ResourceKey);
+                    return;
+                }
 
                 convertedValue = ConvertAttachedPropertyValue(
                     extensionResult,
@@ -1820,7 +1838,8 @@ public partial class XamlReader
             TargetProperty = provideValueTargetProperty
         });
 
-        return extension.ProvideValue(serviceProvider);
+        var valueResult = extension.ProvideValue(serviceProvider);
+        return MarkupExtensionParser.PreserveResourceReference(extension, targetObject, dependencyProperty, valueResult);
     }
 
     private static bool IsCollectionType(Type type)
@@ -3445,7 +3464,7 @@ public partial class XamlReader
     /// AOT-safe assembly lookup by name. Uses compile-time known references for framework assemblies,
     /// falls back to Assembly.Load for user assemblies.
     /// </summary>
-    private static Assembly? FindAssemblyByName(string assemblyName)
+    internal static Assembly? FindAssemblyByName(string assemblyName)
     {
         return assemblyName switch
         {
@@ -4174,6 +4193,44 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     private readonly Stack<object> _parentStack = new();
     private readonly List<PendingGridReference> _pendingGridReferences = new();
     private string? _currentResourceKey;
+    private XmlReader? _markupReader;
+    private XamlParserContext? _markupTypeContext;
+
+    internal MarkupReaderScope EnterMarkupReader(XmlReader reader)
+    {
+        var scope = new MarkupReaderScope(this, _markupReader);
+        _markupReader = reader;
+        return scope;
+    }
+
+    internal readonly struct MarkupReaderScope(XamlParserContext context, XmlReader? previous) : IDisposable
+    {
+        public void Dispose() => context._markupReader = previous;
+    }
+
+    internal Func<string, Type?>? CaptureMarkupTypeResolver()
+    {
+        IReadOnlyDictionary<string, string>? namespaces = _markupReader switch
+        {
+            JalxamlReader jalxaml => jalxaml.SnapshotNamespacesInScope(),
+            IXmlNamespaceResolver xml => new Dictionary<string, string>(xml.GetNamespacesInScope(XmlNamespaceScope.All)),
+            _ => null,
+        };
+        if (namespaces is null) return null;
+        // Retained extensions capture only a namespace snapshot and a type-only
+        // context, never the parser's parent stack, resource dictionary or reader.
+        var typeContext = _markupTypeContext ??= new XamlParserContext
+        { SourceAssembly = SourceAssembly, IsRestrictive = IsRestrictive };
+        return name =>
+        {
+            int colon = name.IndexOf(':');
+            string prefix = colon < 0 ? string.Empty : name[..colon];
+            string localName = colon < 0 ? name : name[(colon + 1)..];
+            if (namespaces.TryGetValue(prefix, out var uri) && !string.IsNullOrEmpty(uri))
+                return typeContext.ResolveType(uri, localName);
+            return colon < 0 ? typeContext.FilterRestrictiveType(XamlTypeRegistry.GetType(name), name) : null;
+        };
+    }
 
     /// <summary>
     /// Gets or sets the base URI for resolving relative Source paths.
@@ -4669,8 +4726,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         // 1) clr-namespace:Foo;assembly=Bar — an explicit CLR namespace reference.
         if (namespaceUri.StartsWith("clr-namespace:", StringComparison.Ordinal))
         {
-            var type = ResolveClrNamespaceType(namespaceUri, typeName);
-            if (type != null) return type;
+            return ResolveClrNamespaceType(namespaceUri, typeName);
         }
 
         // 2) The AOT-friendly static type registry, by simple name. This used to sit *after*
@@ -4816,6 +4872,8 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         }
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Runtime CLR-namespace lookup follows the public XamlReader reflection contract; generated/AOT callers preserve their explicitly referenced types in XamlTypeRegistry.")]
     private Type? ResolveClrNamespaceType(string namespaceUri, string typeName)
     {
         // Parse clr-namespace:MyNamespace;assembly=MyAssembly
@@ -4834,20 +4892,16 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
             }
         }
 
-        var assembly = assemblyName != null ? FindAssemblyBySimpleName(assemblyName) : null;
-        return ResolveTypeInNamespace(ns, typeName, assembly);
-    }
-
-    private static Assembly? FindAssemblyBySimpleName(string assemblyName)
-    {
-        foreach (var candidate in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            if (string.Equals(candidate.GetName().Name, assemblyName, StringComparison.OrdinalIgnoreCase))
-            {
-                return candidate;
-            }
-        }
-        return null;
+        var assembly = assemblyName != null ? XamlReader.FindAssemblyByName(assemblyName) : SourceAssembly;
+        if (assemblyName != null && assembly is null) return null;
+        string fullName = $"{ns}.{typeName}";
+        var registered = XamlTypeRegistry.GetType(fullName) ?? XamlTypeRegistry.GetType(typeName);
+        if (registered?.FullName == fullName && (assembly is null || ReferenceEquals(registered.Assembly, assembly)))
+            return registered;
+        // An explicit namespace/assembly must not borrow a same-named type from
+        // another scope. Known compatibility facades resolve to the implementation
+        // assembly even when the facade itself has not yet been loaded.
+        return assembly?.GetType(fullName);
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",

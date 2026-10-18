@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--results-file', type=Path)
     parser.add_argument('--image-directory', type=Path)
     parser.add_argument('--cases', default=','.join(map(str, range(8))))
+    parser.add_argument('--background-control', action='store_true')
     args = parser.parse_args()
     source = args.app.resolve()
     if not source.is_dir() or source.suffix != '.app': parser.error('--app must name a built .app')
@@ -57,6 +58,7 @@ def main():
                            '--env', 'TMPDIR=' + str(work / 'tmp'), '--env', 'DYLD_PRINT_LIBRARIES=1',
                            '--stdout', str(output / 'app.log'), '--stderr', str(output / 'app.err'),
                            str(app), '--args', '--window-appearance-case=' + str(index)]
+                command[3:3] = ['--env', 'JALIUM_APPEARANCE_BACKGROUND_CONTROL=' + ('1' if args.background_control else '0')]
                 with (output / 'launcher.log').open('w') as log:
                     process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
                     code = process.wait()
@@ -64,11 +66,14 @@ def main():
                 dyld = (output / 'app.err').read_text(errors='replace') if (output / 'app.err').exists() else ''
                 loaded = [filename for filename, paths in libraries.items() if any(str(path) in dyld for path in paths)]
                 required = ['libjalium.native.' + n + '.dylib' for n in ('core', 'text', 'platform', 'metal' if index % 4 < 2 else 'software')]
-                failures = [] if host and host['passed'] else [host.get('failure') if host else 'host did not report a result']
+                failures = [] if host and host.get('qualifiedWithoutForeground') else [host.get('failure') if host else 'host did not report a result']
                 if code != 0: failures.append('launcher exit code: ' + str(code))
                 failures += ['required payload not loaded: ' + filename for filename in required if filename not in loaded]
                 image = output / 'host-light.png'
-                receipt = {'index': index, 'passed': not failures, 'failures': failures, 'hostResult': host,
+                unavailable = host.get('ForegroundUnavailable', 0) if host else 0
+                qualified = not failures and bool(host and host.get('qualifiedWithoutForeground'))
+                receipt = {'index': index, 'passed': qualified and unavailable == 0,
+                           'qualifiedWithoutForeground': qualified, 'foregroundUnavailable': unavailable, 'failures': failures, 'hostResult': host,
                            'loadedNative': loaded, 'launcherExitCode': code, 'physicalInput': False,
                            'desktopScreenshot': False, 'seconds': round(time.monotonic() - started, 3),
                            'dyldLogSHA256': hashlib.sha256(dyld.encode()).hexdigest(),
@@ -79,7 +84,7 @@ def main():
                         shutil.copy2(picture, args.image_directory / ('case-' + str(index) + '-' + picture.name))
                 receipts.append(receipt)
                 print(json.dumps({'case': index, 'passed': receipt['passed'], 'checks': len(host['checks']) if host else 0,
-                                  'failures': failures}, ensure_ascii=False), flush=True)
+                                  'foregroundUnavailable': unavailable, 'qualifiedWithoutForeground': qualified, 'failures': failures}, ensure_ascii=False), flush=True)
         finally:
             prefix = str(app / 'Contents/MacOS') + '/'
             for row in subprocess.check_output(['ps', '-axo', 'pid=,command='], text=True).splitlines():
@@ -87,12 +92,15 @@ def main():
                 if command.startswith(prefix):
                     try: os.kill(int(pid), signal.SIGTERM)
                     except ProcessLookupError: pass
-    result = {'passed': sum(x['passed'] for x in receipts), 'total': len(cases), 'cases': receipts,
+    result = {'passed': sum(x['passed'] for x in receipts),
+              'qualifiedWithoutForeground': sum(x['qualifiedWithoutForeground'] for x in receipts),
+              'foregroundUnavailable': sum(x['foregroundUnavailable'] for x in receipts),
+              'backgroundControl': args.background_control, 'total': len(cases), 'cases': receipts,
               'nativeSHA256': hashes, 'managedSHA256': assemblies, 'physicalInput': False,
               'desktopScreenshot': False, 'temporaryRootRemoved': not work.exists()}
     if args.results_file: args.results_file.write_text(json.dumps(result, ensure_ascii=False))
-    print(json.dumps({k: result[k] for k in ['passed', 'total', 'physicalInput', 'desktopScreenshot', 'temporaryRootRemoved']}), flush=True)
-    return 0 if result['passed'] == result['total'] else 1
+    print(json.dumps({k: result[k] for k in ['passed', 'qualifiedWithoutForeground', 'foregroundUnavailable', 'total', 'physicalInput', 'desktopScreenshot', 'temporaryRootRemoved']}), flush=True)
+    return 0 if result['passed'] == result['total'] else 3 if result['qualifiedWithoutForeground'] == result['total'] else 1
 
 if __name__ == '__main__':
     raise SystemExit(main())

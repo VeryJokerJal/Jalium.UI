@@ -4,6 +4,74 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v287：Window 系统资源的 XAML 表达式与本地替换
+
+真实 XAML 现在可用 `{DynamicResource {x:Static ui:SystemParameters.ClientAreaAnimationKey}}`
+等嵌套键，并在后续系统偏好通知中继续更新。StaticResource 保留首次值，DynamicResource
+及 ThemeResource 保留表达式；命名 ResourceKey、映射 CLR 命名空间、静态字段/属性、枚举、
+x:Type 键、普通属性元素及附加属性的属性语法使用相同语义。保留命名空间快照，不保留 XmlReader
+或解析器的资源/父级树；显式 CLR 映射不会误用另一个命名空间的同名类型。缺失、非静态、
+空或无效的嵌套键在 XAML 边界报错，转义键保持普通字符串。
+语法对照 [Microsoft x:Static](https://learn.microsoft.com/en-us/dotnet/desktop/xaml-services/xstatic-markup-extension)。
+
+公开 SetValue（包括写入相同值）、ClearValue 和替换 Binding 会退役旧的本地动态资源
+表达式，防止后续偏好通知覆盖用户设置。SetCurrentValue 及资源自身的刷新保留订阅；
+样式/模板的低优先级表达式仍保留。覆盖普通元素、非可视依赖对象及文档元素；查找回调
+重新设置本地值或重新订阅时，按表达式实例重新核对归属，旧查找不再写入过时值。
+只在有效且可写的操作通过检查后移除订阅。行为对照
+[Microsoft DynamicResource](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/advanced/dynamicresource-markup-extension)。
+本轮五个托管产品文件完成 v286 留下的两项资源缺口，原生源码均保持各自父版本。
+
+| 当前冻结源码验收 | PR 历史 | 本地 master 历史 |
+| --- | --- | --- |
+| 完整 macOS 托管套件 | 3448 通过、2 项既有跳过、0 失败 | 3365 通过、2 项既有跳过、0 失败 |
+| 新增表达式/订阅回归 | 71/71 | 71/71 |
+| 完整模板套件 | 56/56 | 56/56 |
+| AppKit 动态效果功能场景 | 336/336、7232 项断言 | 336/336、7232 项断言 |
+| 动态效果前台条件完整的组 | 16/16 | 16/16 |
+| 动态效果前台观察 | 160/160；0 次不可用 | 160/160；0 次不可用 |
+| 外观生命周期功能组 | 8/8、456 项断言 | 8/8、456 项断言 |
+| 外观前台条件完整的组 | 8/8；0 次不可用 | 8/8；0 次不可用 |
+
+同一最终诊断在未修改产品的父提交 0d51330e1946c90335911c9aeefcf1aa31389500 上，71 项新增用例有 68 项失败、3 项
+正对照通过；33 项既有资源/解析消费者全部通过。父版本 AppKit 有
+256/336 场景失败、80 项正对照通过。
+候选与本地历史都使用真实 XAML 系统键验证初始值、双向偏好通知、静态快照、本地相同值
+及文字替换、ClearValue、SetCurrentValue，覆盖 Native／Custom × Metal／Software ×
+应用 None／System／Light／Dark，以及无窗口、独立窗口、重开、宿主停止/重启。
+进程内 AppKit getter 测试替换均恢复，不修改系统偏好、不投递键鼠事件。
+
+最初 PR 外观检查为 6/8，通过前未删除失败记录。失败时 AppKit 不活跃且系统前台 PID
+属于其他进程。新增诊断与程序化 Hide 对照在父版本及候选中均观察到：全局 KeyWindow
+为空，但目标窗口的首响应者仍保留。原断言把全局 KeyWindow 当成目标窗口，在后台不
+成立；初次失败没有记录目标首响应者，仍不能据此推断其具体状态。最终夹具始终检查
+目标窗口首响应者、逻辑焦点、中文和 UTF-16 选区；只有 AppKit 与系统 PID 一致处于前台
+时再断言目标为 KeyWindow 及全局首响应者一致。同进程前台但错误 KeyWindow 仍会失败。
+后台对照的 4 次观察分别记为不可用、passed=false、退出码 3；完整功能断言单独通过。
+该对照不是物理应用切换。嵌套 SDK 等待同时运行框架正常的 AppKit 事件泵，避免只有
+NSRunLoop 时无法完成隐藏事件；早期请求超时与旧断言失败全部保留，没有算作成功。
+v286 的 14 次前台不一致仍保留，当前结果不关闭该历史缺口。
+
+托管和模板完整回归结束后，仅补充两个外观诊断输入及修改 HostSmoke 动态效果夹具；
+七个被单元/模板工程使用的产品及诊断输入逐项相同，两个工程均不包含这些 HostSmoke
+文件，不为未消费的夹具修改重复跑相同套件。所有 AppKit 宿主随后重新构建、完整重跑；
+两条完整冻结树、10 个最终代码/诊断输入、八个实际加载的原生库及签名 Mach-O 内容、
+四份程序集和 98 个平台导出都核对。120 份当前后端读回图像、
+91 份不同图像均已查看，包括 420/760 宽度、窗口切换及独立窗口。
+这些图像不是桌面截图，不证明真实输入、IME 或 VoiceOver。
+
+云端 master 8cf44a8b31cd00993f2a6ba54426bbb504846743 已包含在两条历史中。保留 master、现有 PR 分支、
+并行脏修改、39 份共享原生产物与历史 34 条差异的逐条增删行哈希；并行保留代码不属于
+本轮冻结验收。父提交最新 CI：Linux in_progress/None；D3D12 ink completed/success；Apple completed/success。父 Window 原始日志核实
+41/41，无失败或跳过；新提交 CI 单独记录，父提交通过不等同于新头通过。
+
+新评审 [4307493558](https://github.com/VeryJokerJal/Jalium.UI/pull/177#discussion_r4307493558)
+指出 Writing Tools 的 ListItem 内 Table 被重建为 Table 内 List，祖先相对顺序仍待修复，
+本轮未改该源码。桌面工具仍未连接；实际桌面截图、真实键鼠/触控板/数位板、IME、
+VoiceOver、多屏/Spaces、最低系统/Intel、完整 Writing Tools UI、生产包及历史首窗/AX
+问题继续保留。v208/v209 用户验收与 v211 全选时序沿用原记录。
+本轮资源缺口可提交现有 PR；完整 macOS 目标继续，PR 保持打开且不合并。
+
 ## v286：无窗口时同步动态效果偏好与独立系统资源
 
 应用仍运行但没有原生窗口时，NSWorkspace 的无障碍显示偏好通知现在会刷新 Reduce

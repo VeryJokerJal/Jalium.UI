@@ -106,4 +106,15 @@
     <Compile Include="../Jalium.UI.Tests/StandaloneSystemResourceTests.cs" Link="WindowSystem/StandaloneSystemResourceTests.cs" />
     <ProjectReference Include="../../src/managed/Jalium.UI.Xaml/Jalium.UI.Xaml.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/WindowResourceExpressionTests.cs" Link="WindowSystem/WindowResourceExpressionTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/DynamicResourceLayeredTests.cs" Link="WindowSystem/DynamicResourceLayeredTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DynamicResourceKeyIndexTests.cs" Link="WindowSystem/DynamicResourceKeyIndexTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DynamicResourceRegistryTests.cs" Link="WindowSystem/DynamicResourceRegistryTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/XamlReaderParityTests.cs" Link="WindowSystem/XamlReaderParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/BindingMarkupExtensionValidationTests.cs" Link="WindowSystem/BindingMarkupExtensionValidationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/StyleXamlReceiverParityTests.cs" Link="WindowSystem/StyleXamlReceiverParityTests.cs" />
+  </ItemGroup>
 </Project>

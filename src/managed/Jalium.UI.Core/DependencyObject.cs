@@ -516,15 +516,44 @@ public class DependencyObject : DispatcherObject
         SetValueCore(dp, value);
     }
 
-    private void SetValueCore(DependencyProperty dp, object? value)
+    private void SetValueCore(DependencyProperty dp, object? value, bool replaceResourceReference = true)
     {
         CheckSealedAccess();
         ValidateValueOrThrow(dp, value);
+        if (replaceResourceReference) ClearLocalResourceReference(dp);
         MutateValue(
             dp,
             ValueMutation.ForSetLocalCore(value),
             notifyBinding: true,
             allowAutoTransition: true);
+    }
+
+    internal void VerifyResourceReferenceAccess(DependencyProperty dp)
+    {
+        ThrowIfReadOnly(dp);
+        CheckSealedAccess();
+    }
+
+    // Expression refreshes use their own write path. A public SetValue invoked by a
+    // property callback still replaces the expression, including an equal-value write.
+    internal void SetValueFromResource(DependencyProperty dp, object? value)
+    {
+        ThrowIfReadOnly(dp);
+        SetValueCore(dp, value, replaceResourceReference: false);
+    }
+
+    internal void ClearValueFromResource(DependencyProperty dp)
+    {
+        ThrowIfReadOnly(dp);
+        ClearValueCore(dp, replaceResourceReference: false);
+    }
+
+    internal virtual void ClearLocalResourceReference(DependencyProperty dp)
+    {
+        if (this is FrameworkElement element)
+            DynamicResourceBindingOperations.ClearLocalDynamicResource(element, dp);
+        else
+            DynamicResourceBindingOperations.ClearDynamicResourceForNonVisual(this, dp);
     }
 
     /// <summary>
@@ -711,6 +740,7 @@ public class DependencyObject : DispatcherObject
 
         // Create and activate the binding expression
         var expression = binding.CreateBindingExpression(this, dp);
+        ClearLocalResourceReference(dp);
         (_bindings ??= new())[dp] = expression;
         expression.Activate();
 
@@ -954,9 +984,10 @@ public class DependencyObject : DispatcherObject
         ClearValueCore(dp);
     }
 
-    private void ClearValueCore(DependencyProperty dp)
+    private void ClearValueCore(DependencyProperty dp, bool replaceResourceReference = true)
     {
         CheckSealedAccess();
+        if (replaceResourceReference) ClearLocalResourceReference(dp);
         DetachBinding(dp);
         MutateValue(
             dp,
