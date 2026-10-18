@@ -61,23 +61,30 @@ public partial class ListBox
             var row = Resolve(value);
             return owner._selectionRows.FindIndex(entry => ReferenceEquals(entry.Row, row));
         }
+        private ItemOccurrence? ResolveForAddition(object value)
+        {
+            if (owner.SelectionMode == SelectionMode.Single) return Resolve(value);
+            var used = new HashSet<ItemOccurrence>(owner._selectionRows.Select(entry => entry.Row), ReferenceEqualityComparer.Instance);
+            return owner.ResolveSelectionOccurrence(value, used);
+        }
         public void Add(object item) => AddCore(item);
         int IList.Add(object? item) => AddCore(item);
         private int AddCore(object? item)
         {
             Validate(item);
-            int existing = FindSelection(item!);
-            if (existing >= 0) return existing;
-            var items = new List<RowSelection>(owner._selectionRows) { new(Resolve(item!)!, item!) };
+            var row = ResolveForAddition(item!)!;
+            if (owner._selectionRows.Any(entry => ReferenceEquals(entry.Row, row))) return FindSelection(item!);
+            var items = new List<RowSelection>(owner._selectionRows) { new(row, item!) };
             owner.ApplyCollectionSelection(items);
-            return FindSelection(item!);
+            return owner._selectionRows.FindIndex(entry => ReferenceEquals(entry.Row, row));
         }
         public void Insert(int index, object item)
         {
             if ((uint)index > (uint)Count) throw new ArgumentOutOfRangeException(nameof(index));
             Validate(item);
-            if (FindSelection(item) >= 0) return;
-            var items = new List<RowSelection>(owner._selectionRows); items.Insert(index, new(Resolve(item)!, item));
+            var row = ResolveForAddition(item)!;
+            if (owner._selectionRows.Any(entry => ReferenceEquals(entry.Row, row))) return;
+            var items = new List<RowSelection>(owner._selectionRows); items.Insert(index, new(row, item));
             owner.ApplyCollectionSelection(items);
         }
         void IList.Insert(int index, object? value) => Insert(index, value!);

@@ -5,6 +5,58 @@ public abstract partial class Selector
     private ItemOccurrence? _selectionOccurrence;
     private bool _isReconcilingOccurrence;
     private bool _pendingOccurrenceReconciliation;
+    private ulong _singleSelectionRevision;
+    private bool _preserveSingleSelectedValue;
+    private SingleSelectionWrite? _singleSelectionWrite;
+
+    private sealed class SingleSelectionWrite(DependencyProperty property, object? value)
+    {
+        internal readonly DependencyProperty Property = property;
+        internal readonly object? Value = value;
+        internal bool Pending = true;
+    }
+
+    private void WriteSingleSelectionProperty(DependencyProperty property, object? value)
+    {
+        if (!_isReconcilingOccurrence || this is ListBox) { SetCurrentValue(property, value); return; }
+        var previous = _singleSelectionWrite;
+        _singleSelectionWrite = new(property, value);
+        try { SetCurrentValue(property, value); }
+        finally { _singleSelectionWrite = previous; }
+    }
+
+    private void RecordSingleSelectionRequest(DependencyProperty property, object? value)
+    {
+        if (!_isReconcilingOccurrence || this is ListBox) return;
+        if (_singleSelectionWrite is { Pending: true } write && write.Property == property &&
+            (property == SelectedIndexProperty ? Equals(write.Value, value) : ReferenceEquals(write.Value, value)))
+        {
+            write.Pending = false;
+            return;
+        }
+        ulong revision = ++_singleSelectionRevision;
+        ItemOccurrence? row;
+        if (property == SelectedIndexProperty) row = Items.GetOccurrenceAt(value is int index ? index : -1);
+        else if (property == SelectedItemProperty) row = ResolveSingleOccurrence(value);
+        else row = Items.GetOccurrenceAt(FindItemBySelectedValue(value).index);
+        if (revision != _singleSelectionRevision) return;
+        _selectionOccurrence = row;
+        _preserveSingleSelectedValue = property == SelectedValueProperty;
+    }
+
+    private void ReconcileSingleSelection()
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            var row = _selectionOccurrence is { IsAlive: true } live ? live : null;
+            _selectionOccurrence = row;
+            ulong itemsVersion = Items.OccurrenceVersion, revision = _singleSelectionRevision;
+            bool Current() => itemsVersion == Items.OccurrenceVersion && revision == _singleSelectionRevision;
+            UpdateSelectionPropertiesFromBatch(row?.Index ?? -1, row?.Item, Current, _preserveSingleSelectedValue);
+            if (Current()) return;
+            if (attempt >= 31) throw new InvalidOperationException("The selection keeps changing during selection.");
+        }
+    }
 
     internal void OnItemOccurrencesChanged(ItemOccurrenceChange change)
     {
@@ -33,26 +85,13 @@ public abstract partial class Selector
         var before = previous ?? _selectionOccurrence;
         _selectionOccurrence = requested;
         _isReconcilingOccurrence = true;
-        try
-        {
-            for (int attempt = 0; ; attempt++)
-            {
-                var row = _selectionOccurrence is { IsAlive: true } live ? live : null;
-                _selectionOccurrence = row;
-                ulong version = Items.OccurrenceVersion;
-                UpdateSelectionPropertiesFromBatch(row?.Index ?? -1, row?.Item,
-                    () => version == Items.OccurrenceVersion, preserveSelectedValue);
-                if (version == Items.OccurrenceVersion) break;
-                if (attempt >= 31) throw new InvalidOperationException("The items keep changing during selection.");
-            }
-        }
+        _preserveSingleSelectedValue = preserveSelectedValue;
+        try { ReconcileSingleSelection(); }
         catch
         {
-            // A callback can remove the selected row and throw. Retain the first
-            // error while leaving the surviving selection coherent and usable.
-            var row = _selectionOccurrence is { IsAlive: true } live ? live : null;
-            _selectionOccurrence = row;
-            try { UpdateSelectionPropertiesFromBatch(row?.Index ?? -1, row?.Item, preserveSelectedValue: preserveSelectedValue); }
+            // A callback can choose a newer row and throw. Reconcile that row,
+            // while retaining the first exception if recovery also calls user code.
+            try { ReconcileSingleSelection(); }
             catch { }
             throw;
         }

@@ -391,11 +391,11 @@ public abstract partial class Selector : ItemsControl
         _isUpdatingSelection = true;
         try
         {
-            SetCurrentValue(SelectedIndexProperty, selectedIndex);
+            WriteSingleSelectionProperty(SelectedIndexProperty, selectedIndex);
             if (isCurrent?.Invoke() == false) return;
-            SetCurrentValue(SelectedItemProperty, selectedItem);
+            WriteSingleSelectionProperty(SelectedItemProperty, selectedItem);
             if (isCurrent?.Invoke() == false) return;
-            if (!preserveSelectedValue) UpdateSelectedValueFromSelection(selectedItem);
+            if (!preserveSelectedValue) UpdateSelectedValueFromSelection(selectedItem, isCurrent);
             if (isCurrent?.Invoke() == false) return;
             UpdateContainerSelection();
         }
@@ -447,7 +447,12 @@ public abstract partial class Selector : ItemsControl
 
     private static void OnSelectedIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is not Selector selector || selector._isUpdatingSelection) return;
+        if (d is not Selector selector) return;
+        if (selector._isUpdatingSelection)
+        {
+            selector.RecordSingleSelectionRequest(SelectedIndexProperty, e.NewValue);
+            return;
+        }
         if (selector.TryApplySelectionProperty(SelectedIndexProperty, e.NewValue)) return;
         object? oldItem = selector.SelectedItem;
         object? newItem = selector.GetItemAt((int)(e.NewValue ?? -1));
@@ -468,7 +473,12 @@ public abstract partial class Selector : ItemsControl
 
     private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is not Selector selector || selector._isUpdatingSelection) return;
+        if (d is not Selector selector) return;
+        if (selector._isUpdatingSelection)
+        {
+            selector.RecordSingleSelectionRequest(SelectedItemProperty, e.NewValue);
+            return;
+        }
         if (selector.TryApplySelectionProperty(SelectedItemProperty, e.NewValue)) return;
         object? newItem = e.NewValue;
         int newIndex = selector.GetIndexOf(newItem);
@@ -487,7 +497,12 @@ public abstract partial class Selector : ItemsControl
 
     private static void OnSelectedValueChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is not Selector selector || selector._isUpdatingSelection) return;
+        if (d is not Selector selector) return;
+        if (selector._isUpdatingSelection)
+        {
+            selector.RecordSingleSelectionRequest(SelectedValueProperty, e.NewValue);
+            return;
+        }
         object? oldItem = selector.SelectedItem;
         var (matchedIndex, matchedItem) = selector.FindItemBySelectedValue(e.NewValue);
         if (selector is not ListBox)
@@ -529,12 +544,14 @@ public abstract partial class Selector : ItemsControl
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
         Justification = "Reached only from the SelectedIndex/SelectedItem/SelectedValuePath property-changed callbacks, whose PropertyChangedCallback signature is fixed by the property system and cannot carry the RUC contract. The only reflective work is the opt-in SelectedValuePath lookup via GetSelectedValueForItem -> TryResolvePathValue -> PropertyAccessorRegistry.TryReadProperty, which is a no-op unless the consumer sets a non-empty SelectedValuePath. Per PropertyAccessorRegistry's RUC contract ('Register typed accessors via Register() to opt out of reflection.'), applications that bind SelectedValuePath against user data types under AOT must register accessors for those types; this is a documented consumer prerequisite, not a defect of this site.")]
-    private void UpdateSelectedValueFromSelection(object? selectedItem)
+    private void UpdateSelectedValueFromSelection(object? selectedItem, Func<bool>? isCurrent = null)
     {
         var newValue = GetSelectedValueForItem(selectedItem);
+        if (isCurrent?.Invoke() == false) return;
         if (!Equals(SelectedValue, newValue))
         {
-            SelectedValue = newValue;
+            if (_isReconcilingOccurrence) WriteSingleSelectionProperty(SelectedValueProperty, newValue);
+            else SelectedValue = newValue;
         }
     }
 

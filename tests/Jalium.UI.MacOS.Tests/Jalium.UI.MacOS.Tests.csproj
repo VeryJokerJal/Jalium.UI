@@ -18,6 +18,7 @@
     <Compile Include="../Jalium.UI.Tests/MultiSelectorParityTests.cs" Link="Shared/MultiSelectorParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/ComboBoxParityTests.cs" Link="Shared/ComboBoxParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/SelectorOccurrenceTests.cs" Link="Shared/SelectorOccurrenceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/SelectionTransactionBoundaryTests.cs" Link="Shared/SelectionTransactionBoundaryTests.cs" />
     <Compile Include="../Jalium.UI.Tests/ListBoxOccurrenceTests.cs" Link="ListBoxOccurrenceTests.cs" />
     <Compile Include="../Jalium.UI.Tests/MouseDoubleClickLifetimeTests.cs" Link="MouseDoubleClickLifetimeTests.cs" />
     <Compile Include="../Jalium.UI.Tests/WritingToolsParagraphFormattingTests.cs" Link="WritingToolsParagraphFormattingTests.cs" />

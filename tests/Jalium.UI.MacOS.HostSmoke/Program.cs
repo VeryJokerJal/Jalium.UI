@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-selection-transaction-case=", StringComparison.Ordinal))
+    return WindowSelectionTransactionChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-placement-boundary-case=", StringComparison.Ordinal))
     return WindowPlacementBoundaryChecks.Run(args[0]);
 

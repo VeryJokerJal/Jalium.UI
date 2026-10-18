@@ -1665,7 +1665,8 @@ public class ComboBox : Selector
             container.ContentStringFormat = ItemStringFormat;
         }
 
-        container.IsSelected = Equals(item, SelectedItem);
+        int index = ItemContainerGenerator.IndexFromContainer(container);
+        container.IsSelected = index >= 0 && index == SelectedIndex;
 
         // Recycled containers retain exactly one owner callback.
         container.ItemClicked -= OnContainerItemClicked;
