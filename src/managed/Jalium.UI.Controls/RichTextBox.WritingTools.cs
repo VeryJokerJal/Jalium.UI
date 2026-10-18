@@ -21,7 +21,7 @@ public partial class RichTextBox
         using var change = DeclareChangeBlock();
         _caretPosition = fragment.Insert(_document, start, length, current);
         if (!current()) return false;
-        _selection = new TextSelection(_caretPosition, _caretPosition);
+        _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
         _selectionAnchor = _caretPosition;
         OnSelectionChanged();
         if (!current()) return false;

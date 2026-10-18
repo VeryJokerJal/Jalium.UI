@@ -558,7 +558,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                         var found = GetPositionInBlock(child, targetOffset, direction, ref currentOffset);
                         if (found is not null) return found;
                     }
-                    if (targetOffset == currentOffset) return new TextPointer(this, null, currentOffset, direction);
+                    if (targetOffset == currentOffset) return new TextPointer(this, cell, TextElement.GetContentLength(cell), direction);
                     currentOffset++; // Cell separator in GetText().
                 }
                 if (targetOffset == currentOffset) return new TextPointer(this, null, currentOffset, direction);
@@ -753,7 +753,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         return length;
     }
 
-    private static int GetBlockLength(Block block)
+    internal static int GetBlockLength(Block block)
     {
         if (block is Paragraph p)
         {

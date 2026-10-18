@@ -119,5 +119,6 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../Jalium.UI.Tests/WritingToolsMixedStructureTests.cs" Link="WritingToolsMixedStructureTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RichTextTableLayoutTests.cs" Link="RichTextTableLayoutTests.cs" />
   </ItemGroup>
 </Project>

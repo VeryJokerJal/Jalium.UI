@@ -3,6 +3,9 @@ using AppKit;
 using Foundation;
 using ObjCRuntime;
 using Jalium.UI.Controls;
+using Jalium.UI.Automation;
+using Jalium.UI.Automation.Peers;
+using Jalium.UI.Automation.Provider;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
@@ -42,7 +45,7 @@ internal static class WindowWritingToolsStructureChecks
         owner.SetResourceReference(Window.BackgroundProperty, "WindowBackground"); Application.Current!.MainWindow = owner;
         var checks = new List<string>(); var failures = new List<string>(); var scenarios = new List<object>(); var focus = new List<object>();
         int unavailable = 0, phase = 0; bool finished = false; var watch = Stopwatch.StartNew();
-        string before = "", shape = ""; Block[] original = []; var contexts = new List<object>();
+        string before = "", shape = ""; Block[] original = []; var contexts = new List<object>(); var geometryRecords = new List<object>();
         void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); checks.Add(message); }
         void Attempt(string name, Action body)
         {
@@ -89,6 +92,47 @@ internal static class WindowWritingToolsStructureChecks
                 NSWritingToolsCoordinatorTextReplacementReason.Noninteractive, null!, value => { calls++; accepted = value; });
             Require(calls == 1 && accepted?.Value == proposed.Value, "SDK replacement completes once with the accepted projection");
         }
+        void CheckGeometry(string stage, bool preview)
+        {
+            owner.UpdateLayout(); var ime = (IImeSupport)editor; int count = 0, visible = 0;
+            foreach (var paragraph in editor.Document.EnumerateParagraphs())
+            {
+                int start = paragraph.ContentStart.DocumentOffset, length = TextElement.GetContentLength(paragraph);
+                Require(ime.TryGetImeTextRangeGeometry(start, length, false, out var range), "paragraph exposes an actual first-line IME rectangle");
+                var rect = range.Rectangle;
+                Require(double.IsFinite(rect.X) && double.IsFinite(rect.Y) && rect.Width >= 0 && rect.Height > 0,
+                    "paragraph geometry is finite after mixed table/list layout");
+                var point = new Point(rect.Left + Math.Min(0.25, rect.Width / 2), rect.Top + Math.Min(1, rect.Height / 2));
+                bool inViewport = new Rect(0, 0, editor.ActualWidth, editor.ActualHeight).Contains(point);
+                int hit = -1;
+                if (length > 0 && inViewport)
+                {
+                    Require(ime.TryGetImeCharacterIndex(point, false, out hit), "IME point query reaches visible paragraph text");
+                    var position = editor.GetPositionFromPoint(point, true);
+                    Require(position is not null && hit == position.DocumentOffset && hit >= start && hit <= start + length,
+                        "native-facing and public point mappings retain the paragraph's source range");
+                    visible++;
+                }
+                geometryRecords.Add(new { stage, start, length, rectangle = rect, inViewport, hit }); count++;
+            }
+            Require(count > 0 && visible > 0, "mixed document retains visible and addressable paragraphs");
+            if (!preview) return;
+            var source = ((AutomationTextProvider)UIElementAutomationPeer.CreatePeerForElement(editor)!.GetPattern(PatternInterface.Text)!).Source;
+            var first = editor.Document.EnumerateParagraphs().First(paragraph => TextElement.GetContentLength(paragraph) > 0);
+            int at = first.ContentStart.DocumentOffset, extent = TextElement.GetContentLength(first);
+            var image = MacOSWritingToolsPresentation.CreatePreview(editor, source, at, extent, Matrix.Identity,
+                owner.DpiScale, null, () => owner.Handle != 0);
+            Require(image is not null && image.Png.Length > 0, "real backend creates a preview of table/list text");
+            var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.StreamSource = new MemoryStream(image!.Png); bitmap.EndInit();
+            var pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4]; bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
+            bool ink = false, transparent = false;
+            for (int i = 3; i < pixels.Length; i += 4) { ink |= pixels[i] > 20; transparent |= pixels[i] < 4; }
+            Require(ink && transparent, "glyph preview contains ink and transparent background");
+            Require(ime.TryGetImeTextRangeGeometry(at, extent, false, out var firstLine) &&
+                image.Frame.Width <= firstLine.Rectangle.Width + 4 * firstLine.Rectangle.Height &&
+                image.Frame.Height <= editor.ActualHeight, "glyph preview excludes the table's full opaque surface");
+            File.WriteAllBytes(Path.Combine(output, "preview.png"), image.Png);
+        }
         void Capture(string phase)
         {
             owner.UpdateLayout(); double dpi = owner.DpiScale;
@@ -109,6 +153,7 @@ internal static class WindowWritingToolsStructureChecks
                 if (phase == 0)
                 {
                 Observe(); Capture("before");
+                Attempt("table-geometry-before", () => CheckGeometry("before", true));
                 before = editor.Document.GetText(); shape = Shape(editor.Document.Blocks); original = editor.Document.Blocks.ToArray();
                 Attempt("unchanged-attributed-proposal", () =>
                 {
@@ -153,6 +198,7 @@ internal static class WindowWritingToolsStructureChecks
                 });
                 Attempt("redo-edited", () => Require(editor.Redo() && editor.Document.GetText() == after && Shape(editor.Document.Blocks) == afterShape, "one Redo restores the edited mixed structure"));
                 Observe(); status.Text = failures.Count == 0 ? "结构、编号、撤销与重做检查通过。" : "检查发现问题，请查看记录。";
+                Attempt("table-geometry-after", () => CheckGeometry("after", false));
                 Capture("after");
             }
             catch (Exception failure) { finished = true; failures.Add("scene: " + failure); }
@@ -163,7 +209,7 @@ internal static class WindowWritingToolsStructureChecks
                 File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
                 {
                     index, model, custom, software, passed = failures.Count == 0 && unavailable == 0, qualifiedWithoutForeground = failures.Count == 0,
-                    failures, checks, scenarios, focus, contexts, foregroundUnavailable = unavailable, processId = Environment.ProcessId,
+                    failures, checks, scenarios, focus, contexts, geometryRecords, foregroundUnavailable = unavailable, processId = Environment.ProcessId,
                     physicalInput = false, desktopScreenshot = false, appleIntelligenceService = false,
                     serviceAvailable = NSWritingToolsCoordinator.IsWritingToolsAvailable, renderThreadOverride = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD")
                 }));

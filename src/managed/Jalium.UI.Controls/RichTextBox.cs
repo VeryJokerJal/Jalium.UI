@@ -221,7 +221,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 _caretPosition = value;
                 _selectionAnchor = value;
                 if (_selection is null or { IsEmpty: true })
-                    _selection = new TextSelection(value, value);
+                    _selection = CreateOwnedSelection(value, value);
                 ResetCaretBlink();
                 EnsureCaretVisible();
                 OnSelectionChanged();
@@ -237,7 +237,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         get
         {
-            _selection ??= new TextSelection(_document.ContentStart, _document.ContentStart);
+            _selection ??= CreateOwnedSelection(_document.ContentStart, _document.ContentStart);
             return _selection;
         }
     }
@@ -293,7 +293,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         _document = new FlowDocument();
         AddLogicalChild(_document);
         _caretPosition = _document.ContentStart;
-        _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
+        _selection = CreateOwnedSelection(_document.ContentStart, _document.ContentStart);
         TrackDocumentChanges();
 
         Focusable = true;
@@ -342,7 +342,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         AddLogicalChild(_document);
         _caretPosition = _document.ContentStart;
         _selectionAnchor = _caretPosition;
-        _selection = new TextSelection(_caretPosition, _caretPosition);
+        _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
         TrackDocumentChanges();
         _spellCheckedText = null;
         if (clearHistory)
@@ -404,7 +404,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     internal override void SelectAllCore()
     {
-        _selection = new TextSelection(_document.ContentStart, _document.ContentEnd);
+        _selection = CreateOwnedSelection(_document.ContentStart, _document.ContentEnd);
         _selectionAnchor = _document.ContentStart;
         _caretPosition = _document.ContentEnd;
         UpdateImeWindowIfComposing();
@@ -419,7 +419,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         if (_caretPosition != null)
         {
-            _selection = new TextSelection(_caretPosition, _caretPosition);
+            _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
             _selectionAnchor = _caretPosition;
             UpdateImeWindowIfComposing();
             InvalidateVisual();
@@ -609,7 +609,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         PushUndo();
         ReplaceDocument(FlowDocument.FromText(text), clearHistory: false);
         _caretPosition = _document.ContentEnd;
-        _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
+        _selection = CreateOwnedSelection(_document.ContentStart, _document.ContentStart);
         _selectionAnchor = _document.ContentStart;
         _spellCheckedText = null;
         ApplyDocumentEnabledState();
@@ -1093,7 +1093,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
         // Update caret to selection start
         _caretPosition = _document.GetPositionAtOffset(start, LogicalDirection.Forward) ?? _document.ContentEnd;
-        _selection = new TextSelection(_caretPosition, _caretPosition);
+        _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
         _selectionAnchor = _caretPosition;
 
         UpdateImeWindowIfComposing();
@@ -1251,7 +1251,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             return _document.GetPositionAtOffset(mapped, direction) ?? _document.ContentEnd;
         }
         _caretPosition = Map(previous.CaretOffset, previous.Caret.LogicalDirection);
-        _selection = new TextSelection(Map(previous.AnchorOffset, previous.SelectionAnchor.LogicalDirection),
+        _selection = CreateOwnedSelection(Map(previous.AnchorOffset, previous.SelectionAnchor.LogicalDirection),
             Map(previous.MovingOffset, previous.SelectionMoving.LogicalDirection));
         _selectionAnchor = Map(previous.CaretAnchorOffset, previous.CaretAnchor.LogicalDirection);
     }
@@ -1280,7 +1280,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         // TextPointer is immutable. Its original parent and affinity remain
         // valid after restoring the original graph, including bidi boundaries.
         _caretPosition = state.Caret;
-        _selection = new TextSelection(state.SelectionAnchor, state.SelectionMoving);
+        _selection = CreateOwnedSelection(state.SelectionAnchor, state.SelectionMoving);
         _selectionAnchor = state.CaretAnchor;
         _spellCheckedText = null;
         ApplyDocumentEnabledState();
@@ -1435,6 +1435,14 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
         try
         {
+            // Cell surfaces belong to the editor, outside the transparent
+            // Writing Tools glyph-preview path.
+            var surfaces = EnsureLayout(contentBounds.Width);
+            if (surfaces is not null)
+            {
+                double surfacesY = contentBounds.Top - _verticalOffset;
+                DrawTableSurfaces(dc, surfaces.Blocks, contentBounds.Left - _horizontalOffset, ref surfacesY);
+            }
             // Render document content
             RenderDocument(dc, contentBounds);
             MacOSWritingToolsPresentation.DrawInactive(this, dc);
@@ -1442,12 +1450,6 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
             {
                 RenderImeComposition(dc, contentBounds);
-            }
-
-            // Render selection
-            if (_selection != null && !_selection.IsEmpty)
-            {
-                RenderSelection(dc, contentBounds);
             }
 
             // Render caret
@@ -1477,6 +1479,9 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
         var y = contentBounds.Top - _verticalOffset;
 
+        if (!MacOSWritingToolsPresentation.IsPreviewing(this) && _selection is { IsEmpty: false })
+            RenderSelection(dc, contentBounds);
+
         foreach (var blockLayout in layout.Blocks)
         {
             RenderBlockLayout(dc, blockLayout, contentBounds.Left - _horizontalOffset, ref y, contentBounds);
@@ -1485,34 +1490,25 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderBlockLayout(DrawingContext dc, BlockLayoutInfo blockLayout, double x, ref double y, Rect contentBounds)
     {
-        if (blockLayout.Block is Paragraph)
+        y += blockLayout.Margin.Top;
+        x += blockLayout.Margin.Left;
+        if (blockLayout.Table is { } table)
+        {
+            RenderTable(dc, table, x, y, contentBounds);
+            y += table.Height;
+        }
+        else
         {
             foreach (var lineLayout in blockLayout.Lines)
             {
                 if (y + lineLayout.Height > contentBounds.Top && y < contentBounds.Bottom)
-                {
-                    RenderLine(dc, lineLayout, x + blockLayout.Margin.Left, y);
-                }
+                    RenderLine(dc, lineLayout, x, y);
                 y += lineLayout.Height;
             }
-
-            // Add paragraph spacing
-            y += blockLayout.Margin.Bottom;
+            foreach (var child in blockLayout.ChildBlocks)
+                RenderBlockLayout(dc, child, x + (blockLayout.Block is List ? 20 : 0), ref y, contentBounds);
         }
-        else if (blockLayout.Block is Section)
-        {
-            foreach (var childLayout in blockLayout.ChildBlocks)
-            {
-                RenderBlockLayout(dc, childLayout, x, ref y, contentBounds);
-            }
-        }
-        else if (blockLayout.Block is List)
-        {
-            foreach (var childLayout in blockLayout.ChildBlocks)
-            {
-                RenderBlockLayout(dc, childLayout, x + 20, ref y, contentBounds); // Indent list items
-            }
-        }
+        y += blockLayout.Margin.Bottom;
     }
 
     private void RenderLine(DrawingContext dc, LineLayoutInfo lineLayout, double x, double y)
@@ -1557,7 +1553,10 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                     var runX = x + runLayout.X;
                     if (lineLayout.NativeLine is null)
                     {
-                        var formattedText = new FormattedText(runLayout.Run.Text, fontFamily, fontSize)
+                        int sourceStart = runLayout.Run.ContentStart.DocumentOffset;
+                        int localStart = Math.Clamp(runLayout.StartOffset - sourceStart, 0, runLayout.Run.Text.Length);
+                        int count = Math.Clamp(runLayout.EndOffset - runLayout.StartOffset, 0, runLayout.Run.Text.Length - localStart);
+                        var formattedText = new FormattedText(runLayout.Run.Text.Substring(localStart, count), fontFamily, fontSize)
                         {
                             Foreground = foreground,
                             FontWeight = fontWeight.ToOpenTypeWeight(),
@@ -1787,22 +1786,16 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (selStart > selEnd)
             (selStart, selEnd) = (selEnd, selStart);
 
-        var y = contentBounds.Top - _verticalOffset;
-
-        foreach (var blockLayout in layout.Blocks)
+        var lines = new List<(LineLayoutInfo line, double y, double x)>();
+        double bottom = contentBounds.Top - _verticalOffset;
+        CollectAllLines(layout.Blocks, contentBounds.Left - _horizontalOffset, ref bottom, lines);
+        foreach (var (lineLayout, y, x) in lines)
         {
-            RenderSelectionInBlock(dc, blockLayout, contentBounds, selBrush, selStart, selEnd,
-                contentBounds.Left - _horizontalOffset, ref y);
-        }
-    }
-
-    private void RenderSelectionInBlock(DrawingContext dc, BlockLayoutInfo blockLayout, Rect contentBounds,
-        Brush selBrush, int selStart, int selEnd, double baseX, ref double y)
-    {
-        var x = baseX + blockLayout.Margin.Left;
-
-        foreach (var lineLayout in blockLayout.Lines)
-        {
+            void DrawSelection(Rect rectangle)
+            {
+                rectangle = ClipToCell(layout, lineLayout, rectangle, contentBounds);
+                if (rectangle.Width > 0 && rectangle.Height > 0) dc.DrawRectangle(selBrush, null, rectangle);
+            }
             if (lineLayout.NativeLine is { } nativeLine)
             {
                 if (y + lineLayout.Height > contentBounds.Top && y < contentBounds.Bottom)
@@ -1810,9 +1803,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                     int start = Math.Clamp(selStart - lineLayout.ParagraphOffset, 0, nativeLine.Paragraph.Text.Length);
                     int end = Math.Clamp(selEnd - lineLayout.ParagraphOffset, start, nativeLine.Paragraph.Text.Length);
                     foreach (var rectangle in nativeLine.Paragraph.Selection(nativeLine.Index, start, end - start))
-                        dc.DrawRectangle(selBrush, null, new Rect(x + rectangle.X, y, rectangle.Width, lineLayout.Height));
+                        DrawSelection(new Rect(x + rectangle.X, y, rectangle.Width, lineLayout.Height));
                 }
-                y += lineLayout.Height;
                 continue;
             }
             // Check if this line intersects the selection
@@ -1841,19 +1833,10 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
                 if (endX > startX && y + lineLayout.Height > contentBounds.Top && y < contentBounds.Bottom)
                 {
-                    dc.DrawRectangle(selBrush, null,
-                        new Rect(startX, y, endX - startX, lineLayout.Height));
+                    DrawSelection(new Rect(startX, y, endX - startX, lineLayout.Height));
                 }
             }
-            y += lineLayout.Height;
         }
-
-        foreach (var childLayout in blockLayout.ChildBlocks)
-        {
-            RenderSelectionInBlock(dc, childLayout, contentBounds, selBrush, selStart, selEnd, x, ref y);
-        }
-
-        y += blockLayout.Margin.Bottom;
     }
 
     private double GetXOffsetInLine(LineLayoutInfo lineLayout, int targetOffset, bool trailing = false, bool backward = false)
@@ -1876,14 +1859,17 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 (targetOffset < runLayout.EndOffset || targetOffset == lineLayout.EndOffset && targetOffset == runLayout.EndOffset) &&
                 runLayout.Run is { } run)
             {
-                int offset = Math.Clamp(targetOffset - runLayout.StartOffset, 0, run.Text.Length);
+                int localStart = Math.Clamp(runLayout.StartOffset - run.ContentStart.DocumentOffset, 0, run.Text.Length);
+                int length = Math.Clamp(runLayout.EndOffset - runLayout.StartOffset, 0, run.Text.Length - localStart);
+                string text = run.Text.Substring(localStart, length);
+                int offset = Math.Clamp(targetOffset - runLayout.StartOffset, 0, text.Length);
                 string family = run.FontFamily?.Source ?? _document.FontFamily ?? FrameworkElement.DefaultFontFamilyName;
                 double size = run.FontSize > 0 ? run.FontSize : _document.FontSize;
-                if (run.Text.Length > 0 && TextMeasurement.HitTestTextPositionWrapped(run.Text, family, size,
+                if (text.Length > 0 && TextMeasurement.HitTestTextPositionWrapped(text, family, size,
                     run.FontWeight.ToOpenTypeWeight(), run.FontStyle.ToOpenTypeStyle(), 100000f, (uint)offset, trailing, out var hit))
                     return runLayout.X + hit.CaretX;
-                if (trailing) offset = GraphemeClusters.NextBoundary(run.Text, offset);
-                return runLayout.X + MeasureText(run.Text[..offset], run);
+                if (trailing) offset = GraphemeClusters.NextBoundary(text, offset);
+                return runLayout.X + MeasureText(text[..offset], run);
             }
         }
 
@@ -2003,58 +1989,29 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (layout == null)
             return null;
 
-        // Find the caret position in the layout
-        var offset = position.DocumentOffset;
-        var y = contentBounds.Top - _verticalOffset;
-        var x = contentBounds.Left - _horizontalOffset;
-
-        foreach (var blockLayout in layout.Blocks)
+        var lines = new List<(LineLayoutInfo line, double y, double x)>();
+        double y = contentBounds.Top - _verticalOffset;
+        CollectAllLines(layout.Blocks, contentBounds.Left - _horizontalOffset, ref y, lines);
+        int offset = position.DocumentOffset;
+        for (int i = 0; i < lines.Count; i++)
         {
-            var result = FindPositionInBlock(blockLayout, offset, position.LogicalDirection, x, ref y);
-            if (result != null)
-                return result;
-        }
-
-        return new Point(contentBounds.Left, contentBounds.Top);
-    }
-
-    private Point? FindPositionInBlock(BlockLayoutInfo blockLayout, int targetOffset,
-        LogicalDirection direction, double x, ref double y)
-    {
-        x += blockLayout.Margin.Left;
-
-        for (int i = 0; i < blockLayout.Lines.Count; i++)
-        {
-            var lineLayout = blockLayout.Lines[i];
-            bool nextRow = direction == LogicalDirection.Forward && targetOffset == lineLayout.EndOffset &&
-                i + 1 < blockLayout.Lines.Count && blockLayout.Lines[i + 1].StartOffset == targetOffset;
-            if (targetOffset >= lineLayout.StartOffset && targetOffset <= lineLayout.EndOffset && !nextRow)
+            var item = lines[i];
+            bool next = position.LogicalDirection == LogicalDirection.Forward && offset == item.line.EndOffset &&
+                i + 1 < lines.Count && lines[i + 1].line.StartOffset == offset;
+            if (offset >= item.line.StartOffset && offset <= item.line.EndOffset && !next)
             {
-                // Found the line containing the offset
-                var lineX = x;
-                foreach (var runLayout in lineLayout.Runs)
-                {
-                    if (targetOffset >= runLayout.StartOffset && targetOffset <= runLayout.EndOffset)
-                    {
-                        // Found the run containing the offset
-                        return new Point(lineX + GetXOffsetInLine(lineLayout, targetOffset,
-                            backward: direction == LogicalDirection.Backward), y);
-                    }
-                }
-                return new Point(lineX + lineLayout.Width, y);
+                double left = item.x + GetXOffsetInLine(item.line, offset,
+                    backward: position.LogicalDirection == LogicalDirection.Backward);
+                var rectangle = ClipToCell(layout, item.line, new Rect(left, item.y, 0, item.line.Height), contentBounds);
+                return rectangle.Location;
             }
-            y += lineLayout.Height;
         }
-
-        foreach (var childLayout in blockLayout.ChildBlocks)
-        {
-            var result = FindPositionInBlock(childLayout, targetOffset, direction, x, ref y);
-            if (result != null)
-                return result;
-        }
-
-        y += blockLayout.Margin.Bottom;
-        return null;
+        // Container endpoints may include virtual table separators. Keep them
+        // beside their last visible insertion point instead of at the origin.
+        var previous = lines.LastOrDefault(item => item.line.EndOffset <= offset);
+        return previous.line is null ? contentBounds.Location :
+            ClipToCell(layout, previous.line, new Rect(previous.x + previous.line.Width,
+                previous.y, 0, previous.line.Height), contentBounds).Location;
     }
 
     private double MeasureText(string text, Run run)
@@ -2262,12 +2219,26 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         double height = 0;
-        CollectAllLines(layout.Blocks, 0, ref height, lines);
+        CollectAllLines(layout.Blocks, 0, ref height, lines, layout.CellClips);
+        double cellY = 0;
+        CollectCellRegions(layout.Blocks, 0, ref cellY, 0, layout.Cells);
         layout.TotalHeight = height;
         foreach (var line in lines)
             layout.TotalWidth = Math.Max(layout.TotalWidth, line.x + line.line.Width);
 
+        foreach (var block in layout.Blocks)
+            layout.TotalWidth = Math.Max(layout.TotalWidth, TableExtent(block, 0));
         return layout;
+    }
+
+    private static double TableExtent(BlockLayoutInfo block, double x)
+    {
+        x += block.Margin.Left;
+        if (block.Table is { } table) return x + table.Width + block.Margin.Right;
+        double width = 0;
+        foreach (var child in block.ChildBlocks)
+            width = Math.Max(width, TableExtent(child, x + (block.Block is List ? 20 : 0)));
+        return width;
     }
 
     private static void CollectDecorationFragments(BlockLayoutInfo block,
@@ -2308,7 +2279,11 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             Margin = block.Margin
         };
 
-        if (block is Paragraph paragraph)
+        if (block is Table table)
+        {
+            LayoutTable(table, blockLayout, maxWidth, ref currentOffset);
+        }
+        else if (block is Paragraph paragraph)
         {
             LayoutParagraph(paragraph, blockLayout, maxWidth - block.Margin.Left - block.Margin.Right, ref currentOffset);
             currentOffset++; // Paragraph break
@@ -2483,51 +2458,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         if (inline is Run run)
         {
-            var text = run.Text;
-            var fontFamily = run.FontFamily?.Source
-                ?? _document.FontFamily
-                ?? FrameworkElement.DefaultFontFamilyName;
-            var fontSize = run.FontSize;
-            if (fontSize <= 0)
-                fontSize = _document.FontSize;
-
-            var formattedText = new FormattedText(text, fontFamily, fontSize)
-            {
-                FontWeight = run.FontWeight.ToOpenTypeWeight(),
-                FontStyle = run.FontStyle.ToOpenTypeStyle()
-            };
-            TextMeasurement.MeasureText(formattedText);
-            var textWidth = formattedText.Width;
-
-            // Check if we need to wrap
-            if (x + textWidth > maxWidth && x > 0)
-            {
-                // Start a new line
-                lineLayout.EndOffset = currentOffset;
-                lineLayout.Width = x;
-                blockLayout.Lines.Add(lineLayout);
-
-                lineLayout = new LineLayoutInfo
-                {
-                    StartOffset = currentOffset,
-                    Height = GetDefaultLineHeight(),
-                    Baseline = GetDefaultLineHeight() * 0.8
-                };
-                x = 0;
-            }
-
-            var runLayout = new RunLayoutInfo
-            {
-                Run = run,
-                X = x,
-                Width = textWidth,
-                StartOffset = currentOffset,
-                EndOffset = currentOffset + text.Length
-            };
-
-            lineLayout.Runs.Add(runLayout);
-            x += textWidth;
-            currentOffset += text.Length;
+            LayoutFallbackRun(run, blockLayout, ref lineLayout, maxWidth, ref x, ref currentOffset);
         }
         else if (inline is Span span)
         {
@@ -2857,7 +2788,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
                 if ((e.KeyboardModifiers & ModifierKeys.Shift) != 0 && _caretPosition != null && newCaretPosition != null)
                 {
-                    _selection = new TextSelection(_caretPosition, newCaretPosition);
+                    _selection = CreateOwnedSelection(_caretPosition, newCaretPosition);
                 }
                 else
                 {
@@ -2865,7 +2796,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                     _selectionAnchor = newCaretPosition;
                     if (newCaretPosition != null)
                     {
-                        _selection = new TextSelection(newCaretPosition, newCaretPosition);
+                        _selection = CreateOwnedSelection(newCaretPosition, newCaretPosition);
                     }
                     _isWordSelecting = false;
                     _isSelecting = true;
@@ -2916,7 +2847,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             }
             else if (_selectionAnchor != null)
             {
-                _selection = new TextSelection(_selectionAnchor, newCaretPosition);
+                _selection = CreateOwnedSelection(_selectionAnchor, newCaretPosition);
                 _caretPosition = newCaretPosition;
             }
         }
@@ -2954,18 +2885,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (layout == null)
             return _document.ContentStart;
 
-        var y = contentBounds.Top - _verticalOffset;
-        var targetY = point.Y;
-        var targetX = point.X - contentBounds.Left + _horizontalOffset;
-
-        foreach (var blockLayout in layout.Blocks)
-        {
-            var result = FindPositionFromPoint(blockLayout, targetX, targetY, ref y);
-            if (result != null)
-                return result;
-        }
-
-        return _document.ContentEnd;
+        return HitTableDocument(layout, point, contentBounds);
     }
 
     private bool IsPointOverDocumentText(Point point)
@@ -2982,102 +2902,17 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (layout == null)
             return false;
 
-        var y = contentBounds.Top - _verticalOffset;
-        var targetX = point.X - contentBounds.Left + _horizontalOffset;
-        foreach (var blockLayout in layout.Blocks)
-        {
-            var overText = IsPointOverDocumentText(blockLayout, targetX, point.Y, ref y, out var verticalHit);
-            if (verticalHit)
-                return overText;
-        }
-
-        return false;
+        var lines = new List<(LineLayoutInfo line, double y, double x)>();
+        double bottom = contentBounds.Top - _verticalOffset;
+        CollectAllLines(layout.Blocks, contentBounds.Left - _horizontalOffset, ref bottom, lines);
+        return lines.Any(item => point.Y >= item.y && point.Y < item.y + item.line.Height &&
+            item.line.Runs.Any(run => run.Width > 0 && point.X >= item.x + run.X && point.X < item.x + run.X + run.Width));
     }
 
-    private static bool IsPointOverDocumentText(
-        BlockLayoutInfo blockLayout,
-        double targetX,
-        double targetY,
-        ref double y,
-        out bool verticalHit)
+
+    private int FindCharIndexFromX(Run run, double x, int sourceStart = 0, int? sourceLength = null)
     {
-        foreach (var lineLayout in blockLayout.Lines)
-        {
-            if (targetY >= y && targetY < y + lineLayout.Height)
-            {
-                verticalHit = true;
-                var x = blockLayout.Margin.Left;
-                return lineLayout.Runs.Any(runLayout =>
-                    runLayout.Width > 0 &&
-                    targetX >= x + runLayout.X &&
-                    targetX < x + runLayout.X + runLayout.Width);
-            }
-
-            y += lineLayout.Height;
-        }
-
-        foreach (var childLayout in blockLayout.ChildBlocks)
-        {
-            var overText = IsPointOverDocumentText(childLayout, targetX, targetY, ref y, out verticalHit);
-            if (verticalHit)
-                return overText;
-        }
-
-        y += blockLayout.Margin.Bottom;
-        verticalHit = false;
-        return false;
-    }
-
-    private TextPointer? FindPositionFromPoint(BlockLayoutInfo blockLayout, double targetX, double targetY, ref double y)
-    {
-        foreach (var lineLayout in blockLayout.Lines)
-        {
-            if (targetY >= y && targetY < y + lineLayout.Height)
-            {
-                if (lineLayout.NativeLine is { } nativeLine)
-                {
-                    var hit = nativeLine.Paragraph.HitTest(nativeLine.Index, targetX - blockLayout.Margin.Left);
-                    return _document.GetPositionAtOffset(lineLayout.ParagraphOffset + (int)hit.TextPosition,
-                        hit.BackwardAffinity != 0 ? LogicalDirection.Backward : LogicalDirection.Forward);
-                }
-                // Found the line
-                double x = blockLayout.Margin.Left;
-                foreach (var runLayout in lineLayout.Runs)
-                {
-                    if (targetX >= x + runLayout.X && targetX < x + runLayout.X + runLayout.Width)
-                    {
-                        // Found the run, find exact offset
-                        if (runLayout.Run != null)
-                        {
-                            var localX = targetX - x - runLayout.X;
-                            var charIndex = FindCharIndexFromX(runLayout.Run, localX);
-                            var offset = runLayout.StartOffset + charIndex;
-                            return _document.GetPositionAtOffset(offset, offset == lineLayout.EndOffset ?
-                                LogicalDirection.Backward : LogicalDirection.Forward);
-                        }
-                        return _document.GetPositionAtOffset(runLayout.StartOffset, LogicalDirection.Forward);
-                    }
-                }
-                // Clicked past the end of the line
-                return _document.GetPositionAtOffset(lineLayout.EndOffset, LogicalDirection.Backward);
-            }
-            y += lineLayout.Height;
-        }
-
-        foreach (var childLayout in blockLayout.ChildBlocks)
-        {
-            var result = FindPositionFromPoint(childLayout, targetX, targetY, ref y);
-            if (result != null)
-                return result;
-        }
-
-        y += blockLayout.Margin.Bottom;
-        return null;
-    }
-
-    private int FindCharIndexFromX(Run run, double x)
-    {
-        var text = run.Text;
+        var text = run.Text.Substring(sourceStart, sourceLength ?? run.Text.Length - sourceStart);
         var fontFamily = run.FontFamily?.Source
             ?? _document.FontFamily
             ?? FrameworkElement.DefaultFontFamilyName;
@@ -3418,6 +3253,17 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             return direction < 0 ? _document.ContentStart : _document.ContentEnd;
 
         int targetLineIndex = currentLineIndex + direction;
+        if (ContainsTables(layout.Blocks))
+        {
+            double currentY = allLines[currentLineIndex].y;
+            var next = allLines.Select((item, index) => (item, index))
+                .Where(value => direction * (value.item.y - currentY) > 0.01)
+                .OrderBy(value => Math.Abs(value.item.y - currentY))
+                .ThenBy(value => Math.Max(0, Math.Max(value.item.x - caretPos.Value.X,
+                    caretPos.Value.X - value.item.x - value.item.line.Width))).FirstOrDefault();
+            if (next.item.line is null) return direction < 0 ? _document.ContentStart : _document.ContentEnd;
+            targetLineIndex = next.index;
+        }
         if (targetLineIndex < 0)
             return _document.ContentStart;
         if (targetLineIndex >= allLines.Count)
@@ -3442,7 +3288,9 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 targetX <= targetLine.x + runLayout.X + runLayout.Width)
             {
                 var localX = targetX - targetLine.x - runLayout.X;
-                var charIndex = FindCharIndexFromX(runLayout.Run, localX);
+                var charIndex = FindCharIndexFromX(runLayout.Run, localX,
+                    Math.Max(0, runLayout.StartOffset - runLayout.Run.ContentStart.DocumentOffset),
+                    runLayout.EndOffset - runLayout.StartOffset);
                 var offset = runLayout.StartOffset + charIndex;
                 return _document.GetPositionAtOffset(offset, offset == targetLine.line.EndOffset ?
                     LogicalDirection.Backward : LogicalDirection.Forward) ?? _document.ContentEnd;
@@ -3458,19 +3306,29 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     }
 
     private void CollectAllLines(List<BlockLayoutInfo> blocks, double baseX, ref double y,
-        List<(LineLayoutInfo line, double y, double x)> result)
+        List<(LineLayoutInfo line, double y, double x)> result,
+        Dictionary<LineLayoutInfo, Rect>? clips = null, Rect? ancestorClip = null)
     {
         foreach (var blockLayout in blocks)
         {
+            y += blockLayout.Margin.Top;
             var x = baseX + blockLayout.Margin.Left;
-
-            foreach (var lineLayout in blockLayout.Lines)
+            if (blockLayout.Table is { } table)
             {
-                result.Add((lineLayout, y, x));
-                y += lineLayout.Height;
+                CollectTableLines(table, x, y, result, clips, ancestorClip);
+                y += table.Height;
             }
-
-            CollectAllLines(blockLayout.ChildBlocks, x, ref y, result);
+            else
+            {
+                foreach (var lineLayout in blockLayout.Lines)
+                {
+                    result.Add((lineLayout, y, x));
+                    if (clips is not null && ancestorClip is { } clip) clips[lineLayout] = clip;
+                    y += lineLayout.Height;
+                }
+                CollectAllLines(blockLayout.ChildBlocks,
+                    x + (blockLayout.Block is List ? 20 : 0), ref y, result, clips, ancestorClip);
+            }
             y += blockLayout.Margin.Bottom;
         }
     }
@@ -3687,7 +3545,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
         if (_selectionAnchor != null)
         {
-            _selection = new TextSelection(_selectionAnchor, newPosition);
+            _selection = CreateOwnedSelection(_selectionAnchor, newPosition);
         }
         _caretPosition = newPosition;
 
@@ -3699,7 +3557,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         var (start, end) = GetWordRangeAtOffset(position.DocumentOffset);
         var startPosition = _document.GetPositionAtOffset(start, LogicalDirection.Forward) ?? _document.ContentStart;
         var endPosition = _document.GetPositionAtOffset(end, LogicalDirection.Forward) ?? _document.ContentEnd;
-        _selection = new TextSelection(startPosition, endPosition);
+        _selection = CreateOwnedSelection(startPosition, endPosition);
         _caretPosition = endPosition;
         _selectionAnchor = startPosition;
         UpdateImeWindowIfComposing();
@@ -3734,7 +3592,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
         var startPosition = _document.GetPositionAtOffset(selectionStart, LogicalDirection.Forward) ?? _document.ContentStart;
         var endPosition = _document.GetPositionAtOffset(selectionEnd, LogicalDirection.Forward) ?? _document.ContentEnd;
-        _selection = new TextSelection(startPosition, endPosition);
+        _selection = CreateOwnedSelection(startPosition, endPosition);
         _caretPosition = _document.GetPositionAtOffset(caretOffset, LogicalDirection.Forward) ?? _document.ContentEnd;
         UpdateImeWindowIfComposing();
         OnSelectionChanged();
@@ -3876,7 +3734,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             ?? _document.ContentStart;
         TextPointer endPosition = _document.GetPositionAtOffset(start + length, LogicalDirection.Backward)
             ?? _document.ContentEnd;
-        _selection = new TextSelection(startPosition, endPosition);
+        _selection = CreateOwnedSelection(startPosition, endPosition);
         _caretPosition = endPosition;
         DeleteSelection();
         return true;
@@ -3890,7 +3748,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         var beginning = _document.GetPositionAtOffset(start, LogicalDirection.Forward) ?? _document.ContentStart;
         var end = _document.GetPositionAtOffset(start + length,
             length == 0 ? LogicalDirection.Forward : LogicalDirection.Backward) ?? _document.ContentEnd;
-        _selection = new TextSelection(beginning, end);
+        _selection = CreateOwnedSelection(beginning, end);
         _selectionAnchor = beginning;
         _caretPosition = end;
         OnSelectionChanged();
@@ -3908,7 +3766,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         PushUndo();
         TrySetImeSelection(start, length);
         _caretPosition = DocumentTextEditing.Replace(_document, start, length, text);
-        _selection = new TextSelection(_caretPosition, _caretPosition);
+        _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
         _selectionAnchor = _caretPosition;
         OnSelectionChanged();
         ResetCaretBlink();
@@ -4005,8 +3863,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 {
                     double left = rectangles.Min(static rectangle => rectangle.X);
                     double right = rectangles.Max(static rectangle => rectangle.X + rectangle.Width);
-                    geometry = new ImeTextRangeGeometry(new Rect(entry.x + left, entry.y,
-                        right - left, entry.line.Height), start, end - start);
+                    geometry = new ImeTextRangeGeometry(ClipToCell(layout, entry.line,
+                        new Rect(entry.x + left, entry.y, right - left, entry.line.Height), bounds), start, end - start);
                     return true;
                 }
             }
@@ -4016,6 +3874,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                         _caretPosition.LogicalDirection == LogicalDirection.Backward),
                 entry.y, 0, Math.Max(1, entry.line.Height));
             if (!ImeTextGeometry.TryGetFirstLineRange(text, start, end - start, caret, out geometry)) return false;
+            geometry = geometry with { Rectangle = ClipToCell(layout, entry.line, geometry.Rectangle, bounds) };
             return true;
         }
         return false;
@@ -4237,6 +4096,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     private class FlowDocumentLayoutInfo : IDisposable
     {
         public List<BlockLayoutInfo> Blocks { get; } = new();
+        public Dictionary<LineLayoutInfo, Rect> CellClips { get; } = new();
+        public List<(TableCellLayout Cell, Rect Bounds, int Depth)> Cells { get; } = new();
         public Dictionary<TextElement, DecorationFragmentMetrics> DecorationFragments { get; } =
             new(ReferenceEqualityComparer.Instance);
         public double TotalHeight { get; set; }
@@ -4262,6 +4123,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         public Thickness Margin { get; set; }
         public List<LineLayoutInfo> Lines { get; } = new();
         public List<BlockLayoutInfo> ChildBlocks { get; } = new();
+        public TableLayout? Table { get; set; }
         public NativeTextParagraph? NativeParagraph { get; set; }
         public int NativeDirection { get; set; }
         public List<(Run? Run, Color Color, double Opacity)> NativeColors { get; } = new();

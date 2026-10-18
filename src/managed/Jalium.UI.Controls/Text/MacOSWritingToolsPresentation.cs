@@ -172,6 +172,8 @@ internal static class MacOSWritingToolsPresentation
     internal static ClipScope PushTextClip(UIElement owner, DrawingContext context, Point offset = default) =>
         UsesShapedGlyphRanges ? default : PushHidden(owner, context, offset);
 
+    internal static bool IsPreviewing(UIElement owner) => _previewDepth != 0 && ReferenceEquals(owner, _previewOwner);
+
     internal static ClipScope PushHidden(UIElement owner, DrawingContext context, Point offset = default)
     {
         if (_previewDepth != 0 || !States.TryGetValue(owner, out var state) || !state.Current()) return default;

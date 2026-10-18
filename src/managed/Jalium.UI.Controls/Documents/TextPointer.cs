@@ -121,7 +121,7 @@ public sealed class TextPointer : ContentPosition, IComparable<TextPointer>
         get
         {
             // At an insertion position if we're in a text element or at an element boundary
-            return _parent is Run || _parent is Paragraph || _parent == null;
+            return _parent is Run || _parent is Paragraph || _parent is TableCell { Blocks.Count: 0 } || _parent == null;
         }
     }
 
