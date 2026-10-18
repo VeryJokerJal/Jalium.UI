@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a control that allows the user to select items from among its child elements.
 /// </summary>
-public abstract class Selector : ItemsControl
+public abstract partial class Selector : ItemsControl
 {
     #region Dependency Properties
 
@@ -297,7 +297,13 @@ public abstract class Selector : ItemsControl
 
     // A selector with occurrence-aware multi-selection owns its complete scalar
     // transaction; other selectors keep the existing default implementation.
-    internal virtual bool TryApplySelectionProperty(DependencyProperty property, object? value) => false;
+    internal virtual bool TryApplySelectionProperty(DependencyProperty property, object? value)
+    {
+        var row = property == SelectedIndexProperty
+            ? Items.GetOccurrenceAt(value is int index ? index : -1) : ResolveSingleOccurrence(value);
+        CommitSingleOccurrence(row);
+        return true;
+    }
 
     protected Selector()
     {
@@ -341,6 +347,8 @@ public abstract class Selector : ItemsControl
     {
         if (item == null) return -1;
 
+        for (int index = 0; index < Items.Count; index++)
+            if (ReferenceEquals(Items.GetItemAt(index), item)) return index;
         return Items.IndexOf(item);
     }
 
@@ -376,8 +384,10 @@ public abstract class Selector : ItemsControl
         "Trimming",
         "IL2026:RequiresUnreferencedCode",
         Justification = "This is the multi-selection counterpart of the existing selection property callbacks. SelectedValuePath reflection remains an opt-in consumer responsibility through PropertyAccessorRegistry.")]
-    internal void UpdateSelectionPropertiesFromBatch(int selectedIndex, object? selectedItem, Func<bool>? isCurrent = null)
+    internal void UpdateSelectionPropertiesFromBatch(int selectedIndex, object? selectedItem, Func<bool>? isCurrent = null, bool preserveSelectedValue = false)
     {
+        if (this is not ListBox && !_isReconcilingOccurrence)
+            _selectionOccurrence = Items.GetOccurrenceAt(selectedIndex);
         _isUpdatingSelection = true;
         try
         {
@@ -385,13 +395,18 @@ public abstract class Selector : ItemsControl
             if (isCurrent?.Invoke() == false) return;
             SetCurrentValue(SelectedItemProperty, selectedItem);
             if (isCurrent?.Invoke() == false) return;
-            UpdateSelectedValueFromSelection(selectedItem);
+            if (!preserveSelectedValue) UpdateSelectedValueFromSelection(selectedItem);
             if (isCurrent?.Invoke() == false) return;
             UpdateContainerSelection();
         }
         finally
         {
             _isUpdatingSelection = false;
+            if (this is not ListBox && _pendingOccurrenceReconciliation && !_isReconcilingOccurrence)
+            {
+                _pendingOccurrenceReconciliation = false;
+                CommitSingleOccurrence(_selectionOccurrence);
+            }
         }
     }
 
@@ -422,80 +437,8 @@ public abstract class Selector : ItemsControl
     /// </summary>
     protected virtual void SynchronizeSelectionWithItemsChange(NotifyCollectionChangedEventArgs e)
     {
-        switch (e.Action)
-        {
-            case NotifyCollectionChangedAction.Reset:
-                if (Items.Count == 0 || (SelectedItem != null && GetIndexOf(SelectedItem) == -1))
-                {
-                    ClearSelectionOnReset();
-                }
-                else if (SelectedIndex >= Items.Count)
-                {
-                    SelectedIndex = Items.Count - 1;
-                }
-                break;
-
-            case NotifyCollectionChangedAction.Remove:
-                if (Items.Count == 0)
-                {
-                    ClearSelectionOnReset();
-                }
-                else if (e.OldItems != null && SelectedItem != null && e.OldItems.Contains(SelectedItem))
-                {
-                    ClearSelectionOnReset();
-                }
-                else if (e.OldStartingIndex >= 0 && e.OldStartingIndex <= SelectedIndex)
-                {
-                    var removedCount = e.OldItems?.Count ?? 1;
-                    var newIndex = Math.Max(0, SelectedIndex - removedCount);
-                    SelectedIndex = newIndex;
-                }
-                break;
-
-            case NotifyCollectionChangedAction.Add:
-                if (e.NewStartingIndex >= 0 && e.NewStartingIndex <= SelectedIndex)
-                {
-                    var addedCount = e.NewItems?.Count ?? 1;
-                    SelectedIndex += addedCount;
-                }
-                break;
-
-            case NotifyCollectionChangedAction.Replace:
-                if (e.OldItems != null && SelectedItem != null && e.OldItems.Contains(SelectedItem))
-                {
-                    if (e.NewStartingIndex >= 0 && e.NewStartingIndex < Items.Count)
-                    {
-                        SelectedItem = GetItemAt(e.NewStartingIndex);
-                    }
-                    else
-                    {
-                        ClearSelectionOnReset();
-                    }
-                }
-                break;
-        }
-    }
-
-    private void ClearSelectionOnReset()
-    {
-        _isUpdatingSelection = true;
-        var oldItem = SelectedItem;
-        try
-        {
-            SetCurrentValue(SelectedIndexProperty, -1);
-            SetCurrentValue(SelectedItemProperty, null);
-            UpdateSelectedValueFromSelection(null);
-            UpdateContainerSelection();
-        }
-        finally
-        {
-            _isUpdatingSelection = false;
-        }
-
-        if (oldItem != null)
-        {
-            RaiseSelectionChanged(oldItem, null);
-        }
+        // ItemCollection reconciles row identity before collection subscribers
+        // and container callbacks. Indices here already describe the new view.
     }
 
     #endregion
@@ -547,6 +490,11 @@ public abstract class Selector : ItemsControl
         if (d is not Selector selector || selector._isUpdatingSelection) return;
         object? oldItem = selector.SelectedItem;
         var (matchedIndex, matchedItem) = selector.FindItemBySelectedValue(e.NewValue);
+        if (selector is not ListBox)
+        {
+            selector.CommitSingleOccurrence(selector.Items.GetOccurrenceAt(matchedIndex), preserveSelectedValue: true);
+            return;
+        }
         if (selector.TryApplySelectionProperty(SelectedIndexProperty, matchedIndex)) return;
         selector._isUpdatingSelection = true;
         try

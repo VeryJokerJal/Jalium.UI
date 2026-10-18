@@ -8,6 +8,7 @@ internal class MacOSPopupWindowHost : Window
 {
     private readonly Popup _popup;
     private readonly double _initialDpiScale;
+    private Point? _startupPixelPosition;
     internal MacOSPopupWindowHost(Window parent, Popup popup, PopupRoot root)
     {
         _popup = popup;
@@ -51,11 +52,15 @@ internal class MacOSPopupWindowHost : Window
         Show();
     }
 
+    internal override Point? GetMacOSStartupPixelPosition() => _startupPixelPosition;
+
+    // Screen positions remain physical pixels across the owner/host DPI boundary.
     internal virtual void MoveTo(Point screenPosition, Size size)
     {
-        Left = screenPosition.X; Top = screenPosition.Y;
+        _startupPixelPosition = screenPosition;
         double scale = Handle == nint.Zero ? _initialDpiScale : DpiScale;
         if (!double.IsFinite(scale) || scale <= 0) scale = 1;
+        Left = screenPosition.X / scale; Top = screenPosition.Y / scale;
         Width = Math.Max(1, Math.Ceiling(size.Width * scale) / scale);
         Height = Math.Max(1, Math.Ceiling(size.Height * scale) / scale);
     }

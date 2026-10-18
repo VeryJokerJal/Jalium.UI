@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-placement-boundary-case=", StringComparison.Ordinal))
+    return WindowPlacementBoundaryChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-occurrence-case=", StringComparison.Ordinal))
     return WindowOccurrenceChecks.Run(args[0]);
 

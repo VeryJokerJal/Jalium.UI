@@ -402,10 +402,11 @@ struct RestoreSnapshotProbe {
         if (selector == @selector(styleMask)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotMask);
         else if (selector == @selector(backingScaleFactor)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotScale);
         else if (selector == @selector(inLiveResize) || selector == @selector(isFlipped) ||
-            selector == @selector(isMiniaturized) || selector == @selector(isZoomed))
+            selector == @selector(isMiniaturized) || selector == @selector(isZoomed) || selector == @selector(isFieldEditor))
             replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotLiveResize);
         else if (selector == @selector(screen) || selector == @selector(contentView) || selector == @selector(superview) ||
-            selector == @selector(delegate) || selector == @selector(currentEditor)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
+            selector == @selector(delegate) || selector == @selector(currentEditor) || selector == @selector(firstResponder) ||
+            selector == @selector(string) || selector == @selector(selectedRanges) || selector == @selector(window)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotObject);
         else if (selector == @selector(standardWindowButton:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotButton);
         else if (selector == @selector(convertPointToScreen:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotPoint);
         else if (selector == @selector(convertPoint:toView:)) replacement = reinterpret_cast<IMP>(ReadRestoreSnapshotViewPoint);
@@ -3546,10 +3547,12 @@ int main(int argc, char** argv)
                 }
                 // A newer state request is queued while the original capture
                 // owns its transition. Its sequence must not invalidate capture.
-                for (bool exiting : {false, true}) for (bool delegateRead : {false, true})
+                const char* captureGetters[] = {"content root", "first responder", "field editor", "delegate", "editor", "text", "selection", "owner"};
+                const SEL captureSelectors[] = {@selector(contentView), @selector(firstResponder), @selector(isFieldEditor), @selector(delegate), @selector(currentEditor), @selector(string), @selector(selectedRanges), @selector(window)};
+                for (bool exiting : {false, true}) for (int getter=0;getter<8;++getter)
                     for (bool maximize : {false, true}) {
                     std::string name = std::string("fullscreen focus capture queues ") + (exiting ? "exit " : "enter ") +
-                        (delegateRead ? "delegate " : "editor ") + (maximize ? "maximize" : "normal");
+                        captureGetters[getter] + (maximize ? " maximize" : " normal");
                     run(name.c_str(), [=](Fixture& f) {
                         NSTextField* control = addControl(f, 0, false);
                         ControlledFullScreen transition(f.native);
@@ -3558,9 +3561,9 @@ int main(int argc, char** argv)
                             Require(Pump([&] { return jalium_window_get_state(f.window) == JALIUM_WINDOW_STATE_FULLSCREEN; }, 0.4),
                                 "initial fullscreen did not finish before queued capture");
                         }
-                        id target = delegateRead ? (id)control.currentEditor : (id)control;
+                        id target = getter<2 ? (id)f.native : getter==4 || getter==7 ? (id)control : (id)control.currentEditor;
                         auto requested = maximize ? JALIUM_WINDOW_STATE_MAXIMIZED : JALIUM_WINDOW_STATE_NORMAL;
-                        RestoreSnapshotProbe probe(target, delegateRead ? @selector(delegate) : @selector(currentEditor), [&] {
+                        RestoreSnapshotProbe probe(target, captureSelectors[getter], [&] {
                             jalium_window_set_state(f.window, requested);
                         });
                         int toggles = transition.toggles;

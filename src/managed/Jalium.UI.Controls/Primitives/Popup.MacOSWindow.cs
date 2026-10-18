@@ -31,7 +31,7 @@ public partial class Popup
             popupSize = MeasurePopupChild(Child!);
             root.Width = popupSize.Width; root.Height = popupSize.Height;
             screenPosition = ApplyScreenAutoFlip(WindowLocalToScreen(CalculateWindowLocalPosition(popupSize)), popupSize);
-            host.ShowAt(new Point(screenPosition.X / parent.DpiScale, screenPosition.Y / parent.DpiScale), popupSize);
+            host.ShowAt(screenPosition, popupSize);
         }
         catch
         {

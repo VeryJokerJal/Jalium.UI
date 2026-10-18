@@ -4707,8 +4707,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         int physicalWidth = Math.Max(1, (int)Math.Round((double.IsFinite(Width) ? Width : 800) * _dpiScale));
         int physicalHeight = Math.Max(1, (int)Math.Round((double.IsFinite(Height) ? Height : 600) * _dpiScale));
-        int x = double.IsNaN(Left) ? -1 : (int)(Left * _dpiScale);
-        int y = double.IsNaN(Top) ? -1 : (int)(Top * _dpiScale);
+        var startupPixels = PlatformFactory.IsMacOS ? GetMacOSStartupPixelPosition() : null;
+        int x = startupPixels.HasValue ? (int)startupPixels.Value.X : double.IsNaN(Left) ? -1 : (int)(Left * _dpiScale);
+        int y = startupPixels.HasValue ? (int)startupPixels.Value.Y : double.IsNaN(Top) ? -1 : (int)(Top * _dpiScale);
 
         nint platformOwnerHandle = (PlatformFactory.IsMacOS
             ? OwnerForPlatformTermination : _modalOwner ?? Owner)?.Handle ?? nint.Zero;
@@ -4720,6 +4721,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_platformWindow == null)
             throw new InvalidOperationException("Failed to create platform window.");
 
+        // Creation uses -1 as a per-axis default sentinel. A popup can have that
+        // exact physical coordinate, so reconcile it before publishing the handle
+        // or showing the surface. Move has no sentinel and uses the same pixels.
+        if (startupPixels.HasValue) _platformWindow.Move(x, y);
         Handle = _platformWindow.NativeHandle;
 
         if (Handle == nint.Zero)

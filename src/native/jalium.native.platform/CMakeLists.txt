@@ -633,6 +633,14 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_test(NAME jalium.native.platform.macos.window.style-input-focus
         COMMAND jalium.native.platform.window.accessibility.tests --style-input-focus-only)
     set_tests_properties(jalium.native.platform.macos.window.style-input-focus PROPERTIES TIMEOUT 90)
+    add_executable(jalium.native.platform.window.creation-geometry.tests tests/platform_apple_window_creation_geometry_tests.mm)
+    target_include_directories(jalium.native.platform.window.creation-geometry.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.window.creation-geometry.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.window.creation-geometry.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.creation-geometry.tests)
+    add_test(NAME jalium.native.platform.macos.window.creation-geometry COMMAND jalium.native.platform.window.creation-geometry.tests)
+    set_tests_properties(jalium.native.platform.macos.window.creation-geometry PROPERTIES TIMEOUT 30)
     add_executable(jalium.native.platform.window.writing-tools.tests tests/platform_apple_writing_tools_tests.mm)
     target_include_directories(jalium.native.platform.window.writing-tools.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)

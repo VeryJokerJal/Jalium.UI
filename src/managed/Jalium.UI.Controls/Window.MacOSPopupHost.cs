@@ -80,6 +80,8 @@ public partial class Window
         return null;
     }
 
+    internal virtual Point? GetMacOSStartupPixelPosition() => null;
+
     internal Point GetMacOSClientScreenOrigin()
     {
         Point origin = GetMacOSClientPixelOrigin();

@@ -308,6 +308,7 @@ public sealed partial class ItemCollection : Jalium.UI.Data.CollectionView, ILis
         if (_owner?.GetExistingAutomationPeer() is Jalium.UI.Automation.Peers.ItemsControlAutomationPeer peer)
             peer.OnItemsCollectionChanging(args);
         if (_owner is ListBox list) list.OnItemOccurrencesChanged(change, args);
+        else if (_owner is Primitives.Selector selector) selector.OnItemOccurrencesChanged(change);
     }
 
     protected override void RefreshOverride()

@@ -998,9 +998,8 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
         if (_isUsingExternalWindow && _macOSPopupWindow is { } macHost)
         {
             var screen = ApplyScreenAutoFlip(WindowLocalToScreen(windowLocalPos), popupSize);
-            var scale = parent.DpiScale;
             if (!Current() || !ReferenceEquals(macHost, _macOSPopupWindow)) return;
-            macHost.MoveTo(new Point(screen.X / scale, screen.Y / scale), popupSize);
+            macHost.MoveTo(screen, popupSize);
         }
         else if (_isUsingExternalWindow && _popupWindow is { } nativeHost)
         {

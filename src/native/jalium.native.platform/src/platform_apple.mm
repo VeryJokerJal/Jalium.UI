@@ -373,6 +373,26 @@ NSPoint FrameworkScreenPoint(NSPoint point, NSScreen* screen)
         ScreenCoordinate(DesktopTop() - point.y, DesktopTop() - NSMaxY(frame), primaryScale, scale));
 }
 
+NSScreen* ScreenForFrameworkPoint(NSPoint point, NSScreen* fallback)
+{
+    for (NSScreen* screen in NSScreen.screens) {
+        NSPoint origin = FrameworkScreenPoint(NSMakePoint(NSMinX(screen.frame), NSMaxY(screen.frame)), screen);
+        double scale = screen.backingScaleFactor ?: 1.0;
+        NSRect bounds = NSMakeRect(origin.x, origin.y, screen.frame.size.width * scale, screen.frame.size.height * scale);
+        if (NSPointInRect(point, bounds)) return screen;
+    }
+    return fallback ?: NSScreen.screens.firstObject;
+}
+
+NSPoint NativeScreenPoint(NSPoint point, NSScreen* screen)
+{
+    double top = DesktopTop();
+    double primaryScale = NSScreen.screens.firstObject.backingScaleFactor ?: 1.0;
+    using jalium::platform::apple::ScreenPoint;
+    return NSMakePoint(ScreenPoint(point.x, NSMinX(screen.frame), primaryScale, screen.backingScaleFactor),
+        top - ScreenPoint(point.y, top - NSMaxY(screen.frame), primaryScale, screen.backingScaleFactor));
+}
+
 void PublishWindowState(JaliumPlatformWindow* window, JaliumWindowState state)
 {
     if (!window || window->state == state) return;
@@ -4140,11 +4160,14 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     ((JaliumAppleWindow*)result->window).jaliumOwner = result.get();
     result->window.releasedWhenClosed=NO;
     [result->window center];
-    CGFloat desktopTop = NSMaxY(NSScreen.screens.firstObject.frame);
     NSRect frame = result->window.frame;
-    NSPoint topLeft = NSMakePoint(
-        params->x == JALIUM_DEFAULT_POS ? frame.origin.x : params->x / scale,
-        params->y == JALIUM_DEFAULT_POS ? NSMaxY(frame) : desktopTop - params->y / scale);
+    NSPoint defaults = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), result->window.screen);
+    NSPoint requested = NSMakePoint(params->x == JALIUM_DEFAULT_POS ? defaults.x : params->x,
+        params->y == JALIUM_DEFAULT_POS ? defaults.y : params->y);
+    NSScreen* destination = ScreenForFrameworkPoint(requested, result->window.screen);
+    NSPoint topLeft = NativeScreenPoint(requested, destination);
+    if (params->x == JALIUM_DEFAULT_POS) topLeft.x = NSMinX(frame);
+    if (params->y == JALIUM_DEFAULT_POS) topLeft.y = NSMaxY(frame);
     [result->window setFrameTopLeftPoint:topLeft];
     result->view=[[JaliumAppleView alloc]initWithFrame:NSMakeRect(0,0,rect.size.width,rect.size.height)];
     result->view.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
@@ -4159,8 +4182,9 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     result->window.acceptsMouseMovedEvents=YES;
     result->scale=result->window.backingScaleFactor;
     frame=result->window.frame;
-    result->x=lround(frame.origin.x*result->scale);
-    result->y=lround((desktopTop-NSMaxY(frame))*result->scale);
+    NSPoint positioned = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), result->window.screen);
+    result->x=lround(positioned.x);
+    result->y=lround(positioned.y);
     ApplyAppleStyle(result.get());
     UpdateWindowGeometry(result.get());
     if (params->parentHandle) jalium_window_set_owner(result.get(), params->parentHandle);
@@ -4686,21 +4710,10 @@ void jalium_window_move(JaliumPlatformWindow* w,int32_t x,int32_t y){if(!w)retur
         SynchronizeRestoreStyle(w);
         w->pendingStartupPlacement = true;
     }
-    CGFloat desktopTop=NSMaxY(NSScreen.screens.firstObject.frame);
     bool wasApplyingState = w->applyingState;
     w->applyingState = true;
-    NSScreen* destination = nativeWindow.screen ?: NSScreen.screens.firstObject;
-    for (NSScreen* screen in NSScreen.screens) {
-        NSPoint origin = FrameworkScreenPoint(NSMakePoint(NSMinX(screen.frame), NSMaxY(screen.frame)), screen);
-        NSRect bounds = NSMakeRect(origin.x, origin.y,
-            screen.frame.size.width * screen.backingScaleFactor, screen.frame.size.height * screen.backingScaleFactor);
-        if (NSPointInRect(NSMakePoint(x, y), bounds)) { destination = screen; break; }
-    }
-    double primaryScale = NSScreen.screens.firstObject.backingScaleFactor ?: 1.0;
-    using jalium::platform::apple::ScreenPoint;
-    NSPoint topLeft = NSMakePoint(
-        ScreenPoint(x, NSMinX(destination.frame), primaryScale, destination.backingScaleFactor),
-        desktopTop - ScreenPoint(y, desktopTop - NSMaxY(destination.frame), primaryScale, destination.backingScaleFactor));
+    NSScreen* destination = ScreenForFrameworkPoint(NSMakePoint(x, y), nativeWindow.screen);
+    NSPoint topLeft = NativeScreenPoint(NSMakePoint(x, y), destination);
     if (w->pendingStartupPlacement && w->hasRestoreFrame)
         w->restoreFrame.origin = NSMakePoint(topLeft.x, topLeft.y - w->restoreFrame.size.height);
     if (w->applyingAppleStyle) { w->applyingState = wasApplyingState; return; }
