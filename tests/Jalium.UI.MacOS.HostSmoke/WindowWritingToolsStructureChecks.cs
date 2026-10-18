@@ -1,0 +1,239 @@
+#pragma warning disable WPF0001
+using AppKit;
+using Foundation;
+using ObjCRuntime;
+using Jalium.UI.Controls;
+using Jalium.UI.Documents;
+using Jalium.UI.Input;
+using Jalium.UI.Interop;
+using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
+using System.Diagnostics;
+using System.Text.Json;
+using DocList = Jalium.UI.Documents.List;
+
+namespace Jalium.UI.MacOS;
+
+internal static class WindowWritingToolsStructureChecks
+{
+    internal static int Run(string argument)
+    {
+        int index = int.Parse(argument.Split('=').Last());
+        if (index is < 0 or >= 24) return 2;
+        if (!OperatingSystem.IsMacOSVersionAtLeast(15, 2)) return 77;
+        string output = Environment.GetEnvironmentVariable("JALIUM_WRITING_STRUCTURE_OUTPUT")!;
+        Directory.CreateDirectory(output);
+        bool custom = index % 2 == 1, software = index % 4 >= 2;
+        int model = new[] { 0, 1, 4, 5, 9, 11 }[index / 4];
+        var app = NSApplication.SharedApplication; app.ActivationPolicy = NSApplicationActivationPolicy.Regular;
+        using var host = new Delegate(); app.Delegate = host; app.FinishLaunching();
+        using (var note = NSNotification.FromName(NSApplication.DidFinishLaunchingNotification, app)) host.DidFinishLaunching(note);
+        RenderContext.GetOrCreateCurrent(software ? RenderBackend.Software : RenderBackend.Metal, forceReplace: true);
+        Controls.Themes.ThemeManager.Initialize(Application.Current!);
+        var editor = new RichTextBox(Model(model)) { Height = 472, FontSize = 18 };
+        editor.SetResourceReference(Control.ForegroundProperty, "TextFillColorPrimaryBrush");
+        var panel = new StackPanel { Margin = new Thickness(20), Spacing = 12 };
+        panel.Children.Add(new TextBlock { Text = "列表与表格结构往返", FontSize = 22 });
+        panel.Children.Add(new TextBlock { Text = "内容经过原生文本服务后，层级、段落与编号应保持。", FontSize = 15, TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(editor);
+        var status = new TextBlock { Text = "检查准备中", FontSize = 15, TextWrapping = TextWrapping.Wrap }; panel.Children.Add(status);
+        var owner = new Window { Title = "Jalium Writing Tools Structure " + index, Width = custom ? 420 : 760, Height = 660,
+            MinWidth = 400, MinHeight = 620, TitleBarStyle = custom ? WindowTitleBarStyle.Custom : WindowTitleBarStyle.Native, Content = panel };
+        owner.SetResourceReference(Window.BackgroundProperty, "WindowBackground"); Application.Current!.MainWindow = owner;
+        var checks = new List<string>(); var failures = new List<string>(); var scenarios = new List<object>(); var focus = new List<object>();
+        int unavailable = 0, phase = 0; bool finished = false; var watch = Stopwatch.StartNew();
+        string before = "", shape = ""; Block[] original = []; var contexts = new List<object>();
+        void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); checks.Add(message); }
+        void Attempt(string name, Action body)
+        {
+            int start = checks.Count; Exception? error = null;
+            try { body(); } catch (Exception failure) { error = failure; failures.Add(name + ": " + failure); }
+            scenarios.Add(new { name, passed = error is null, checks = checks.Skip(start).ToArray(), error = error?.ToString() });
+        }
+        void Observe()
+        {
+            var view = Runtime.GetNSObject<NSView>(owner.Handle)!; var nativeWindow = view.Window!;
+            bool active = app.Active; int? pid = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier;
+            bool available = active && pid == Environment.ProcessId;
+            if (!available) unavailable++;
+            focus.Add(new { available, appActive = active, frontmostPID = pid, nativeKey = nativeWindow.IsKeyWindow,
+                ownResponder = nativeWindow.FirstResponder?.Handle.ToString(), expectedResponder = view.Handle.ToString() });
+            Require(ReferenceEquals(Keyboard.FocusedElement, editor), "logical rich-editor focus is retained");
+            Require(nativeWindow.FirstResponder?.Handle == view.Handle, "subject window retains its native input responder");
+            if (available) Require(nativeWindow.IsKeyWindow && app.KeyWindow?.Handle == nativeWindow.Handle, "foreground subject remains the native key window");
+        }
+        NSWritingToolsCoordinatorContext Context(out NSWritingToolsCoordinator coordinator, out INSWritingToolsCoordinatorDelegate client)
+        {
+            var view = Runtime.GetNSObject<NSView>(owner.Handle)!; coordinator = view.WritingToolsCoordinator!;
+            Require(coordinator?.WeakDelegate is not null, "focused rich editor exposes the actual SDK delegate");
+            client = Runtime.GetINativeObject<INSWritingToolsCoordinatorDelegate>(coordinator!.WeakDelegate!.Handle, false)!;
+            string Read(NSObject value, string key)
+            {
+                try { using var name = new NSString(key); return value.ValueForKey(name)?.ToString() ?? "null"; }
+                catch (Exception error) { return error.GetType().Name; }
+            }
+            string stoppedBefore = Read(coordinator.WeakDelegate!, "stopped"), currentBefore = Read(coordinator.WeakDelegate!, "current");
+            string inputBefore = Read(coordinator.WeakDelegate!, "inputGeneration"), viewInputBefore = Read(view, "textInputGeneration");
+            NSWritingToolsCoordinatorContext? context = null; int calls = 0;
+            client.RequestsContexts(coordinator, NSWritingToolsCoordinatorContextScope.FullDocument, values => { calls++; context = values.FirstOrDefault(); });
+            contexts.Add(new { phase, calls, nativeText = context?.AttributedString.Value, managedText = editor.Document.GetText(), coordinator = coordinator.Handle.ToString(), stoppedBefore, currentBefore, inputBefore, viewInputBefore,
+                stoppedAfter = Read(coordinator.WeakDelegate!, "stopped"), currentAfter = Read(coordinator.WeakDelegate!, "current"),
+                nativeEditor = Read(coordinator.WeakDelegate!, "editor"), nativeSession = Read(coordinator.WeakDelegate!, "session") });
+            Require(calls == 1 && context?.AttributedString.Value == editor.Document.GetText(), "full SDK context retains the exact document projection; calls=" + calls + "; native=" + context?.AttributedString.Value + "; managed=" + editor.Document.GetText());
+            return context!;
+        }
+        void Replace(NSWritingToolsCoordinator coordinator, INSWritingToolsCoordinatorDelegate client, NSWritingToolsCoordinatorContext context, NSAttributedString proposed)
+        {
+            NSAttributedString? accepted = null; int calls = 0;
+            client.ReplaceRange(coordinator, new NSRange(0, (nint)context.AttributedString.Value.Length), context, proposed,
+                NSWritingToolsCoordinatorTextReplacementReason.Noninteractive, null!, value => { calls++; accepted = value; });
+            Require(calls == 1 && accepted?.Value == proposed.Value, "SDK replacement completes once with the accepted projection");
+        }
+        void Capture(string phase)
+        {
+            owner.UpdateLayout(); double dpi = owner.DpiScale;
+            var bitmap = MacOSWritingToolsBitmapCapture.Capture((int)Math.Ceiling(owner.ActualWidth * dpi), (int)Math.Ceiling(owner.ActualHeight * dpi), dpi,
+                drawing => { drawing.DrawRectangle(owner.Background, null, new Rect(0, 0, owner.ActualWidth, owner.ActualHeight)); owner.Render(drawing); }, () => owner.Handle != 0)
+                ?? throw new InvalidOperationException("Backend readback unavailable.");
+            var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            using var file = File.Create(Path.Combine(output, phase + ".png")); encoder.Save(file);
+        }
+        owner.Show(); owner.UpdateLayout(); owner.Activate(); editor.Focus();
+        using var timer = NSTimer.CreateRepeatingScheduledTimer(TimeSpan.FromMilliseconds(100), _ =>
+        {
+            if (finished) return;
+            bool ready = app.Active && NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier == Environment.ProcessId;
+            if (!ready && watch.Elapsed.TotalSeconds < 12) return;
+            try
+            {
+                if (phase == 0)
+                {
+                Observe(); Capture("before");
+                before = editor.Document.GetText(); shape = Shape(editor.Document.Blocks); original = editor.Document.Blocks.ToArray();
+                Attempt("unchanged-attributed-proposal", () =>
+                {
+                    var context = Context(out var coordinator, out var client); Replace(coordinator, client, context, context.AttributedString);
+                    Require(editor.Document.GetText() == before, "unchanged attributed proposal preserves exact Unicode and table storage");
+                    Require(Shape(editor.Document.Blocks) == shape, "unchanged attributed proposal preserves mixed container order and item ownership");
+                });
+                Attempt("undo-unchanged", () =>
+                {
+                    Require(editor.Undo(), "unchanged attributed replacement creates one undo unit");
+                    Require(editor.Document.GetText() == before && Shape(editor.Document.Blocks) == shape, "Undo restores the source projection and structure");
+                    Require(original.Length == editor.Document.Blocks.Count && original.Select((block, i) => ReferenceEquals(block, editor.Document.Blocks[i])).All(x => x), "Undo restores original root identities");
+                });
+                Attempt("redo-unchanged", () =>
+                {
+                    Require(editor.Redo() && editor.Document.GetText() == before && Shape(editor.Document.Blocks) == shape, "Redo restores the unchanged structured proposal");
+                });
+                editor.Document = Model(model); editor.Focus(); owner.UpdateLayout();
+                // Document replacement retires the text-service session. Let the
+                // normal AppKit/dispatcher turn attach its successor before a new operation.
+                phase = 1;
+                return;
+                }
+                finished = true;
+                Observe();
+                original = editor.Document.Blocks.ToArray();
+                var expected = Model(model); var run = expected.EnumerateParagraphs().SelectMany(p => p.Inlines.OfType<Run>()).First(r => r.Text.Any(char.IsLetter));
+                int local = Array.FindIndex(run.Text.ToCharArray(), char.IsLetter); run.Text = run.Text[..local] + "新" + run.Text[(local + 1)..];
+                string after = expected.GetText(), afterShape = Shape(expected.Blocks);
+                Attempt("edited-attributed-proposal", () =>
+                {
+                    var context = Context(out var coordinator, out var client); using var proposed = new NSMutableAttributedString(context.AttributedString);
+                    int at = Array.FindIndex(before.ToCharArray(), char.IsLetter); proposed.Replace(new NSRange(at, 1), "新");
+                    Replace(coordinator, client, context, proposed);
+                    Require(editor.Document.GetText() == after, "edited attributed proposal changes only its authored character");
+                    Require(Shape(editor.Document.Blocks) == afterShape, "edited proposal preserves list numbering, item grouping, table spans and mixed nesting");
+                });
+                Attempt("undo-edited", () =>
+                {
+                    Require(editor.Undo() && editor.Document.GetText() == before && Shape(editor.Document.Blocks) == shape, "one Undo restores the edited source structure");
+                    Require(original.Length == editor.Document.Blocks.Count && original.Select((block, i) => ReferenceEquals(block, editor.Document.Blocks[i])).All(x => x), "edited Undo restores original root identities");
+                });
+                Attempt("redo-edited", () => Require(editor.Redo() && editor.Document.GetText() == after && Shape(editor.Document.Blocks) == afterShape, "one Redo restores the edited mixed structure"));
+                Observe(); status.Text = failures.Count == 0 ? "结构、编号、撤销与重做检查通过。" : "检查发现问题，请查看记录。";
+                Capture("after");
+            }
+            catch (Exception failure) { finished = true; failures.Add("scene: " + failure); }
+            finally
+            {
+                if (finished)
+                {
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    index, model, custom, software, passed = failures.Count == 0 && unavailable == 0, qualifiedWithoutForeground = failures.Count == 0,
+                    failures, checks, scenarios, focus, contexts, foregroundUnavailable = unavailable, processId = Environment.ProcessId,
+                    physicalInput = false, desktopScreenshot = false, appleIntelligenceService = false,
+                    serviceAvailable = NSWritingToolsCoordinator.IsWritingToolsAvailable, renderThreadOverride = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD")
+                }));
+                owner.Close(); host.AllowQuit = true; app.Terminate(app);
+                }
+            }
+        });
+        app.Run(); return 0;
+    }
+
+    private sealed class Delegate : JaliumMacApplicationDelegate
+    {
+        private bool _started; internal bool AllowQuit;
+        public override void DidFinishLaunching(NSNotification notification) { if (_started) return; _started = true; base.DidFinishLaunching(notification); }
+        protected override JaliumApp CreateHostedApp() => AppBuilder.CreateBuilder(new AppBuilderSettings { DisableDefaults = true }).Build()
+            .UseApplication(new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown });
+        public override NSApplicationTerminateReply ApplicationShouldTerminate(NSApplication sender) => AllowQuit ? NSApplicationTerminateReply.Now : NSApplicationTerminateReply.Cancel;
+    }
+    private static FlowDocument Model(int index)
+    {
+        Block value = index switch
+        {
+            0 => MakeList([MakeTable([P("列表内的表格🙂")])]),
+            1 => MakeTable([MakeList([P("表格内的列表")], [P("第二项🙂")])]),
+            2 => MakeList([MakeTable([MakeList([P("内层编号")])])]),
+            3 => MakeTable([MakeList([MakeTable([P("内层表格")])])]),
+            4 => MakeList([MakeTable([MakeList([MakeTable([P("交错四层🙂")])])])]),
+            5 => MakeList([P("前段"), MakeTable([P("中间表格")]), P("后段🙂")], [P("第二项")]),
+            6 => MakeList([MakeTable([P("表一")]), MakeTable([P("表二")]), P("同一项末段")]),
+            7 => MakeList([P("外层"), MakeList([P("内层前段"), MakeTable([P("内层表格")]), P("内层后段")])], [P("外层第二项")]),
+            8 => MakeList([MakeTable([P("第一项左")], [P("第一项右")])], [MakeTable([P("第二项左")], [P("第二项右")])]),
+            9 => SpanningTable(),
+            11 => MakeList([P("\t3.\t这也是用户文字🙂")]),
+            _ => MakeList([P(""), MakeTable([P("")], [P("中文 e\u0301 🙂")]), P("")], [P("")])
+        };
+        return new FlowDocument(value);
+    }
+    private static Paragraph P(string text) => new(new Run(text));
+    private static DocList MakeList(params Block[][] contents)
+    {
+        var list = new DocList { MarkerStyle = TextMarkerStyle.Decimal, StartIndex = 3 };
+        foreach (var blocks in contents) { var item = new ListItem(); foreach (var block in blocks) item.Blocks.Add(block); list.ListItems.Add(item); }
+        return list;
+    }
+    private static Table MakeTable(params Block[][] contents)
+    {
+        var table = new Table(); var group = new TableRowGroup(); var row = new TableRow();
+        table.RowGroups.Add(group); group.Rows.Add(row);
+        foreach (var blocks in contents)
+        { table.Columns.Add(new TableColumn()); var cell = new TableCell(); foreach (var block in blocks) cell.Blocks.Add(block); row.Cells.Add(cell); }
+        return table;
+    }
+    private static Table SpanningTable()
+    {
+        var table = MakeTable([MakeList([P("跨行内列表"), P("同项续段🙂")])], [P("跨列标题")]);
+        table.Columns.Add(new TableColumn()); var group = table.RowGroups[0]; group.Rows[0].Cells[0].RowSpan = 2; group.Rows[0].Cells[1].ColumnSpan = 2;
+        var second = new TableRow(); second.Cells.Add(new TableCell(MakeList([MakeTable([P("右下嵌套")])])) { ColumnSpan = 2 }); group.Rows.Add(second); return table;
+    }
+    private static TextElement[] Owners(Paragraph paragraph)
+    {
+        var result = new List<TextElement>();
+        for (DependencyObject? owner = paragraph.Parent; owner is TextElement element; owner = element.Parent)
+            if (element is ListItem or TableCell) result.Add(element);
+        result.Reverse(); return result.ToArray();
+    }
+    private static string Shape(IEnumerable<Block> blocks) => string.Join("|", blocks.Select(block => block switch
+    {
+        Paragraph paragraph => "P(" + string.Concat(paragraph.Inlines.OfType<Run>().Select(run => run.Text)) + ")",
+        DocList list => $"L({list.MarkerStyle},{list.StartIndex})[" + string.Join(";", list.ListItems.Select(item => Shape(item.Blocks))) + "]",
+        Table table => "T" + table.Columns.Count + "[" + string.Join(";", table.RowGroups.SelectMany(group => group.Rows).Select(row => string.Join(",", row.Cells.Select(cell => $"({cell.RowSpan},{cell.ColumnSpan})" + Shape(cell.Blocks))))) + "]",
+        _ => throw new InvalidOperationException(block.GetType().Name)
+    }));
+}

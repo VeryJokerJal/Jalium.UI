@@ -4,6 +4,59 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v288：Writing Tools 保留列表/表格相对层级与重复聚焦上下文
+
+修复评审 [4307493558](https://github.com/VeryJokerJal/Jalium.UI/pull/177#discussion_r4307493558)：
+ListItem 内的 Table 不再重建为 Table 内的 List。段落携带从外到内的祖先顺序及列表项身份，
+区分同一项的多个段落、表格和下一项；保留交替嵌套、跨行/列、空段落、中文和 emoji。
+AppKit 的 textLists 与 textBlocks 是独立数组；私有属性仅在实际原生容器仍匹配时复用，
+原生样式改变后拒绝过时顺序。缺少顺序的旧/原生生成提案继续使用既有解释。
+参考 [Apple Writing Tools attributedString](https://developer.apple.com/documentation/appkit/nswritingtoolscoordinator/context/attributedstring)。
+
+表格单元格和行的虚拟 tab/换行保持真实 UTF-16 位置，回传时不生成额外段落；私有标记
+只可省略纯分隔符，普通 exclusion 或混入用户文字均不能吞掉文字。源段落中用户输入的
+“tab + 3. + tab”不会被当作原生编号删除。FlowDocument 仅采纳并行修改中与全局表格
+长度、位置和偏移一致性有关的三个代码块；分页/CSS 及 GetBlockLength 可见性改动保留未提交。
+
+实际宿主的第二次操作暴露重复聚焦缺口：窗口推进选择代次，但视图已有首响应者时
+AppKit 不重入 becomeFirstResponder，旧适配器遂失效。聚焦确认后显式刷新 Writing Tools，
+并在同步回调后重查窗口、代次、模态条件、KeyWindow 与首响应者；Hide/销毁/新请求不能让
+旧请求返回成功。没有新增原生 ABI。
+
+| 当前冻结输入 | PR 历史 | 本地 master 历史 |
+| --- | --- | --- |
+| 完整 macOS 托管套件 | 3485 通过、2 项既有跳过、0 失败 | 3402 通过、2 项既有跳过、0 失败 |
+| 新增混合结构/位置用例 | 37/37 | 37/37 |
+| 完整模板套件 | 56/56 | 56/56 |
+| 原生 Window/AX/文本/剪贴板合约 | 44/44 | 44/44 |
+| 其中 Writing Tools 原生 SDK 场景 | 80/80 | 80/80 |
+| 托管编辑器→实际 SDK delegate→回传 | 24/24 组、144/144 场景、624 项断言 | 24/24 组、144/144 场景、624 项断言 |
+| 目标首响应者及完整前台条件观察 | 72/72，0 次不可用 | 72/72，0 次不可用 |
+
+宿主覆盖六种模型 × Native/Custom × Metal/Software，每组保留未改提案、编辑提案及各自
+Undo/Redo。父提交 ab921b40ce2830ff53016b600a9862d8bcdcf491 在同一最终诊断下：托管 35 失败/2 正对照，
+原生 SDK 66/80；宿主 24 组均未完整通过，144 场景中 120 失败，另有 6 次前台不可用。
+这 6 次不能归因为产品错误。早期夹具编译/逻辑父级错误、缺少正式原生完成标记的构建门槛、
+辅助诊断的加载路径错误均单独保留，不作为产品负对照。
+
+首轮 PR 原生合约为 41/43，线程队列与最小化恢复各有一次失败。父版本原断言对照随后
+2/2；独立副本的父版/候选各 200 次队列投递和各 3 次最小化恢复均未复现。队列首次
+投递缺失即保留失败退出码；恢复诊断即使在额外观察中恢复也保留原 3 秒断言的失败。
+最终原样 44 项结果单列，早期两项失败仍保留，原因未定，不能宣称由本轮修复解决。
+
+96 份当前渲染读回图像（47 份不同图像）均已查看，另查看四份关键原图；420/760 宽度
+的诊断窗口布局无新溢出。**表格内容的视觉验收未通过**：未修改的 RichTextBox LayoutBlock
+及 RenderBlockLayout 没有 Table 分支，表格内容为空；普通列表段落可见。这是明确的
+显示/布局缺口，数据结构与回传通过不能代替它。图像均为后端读回，桌面工具仍未连接。
+
+局部替换现有结构祖先、None/Box 标记精确保真、容器 ContentEnd/TextPointer 端点、真实
+Apple Intelligence 提案及完整 Writing Tools UI 仍待测。真实键鼠/触控板/数位板、IME、
+VoiceOver、多屏/Spaces、最低 macOS/Intel、生产包和历史首窗/AX、v286 前台缺口均未关闭。
+八份原生库、四份程序集、98 个平台导出、两条完整冻结树分别核对；共享 39 份原生产物、
+历史 34 条差异的精确增删行哈希和并行脏修改保留。云端 master 8cf44a8b31cd00993f2a6ba54426bbb504846743
+已包含在两条历史中。父 Window CI 原日志 41/41；新头 CI 单独跟踪。本轮更新现有 PR，
+保持 master 与 codex/macos-window-behavior，不合并；完整 macOS 目标继续。
+
 ## v287：Window 系统资源的 XAML 表达式与本地替换
 
 真实 XAML 现在可用 `{DynamicResource {x:Static ui:SystemParameters.ClientAreaAnimationKey}}`

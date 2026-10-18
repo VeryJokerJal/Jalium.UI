@@ -117,4 +117,7 @@
     <Compile Include="../Jalium.UI.Tests/BindingMarkupExtensionValidationTests.cs" Link="WindowSystem/BindingMarkupExtensionValidationTests.cs" />
     <Compile Include="../Jalium.UI.Tests/StyleXamlReceiverParityTests.cs" Link="WindowSystem/StyleXamlReceiverParityTests.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/WritingToolsMixedStructureTests.cs" Link="WritingToolsMixedStructureTests.cs" />
+  </ItemGroup>
 </Project>

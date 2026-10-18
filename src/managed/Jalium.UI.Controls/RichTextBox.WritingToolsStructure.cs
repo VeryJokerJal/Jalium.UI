@@ -53,19 +53,28 @@ public partial class RichTextBox
             int from = Math.Max(rangeStart, paragraphStart), to = Math.Min(rangeStart + rangeLength, paragraphStart + paragraphLength);
             if (to <= from) continue;
             var lists = new List<WritingToolsList>(); var cells = new List<WritingToolsCell>();
+            var owners = new List<TextElement>();
             for (DependencyObject? parent = paragraph.Parent; parent is not null; parent = (parent as TextElement)?.Parent)
+                if (parent is ListItem or TableCell) owners.Add((TextElement)parent);
+            owners.Reverse();
+            var ancestors = new List<WritingToolsAncestor>();
+            foreach (var owner in owners)
             {
-                if (parent is ListItem { Parent: DocList list })
+                if (owner is ListItem { Parent: DocList list } item)
+                {
+                    ancestors.Add(new("list", lists.Count, Id(item)));
                     lists.Add(new(Id(list), Marker(list.MarkerStyle), list.StartIndex));
-                if (parent is TableCell { Parent: TableRow row } cell && row.Parent is TableRowGroup { Parent: Table table })
+                }
+                if (owner is TableCell { Parent: TableRow row } cell && row.Parent is TableRowGroup { Parent: Table table })
                 {
                     var position = Locate(table, cell);
                     int columns = Math.Max(table.Columns.Count, grids[table].Max(pair => pair.Value.Column + pair.Key.ColumnSpan));
+                    ancestors.Add(new("table", cells.Count));
                     cells.Add(new(Id(table), position.Row, position.Column, cell.RowSpan, cell.ColumnSpan, columns));
                 }
             }
-            lists.Reverse(); cells.Reverse();
-            records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray()));
+            if (lists.Count > 32 || cells.Count > 32) throw new NotSupportedException("The document exceeds the native text service nesting limit.");
+            records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray(), ancestors.ToArray()));
         }
         return records.ToArray();
     }

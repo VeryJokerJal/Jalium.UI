@@ -188,6 +188,96 @@ int main()
                 Require([c.attributedString.string isEqual:f.text] && [first textBlocks].count==1 && [second textBlocks].count==1
                     && [[c.attributedString attribute:NSWritingToolsExclusionAttributeName atIndex:2 effectiveRange:nil] boolValue]
                     && ![c.attributedString attribute:NSWritingToolsExclusionAttributeName atIndex:0 effectiveRange:nil],"rich structure or UTF16 exclusion");});
+            Run("mixed container ancestors survive unchanged attributed proposals",style,[&]{
+                for (NSString* kinds in @[@"LT",@"TL",@"LTLT",@"TLT"]) {
+                    Fixture f(style); f.text=@"内容🙂\n"; f.selection=NSMakeRange(0,0);
+                    NSMutableArray* lists=[NSMutableArray new], *tables=[NSMutableArray new], *path=[NSMutableArray new];
+                    for (NSUInteger i=0;i<kinds.length;++i) {
+                        bool list=[kinds characterAtIndex:i]=='L'; NSUInteger index=list?lists.count:tables.count;
+                        if (list) {
+                            [lists addObject:@{@"id":[NSString stringWithFormat:@"list-%lu",(unsigned long)index],@"format":@"{decimal}.",@"start":@3}];
+                            [path addObject:@{@"kind":@"list",@"index":@(index),@"item":[NSString stringWithFormat:@"item-%lu",(unsigned long)index]}];
+                        } else {
+                            [tables addObject:@{@"id":[NSString stringWithFormat:@"table-%lu",(unsigned long)index],@"row":@0,@"column":@0,@"rows":@1,@"columns":@1,@"tableColumns":@1}];
+                            [path addObject:@{@"kind":@"table",@"index":@(index)}];
+                        }
+                    }
+                    f.structure=@[@{@"start":@0,@"length":@(f.text.length),@"lists":lists,@"tables":tables,@"ancestors":path}];
+                    auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"source context");
+                    auto* accepted=f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),[context.attributedString copy]);
+                    NSArray* rows=f.proposal[@"paragraphs"];Require(accepted && rows.count==1,"unchanged completion or paragraph count");
+                    Require([rows[0][@"ancestors"] isEqual:path] && [rows[0][@"skipPrefix"] intValue]==0,"interleaved ancestors and item ownership");
+                }
+            });
+            Run("paragraphs in one source list item retain a shared owner",style,[&]{
+                Fixture f(style); f.text=@"a\nb\n";f.selection=NSMakeRange(0,0);
+                NSArray* lists=@[@{@"id":@"list",@"format":@"{decimal}.",@"start":@3}];
+                NSArray* path=@[@{@"kind":@"list",@"index":@0,@"item":@"same-item"}];
+                f.structure=@[@{@"start":@0,@"length":@2,@"lists":lists,@"tables":@[],@"ancestors":path},
+                    @{@"start":@2,@"length":@2,@"lists":lists,@"tables":@[],@"ancestors":path}];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString);NSArray* rows=f.proposal[@"paragraphs"];
+                Require(rows.count==2 && [rows[0][@"ancestors"][0][@"item"] isEqual:@"same-item"] &&
+                    [rows[1][@"ancestors"][0][@"item"] isEqual:@"same-item"],"multi-paragraph item ownership");
+            });
+            Run("source virtual table separators have explicit wire boundaries",style,[&]{
+                Fixture f(style);NSString* left=@"left\n",*right=@"right\n";f.text=[NSString stringWithFormat:@"%@\t%@\t\n",left,right];f.selection=NSMakeRange(0,0);
+                NSArray* path=@[@{@"kind":@"table",@"index":@0}];
+                f.structure=@[@{@"start":@0,@"length":@(left.length),@"lists":@[],@"tables":@[@{@"id":@"t",@"row":@0,@"column":@0,@"rows":@1,@"columns":@1,@"tableColumns":@2}],@"ancestors":path},
+                    @{@"start":@(left.length+1),@"length":@(right.length),@"lists":@[],@"tables":@[@{@"id":@"t",@"row":@0,@"column":@1,@"rows":@1,@"columns":@1,@"tableColumns":@2}],@"ancestors":path}];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString);NSArray* rows=f.proposal[@"paragraphs"];
+                Require(rows.count==4 && [rows[1][@"storageSeparator"] boolValue] && [rows[3][@"storageSeparator"] boolValue],"virtual storage records");
+                Require([rows[0][@"tables"][0][@"column"] intValue]==0 && [rows[2][@"tables"][0][@"column"] intValue]==1 &&
+                    [rows[2][@"start"] unsignedIntegerValue]==left.length+1,"real cell metadata survives separators");
+            });
+            Run("authored source text resembling a marker is not removed",style,[&]{
+                Fixture f(style);f.text=@"\t3.\t这也是用户文字🙂\n";f.selection=NSMakeRange(0,0);
+                f.structure=@[@{@"start":@0,@"length":@(f.text.length),@"lists":@[@{@"id":@"list",@"format":@"{decimal}.",@"start":@3}],@"tables":@[],
+                    @"ancestors":@[@{@"kind":@"list",@"index":@0,@"item":@"item"}]}];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString);
+                NSDictionary* row=[f.proposal[@"paragraphs"] firstObject];Require([row[@"skipPrefix"] integerValue]==0 && [row[@"ancestors"] count]==1,"authored marker-looking prefix");
+            });
+            Run("ordinary excluded content is not a virtual storage separator",style,[&]{
+                Fixture f(style);auto* value=[[NSAttributedString alloc]initWithString:@"保留🙂" attributes:@{NSWritingToolsExclusionAttributeName:@YES}];
+                f.ReplaceAttributed(f.Context(),NSMakeRange(2,2),value);NSDictionary* row=[f.proposal[@"paragraphs"] firstObject];
+                Require(!row[@"storageSeparator"] && [Text16([[NSData alloc]initWithBase64EncodedString:f.proposal[@"text16"] options:0]) isEqual:value.string],"authored excluded text preserved");
+            });
+            Run("changed native containers do not reuse stale private ancestry",style,[&]{
+                Fixture f(style);f.text=@"a\n";f.selection=NSMakeRange(0,0);
+                f.structure=@[@{@"start":@0,@"length":@2,@"lists":@[@{@"id":@"list",@"format":@"{decimal}.",@"start":@3}],@"tables":@[],
+                    @"ancestors":@[@{@"kind":@"list",@"index":@0,@"item":@"item"}]}];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);NSMutableAttributedString* value=[context.attributedString mutableCopy];
+                [value addAttribute:NSParagraphStyleAttributeName value:NSParagraphStyle.defaultParagraphStyle range:NSMakeRange(0,value.length)];
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),value);NSDictionary* row=[f.proposal[@"paragraphs"] firstObject];
+                Require(!row[@"ancestors"] && ![row[@"lists"] count],"stale carrier rejected after native style replacement");
+            });
+            Run("invalid managed ancestry cannot create a native context",style,[&]{
+                for (NSArray* path in @[@[],@[@{@"kind":@"unknown",@"index":@0}],@[@{@"kind":@"list",@"index":@1}],
+                    @[@{@"kind":@"list",@"index":@0,@"item":@42}],@[@{@"kind":@"list",@"index":@YES}]]) {
+                    Fixture f(style);f.text=@"a\n";f.selection=NSMakeRange(0,0);
+                    f.structure=@[@{@"start":@0,@"length":@2,@"lists":@[@{@"id":@"list",@"format":@"{decimal}.",@"start":@3}],@"tables":@[],@"ancestors":path}];
+                    Require(!f.Context(NSWritingToolsCoordinatorContextScopeFullDocument),"malformed source ancestry rejected");
+                }
+            });
+            Run("repeated content focus replaces retired writing tools ownership",style,[&]{
+                Fixture f(style);auto focus=reinterpret_cast<int32_t(*)(JaliumPlatformWindow*)>(dlsym(RTLD_DEFAULT,"jalium_apple_window_set_keyboard_focus"));Require(focus,"keyboard focus entry point");
+                Require(focus(f.window)==JALIUM_OK,"prime the content responder");
+                f.coordinator=f.view.writingToolsCoordinator;f.delegate=f.coordinator.delegate;
+                auto* original=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(original,"primed SDK context");
+                NSWritingToolsCoordinator* previous=f.coordinator;id<NSWritingToolsCoordinatorDelegate> previousClient=f.delegate;
+                Require(focus(f.window)==JALIUM_OK,"repeat focus on the existing content responder");
+                f.coordinator=f.view.writingToolsCoordinator;f.delegate=f.coordinator.delegate;
+                Require(f.coordinator && f.coordinator!=previous && f.Context(NSWritingToolsCoordinatorContextScopeFullDocument),"successor SDK session is usable after repeated focus");
+                __block NSArray* old=nil;[previousClient writingToolsCoordinator:previous requestsContextsForScope:NSWritingToolsCoordinatorContextScopeFullDocument completion:^(NSArray* values){old=values;}];
+                Require(old && !old.count,"retired coordinator cannot expose a replacement session");
+            });
+            Run("content focus refresh revalidates a callback hiding the owner",style,[&]{
+                Fixture f(style);auto focus=reinterpret_cast<int32_t(*)(JaliumPlatformWindow*)>(dlsym(RTLD_DEFAULT,"jalium_apple_window_set_keyboard_focus"));Require(focus,"keyboard focus entry point");
+                Require(focus(f.window)==JALIUM_OK,"prime native content focus");
+                f.after=[&](int kind){if(kind==0)jalium_window_hide(f.window);};
+                Require(focus(f.window)==JALIUM_ERROR_INVALID_STATE && !f.view.window.visible && !f.view.writingToolsCoordinator,"refresh callback hiding a window retires the outer focus request");
+            });
             Run("read-only storage completes replacement without edits",style,[&]{Fixture f(style);f.canEdit=false;NSString* before=f.text;Require(!f.Replace(f.Context(),NSMakeRange(2,2),@"x") && [f.text isEqual:before] && !f.replacements,"read-only edit");});
             Run("rejected proposals still report a callback's own edit",style,[&]{Fixture f(style);auto* context=f.Context();int snapshots=f.snapshotQueries;f.canEdit=false;
                 f.after=[&](int kind){if(kind==2){f.text=[f.text stringByAppendingString:@" user"];f.Publish();}};

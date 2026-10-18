@@ -547,6 +547,24 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 }
             }
         }
+        else if (block is Table table)
+        {
+            foreach (var row in table.RowGroups.SelectMany(group => group.Rows))
+            {
+                foreach (var cell in row.Cells)
+                {
+                    foreach (var child in cell.Blocks)
+                    {
+                        var found = GetPositionInBlock(child, targetOffset, direction, ref currentOffset);
+                        if (found is not null) return found;
+                    }
+                    if (targetOffset == currentOffset) return new TextPointer(this, null, currentOffset, direction);
+                    currentOffset++; // Cell separator in GetText().
+                }
+                if (targetOffset == currentOffset) return new TextPointer(this, null, currentOffset, direction);
+                currentOffset++; // Row separator in GetText().
+            }
+        }
         else if (block is BlockUIContainer)
         {
             if (targetOffset >= currentOffset && targetOffset < currentOffset + 1)
@@ -675,7 +693,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 }
             }
 
-            if (current is Paragraph)
+            if (current is Paragraph or TableCell or TableRow)
             {
                 cursor++;
             }
@@ -762,6 +780,10 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 }
             }
             return length;
+        }
+        else if (block is Table table)
+        {
+            return table.RowGroups.Sum(group => group.Rows.Sum(row => row.Cells.Sum(cell => cell.Blocks.Sum(GetBlockLength) + 1) + 1));
         }
         else if (block is BlockUIContainer)
         {

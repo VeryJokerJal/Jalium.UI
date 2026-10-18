@@ -63,6 +63,45 @@ static bool AppleTextServiceRect(id object, CGFloat scale, NSRect& rectangle)
     rectangle = NSMakeRect(values[0], values[1], values[2], values[3]);
     return rectangle.size.width >= 0 && rectangle.size.height > 0;
 }
+// AppKit keeps lists and tables in separate paragraph-style arrays. Retain
+// their original interleaving and item ownership as a private attributed value.
+static NSAttributedStringKey const AppleWritingToolsAncestorsAttribute = @"JaliumWritingToolsAncestors";
+static NSAttributedStringKey const AppleWritingToolsStorageSeparatorAttribute = @"JaliumWritingToolsStorageSeparator";
+static NSArray* AppleWritingToolsValidateAncestors(id value, NSUInteger lists, NSUInteger tables)
+{
+    if (![value isKindOfClass:NSArray.class] || [value count] != lists + tables || [value count] > 64) return nil;
+    NSUInteger list = 0, table = 0;
+    for (id entry in value) {
+        if (![entry isKindOfClass:NSDictionary.class] || ![entry[@"kind"] isKindOfClass:NSString.class] ||
+            !JaliumAccessibilityStyleNumber(entry,@"index",0,31) ||
+            CFGetTypeID((__bridge CFTypeRef)entry[@"index"]) == CFBooleanGetTypeID()) return nil;
+        bool isTable = [entry[@"kind"] isEqualToString:@"table"];
+        if (!isTable && ![entry[@"kind"] isEqualToString:@"list"]) return nil;
+        NSUInteger index = [entry[@"index"] unsignedIntegerValue];
+        if (isTable ? index != table++ || index >= tables : index != list++ || index >= lists) return nil;
+        id item = entry[@"item"];
+        if (item && (isTable || ![item isKindOfClass:NSString.class] || ![item length] || [item length] > 1024)) return nil;
+    }
+    return value;
+}
+static NSArray* AppleWritingToolsRetainedAncestors(id value, NSParagraphStyle* style)
+{
+    if (![value isKindOfClass:NSDictionary.class]) return nil;
+    NSArray* lists = value[@"lists"], *blocks = value[@"tables"];
+    NSMutableArray<NSTextTableBlock*>* current = [NSMutableArray new];
+    for (NSTextBlock* block in style.textBlocks)
+        if ([block isKindOfClass:NSTextTableBlock.class]) [current addObject:(NSTextTableBlock*)block];
+    if (![lists isKindOfClass:NSArray.class] || ![blocks isKindOfClass:NSArray.class] ||
+        lists.count != style.textLists.count || blocks.count != current.count) return nil;
+    for (NSUInteger i = 0; i < lists.count; ++i) if (lists[i] != style.textLists[i]) return nil;
+    for (NSUInteger i = 0; i < blocks.count; ++i) {
+        id saved = blocks[i]; NSTextTableBlock* now = current[i];
+        if (![saved isKindOfClass:NSTextTableBlock.class] || [saved table] != now.table ||
+            [saved startingRow] != now.startingRow || [saved startingColumn] != now.startingColumn ||
+            [saved rowSpan] != now.rowSpan || [saved columnSpan] != now.columnSpan) return nil;
+    }
+    return AppleWritingToolsValidateAncestors(value[@"ancestors"], lists.count, blocks.count);
+}
 static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id records)
 {
     if (!records) return true;
@@ -73,6 +112,7 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
         // FlowDocument's tabs/row separators are structural storage, not
         // editable paragraph text. Preserve their exact UTF-16 positions.
         [text addAttribute:NSWritingToolsExclusionAttributeName value:@YES range:NSMakeRange(0,text.length)];
+        [text addAttribute:AppleWritingToolsStorageSeparatorAttribute value:@YES range:NSMakeRange(0,text.length)];
         NSUInteger previousEnd = 0;
         for (id record in records) {
             if (![record isKindOfClass:NSDictionary.class]) return false;
@@ -84,6 +124,8 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
             id listRecords = record[@"lists"], tableRecords = record[@"tables"];
             if (![listRecords isKindOfClass:NSArray.class] || [listRecords count] > 32 ||
                 ![tableRecords isKindOfClass:NSArray.class] || [tableRecords count] > 32) return false;
+            id ancestry = record[@"ancestors"];
+            if (ancestry && !AppleWritingToolsValidateAncestors(ancestry, [listRecords count], [tableRecords count])) return false;
             NSMutableArray* listObjects = [NSMutableArray new]; NSMutableArray* tableObjects = [NSMutableArray new];
             for (id metadata in listRecords) {
                 if (![metadata isKindOfClass:NSDictionary.class]) return false;
@@ -121,7 +163,10 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
             NSMutableParagraphStyle* style = original ? [original mutableCopy] : [NSMutableParagraphStyle new];
             style.textLists = listObjects; style.textBlocks = tableObjects;
             [text addAttribute:NSParagraphStyleAttributeName value:style range:range];
+            if (ancestry) [text addAttribute:AppleWritingToolsAncestorsAttribute
+                value:@{@"ancestors":ancestry,@"lists":listObjects,@"tables":tableObjects} range:range];
             [text removeAttribute:NSWritingToolsExclusionAttributeName range:range];
+            [text removeAttribute:AppleWritingToolsStorageSeparatorAttribute range:range];
         }
     }
     return true;
@@ -191,9 +236,23 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
         NSRange styleRange;
         NSParagraphStyle* style = [text attribute:NSParagraphStyleAttributeName atIndex:index effectiveRange:&styleRange];
         if (![style isKindOfClass:NSParagraphStyle.class]) style = NSParagraphStyle.defaultParagraphStyle;
-        if (style.textBlocks.count) range = NSMakeRange(index, std::min(NSMaxRange(range),NSMaxRange(styleRange))-index);
+        NSRange separatorRange;
+        BOOL storageSeparator = [[text attribute:AppleWritingToolsStorageSeparatorAttribute atIndex:index effectiveRange:&separatorRange] boolValue];
+        NSUInteger end = std::min(NSMaxRange(range), NSMaxRange(separatorRange));
+        if (style.textBlocks.count) end = std::min(end, NSMaxRange(styleRange));
+        range = NSMakeRange(index, end-index);
+        // Only our virtual storage characters may be omitted by the importer.
+        // A copied/stale private value must never discard newly authored text.
+        for (NSUInteger i = index; storageSeparator && i < end; ++i) {
+            unichar value = [plain characterAtIndex:i];
+            if (value != '\t' && value != '\n' && value != '\r' && value != 0x2029) storageSeparator = NO;
+        }
+        NSArray* ancestry = AppleWritingToolsRetainedAncestors(
+            [text attribute:AppleWritingToolsAncestorsAttribute atIndex:index effectiveRange:nil], style);
         NSUInteger skipPrefix = 0;
-        if (style.textLists.count) {
+        // Source paragraphs already contain authored content, not generated
+        // AppKit list markers, even when that content happens to look like one.
+        if (style.textLists.count && !ancestry) {
             NSTextList* list = style.textLists.lastObject;
             NSString* key = [NSString stringWithFormat:@"%p",list];
             NSInteger ordinal = ordinals[key] ? ordinals[key].integerValue : list.startingItemNumber;
@@ -215,9 +274,12 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
                 @"row":@(cell.startingRow),@"column":@(cell.startingColumn),@"rows":@(cell.rowSpan),
                 @"columns":@(cell.columnSpan),@"tableColumns":@(cell.table.numberOfColumns)}];
         }
-        [paragraphs addObject:@{@"start":@(range.location),@"length":@(range.length),
+        NSMutableDictionary* paragraph = [@{@"start":@(range.location),@"length":@(range.length),
             @"alignment":@(JaliumBridgeTextAlignment(style.alignment)),@"direction":@(style.baseWritingDirection),
-            @"lists":lists,@"tables":tables,@"skipPrefix":@(skipPrefix)}];
+            @"lists":lists,@"tables":tables,@"skipPrefix":@(skipPrefix)} mutableCopy];
+        if (ancestry) paragraph[@"ancestors"] = ancestry;
+        if (storageSeparator) paragraph[@"storageSeparator"] = @YES;
+        [paragraphs addObject:paragraph];
         index = NSMaxRange(range);
     }
     return @{@"version":@1,@"text16":encoded ?: @"",@"runs":runs,@"paragraphs":paragraphs};

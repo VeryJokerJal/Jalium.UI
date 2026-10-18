@@ -10,7 +10,8 @@ internal sealed class WritingToolsDocumentFragment
 {
     internal readonly List<Block> Blocks = new();
     internal bool EndsWithParagraphBreak { get; private init; }
-    private sealed record Row(Paragraph Paragraph, JsonElement Lists, JsonElement Tables);
+    private sealed record Container(bool Table, string Id, JsonElement Metadata, string? Item = null);
+    private sealed record Row(Paragraph Paragraph, Container[] Path);
     internal static WritingToolsDocumentFragment Parse(JsonElement packet)
     {
         if (packet.GetProperty("version").GetInt32() != 1) throw new FormatException("Unsupported text fragment.");
@@ -28,15 +29,34 @@ internal sealed class WritingToolsDocumentFragment
         if (through != text.Length || runs.Length > 100000) throw new FormatException("Incomplete style ranges.");
         var rows = new List<Row>();
         through = 0;
-        foreach (var record in packet.GetProperty("paragraphs").EnumerateArray())
+        var paragraphRecords = packet.GetProperty("paragraphs");
+        if (paragraphRecords.ValueKind != JsonValueKind.Array || paragraphRecords.GetArrayLength() > 100000)
+            throw new FormatException("Invalid paragraph records.");
+        foreach (var record in paragraphRecords.EnumerateArray())
         {
             int start = record.GetProperty("start").GetInt32(), length = record.GetProperty("length").GetInt32();
             if (start != through || length <= 0 || length > text.Length - start || rows.Count >= 100000)
                 throw new FormatException("Invalid paragraph range.");
             through += length;
             int end = start + length;
+            if (record.TryGetProperty("storageSeparator", out var separator))
+            {
+                if (separator.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    throw new FormatException("Invalid storage separator.");
+                if (separator.GetBoolean())
+                {
+                    // FlowDocument emits virtual tabs/newlines between cells and
+                    // rows. They already belong to their table, not a new paragraph.
+                    for (int i = start; i < end; i++)
+                        if (text[i] is not ('\t' or '\n' or '\r' or '\u2029'))
+                            throw new FormatException("A storage separator contains authored text.");
+                    continue;
+                }
+            }
             var tables = record.GetProperty("tables"); var lists = record.GetProperty("lists");
-            if (tables.GetArrayLength() > 32 || lists.GetArrayLength() > 32) throw new FormatException("Excessive nesting.");
+            if (tables.ValueKind != JsonValueKind.Array || lists.ValueKind != JsonValueKind.Array ||
+                tables.GetArrayLength() > 32 || lists.GetArrayLength() > 32) throw new FormatException("Excessive nesting.");
+            var path = ReadPath(record, lists, tables);
             if (end > start && text[end - 1] is '\n' or '\r' or '\u2029')
             {
                 --end;
@@ -65,66 +85,108 @@ internal sealed class WritingToolsDocumentFragment
                 paragraph.Inlines.Add(run);
             }
             if (paragraph.Inlines.Count == 0) paragraph.Inlines.Add(new Run());
-            rows.Add(new(paragraph, lists, tables));
+            rows.Add(new(paragraph, path));
         }
         if (through != text.Length) throw new FormatException("Incomplete paragraph ranges.");
         var fragment = new WritingToolsDocumentFragment
         { EndsWithParagraphBreak = text.Length > 0 && text[^1] is '\n' or '\r' or '\u2029' };
-        fragment.Blocks.AddRange(Build(rows, 0, 0));
+        fragment.Blocks.AddRange(Build(rows, 0));
         return fragment;
     }
 
-    private static IEnumerable<Block> Build(IReadOnlyList<Row> rows, int tableDepth, int listDepth)
+    private static Container[] ReadPath(JsonElement record, JsonElement lists, JsonElement tables)
+    {
+        Container Make(bool table, int index, string? item = null)
+        {
+            var metadata = (table ? tables : lists)[index];
+            if (metadata.ValueKind != JsonValueKind.Object || !metadata.TryGetProperty("id", out var id) ||
+                id.ValueKind != JsonValueKind.String || id.GetString() is not { Length: > 0 and <= 1024 } identity)
+                throw new FormatException("Invalid container identity.");
+            return new(table, identity, metadata, item);
+        }
+        if (!record.TryGetProperty("ancestors", out var ancestors))
+        {
+            // Older/native-only proposals have separate arrays. Preserve their
+            // established table-then-list interpretation when no order is supplied.
+            return Enumerable.Range(0, tables.GetArrayLength()).Select(i => Make(true, i))
+                .Concat(Enumerable.Range(0, lists.GetArrayLength()).Select(i => Make(false, i))).ToArray();
+        }
+        if (ancestors.ValueKind != JsonValueKind.Array ||
+            ancestors.GetArrayLength() != lists.GetArrayLength() + tables.GetArrayLength())
+            throw new FormatException("Incomplete container ancestry.");
+        int list = 0, table = 0;
+        var result = new List<Container>();
+        foreach (var ancestor in ancestors.EnumerateArray())
+        {
+            if (ancestor.ValueKind != JsonValueKind.Object ||
+                !ancestor.TryGetProperty("kind", out var kind) || kind.ValueKind != JsonValueKind.String ||
+                !ancestor.TryGetProperty("index", out var index) || index.ValueKind != JsonValueKind.Number || !index.TryGetInt32(out int value))
+                throw new FormatException("Invalid container ancestry.");
+            bool isTable = kind.GetString() switch
+            { "table" => true, "list" => false, _ => throw new FormatException("Unknown container ancestor.") };
+            if (value != (isTable ? table++ : list++) || value >= (isTable ? tables.GetArrayLength() : lists.GetArrayLength()))
+                throw new FormatException("Invalid container ancestry index.");
+            string? item = null;
+            if (ancestor.TryGetProperty("item", out var owner))
+            {
+                if (isTable || owner.ValueKind != JsonValueKind.String || owner.GetString() is not { Length: > 0 and <= 1024 })
+                    throw new FormatException("Invalid list item identity.");
+                item = owner.GetString();
+            }
+            result.Add(Make(isTable, value, item));
+        }
+        return result.ToArray();
+    }
+
+    private static bool SharesContainer(Row row, int depth, Container container) =>
+        row.Path.Length > depth && row.Path[depth].Table == container.Table && row.Path[depth].Id == container.Id;
+
+    private static IEnumerable<Block> Build(IReadOnlyList<Row> rows, int depth)
     {
         for (int index = 0; index < rows.Count;)
         {
             Row row = rows[index];
-            if (row.Tables.GetArrayLength() > tableDepth)
+            if (row.Path.Length <= depth) { yield return row.Paragraph; ++index; continue; }
+            var container = row.Path[depth];
+            int end = index + 1;
+            while (end < rows.Count && SharesContainer(rows[end], depth, container)) ++end;
+            if (container.Table)
             {
-                string id = row.Tables[tableDepth].GetProperty("id").GetString()!;
-                int end = index + 1;
-                while (end < rows.Count && rows[end].Tables.GetArrayLength() > tableDepth &&
-                    rows[end].Tables[tableDepth].GetProperty("id").GetString() == id) ++end;
-                yield return BuildTable(rows.Skip(index).Take(end - index).ToArray(), tableDepth, listDepth);
+                yield return BuildTable(rows.Skip(index).Take(end - index).ToArray(), depth);
                 index = end; continue;
             }
-            if (row.Lists.GetArrayLength() > listDepth)
+            var metadata = container.Metadata;
+            string format = metadata.GetProperty("format").GetString()!;
+            int start = metadata.GetProperty("start").GetInt32();
+            var list = new DocList { MarkerStyle = Marker(format), StartIndex = start };
+            while (index < end)
             {
-                var metadata = row.Lists[listDepth]; string id = metadata.GetProperty("id").GetString()!;
-                var list = new DocList
-                {
-                    MarkerStyle = Marker(metadata.GetProperty("format").GetString()!),
-                    StartIndex = metadata.GetProperty("start").GetInt32()
-                };
-                while (index < rows.Count && rows[index].Tables.GetArrayLength() == tableDepth &&
-                    rows[index].Lists.GetArrayLength() > listDepth &&
-                    rows[index].Lists[listDepth].GetProperty("id").GetString() == id)
-                {
-                    var item = new ListItem();
-                    item.Blocks.Add(rows[index].Paragraph);
-                    ++index;
-                    int nestedEnd = index;
-                    while (nestedEnd < rows.Count && rows[nestedEnd].Tables.GetArrayLength() == tableDepth &&
-                        rows[nestedEnd].Lists.GetArrayLength() > listDepth + 1 &&
-                        rows[nestedEnd].Lists[listDepth].GetProperty("id").GetString() == id) ++nestedEnd;
-                    foreach (var block in Build(rows.Skip(index).Take(nestedEnd - index).ToArray(), tableDepth, listDepth + 1))
-                        item.Blocks.Add(block);
-                    index = nestedEnd; list.ListItems.Add(item);
-                }
-                yield return list; continue;
+                var itemOwner = rows[index].Path[depth];
+                int itemEnd = index + 1;
+                if (itemOwner.Item is not null)
+                    while (itemEnd < end && rows[itemEnd].Path[depth].Item == itemOwner.Item) ++itemEnd;
+                else
+                    while (itemEnd < end && rows[itemEnd].Path.Length > depth + 1) ++itemEnd;
+                for (int i = index; i < itemEnd; i++)
+                    if (rows[i].Path[depth].Metadata.GetProperty("format").GetString() != format ||
+                        rows[i].Path[depth].Metadata.GetProperty("start").GetInt32() != start)
+                        throw new FormatException("Inconsistent list metadata.");
+                var item = new ListItem();
+                foreach (var block in Build(rows.Skip(index).Take(itemEnd - index).ToArray(), depth + 1)) item.Blocks.Add(block);
+                list.ListItems.Add(item); index = itemEnd;
             }
-            yield return row.Paragraph; ++index;
+            yield return list;
         }
     }
-    private static Table BuildTable(IReadOnlyList<Row> paragraphs, int depth, int listDepth)
+    private static Table BuildTable(IReadOnlyList<Row> paragraphs, int depth)
     {
-        int columns = paragraphs[0].Tables[depth].GetProperty("tableColumns").GetInt32();
+        int columns = paragraphs[0].Path[depth].Metadata.GetProperty("tableColumns").GetInt32();
         if (columns is < 1 or > 256) throw new FormatException("Invalid table dimensions.");
         var table = new Table();
         for (int i = 0; i < columns; ++i) table.Columns.Add(new TableColumn());
         var group = new TableRowGroup(); table.RowGroups.Add(group);
         var occupied = new HashSet<(int Row, int Column)>();
-        var rowGroups = paragraphs.GroupBy(row => row.Tables[depth].GetProperty("row").GetInt32()).OrderBy(row => row.Key).ToArray();
+        var rowGroups = paragraphs.GroupBy(row => row.Path[depth].Metadata.GetProperty("row").GetInt32()).OrderBy(row => row.Key).ToArray();
         if (rowGroups.Length > 4096) throw new FormatException("Excessive table rows.");
         int firstRow = rowGroups[0].Key;
         foreach (var rowGroup in rowGroups)
@@ -133,7 +195,7 @@ internal sealed class WritingToolsDocumentFragment
             if (rowIndex is < 0 or > 4095) throw new FormatException("Invalid table row.");
             while (group.Rows.Count <= rowIndex) group.Rows.Add(new TableRow());
             var row = group.Rows[rowIndex];
-            var cells = rowGroup.GroupBy(value => value.Tables[depth].GetProperty("column").GetInt32())
+            var cells = rowGroup.GroupBy(value => value.Path[depth].Metadata.GetProperty("column").GetInt32())
                 .ToDictionary(value => value.Key, value => value.ToArray());
             if (cells.Keys.Any(column => column < 0 || column >= columns)) throw new FormatException("Invalid table column.");
             for (int column = 0; column < columns;)
@@ -145,7 +207,7 @@ internal sealed class WritingToolsDocumentFragment
                 }
                 if (!cells.TryGetValue(column, out var content))
                 { row.Cells.Add(new TableCell(new Paragraph())); ++column; continue; }
-                var metadata = content[0].Tables[depth];
+                var metadata = content[0].Path[depth].Metadata;
                 int rowSpan = metadata.GetProperty("rows").GetInt32(), columnSpan = metadata.GetProperty("columns").GetInt32();
                 if (rowSpan is < 1 or > 4096 || columnSpan < 1 || columnSpan > columns - column)
                     throw new FormatException("Invalid table span.");
@@ -153,7 +215,7 @@ internal sealed class WritingToolsDocumentFragment
                     throw new FormatException("Overlapping table spans.");
                 foreach (var value in content)
                 {
-                    var details = value.Tables[depth];
+                    var details = value.Path[depth].Metadata;
                     if (details.GetProperty("rows").GetInt32() != rowSpan ||
                         details.GetProperty("columns").GetInt32() != columnSpan ||
                         details.GetProperty("tableColumns").GetInt32() != columns)
@@ -162,7 +224,7 @@ internal sealed class WritingToolsDocumentFragment
                 var cell = new TableCell { RowSpan = rowSpan, ColumnSpan = columnSpan };
                 for (int y = 0; y < rowSpan; ++y) for (int x = 0; x < columnSpan; ++x)
                     if (!occupied.Add((rowIndex + y, column + x))) throw new FormatException("Overlapping table spans.");
-                foreach (var block in Build(content, depth + 1, listDepth)) cell.Blocks.Add(block);
+                foreach (var block in Build(content, depth + 1)) cell.Blocks.Add(block);
                 row.Cells.Add(cell); column += columnSpan;
             }
         }

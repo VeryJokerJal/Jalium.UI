@@ -5154,6 +5154,16 @@ int32_t jalium_apple_window_set_keyboard_focus(JaliumPlatformWindow* w)
         NSWindow* key = NSApp.keyWindow;
         if (key != nativeWindow && (NSApp.active || key != previousKey)) return JALIUM_ERROR_INVALID_STATE;
         NSResponder* responder = nativeWindow.firstResponder;
+        if (!ready() || responder != view) return JALIUM_ERROR_INVALID_STATE;
+        // CancelPendingWindowSelection retired the previous selection generation.
+        // AppKit does not call becomeFirstResponder again when this view already
+        // owns it, so explicitly replace any text-service adapter from that generation.
+        RefreshAppleWritingTools((JaliumAppleView*)view);
+        if (!ready()) return JALIUM_ERROR_INVALID_STATE;
+        key = NSApp.keyWindow;
+        if (key != nativeWindow && (NSApp.active || key != previousKey)) return JALIUM_ERROR_INVALID_STATE;
+        if (!ready()) return JALIUM_ERROR_INVALID_STATE;
+        responder = nativeWindow.firstResponder;
         return ready() && responder == view ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
     } @catch (NSException*) { return JALIUM_ERROR_INVALID_STATE; }
 #else
