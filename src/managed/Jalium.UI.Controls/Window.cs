@@ -1661,6 +1661,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (visibility != Visibility.Visible) NativeDropTarget.RevokeWindow(this);
         if (base.Visibility != visibility) return;
         if (_managedTeardownStarted || _managedTeardownCompleted) return;
+        if (visibility == Visibility.Visible && IsHostedApplicationStopping)
+        {
+            // Reject binding/style display requests through an effective update.
+            // Coercing the old value during a read would suppress IsVisible change.
+            SetMacOSVisibilityForDisplay(Visibility.Collapsed);
+            return;
+        }
         if (visibility == Visibility.Visible)
         {
             if (_isClosing) return;
@@ -1800,6 +1807,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     public Window()
     {
+        EnsureHostedApplicationCanDisplay();
         _inputDispatcher = new WindowInputDispatcher(this);
         _ownedWindowCollection = new Jalium.UI.WindowCollection(() => _ownedWindows);
         ResourcesChanged += OnWindowThemeResourcesChanged;
@@ -1842,6 +1850,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         EnsureImageContentInvalidationHook();
         EnsureOrphanedFocusImeHook();
         if (OperatingSystem.IsMacOS()) UpdateIsVisibleFromTree();
+        Application.Current?.TrackHostedWindow(this);
     }
 
     /// <summary>
@@ -3113,6 +3122,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual void Show()
     {
+        EnsureHostedApplicationCanDisplay();
         if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
             throw new InvalidOperationException("A closing or closed window cannot be shown again.");
 
@@ -3358,6 +3368,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     private bool CanContinueMacOSDisplay(IPlatformWindow platformWindow, Visibility visibility) =>
+        !IsHostedApplicationStopping &&
         Handle != nint.Zero && !IsCloseRequestedForPlatformTermination &&
         ReferenceEquals(_platformWindow, platformWindow) && base.Visibility == visibility;
 
@@ -3576,6 +3587,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </remarks>
     public virtual bool Activate()
     {
+        if (IsHostedApplicationStopping) return false;
         if (Handle == nint.Zero || _isClosing || _managedTeardownStarted || _managedTeardownCompleted)
         {
             return false;

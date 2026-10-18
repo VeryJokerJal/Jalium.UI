@@ -11,5 +11,9 @@ public partial class Application
     {
     }
 
-    internal void NotifyWindowShowing(Window window) => OnWindowShowing(window);
+    internal void NotifyWindowShowing(Window window)
+    {
+        TrackHostedWindow(window);
+        OnWindowShowing(window);
+    }
 }

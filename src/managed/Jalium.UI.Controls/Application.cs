@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -186,6 +187,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             if (ReferenceEquals(_mainWindow, value))
                 return;
 
+            if (value != null) TrackHostedWindow(value);
             _mainWindow = value;
             if (value != null)
             {
@@ -939,12 +941,13 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             OnStartup(new StartupEventArgs(args));
         }
 
+        if (IsHostedStopping) return;
         Window? startupWindow;
         using (StartupDiagnostics.Begin("Application.ResolveStartupWindow", blocksUiThread: true))
         {
             startupWindow = ResolveStartupWindow();
         }
-        if (startupWindow == null)
+        if (startupWindow == null || IsHostedStopping)
             return;
 
         if (startupWindow.Handle == nint.Zero)
@@ -990,21 +993,40 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     /// Raises Exit and tears down application state for an externally hosted
     /// message loop. Repeated calls are harmless and return the first exit code.
     /// </summary>
-    internal int StopHosted(int exitCode)
+    internal int StopHosted(int exitCode) => StopHostedCore(exitCode, raiseExit: true);
+
+    internal int AbortHostedStart(int exitCode)
+    {
+        bool startupBegan = Interlocked.CompareExchange(ref _hostedStartState, 1, 0) != 0;
+        return StopHostedCore(exitCode, raiseExit: startupBegan);
+    }
+
+    internal int HostedExitCode => Volatile.Read(ref _hostedExitCode);
+
+    private int StopHostedCore(int exitCode, bool raiseExit)
     {
         VerifyAccess();
-        if (Volatile.Read(ref _hostedStartState) == 0)
-            return exitCode;
-        if (Interlocked.CompareExchange(ref _hostedStopState, 1, 0) != 0)
-            return Volatile.Read(ref _hostedExitCode);
-
-        // Fire Exit before cleanup so handlers can still access application state.
-        var exitArgs = new ExitEventArgs(exitCode);
-        OnExit(exitArgs);
-        exitCode = exitArgs.ApplicationExitCode;
+        if (Volatile.Read(ref _hostedStartState) == 0) return exitCode;
+        if (Interlocked.CompareExchange(ref _hostedStopState, 1, 0) != 0) return HostedExitCode;
         Volatile.Write(ref _hostedExitCode, exitCode);
-        Cleanup();
-        return exitCode;
+        var exitArgs = new ExitEventArgs(exitCode);
+        ExceptionDispatchInfo? failure = null;
+        try
+        {
+            // Exit can still inspect the live application. Stop is irreversible;
+            // window creation/display is rejected, and Closing cannot cancel teardown.
+            if (raiseExit) OnExit(exitArgs);
+        }
+        catch (Exception error) { failure = ExceptionDispatchInfo.Capture(error); }
+        finally
+        {
+            Volatile.Write(ref _hostedExitCode, exitArgs.ApplicationExitCode);
+            HostedLifecycleCleanup.Attempt(CloseHostedWindows, ref failure);
+            if (HasPendingHostedWindowTeardown) ScheduleHostedCleanup();
+            else FinishHostedCleanup(ref failure);
+        }
+        failure?.Throw();
+        return HostedExitCode;
     }
 
     #region Android Lifecycle
@@ -1041,10 +1063,9 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
 
     private void Cleanup()
     {
-        Volatile.Write(ref _cleanupStarted, 1);
-        Interlocked.Exchange(ref _linuxSessionMonitor, null)?.Dispose();
-
-        // Unsubscribe Android lifecycle events
+        if (Interlocked.Exchange(ref _cleanupStarted, 1) != 0) return;
+        ExceptionDispatchInfo? failure = null;
+        HostedLifecycleCleanup.Attempt(() => Interlocked.Exchange(ref _linuxSessionMonitor, null)?.Dispose(), ref failure);
         if (PlatformFactory.IsAndroid)
         {
             AndroidActivityBridge.Paused -= OnAndroidPause;
@@ -1052,49 +1073,31 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             AndroidActivityBridge.Destroying -= OnAndroidDestroy;
             AndroidActivityBridge.LowMemory -= OnAndroidLowMemory;
         }
-
-        _workingSetTrimController?.Dispose();
-
-        // Stop all active animations
-        Storyboard.StopAll();
-
-        // Stop all tooltip timers
-        ToolTipService.Cleanup();
-
-        // Clear static text format cache before RenderContext is destroyed,
-        // otherwise finalizers may try to destroy native resources after the
-        // DWrite factory is already gone, causing StackOverflowException.
-        TextMeasurement.ClearCache();
-
-        // Dispose the render context (destroys native DWrite factory, D3D12 device, etc.)
-        RenderContext.Current?.Dispose();
-
-        // Release host-provided references (Services/Configuration/Environment) so nothing
-        // keeps them alive after Run() returns. JaliumApp.Dispose() disposes the underlying IHost.
-        DetachHost();
-
-        // Break the application -> window edge before detaching theme dictionaries. Their
-        // collection notifications must not walk a window that is already being torn down.
-        _mainWindow = null;
-        ThemeManager.Cleanup(this);
-
-        // Resource lookup caches are thread-local and can otherwise retain the old visual tree,
-        // application dictionaries, and resolved resource values until this UI thread exits.
-        ResourceLookup.ClearThreadCache();
-        ResourceDictionary.ClearThreadCache();
-        FrameworkElement.ClearScopelessResourceThreadCache();
-
-        // A stale Application finishing cleanup after a replacement was installed must not clear
-        // that replacement's callbacks or Current reference.
+        HostedLifecycleCleanup.Attempt(() => _workingSetTrimController?.Dispose(), ref failure);
+        // A replacement can be installed by a cleanup callback. Shared rendering,
+        // timers and lookup callbacks belong to the currently installed application.
         if (ReferenceEquals(_current, this))
         {
+            HostedLifecycleCleanup.Attempt(Storyboard.StopAll, ref failure);
+            HostedLifecycleCleanup.Attempt(ToolTipService.Cleanup, ref failure);
+            HostedLifecycleCleanup.Attempt(TextMeasurement.ClearCache, ref failure);
+            HostedLifecycleCleanup.Attempt(() => RenderContext.Current?.Dispose(), ref failure);
+        }
+        HostedLifecycleCleanup.Attempt(DetachHost, ref failure);
+        _mainWindow = null;
+        HostedLifecycleCleanup.Attempt(() => ThemeManager.Cleanup(this), ref failure);
+        if (ReferenceEquals(_current, this))
+        {
+            HostedLifecycleCleanup.Attempt(ResourceLookup.ClearThreadCache, ref failure);
+            HostedLifecycleCleanup.Attempt(ResourceDictionary.ClearThreadCache, ref failure);
+            HostedLifecycleCleanup.Attempt(FrameworkElement.ClearScopelessResourceThreadCache, ref failure);
             ResourceLookup.ApplicationResourceLookup = null;
             ResourceLookup.ApplicationResourceLookupWithSource = null;
             ResourceLookup.AncestorRedirectLookup = null;
-
             _current = null;
-            CurrentChanged?.Invoke(null, EventArgs.Empty);
+            HostedLifecycleCleanup.Attempt(() => CurrentChanged?.Invoke(null, EventArgs.Empty), ref failure);
         }
+        failure?.Throw();
     }
 
     private bool HandleLinuxSessionEnding(ReasonSessionEnding reason)

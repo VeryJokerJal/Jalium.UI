@@ -109,7 +109,12 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
 
     public override NSApplicationTerminateReply ApplicationShouldTerminate(NSApplication sender)
     {
-        if (_stopped || Jalium.UI.Application.Current is not { } application)
+        var application = Jalium.UI.Application.Current;
+        // StopHosted marks this delegate first. Pending application cleanup
+        // must still block nested termination until its resources are released.
+        if (application?.IsHostedStopping == true)
+            return NSApplicationTerminateReply.Cancel;
+        if (_stopped || application == null)
             return NSApplicationTerminateReply.Now;
         if (application.IsHandlingMacOSSessionEnding)
             return NSApplicationTerminateReply.Cancel;
@@ -169,6 +174,7 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
     {
         if (_stopped || _handlingReopen) return false;
         if (Jalium.UI.Application.Current is not { } application) return true;
+        if (application.IsHostedStopping) return false;
         IEnumerable<Jalium.UI.Window> candidates = application.Windows.Cast<Jalium.UI.Window>().Reverse().ToArray();
         if (application.MainWindow is { } main)
             candidates = new[] { main }.Concat(candidates.Where(candidate => !ReferenceEquals(candidate, main)));
@@ -230,7 +236,8 @@ public abstract class JaliumMacApplicationDelegate : NSApplicationDelegate
         _retryTerminationAfterClose = false;
         _themeMonitor?.Dispose();
         _themeMonitor = null;
-        _hostedApp?.StopHosted(exitCode);
+        var hostedApp = _hostedApp;
         _hostedApp = null;
+        hostedApp?.StopHosted(exitCode);
     }
 }

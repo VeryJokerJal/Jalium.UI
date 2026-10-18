@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-hosted-failure-case=", StringComparison.Ordinal))
+    return WindowHostedFailureChecks.Run(args[0]);
+
 if (args.Length == 1 && (args[0] == "--window-themes" || args[0].StartsWith("--window-theme-case=", StringComparison.Ordinal)))
     return WindowThemeModeChecks.Run(args[0]);
 
