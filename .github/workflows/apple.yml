@@ -109,10 +109,11 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release -DJALIUM_PLATFORM_BUILD_TESTS=ON
           -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
           -DJALIUM_NATIVE_OUTPUT_ROOT="$RUNNER_TEMP/jalium-window-native"
-      - name: Build Window and clipboard contract fixtures
+      - name: Build Window, clipboard and thread-affinity contract fixtures
         run: >-
           cmake --build "$RUNNER_TEMP/jalium-window-contracts" --parallel 4 --target
           jalium.native.platform.clipboard.tests
+          jalium.native.platform.thread-affinity.tests
           jalium.native.platform.window.tests
           jalium.native.platform.window.accessibility.tests
           jalium.native.platform.window.popup-keyboard.tests
@@ -121,10 +122,10 @@ jobs:
           jalium.native.platform.window.menu.tests
           jalium.native.platform.window.startup.tests
           jalium.native.platform.window.drag.tests
-      - name: Verify all Window and clipboard contracts
+      - name: Verify all Window, clipboard and thread-affinity contracts
         run: >-
           ctest --test-dir "$RUNNER_TEMP/jalium-window-contracts"
-          -R '^jalium[.]native[.]platform[.](clipboard|macos[.]window([.].*)?)$'
+          -R '^jalium[.]native[.]platform[.](clipboard|macos[.](window|thread-affinity)([.].*)?)$'
           --output-on-failure -V
 
   metal-readback:
