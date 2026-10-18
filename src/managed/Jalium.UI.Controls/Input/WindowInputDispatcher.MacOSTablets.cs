@@ -90,9 +90,9 @@ internal sealed partial class WindowInputDispatcher
             {
                 DispatchManipulationPipeline(target, data, isDown, isUp, handled, timestamp);
                 if (!Current()) return true;
-                if (isDown) RaisePointerDownPipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints);
-                else if (isUp) RaisePointerUpPipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints);
-                else RaisePointerMovePipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints);
+                if (isDown) RaisePointerDownPipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints, inputLifetime: Current);
+                else if (isUp) RaisePointerUpPipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints, inputLifetime: Current);
+                else RaisePointerMovePipeline(target, data.Point, data.Modifiers, timestamp, data.StylusPoints, inputLifetime: Current);
                 if (!Current()) return true;
             }
             if (handled) CancelMacOSTabletMouse(id);

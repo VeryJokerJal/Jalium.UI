@@ -28,13 +28,13 @@ def main():
     parser.add_argument('--work-parent', type=Path, default=Path.home() / 'Library/Caches')
     parser.add_argument('--results-file', type=Path)
     parser.add_argument('--image-directory', type=Path)
-    parser.add_argument('--cases', default=','.join(map(str, range(48))))
+    parser.add_argument('--cases', default=','.join(map(str, range(52))))
     args = parser.parse_args()
     source = args.app.resolve()
     if not source.is_dir() or source.suffix != '.app': parser.error('--app must name a built .app')
     try: cases = [int(x) for x in args.cases.split(',')]
     except ValueError: parser.error('--cases must contain integer indices')
-    if not cases or len(cases) != len(set(cases)) or any(x not in range(48) for x in cases): parser.error('invalid cases')
+    if not cases or len(cases) != len(set(cases)) or any(x not in range(52) for x in cases): parser.error('invalid cases')
     if args.image_directory:
         args.image_directory.mkdir(exist_ok=False, parents=True)
     receipts = []

@@ -592,7 +592,7 @@ internal sealed partial class WindowInputDispatcher
         bool hasPreciseScrollingDeltas, MouseButtonStates buttons, ModifierKeys modifiers, int timestamp,
         MouseWheelPhase phase = MouseWheelPhase.None, MouseWheelPhase momentumPhase = MouseWheelPhase.None)
     {
-        long packet = _mouseInputGeneration;
+        long packet = OperatingSystem.IsMacOS() ? unchecked(++_mouseInputGeneration) : _mouseInputGeneration;
         Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
         var physicalModifiers = modifiers;
         modifiers = MouseInputModifiers.ToLogical(modifiers);
@@ -619,6 +619,7 @@ internal sealed partial class WindowInputDispatcher
             buttons.Left, buttons.Middle, buttons.Right,
             buttons.XButton1, buttons.XButton2, modifiers, timestamp, phase, momentumPhase) { PhysicalModifiers = physicalModifiers };
         MouseCommandInput.Raise(target, tunnelArgs, commandInput);
+        if (packetLifetime?.Invoke() == false) return;
 
         bool sourceHandled = tunnelArgs.Handled;
         bool sourceCanceled = tunnelArgs.Cancel;
@@ -648,10 +649,11 @@ internal sealed partial class WindowInputDispatcher
             _lastPointerPoints[MousePointerId] = pointerPoint;
 
             if (sourceCanceled)
-                RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
+                RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp,
+                    inputLifetime: commandInput == null ? packetLifetime : commandInput.IsCurrent);
             else if (!sourceHandled)
                 RaisePointerWheelPipeline(target, pointerPoint, modifiers, timestamp,
-                    inputLifetime: commandInput == null ? null : commandInput.IsCurrent);
+                    inputLifetime: commandInput == null ? packetLifetime : commandInput.IsCurrent);
         }
     }
 

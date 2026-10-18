@@ -82,9 +82,8 @@ public partial class Window
 
     internal Point GetMacOSClientScreenOrigin()
     {
-        if (TryGetClientOriginOnScreen(out var origin))
-            return new Point(origin.X / DpiScale, origin.Y / DpiScale);
-        return new Point(double.IsFinite(Left) ? Left : 0, double.IsFinite(Top) ? Top : 0);
+        Point origin = GetMacOSClientPixelOrigin();
+        return new Point(origin.X / DpiScale, origin.Y / DpiScale);
     }
 
     private Matrix GetMacOSInputTransform(UIElement target)
@@ -92,10 +91,11 @@ public partial class Window
         Matrix transform = target.GetRenderMatrix();
         var physical = GetMacOSPhysicalWindow(target);
         if (physical == null || ReferenceEquals(physical, this)) return transform;
-        Point source = physical.GetMacOSClientScreenOrigin(), destination = GetMacOSClientScreenOrigin();
-        transform.OffsetX += source.X - destination.X;
-        transform.OffsetY += source.Y - destination.Y;
-        return transform;
+        Matrix windows = GetMacOSWindowInputTransform(physical);
+        return new Matrix(transform.M11 * windows.M11, transform.M12 * windows.M22,
+            transform.M21 * windows.M11, transform.M22 * windows.M22,
+            transform.OffsetX * windows.M11 + windows.OffsetX,
+            transform.OffsetY * windows.M22 + windows.OffsetY);
     }
     internal static Rect GetMacOSMonitorWorkArea(Point point)
     {
@@ -118,12 +118,24 @@ public partial class Window
         return selected;
     }
 
-    private Point GetMacOSOwnerInputPoint(Point position)
+    private Point GetMacOSClientPixelOrigin()
     {
-        var source = GetMacOSClientScreenOrigin();
-        var destination = MacOSInputOwner.GetMacOSClientScreenOrigin();
-        return new Point(position.X + source.X - destination.X, position.Y + source.Y - destination.Y);
+        if (TryGetClientOriginOnScreen(out var origin)) return origin;
+        return new Point((double.IsFinite(Left) ? Left : 0) * DpiScale,
+            (double.IsFinite(Top) ? Top : 0) * DpiScale);
     }
+
+    private Matrix GetMacOSWindowInputTransform(Window source)
+    {
+        // Client origins share physical screen pixels; each window's local
+        // coordinates use its own DIP scale, including the text transform.
+        Point from = source.GetMacOSClientPixelOrigin(), to = GetMacOSClientPixelOrigin();
+        double scale = source.DpiScale / DpiScale;
+        return new Matrix(scale, 0, 0, scale, (from.X - to.X) / DpiScale, (from.Y - to.Y) / DpiScale);
+    }
+
+    private Point GetMacOSOwnerInputPoint(Point position) =>
+        MacOSInputOwner.GetMacOSWindowInputTransform(this).Transform(position);
 
     private IReadOnlyList<Popup> GetMacOSMousePopupGroup()
     {

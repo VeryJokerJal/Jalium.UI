@@ -20,7 +20,7 @@ internal static class WindowHostedFailureChecks
 {
     internal static int Run(string argument)
     {
-        if (!int.TryParse(argument.Split('=').Last(), out int index) || index is < 0 or >= 48) return 2;
+        if (!int.TryParse(argument.Split('=').Last(), out int index) || index is < 0 or >= 52) return 2;
         string output = Environment.GetEnvironmentVariable("JALIUM_HOSTED_FAILURE_OUTPUT")
             ?? throw new InvalidOperationException("Set the owned host output directory.");
         Directory.CreateDirectory(output);
@@ -35,7 +35,7 @@ internal static class WindowHostedFailureChecks
             catch (Exception error) { failure = error; }
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
             {
-                index, passed = failure == null, stage = index < 32 ? index / 2 % 8 : index < 36 ? 8 : index < 40 ? 9 : index < 44 ? 10 : 11,
+                index, passed = failure == null, stage = index < 32 ? index / 2 % 8 : index < 36 ? 8 : index < 40 ? 9 : index < 44 ? 10 : index < 48 ? 11 : 12,
                 custom = index % 2 == 1, backend = (index < 32 ? index < 16 : index % 4 < 2) ? "Metal" : "Software",
                 checks = scene.Checks, failure = failure?.ToString(), scene.Observed,
                 processId = Environment.ProcessId,
@@ -59,7 +59,7 @@ internal static class WindowHostedFailureChecks
         private TextBox? _editor;
         private int _exitCount;
         private bool _exitCreationRejected;
-        private int Stage => index < 32 ? index / 2 % 8 : index < 36 ? 8 : index < 40 ? 9 : index < 44 ? 10 : 11;
+        private int Stage => index < 32 ? index / 2 % 8 : index < 36 ? 8 : index < 40 ? 9 : index < 44 ? 10 : index < 48 ? 11 : 12;
         private bool Custom => index % 2 == 1;
         private RenderBackend Backend => (index < 32 ? index < 16 : index % 4 < 2) ? RenderBackend.Metal : RenderBackend.Software;
         internal List<string> Checks { get; } = [];
@@ -76,12 +76,12 @@ internal static class WindowHostedFailureChecks
             Exception? observedError = null;
             _wrapper = wrapper;
             if (Stage == 10) host.OnStart = () => wrapper.StopHosted(29);
-            int expectedExit = Stage is 5 or 6 ? 23 : Stage == 7 ? 41 : Stage == 8 ? 17 : Stage == 9 ? 19 : Stage == 10 ? 29 : Stage == 11 ? 31 : 1;
+            int expectedExit = Stage is 5 or 6 ? 23 : Stage == 7 ? 41 : (Stage is 8 or 12) ? 17 : Stage == 9 ? 19 : Stage == 10 ? 29 : Stage == 11 ? 31 : 1;
             try
             {
                 wrapper.StartHosted();
                 Require(Stage >= 5, "the requested startup failure is observed");
-                if (Stage <= 9)
+                if (Stage <= 9 || Stage == 12)
                 {
                     Require(_windows.All(window => window.Handle != 0 && window.IsVisible), "all startup windows were shown");
                     Require(_editor!.Text == "中文🙂，回调后继续编辑", "live editor text is available before stop");
@@ -95,7 +95,7 @@ internal static class WindowHostedFailureChecks
                     Require(host.DisposeCount == 0 && ReferenceEquals(Application.Current, _application) && _windows.All(window => window.Handle != 0),
                         "a rejected cross-thread stop leaves the UI and host running");
                 }
-                if (Stage == 8)
+                if (Stage is 8 or 12)
                 {
                     bool invoked = false, servicesLiveInsideRender = false;
                     Exception? renderError = null;
@@ -105,6 +105,7 @@ internal static class WindowHostedFailureChecks
                         try
                         {
                             wrapper.StopHosted(17);
+                            if (Stage == 12) { wrapper.Dispose(); wrapper.Dispose(); }
                             servicesLiveInsideRender = host.StopCount == 0 && host.DisposeCount == 0 &&
                                 ReferenceEquals(Application.Current, _application) && RenderContext.Current != null;
                         }
@@ -124,7 +125,7 @@ internal static class WindowHostedFailureChecks
                 else if (Stage <= 9) wrapper.StopHosted(7);
             }
             catch (Exception error) { observedError = error; }
-            if (Stage == 8)
+            if (Stage is 8 or 12)
             {
                 var wait = Stopwatch.StartNew();
                 while (Application.Current != null && wait.Elapsed.TotalSeconds < 6)
@@ -214,7 +215,7 @@ internal static class WindowHostedFailureChecks
 
         private Window MakeWindow(bool throwAfterShow, bool passive)
         {
-            Window window = throwAfterShow ? new ThrowingWindow(_primary) : Stage == 8 && !passive ? new RenderStopWindow() : new Window();
+            Window window = throwAfterShow ? new ThrowingWindow(_primary) : (Stage is 8 or 12) && !passive ? new RenderStopWindow() : new Window();
             window.Title = "Jalium 宿主恢复";
             window.Width = 520; window.Height = 360; window.MinWidth = 400; window.MinHeight = 300;
             window.ShowActivated = !passive;

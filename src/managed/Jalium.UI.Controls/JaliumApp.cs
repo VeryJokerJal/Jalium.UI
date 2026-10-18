@@ -45,6 +45,7 @@ public sealed class JaliumApp : IHost
     private Application? _application;
     private Func<Application>? _applicationFactory;
     private bool _disposed;
+    private int _hostDisposed;
     private int _hostedState; // 0 = not started, 1 = running, 2 = stopped
     private int _hostedExitCode;
     private int _hostedHostStartAttempted;
@@ -435,7 +436,7 @@ public sealed class JaliumApp : IHost
         if (Volatile.Read(ref _hostedHostStartAttempted) != 0)
             HostedLifecycleCleanup.Attempt(() => RunHostOperationBlocking(
                 () => _host.StopAsync(CancellationToken.None)), ref failure, suppress: true);
-        HostedLifecycleCleanup.Attempt(Dispose, ref failure);
+        HostedLifecycleCleanup.Attempt(DisposeHost, ref failure);
     }
 
     /// <summary>
@@ -455,6 +456,20 @@ public sealed class JaliumApp : IHost
         {
             return;
         }
+        _disposed = true;
+        if (_application?.IsHostedCleanupPending == true)
+        {
+            ExceptionDispatchInfo? failure = null;
+            CompleteHostedHost(_application, ref failure);
+            failure?.Throw();
+            return;
+        }
+        DisposeHost();
+    }
+
+    private void DisposeHost()
+    {
+        if (Interlocked.Exchange(ref _hostDisposed, 1) != 0) return;
         _disposed = true;
         _host.Dispose();
     }

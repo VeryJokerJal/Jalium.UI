@@ -120,12 +120,16 @@ public sealed class MacOSExternalPopupHostTests
         Assert.True(h.Target.Focus());
         Send(host, new PlatformEvent { Type = PlatformEventType.Activate });
         Window receiver = ownerReceives ? h.Window : host;
-        var point = ownerReceives ? new Point(60, 120) : new Point(10, 10);
+        // Owner client origin is (200,200) physical pixels at 2x;
+        // the explicit 1x popup origin is (120,150), and the probe
+        // starts at popup-local (10,10). Its owner-client pixel origin
+        // is therefore (-70,-40), with an unchanged 10x14 pixel extent.
+        var point = ownerReceives ? new Point(-70, -40) : new Point(10, 10);
         var request = new PlatformImeGeometryRequest(kind, 0, 1, point);
         Send(receiver, new PlatformEvent { Type = PlatformEventType.ImeGeometryRequest, ImeGeometryRequest = request });
         Assert.True(request.Handled);
         if (kind is 0 or 2)
-            Assert.Equal(ownerReceives ? new Rect(60, 120, 20, 28) : new Rect(10, 10, 10, 14), request.Geometry.Rectangle);
+            Assert.Equal(ownerReceives ? new Rect(-70, -40, 10, 14) : new Rect(10, 10, 10, 14), request.Geometry.Rectangle);
         else Assert.Equal(new Point(), h.Target.QueryPoint);
     }
 
@@ -825,6 +829,9 @@ public sealed class MacOSExternalPopupHostTests
         public override void Show()
         {
             if (FailShow) throw new InvalidOperationException("Native show failed in the contract host.");
+            // Model the initial same-monitor scale that AppKit would supply.
+            // Individual mixed-DPI cases can explicitly replace it after Show.
+            typeof(Window).GetField("_dpiScale", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(this, owner.DpiScale);
             // Headless contract: no AppKit UI is created on an xUnit worker.
             typeof(Window).GetMethod("SetMacOSVisibilityForDisplay", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(this, [Visibility.Visible]);
             Measure(new Size(Width, Height)); Arrange(new Rect(0, 0, Width, Height));
