@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-gesture-interleave-case=", StringComparison.Ordinal))
+    return WindowGestureInterleaveChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-appearance-default-case=", StringComparison.Ordinal))
     return WindowAppearanceDefaultsChecks.Run(args[0]);
 

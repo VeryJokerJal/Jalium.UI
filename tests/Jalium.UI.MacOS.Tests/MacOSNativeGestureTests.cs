@@ -10,6 +10,144 @@ namespace Jalium.UI.Tests;
 
 public sealed class MacOSNativeGestureTests
 {
+    [Theory]
+    [InlineData(true, true)] [InlineData(true, false)]
+    [InlineData(false, true)] [InlineData(false, false)]
+    public void ExcludedFirstKindWaitsForAnEnabledKind(bool rotateOnly, bool startingMode)
+    {
+        using var f = new Fixture();
+        var mode = rotateOnly ? ManipulationModes.Rotate : ManipulationModes.Scale;
+        if (startingMode) f.Target.AddHandler(UIElement.ManipulationStartingEvent, new RoutedEventHandler((_, e) =>
+            ((ManipulationStartingEventArgs)e).Mode = mode));
+        else Manipulation.SetManipulationMode(f.Target, mode);
+        int excluded = rotateOnly ? 1 : 2, enabled = rotateOnly ? 2 : 1;
+        Assert.True(f.Send(1, 1.1, 5, kind: excluded, flags: 1).Handled);
+        Assert.False(Manipulation.IsManipulationActive(f.Target));
+        Assert.Equal(["starting-preview", "starting"], f.Order);
+        Assert.Empty(f.Deltas); Assert.Empty(f.Completed);
+        Assert.True(f.Send(1, 1.2, 12, kind: enabled, flags: 1).Handled);
+        Assert.True(Manipulation.IsManipulationActive(f.Target));
+        Assert.Equal(1, f.Order.Count(x => x == "started"));
+        var delta = Assert.Single(f.Deltas);
+        Assert.Equal(rotateOnly ? 1 : 1.2, delta.CumulativeManipulation.Scale.X, 10);
+        Assert.Equal(rotateOnly ? 12 : 0, delta.CumulativeManipulation.Rotation, 10);
+        f.Send(3, kind: excluded, flags: 1); f.Send(3, kind: enabled, flags: 1); f.Send(3, kind: 0);
+        Assert.Single(f.Completed); Assert.False(Manipulation.IsManipulationActive(f.Target));
+    }
+
+    [Theory] [InlineData(3)] [InlineData(4)]
+    public void PendingGestureEndsWithoutInventingStartedOrCompletedEvents(int terminal)
+    {
+        using var f = new Fixture(); Manipulation.SetManipulationMode(f.Target, ManipulationModes.Rotate);
+        Assert.True(f.Send(1, 1.2, flags: 1).Handled);
+        Assert.True(f.Send(2, 1.1, flags: 1).Handled);
+        Assert.Throws<InvalidOperationException>(() => Manipulation.StartInertia(f.Target));
+        Assert.True(f.Send(terminal, kind: 0).Handled);
+        Assert.Equal(["starting-preview", "starting"], f.Order);
+        Assert.Null(typeof(Window).GetField("_macOSManipulation", Private)!.GetValue(f.Window));
+        Assert.True(f.Send(1, rotation: 5, kind: 2, sequence: 2).Handled);
+        f.Send(3, kind: 0, sequence: 2);
+        Assert.Single(f.Completed);
+    }
+
+    [Theory] [InlineData("disable")] [InlineData("hide")] [InlineData("complete")]
+    public void PendingOwnershipRetiresBeforeALaterEnabledPacket(string change)
+    {
+        using var f = new Fixture(); Manipulation.SetManipulationMode(f.Target, ManipulationModes.Rotate);
+        Assert.True(f.Send(1, 1.1, flags: 1).Handled);
+        if (change == "disable") { f.Target.IsEnabled = false; f.Target.IsEnabled = true; }
+        if (change == "hide") { f.Target.Visibility = Visibility.Hidden; f.Target.Visibility = Visibility.Visible; }
+        if (change == "complete") Manipulation.CompleteManipulation(f.Target);
+        Assert.False(f.Send(1, rotation: 5, kind: 2, flags: 1).Handled);
+        Assert.Empty(f.Deltas); Assert.Empty(f.Completed);
+        Assert.Null(typeof(Window).GetField("_macOSManipulation", Private)!.GetValue(f.Window));
+        Assert.True(f.Send(1, rotation: 7, kind: 2, sequence: 2).Handled);
+        f.Send(3, kind: 0, sequence: 2); Assert.Single(f.Completed);
+    }
+
+    [Theory] [InlineData(ManipulationModes.None)] [InlineData(ManipulationModes.Translate)]
+    public void NoNativeModeStillRejectsTheSequence(ManipulationModes mode)
+    {
+        using var f = new Fixture(); Manipulation.SetManipulationMode(f.Target, mode);
+        Assert.False(f.Send(1, 1.2).Handled);
+        Assert.Empty(f.Deltas); Assert.Empty(f.Completed);
+        Assert.Null(typeof(Window).GetField("_macOSManipulation", Private)!.GetValue(f.Window));
+    }
+
+    [Fact]
+    public void MagnificationRetainsTheAngularVelocityPassedToInertia()
+    {
+        using var f = new Fixture();
+        f.Send(1, rotation: 2, kind: 2, flags: 1, timestamp: 1);
+        f.Send(2, rotation: 6, kind: 2, flags: 1, timestamp: 1.02);
+        var earlier = f.Deltas.Last().Velocities;
+        Assert.Equal(.3, earlier.AngularVelocity, 10);
+        f.Send(1, 1.1, kind: 1, flags: 1, timestamp: 1.03);
+        Assert.Equal(.3, f.Deltas.Last().Velocities.AngularVelocity, 10);
+        Assert.Equal(.3, earlier.AngularVelocity, 10);
+        double initial = double.NaN;
+        f.Target.AddHandler(UIElement.ManipulationInertiaStartingEvent, new RoutedEventHandler((_, e) =>
+            initial = ((ManipulationInertiaStartingEventArgs)e).InitialVelocities.AngularVelocity));
+        Manipulation.StartInertia(f.Target); Assert.Equal(.3, initial, 10);
+        f.Inertia().TickForTesting(16);
+        Assert.Contains(f.Deltas, e => e.IsInertial && e.DeltaManipulation.Rotation > 0);
+        Manipulation.CompleteManipulation(f.Target); Assert.Single(f.Completed);
+    }
+
+    [Fact]
+    public void RotationTimingExcludesInterleavedMagnificationPackets()
+    {
+        using var f = new Fixture();
+        f.Send(1, rotation: 2, kind: 2, flags: 1, timestamp: 1);
+        f.Send(1, 1.1, kind: 1, flags: 1, timestamp: 1.01);
+        f.Send(2, rotation: 6, kind: 2, flags: 1, timestamp: 1.02);
+        var earlier = f.Deltas.Last().Velocities;
+        Assert.Equal(.3, earlier.AngularVelocity, 10);
+        f.Send(2, 1.05, kind: 1, flags: 1, timestamp: 1.03);
+        f.Send(2, rotation: 8, kind: 2, flags: 1, timestamp: 1.06);
+        Assert.Equal(.2, f.Deltas.Last().Velocities.AngularVelocity, 10);
+        Assert.Equal(.3, earlier.AngularVelocity, 10);
+        f.Send(3, kind: 0);
+    }
+
+    [Fact]
+    public void NeutralRotationBeginEstablishesItsOwnSampleClock()
+    {
+        using var f = new Fixture();
+        f.Send(1, kind: 2, flags: 1, timestamp: 1);
+        Assert.Empty(f.Deltas);
+        f.Send(2, rotation: 6, kind: 2, flags: 1, timestamp: 1.02);
+        Assert.Equal(.3, Assert.Single(f.Deltas).Velocities.AngularVelocity, 10);
+        f.Send(3, kind: 0);
+    }
+
+    [Fact]
+    public void ADeferredStartedCallbackKeepsANewerSequenceIntact()
+    {
+        using var f = new Fixture(); Manipulation.SetManipulationMode(f.Target, ManipulationModes.Rotate);
+        bool once = false;
+        f.Target.AddHandler(UIElement.PreviewManipulationStartedEvent, new RoutedEventHandler((_, _) =>
+        { if (!once) { once = true; f.Send(1, rotation: 7, kind: 2, sequence: 2); } }));
+        Assert.True(f.Send(1, 1.1, flags: 1).Handled);
+        f.Send(1, rotation: 5, kind: 2, flags: 1);
+        Assert.True(Manipulation.IsManipulationActive(f.Target));
+        f.Send(2, rotation: 3, kind: 2, sequence: 2); f.Send(3, kind: 0, sequence: 2);
+        Assert.Equal(2, f.Completed.Count); Assert.Equal(10, f.Completed.Last().TotalManipulation.Rotation, 10);
+    }
+
+    [Fact]
+    public void ChangingThePendingModeCanStartOnTheNextMatchingUpdate()
+    {
+        using var f = new Fixture(); Manipulation.SetManipulationMode(f.Target, ManipulationModes.Rotate);
+        Assert.True(f.Send(1, 1.1, flags: 1).Handled);
+        Manipulation.SetManipulationMode(f.Target, ManipulationModes.Scale);
+        Assert.True(f.Send(2, 1.2, flags: 1).Handled);
+        Assert.True(Manipulation.IsManipulationActive(f.Target));
+        Assert.Equal(1.2, Assert.Single(f.Deltas).CumulativeManipulation.Scale.X, 10);
+        f.Send(3, kind: 0); Assert.Single(f.Completed);
+    }
+
+
     [Fact]
     public void NativeFactorsAccumulateAndImperativeStateEndsBeforeCompletion()
     {
@@ -342,10 +480,10 @@ public sealed class MacOSNativeGestureTests
             Target.AddHandler(UIElement.ManipulationCompletedEvent,new RoutedEventHandler((_,e)=>
             { CompletedActive=Manipulation.IsManipulationActive(Target);Completed.Add((ManipulationCompletedEventArgs)e); }));
         }
-        internal MacOSGestureRequest Send(int phase,double scale=1,double rotation=0,int kind=1,ulong sequence=1,uint flags=0)
+        internal MacOSGestureRequest Send(int phase,double scale=1,double rotation=0,int kind=1,ulong sequence=1,uint flags=0,double? timestamp=null)
         {
             var point=Target.TranslatePoint(new(10,10),Window);
-            var request=new MacOSGestureRequest(new(sequence,kind,phase,point.X*_dpi,point.Y*_dpi,scale,rotation,1+Order.Count*.02,flags));
+            var request=new MacOSGestureRequest(new(sequence,kind,phase,point.X*_dpi,point.Y*_dpi,scale,rotation,timestamp ?? 1+Order.Count*.02,flags));
             try { typeof(Window).GetMethod("HandleMacOSGesture",Private)!.Invoke(Window,[request]); }
             catch(TargetInvocationException e) when(e.InnerException!=null) { ExceptionDispatchInfo.Capture(e.InnerException).Throw(); }
             return request;

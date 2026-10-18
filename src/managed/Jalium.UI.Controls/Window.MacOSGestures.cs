@@ -46,8 +46,8 @@ public partial class Window
         internal readonly ulong ModalRevision;
         internal readonly MouseCommandInput Input;
         internal uint Kinds;
-        internal bool Started, Ended, Inertial, HasSample;
-        internal double LastTime;
+        internal bool Started, Ended, Inertial, HasAngularSample;
+        internal double LastAngularTime;
         internal Point LastWindowPoint, LastOrigin;
         internal ManipulationDelta Total = GestureDelta(1, 0);
         internal ManipulationVelocities Velocities = new();
@@ -220,15 +220,33 @@ public partial class Window
                     Pivot = previous is null ? session.Pivot : previous.Pivot
                 }, args => args.CancelRequested);
                 if (!session.Current || revision != _macOSGestureDispatch) { FinishMacOSManipulation(session); return; }
-                if (starting.CancelRequested || (starting.Mode & (sample.Kind == 1 ? ManipulationModes.Scale : ManipulationModes.Rotate)) == 0)
+                if (starting.CancelRequested || (starting.Mode & MacOSGestureModes) == 0)
                 { FinishMacOSManipulation(session); return; }
                 session.Container = starting.ManipulationContainer ?? session.Target;
                 session.Mode = starting.Mode; session.Pivot = starting.Pivot;
                 session.LastWindowPoint = position;
                 session.LastOrigin = GetMacOSGestureOrigin(position, (UIElement)session.Container);
                 if (!Finite(session.LastOrigin) || !session.Current) { FinishMacOSManipulation(session); return; }
+            }
+            // AppKit shares one sequence across magnification and rotation.
+            // Claim it while an enabled kind can still join, without exposing
+            // an active manipulation until that kind actually arrives.
+            request.Handled = true;
+            if (!session.Current) { FinishMacOSManipulation(session); return; }
+            if (revision != _macOSGestureDispatch || session.Inertial) return;
+            if (sample.Phase == 4 || (session.Mode & MacOSGestureModes) == 0)
+            { FinishMacOSManipulation(session); return; }
+            uint bit = sample.Kind == 0 ? 0u : 1u << (sample.Kind - 1);
+            if (sample.Phase == 1) session.Kinds |= bit;
+            var kindMode = sample.Kind == 1 ? ManipulationModes.Scale : sample.Kind == 2 ? ManipulationModes.Rotate : ManipulationModes.None;
+            if (!session.Started && sample.Phase is 1 or 2 && (session.Mode & kindMode) != 0)
+            {
+                var position = new Point(sample.X / _dpiScale, sample.Y / _dpiScale);
+                session.LastOrigin = GetMacOSGestureOrigin(position, (UIElement)session.Container);
+                session.LastWindowPoint = position;
+                if (!Finite(session.LastOrigin) || !session.Current) { FinishMacOSManipulation(session); return; }
+                if (revision != _macOSGestureDispatch) return;
                 session.Started = true;
-                request.Handled = true;
                 var started = RaiseMacOSGesturePair(session, revision, (bool preview, ManipulationStartedEventArgs? _) => new()
                 {
                     RoutedEvent = preview ? PreviewManipulationStartedEvent : ManipulationStartedEvent,
@@ -236,13 +254,9 @@ public partial class Window
                 }, args => args.CancelRequested || args.CompleteRequested);
                 if (started.CancelRequested || started.CompleteRequested) { FinishMacOSManipulation(session); return; }
             }
-            request.Handled = session.Started;
             if (!session.Current) { FinishMacOSManipulation(session); return; }
             if (revision != _macOSGestureDispatch || session.Inertial) return;
-            if (sample.Phase == 4) { FinishMacOSManipulation(session); return; }
-            uint bit = sample.Kind == 0 ? 0u : 1u << (sample.Kind - 1);
-            if (sample.Phase == 1) session.Kinds |= bit;
-            if (sample.Kind != 0 && !ApplyMacOSGestureDelta(session, sample, revision)) return;
+            if (session.Started && sample.Kind != 0 && !ApplyMacOSGestureDelta(session, sample, revision)) return;
             if (sample.Phase == 3)
             {
                 session.Kinds &= ~bit;
@@ -261,6 +275,11 @@ public partial class Window
     {
         double scale = (session.Mode & ManipulationModes.Scale) != 0 ? sample.Scale : 1;
         double rotation = (session.Mode & ManipulationModes.Rotate) != 0 ? sample.Rotation : 0;
+        if (sample.Kind == 2 && sample.Phase == 1 && rotation == 0 && (session.Mode & ManipulationModes.Rotate) != 0)
+        {
+            session.LastAngularTime = sample.Timestamp;
+            session.HasAngularSample = true;
+        }
         if (scale == 1 && rotation == 0) return true;
         var position = new Point(sample.X / _dpiScale, sample.Y / _dpiScale);
         var container = (UIElement)session.Container;
@@ -279,9 +298,19 @@ public partial class Window
         { FinishMacOSManipulation(session); return false; }
         if (!session.Current) { FinishMacOSManipulation(session); return false; }
         if (revision != _macOSGestureDispatch) return false;
-        double dt = Math.Max(1, (sample.Timestamp - session.LastTime) * 1000);
-        var velocities = new ManipulationVelocities { AngularVelocity = session.HasSample ? rotation / dt : 0 };
-        session.LastTime = sample.Timestamp; session.HasSample = true;
+        double angular = (session.Mode & ManipulationModes.Rotate) != 0 ? session.Velocities.AngularVelocity : 0;
+        if (rotation != 0)
+        {
+            double dt = Math.Max(1, (sample.Timestamp - session.LastAngularTime) * 1000);
+            angular = session.HasAngularSample ? rotation / dt : 0;
+            session.LastAngularTime = sample.Timestamp; session.HasAngularSample = true;
+        }
+        var velocities = new ManipulationVelocities
+        {
+            LinearVelocity = session.Velocities.LinearVelocity,
+            AngularVelocity = angular,
+            ExpansionVelocity = session.Velocities.ExpansionVelocity
+        };
         session.LastOrigin = origin; session.LastWindowPoint = position;
         session.Total = GestureDelta(totalScale, totalRotation); session.Velocities = velocities;
         var delta = GestureDelta(scale, rotation);
