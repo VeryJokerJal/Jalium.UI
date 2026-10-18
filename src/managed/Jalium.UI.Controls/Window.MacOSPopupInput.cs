@@ -8,6 +8,22 @@ namespace Jalium.UI;
 
 public partial class Window
 {
+    private long _macOSKeyboardPacketGeneration;
+    private readonly KeyboardPressedState _macOSKeyboardPressedState = new();
+
+    private Func<bool> BeginMacOSKeyboardInput()
+    {
+        var owner = MacOSInputOwner;
+        long packet = Interlocked.Increment(ref owner._macOSKeyboardPacketGeneration);
+        return () => packet == Volatile.Read(ref owner._macOSKeyboardPacketGeneration);
+    }
+
+    Func<bool>? IInputDispatcherHost.BeginNativeKeyboardInput() =>
+        OperatingSystem.IsMacOS() ? BeginMacOSKeyboardInput() : null;
+
+    KeyboardPressedState? IInputDispatcherHost.NativeKeyboardPressedState =>
+        OperatingSystem.IsMacOS() ? MacOSInputOwner._macOSKeyboardPressedState : null;
+
     internal bool IsMacOSPopupInputOwnerAlive => !_isClosing && !_managedTeardownStarted && IsMacOSPopupHostCurrent;
 
     internal event Action<UIElement>? MacOSInputSubtreeDetached;

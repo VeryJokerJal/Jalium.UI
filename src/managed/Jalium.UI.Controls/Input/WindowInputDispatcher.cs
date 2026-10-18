@@ -36,6 +36,8 @@ internal sealed partial class WindowInputDispatcher
 
     // ── Keyboard state ──
     private readonly List<UIElement> _keyboardPressedChain = [];
+    private readonly KeyboardPressedState _ownKeyboardPressedState = new();
+    private KeyboardPressedState KeyboardPressState => _host.NativeKeyboardPressedState ?? _ownKeyboardPressedState;
     private long _suppressEscapeUntilTick;
     private const int EscapeReactivateSuppressionMs = 250;
 
@@ -680,18 +682,26 @@ internal sealed partial class WindowInputDispatcher
         => HandleKeyDownCore(key, modifiers, isRepeat, timestamp, null);
 
     public bool HandlePlatformKeyDown(Key key, ModifierKeys modifiers, bool isRepeat, int timestamp,
-        ModifierKeys physicalModifiers)
-        => HandleKeyDownCore(key, modifiers, isRepeat, timestamp, physicalModifiers);
+        ModifierKeys physicalModifiers, Func<bool>? packetLifetime = null)
+        => HandleKeyDownCore(key, modifiers, isRepeat, timestamp, physicalModifiers, packetLifetime);
 
     private bool HandleKeyDownCore(Key key, ModifierKeys modifiers, bool isRepeat, int timestamp,
-        ModifierKeys? physicalModifiers)
+        ModifierKeys? physicalModifiers, Func<bool>? packetLifetime = null)
     {
+        bool nativeMac = OperatingSystem.IsMacOS() && physicalModifiers.HasValue;
+        if (nativeMac) packetLifetime ??= _host.BeginNativeKeyboardInput();
+        UIElement? nativeTarget = nativeMac ? _host.GetKeyboardEventTarget() : null;
+        Func<bool>? inputLifetime = nativeMac ? CaptureKeyboardInputLifetime(nativeTarget!, false, packetLifetime) : null;
+        var pressedState = KeyboardPressState;
+        long pressedRevision = pressedState.Revision;
+        if (inputLifetime?.Invoke() == false) return true;
         if (ShouldSuppressReactivatedEscape(key, isKeyDown: true))
             return true;
 
         // Allow subclass to intercept before any processing
         if (_host.OnPreviewWindowKeyDown(key, modifiers, isRepeat))
             return true;
+        if (inputLifetime?.Invoke() == false) return true;
 
         // F3 toggles debug HUD — silently ignored unless the app opted in via
         // app.UseDebugHud(). Treat as unhandled so other handlers can claim F3.
@@ -721,18 +731,19 @@ internal sealed partial class WindowInputDispatcher
         }
 
         var target = _host.GetKeyboardEventTarget();
-        var inputLifetime = physicalModifiers.HasValue ? _host.CaptureNativeInputLifetime(target, textInput: false) : null;
+        if (!nativeMac && physicalModifiers.HasValue)
+            inputLifetime = _host.CaptureNativeInputLifetime(target, textInput: false);
         if (inputLifetime?.Invoke() == false) return true;
 
         if (!isRepeat && (key == Key.Space || key == Key.Enter))
-            ActivateKeyboardPressedChain(target);
+            pressedRevision = ActivateKeyboardPressedChainCore(target, pressedState, inputLifetime);
 
         // Raise tunnel event (PreviewKeyDown)
         KeyEventArgs tunnelArgs = new(UIElement.PreviewKeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp)
             { PhysicalModifiers = physicalModifiers };
         RaiseNativeInput(target, tunnelArgs, inputLifetime);
         if (inputLifetime?.Invoke() == false)
-        { ClearKeyboardPressedChain(); return true; }
+        { ClearKeyboardPressedChainIfCurrent(pressedState, pressedRevision); return true; }
 
         // Raise bubble event (KeyDown) if not handled
         if (!tunnelArgs.Handled)
@@ -741,7 +752,7 @@ internal sealed partial class WindowInputDispatcher
                 { PhysicalModifiers = physicalModifiers };
             RaiseNativeInput(target, bubbleArgs, inputLifetime);
             if (inputLifetime?.Invoke() == false)
-            { ClearKeyboardPressedChain(); return true; }
+            { ClearKeyboardPressedChainIfCurrent(pressedState, pressedRevision); return true; }
 
             // Auto Tab/Shift+Tab focus navigation
             if (!bubbleArgs.Handled && key == Key.Tab)
@@ -817,19 +828,37 @@ internal sealed partial class WindowInputDispatcher
     private bool HandleKeyUpCore(Key key, ModifierKeys modifiers, int timestamp,
         ModifierKeys? physicalModifiers)
     {
+        bool nativeMac = OperatingSystem.IsMacOS() && physicalModifiers.HasValue;
+        var packetLifetime = nativeMac ? _host.BeginNativeKeyboardInput() : null;
+        UIElement? nativeTarget = nativeMac ? _host.GetKeyboardEventTarget() : null;
+        Func<bool>? inputLifetime = nativeMac ? CaptureKeyboardInputLifetime(nativeTarget!, false, packetLifetime) : null;
+        var pressedState = KeyboardPressState;
+        long pressedRevision = pressedState.Revision;
         if (ShouldSuppressReactivatedEscape(key, isKeyDown: false))
             return true;
 
-        if (_host.OnPreviewWindowKeyUp(key, modifiers))
+        if (inputLifetime?.Invoke() == false)
+        {
+            if (key is Key.Space or Key.Enter) ClearKeyboardPressedChainIfCurrent(pressedState, pressedRevision);
             return true;
+        }
+        bool previewHandled = _host.OnPreviewWindowKeyUp(key, modifiers);
+        if (previewHandled || inputLifetime?.Invoke() == false)
+        {
+            // A window hook may consume this release or pump newer input. Only
+            // release the old chain; a newer Enter/Space press owns its revision.
+            if (key is Key.Space or Key.Enter) ClearKeyboardPressedChainIfCurrent(pressedState, pressedRevision);
+            return true;
+        }
 
         var target = OperatingSystem.IsMacOS()
             ? _host.GetKeyboardEventTarget()
             : Keyboard.FocusedElement as UIElement ?? _host.Self;
-        var inputLifetime = physicalModifiers.HasValue ? _host.CaptureNativeInputLifetime(target, textInput: false) : null;
+        if (!nativeMac && physicalModifiers.HasValue)
+            inputLifetime = _host.CaptureNativeInputLifetime(target, textInput: false);
         if (inputLifetime?.Invoke() == false)
         {
-            if (key is Key.Space or Key.Enter) ClearKeyboardPressedChain();
+            if (key is Key.Space or Key.Enter) ClearKeyboardPressedChainIfCurrent(pressedState, pressedRevision);
             return true;
         }
 
@@ -847,7 +876,7 @@ internal sealed partial class WindowInputDispatcher
         }
 
         if (key == Key.Space || key == Key.Enter)
-            ClearKeyboardPressedChain();
+            ClearKeyboardPressedChainIfCurrent(pressedState, pressedRevision);
 
         return handled || inputLifetime?.Invoke() == false;
     }
@@ -855,6 +884,7 @@ internal sealed partial class WindowInputDispatcher
     /// <summary>Handles character input (WM_CHAR or PlatformEvent.CharInput).</summary>
     public void HandleCharInput(string text, int timestamp)
     {
+        var packetLifetime = OperatingSystem.IsMacOS() ? _host.BeginNativeKeyboardInput() : null;
         // Tab is already handled by KeyDown, either as focus navigation or as
         // editor indentation. Its subsequent WM_CHAR must not reach the newly
         // focused control or insert a second tab in an AcceptsTab editor.
@@ -864,7 +894,7 @@ internal sealed partial class WindowInputDispatcher
         var target = _host.GetTextInputTarget();
         if (target == null)
             return;
-        var inputLifetime = _host.CaptureNativeInputLifetime(target, textInput: true);
+        var inputLifetime = CaptureKeyboardInputLifetime(target, true, packetLifetime);
         if (inputLifetime?.Invoke() == false) return;
 
         TextCompositionEventArgs tunnelArgs = new(UIElement.PreviewTextInputEvent, text, timestamp);
@@ -879,6 +909,13 @@ internal sealed partial class WindowInputDispatcher
 
     private static void RaiseNativeInput(UIElement target, RoutedEventArgs args, Func<bool>? inputLifetime)
         => InputRoute.Raise(target, args, inputLifetime);
+
+    private Func<bool>? CaptureKeyboardInputLifetime(UIElement target, bool textInput, Func<bool>? packetLifetime)
+    {
+        var hostLifetime = _host.CaptureNativeInputLifetime(target, textInput);
+        return hostLifetime == null && packetLifetime == null ? null :
+            () => packetLifetime?.Invoke() != false && hostLifetime?.Invoke() != false;
+    }
 
     private bool ShouldSuppressReactivatedEscape(Key key, bool isKeyDown)
     {
@@ -1493,15 +1530,43 @@ internal sealed partial class WindowInputDispatcher
     }
 
     internal void ActivateKeyboardPressedChain(UIElement target)
+        => ActivateKeyboardPressedChainCore(target, KeyboardPressState, null);
+
+    private long ActivateKeyboardPressedChainCore(UIElement target, KeyboardPressedState state, Func<bool>? inputLifetime)
     {
-        ClearKeyboardPressedChain();
+        long revision = unchecked(++state.Revision);
+        var previous = state.CurrentChain == null ? Array.Empty<UIElement>() : DetachPressedChain(state.CurrentChain);
+        state.CurrentChain = null;
+        if (_keyboardPressedChain.Count != 0)
+            previous = previous.Concat(DetachPressedChain(_keyboardPressedChain)).Distinct().ToArray();
+        ClearDetachedPressedChain(previous, _keyboardPressedChain, _mousePressedChain);
+        if (revision != state.Revision || inputLifetime?.Invoke() == false) return revision;
         BuildAncestorChain(target, _keyboardPressedChain);
-        ApplyPressedState(_keyboardPressedChain, true);
+        state.CurrentChain = _keyboardPressedChain;
+        foreach (var element in _keyboardPressedChain.ToArray())
+        {
+            if (revision != state.Revision || inputLifetime?.Invoke() == false) break;
+            element.SetIsPressed(true);
+        }
+        return revision;
+    }
+
+    private void ClearKeyboardPressedChainIfCurrent(KeyboardPressedState state, long revision)
+    {
+        if (ReferenceEquals(state, KeyboardPressState) && revision == state.Revision)
+            ClearKeyboardPressedChain();
     }
 
     internal void ClearKeyboardPressedChain()
     {
-        ClearPressedChain(_keyboardPressedChain);
+        var state = KeyboardPressState;
+        if (ReferenceEquals(state.CurrentChain, _keyboardPressedChain))
+        {
+            state.Revision++;
+            state.CurrentChain = null;
+        }
+        var previous = DetachPressedChain(_keyboardPressedChain);
+        ClearDetachedPressedChain(previous, _keyboardPressedChain, _mousePressedChain);
     }
 
     internal void ClearPressedChains()
@@ -1537,7 +1602,7 @@ internal sealed partial class WindowInputDispatcher
             chain[i].SetIsPressed(isPressed);
     }
 
-    private static void ClearPressedChain(List<UIElement> chain)
+    private void ClearPressedChain(List<UIElement> chain)
     {
         if (chain.Count == 0)
             return;
@@ -1556,14 +1621,15 @@ internal sealed partial class WindowInputDispatcher
         return previous;
     }
 
-    private static void ClearDetachedPressedChain(
+    private void ClearDetachedPressedChain(
         UIElement[] previous,
         List<UIElement> currentChain,
         List<UIElement>? additionalChain = null)
     {
         foreach (UIElement element in previous)
         {
-            if (!currentChain.Contains(element) && additionalChain?.Contains(element) != true)
+            if (!currentChain.Contains(element) && additionalChain?.Contains(element) != true &&
+                KeyboardPressState.CurrentChain?.Contains(element) != true)
                 element.SetIsPressed(false);
         }
     }

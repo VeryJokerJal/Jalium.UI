@@ -12,6 +12,7 @@
     <DefineConstants Condition="'$(JaliumMacNativeGeometryTests)' == 'true'">$(DefineConstants);JALIUM_MAC_NATIVE_GEOMETRY_TESTS</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/ListBoxParityTests.cs" Link="ListBoxParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/HierarchicalDataTemplateParityTests.cs" Link="HierarchicalDataTemplateParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/MouseWheelSignConsumerTests.cs" Link="MouseWheelSignConsumerTests.cs" />
     <Compile Include="../../src/packaging/Jalium.UI.MacOS/FileDialogFilterSelection.cs" Link="FileDialogFilterSelection.cs" />

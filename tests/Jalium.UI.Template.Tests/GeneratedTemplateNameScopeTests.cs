@@ -5,6 +5,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using Jalium.UI.Controls;
+using Jalium.UI.Data;
 using Parser = sg::Jalium.UI.Xaml.SourceGenerator.JalxamlParser;
 using Generator = sg::Jalium.UI.Xaml.SourceGenerator.JalxamlSourceGenerator;
 
@@ -150,6 +151,42 @@ public sealed class GeneratedTemplateNameScopeTests
         Assert.Equal(DiagnosticSeverity.Error,diagnostic.Severity);Assert.Contains("Repeated",diagnostic.GetMessage());
         Assert.Equal("/ScopeView.jalxaml",diagnostic.Location.GetLineSpan().Path);
         Assert.Equal(3,diagnostic.Location.GetLineSpan().StartLinePosition.Line);
+    }
+
+    [Theory] [InlineData("ControlTemplate")] [InlineData("DataTemplate")]
+    [InlineData("HierarchicalDataTemplate")] [InlineData("ItemsPanelTemplate")] [InlineData("ItemContainerTemplate")]
+    public void GeneratedInstancesRegisterTheirOwnNamedDescendants(string kind)
+    {
+        string xaml=Prefix+"<UserControl.Resources>"+Template(kind,"x:Name","first")+"</UserControl.Resources><Grid x:Name=\"Inside\"/></UserControl>";
+        var output=Generate(xaml);AssertNoErrors(output.Compilation);var owner=Create(output.Compilation);
+        var factory=(FrameworkTemplate)owner.Resources["first"]!;
+        var one=Assert.IsType<StackPanel>(factory.LoadContent());var two=Assert.IsType<StackPanel>(factory.LoadContent());
+        Assert.Same(one.Children[0],one.FindName("Inside"));Assert.Same(two.Children[0],two.FindName("Inside"));
+        Assert.NotSame(one.FindName("Inside"),two.FindName("Inside"));Assert.IsType<Grid>(owner.FindName("Inside"));
+    }
+
+    [Theory] [InlineData("ControlTemplate")] [InlineData("DataTemplate")]
+    [InlineData("HierarchicalDataTemplate")] [InlineData("ItemsPanelTemplate")] [InlineData("ItemContainerTemplate")]
+    public void ElementNameBindingsStayInsideTheirOwnGeneratedInstance(string kind)
+    {
+        string target=kind=="ControlTemplate"?" TargetType=\"Button\"":"";
+        string xaml=Prefix+"<UserControl.Resources><"+kind+" x:Key=\"first\""+target+"><StackPanel><TextBox x:Name=\"Source\" Text=\"内部\"/><TextBlock x:Name=\"Target\" Text=\"{Binding Text, ElementName=Source}\"/></StackPanel></"+kind+"></UserControl.Resources><StackPanel x:Name=\"Mount\"><TextBox x:Name=\"Source\" Text=\"外部\"/></StackPanel></UserControl>";
+        var output=Generate(xaml);AssertNoErrors(output.Compilation);var owner=Create(output.Compilation);
+        var factory=(FrameworkTemplate)owner.Resources["first"]!;
+        var one=Assert.IsType<StackPanel>(factory.LoadContent());var two=Assert.IsType<StackPanel>(factory.LoadContent());
+        var mount=Assert.IsType<StackPanel>(owner.FindName("Mount"));mount.Children.Add(one);mount.Children.Add(two);
+        owner.Measure(new Size(600,600));owner.Arrange(new Rect(0,0,600,600));
+        var firstSource=Assert.IsType<TextBox>(one.Children[0]);var secondSource=Assert.IsType<TextBox>(two.Children[0]);
+        var firstTarget=Assert.IsType<TextBlock>(one.Children[1]);var secondTarget=Assert.IsType<TextBlock>(two.Children[1]);
+        BindingOperations.ClearBinding(firstTarget,TextBlock.TextProperty);
+        BindingOperations.ClearBinding(secondTarget,TextBlock.TextProperty);
+        BindingOperations.SetBinding(firstTarget,TextBlock.TextProperty,new Binding("Text") { ElementName="Source" });
+        BindingOperations.SetBinding(secondTarget,TextBlock.TextProperty,new Binding("Text") { ElementName="Source" });
+        Assert.Equal("内部",firstTarget.Text);Assert.Equal("内部",secondTarget.Text);
+        firstSource.Text="第一实例";secondSource.Text="第二实例";
+        Assert.Equal("第一实例",firstTarget.Text);Assert.Equal("第二实例",secondTarget.Text);
+        Assert.IsType<TextBox>(owner.FindName("Source")).Text="外部更新";
+        Assert.Equal("第一实例",firstTarget.Text);Assert.Equal("第二实例",secondTarget.Text);
     }
 
     private static (Compilation Compilation,GeneratorDriverRunResult Run) Generate(string xaml,string code=Code,bool allowGeneratorErrors=false)

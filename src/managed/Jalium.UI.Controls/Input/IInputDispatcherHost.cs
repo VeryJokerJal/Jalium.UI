@@ -4,6 +4,12 @@ using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
+internal sealed class KeyboardPressedState
+{
+    internal long Revision;
+    internal List<UIElement>? CurrentChain;
+}
+
 /// <summary>
 /// Callback interface that <see cref="WindowInputDispatcher"/> uses to interact
 /// with the host <see cref="Window"/>. Keeps the dispatcher decoupled from
@@ -47,6 +53,8 @@ internal interface IInputDispatcherHost
 
     UIElement GetKeyboardEventTarget();
     UIElement? GetTextInputTarget();
+    Func<bool>? BeginNativeKeyboardInput() => null;
+    KeyboardPressedState? NativeKeyboardPressedState => null;
     Func<bool>? CaptureNativeInputLifetime(UIElement target, bool textInput) => null;
     MouseCommandInput? CaptureNativeMouseCommandInput(UIElement target, Func<bool>? isPacketCurrent = null) => null;
     ContentDialog? FindContainingInPlaceDialog();

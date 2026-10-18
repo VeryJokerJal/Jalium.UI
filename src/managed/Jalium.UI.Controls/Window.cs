@@ -5409,6 +5409,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var physicalModifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 int timestamp = Environment.TickCount;
                 Window inputOwner = OperatingSystem.IsMacOS() ? MacOSInputOwner : this;
+                var keyboardPacketLifetime = OperatingSystem.IsMacOS() ? BeginMacOSKeyboardInput() : null;
                 UIElement? ResolveCommandTarget() => GetTextInputTarget() ??
                     (Keyboard.FocusedElement == null && inputOwner.IsMacOSInputTargetValid(inputOwner) ? inputOwner : null);
                 var commandTarget = OperatingSystem.IsMacOS() ? ResolveCommandTarget() : null;
@@ -5421,7 +5422,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 int commandActivationGeneration = _macOSActivationGeneration;
                 int commandNativeActivationGeneration = _macOSNativeActivationGeneration;
                 int commandResponderFocusEpoch = _macOSResponderFocusEpoch;
-                bool IsCommandTargetCurrent() => commandTarget != null &&
+                bool IsCommandTargetCurrent() => keyboardPacketLifetime?.Invoke() != false && commandTarget != null &&
                     IsEnabled && Visibility == Visibility.Visible &&
                     ReferenceEquals(commandTarget, ResolveCommandTarget()) &&
                     ReferenceEquals(commandScope, inputOwner.ActiveContentDialog ?? (UIElement)inputOwner) &&
@@ -5433,7 +5434,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     commandResponderFocusEpoch == _macOSResponderFocusEpoch &&
                     ReferenceEquals(commandPlatform, _platformWindow) && commandHandle == Handle;
                 bool handled = _inputDispatcher.HandlePlatformKeyDown(key, modifiers, isRepeat, timestamp,
-                    physicalModifiers);
+                    physicalModifiers, keyboardPacketLifetime);
                 // AppKit edit actions also arrive as key events. Let custom
                 // routed commands handle them after the control's own handlers.
                 if (!handled && IsCommandTargetCurrent())
@@ -5465,15 +5466,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             case PlatformEventType.CompositionStart:
-                if (OperatingSystem.IsMacOS() && !TryGetImeTarget(out _, out _)) break;
+                if (OperatingSystem.IsMacOS())
+                {
+                    BeginMacOSKeyboardInput();
+                    if (!TryGetImeTarget(out _, out _)) break;
+                }
                 if (!InputMethod.IsComposing)
                     InputMethod.StartComposition();
                 break;
 
             case PlatformEventType.CompositionUpdate:
+                var compositionUpdateLifetime = OperatingSystem.IsMacOS() ? BeginMacOSKeyboardInput() : null;
                 if (OperatingSystem.IsMacOS() && !TryGetImeTarget(out _, out _)) break;
                 if (!InputMethod.IsComposing)
                     InputMethod.StartComposition();
+                if (compositionUpdateLifetime?.Invoke() == false) break;
                 InputMethod.UpdateComposition(
                     evt.CompositionText ?? string.Empty,
                     Math.Max(0, evt.CompositionCursor));
@@ -5481,6 +5488,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.CompositionEnd:
             {
+                var compositionEndLifetime = OperatingSystem.IsMacOS() ? BeginMacOSKeyboardInput() : null;
                 if (OperatingSystem.IsMacOS() && InputMethod.CurrentTarget is UIElement composingTarget &&
                     !IsMacOSInputTargetValid(composingTarget)) break;
                 string result = evt.CompositionText ?? string.Empty;
@@ -5491,6 +5499,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var commitLifetime = OperatingSystem.IsMacOS() && commitTarget != null
                     ? CaptureMacOSInputLifetime(commitTarget, textInput: true) : null;
                 InputMethod.EndComposition(result.Length == 0 ? null : result);
+                if (compositionEndLifetime?.Invoke() == false) break;
                 // Composition-ended callbacks may move focus. Never send the
                 // old editor's commit into the editor they just focused.
                 if (result.Length != 0 && commitLifetime?.Invoke() != false && (!OperatingSystem.IsMacOS() ||
@@ -5510,11 +5519,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
 
             case PlatformEventType.ImeTextRequest:
-                if (evt.ImeTextRequest is { } request &&
-                    TryGetImeTarget(out UIElement? requestTarget, out IImeSupport? textSupport))
+            {
+                if (evt.ImeTextRequest is not { } request) break;
+                var requestPacketLifetime = OperatingSystem.IsMacOS() ? BeginMacOSKeyboardInput() : null;
+                if (TryGetImeTarget(out UIElement? requestTarget, out IImeSupport? textSupport))
                 {
-                    var requestLifetime = OperatingSystem.IsMacOS()
+                    var requestTargetLifetime = OperatingSystem.IsMacOS()
                         ? CaptureMacOSInputLifetime(requestTarget!, textInput: true) : null;
+                    Func<bool>? requestLifetime = OperatingSystem.IsMacOS()
+                        ? () => requestPacketLifetime?.Invoke() != false && requestTargetLifetime?.Invoke() != false : null;
                     if (!textSupport!.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot requestSnapshot) ||
                         !ImeTextEncoding.TryNormalizeUtf16Range(requestSnapshot.Text,
                             request.Start, request.Length, out int rangeStart, out int rangeLength)) break;
@@ -5550,6 +5563,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     RefreshLinuxImeContext();
                 }
                 break;
+            }
 
             case PlatformEventType.MacOSTablet:
                 if (evt.MacOSTablet is { } tablet) HandleMacOSTablet(tablet);

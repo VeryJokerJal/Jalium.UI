@@ -1391,6 +1391,7 @@ internal static class JalxamlCodeGenerator
         };
         sb.AppendLine($"{bodyPad}var {rootVar} = new global::{rootChild.ResolvedClrTypeName!}();");
         EmitElementBody(sb, rootChild, rootVar, counter, new HashSet<string>(StringComparer.Ordinal), indent + 8, templateContext);
+        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.EndComponent({rootVar}, {context});");
         sb.AppendLine($"{bodyPad}return {rootVar};");
         sb.AppendLine($"{innerPad}}}");
         sb.AppendLine($"{innerPad}finally");
