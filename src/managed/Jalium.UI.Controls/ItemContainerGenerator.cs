@@ -95,8 +95,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </summary>
     public DependencyObject? ContainerFromIndex(int index)
     {
-        return _realizedItems.TryGetValue(index, out var map) ? map.Container : null;
+        return _host.Items.GetOccurrenceAt(index) is { } row ? ContainerFromOccurrence(row) : null;
     }
+
+    internal DependencyObject? ContainerFromOccurrence(ItemOccurrence row) => row.IsAlive
+        ? _realizedItems.Values.Where(map => ReferenceEquals(map.Occurrence, row)).Select(map => map.Container).FirstOrDefault() : null;
 
     /// <summary>
     /// Returns the container for the specified item.
@@ -105,13 +108,13 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     {
         foreach (var map in _realizedItems.Values)
         {
-            if (Equals(map.Item, item))
+            if (map.Occurrence?.IsAlive == true && ReferenceEquals(map.Item, item))
             {
                 return map.Container;
             }
         }
 
-        return null;
+        return _realizedItems.Values.Where(map => map.Occurrence?.IsAlive == true && Equals(map.Item, item)).Select(map => map.Container).FirstOrDefault();
     }
 
     /// <summary>
@@ -121,7 +124,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     {
         if (_containerToIndex.TryGetValue(container, out var index) && _realizedItems.TryGetValue(index, out var map))
         {
-            return map.Item;
+            return map.Occurrence?.IsAlive == true ? map.Item : DependencyProperty.UnsetValue;
         }
 
         return DependencyProperty.UnsetValue;
@@ -148,7 +151,8 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         // contract for a future grouped generator, where false recursively searches child group
         // generators while true stops at this map.
         _ = returnLocalIndex;
-        return _containerToIndex.TryGetValue(container, out var index) ? index : -1;
+        return _containerToIndex.TryGetValue(container, out var index) && _realizedItems.TryGetValue(index, out var map)
+            ? map.Occurrence?.Index ?? -1 : -1;
     }
 
     #endregion
@@ -367,10 +371,13 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
         if (_realizedItems.TryGetValue(index, out var existing))
         {
-            return existing.Container;
+            if (ReferenceEquals(existing.Occurrence, _host.Items.GetOccurrenceAt(index))) return existing.Container;
+            return null;
         }
 
-        var item = _itemAccessor.GetItemAt(index);
+        var occurrence = _host.Items.GetOccurrenceAt(index);
+        var item = occurrence?.Item;
+        ulong version = _host.Items.OccurrenceVersion;
         if (item == null)
         {
             return null;
@@ -381,10 +388,6 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         if (isOwnContainer)
         {
             container = (DependencyObject)item;
-            if (container is FrameworkElement ownContainer)
-            {
-                _host.PrepareContainerForItemInternal(ownContainer, item);
-            }
             isNewlyRealized = true;
         }
         else if (_preferredContainerType != null && TryPopDetachedContainer(out var recycled))
@@ -404,8 +407,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
             isNewlyRealized = true;
         }
 
+        if (version != _host.Items.OccurrenceVersion || !occurrence!.IsAlive) return null;
         MapContainer(index, item, container, isOwnContainer);
-        return container;
+        if (isOwnContainer && container is FrameworkElement ownContainer)
+            _host.PrepareContainerForItemInternal(ownContainer, item);
+        return version == _host.Items.OccurrenceVersion && occurrence.IsAlive ? container : null;
     }
 
     /// <summary>
@@ -672,7 +678,8 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     {
         _realizedItems[index] = new ItemContainerMap(index, item, container, isOwnContainer)
         {
-            RealizationId = checked(++_nextRealizationId)
+            RealizationId = checked(++_nextRealizationId),
+            Occurrence = _host.Items.GetOccurrenceAt(index)
         };
         _containerToIndex[container] = index;
         MarkSortedCacheDirty();
@@ -795,6 +802,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         public DependencyObject Container { get; set; }
 
         public bool IsOwnContainer { get; set; }
+        internal ItemOccurrence? Occurrence { get; set; }
     }
 
     /// <summary>

@@ -216,7 +216,7 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
                 @"columns":@(cell.columnSpan),@"tableColumns":@(cell.table.numberOfColumns)}];
         }
         [paragraphs addObject:@{@"start":@(range.location),@"length":@(range.length),
-            @"alignment":@(style.alignment),@"direction":@(style.baseWritingDirection),
+            @"alignment":@(JaliumBridgeTextAlignment(style.alignment)),@"direction":@(style.baseWritingDirection),
             @"lists":lists,@"tables":tables,@"skipPrefix":@(skipPrefix)}];
         index = NSMaxRange(range);
     }

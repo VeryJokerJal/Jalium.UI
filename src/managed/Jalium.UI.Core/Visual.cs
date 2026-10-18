@@ -442,7 +442,7 @@ public abstract class Visual : DependencyObject
             // should be a no-op. Happens during own-container realization when
             // multiple pipelines (ItemsControl populate + VSP realize) converge
             // on the same container within one layout pass.
-            if (!_children.Contains(child))
+            if (!_children.Any(candidate => ReferenceEquals(candidate, child)))
             {
                 _children.Add(child);
                 ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
@@ -528,7 +528,8 @@ public abstract class Visual : DependencyObject
         child.InputParentRevision++;
         child._parent = null;
         ((DependencyObject)child).VisualParent = null;
-        _children.Remove(child);
+        int index = _children.FindIndex(candidate => ReferenceEquals(candidate, child));
+        if (index >= 0) _children.RemoveAt(index);
         ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
 
         OnVisualChildrenChanged(null, child);

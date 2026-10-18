@@ -231,6 +231,10 @@ internal sealed class WritingToolsDocumentFragment
         var incoming = Blocks.ToList();
         if (incoming[0] is Paragraph first)
         {
+            prefix.TextAlignment = first.TextAlignment;
+            if (!current()) return document.ContentStart;
+            prefix.FlowDirection = first.FlowDirection;
+            if (!current()) return document.ContentStart;
             MoveInlines(first, prefix);
             incoming.RemoveAt(0);
         }

@@ -49,8 +49,6 @@ public partial class ListBox : Selector
     private int _anchorIndex = -1;
     private object? _anchorItem;
     private bool _isApplyingSelectedItems;
-    private object? _focusedItem;
-    private object? _pendingFocusItem;
     private IInputElement? _pendingFocusOrigin;
     private bool _focusRequestQueued;
 
@@ -89,14 +87,13 @@ public partial class ListBox : Selector
                 return;
             }
 
-            int index = GetIndexOf(value);
+            int index = ResolveSelectionOccurrence(value, preferred: _primaryOccurrence)?.Index ?? -1;
             if (index < 0)
             {
                 throw new InvalidOperationException("The anchor item must belong to this ListBox.");
             }
 
-            _anchorIndex = index;
-            _anchorItem = GetItemAt(index);
+            SetAnchorIndex(index);
         }
     }
 
@@ -137,7 +134,7 @@ public partial class ListBox : Selector
             return;
         }
 
-        int index = GetIndexOf(item);
+        int index = Items.FindOccurrence(item)?.Index ?? -1;
         if (index < 0)
         {
             return;
@@ -201,20 +198,9 @@ public partial class ListBox : Selector
             }
 
             listBoxItem.ParentListBox = this;
-            var logicalValue = GetSelectionValueFromLogicalItem(item);
-
-            // Set selection state based on current selection mode
-            if (SelectionMode == SelectionMode.Single)
-            {
-                // Selecting through SelectedIndex stores the item itself, selecting through input stores
-                // its selection value (the content of an explicit ListBoxItem). UpdateContainerSelection
-                // accepts both; a row generated after the selection was made must accept both too.
-                listBoxItem.IsSelected = Equals(logicalValue, SelectedItem) || ReferenceEquals(item, SelectedItem);
-            }
-            else
-            {
-                listBoxItem.IsSelected = _selectedItems.Contains(item) || (logicalValue != null && _selectedItems.Contains(logicalValue));
-            }
+            int index = ItemContainerGenerator.IndexFromContainer(element);
+            if (index < 0) index = Items.FindOccurrence(item)?.Index ?? -1;
+            listBoxItem.IsSelected = IsOccurrenceSelected(index);
         }
     }
 
@@ -236,9 +222,8 @@ public partial class ListBox : Selector
     /// <inheritdoc />
     protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
     {
-        // Retire membership before Selector publishes selection changes. Those
-        // callbacks may replace the source again or throw before returning here.
-        SynchronizeExplicitItemOwnership(e);
+        // Membership and occurrence selection were reconciled at the collection
+        // boundary before any subscribers could query, reenter or throw.
         base.OnItemsChanged(e);
     }
 
@@ -309,37 +294,8 @@ public partial class ListBox : Selector
 
     protected override void SynchronizeSelectionWithItemsChange(NotifyCollectionChangedEventArgs e)
     {
-        if (_isApplyingSelectedItems) return;
-        if (_selectedItems.Count == 0 && SelectedItem is null && SelectedIndex < 0) return;
-        if (e.Action == NotifyCollectionChangedAction.Add && e.NewStartingIndex > SelectedIndex) return;
-
-        var requested = new List<object>(_selectedItems);
-        object? preferred = SelectedItem;
-        // Keep the existing Selector replacement behavior, including its active
-        // item, while preserving whether a selection used a container or value.
-        if (e.Action == NotifyCollectionChangedAction.Replace && e.OldItems is not null && e.NewItems is not null)
-        {
-            for (int selected = 0; selected < requested.Count; selected++)
-            {
-                for (int i = 0; i < e.OldItems.Count && i < e.NewItems.Count; i++)
-                {
-                    object? oldItem = e.OldItems[i];
-                    object? oldValue = GetSelectionValueFromLogicalItem(oldItem);
-                    if (!Equals(requested[selected], oldItem) && !Equals(requested[selected], oldValue)) continue;
-                    object? replacement = ReferenceEquals(requested[selected], oldItem)
-                        ? e.NewItems[i] : GetSelectionValueFromLogicalItem(e.NewItems[i]);
-                    if (Equals(preferred, requested[selected])) preferred = replacement;
-                    if (replacement is not null) requested[selected] = replacement;
-                    break;
-                }
-            }
-        }
-        var surviving = requested.Where(item => TryResolveSelectionItem(item, out _, out _, out _)).ToArray();
-        int? primaryIndex = preferred is not null && TryResolveSelectionItem(preferred, out _, out int index, out _)
-            ? index : null;
-        ApplySelectedItems(surviving, primaryIndex, publishToSource: true, preserveItemAliases: true);
-        if (_pendingFocusItem is not null && GetIndexOf(_pendingFocusItem) < 0)
-            ClearPendingFocus();
+        // ItemCollection has already reconciled occurrences before publishing
+        // either direct-item or source/view notifications.
     }
 
     #endregion
@@ -363,85 +319,25 @@ public partial class ListBox : Selector
             return false;
         }
 
-        var resolvedItems = new List<(object SelectionValue, int Index, object Item, object LogicalValue)>();
-        if (selectedItems is not null)
+        var resolved = new List<RowSelection>();
+        var used = new HashSet<ItemOccurrence>();
+        ItemOccurrence? preferred = preferredIndex.HasValue ? Items.GetOccurrenceAt(preferredIndex.Value) : null;
+        if (selectedItems != null)
         {
-            foreach (object? requestedItem in selectedItems)
+            foreach (object? requested in selectedItems)
             {
-                if (requestedItem is null ||
-                    !TryResolveSelectionItem(requestedItem, out object? selectionValue, out int index, out object? item))
-                {
-                    return false;
-                }
-
-                if (resolvedItems.Any(entry => Equals(entry.LogicalValue, selectionValue)))
-                {
-                    continue;
-                }
-
-                resolvedItems.Add((preserveItemAliases ? requestedItem : selectionValue!, index, item!, selectionValue!));
+                if (requested is null || ResolveSelectionOccurrence(requested, used, preferred) is not { } row) return false;
+                if (!used.Add(row)) continue;
+                resolved.Add(new(row, preserveItemAliases ? requested : GetSelectionValueFromLogicalItem(row.Item)!));
             }
         }
-
-        if (SelectionMode == SelectionMode.Single && resolvedItems.Count > 1)
-        {
-            return false;
-        }
-
-        var oldSelectedItems = new List<object>(_selectedItems);
-        var newSelectedItems = resolvedItems.Select(entry => entry.SelectionValue).ToList();
-        var removedItems = oldSelectedItems.Where(item => !newSelectedItems.Any(selected => SelectionValuesEqual(selected, item))).ToList();
-        var addedItems = newSelectedItems.Where(item => !oldSelectedItems.Any(selected => SelectionValuesEqual(selected, item))).ToList();
-
-        _isApplyingSelectedItems = true;
-        try
-        {
-            _selectedItems.Clear();
-            _selectedItems.AddRange(newSelectedItems);
-
-            if (resolvedItems.Count == 0)
-            {
-                UpdateSelectionPropertiesFromBatch(-1, null);
-            }
-            else
-            {
-                // The protected batch API keeps its first-item contract. Input selects
-                // the active item without reordering or collapsing the multi-selection.
-                var primary = preferredIndex.HasValue
-                    ? resolvedItems.FirstOrDefault(entry => entry.Index == preferredIndex.Value)
-                    : resolvedItems[0];
-                if (primary.SelectionValue is null)
-                    primary = resolvedItems[^1];
-                UpdateSelectionPropertiesFromBatch(primary.Index, primary.SelectionValue);
-            }
-
-        }
-        finally
-        {
-            _isApplyingSelectedItems = false;
-        }
-
-        // User handlers run after the selection transaction closes so a newer
-        // selection uses the same complete pipeline and remains authoritative.
-        try
-        {
-            if (removedItems.Count > 0 || addedItems.Count > 0)
-                OnSelectionChanged(new SelectionChangedEventArgs(SelectionChangedEvent, removedItems, addedItems));
-        }
-        finally
-        {
-            try { _selectedItemsView.PublishCommittedSelection(); }
-            finally { if (publishToSource) PublishSelectionToSource(); }
-        }
-        return true;
+        return CommitOccurrenceSelection(resolved, preferred ?? resolved.FirstOrDefault().Row, publishToSource);
     }
 
     private void ApplyInputSelection(IEnumerable selectedItems, object? primaryItem)
     {
-        int index = primaryItem is not null &&
-            TryResolveSelectionItem(primaryItem, out _, out int resolvedIndex, out _)
-            ? resolvedIndex : -1;
-        ApplySelectedItems(selectedItems, index, publishToSource: true);
+        var row = primaryItem is null ? null : ResolveSelectionOccurrence(primaryItem, preferred: _primaryOccurrence);
+        ApplySelectedItems(selectedItems, row?.Index, publishToSource: true);
     }
 
     private void PublishSelectionToSource()
@@ -470,7 +366,7 @@ public partial class ListBox : Selector
         var content = GetSelectionValueAtIndex(clickedIndex) ?? item.Content;
         if (content is null) return;
         ClearPendingFocus();
-        _focusedItem = GetItemAt(clickedIndex);
+        _focusedOccurrence = Items.GetOccurrenceAt(clickedIndex);
 
         switch (SelectionMode)
         {
@@ -496,15 +392,8 @@ public partial class ListBox : Selector
     // realized containers and SelectionChanged stay synchronized.
     internal void SetAutomationSelection(object item, bool selected, bool exclusive)
     {
-        int index = item is ListBoxItem container ? GetItemIndex(container) : Items.IndexOf(item);
-        if (index < 0) index = Items.IndexOf(item);
-        if (index < 0 || GetSelectionValueAtIndex(index) is not { } value) return;
-        IEnumerable<object> requested = exclusive ? [value]
-            : selected ? _selectedItems.Append(value)
-            : _selectedItems.Where(candidate => !SelectionValuesEqual(candidate, value));
-        if (!SetSelectedItems(requested.ToArray()))
-            throw new InvalidOperationException("The list cannot apply the requested automation selection.");
-        PublishSelectionToSource();
+        int index = item is ListBoxItem container ? GetItemIndex(container) : ResolveSelectionOccurrence(item)?.Index ?? -1;
+        if (index >= 0) SetAutomationSelectionAt(index, selected, exclusive);
     }
 
     /// <summary>
@@ -512,22 +401,26 @@ public partial class ListBox : Selector
     /// </summary>
     private void SelectSingle(ListBoxItem item, object content)
     {
-        SetAnchorIndex(GetItemIndex(item));
-        ApplyInputSelection(new[] { content }, content);
+        int index = GetItemIndex(item);
+        SetAnchorIndex(index);
+        ApplyIndexSelection([index], index);
     }
 
     private void SelectMultiple(ListBoxItem item, object content, int clickedIndex)
     {
-        ToggleSelection(content);
+        ToggleSelection(clickedIndex);
         SetAnchorIndex(clickedIndex);
     }
 
-    private void ToggleSelection(object value)
+    private void ToggleSelection(int index)
     {
-        var requested = new List<object>(_selectedItems);
-        if (requested.RemoveAll(candidate => SelectionValuesEqual(candidate, value)) == 0)
-            requested.Add(value);
-        ApplyInputSelection(requested, requested.Any(candidate => SelectionValuesEqual(candidate, value)) ? value : requested.LastOrDefault());
+        var row = Items.GetOccurrenceAt(index);
+        if (row is null) return;
+        var entries = new List<RowSelection>(_selectionRows);
+        bool removed = entries.RemoveAll(entry => ReferenceEquals(entry.Row, row)) != 0;
+        if (!removed) entries.Add(SelectionAt(index));
+        entries = entries.Select(entry => new RowSelection(entry.Row, GetSelectionValueFromLogicalItem(entry.Row.Item)!)).ToList();
+        CommitOccurrenceSelection(entries, removed ? entries.LastOrDefault().Row : row, publishToSource: true);
     }
 
     private void SelectExtended(ListBoxItem item, object content, int clickedIndex, bool isCtrlPressed, bool isShiftPressed)
@@ -539,7 +432,7 @@ public partial class ListBox : Selector
         }
         else if (isCtrlPressed)
         {
-            ToggleSelection(content);
+            ToggleSelection(clickedIndex);
             SetAnchorIndex(clickedIndex);
         }
         else
@@ -550,13 +443,10 @@ public partial class ListBox : Selector
 
     private void ApplyRangeSelection(int from, int to, bool additive)
     {
-        var requested = additive ? new List<object>(_selectedItems) : new List<object>();
+        var indices = additive ? GetSelectedOccurrenceIndices().ToList() : new List<int>();
         for (int i = Math.Max(0, Math.Min(from, to)); i <= Math.Max(from, to); i++)
-        {
-            if (GetSelectionValueAtIndex(i) is { } value && !requested.Contains(value))
-                requested.Add(value);
-        }
-        ApplyInputSelection(requested, GetSelectionValueAtIndex(to));
+            if (!indices.Contains(i)) indices.Add(i);
+        ApplyIndexSelection(indices, to);
     }
 
     /// <summary>
@@ -571,7 +461,7 @@ public partial class ListBox : Selector
             return indexFromGenerator;
         }
 
-        var indexOfItem = Items.IndexOf(item);
+        var indexOfItem = Items.FindOccurrence(item)?.Index ?? -1;
         if (indexOfItem >= 0)
         {
             return indexOfItem;
@@ -606,27 +496,10 @@ public partial class ListBox : Selector
     {
         var visited = new HashSet<ListBoxItem>(ReferenceEqualityComparer.Instance);
         if (ItemsHost != null)
-        {
-            foreach (UIElement child in ItemsHost.Children)
-            {
-                if (child is ListBoxItem item && visited.Add(item))
-                {
-                    yield return item;
-                }
-            }
-        }
-
-        foreach (var item in Items)
-        {
-            if (item is ListBoxItem lbi && visited.Add(lbi))
-            {
-                yield return lbi;
-            }
-            else if (item is not null && ItemContainerGenerator.ContainerFromItem(item) is ListBoxItem gen && visited.Add(gen))
-            {
-                yield return gen;
-            }
-        }
+            foreach (var child in ItemsHost.Children.OfType<ListBoxItem>().ToArray()) if (visited.Add(child)) yield return child;
+        foreach (int index in ItemContainerGenerator.GetRealizedIndices().ToArray())
+            if (ItemContainerGenerator.ContainerFromIndex(index) is ListBoxItem row && visited.Add(row)) yield return row;
+        foreach (var own in _explicitItemMemberships.Keys.ToArray()) if (visited.Add(own)) yield return own;
     }
 
     private object? GetSelectionValueAtIndex(int index)
@@ -659,25 +532,11 @@ public partial class ListBox : Selector
         out int index,
         out object? item)
     {
-        int count = GetItemCount();
-        for (int i = 0; i < count; i++)
-        {
-            object? candidateItem = GetItemAt(i);
-            object? candidateValue = GetSelectionValueFromLogicalItem(candidateItem);
-            if ((Equals(candidateItem, requestedItem) || Equals(candidateValue, requestedItem)) &&
-                candidateItem is not null && candidateValue is not null)
-            {
-                selectionValue = candidateValue;
-                index = i;
-                item = candidateItem;
-                return true;
-            }
-        }
-
-        selectionValue = null;
-        index = -1;
-        item = null;
-        return false;
+        var row = ResolveSelectionOccurrence(requestedItem);
+        selectionValue = row is null ? null : GetSelectionValueFromLogicalItem(row.Item);
+        index = row?.Index ?? -1;
+        item = row?.Item;
+        return row != null && selectionValue != null;
     }
 
     private void SetAnchorIndex(int index)
@@ -691,28 +550,14 @@ public partial class ListBox : Selector
 
         _anchorIndex = index;
         _anchorItem = item;
+        _anchorOccurrence = Items.GetOccurrenceAt(index);
     }
 
     private int ResolveAnchorIndex()
     {
-        if (_anchorItem is null)
-        {
-            _anchorIndex = -1;
-            return -1;
-        }
-
-        if (_anchorIndex >= 0 && _anchorIndex < GetItemCount() &&
-            Equals(GetItemAt(_anchorIndex), _anchorItem))
-        {
-            return _anchorIndex;
-        }
-
-        _anchorIndex = GetIndexOf(_anchorItem);
-        if (_anchorIndex < 0)
-        {
-            ClearAnchor();
-        }
-
+        if (_anchorOccurrence is not { IsAlive: true }) { ClearAnchor(); return -1; }
+        _anchorIndex = _anchorOccurrence.Index;
+        _anchorItem = _anchorOccurrence.Item;
         return _anchorIndex;
     }
 
@@ -720,6 +565,7 @@ public partial class ListBox : Selector
     {
         _anchorIndex = -1;
         _anchorItem = null;
+        _anchorOccurrence = null;
     }
 
     /// <summary>
@@ -733,44 +579,19 @@ public partial class ListBox : Selector
     public void SelectAll()
     {
         if (SelectionMode == SelectionMode.Single) return;
-        var requested = new List<object>(_selectedItems);
-        for (int i = 0; i < GetItemCount(); i++)
-        {
-            if (GetSelectionValueAtIndex(i) is { } value && !requested.Contains(value))
-                requested.Add(value);
-        }
-        ApplyInputSelection(requested, requested.LastOrDefault());
+        var indices = GetSelectedOccurrenceIndices().ToList();
+        for (int i = 0; i < Items.Count; i++) if (!indices.Contains(i)) indices.Add(i);
+        ApplyIndexSelection(indices, indices.LastOrDefault(-1));
     }
 
     /// <inheritdoc />
     protected override void UpdateContainerSelection()
     {
-        if (!_isApplyingSelectedItems)
+        ulong version = Items.OccurrenceVersion;
+        foreach (var child in EnumerateRealizedContainers())
         {
-            _selectedItems.Clear();
-            if (SelectedItem != null)
-            {
-                _selectedItems.Add(SelectedItem);
-            }
-        }
-
-        if (SelectionMode == SelectionMode.Single)
-        {
-            foreach (var child in EnumerateRealizedContainers())
-            {
-                var index = GetItemIndex(child);
-                var value = GetSelectionValueAtIndex(index);
-                child.IsSelected = (index >= 0 && index == SelectedIndex) || Equals(value, SelectedItem) || Equals(child, SelectedItem);
-            }
-        }
-        else
-        {
-            foreach (var child in EnumerateRealizedContainers())
-            {
-                var index = GetItemIndex(child);
-                var value = GetSelectionValueAtIndex(index);
-                child.IsSelected = (value != null && _selectedItems.Contains(value)) || _selectedItems.Contains(child);
-            }
+            if (version != Items.OccurrenceVersion) break;
+            child.IsSelected = IsOccurrenceSelected(GetItemIndex(child));
         }
     }
 
@@ -815,7 +636,7 @@ public partial class ListBox : Selector
     private int GetNavigationIndex()
     {
         if (PendingFocusStillApplies())
-            return GetIndexOf(_pendingFocusItem);
+            return _pendingFocusOccurrence!.Index;
         // Focus and selection are independent in Multiple and Ctrl-navigation.
         // Read actual focus first, including focus within an item template.
         for (var visual = Keyboard.FocusedElement as Visual; visual is not null; visual = visual.VisualParent)
@@ -823,21 +644,21 @@ public partial class ListBox : Selector
             if (visual is ListBoxItem item && ReferenceEquals(item.ParentListBox, this))
                 return GetItemIndex(item);
         }
-        int remembered = GetIndexOf(_focusedItem);
+        int remembered = _focusedOccurrence is { IsAlive: true } ? _focusedOccurrence.Index : -1;
         return remembered >= 0 ? remembered : SelectedIndex;
     }
 
     private void ClearPendingFocus()
     {
-        _pendingFocusItem = null;
+        _pendingFocusOccurrence = null;
         _pendingFocusOrigin = null;
     }
 
     private bool PendingFocusStillApplies()
     {
-        if (_pendingFocusItem is null) return false;
+        if (_pendingFocusOccurrence is null) return false;
         var current = Keyboard.FocusedElement;
-        if (GetIndexOf(_pendingFocusItem) < 0 ||
+        if (!_pendingFocusOccurrence.IsAlive ||
             (current is not null && !ReferenceEquals(current, _pendingFocusOrigin) && !ReferenceEquals(current, this)))
         {
             // A later user focus request wins over deferred virtualization.
@@ -850,10 +671,10 @@ public partial class ListBox : Selector
     private void FocusItem(int index)
     {
         if (GetItemAt(index) is not { } item) return;
-        _focusedItem = item;
-        _pendingFocusItem = item;
+        _focusedOccurrence = Items.GetOccurrenceAt(index);
+        _pendingFocusOccurrence = _focusedOccurrence;
         _pendingFocusOrigin = Keyboard.FocusedElement;
-        ScrollIntoView(item);
+        ScrollOccurrenceIntoView(index);
         if (GetItemAtIndex(index) is { } realized && realized.Focus())
         {
             ClearPendingFocus();
@@ -869,7 +690,7 @@ public partial class ListBox : Selector
             // handlers. Coalesced keys use the latest logical pending target.
             UpdateLayout();
             if (!PendingFocusStillApplies()) return;
-            int target = GetIndexOf(_pendingFocusItem);
+            int target = _pendingFocusOccurrence!.Index;
             if (GetItemAtIndex(target) is { } container && container.Focus())
                 ClearPendingFocus();
         });
@@ -914,7 +735,7 @@ public partial class ListBox : Selector
         if (index < 0 || GetSelectionValueAtIndex(index) is not { } value) return false;
         if (SelectionMode == SelectionMode.Multiple || (SelectionMode == SelectionMode.Extended && isCtrl))
         {
-            ToggleSelection(value);
+            ToggleSelection(index);
             if (SelectionMode == SelectionMode.Extended) SetAnchorIndex(index);
             return true;
         }
@@ -925,7 +746,7 @@ public partial class ListBox : Selector
     {
         if (GetSelectionValueAtIndex(index) is not { } value) return;
         SetAnchorIndex(index);
-        ApplyInputSelection(new[] { value }, value);
+        ApplyIndexSelection([index], index);
         FocusItem(index);
     }
 
@@ -939,8 +760,8 @@ public partial class ListBox : Selector
         switch (SelectionMode)
         {
             case SelectionMode.Multiple:
-                if (!_selectedItems.Contains(value))
-                    ApplyInputSelection(_selectedItems.Append(value).ToArray(), value);
+                if (!IsOccurrenceSelected(index))
+                    ApplyIndexSelection(GetSelectedOccurrenceIndices().Append(index), index);
                 break;
             case SelectionMode.Extended when ResolveAnchorIndex() is var anchor && anchor >= 0:
                 ApplyRangeSelection(anchor, index, additive: false);

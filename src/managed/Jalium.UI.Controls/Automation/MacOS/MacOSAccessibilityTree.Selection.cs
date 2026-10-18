@@ -54,20 +54,14 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         // recycled or retired item must never leave a partial selection behind.
         if (peer.Owner is ListBox list)
         {
-            List<object> items = [];
+            List<ItemOccurrence> rows = [];
             foreach (var member in members)
             {
-                if (member is not ItemAutomationPeer item) return false;
-                object value = item.Item;
-                if (value is ListBoxItem container && !list.Items.Contains(container))
-                {
-                    value = list.ItemContainerGenerator.ItemFromContainer(container)!;
-                    if (value is null || ReferenceEquals(value, DependencyProperty.UnsetValue)) return false;
-                }
-                items.Add(value);
+                if (member is not ListBoxItemAutomationPeer item || list.Items.GetOccurrenceAt(item.ListIndex) is not { } row) return false;
+                rows.Add(row);
             }
-            if (!lifetime() || memberLifetimes.Any(current => !current())) return false;
-            return list.SetAutomationSelectedItems(items);
+            bool Current() => lifetime() && memberLifetimes.All(current => current());
+            return list.SetAutomationSelectedOccurrences(rows, Current);
         }
         if (peer.Owner is TreeView tree && members.Count <= 1)
         {

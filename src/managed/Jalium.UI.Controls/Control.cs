@@ -118,7 +118,7 @@ public class Control : FrameworkElement
             e.Timestamp) { PhysicalModifiers = e.PhysicalModifiers };
         // RaiseEvent 让 Bubble 路由生效；OnMouseDoubleClick 虚方法由 static Control()
         // 注册的 MouseDoubleClickEvent 类处理器自动调用，避免 inline 调用绕过路由。
-        control.RaiseEvent(args);
+        InputRoute.Raise(control, args, e.CommandInputLifetime);
         if (args.Handled)
             e.Handled = true;
     }
@@ -141,7 +141,7 @@ public class Control : FrameworkElement
             e.XButton2,
             e.KeyboardModifiers,
             e.Timestamp) { PhysicalModifiers = e.PhysicalModifiers };
-        control.RaiseEvent(args);
+        InputRoute.Raise(control, args, e.CommandInputLifetime);
         if (args.Handled)
             e.Handled = true;
     }

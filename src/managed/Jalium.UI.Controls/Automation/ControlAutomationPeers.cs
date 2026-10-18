@@ -58,18 +58,7 @@ public class ListBoxAutomationPeer : SelectorAutomationPeer
     /// <inheritdoc />
     public override AutomationPeer[] GetSelection()
     {
-        List<AutomationPeer> selected = [];
-        HashSet<object> values = [];
-        foreach (object item in ListBoxOwner.Items)
-        {
-            object value = item is ListBoxItem container ? container.Content ?? container : item;
-            bool isSelected = ListBoxOwner.SelectionMode == SelectionMode.Single
-                ? Equals(ListBoxOwner.SelectedItem, item) || Equals(ListBoxOwner.SelectedItem, value)
-                : ListBoxOwner.SelectedItems.Contains(item) || ListBoxOwner.SelectedItems.Contains(value);
-            if (isSelected && values.Add(value))
-                selected.Add(FindOrCreateItemAutomationPeer(item));
-        }
-        return selected.ToArray();
+        return ListBoxOwner.GetSelectedOccurrenceIndices().Select(index => (AutomationPeer)FindOrCreateItemAutomationPeerAt(index)).ToArray();
     }
 
     /// <inheritdoc />
@@ -111,7 +100,15 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
         return GetChildren();
     }
     private ListBox? ListOwner => ItemsControlAutomationPeer?.ItemsOwner as ListBox ?? (Item as ListBoxItem)?.ParentListBox;
-    private object SelectionValue => Item is ListBoxItem item ? item.Content ?? item : Item;
+    internal int ListIndex
+    {
+        get
+        {
+            if (OccurrenceIndex >= 0) return OccurrenceIndex;
+            if (Item is ListBoxItem container && ListOwner is { } owner && owner.ItemContainerGenerator.IndexFromContainer(container) is int index && index >= 0) return index;
+            return ListOwner?.Items.FindOccurrence(Item)?.Index ?? -1;
+        }
+    }
 
     protected override AutomationPeer? GetParentCore() => SelectionContainer ?? base.GetParentCore();
 
@@ -162,10 +159,7 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
 
     /// <inheritdoc />
     public override bool IsSelected => !IsRetired && (ListOwner is { } list
-        ? list.SelectionMode == SelectionMode.Single
-            ? Equals(list.SelectedItem, Item) || Equals(list.SelectedItem, SelectionValue)
-            : list.SelectedItems.Contains(Item) || list.SelectedItems.Contains(SelectionValue)
-        : Item is ListBoxItem item && item.IsSelected);
+        ? list.IsOccurrenceSelected(ListIndex) : Item is ListBoxItem item && item.IsSelected);
 
     /// <inheritdoc />
     public override AutomationPeer SelectionContainer
@@ -187,9 +181,9 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     public override void Select()
     {
         ThrowIfRetired();
-        if (Item is not ListBoxItem && ListOwner is { } dataList)
+        if (ListOwner is { } dataList)
         {
-            dataList.SetAutomationSelection(Item, selected: true, exclusive: true);
+            dataList.SetAutomationSelectionAt(ListIndex, selected: true, exclusive: true);
             return;
         }
         if (ComboBoxOwner is { } combo) combo.SetAutomationSelection((ComboBoxItem)ItemOwner, selected: true);
@@ -201,9 +195,9 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     public override void AddToSelection()
     {
         ThrowIfRetired();
-        if (Item is not ListBoxItem && ListOwner is { } dataList)
+        if (ListOwner is { } dataList)
         {
-            dataList.SetAutomationSelection(Item, selected: true, exclusive: false);
+            dataList.SetAutomationSelectionAt(ListIndex, selected: true, exclusive: false);
             return;
         }
         if (ComboBoxOwner is { } combo) combo.SetAutomationSelection((ComboBoxItem)ItemOwner, selected: true);
@@ -215,9 +209,9 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     public override void RemoveFromSelection()
     {
         ThrowIfRetired();
-        if (Item is not ListBoxItem && ListOwner is { } dataList)
+        if (ListOwner is { } dataList)
         {
-            dataList.SetAutomationSelection(Item, selected: false, exclusive: false);
+            dataList.SetAutomationSelectionAt(ListIndex, selected: false, exclusive: false);
             return;
         }
         if (ComboBoxOwner is { } combo) combo.SetAutomationSelection((ComboBoxItem)ItemOwner, selected: false);
@@ -234,7 +228,7 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     {
         if (Item is not ListBoxItem && ListOwner is { } dataList)
         {
-            dataList.ScrollIntoView(Item);
+            dataList.ScrollOccurrenceIntoView(ListIndex);
             return;
         }
         ItemOwner.BringIntoView();

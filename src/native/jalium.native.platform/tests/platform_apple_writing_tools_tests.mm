@@ -32,6 +32,7 @@ struct Fixture {
     NSString* animationKey;
     NSArray* structure;
     NSDictionary* proposal;
+    NSString* styles;
     bool wrongSession = false;
     std::function<void(int)> after;
     explicit Fixture(uint32_t style, bool optIn = true)
@@ -58,7 +59,8 @@ struct Fixture {
         NSMutableDictionary* value=[@{@"editor":editor,@"text16":Base64(text),
             @"selection":@[@(selection.location),@(selection.length)],
             @"visible":text.length>=18 ? @[@6,@12] : @[@0,@(text.length)]} mutableCopy];
-        if(structure)value[@"structure"]=structure;return value;
+        if(structure)value[@"structure"]=structure;
+        if(styles)value[@"styles"]=styles;return value;
     }
     NSWritingToolsCoordinatorContext* Context(NSWritingToolsCoordinatorContextScope scope=NSWritingToolsCoordinatorContextScopeUserSelection)
     {
@@ -143,6 +145,23 @@ int main()
                 Require([accepted.string isEqual:value.string] && [Text16([[NSData alloc]initWithBase64EncodedString:f.proposal[@"text16"] options:0]) isEqual:value.string]
                     && [run[@"italic"] boolValue] && [run[@"weight"] integerValue]>=600 && [run[@"size"] doubleValue]==23
                     && [run[@"foreground"] unsignedIntValue]==0xffff0000u && [run[@"underline"] intValue]==1,"styled proposal");});
+            Run("paragraph alignment wire values are independent of the native ABI",style,[&]{
+                const NSTextAlignment alignments[] = {NSTextAlignmentLeft, NSTextAlignmentRight, NSTextAlignmentCenter, NSTextAlignmentJustified};
+                for (NSInteger alignment=0;alignment<4;++alignment) for (NSInteger direction=0;direction<2;++direction) {
+                    Fixture f(style); NSDictionary* run=@{@"start":@0,@"length":@(f.text.length),@"family":@"Arial",@"size":@18,
+                        @"weight":@400,@"italic":@0,@"underline":@0,@"strike":@0,@"alignment":@(alignment),@"direction":@(direction),@"language":@"zh-CN"};
+                    NSData* encoded=[NSJSONSerialization dataWithJSONObject:@{@"version":@1,@"text16":Base64(f.text),@"runs":@[run]} options:0 error:nil];
+                    f.styles=[[NSString alloc]initWithData:encoded encoding:NSUTF8StringEncoding];
+                    auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);
+                    NSParagraphStyle* exported=[context.attributedString attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:nil];
+                    Require(exported.alignment==alignments[alignment] && exported.baseWritingDirection==(NSWritingDirection)direction,"managed styles export to the actual native paragraph alignment");
+                    auto* paragraph=[NSMutableParagraphStyle new];paragraph.alignment=alignments[alignment];paragraph.baseWritingDirection=(NSWritingDirection)direction;
+                    f.styles=nil;
+                    f.ReplaceAttributed(context,NSMakeRange(6,2),[[NSAttributedString alloc]initWithString:@"新文🙂" attributes:@{NSParagraphStyleAttributeName:paragraph}]);
+                    NSDictionary* imported=[f.proposal[@"paragraphs"] firstObject];
+                    Require([imported[@"alignment"] integerValue]==alignment && [imported[@"direction"] integerValue]==direction,"actual native paragraph alignment imports to stable managed values");
+                }
+            });
             Run("list proposals separate native markers from content",style,[&]{
                 Fixture f(style);auto* list=[[NSTextList alloc]initWithMarkerFormat:@"{decimal}." options:0];list.startingItemNumber=3;
                 auto* paragraph=[NSMutableParagraphStyle new];paragraph.textLists=@[list];

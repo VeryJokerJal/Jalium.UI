@@ -48,6 +48,27 @@ static double JaliumAccessibilityFontShear(NSFont* font)
         && std::isfinite(matrix.c) ? matrix.c : 0;
 }
 
+// The managed wire format is left=0, right=1, center=2, justify=3.
+// AppKit uses iOS enum values on Apple Silicon and macOS values on Intel.
+static NSTextAlignment JaliumNativeTextAlignment(NSInteger alignment)
+{
+    switch (alignment) {
+        case 1: return NSTextAlignmentRight;
+        case 2: return NSTextAlignmentCenter;
+        case 3: return NSTextAlignmentJustified;
+        default: return NSTextAlignmentLeft;
+    }
+}
+static NSInteger JaliumBridgeTextAlignment(NSTextAlignment alignment)
+{
+    switch (alignment) {
+        case NSTextAlignmentRight: return 1;
+        case NSTextAlignmentCenter: return 2;
+        case NSTextAlignmentJustified: return 3;
+        default: return 0;
+    }
+}
+
 static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL accessibility)
 {
     NSFont* font = JaliumAccessibilityFont(style);
@@ -73,7 +94,7 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
         if (underlineColor) attributes[NSAccessibilityUnderlineColorTextAttribute] = (__bridge id)underlineColor.CGColor;
         if (strike) attributes[NSAccessibilityStrikethroughTextAttribute] = @YES;
         if (strikeColor) attributes[NSAccessibilityStrikethroughColorTextAttribute] = (__bridge id)strikeColor.CGColor;
-        attributes[NSAccessibilityTextAlignmentAttribute] = style[@"alignment"];
+        attributes[NSAccessibilityTextAlignmentAttribute] = @(JaliumNativeTextAlignment([style[@"alignment"] integerValue]));
         id language = style[@"language"];
         if ([language isKindOfClass:NSString.class] && [language length]) attributes[NSAccessibilityLanguageTextAttribute] = language;
     } else {
@@ -91,7 +112,7 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
         if (strike) attributes[NSStrikethroughStyleAttributeName] = @(strike);
         if (strikeColor) attributes[NSStrikethroughColorAttributeName] = strikeColor;
         NSMutableParagraphStyle* paragraph = [NSMutableParagraphStyle new];
-        paragraph.alignment = (NSTextAlignment)[style[@"alignment"] intValue];
+        paragraph.alignment = JaliumNativeTextAlignment([style[@"alignment"] integerValue]);
         paragraph.baseWritingDirection = (NSWritingDirection)[style[@"direction"] intValue];
         attributes[NSParagraphStyleAttributeName] = paragraph;
     }

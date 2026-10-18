@@ -293,6 +293,12 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Initializes a new instance of the <see cref="Selector"/> class.
     /// </summary>
+    static Selector() => SelectedItemProperty.UsesReferenceIdentity = true;
+
+    // A selector with occurrence-aware multi-selection owns its complete scalar
+    // transaction; other selectors keep the existing default implementation.
+    internal virtual bool TryApplySelectionProperty(DependencyProperty property, object? value) => false;
+
     protected Selector()
     {
         Focusable = true;
@@ -370,14 +376,17 @@ public abstract class Selector : ItemsControl
         "Trimming",
         "IL2026:RequiresUnreferencedCode",
         Justification = "This is the multi-selection counterpart of the existing selection property callbacks. SelectedValuePath reflection remains an opt-in consumer responsibility through PropertyAccessorRegistry.")]
-    internal void UpdateSelectionPropertiesFromBatch(int selectedIndex, object? selectedItem)
+    internal void UpdateSelectionPropertiesFromBatch(int selectedIndex, object? selectedItem, Func<bool>? isCurrent = null)
     {
         _isUpdatingSelection = true;
         try
         {
             SetCurrentValue(SelectedIndexProperty, selectedIndex);
+            if (isCurrent?.Invoke() == false) return;
             SetCurrentValue(SelectedItemProperty, selectedItem);
+            if (isCurrent?.Invoke() == false) return;
             UpdateSelectedValueFromSelection(selectedItem);
+            if (isCurrent?.Invoke() == false) return;
             UpdateContainerSelection();
         }
         finally
@@ -496,6 +505,7 @@ public abstract class Selector : ItemsControl
     private static void OnSelectedIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is not Selector selector || selector._isUpdatingSelection) return;
+        if (selector.TryApplySelectionProperty(SelectedIndexProperty, e.NewValue)) return;
         object? oldItem = selector.SelectedItem;
         object? newItem = selector.GetItemAt((int)(e.NewValue ?? -1));
         bool changed = selector.SelectedItem != newItem;
@@ -516,6 +526,7 @@ public abstract class Selector : ItemsControl
     private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is not Selector selector || selector._isUpdatingSelection) return;
+        if (selector.TryApplySelectionProperty(SelectedItemProperty, e.NewValue)) return;
         object? newItem = e.NewValue;
         int newIndex = selector.GetIndexOf(newItem);
         if (newIndex == -1) newItem = null;
@@ -536,6 +547,7 @@ public abstract class Selector : ItemsControl
         if (d is not Selector selector || selector._isUpdatingSelection) return;
         object? oldItem = selector.SelectedItem;
         var (matchedIndex, matchedItem) = selector.FindItemBySelectedValue(e.NewValue);
+        if (selector.TryApplySelectionProperty(SelectedIndexProperty, matchedIndex)) return;
         selector._isUpdatingSelection = true;
         try
         {

@@ -687,7 +687,7 @@ public class DependencyObject : DispatcherObject
         ArgumentNullException.ThrowIfNull(dp);
         var oldValue = GetValue(dp);
         var newValue = GetValueState(dp, forceCoerce: true).Value;
-        if (!Equals(oldValue, newValue))
+        if (!dp.AreValuesEqual(oldValue, newValue))
             OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
     }
 
@@ -1050,7 +1050,7 @@ public class DependencyObject : DispatcherObject
             }
 
             var newValue = GetValue(dp);
-            if (!Equals(oldValue, newValue))
+            if (!dp.AreValuesEqual(oldValue, newValue))
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
         }
 
@@ -1157,7 +1157,7 @@ public class DependencyObject : DispatcherObject
     private bool NotifyCssAnimatedValueChanged(DependencyProperty dp, object? oldValue)
     {
         var newValue = GetValue(dp);
-        if (Equals(oldValue, newValue)) return false;
+        if (dp.AreValuesEqual(oldValue, newValue)) return false;
         OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
         if (this is UIElement visual && !DpHasInvalidationCallback(dp))
         {
@@ -1201,7 +1201,7 @@ public class DependencyObject : DispatcherObject
 
         var cssRadiusChanged = existing is null && InvalidateCssRadiusPrecedence(dp);
         if (existing is null) InvalidateCssBorderPrecedence(dp);
-        if (Equals(oldValue, value))
+        if (dp.AreValuesEqual(oldValue, value))
         {
             // No visible change: do not fire OnPropertyChanged and do not schedule a
             // present. This is the single source of truth that lets a frame on which
@@ -1264,7 +1264,7 @@ public class DependencyObject : DispatcherObject
             // Get the new effective value after removing animation
             var newValue = GetValue(dp);
 
-            if (!Equals(oldValue, newValue))
+            if (!dp.AreValuesEqual(oldValue, newValue))
             {
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
             }
@@ -1320,7 +1320,7 @@ public class DependencyObject : DispatcherObject
 
             var newValue = GetValue(dp);
 
-            if (!Equals(oldValue, newValue))
+            if (!dp.AreValuesEqual(oldValue, newValue))
             {
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
             }
@@ -1592,17 +1592,17 @@ public class DependencyObject : DispatcherObject
             OnEffectiveValueSourceChanged(dp);
             // An explicit `text-shadow: none` and an absent declaration both
             // read as null, but only the former blocks an inherited shadow.
-            if (dp == Styling.CssTextShadowProperties.ValueProperty && Equals(oldValue, newValue))
+            if (dp == Styling.CssTextShadowProperties.ValueProperty && dp.AreValuesEqual(oldValue, newValue))
                 Styling.CssTextShadowProperties.NotifyPresentationChanged(this);
         }
         if (this is UIElement visibilityElement)
         {
             if (dp == Styling.CssDisplayProperties.VisibilityProperty ||
-                dp == UIElement.VisibilityProperty && Equals(oldValue, newValue) &&
+                dp == UIElement.VisibilityProperty && dp.AreValuesEqual(oldValue, newValue) &&
                 Styling.CssDisplayProperties.HasVisibilityDeclarations)
                 Styling.CssDisplayProperties.RefreshVisibility(visibilityElement);
         }
-        if (!Equals(oldValue, newValue))
+        if (!dp.AreValuesEqual(oldValue, newValue))
         {
             if (!cssTransitionCleared)
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
@@ -1619,7 +1619,7 @@ public class DependencyObject : DispatcherObject
     private void NotifyNativeDirectionChanged(DependencyProperty property, bool hadOldValue, object? oldValue)
     {
         var hasNewValue = TryGetValueWithoutCss(property, out var newValue);
-        if (hadOldValue != hasNewValue || !Equals(oldValue, newValue))
+        if (hadOldValue != hasNewValue || !property.AreValuesEqual(oldValue, newValue))
             Styling.CssSelectorDependencies.NativeValueChanged(this, property.Name);
     }
 

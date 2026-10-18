@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-occurrence-case=", StringComparison.Ordinal))
+    return WindowOccurrenceChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-gesture-interleave-case=", StringComparison.Ordinal))
     return WindowGestureInterleaveChecks.Run(args[0]);
 
@@ -353,6 +356,7 @@ if (args.Length != 1 || !args[0].StartsWith("--menu-case=", StringComparison.Ord
     return 2;
 }
 JaliumMacApplication.Initialize();
+
 var application = NSApplication.SharedApplication;
 application.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
 using var host = new MenuTestDelegate();

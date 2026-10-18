@@ -564,6 +564,19 @@ int main(int argc, const char** argv)
         NSAttributedString* decoded = [[NSAttributedString alloc] initWithRTF:rtf documentAttributes:nil];
         Check([decoded.string isEqual:@"中文🙂"] && [[[decoded attributesAtIndex:0 effectiveRange:nil] objectForKey:NSFontAttributeName] pointSize] == 21,
             "RTF is decoded by AppKit with the same text and point size");
+        const NSTextAlignment alignments[] = {NSTextAlignmentLeft, NSTextAlignmentRight, NSTextAlignmentCenter, NSTextAlignmentJustified};
+        for (NSInteger alignment=0;alignment<4;++alignment) for (NSInteger direction=0;direction<2;++direction) {
+            NSMutableDictionary* aligned=[style mutableCopy];aligned[@"alignment"]=@(alignment);aligned[@"direction"]=@(direction);
+            fixture.stylePayload=payload(@[aligned],text16);
+            NSAttributedString* ax=[child accessibilityAttributedStringForRange:NSMakeRange(0,4)];
+            Check([[ax attribute:NSAccessibilityTextAlignmentAttribute atIndex:0 effectiveRange:nil] integerValue]==alignments[alignment],
+                "AX paragraph alignment uses the architecture's native enum values");
+            NSAttributedString* rtfValue=[[NSAttributedString alloc]initWithRTF:[child accessibilityRTFForRange:NSMakeRange(0,4)] documentAttributes:nil];
+            NSParagraphStyle* paragraph=[rtfValue attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:nil];
+            Check(paragraph.alignment==alignments[alignment] && paragraph.baseWritingDirection==(NSWritingDirection)direction,
+                "RTF paragraph alignment and writing direction survive native decoding");
+        }
+        fixture.stylePayload=payload(@[style],text16);
         Check(NSEqualRanges([child accessibilityStyleRangeForIndex:2], NSMakeRange(0, 4))
             && NSEqualRanges([child accessibilityStyleRangeForIndex:4], NSMakeRange(0, 0)), "style extents include UTF-16 characters and reject EOF as a character");
         for (NSDictionary* changes in @[@{@"start":@1}, @{@"length":@0}, @{@"length":@5}, @{@"size":@(-1)}, @{@"weight":@1001},

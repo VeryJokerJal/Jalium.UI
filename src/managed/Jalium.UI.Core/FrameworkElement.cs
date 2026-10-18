@@ -2951,7 +2951,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         _logicalChildren ??= new List<object>();
-        if (_logicalChildren.Contains(child))
+        if (_logicalChildren.Any(candidate => ReferenceEquals(candidate, child)))
         {
             return;
         }
@@ -3038,11 +3038,13 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
     protected internal void RemoveLogicalChild(object? child)
     {
-        if (child == null || _logicalChildren == null || !_logicalChildren.Remove(child))
+        int index = child == null ? -1 : _logicalChildren?.FindIndex(candidate => ReferenceEquals(candidate, child)) ?? -1;
+        if (index < 0)
         {
             return;
         }
 
+        _logicalChildren!.RemoveAt(index);
         var preservesVirtualizationResourceScope =
             child is FrameworkElement candidate &&
             candidate.CanPreserveVirtualizationResourceScope(this);

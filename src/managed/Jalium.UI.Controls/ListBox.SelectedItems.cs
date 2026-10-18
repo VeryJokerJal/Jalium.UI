@@ -12,15 +12,11 @@ public partial class ListBox
         finally { _selectedItemsView?.PublishCommittedSelection(); }
     }
 
-    private void ApplyCollectionSelection(List<object> items)
+    private void ApplyCollectionSelection(List<RowSelection> items)
     {
-        if (_isApplyingSelectedItems)
-            throw new InvalidOperationException("The selection transaction is still active.");
-        if (SelectionMode == SelectionMode.Single && items.Count > 1)
-            throw new InvalidOperationException("Single selection cannot contain multiple items.");
-        int? preferred = SelectedItem is { } current && items.Any(item => SelectionValuesEqual(item, current))
-            ? SelectedIndex : null;
-        if (!ApplySelectedItems(items, preferred, publishToSource: true, preserveItemAliases: true))
+        if (_isApplyingSelectedItems) throw new InvalidOperationException("The selection transaction is still active.");
+        if (SelectionMode == SelectionMode.Single && items.Count > 1) throw new InvalidOperationException("Single selection cannot contain multiple items.");
+        if (!CommitOccurrenceSelection(items, _primaryOccurrence, publishToSource: true))
             throw new InvalidOperationException("The selection could not be applied.");
     }
 
@@ -30,6 +26,7 @@ public partial class ListBox
         IList, IList<object>, IReadOnlyList<object>, INotifyCollectionChanged, INotifyPropertyChanged
     {
         private object[] _published = [];
+        private ItemOccurrence[] _publishedRows = [];
         public event NotifyCollectionChangedEventHandler? CollectionChanged;
         public event PropertyChangedEventHandler? PropertyChanged;
         public int Count => storage.Count;
@@ -44,7 +41,9 @@ public partial class ListBox
             {
                 if ((uint)index >= (uint)Count) throw new ArgumentOutOfRangeException(nameof(index));
                 Validate(value);
-                var items = new List<object>(storage); items[index] = value;
+                var items = new List<RowSelection>(owner._selectionRows);
+                var row = owner.ResolveSelectionOccurrence(value, preferred: items[index].Row)!;
+                items[index] = new(row, value);
                 owner.ApplyCollectionSelection(items);
             }
         }
@@ -55,7 +54,13 @@ public partial class ListBox
             if (item is null || !owner.TryResolveSelectionItem(item, out _, out _, out _))
                 throw new ArgumentException("The item must belong to this ListBox.", nameof(item));
         }
-        private int FindSelection(object value) => storage.FindIndex(item => SelectionValuesEqual(item, value));
+        private ItemOccurrence? Resolve(object value) => owner.ResolveSelectionOccurrence(value,
+            preferred: owner._selectionRows.FirstOrDefault(entry => SelectionValuesEqual(entry.Alias, value)).Row);
+        private int FindSelection(object value)
+        {
+            var row = Resolve(value);
+            return owner._selectionRows.FindIndex(entry => ReferenceEquals(entry.Row, row));
+        }
         public void Add(object item) => AddCore(item);
         int IList.Add(object? item) => AddCore(item);
         private int AddCore(object? item)
@@ -63,7 +68,7 @@ public partial class ListBox
             Validate(item);
             int existing = FindSelection(item!);
             if (existing >= 0) return existing;
-            var items = new List<object>(storage) { item! };
+            var items = new List<RowSelection>(owner._selectionRows) { new(Resolve(item!)!, item!) };
             owner.ApplyCollectionSelection(items);
             return FindSelection(item!);
         }
@@ -72,13 +77,13 @@ public partial class ListBox
             if ((uint)index > (uint)Count) throw new ArgumentOutOfRangeException(nameof(index));
             Validate(item);
             if (FindSelection(item) >= 0) return;
-            var items = new List<object>(storage); items.Insert(index, item);
+            var items = new List<RowSelection>(owner._selectionRows); items.Insert(index, new(Resolve(item)!, item));
             owner.ApplyCollectionSelection(items);
         }
         void IList.Insert(int index, object? value) => Insert(index, value!);
         public bool Remove(object item)
         {
-            int index = storage.IndexOf(item);
+            int index = FindSelection(item);
             if (index < 0) return false;
             RemoveAt(index); return true;
         }
@@ -86,13 +91,13 @@ public partial class ListBox
         public void RemoveAt(int index)
         {
             if ((uint)index >= (uint)Count) throw new ArgumentOutOfRangeException(nameof(index));
-            var items = new List<object>(storage); items.RemoveAt(index);
+            var items = new List<RowSelection>(owner._selectionRows); items.RemoveAt(index);
             owner.ApplyCollectionSelection(items);
         }
         public void Clear() { if (Count > 0) owner.ApplyCollectionSelection([]); }
-        public bool Contains(object item) => storage.Contains(item);
+        public bool Contains(object item) => FindSelection(item) >= 0;
         bool IList.Contains(object? value) => value is not null && Contains(value);
-        public int IndexOf(object item) => storage.IndexOf(item);
+        public int IndexOf(object item) => FindSelection(item);
         int IList.IndexOf(object? value) => value is null ? -1 : IndexOf(value);
         public void CopyTo(object[] array, int arrayIndex) => storage.CopyTo(array, arrayIndex);
         void ICollection.CopyTo(Array array, int index) => ((ICollection)storage).CopyTo(array, index);
@@ -104,10 +109,11 @@ public partial class ListBox
             object[] current = storage.ToArray();
             bool same = _published.Length == current.Length;
             for (int i = 0; same && i < current.Length; i++)
-                same = ReferenceEquals(_published[i], current[i]);
+                same = ReferenceEquals(_published[i], current[i]) && ReferenceEquals(_publishedRows[i], owner._selectionRows[i].Row);
             if (same) return;
             bool countChanged = _published.Length != current.Length;
             _published = current;
+            _publishedRows = owner._selectionRows.Select(entry => entry.Row).ToArray();
             // Reset means observers reread the complete committed selection.
             // A callback can commit a newer choice without leaving stale indices
             // in later callbacks from the outer transaction.
