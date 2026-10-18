@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
+#include <chrono>
 
 static id Copy(AXUIElementRef element, CFStringRef attribute, AXError* error = nullptr) {
     CFTypeRef value = nullptr;
@@ -46,6 +47,20 @@ struct Client {
         AXUIElementSetMessagingTimeout(app, 0.5);
     }
     ~Client() { CFRelease(app); }
+    NSDictionary* Context() {
+        AXError frontError = kAXErrorSuccess, focusedError = kAXErrorSuccess;
+        id frontmost = Copy(app, kAXFrontmostAttribute, &frontError);
+        AXUIElementRef system = AXUIElementCreateSystemWide();
+        id focusedApp = Copy(system, kAXFocusedApplicationAttribute, &focusedError);
+        pid_t focusedPid = 0;
+        AXError pidError = IsElement(focusedApp)
+            ? AXUIElementGetPid((__bridge AXUIElementRef)focusedApp, &focusedPid) : kAXErrorNoValue;
+        CFRelease(system);
+        return @{@"unixMicros":@((int64_t)((CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970) * 1000000)),
+            @"targetFrontmost":Scalar(frontmost), @"targetFrontmostError":@(frontError),
+            @"focusedApplicationPID":@(focusedPid), @"focusedApplicationError":@(focusedError),
+            @"focusedApplicationPIDError":@(pidError)};
+    }
     NSUInteger Token(id element) {
         for (NSUInteger i = 0; i < held.count; ++i)
             if (CFEqual((__bridge CFTypeRef)held[i], (__bridge CFTypeRef)element)) return i + 1;
@@ -136,6 +151,9 @@ int main(int argc, const char** argv) { @autoreleasepool {
         NSDictionary* command = decoded; NSString* action = Text(command[@"action"]);
         NSMutableDictionary* result = [@{@"action":action,@"clientPID":@(getpid()),
             @"targetPID":@(target),@"trusted":@(AXIsProcessTrusted())} mutableCopy];
+        const bool diagnostics = [command[@"diagnostics"] boolValue];
+        const auto requestStart = std::chrono::steady_clock::now();
+        if (diagnostics) result[@"diagnosticsBefore"] = client.Context();
         if (!AXIsProcessTrusted()) result[@"error"] = @"Existing AX permission is unavailable";
         else if ([action isEqualToString:@"discover"]) result[@"nodes"] = client.Discover();
         else if (![action isEqualToString:@"quit"]) {
@@ -177,6 +195,10 @@ int main(int argc, const char** argv) { @autoreleasepool {
         AXError focusError = kAXErrorSuccess; id focused = Copy(client.app,kAXFocusedUIElementAttribute,&focusError);
         result[@"focusedId"] = IsElement(focused) ? Text(Copy((__bridge AXUIElementRef)focused,kAXIdentifierAttribute)) : @"";
         result[@"focusReadError"] = @(focusError);
+        if (diagnostics) {
+            result[@"diagnosticsAfter"] = client.Context();
+            result[@"requestElapsedSeconds"] = @(std::chrono::duration<double>(std::chrono::steady_clock::now() - requestStart).count());
+        }
         NSData* output = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
         fwrite(output.bytes,1,output.length,stdout);fputc('\n',stdout);fflush(stdout);
         if ([action isEqualToString:@"quit"]) break;

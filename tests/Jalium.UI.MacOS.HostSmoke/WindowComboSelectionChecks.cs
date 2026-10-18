@@ -6,6 +6,7 @@ using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace Jalium.UI.MacOS;
@@ -39,6 +40,44 @@ internal static partial class WindowSelectionNotificationChecks
         Name(combo,"选择项目 中文🙂","combo-root"); combo.SelectedIndex = 1;
         Window? owner = null; int phase = 0; bool closed = false, closeNext = false, timedOut = false, narrowed = false;
         var changes = new List<int>();
+        bool diagnostics = Environment.GetEnvironmentVariable("JALIUM_COMBO_DIAGNOSTICS") == "1";
+        int traceSequence = 0; string? traceState = null, diagnosticError = null;
+        void Trace(string kind)
+        {
+            if (!diagnostics) return;
+            try
+            {
+                var native = app.KeyWindow;
+                var value = new { sequence = traceSequence + 1, kind,
+                    unixMicros = (DateTime.UtcNow.Ticks - DateTime.UnixEpoch.Ticks) / 10,
+                    elapsedMilliseconds = watch.Elapsed.TotalMilliseconds,
+                    processId = Environment.ProcessId, appActive = app.Active, ownerActive = owner?.IsActive,
+                    frontmostPID = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier,
+                    nativeKeyNumber = native == null ? (long?)null : (long)native.WindowNumber,
+                    nativeResponder = native?.FirstResponder?.Handle.ToString(),
+                    open = combo.IsDropDownOpen, selectedIndex = combo.SelectedIndex,
+                    focusWithin = combo.IsKeyboardFocusWithin, closed,
+                    rows = items.Select((item, i) => new { id = Entry(item).Id,
+                        container = combo.ItemContainerGenerator.ContainerFromIndex(i) is { } row
+                            ? RuntimeHelpers.GetHashCode(row) : 0 }).ToArray() };
+                File.AppendAllText(Path.Combine(output,"trace.jsonl"), JsonSerializer.Serialize(value) + "\n");
+                traceSequence++;
+            }
+            catch (Exception error)
+            {
+                // A diagnostic failure must be reported without changing UI control flow.
+                diagnosticError ??= error.ToString();
+            }
+        }
+        var observers = new List<NSObject>();
+        if (diagnostics)
+        {
+            var center = NSNotificationCenter.DefaultCenter;
+            observers.Add(center.AddObserver(NSApplication.DidBecomeActiveNotification, _ => Trace("app-became-active")));
+            observers.Add(center.AddObserver(NSApplication.DidResignActiveNotification, _ => Trace("app-resigned-active")));
+            combo.DropDownOpened += (_, _) => Trace("dropdown-opened");
+            combo.DropDownClosed += (_, _) => Trace("dropdown-closed");
+        }
         void PrepareRows()
         {
             for (int i = 0; i < items.Count; i++)
@@ -51,6 +90,14 @@ internal static partial class WindowSelectionNotificationChecks
         void Record()
         {
             PrepareRows();
+            if (diagnostics)
+            {
+                string current = string.Join("|", app.Active, owner?.IsActive, combo.IsDropDownOpen,
+                    combo.SelectedIndex, combo.IsKeyboardFocusWithin, closed,
+                    string.Join(",", items.Select((item, i) => combo.ItemContainerGenerator.ContainerFromIndex(i) is { } row
+                        ? RuntimeHelpers.GetHashCode(row) : 0)));
+                if (current != traceState) { traceState = current; Trace("state-changed"); }
+            }
             var state = new { processId = Environment.ProcessId, index, custom, own, editable, phase,
                 selectedIndex = combo.SelectedIndex, selectedId = combo.SelectedItem is { } selected ? Entry(selected).Id : -1,
                 text = combo.Text, open = combo.IsDropDownOpen, enabled = combo.IsEnabled, readOnly = combo.IsReadOnly,
@@ -59,6 +106,7 @@ internal static partial class WindowSelectionNotificationChecks
                     realized = combo.ItemContainerGenerator.ContainerFromIndex(i) is ComboBoxItem,
                     selected = (combo.ItemContainerGenerator.ContainerFromIndex(i) as ComboBoxItem)?.IsSelected,
                     enabled = (combo.ItemContainerGenerator.ContainerFromIndex(i) as ComboBoxItem)?.IsEnabled }).ToArray(),
+                diagnosticsEnabled = diagnostics, traceSequence, diagnosticError,
                 closed, timedOut, narrowed, width = owner?.ActualWidth, height = owner?.ActualHeight,
                 appRunning = app.Running, appActive = app.Active, ownerActive = owner?.IsActive,
                 frontmostPID = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier,
@@ -83,6 +131,11 @@ internal static partial class WindowSelectionNotificationChecks
             Background = new SolidColorBrush(Color.FromRgb(0x1c,0x20,0x26)),
             Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } };
+        if (diagnostics)
+        {
+            owner.Activated += (_, _) => Trace("window-activated");
+            owner.Deactivated += (_, _) => Trace("window-deactivated");
+        }
         Application.Current!.MainWindow = owner;
         open.Click += (_, _) => { combo.IsDropDownOpen = true; owner.UpdateLayout(); PrepareRows(); Record(); };
         collapse.Click += (_, _) => { combo.IsDropDownOpen = false; Record(); };
@@ -97,6 +150,7 @@ internal static partial class WindowSelectionNotificationChecks
         combo.SelectionChanged += (_, _) =>
         {
             changes.Add(combo.SelectedItem is { } selected ? Entry(selected).Id : -1);
+            Trace("selection-changed");
             if (closeNext) owner.Close(); Record();
         };
         owner.Show(); Record();
@@ -111,6 +165,10 @@ internal static partial class WindowSelectionNotificationChecks
         finally
         {
             pulse.Invalidate(); if (owner.Handle != 0) owner.Close();
+            Trace("host-finishing");
+            foreach (var observer in observers)
+            { NSNotificationCenter.DefaultCenter.RemoveObserver(observer); observer.Dispose(); }
+            if (diagnostics) Record();
             using var termination = NSNotification.FromName(NSApplication.WillTerminateNotification,app);
             host.WillTerminate(termination); app.Delegate = null!;
         }

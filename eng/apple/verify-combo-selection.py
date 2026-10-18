@@ -30,9 +30,10 @@ def stop_owned_app(app):
             try: os.kill(int(pid), signal.SIGTERM)
             except ProcessLookupError: pass
 
-def run_case(work, app, client_binary, index, libraries):
+def run_case(work, app, client_binary, index, libraries, diagnostics=False):
     output = work / ('case-' + str(index)); output.mkdir(mode=0o700)
     commands, checks, failures = [], [], []
+    request_states, failure_diagnostics = [], {}
     launcher = client = None; pid = None; initial = final = {}
     def state():
         try: return json.loads((output / 'state.json').read_text())
@@ -48,10 +49,19 @@ def run_case(work, app, client_binary, index, libraries):
             time.sleep(.02)
         raise RuntimeError(message + '; state=' + json.dumps(state()))
     def call(action, **kwargs):
-        request = {'action': action, **kwargs}; client.stdin.write(json.dumps(request) + '\n'); client.stdin.flush()
+        request = {'action': action, **kwargs}
+        if diagnostics: request['diagnostics'] = True
+        before = state() if diagnostics else {}; start_ns = time.monotonic_ns(); start_utc = time.time_ns() // 1000
+        client.stdin.write(json.dumps(request) + '\n'); client.stdin.flush()
         poll = selectors.DefaultSelector(); poll.register(client.stdout, selectors.EVENT_READ)
         ready = poll.select(6); poll.close(); require(bool(ready), 'AX reply received')
         response = json.loads(client.stdout.readline()); commands.append({'request': request, 'response': response})
+        if diagnostics:
+            fields = ('traceSequence','appRunning','appActive','ownerActive','frontmostPID','open','selectedIndex','selectedId','focusWithin','closed')
+            after = state(); request_states.append({'action':action,'id':kwargs.get('id'),'token':kwargs.get('token'),
+                'startUnixMicros':start_utc,'endUnixMicros':time.time_ns() // 1000,
+                'elapsedNanoseconds':time.monotonic_ns() - start_ns,
+                'before':{k:before.get(k) for k in fields},'after':{k:after.get(k) for k in fields}})
         require(response['trusted'] and response['clientPID'] != pid and response['targetPID'] == pid,
                 'trusted independent AX client identities match')
         return response
@@ -91,8 +101,10 @@ def run_case(work, app, client_binary, index, libraries):
         launcher = subprocess.Popen(['/usr/bin/open', '-n', '-W', '--env', 'JALIUM_SELECTION_OUTPUT=' + str(output),
             '--env', 'TMPDIR=' + str(work / 'tmp'), '--env', 'DYLD_PRINT_LIBRARIES=1',
             '--stdout', str(output / 'app.log'), '--stderr', str(output / 'app.err'), str(app),
+            *(['--env', 'JALIUM_COMBO_DIAGNOSTICS=1'] if diagnostics else []),
             '--args', '--window-combo-selection-case=' + str(index)], stdout=(output / 'launch.log').open('w'), stderr=subprocess.STDOUT)
         initial = wait(lambda: state() if state().get('appRunning') else None, 'ComboBox host ready'); pid = initial['processId']
+        if diagnostics: require(initial.get('diagnosticError') is None, 'diagnostic recording does not alter host startup')
         client = subprocess.Popen([str(client_binary), str(pid)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   text=True, bufsize=1, stderr=(output / 'client.err').open('w'))
         nodes = nodes_ready('combo-root'); selected(1)
@@ -156,6 +168,11 @@ def run_case(work, app, client_binary, index, libraries):
         require(launcher.returncode == 0 and not final['timedOut'], 'ComboBox host exits normally')
     except Exception as error:
         failures.append(str(error)); failure_state = state()
+        if diagnostics and client is not None:
+            try:
+                failure_diagnostics = {'freshDiscovery':call('discover'), 'afterDiscoveryState':state()}
+            except Exception as diagnostic_error:
+                failure_diagnostics = {'error':str(diagnostic_error), 'afterDiscoveryState':state()}
     finally:
         if client is not None:
             try: call('quit'); client.wait(timeout=3)
@@ -165,11 +182,19 @@ def run_case(work, app, client_binary, index, libraries):
             try: launcher.wait(timeout=6)
             except subprocess.TimeoutExpired: stop_owned_app(app); launcher.wait(timeout=6)
         final = state(); loaded = []
+        if diagnostics and final.get('diagnosticError'): failures.append('diagnostic recording failed: ' + final['diagnosticError'])
+        timeline = []
+        if diagnostics and (output / 'trace.jsonl').exists():
+            timeline = [json.loads(line) for line in (output / 'trace.jsonl').read_text().splitlines() if line]
         log = (output / 'app.err').read_text(errors='replace') if (output / 'app.err').exists() else ''
         for name, paths in libraries.items():
             if not any(str(path) in log for path in paths): failures.append('loaded payload not proven: ' + name)
             else: loaded.append(name)
         result = {'index': index, 'passed': not failures, 'checks': checks, 'failures': failures,
+                  'diagnosticsEnabled':diagnostics,'requestStates':request_states,
+                  'failureDiagnostics':failure_diagnostics,'hostTimeline':timeline,
+                  'launcherExitCode':None if launcher is None else launcher.returncode,
+                  'diagnosticLogTails':{name:(output / name).read_text(errors='replace')[-6000:] for name in ('app.log','app.err','launch.log') if (output / name).exists()} if diagnostics and failures else {},
                   'initial': initial, 'final': final, 'failureState': locals().get('failure_state'), 'commands': commands, 'hostPID': pid,
                   'clientPID': None if client is None else client.pid, 'loadedNative': loaded,
                   'externalAX': True, 'physicalInput': False, 'seconds': round(time.monotonic() - started, 3)}
@@ -182,6 +207,7 @@ def main():
     parser.add_argument('--work-parent', type=Path, default=Path.home() / 'Library/Caches')
     parser.add_argument('--results-file', type=Path)
     parser.add_argument('--cases', default='0,1,2,3,4,5,6,7')
+    parser.add_argument('--diagnostics', action='store_true', help='record read-only request context and host transitions')
     args = parser.parse_args(); source = args.app.resolve()
     if not source.is_dir() or source.suffix != '.app': parser.error('--app must name a built .app')
     try: cases = [int(x) for x in args.cases.split(',')]
@@ -205,7 +231,7 @@ def main():
                         'Foundation', '-framework', 'ApplicationServices', '-o', str(client)], check=True)
         try:
             for index in cases:
-                receipt = run_case(work, app, client, index, libraries); receipts.append(receipt)
+                receipt = run_case(work, app, client, index, libraries, args.diagnostics); receipts.append(receipt)
                 print(json.dumps({'case': index, 'passed': receipt['passed'], 'checks': len(receipt['checks']), 'failures': receipt['failures']}), flush=True)
         finally: stop_owned_app(app)
         result = {'cases': receipts, 'passed': sum(x['passed'] for x in receipts), 'total': len(cases),
