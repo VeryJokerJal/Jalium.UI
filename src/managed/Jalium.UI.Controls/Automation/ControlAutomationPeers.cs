@@ -113,6 +113,8 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     private ListBox? ListOwner => ItemsControlAutomationPeer?.ItemsOwner as ListBox ?? (Item as ListBoxItem)?.ParentListBox;
     private object SelectionValue => Item is ListBoxItem item ? item.Content ?? item : Item;
 
+    protected override AutomationPeer? GetParentCore() => SelectionContainer ?? base.GetParentCore();
+
     private ComboBox? ComboBoxOwner => ItemContainer is ComboBoxItem comboItem
         ? ItemsControl.ItemsControlFromItemContainer(comboItem) as ComboBox
         : null;

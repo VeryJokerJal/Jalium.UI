@@ -40,6 +40,7 @@ public partial class ListBox : Selector
 
     private readonly List<object> _selectedItems;
     private readonly SelectedItemsCollection _selectedItemsView;
+    private readonly Dictionary<ListBoxItem, int> _explicitItemMemberships = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// The anchor index for Extended selection range operations.
@@ -235,41 +236,72 @@ public partial class ListBox : Selector
     /// <inheritdoc />
     protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
     {
+        // Retire membership before Selector publishes selection changes. Those
+        // callbacks may replace the source again or throw before returning here.
+        SynchronizeExplicitItemOwnership(e);
         base.OnItemsChanged(e);
+    }
 
-        if (e.Action is NotifyCollectionChangedAction.Add or NotifyCollectionChangedAction.Replace)
+    private void SynchronizeExplicitItemOwnership(NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action == NotifyCollectionChangedAction.Move) return;
+
+        if (e.Action == NotifyCollectionChangedAction.Reset)
         {
-            if (e.NewItems != null)
+            var current = new Dictionary<ListBoxItem, int>(ReferenceEqualityComparer.Instance);
+            foreach (var item in Items)
             {
-                foreach (var newItem in e.NewItems)
+                if (item is ListBoxItem row)
                 {
-                    if (newItem is ListBoxItem lbi)
-                    {
-                        lbi.ParentListBox = this;
-                    }
+                    current.TryGetValue(row, out int count);
+                    current[row] = count + 1;
                 }
             }
+            foreach (var row in _explicitItemMemberships.Keys)
+            {
+                if (!current.ContainsKey(row) && ReferenceEquals(row.ParentListBox, this))
+                    row.ParentListBox = null;
+            }
+            _explicitItemMemberships.Clear();
+            foreach (var entry in current)
+            {
+                _explicitItemMemberships.Add(entry.Key, entry.Value);
+                entry.Key.ParentListBox = this;
+            }
+            return;
         }
-        else if (e.Action is NotifyCollectionChangedAction.Remove)
+
+        if (e.Action is NotifyCollectionChangedAction.Remove or NotifyCollectionChangedAction.Replace)
         {
             if (e.OldItems != null)
             {
                 foreach (var oldItem in e.OldItems)
                 {
-                    if (oldItem is ListBoxItem lbi && ReferenceEquals(lbi.ParentListBox, this))
+                    if (oldItem is ListBoxItem row)
                     {
-                        lbi.ParentListBox = null;
+                        _explicitItemMemberships.TryGetValue(row, out int count);
+                        if (count > 1) _explicitItemMemberships[row] = count - 1;
+                        else
+                        {
+                            _explicitItemMemberships.Remove(row);
+                            if (ReferenceEquals(row.ParentListBox, this)) row.ParentListBox = null;
+                        }
                     }
                 }
             }
         }
-        else if (e.Action is NotifyCollectionChangedAction.Reset)
+        if (e.Action is NotifyCollectionChangedAction.Add or NotifyCollectionChangedAction.Replace)
         {
-            foreach (var item in Items)
+            if (e.NewItems != null)
             {
-                if (item is ListBoxItem lbi)
+                foreach (var item in e.NewItems)
                 {
-                    lbi.ParentListBox = this;
+                    if (item is ListBoxItem row)
+                    {
+                        _explicitItemMemberships.TryGetValue(row, out int count);
+                        _explicitItemMemberships[row] = count + 1;
+                        row.ParentListBox = this;
+                    }
                 }
             }
         }
