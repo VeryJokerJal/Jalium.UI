@@ -67,6 +67,7 @@ static bool AppleTextServiceRect(id object, CGFloat scale, NSRect& rectangle)
 // their original interleaving and item ownership as a private attributed value.
 static NSAttributedStringKey const AppleWritingToolsAncestorsAttribute = @"JaliumWritingToolsAncestors";
 static NSAttributedStringKey const AppleWritingToolsStorageSeparatorAttribute = @"JaliumWritingToolsStorageSeparator";
+static NSAttributedStringKey const AppleWritingToolsEmptyCellAttribute = @"JaliumWritingToolsEmptyCell";
 static NSArray* AppleWritingToolsValidateAncestors(id value, NSUInteger lists, NSUInteger tables)
 {
     if (![value isKindOfClass:NSArray.class] || [value count] != lists + tables || [value count] > 64) return nil;
@@ -113,6 +114,7 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
         // editable paragraph text. Preserve their exact UTF-16 positions.
         [text addAttribute:NSWritingToolsExclusionAttributeName value:@YES range:NSMakeRange(0,text.length)];
         [text addAttribute:AppleWritingToolsStorageSeparatorAttribute value:@YES range:NSMakeRange(0,text.length)];
+        [text removeAttribute:AppleWritingToolsEmptyCellAttribute range:NSMakeRange(0,text.length)];
         NSUInteger previousEnd = 0;
         for (id record in records) {
             if (![record isKindOfClass:NSDictionary.class]) return false;
@@ -121,6 +123,10 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
             NSRange range = NSMakeRange([record[@"start"] unsignedIntegerValue],[record[@"length"] unsignedIntegerValue]);
             if (!ValidTextRange(range,text.length)) return false;
             previousEnd = NSMaxRange(range);
+            id emptyValue = record[@"emptyCell"];
+            if (emptyValue && (![emptyValue isKindOfClass:NSNumber.class] ||
+                CFGetTypeID((__bridge CFTypeRef)emptyValue) != CFBooleanGetTypeID())) return false;
+            const bool emptyCell = emptyValue && [emptyValue boolValue];
             id listRecords = record[@"lists"], tableRecords = record[@"tables"];
             if (![listRecords isKindOfClass:NSArray.class] || [listRecords count] > 32 ||
                 ![tableRecords isKindOfClass:NSArray.class] || [tableRecords count] > 32) return false;
@@ -159,13 +165,16 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
                     startingRow:[metadata[@"row"] integerValue] rowSpan:[metadata[@"rows"] integerValue]
                     startingColumn:column columnSpan:span]];
             }
+            if (emptyCell && (!tableObjects.count || range.length != 1 ||
+                [text.string characterAtIndex:range.location] != '\t')) return false;
             NSParagraphStyle* original = [text attribute:NSParagraphStyleAttributeName atIndex:range.location effectiveRange:nil];
             NSMutableParagraphStyle* style = original ? [original mutableCopy] : [NSMutableParagraphStyle new];
             style.textLists = listObjects; style.textBlocks = tableObjects;
             [text addAttribute:NSParagraphStyleAttributeName value:style range:range];
             if (ancestry) [text addAttribute:AppleWritingToolsAncestorsAttribute
                 value:@{@"ancestors":ancestry,@"lists":listObjects,@"tables":tableObjects} range:range];
-            [text removeAttribute:NSWritingToolsExclusionAttributeName range:range];
+            if (emptyCell) [text addAttribute:AppleWritingToolsEmptyCellAttribute value:@YES range:range];
+            else [text removeAttribute:NSWritingToolsExclusionAttributeName range:range];
             [text removeAttribute:AppleWritingToolsStorageSeparatorAttribute range:range];
         }
     }
@@ -233,13 +242,27 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
     NSMutableDictionary<NSString*,NSNumber*>* ordinals = [NSMutableDictionary new];
     for (NSUInteger index = 0; index < text.length;) {
         NSRange range = [plain paragraphRangeForRange:NSMakeRange(index,0)];
-        NSRange styleRange;
-        NSParagraphStyle* style = [text attribute:NSParagraphStyleAttributeName atIndex:index effectiveRange:&styleRange];
+        NSRange searchRange = NSMakeRange(index, NSMaxRange(range)-index), styleRange;
+        // An ordinary effective range may end at an unrelated font/color run.
+        // Only a real paragraph/cell or provenance change can split this record.
+        // Bound longest-range searches to the current paragraph/cell.
+        NSParagraphStyle* style = [text attribute:NSParagraphStyleAttributeName atIndex:index
+            longestEffectiveRange:&styleRange inRange:searchRange];
         if (![style isKindOfClass:NSParagraphStyle.class]) style = NSParagraphStyle.defaultParagraphStyle;
-        NSRange separatorRange;
-        BOOL storageSeparator = [[text attribute:AppleWritingToolsStorageSeparatorAttribute atIndex:index effectiveRange:&separatorRange] boolValue];
-        NSUInteger end = std::min(NSMaxRange(range), NSMaxRange(separatorRange));
+        NSUInteger end = NSMaxRange(range);
         if (style.textBlocks.count) end = std::min(end, NSMaxRange(styleRange));
+        searchRange.length = end-index;
+        NSRange separatorRange, emptyRange;
+        id separatorValue = [text attribute:AppleWritingToolsStorageSeparatorAttribute atIndex:index
+            longestEffectiveRange:&separatorRange inRange:searchRange];
+        BOOL storageSeparator = [separatorValue isKindOfClass:NSNumber.class] &&
+            CFGetTypeID((__bridge CFTypeRef)separatorValue) == CFBooleanGetTypeID() && [separatorValue boolValue];
+        id emptyValue = [text attribute:AppleWritingToolsEmptyCellAttribute atIndex:index
+            longestEffectiveRange:&emptyRange inRange:searchRange];
+        BOOL emptyCell = [emptyValue isKindOfClass:NSNumber.class] &&
+            CFGetTypeID((__bridge CFTypeRef)emptyValue) == CFBooleanGetTypeID() && [emptyValue boolValue];
+        end = std::min(end, NSMaxRange(separatorRange));
+        end = std::min(end, NSMaxRange(emptyRange));
         range = NSMakeRange(index, end-index);
         // Only our virtual storage characters may be omitted by the importer.
         // A copied/stale private value must never discard newly authored text.
@@ -278,6 +301,10 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
             @"alignment":@(JaliumBridgeTextAlignment(style.alignment)),@"direction":@(style.baseWritingDirection),
             @"lists":lists,@"tables":tables,@"skipPrefix":@(skipPrefix)} mutableCopy];
         if (ancestry) paragraph[@"ancestors"] = ancestry;
+        // Private provenance is useful only while the real table/list style
+        // still matches, and it can never suppress newly authored characters.
+        if (emptyCell && ancestry && style.textBlocks.count && range.length == 1 &&
+            [plain characterAtIndex:index] == '\t') paragraph[@"emptyCell"] = @YES;
         if (storageSeparator) paragraph[@"storageSeparator"] = @YES;
         [paragraphs addObject:paragraph];
         index = NSMaxRange(range);

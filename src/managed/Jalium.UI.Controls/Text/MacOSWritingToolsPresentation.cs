@@ -301,6 +301,7 @@ internal static class MacOSWritingToolsPresentation
                     inkLeft = Math.Min(inkLeft, col); inkTop = Math.Min(inkTop, row);
                     inkRight = Math.Max(inkRight, col + 1); inkBottom = Math.Max(inkBottom, row + 1);
                 }
+        if (inkRight <= inkLeft || inkBottom <= inkTop) return null;
         if (inkRight > inkLeft)
         {
             Rect ink = new(captured.X + inkLeft / dpi, captured.Y + inkTop / dpi,
@@ -364,7 +365,16 @@ internal static class MacOSWritingToolsPresentation
             finally { --_previewDepth; dc.Pop(); dc.Pop(); dc.Pop(); }
         }, current);
         var candidates = projected.Select(rect => Rect.Intersect(rect, frame)).Where(Finite).ToArray();
-        return current() && bitmap is not null ? (bitmap, frame, candidates) : null;
+        return current() && bitmap is not null && HasVisiblePreviewPixels(bitmap) ? (bitmap, frame, candidates) : null;
+    }
+    private static bool HasVisiblePreviewPixels(WriteableBitmap bitmap)
+    {
+        int stride = checked(bitmap.PixelWidth * 4);
+        byte[] pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        for (int i = 3; i < pixels.Length; i += 4)
+            if (pixels[i] != 0) return true;
+        return false;
     }
     private static bool Finite(Rect rect) => !rect.IsEmpty && double.IsFinite(rect.X) && double.IsFinite(rect.Y) &&
         double.IsFinite(rect.Width) && double.IsFinite(rect.Height) && rect.Width >= 0 && rect.Height > 0;

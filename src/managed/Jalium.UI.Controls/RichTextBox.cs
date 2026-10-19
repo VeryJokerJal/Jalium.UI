@@ -2214,12 +2214,21 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             layout.Blocks.Add(blockLayout);
         }
 
+        if (layout.Blocks.Count == 0)
+        {
+            double lineHeight = GetDefaultLineHeight();
+            var empty = new BlockLayoutInfo { Block = new Paragraph() };
+            empty.Lines.Add(new LineLayoutInfo { StartOffset = 0, EndOffset = 0, Height = lineHeight, Baseline = lineHeight * 0.8 });
+            layout.Blocks.Add(empty);
+        }
+
         foreach (var block in layout.Blocks)
             CollectDecorationFragments(block, layout.DecorationFragments);
 
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         double height = 0;
         CollectAllLines(layout.Blocks, 0, ref height, lines, layout.CellClips);
+        layout.TextPositionLines.AddRange(lines);
         double cellY = 0;
         CollectCellRegions(layout.Blocks, 0, ref cellY, 0, layout.Cells);
         layout.TotalHeight = height;
@@ -3252,18 +3261,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (currentLineIndex < 0)
             return direction < 0 ? _document.ContentStart : _document.ContentEnd;
 
-        int targetLineIndex = currentLineIndex + direction;
-        if (ContainsTables(layout.Blocks))
-        {
-            double currentY = allLines[currentLineIndex].y;
-            var next = allLines.Select((item, index) => (item, index))
-                .Where(value => direction * (value.item.y - currentY) > 0.01)
-                .OrderBy(value => Math.Abs(value.item.y - currentY))
-                .ThenBy(value => Math.Max(0, Math.Max(value.item.x - caretPos.Value.X,
-                    caretPos.Value.X - value.item.x - value.item.line.Width))).FirstOrDefault();
-            if (next.item.line is null) return direction < 0 ? _document.ContentStart : _document.ContentEnd;
-            targetLineIndex = next.index;
-        }
+        int targetLineIndex = FindAdjacentTextLine(allLines, currentLineIndex, direction,
+            caretPos.Value.X, ContainsTables(layout.Blocks), layout.CellClips, contentBounds.Left - _horizontalOffset);
         if (targetLineIndex < 0)
             return _document.ContentStart;
         if (targetLineIndex >= allLines.Count)
@@ -4097,6 +4096,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         public List<BlockLayoutInfo> Blocks { get; } = new();
         public Dictionary<LineLayoutInfo, Rect> CellClips { get; } = new();
+        public List<(LineLayoutInfo line, double y, double x)> TextPositionLines { get; } = new();
         public List<(TableCellLayout Cell, Rect Bounds, int Depth)> Cells { get; } = new();
         public Dictionary<TextElement, DecorationFragmentMetrics> DecorationFragments { get; } =
             new(ReferenceEqualityComparer.Instance);

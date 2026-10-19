@@ -29,7 +29,7 @@ def main():
     parser.add_argument('--work-parent', type=Path, default=Path.home() / 'Library/Caches')
     parser.add_argument('--results-file', type=Path)
     parser.add_argument('--image-directory', type=Path)
-    parser.add_argument('--cases', default=','.join(map(str, range(24))))
+    parser.add_argument('--cases', default=','.join(map(str, range(44))))
     args = parser.parse_args()
     source = args.app.resolve()
     if not source.is_dir() or source.suffix != '.app':
@@ -38,7 +38,7 @@ def main():
         cases = [int(value) for value in args.cases.split(',')]
     except ValueError:
         parser.error('--cases must contain integer indices')
-    if not cases or len(cases) != len(set(cases)) or any(value not in range(24) for value in cases):
+    if not cases or len(cases) != len(set(cases)) or any(value not in range(44) for value in cases):
         parser.error('invalid cases')
     if args.image_directory:
         args.image_directory.mkdir(exist_ok=False, parents=True)

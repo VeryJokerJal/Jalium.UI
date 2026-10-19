@@ -22,12 +22,12 @@ internal static class WindowWritingToolsStructureChecks
     internal static int Run(string argument)
     {
         int index = int.Parse(argument.Split('=').Last());
-        if (index is < 0 or >= 24) return 2;
+        if (index is < 0 or >= 44) return 2;
         if (!OperatingSystem.IsMacOSVersionAtLeast(15, 2)) return 77;
         string output = Environment.GetEnvironmentVariable("JALIUM_WRITING_STRUCTURE_OUTPUT")!;
         Directory.CreateDirectory(output);
         bool custom = index % 2 == 1, software = index % 4 >= 2;
-        int model = new[] { 0, 1, 4, 5, 9, 11 }[index / 4];
+        int model = new[] { 0, 1, 4, 5, 9, 11, 12, 13, 14, 15, 16 }[index / 4];
         var app = NSApplication.SharedApplication; app.ActivationPolicy = NSApplicationActivationPolicy.Regular;
         using var host = new Delegate(); app.Delegate = host; app.FinishLaunching();
         using (var note = NSNotification.FromName(NSApplication.DidFinishLaunchingNotification, app)) host.DidFinishLaunching(note);
@@ -45,7 +45,7 @@ internal static class WindowWritingToolsStructureChecks
         owner.SetResourceReference(Window.BackgroundProperty, "WindowBackground"); Application.Current!.MainWindow = owner;
         var checks = new List<string>(); var failures = new List<string>(); var scenarios = new List<object>(); var focus = new List<object>();
         int unavailable = 0, phase = 0; bool finished = false; var watch = Stopwatch.StartNew();
-        string before = "", shape = ""; Block[] original = []; var contexts = new List<object>(); var geometryRecords = new List<object>();
+        string before = "", shape = ""; Block[] original = []; var contexts = new List<object>(); var geometryRecords = new List<object>(); var replacements = new List<object>(); string previewKind = "not-requested";
         void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); checks.Add(message); }
         void Attempt(string name, Action body)
         {
@@ -90,11 +90,19 @@ internal static class WindowWritingToolsStructureChecks
             NSAttributedString? accepted = null; int calls = 0;
             client.ReplaceRange(coordinator, new NSRange(0, (nint)context.AttributedString.Value.Length), context, proposed,
                 NSWritingToolsCoordinatorTextReplacementReason.Noninteractive, null!, value => { calls++; accepted = value; });
+            string proposalPath = Path.Combine(output, "received-fragment.json");
+            string? packet = File.Exists(proposalPath) ? File.ReadAllText(proposalPath) : null;
+            replacements.Add(new { phase, calls, proposed = proposed.Value, accepted = accepted?.Value,
+                managedAfter = editor.Document.GetText(), shapeAfter = Shape(editor.Document.Blocks), packet });
             Require(calls == 1 && accepted?.Value == proposed.Value, "SDK replacement completes once with the accepted projection");
         }
+        bool Same(Rect left, Rect right) => !left.IsEmpty && !right.IsEmpty &&
+            Math.Abs(left.X - right.X) < 0.02 && Math.Abs(left.Y - right.Y) < 0.02 &&
+            Math.Abs(left.Width - right.Width) < 0.02 && Math.Abs(left.Height - right.Height) < 0.02;
         void CheckGeometry(string stage, bool preview)
         {
             owner.UpdateLayout(); var ime = (IImeSupport)editor; int count = 0, visible = 0;
+            string projection = editor.Document.GetText();
             foreach (var paragraph in editor.Document.EnumerateParagraphs())
             {
                 int start = paragraph.ContentStart.DocumentOffset, length = TextElement.GetContentLength(paragraph);
@@ -102,7 +110,32 @@ internal static class WindowWritingToolsStructureChecks
                 var rect = range.Rectangle;
                 Require(double.IsFinite(rect.X) && double.IsFinite(rect.Y) && rect.Width >= 0 && rect.Height > 0,
                     "paragraph geometry is finite after mixed table/list layout");
-                var point = new Point(rect.Left + Math.Min(0.25, rect.Width / 2), rect.Top + Math.Min(1, rect.Height / 2));
+                Require(paragraph.ContentStart.HasValidLayout, "public text position reports the current actual layout");
+                Require(paragraph.ContentStart.IsAtLineStartPosition &&
+                    paragraph.ContentStart.GetLineStartPosition(0)?.DocumentOffset == start, "public line start uses the displayed paragraph line");
+                for (int at = start; at < start + length;)
+                {
+                    int end = Math.Min(start + length, GraphemeClusters.NextBoundary(projection, at));
+                    Require(ime.TryGetImeTextRangeGeometry(at, end - at, false, out var expected), "native range reaches each authored grapheme");
+                    var forward = editor.Document.GetPositionAtOffset(at, LogicalDirection.Forward)!;
+                    var backward = editor.Document.GetPositionAtOffset(end, LogicalDirection.Backward)!;
+                    var forwardRect = forward.GetCharacterRect(LogicalDirection.Forward);
+                    var backwardRect = backward.GetCharacterRect(LogicalDirection.Backward);
+                    Require(Same(expected.Rectangle, forwardRect) && Same(expected.Rectangle, backwardRect),
+                        "public adjacent-character rectangles match native graphemes; at=" + at + "; expected=" + expected.Rectangle +
+                        "; forward=" + forwardRect + "; backward=" + backwardRect);
+                    at = end;
+                }
+                if (range.Length < length)
+                {
+                    var next = paragraph.ContentStart.GetLineStartPosition(1, out int moved);
+                    Require(moved == 1 && next is not null && next.DocumentOffset > start &&
+                        next.GetCharacterRect(LogicalDirection.Forward).Top > rect.Top,
+                        "public line navigation reaches the next displayed wrap or explicit line");
+                }
+                var firstCharacter = paragraph.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+                var point = new Point(firstCharacter.Left + Math.Max(0.01, firstCharacter.Width / 2),
+                    firstCharacter.Top + Math.Min(1, firstCharacter.Height / 2));
                 bool inViewport = new Rect(0, 0, editor.ActualWidth, editor.ActualHeight).Contains(point);
                 int hit = -1;
                 if (length > 0 && inViewport)
@@ -111,24 +144,52 @@ internal static class WindowWritingToolsStructureChecks
                     var position = editor.GetPositionFromPoint(point, true);
                     Require(position is not null && hit == position.DocumentOffset && hit >= start && hit <= start + length,
                         "native-facing and public point mappings retain the paragraph's source range");
+                    Require(hit <= GraphemeClusters.NextBoundary(projection, start),
+                        $"visible first-grapheme hit remains within the actually sampled source character; start={start}; hit={hit}; point={point}; first={firstCharacter}");
                     visible++;
                 }
-                geometryRecords.Add(new { stage, start, length, rectangle = rect, inViewport, hit }); count++;
+                geometryRecords.Add(new { stage, kind = "paragraph", start, length, rectangle = rect, inViewport, hit }); count++;
             }
-            Require(count > 0 && visible > 0, "mixed document retains visible and addressable paragraphs");
+            foreach (var cell in EmptyCells(editor.Document.Blocks))
+            {
+                int start = cell.ContentStart.DocumentOffset;
+                Require(ime.TryGetImeTextRangeGeometry(start, 0, false, out var range), "zero-block cell exposes an IME insertion rectangle");
+                var rect = cell.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+                Require(cell.ContentStart.HasValidLayout && Same(range.Rectangle, rect) && rect.Width == 0 && rect.Height > 0,
+                    "zero-block public rectangle stays in its own cell and has a real line height");
+                var point = new Point(rect.X + 0.1, rect.Y + Math.Min(1, rect.Height / 2));
+                bool inViewport = new Rect(0, 0, editor.ActualWidth, editor.ActualHeight).Contains(point);
+                if (inViewport)
+                {
+                    Require(editor.GetPositionFromPoint(point, true)?.DocumentOffset == start,
+                        "point mapping reaches the same zero-block cell insertion position");
+                    visible++;
+                }
+                geometryRecords.Add(new { stage, kind = "empty-cell", start, length = 0, rectangle = rect, inViewport }); count++;
+            }
+            Require(count > 0 && visible > 0, "document retains visible and addressable paragraphs or empty cells");
             if (!preview) return;
             var source = ((AutomationTextProvider)UIElementAutomationPeer.CreatePeerForElement(editor)!.GetPattern(PatternInterface.Text)!).Source;
-            var first = editor.Document.EnumerateParagraphs().First(paragraph => TextElement.GetContentLength(paragraph) > 0);
-            int at = first.ContentStart.DocumentOffset, extent = TextElement.GetContentLength(first);
-            var image = MacOSWritingToolsPresentation.CreatePreview(editor, source, at, extent, Matrix.Identity,
+            var first = editor.Document.EnumerateParagraphs().FirstOrDefault(paragraph => TextElement.GetContentLength(paragraph) > 0);
+            int atPreview = first?.ContentStart.DocumentOffset ?? 0;
+            int extent = first is null ? projection.Length : TextElement.GetContentLength(first);
+            var image = MacOSWritingToolsPresentation.CreatePreview(editor, source, atPreview, extent, Matrix.Identity,
                 owner.DpiScale, null, () => owner.Handle != 0);
+            if (first is null)
+            {
+                previewKind = "structural-empty";
+                if (image is not null) File.WriteAllBytes(Path.Combine(output, "unexpected-empty-preview.png"), image.Png);
+                Require(image is null, "pure structural storage does not fabricate a glyph preview");
+                return;
+            }
+            previewKind = "glyphs";
             Require(image is not null && image.Png.Length > 0, "real backend creates a preview of table/list text");
             var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.StreamSource = new MemoryStream(image!.Png); bitmap.EndInit();
             var pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4]; bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
             bool ink = false, transparent = false;
             for (int i = 3; i < pixels.Length; i += 4) { ink |= pixels[i] > 20; transparent |= pixels[i] < 4; }
             Require(ink && transparent, "glyph preview contains ink and transparent background");
-            Require(ime.TryGetImeTextRangeGeometry(at, extent, false, out var firstLine) &&
+            Require(ime.TryGetImeTextRangeGeometry(atPreview, extent, false, out var firstLine) &&
                 image.Frame.Width <= firstLine.Rectangle.Width + 4 * firstLine.Rectangle.Height &&
                 image.Frame.Height <= editor.ActualHeight, "glyph preview excludes the table's full opaque surface");
             File.WriteAllBytes(Path.Combine(output, "preview.png"), image.Png);
@@ -180,15 +241,27 @@ internal static class WindowWritingToolsStructureChecks
                 finished = true;
                 Observe();
                 original = editor.Document.Blocks.ToArray();
-                var expected = Model(model); var run = expected.EnumerateParagraphs().SelectMany(p => p.Inlines.OfType<Run>()).First(r => r.Text.Any(char.IsLetter));
-                int local = Array.FindIndex(run.Text.ToCharArray(), char.IsLetter); run.Text = run.Text[..local] + "新" + run.Text[(local + 1)..];
+                var expected = Model(model); var run = expected.EnumerateParagraphs().SelectMany(p => p.Inlines.OfType<Run>()).FirstOrDefault(r => r.Text.Any(char.IsLetter));
+                bool inserting = run is null;
+                if (run is null) EmptyCells(expected.Blocks).First().Blocks.Add(P("新"));
+                else { int local = Array.FindIndex(run.Text.ToCharArray(), char.IsLetter); run.Text = run.Text[..local] + "新" + run.Text[(local + 1)..]; }
                 string after = expected.GetText(), afterShape = Shape(expected.Blocks);
                 Attempt("edited-attributed-proposal", () =>
                 {
                     var context = Context(out var coordinator, out var client); using var proposed = new NSMutableAttributedString(context.AttributedString);
-                    int at = Array.FindIndex(before.ToCharArray(), char.IsLetter); proposed.Replace(new NSRange(at, 1), "新");
+                    if (inserting)
+                    {
+                        using var inserted = new NSMutableAttributedString(context.AttributedString.Substring(0, 1));
+                        inserted.Replace(new NSRange(0, 1), "新\n");
+                        var authoredRange = new NSRange(0, inserted.Length);
+                        inserted.RemoveAttribute("JaliumWritingToolsEmptyCell", authoredRange);
+                        inserted.RemoveAttribute("JaliumWritingToolsStorageSeparator", authoredRange);
+                        inserted.RemoveAttribute(NSStringAttributeKey.WritingToolsExclusion.ToString(), authoredRange);
+                        proposed.Insert(inserted, 0);
+                    }
+                    else { int at = Array.FindIndex(before.ToCharArray(), char.IsLetter); proposed.Replace(new NSRange(at, 1), "新"); }
                     Replace(coordinator, client, context, proposed);
-                    Require(editor.Document.GetText() == after, "edited attributed proposal changes only its authored character");
+                    Require(editor.Document.GetText() == after, inserting ? "SDK insertion adds authored text inside the original empty cell" : "edited attributed proposal changes only its authored character");
                     Require(Shape(editor.Document.Blocks) == afterShape, "edited proposal preserves list numbering, item grouping, table spans and mixed nesting");
                 });
                 Attempt("undo-edited", () =>
@@ -199,6 +272,16 @@ internal static class WindowWritingToolsStructureChecks
                 Attempt("redo-edited", () => Require(editor.Redo() && editor.Document.GetText() == after && Shape(editor.Document.Blocks) == afterShape, "one Redo restores the edited mixed structure"));
                 Observe(); status.Text = failures.Count == 0 ? "结构、编号、撤销与重做检查通过。" : "检查发现问题，请查看记录。";
                 Attempt("table-geometry-after", () => CheckGeometry("after", false));
+                Attempt("explicit-line-break-geometry", () =>
+                {
+                    var previous = editor.Document;
+                    try
+                    {
+                        editor.Document = new FlowDocument(P("第一行 Miii🙂\n第二行 e\u0301 中文")); owner.UpdateLayout();
+                        CheckGeometry("explicit-line-break", false); Capture("explicit-line-break");
+                    }
+                    finally { editor.Document = previous; owner.UpdateLayout(); }
+                });
                 Capture("after");
             }
             catch (Exception failure) { finished = true; failures.Add("scene: " + failure); }
@@ -209,7 +292,7 @@ internal static class WindowWritingToolsStructureChecks
                 File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
                 {
                     index, model, custom, software, passed = failures.Count == 0 && unavailable == 0, qualifiedWithoutForeground = failures.Count == 0,
-                    failures, checks, scenarios, focus, contexts, geometryRecords, foregroundUnavailable = unavailable, processId = Environment.ProcessId,
+                    failures, checks, scenarios, focus, contexts, geometryRecords, replacements, previewKind, foregroundUnavailable = unavailable, processId = Environment.ProcessId,
                     physicalInput = false, desktopScreenshot = false, appleIntelligenceService = false,
                     serviceAvailable = NSWritingToolsCoordinator.IsWritingToolsAvailable, renderThreadOverride = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD")
                 }));
@@ -243,9 +326,46 @@ internal static class WindowWritingToolsStructureChecks
             8 => MakeList([MakeTable([P("第一项左")], [P("第一项右")])], [MakeTable([P("第二项左")], [P("第二项右")])]),
             9 => SpanningTable(),
             11 => MakeList([P("\t3.\t这也是用户文字🙂")]),
+            12 => MakeTable([], [P("空单元格旁的文字🙂")]),
+            13 => RawGrid(false),
+            14 => RawGrid(true),
+            15 => MakeTable([MakeTable([], [P("内层文字🙂")])], []),
+            16 => LongParagraph(),
             _ => MakeList([P(""), MakeTable([P("")], [P("中文 e\u0301 🙂")]), P("")], [P("")])
         };
         return new FlowDocument(value);
+    }
+    private static Paragraph LongParagraph()
+    {
+        var paragraph = P(string.Concat(Enumerable.Repeat("Miii 中文 e\u0301 👩‍👧 العربية ", 8)));
+        paragraph.FlowDirection = FlowDirection.RightToLeft;
+        ((Run)paragraph.Inlines[0]).FontStyle = FontStyles.Italic;
+        return paragraph;
+    }
+    private static Table RawGrid(bool allEmpty)
+    {
+        var table = MakeTable(allEmpty ? [] : [P("左上")], []);
+        var row = new TableRow(); row.Cells.Add(new TableCell());
+        row.Cells.Add(allEmpty ? new TableCell() : new TableCell(P("右下🙂")));
+        table.RowGroups[0].Rows.Add(row); return table;
+    }
+    private static IEnumerable<TableCell> EmptyCells(IEnumerable<Block> blocks)
+    {
+        foreach (var block in blocks)
+        {
+            if (block is Table table)
+                foreach (var cell in table.RowGroups.SelectMany(group => group.Rows).SelectMany(row => row.Cells))
+                {
+                    if (cell.Blocks.Count == 0) yield return cell;
+                    foreach (var inner in EmptyCells(cell.Blocks)) yield return inner;
+                }
+            else
+            {
+                IEnumerable<Block> children = block switch
+                { Section section => section.Blocks, DocList list => list.ListItems.SelectMany(item => item.Blocks), _ => Array.Empty<Block>() };
+                foreach (var cell in EmptyCells(children)) yield return cell;
+            }
+        }
     }
     private static Paragraph P(string text) => new(new Run(text));
     private static DocList MakeList(params Block[][] contents)

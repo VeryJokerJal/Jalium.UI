@@ -312,6 +312,25 @@ JaliumResult MetalTextParagraph::HitTest(uint32_t line, float x, JaliumParagraph
     auto closest = std::min_element(carets.begin(), carets.end(), [&](const auto& a, const auto& b) {
         return std::abs(a.x - x) < std::abs(b.x - x);
     });
+#ifdef __APPLE__
+    // A bidi boundary can expose distinct logical offsets at the same visual
+    // caret. Resolve that ambiguity using CoreText's hit for the shaped line,
+    // while retaining the nearest grapheme edge and its affinity.
+    const auto& row = impl_->rows[line];
+    CFIndex hint = row.line ? CTLineGetStringIndexForPosition(row.line,
+        CGPointMake(x - row.originX, 0)) : kCFNotFound;
+    if (hint >= 0) {
+        if (hint < impl_->length) {
+            CFRange cluster = CFStringGetRangeOfComposedCharactersAtIndex(impl_->String(), hint);
+            hint = cluster.location;
+        }
+        const float distance = std::abs(closest->x - x);
+        auto preferred = std::find_if(carets.begin(), carets.end(), [&](const auto& edge) {
+            return edge.textPosition == hint && std::abs(std::abs(edge.x - x) - distance) < 0.001f;
+        });
+        if (preferred != carets.end()) closest = preferred;
+    }
+#endif
     *result = *closest; return JALIUM_OK;
 }
 JaliumResult MetalTextParagraph::GetSelection(uint32_t line, uint32_t start, uint32_t length,

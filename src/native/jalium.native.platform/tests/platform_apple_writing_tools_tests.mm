@@ -18,6 +18,12 @@ static NSString* Base64(NSString* text)
     std::vector<unichar> units(text.length); [text getCharacters:units.data() range:NSMakeRange(0,text.length)];
     return [[NSData dataWithBytes:units.data() length:units.size()*2] base64EncodedStringWithOptions:0];
 }
+static NSDictionary* EmptyCellRecord(NSUInteger start, NSUInteger length, NSUInteger column, id empty, NSUInteger columns=2)
+{
+    return @{@"start":@(start),@"length":@(length),@"emptyCell":empty,@"lists":@[],
+        @"tables":@[@{@"id":@"empty-table",@"row":@0,@"column":@(column),@"rows":@1,@"columns":@1,@"tableColumns":@(columns)}],
+        @"ancestors":@[@{@"kind":@"table",@"index":@0}]};
+}
 struct Fixture {
     JaliumPlatformWindow* window;
     NSView* view;
@@ -237,6 +243,83 @@ int main()
                     @"ancestors":@[@{@"kind":@"list",@"index":@0,@"item":@"item"}]}];
                 auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString);
                 NSDictionary* row=[f.proposal[@"paragraphs"] firstObject];Require([row[@"skipPrefix"] integerValue]==0 && [row[@"ancestors"] count]==1,"authored marker-looking prefix");
+            });
+            Run("raw empty cell retains native table provenance and exclusion",style,[&]{
+                Fixture f(style); f.text=@"\tX\n\t\n"; f.selection=NSMakeRange(1,1);
+                f.structure=@[EmptyCellRecord(0,1,0,@YES),EmptyCellRecord(1,2,1,@NO)];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);
+                Require(context && [context.attributedString.string isEqual:f.text],"empty cell context projection");
+                auto* paragraph=[context.attributedString attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:nil];
+                Require([paragraph textBlocks].count==1 &&
+                    [[context.attributedString attribute:NSWritingToolsExclusionAttributeName atIndex:0 effectiveRange:nil] boolValue] &&
+                    ![context.attributedString attribute:NSWritingToolsExclusionAttributeName atIndex:1 effectiveRange:nil],"empty slot is structured storage, authored neighbor stays editable");
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString);
+                NSArray* rows=f.proposal[@"paragraphs"];
+                Require(rows.count==3 && [rows[0][@"emptyCell"] boolValue] && !rows[0][@"storageSeparator"] &&
+                    [rows[1][@"tables"][0][@"column"] intValue]==1 && [rows[2][@"storageSeparator"] boolValue],"empty cell is distinct from an omitted separator");
+            });
+            Run("adjacent raw empty cells remain distinct native records",style,[&]{
+                Fixture f(style); f.text=@"\t\t\n"; f.selection=NSMakeRange(0,0);
+                f.structure=@[EmptyCellRecord(0,1,0,@YES),EmptyCellRecord(1,1,1,@YES)];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument); Require(context,"all-empty source context");
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString); NSArray* rows=f.proposal[@"paragraphs"];
+                Require(rows.count==3 && [rows[0][@"emptyCell"] boolValue] && [rows[1][@"emptyCell"] boolValue] &&
+                    [rows[0][@"tables"][0][@"column"] intValue]==0 && [rows[1][@"tables"][0][@"column"] intValue]==1,"all-empty cells kept separate");
+            });
+            Run("copied empty provenance cannot omit newly authored characters",style,[&]{
+                Fixture f(style); f.text=@"\tX\n\t\n"; f.selection=NSMakeRange(1,1);
+                f.structure=@[EmptyCellRecord(0,1,0,@YES),EmptyCellRecord(1,2,1,@NO)];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);
+                NSMutableAttributedString* value=[context.attributedString mutableCopy];
+                NSDictionary* attributes=[value attributesAtIndex:0 effectiveRange:nil];
+                [value replaceCharactersInRange:NSMakeRange(0,1) withString:@"Q"];
+                [value setAttributes:attributes range:NSMakeRange(0,1)];
+                [value addAttribute:@"JaliumWritingToolsEmptyCell" value:@YES range:NSMakeRange(0,1)];
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),value); NSDictionary* row=[f.proposal[@"paragraphs"] firstObject];
+                Require(!row[@"emptyCell"] && !row[@"storageSeparator"] &&
+                    [Text16([[NSData alloc]initWithBase64EncodedString:f.proposal[@"text16"] options:0]) hasPrefix:@"Q"],"authored glyph survives copied provenance");
+            });
+            Run("changed native table style retires empty-cell provenance",style,[&]{
+                Fixture f(style); f.text=@"\tX\n\t\n"; f.selection=NSMakeRange(1,1);
+                f.structure=@[EmptyCellRecord(0,1,0,@YES),EmptyCellRecord(1,2,1,@NO)];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument); NSMutableAttributedString* value=[context.attributedString mutableCopy];
+                NSMutableParagraphStyle* paragraph=[[value attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:nil] mutableCopy];
+                paragraph.textBlocks=@[]; [value addAttribute:NSParagraphStyleAttributeName value:paragraph range:NSMakeRange(0,1)];
+                [value addAttribute:@"JaliumWritingToolsEmptyCell" value:@YES range:NSMakeRange(0,1)];
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),value); NSDictionary* row=[f.proposal[@"paragraphs"] firstObject];
+                Require(!row[@"emptyCell"] && !row[@"ancestors"] && [row[@"tables"] count]==0,"stale private empty marker does not rebuild the old table");
+            });
+            Run("malformed empty-cell source records cannot create contexts",style,[&]{
+                for (int problem=0;problem<5;++problem) {
+                    Fixture f(style); f.text=problem==2?@"QX\n\t\n":@"\tX\n\t\n";f.selection=NSMakeRange(1,1);
+                    NSMutableDictionary* first=[EmptyCellRecord(0,problem==4?2:1,0,@YES) mutableCopy];
+                    if(problem==0)first[@"emptyCell"]=@1;
+                    if(problem==1)first[@"emptyCell"]=@"true";
+                    if(problem==3){first[@"tables"]=@[];first[@"ancestors"]=@[];}
+                    f.structure=@[first,EmptyCellRecord(problem==4?2:1,problem==4?1:2,1,@NO)];
+                    Require(!f.Context(NSWritingToolsCoordinatorContextScopeFullDocument),"invalid empty metadata created a context");
+                }
+            });
+            Run("real empty paragraph is not converted to a zero-block cell",style,[&]{
+                Fixture f(style); f.text=@"\n\t\n"; f.selection=NSMakeRange(0,0);
+                f.structure=@[EmptyCellRecord(0,1,0,@NO,1)];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument); Require(context,"empty paragraph context");
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString); NSDictionary* row=[f.proposal[@"paragraphs"] firstObject];
+                Require(!row[@"emptyCell"] && !row[@"storageSeparator"] && [row[@"length"] intValue]==1 &&
+                    [row[@"tables"] count]==1,"authored empty paragraph retains paragraph semantics");
+            });
+            Run("font runs do not manufacture new paragraphs",style,[&]{
+                for (bool table : {false,true}) {
+                    Fixture f(style);f.text=@"Miii 中文 e\u0301 🙂\n";f.selection=NSMakeRange(0,0);
+                    f.structure=table?@[EmptyCellRecord(0,f.text.length,0,@NO,1)]:
+                        @[@{@"start":@0,@"length":@(f.text.length),@"lists":@[],@"tables":@[],@"ancestors":@[]}];
+                    auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"formatted source context");
+                    NSMutableAttributedString* value=[context.attributedString mutableCopy];
+                    [value addAttribute:NSFontAttributeName value:[NSFontManager.sharedFontManager convertFont:[NSFont systemFontOfSize:18] toHaveTrait:NSItalicFontMask] range:NSMakeRange(0,value.length-1)];
+                    f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),value);NSArray* rows=f.proposal[@"paragraphs"];
+                    Require(rows.count==1 && [rows[0][@"length"] unsignedIntegerValue]==value.length &&
+                        !rows[0][@"storageSeparator"],"font boundary was exported as a paragraph boundary");
+                }
             });
             Run("ordinary excluded content is not a virtual storage separator",style,[&]{
                 Fixture f(style);auto* value=[[NSAttributedString alloc]initWithString:@"保留🙂" attributes:@{NSWritingToolsExclusionAttributeName:@YES}];

@@ -120,5 +120,7 @@
   <ItemGroup>
     <Compile Include="../Jalium.UI.Tests/WritingToolsMixedStructureTests.cs" Link="WritingToolsMixedStructureTests.cs" />
     <Compile Include="../Jalium.UI.Tests/RichTextTableLayoutTests.cs" Link="RichTextTableLayoutTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/WritingToolsEmptyCellTests.cs" Link="WritingToolsEmptyCellTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TextPointerLayoutTests.cs" Link="TextPointerLayoutTests.cs" />
   </ItemGroup>
 </Project>

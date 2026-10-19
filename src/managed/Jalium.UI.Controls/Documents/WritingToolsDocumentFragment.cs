@@ -11,7 +11,7 @@ internal sealed class WritingToolsDocumentFragment
     internal readonly List<Block> Blocks = new();
     internal bool EndsWithParagraphBreak { get; private init; }
     private sealed record Container(bool Table, string Id, JsonElement Metadata, string? Item = null);
-    private sealed record Row(Paragraph Paragraph, Container[] Path);
+    private sealed record Row(Paragraph? Paragraph, Container[] Path);
     internal static WritingToolsDocumentFragment Parse(JsonElement packet)
     {
         if (packet.GetProperty("version").GetInt32() != 1) throw new FormatException("Unsupported text fragment.");
@@ -39,12 +39,20 @@ internal sealed class WritingToolsDocumentFragment
                 throw new FormatException("Invalid paragraph range.");
             through += length;
             int end = start + length;
+            bool emptyCell = false;
+            if (record.TryGetProperty("emptyCell", out var empty))
+            {
+                if (empty.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    throw new FormatException("Invalid empty cell marker.");
+                emptyCell = empty.GetBoolean();
+            }
             if (record.TryGetProperty("storageSeparator", out var separator))
             {
                 if (separator.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
                     throw new FormatException("Invalid storage separator.");
                 if (separator.GetBoolean())
                 {
+                    if (emptyCell) throw new FormatException("An empty cell cannot also be an omitted storage record.");
                     // FlowDocument emits virtual tabs/newlines between cells and
                     // rows. They already belong to their table, not a new paragraph.
                     for (int i = start; i < end; i++)
@@ -57,6 +65,14 @@ internal sealed class WritingToolsDocumentFragment
             if (tables.ValueKind != JsonValueKind.Array || lists.ValueKind != JsonValueKind.Array ||
                 tables.GetArrayLength() > 32 || lists.GetArrayLength() > 32) throw new FormatException("Excessive nesting.");
             var path = ReadPath(record, lists, tables);
+            if (emptyCell)
+            {
+                if (length != 1 || text[start] != '\t' || path.Length == 0 || !path[^1].Table ||
+                    record.TryGetProperty("skipPrefix", out var prefix) && prefix.GetInt32() != 0)
+                    throw new FormatException("Invalid empty cell storage.");
+                rows.Add(new(null, path));
+                continue;
+            }
             if (end > start && text[end - 1] is '\n' or '\r' or '\u2029')
             {
                 --end;
@@ -146,7 +162,7 @@ internal sealed class WritingToolsDocumentFragment
         for (int index = 0; index < rows.Count;)
         {
             Row row = rows[index];
-            if (row.Path.Length <= depth) { yield return row.Paragraph; ++index; continue; }
+            if (row.Path.Length <= depth) { if (row.Paragraph is { } paragraph) yield return paragraph; ++index; continue; }
             var container = row.Path[depth];
             int end = index + 1;
             while (end < rows.Count && SharesContainer(rows[end], depth, container)) ++end;

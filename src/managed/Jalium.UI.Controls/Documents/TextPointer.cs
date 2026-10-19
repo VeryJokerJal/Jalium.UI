@@ -107,11 +107,12 @@ public sealed class TextPointer : ContentPosition, IComparable<TextPointer>
     public TextPointer DocumentEnd => _document.ContentEnd;
 
     /// <summary>Gets whether layout information for this position is current.</summary>
-    public bool HasValidLayout => false;
+    public bool HasValidLayout => LayoutOwner?.HasValidTextPositionLayout(this) == true;
 
-    /// <summary>Gets whether this position is at the beginning of a logical line.</summary>
-    public bool IsAtLineStartPosition =>
-        _parent is Paragraph && _offset == 0 || _parent is Run && _offset == 0 && _parent.Parent is Paragraph;
+    private Controls.RichTextBox? LayoutOwner => _document.Parent as Controls.RichTextBox;
+
+    /// <summary>Gets whether this position is at the beginning of a displayed line.</summary>
+    public bool IsAtLineStartPosition => LayoutOwner?.IsTextPositionAtLineStart(this) == true;
 
     /// <summary>
     /// Gets a value indicating whether this TextPointer is at the start of its containing paragraph.
@@ -220,29 +221,15 @@ public sealed class TextPointer : ContentPosition, IComparable<TextPointer>
     /// <returns>A TextPointer at the start of the current line.</returns>
     public TextPointer? GetLineStartPosition(int count)
     {
-        return GetLineStartPosition(count, out _);
+        var position = GetLineStartPosition(count, out int actualCount);
+        return actualCount == count ? position : null;
     }
 
-    /// <summary>Returns the start of a nearby logical line and reports the number moved.</summary>
+    /// <summary>Returns the start of a nearby displayed line and reports the number moved.</summary>
     public TextPointer? GetLineStartPosition(int count, out int actualCount)
     {
         actualCount = 0;
-        var paragraphs = _document.EnumerateParagraphs().ToList();
-        var paragraph = Paragraph;
-        if (paragraph is null)
-        {
-            return null;
-        }
-
-        var index = paragraphs.IndexOf(paragraph);
-        if (index < 0)
-        {
-            return null;
-        }
-
-        var target = Math.Clamp(index + count, 0, paragraphs.Count - 1);
-        actualCount = target - index;
-        return new TextPointer(_document, paragraphs[target], 0, LogicalDirection.Forward);
+        return LayoutOwner?.GetTextPositionLineStart(this, count, out actualCount);
     }
 
     /// <summary>Returns the nearest valid insertion position in the requested direction.</summary>
@@ -332,21 +319,12 @@ public sealed class TextPointer : ContentPosition, IComparable<TextPointer>
     /// <summary>Splits the containing paragraph and returns the start of the new paragraph.</summary>
     public TextPointer InsertParagraphBreak() => _document.InsertParagraphBreak(this);
 
-    /// <summary>Returns an approximate layout rectangle for the adjacent character.</summary>
+    /// <summary>Returns the bounds of adjacent displayed content in text-host coordinates.</summary>
     public Rect GetCharacterRect(LogicalDirection direction)
     {
-        var paragraph = Paragraph;
-        if (paragraph is null)
-        {
-            return Rect.Empty;
-        }
-
-        var fontSize = Math.Max(1.0, paragraph.GetEffectiveFontSize());
-        var lineHeight = double.IsFinite(paragraph.LineHeight) && paragraph.LineHeight > 0
-            ? paragraph.LineHeight
-            : fontSize * 1.35;
-        var x = Math.Max(0, DocumentOffset) * fontSize * 0.55;
-        return new Rect(x, 0, Math.Max(1.0, fontSize * 0.55), lineHeight);
+        if (direction != LogicalDirection.Forward && direction != LogicalDirection.Backward)
+            throw new ArgumentException("Invalid logical direction.", nameof(direction));
+        return LayoutOwner?.GetTextPositionCharacterRect(this, direction) ?? Rect.Empty;
     }
 
     /// <summary>

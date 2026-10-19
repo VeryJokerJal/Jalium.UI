@@ -46,15 +46,13 @@ public partial class RichTextBox
         }
         if (rangeLength < 0) rangeLength = _document.GetText().Length - rangeStart;
         var records = new List<WritingToolsParagraph>();
-        foreach (var paragraph in _document.EnumerateParagraphs())
+        foreach (var (element, paragraphStart, paragraphLength, emptyCell) in EnumerateWritingToolsNodes(_document.Blocks))
         {
-            int paragraphStart = _document.GetDocumentOffset(paragraph, 0);
-            int paragraphLength = TextElement.GetContentLength(paragraph) + Environment.NewLine.Length;
             int from = Math.Max(rangeStart, paragraphStart), to = Math.Min(rangeStart + rangeLength, paragraphStart + paragraphLength);
             if (to <= from) continue;
             var lists = new List<WritingToolsList>(); var cells = new List<WritingToolsCell>();
             var owners = new List<TextElement>();
-            for (DependencyObject? parent = paragraph.Parent; parent is not null; parent = (parent as TextElement)?.Parent)
+            for (DependencyObject? parent = emptyCell ? element : element.Parent; parent is not null; parent = (parent as TextElement)?.Parent)
                 if (parent is ListItem or TableCell) owners.Add((TextElement)parent);
             owners.Reverse();
             var ancestors = new List<WritingToolsAncestor>();
@@ -74,10 +72,38 @@ public partial class RichTextBox
                 }
             }
             if (lists.Count > 32 || cells.Count > 32) throw new NotSupportedException("The document exceeds the native text service nesting limit.");
-            records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray(), ancestors.ToArray()));
+            records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray(), ancestors.ToArray(), emptyCell));
         }
         return records.ToArray();
     }
+    private IEnumerable<(TextElement Element, int Start, int Length, bool EmptyCell)> EnumerateWritingToolsNodes(IEnumerable<Block> blocks)
+    {
+        foreach (var block in blocks)
+        {
+            if (block is Paragraph paragraph)
+                yield return (paragraph, paragraph.ContentStart.DocumentOffset,
+                    TextElement.GetContentLength(paragraph) + Environment.NewLine.Length, false);
+            else if (block is Table table)
+            {
+                foreach (var cell in table.RowGroups.SelectMany(group => group.Rows).SelectMany(row => row.Cells))
+                    if (cell.Blocks.Count == 0)
+                        yield return (cell, cell.ContentStart.DocumentOffset, 1, true);
+                    else
+                        foreach (var node in EnumerateWritingToolsNodes(cell.Blocks)) yield return node;
+            }
+            else
+            {
+                IEnumerable<Block> children = block switch
+                {
+                    Section section => section.Blocks,
+                    DocList list => list.ListItems.SelectMany(item => item.Blocks),
+                    _ => Array.Empty<Block>()
+                };
+                foreach (var node in EnumerateWritingToolsNodes(children)) yield return node;
+            }
+        }
+    }
+
     private static string Marker(TextMarkerStyle marker) => marker switch
     {
         TextMarkerStyle.Decimal => "{decimal}", TextMarkerStyle.LowerLatin => "{lower-alpha}",
