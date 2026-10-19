@@ -143,6 +143,6 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release -DJALIUM_METAL_BUILD_TESTS=ON -DJALIUM_SOFTWARE_BUILD_TESTS=ON
           -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
       - name: Build focused readback and regression tests
-        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback jalium.native.metal.regression jalium.native.metal.text-glyph-ranges jalium.native.software.apple.text --parallel 4
+        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback jalium.native.metal.regression jalium.native.metal.text-glyph-ranges jalium.native.metal.text-metrics jalium.native.metal.fonts jalium.native.software.apple.text --parallel 4
       - name: Verify GPU resources, readback and Window rendering regressions
-        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium[.]native[.](metal[.](gpu-.*baseline|readback(-no-resize)?|regression|text-glyph-ranges)|software[.]apple[.](text-glyph-ranges|coretext))$' --output-on-failure -V
+        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium[.]native[.](metal[.](gpu-.*baseline|readback(-no-resize)?|regression|text-glyph-ranges|text-metrics|fonts)|software[.]apple[.](text-glyph-ranges|coretext))$' --output-on-failure -V
