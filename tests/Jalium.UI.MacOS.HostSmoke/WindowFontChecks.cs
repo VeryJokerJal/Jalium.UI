@@ -21,7 +21,7 @@ internal static class WindowFontChecks
 {
     private const string Sample = "MMMM iii1 abc אבג xyz tail";
     private const string MonoPath = "/System/Library/Fonts/Supplemental/Andale Mono.ttf";
-    private const int CheckCount = 34;
+    private const int CheckCount = 37;
     private static readonly string[] WeightFaces = ["AvenirNext-UltraLight", "AvenirNext-UltraLight", "AvenirNext-UltraLight",
         "AvenirNext-Regular", "AvenirNext-Medium", "AvenirNext-DemiBold", "AvenirNext-Bold", "AvenirNext-Heavy", "AvenirNext-Heavy"];
     internal static int RunAll()
@@ -81,6 +81,9 @@ internal static class WindowFontChecks
                 case 31: CheckTextBoxSelectionPixels(context, "SF Pro", FontWeights.Bold, FontStyles.Normal, FontStretches.Normal); break;
                 case 32: CheckTextBoxSelectionPixels(context, "Helvetica Neue", FontWeights.Normal, FontStyles.Italic, FontStretches.Normal); break;
                 case 33: CheckTextBoxSelectionPixels(context, "SF Pro", FontWeights.Bold, FontStyles.Oblique, FontStretches.Normal, 90.25); break;
+                case 34: CheckTextBoxSelectionPixels(context, "PingFang SC", FontWeights.Normal, FontStyles.Italic, FontStretches.Normal); break;
+                case 35: CheckTextBoxSelectionPixels(context, "pingfang sc", FontWeights.Normal, FontStyles.Normal, FontStretches.Normal); break;
+                case 36: CheckTextBoxSelectionPixels(context, "PingFangSC-Semibold", FontWeights.Normal, FontStyles.Normal, FontStretches.Normal); break;
             }
             Console.WriteLine($"PASS: native Window font case {index}"); return 0;
         }

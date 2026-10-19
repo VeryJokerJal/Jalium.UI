@@ -319,9 +319,11 @@ CTFontRef CreatePrivateFont(CFDataRef data, float size, int32_t weight, int32_t 
     return base;
 }
 
-CTFontRef CopyFontWithWeight(CTFontRef base, float size, int32_t weight, bool systemFont)
+CTFontRef CopyFontWithWeight(CTFontRef base, float size, int32_t weight, bool systemFont, bool familyRequest)
 {
-    if (!systemFont && weight == 400) return nullptr; // Preserve explicitly named faces.
+    if (!systemFont && !familyRequest && weight == 400) return nullptr; // Preserve explicitly named faces.
+    // Family names must still resolve the regular instance: CoreText may return
+    // a different variable instance for a family alias than AppKit selects.
     CGFloat value = CoreTextWeight(weight);
 #if TARGET_OS_OSX
     if (systemFont) {
@@ -396,7 +398,7 @@ CTFontRef CreateAppleTextFont(CFStringRef familyName, float size, int32_t weight
     if (!base) return nullptr;
 
     if (!registered) {
-        CTFontRef weighted = CopyFontWithWeight(base, size, weight, systemFont);
+        CTFontRef weighted = CopyFontWithWeight(base, size, weight, systemFont, familyRequest);
         if (weighted) { CFRelease(base); base = weighted; }
         if (style == 1 || style == 2) {
 #if TARGET_OS_OSX
