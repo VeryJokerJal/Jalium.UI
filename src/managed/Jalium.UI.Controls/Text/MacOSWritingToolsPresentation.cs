@@ -12,6 +12,9 @@ namespace Jalium.UI;
 
 internal static class MacOSWritingToolsPresentation
 {
+    // Match the native render-target budget. Keep excess requests registered
+    // for balanced Finish calls; they remain ordinary text until a slot frees.
+    private const int MaximumPresentedAnimations = 4096;
     private static readonly ConditionalWeakTable<UIElement, State> States = new();
     internal static bool UsesShapedGlyphRanges => OperatingSystem.IsMacOS() && Jalium.UI.Interop.RenderContext.Current?.Backend is Jalium.UI.Interop.RenderBackend.Metal or Jalium.UI.Interop.RenderBackend.Software;
     [ThreadStatic] private static int _previewDepth;
@@ -42,6 +45,8 @@ internal static class MacOSWritingToolsPresentation
         internal int Activity;
         internal Geometry? Mask;
     }
+    private static IEnumerable<Animation> PresentedAnimations(State state) =>
+        state.Animations.Values.SelectMany(list => list).Take(MaximumPresentedAnimations);
     internal sealed record Preview(byte[] Png, Rect Frame, IReadOnlyList<Rect> Rectangles);
 
     internal static bool IsPresenting(UIElement owner) => _previewDepth == 0 &&
@@ -65,8 +70,15 @@ internal static class MacOSWritingToolsPresentation
         string old = state.Text; state.Text = text;
         int start = 0, suffix = 0;
         while (start < old.Length && start < text.Length && old[start] == text[start]) ++start;
+        // A shared UTF16 prefix/suffix can end inside a surrogate, combining
+        // sequence or ZWJ cluster. Both versions must own the same boundary.
+        var oldBoundaries = GraphemeClusters.GetBoundaries(old);
+        var newBoundaries = GraphemeClusters.GetBoundaries(text);
+        while (start > 0 && (Array.BinarySearch(oldBoundaries, start) < 0 || Array.BinarySearch(newBoundaries, start) < 0)) --start;
         while (suffix < old.Length - start && suffix < text.Length - start &&
             old[old.Length - suffix - 1] == text[text.Length - suffix - 1]) ++suffix;
+        while (suffix > 0 && (Array.BinarySearch(oldBoundaries, old.Length - suffix) < 0 ||
+            Array.BinarySearch(newBoundaries, text.Length - suffix) < 0)) --suffix;
         int oldEnd = old.Length - suffix, newEnd = text.Length - suffix;
         int delta = newEnd - oldEnd;
         foreach (var animation in state.Animations.Values.SelectMany(list => list))
@@ -74,8 +86,9 @@ internal static class MacOSWritingToolsPresentation
             int end = animation.Start + animation.Length;
             int mappedStart = animation.Start <= start ? animation.Start : animation.Start >= oldEnd ? animation.Start + delta : start;
             int mappedEnd = end < start ? end : end >= oldEnd ? end + delta : newEnd;
-            animation.Start = Math.Clamp(mappedStart, 0, text.Length);
-            animation.Length = Math.Clamp(mappedEnd - animation.Start, 0, text.Length - animation.Start);
+            animation.Start = GraphemeClusters.Snap(text, mappedStart, forward: false);
+            int snappedEnd = GraphemeClusters.Snap(text, Math.Max(mappedEnd, animation.Start), forward: true);
+            animation.Length = snappedEnd - animation.Start;
             animation.Inactive = null;
         }
         Invalidate(owner);
@@ -127,11 +140,11 @@ internal static class MacOSWritingToolsPresentation
         State? state = null;
         if (!preview && (_previewDepth != 0 || !States.TryGetValue(owner, out state) || !state.Current())) return;
         int length = layoutLength ?? text.Text.Length;
-        List<uint> ranges = new();
+        List<(uint Start, uint End)> intervals = new();
         void Add(int start, int count)
         {
             int from = Math.Max(start, documentOffset), to = (int)Math.Min((long)start + count, (long)documentOffset + length);
-            if (to > from) { ranges.Add((uint)(from - documentOffset)); ranges.Add((uint)(to - from)); }
+            if (to > from) intervals.Add(((uint)(from - documentOffset), (uint)(to - documentOffset)));
         }
         if (preview)
         {
@@ -140,10 +153,18 @@ internal static class MacOSWritingToolsPresentation
         }
         else
         {
-            foreach (var animation in state!.Animations.Values.SelectMany(list => list).ToArray())
+            foreach (var animation in PresentedAnimations(state!).ToArray())
                 if (animation.Kind != 8 || EnsureInactive(owner, state, animation)) Add(animation.Start, animation.Length);
-            if (ranges.Count == 0 || !state.Current()) return;
+            if (intervals.Count == 0 || !state.Current()) return;
             text.GlyphVisibility = 2;
+        }
+        intervals.Sort((left, right) => left.Start.CompareTo(right.Start));
+        List<uint> ranges = new();
+        foreach (var interval in intervals)
+        {
+            if (ranges.Count != 0 && interval.Start <= ranges[^2] + ranges[^1])
+                ranges[^1] = Math.Max(ranges[^2] + ranges[^1], interval.End) - ranges[^2];
+            else { ranges.Add(interval.Start); ranges.Add(interval.End - interval.Start); }
         }
         text.GlyphRanges = ranges.ToArray();
     }
@@ -181,7 +202,7 @@ internal static class MacOSWritingToolsPresentation
         if (mask is null)
         {
             Geometry? holes = null;
-            foreach (var animation in state.Animations.Values.SelectMany(list => list).ToArray())
+            foreach (var animation in PresentedAnimations(state).ToArray())
             {
                 if (animation.Kind == 8 && !EnsureInactive(owner, state, animation)) continue;
                 foreach (var rect in state.Source.GetBoundingRectangles(animation.Start, animation.Length))
@@ -206,7 +227,7 @@ internal static class MacOSWritingToolsPresentation
     internal static void DrawInactive(UIElement owner, DrawingContext context, Point offset = default)
     {
         if (_previewDepth != 0 || !States.TryGetValue(owner, out var state) || !state.Current()) return;
-        foreach (var animation in state.Animations.Values.SelectMany(list => list).Where(animation => animation.Kind == 8).ToArray())
+        foreach (var animation in PresentedAnimations(state).Where(animation => animation.Kind == 8).ToArray())
         {
             if (animation.Inactive is null) continue;
             if (!state.Current()) return;

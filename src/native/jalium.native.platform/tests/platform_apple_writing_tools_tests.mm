@@ -292,6 +292,7 @@ int main()
                     NSForegroundColorAttributeName:NSColor.redColor,NSUnderlineStyleAttributeName:@1}];
                 auto* accepted=f.ReplaceAttributed(c,NSMakeRange(2,2),value);auto* run=[f.proposal[@"runs"] firstObject];
                 Require([accepted.string isEqual:value.string] && [Text16([[NSData alloc]initWithBase64EncodedString:f.proposal[@"text16"] options:0]) isEqual:value.string]
+                    && [run[@"family"] isEqual:font.familyName] && ![font.familyName isEqual:font.fontName]
                     && [run[@"italic"] boolValue] && [run[@"weight"] integerValue]>=600 && [run[@"size"] doubleValue]==23
                     && [run[@"foreground"] unsignedIntValue]==0xffff0000u && [run[@"underline"] intValue]==1,"styled proposal");});
             Run("paragraph alignment wire values are independent of the native ABI",style,[&]{

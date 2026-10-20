@@ -306,7 +306,7 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text, bool or
         if (![font isKindOfClass:NSFont.class]) font = [NSFont systemFontOfSize:NSFont.systemFontSize];
         NSFontTraitMask traits = [NSFontManager.sharedFontManager traitsOfFont:font];
         NSMutableDictionary* run = [@{@"start":@(range.location),@"length":@(range.length),
-            @"family":font.fontName,@"size":@(font.pointSize),@"weight":@(AppleWritingToolsWeight(font)),
+            @"family":font.familyName ?: font.fontName,@"size":@(font.pointSize),@"weight":@(AppleWritingToolsWeight(font)),
             @"italic":@((traits & NSItalicFontMask) != 0 || [attributes[NSObliquenessAttributeName] doubleValue] != 0),
             @"underline":attributes[NSUnderlineStyleAttributeName] ?: @0,
             @"strike":attributes[NSStrikethroughStyleAttributeName] ?: @0} mutableCopy];

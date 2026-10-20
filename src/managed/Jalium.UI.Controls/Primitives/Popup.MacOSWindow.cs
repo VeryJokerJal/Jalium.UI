@@ -48,6 +48,6 @@ public partial class Popup
             return new Rect(point, new Size(Math.Max(1, owner.ActualWidth), Math.Max(1, owner.ActualHeight)));
         var anchor = GetPlacementBounds(PlacementTarget ?? this);
         point = new Point(point.X + anchor.X, point.Y + anchor.Y);
-        return Window.GetMacOSMonitorWorkArea(point);
+        return Window.GetMacOSMonitorWorkArea(point, owner.DpiScale);
     }
 }

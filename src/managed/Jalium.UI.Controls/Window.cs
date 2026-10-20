@@ -999,15 +999,42 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     internal nint GetPlatformDragSource(ulong sessionId) =>
         _platformWindow is NativePlatformWindow native ? native.GetMacOSDragSource(sessionId) : 0;
 
-    internal void CompletePlatformDragInput() => CompletePlatformDragInputCore(null);
+    internal void CompletePlatformDragInput() => CapturePlatformDragInputCompletion()();
+
+    internal Action CapturePlatformDragInputCompletion()
+    {
+        long press = Mouse.PressEpoch, windowPress = _inputDispatcher.MousePressEpoch;
+        bool completed = false;
+        return () =>
+        {
+            if (completed) return;
+            completed = true;
+            Exception? error = null;
+            void Notify(Action action)
+            {
+                try { action(); } catch (Exception failure) { error ??= failure; }
+            }
+            Action? cancelPointer = null;
+            if (_inputDispatcher.MousePressEpoch == windowPress)
+                Notify(() => cancelPointer = _inputDispatcher.PrepareNativeMouseDragCompletion());
+            if (Mouse.PressEpoch == press) Notify(() => CompletePlatformDragInputCore(() => Mouse.PressEpoch == press));
+            if (cancelPointer is not null) Notify(cancelPointer);
+            // A callback may start a successor press in another surface.
+            // Retire this source's old chain without clearing that press.
+            if (_inputDispatcher.MousePressEpoch == windowPress) Notify(_inputDispatcher.ClearMousePressedChain);
+            if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+        };
+    }
 
     private void CompletePlatformDragInputCore(Func<bool>? current)
     {
         // AppKit consumes the terminating release/Escape while tracking a drag.
         // End the owned press/capture without synthesizing a Button.Click.
+        bool ownedCapture = Mouse.Captured is not Visual capturedAtEntry ||
+            ReferenceEquals(GetMacOSPhysicalWindow(capturedAtEntry), this);
         try
         {
-            if (Mouse.Captured is not Visual captured || ReferenceEquals(GetWindow(captured), this))
+            if (ownedCapture)
             {
                 if (current == null) _inputDispatcher.HandleNativeCaptureChanged(0, Handle);
                 else _inputDispatcher.HandleNativeCaptureChangedIfCurrent(0, Handle, current);
@@ -1020,8 +1047,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             try { if (current?.Invoke() != false) _inputDispatcher.ClearMousePressedChain(); }
             finally
             {
-                if (current?.Invoke() != false &&
-                    (Mouse.Captured is not Visual captured || ReferenceEquals(GetWindow(captured), this)))
+                if (current?.Invoke() != false && ownedCapture)
                     Mouse.UpdateState(Mouse.Position, UIElement.MouseDirectlyOverElement, MouseButtonStates.AllReleased);
             }
         }

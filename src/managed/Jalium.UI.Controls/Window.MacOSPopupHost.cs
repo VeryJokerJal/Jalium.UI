@@ -99,19 +99,31 @@ public partial class Window
             transform.OffsetX * windows.M11 + windows.OffsetX,
             transform.OffsetY * windows.M22 + windows.OffsetY);
     }
-    internal static Rect GetMacOSMonitorWorkArea(Point point)
+    internal static Rect GetMacOSMonitorWorkArea(Point point, double coordinateScale)
     {
-        Rect selected = new(point, new Size(1, 1));
-        double distance = double.PositiveInfinity;
+        var monitors = new List<Interop.NativeMethods.NativeMonitorInfo>();
         int count = Interop.NativeMethods.PlatformGetMonitorCount();
         for (int i = 0; i < count; i++)
+            if (Interop.NativeMethods.PlatformGetMonitorInfo(i, out var info) == 0) monitors.Add(info);
+        return GetMacOSMonitorWorkArea(point, coordinateScale, monitors);
+    }
+
+    internal static Rect GetMacOSMonitorWorkArea(Point point, double coordinateScale,
+        IReadOnlyList<Interop.NativeMethods.NativeMonitorInfo> monitors)
+    {
+        double scale = double.IsFinite(coordinateScale) && coordinateScale > 0 ? coordinateScale : 1;
+        var physical = new Point(point.X * scale, point.Y * scale);
+        Rect selected = new(point, new Size(1, 1));
+        double distance = double.PositiveInfinity;
+        foreach (var info in monitors)
         {
-            if (Interop.NativeMethods.PlatformGetMonitorInfo(i, out var info) != 0 ||
-                info.WorkWidth <= 0 || info.WorkHeight <= 0) continue;
-            double scale = double.IsFinite(info.Scale) && info.Scale > 0 ? info.Scale : 1;
-            var screen = new Rect(info.X / scale, info.Y / scale, info.Width / scale, info.Height / scale);
-            double dx = Math.Max(screen.Left - point.X, Math.Max(0, point.X - screen.Right));
-            double dy = Math.Max(screen.Top - point.Y, Math.Max(0, point.Y - screen.Bottom));
+            if (info.Width <= 0 || info.Height <= 0 || info.WorkWidth <= 0 || info.WorkHeight <= 0) continue;
+            // Both the anchor and monitor rectangles now use the native screen
+            // coordinate space. Per-monitor backing scales describe local DIPs;
+            // they must not rescale the shared desktop origin independently.
+            var screen = new Rect(info.X, info.Y, info.Width, info.Height);
+            double dx = Math.Max(screen.Left - physical.X, Math.Max(0, physical.X - screen.Right));
+            double dy = Math.Max(screen.Top - physical.Y, Math.Max(0, physical.Y - screen.Bottom));
             double candidateDistance = dx * dx + dy * dy;
             if (candidateDistance >= distance) continue;
             distance = candidateDistance;

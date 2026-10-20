@@ -24,6 +24,16 @@ internal static class WindowWritingToolsGlyphChecks
     static void Check(bool value,string name){if(value){++passed;Console.WriteLine("PASS "+name);}else{++failures;Console.WriteLine("FAIL "+name);}}
     static WriteableBitmap Paint(FrameworkElement element)=>MacOSWritingToolsBitmapCapture.Capture(380,180,1,element.Render,()=>true)??throw new Exception("Native capture failed");
     static BitmapImage Decode(byte[] p){var b=new BitmapImage();b.BeginInit();b.StreamSource=new MemoryStream(p);b.EndInit();return b;}
+    static byte[] PreviewPixels(BitmapSource bitmap)
+    {
+        // Compare previews and controls through the same public PNG path.
+        // A straight-BGRA native readback may normalize a translucent channel
+        // when PNG decoding passes through premultiplied pixels. No tolerance
+        // or coordinate relaxation is needed; raw restoration stays exact.
+        using var stream=new MemoryStream();var encoder=new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(stream);
+        return Pixels(Decode(stream.ToArray()));
+    }
     static void Save(BitmapSource b,string name){var e=new PngBitmapEncoder();e.Frames.Add(BitmapFrame.Create(b));using var f=File.Create(Path.Combine(Output,name+".png"));e.Save(f);}
     static void Pump(int ms){var t=System.Diagnostics.Stopwatch.StartNew();while(t.ElapsedMilliseconds<ms){Jalium.UI.Interop.NativeMethods.PlatformPollEvents();Jalium.UI.Threading.Dispatcher.CurrentDispatcher.ProcessQueue();Thread.Sleep(2);}}
     static void Case(int kind,string font,string text)
@@ -83,7 +93,7 @@ internal static class WindowWritingToolsGlyphChecks
             var source=((AutomationTextProvider)UIElementAutomationPeer.CreatePeerForElement(e)!.GetPattern(PatternInterface.Text)!).Source;
             int width=(int)(440*dpi),height=(int)(220*dpi);
             WriteableBitmap PaintTransformed()=>MacOSWritingToolsBitmapCapture.Capture(width,height,dpi,dc=>{dc.PushTransform(new MatrixTransform(transform));e.Render(dc);dc.Pop();},()=>true)??throw new Exception("Transformed native readback failed");
-            var normal=Pixels(PaintTransformed());
+            var normalBitmap=PaintTransformed();var rawNormal=Pixels(normalBitmap);var normal=PreviewPixels(normalBitmap);
             var whole=MacOSWritingToolsPresentation.CreatePreview(e,source,0,text.Length,transform,dpi,null,()=>true)??throw new Exception("Whole preview failed");
             var all=Canvas(new(whole.Png,whole.Frame),width,height,dpi);
             if(!all.SequenceEqual(normal) && !File.Exists(Path.Combine(Output,"first-difference.json")))
@@ -97,7 +107,7 @@ internal static class WindowWritingToolsGlyphChecks
             Check(all.SequenceEqual(normal),label+" whole preview preserves actual BGRA ink including overhang");
             var left=MacOSWritingToolsPresentation.CreatePreview(e,source,0,3,transform,dpi,null,()=>true)??throw new Exception("Partial preview failed");
             var selected=Canvas(new(left.Png,left.Frame),width,height,dpi);
-            MacOSWritingToolsPresentation.Prepare(e,source,"left",0,3,0,()=>true);var remaining=Pixels(PaintTransformed());
+            MacOSWritingToolsPresentation.Prepare(e,source,"left",0,3,0,()=>true);var remaining=PreviewPixels(PaintTransformed());
             bool partition=true,selectedInk=false,remainingInk=false;
             for(int i=0;i<normal.Length;i+=4)
             {
@@ -107,8 +117,8 @@ internal static class WindowWritingToolsGlyphChecks
             }
             Check(partition&&selectedInk&&remainingInk,label+" partial selection preserves neighboring glyphs and shaping");
             MacOSWritingToolsPresentation.Prepare(e,source,"right",9,4,0,()=>true);Check(Pixels(PaintTransformed()).All(value=>value==0),label+" interleaved ranges hide all BGRA ink including color emoji");
-            MacOSWritingToolsPresentation.Finish(e,"left");Check(Pixels(PaintTransformed()).SequenceEqual(selected),label+" independent finish restores only its range");
-            MacOSWritingToolsPresentation.Finish(e,"right");Check(Pixels(PaintTransformed()).SequenceEqual(normal),label+" final finish restores exact BGRA");
+            MacOSWritingToolsPresentation.Finish(e,"left");Check(PreviewPixels(PaintTransformed()).SequenceEqual(selected),label+" independent finish restores only its range");
+            MacOSWritingToolsPresentation.Finish(e,"right");Check(Pixels(PaintTransformed()).SequenceEqual(rawNormal),label+" final finish restores exact BGRA");
             Check(source.Text==text || source.Text.TrimEnd('\n','\r')==text,label+" presentation does not edit source");
             if(!partition || !all.SequenceEqual(normal))
             {File.WriteAllBytes(Path.Combine(Output,$"partition-{kind}-{dpi}-{transform.M12}-{tail}-preview.png"),whole.Png);Save(PaintTransformed(),$"partition-{kind}-{dpi}-{transform.M12}-{tail}-normal");}
