@@ -13,6 +13,10 @@ public static class Mouse
     private static readonly List<Point> s_intermediatePoints = [];
     private static Point s_lastPosition;
     private static MouseButtonStates s_buttons = MouseButtonStates.AllReleased;
+    // A menu may return after a newer gesture started in another window.
+    private static long s_pressEpoch;
+    internal static long PressEpoch => System.Threading.Volatile.Read(ref s_pressEpoch);
+    internal static void NotifyPress() => System.Threading.Interlocked.Increment(ref s_pressEpoch);
     private static IInputElement? s_capturedByStaticApi;
     private static CaptureMode s_captureMode;
     private static Cursor? s_overrideCursor;

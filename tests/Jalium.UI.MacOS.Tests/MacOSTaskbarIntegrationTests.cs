@@ -156,6 +156,74 @@ public sealed class MacOSTaskbarIntegrationTests
         Assert.Equal(0, command.Executions);
     }
 
+
+    public static IEnumerable<object[]> RoutedLeaseCases()
+    {
+        for (int phase = 0; phase < 4; phase++)
+            foreach (string mutation in new[] { "replace", "remove", "close", "progress" })
+                yield return [phase, mutation];
+    }
+
+    [Theory]
+    [MemberData(nameof(RoutedLeaseCases))]
+    public void RoutedActionsCarryTheirLeaseThroughEveryCallback(int phase, string mutation)
+    {
+        var parent = new Jalium.UI.Controls.StackPanel();
+        var target = new Jalium.UI.Controls.TextBox();
+        parent.Children.Add(target);
+        var command = new Jalium.UI.Input.RoutedCommand("DockAction", typeof(MacOSTaskbarIntegrationTests));
+        var info = new TaskbarItemInfo();
+        bool available = true, armed = false, changed = false, invalidated = false;
+        int queries = 0, previews = 0, executions = 0, staleCallbacks = 0;
+        TaskbarItemInfoLease? lease = null;
+        ThumbButtonInfo? button = null;
+        void Mutate()
+        {
+            if (!armed || changed) return;
+            changed = true;
+            invalidated = mutation != "progress";
+            switch (mutation)
+            {
+                case "replace": info = new(); lease!.Refresh(); break;
+                case "remove": info.ThumbButtonInfos!.Remove(button!); break;
+                case "close": available = false; break;
+                case "progress": info.ProgressValue = .5; break;
+            }
+        }
+        target.AddHandler(Jalium.UI.Input.RoutedCommand.PreviewCanExecuteEvent,
+            new Jalium.UI.Input.CanExecuteRoutedEventHandler((_, _) =>
+            {
+                if (armed && ++previews == 2 && phase == 0) Mutate();
+            }));
+        parent.CommandBindings.Add(new Jalium.UI.Input.CommandBinding(command, (_, _) =>
+        {
+            if (invalidated) staleCallbacks++;
+            executions++;
+        }, (_, args) =>
+        {
+            if (invalidated) staleCallbacks++;
+            if (armed && ++queries == 2 && phase == 1) Mutate();
+            args.CanExecute = true;
+        }));
+        target.AddHandler(Jalium.UI.Input.RoutedCommand.PreviewExecutedEvent,
+            new Jalium.UI.Input.ExecutedRoutedEventHandler((_, _) => { if (phase == 2) Mutate(); }));
+        target.AddHandler(Jalium.UI.Input.RoutedCommand.ExecutedEvent,
+            new Jalium.UI.Input.ExecutedRoutedEventHandler((_, _) => { if (phase == 3) Mutate(); }));
+        button = new ThumbButtonInfo { Command = command, CommandTarget = target };
+        info.ThumbButtonInfos!.Add(button);
+        using (lease = new TaskbarItemInfoLease(() => info, () => available, () => { }))
+        {
+            lease.Refresh();
+            var action = lease.CaptureButton(button);
+            Assert.True(action.CanInvoke);
+            armed = true;
+            action.Invoke();
+            Assert.True(changed);
+            Assert.Equal(mutation == "progress" ? 1 : 0, executions);
+            Assert.Equal(0, staleCallbacks);
+        }
+    }
+
     [Fact]
     public void FrozenCloneRetainsNestedStateWithoutSharingMutableCollections()
     {

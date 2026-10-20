@@ -253,6 +253,124 @@ public sealed class MacOSTextContextMenuTests
         host.Editor.RaiseEvent(Mouse(UIElement.MouseDownEvent, MouseButton.Right));
     }
 
+
+    [Theory]
+    [InlineData(MouseButton.Left, MouseButton.Right)]
+    [InlineData(MouseButton.Middle, MouseButton.Right)]
+    [InlineData(MouseButton.XButton1, MouseButton.Right)]
+    [InlineData(MouseButton.Right, MouseButton.Left)]
+    [InlineData(MouseButton.XButton2, MouseButton.Left)]
+    public void NativeTracking_RetiresOnlyTheInitiatingButton(MouseButton held, MouseButton consumed)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        for (int kind = 0; kind < 4; kind++)
+        {
+            using var host = new Host(kind);
+            host.Editor.Height = 120;
+            host.Panel.Background = Jalium.UI.Media.Brushes.Transparent;
+            host.Panel.Measure(new Size(500, 400));
+            host.Panel.Arrange(new Rect(0, 0, 500, 400));
+            var dispatch = typeof(Window).GetMethod("OnPlatformEvent", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            static int NativeButton(MouseButton button) => button switch
+            { MouseButton.Left => 0, MouseButton.Right => 1, MouseButton.Middle => 2, MouseButton.XButton1 => 3, _ => 4 };
+            void Send(MouseButton button, bool pressed, uint states, int modifiers = 0, float y = 10) =>
+                dispatch.Invoke(host.Window, [new PlatformEvent
+                {
+                    Type = pressed ? PlatformEventType.MouseDown : PlatformEventType.MouseUp,
+                    MouseX = 24, MouseY = y, Button = NativeButton(button), Modifiers = modifiers,
+                    MouseButtons = states, HasMouseButtonStates = true
+                }]);
+            uint heldBit = 1u << NativeButton(held);
+            PlatformTextContextMenus.Show = _ => false;
+            Send(held, true, heldBit, y: held == MouseButton.Right ? 250 : 10);
+            Assert.True(host.Editor.CaptureMouse());
+            var dispatcher = typeof(Window).GetField("_inputDispatcher", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(host.Window)!;
+            var targets = (System.Collections.IDictionary)dispatcher.GetType()
+                .GetField("_activePointerTargets", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dispatcher)!;
+            object? originalPointerTarget = targets[WindowInputDispatcher.MousePointerId];
+            int releases = 0, lostCapture = 0;
+            host.Editor.AddHandler(UIElement.PreviewMouseUpEvent,
+                new MouseButtonEventHandler((_, _) => releases++), handledEventsToo: true);
+            host.Editor.LostMouseCapture += (_, _) => lostCapture++;
+            PlatformTextContextMenus.Show = _ => true;
+            Send(consumed, true, heldBit | (1u << NativeButton(consumed)),
+                consumed == MouseButton.Left ? 0x02 : 0);
+            Assert.Equal(held == MouseButton.Left ? MouseButtonState.Pressed : MouseButtonState.Released, Jalium.UI.Input.Mouse.LeftButton);
+            Assert.Equal(held == MouseButton.Right ? MouseButtonState.Pressed : MouseButtonState.Released, Jalium.UI.Input.Mouse.RightButton);
+            Assert.Equal(held == MouseButton.Middle ? MouseButtonState.Pressed : MouseButtonState.Released, Jalium.UI.Input.Mouse.MiddleButton);
+            Assert.Equal(held == MouseButton.XButton1 ? MouseButtonState.Pressed : MouseButtonState.Released, Jalium.UI.Input.Mouse.XButton1);
+            Assert.Equal(held == MouseButton.XButton2 ? MouseButtonState.Pressed : MouseButtonState.Released, Jalium.UI.Input.Mouse.XButton2);
+            Assert.Same(host.Editor, Jalium.UI.Input.Mouse.Captured);
+            Assert.Same(originalPointerTarget, targets[WindowInputDispatcher.MousePointerId]);
+            Assert.Equal(held == MouseButton.Left, host.Editor.IsPressed);
+            Assert.Equal(0, lostCapture);
+            Send(held, false, 0);
+            Assert.Equal(1, releases);
+            host.Editor.ReleaseMouseCapture();
+            Assert.Equal(1, lostCapture);
+            Assert.False(targets.Contains(WindowInputDispatcher.MousePointerId));
+            Assert.False(host.Editor.IsPressed);
+        }
+    }
+
+
+    [Theory]
+    [InlineData("same", false)]
+    [InlineData("other-captured", false)]
+    [InlineData("other-uncaptured", false)]
+    [InlineData("same", true)]
+    [InlineData("other-captured", true)]
+    public void NativeTracking_NewGestureSurvivesMenuAndCaptureCallbacks(string destination, bool duringCaptureLoss)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var host = new Host();
+        using var peer = destination == "same" ? null : new Host();
+        Host next = peer ?? host;
+        bool uncaptured = destination == "other-uncaptured";
+        next.Editor.Height = 120;
+        next.Panel.Background = Jalium.UI.Media.Brushes.Transparent;
+        next.Panel.Measure(new Size(500, 400)); next.Panel.Arrange(new Rect(0, 0, 500, 400));
+        Assert.True(host.Editor.Focus());
+        var dispatch = typeof(Window).GetMethod("OnPlatformEvent", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        void Send(Host owner, bool pressed, float y = 10, int modifiers = 0) =>
+            dispatch.Invoke(owner.Window, [new PlatformEvent
+            {
+                Type = pressed ? PlatformEventType.MouseDown : PlatformEventType.MouseUp,
+                MouseX = 24, MouseY = y, Button = 0, Modifiers = modifiers,
+                MouseButtons = pressed ? 1u : 0, HasMouseButtonStates = true
+            }]);
+        bool introduced = false;
+        void BeginNext()
+        {
+            if (introduced) return;
+            introduced = true;
+            if (!uncaptured) Assert.True(next.Editor.Focus());
+            Send(next, true, uncaptured ? 250 : 10);
+            if (!uncaptured) Assert.True(next.Editor.CaptureMouse());
+        }
+        MouseEventHandler lost = (_, _) => BeginNext();
+        if (duringCaptureLoss)
+        {
+            Assert.True(host.Editor.CaptureMouse());
+            host.Editor.LostMouseCapture += lost;
+        }
+        PlatformTextContextMenus.Show = _ => { if (!duringCaptureLoss) BeginNext(); return true; };
+        try
+        {
+            Send(host, true, modifiers: 0x02);
+            Assert.True(introduced);
+            Assert.Equal(MouseButtonState.Pressed, Jalium.UI.Input.Mouse.LeftButton);
+            Assert.Equal(uncaptured ? null : next.Editor, Jalium.UI.Input.Mouse.Captured);
+            Assert.True(uncaptured ? next.Panel.IsPressed : next.Editor.IsPressed);
+            if (peer != null) Assert.False(host.Editor.IsPressed);
+        }
+        finally
+        {
+            host.Editor.LostMouseCapture -= lost;
+            if (introduced) Send(next, false, uncaptured ? 250 : 10);
+        }
+    }
+
     [Theory]
     [InlineData(0x02, ModifierKeys.Control)]
     [InlineData(0x08, ModifierKeys.Windows)]

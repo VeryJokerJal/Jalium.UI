@@ -284,6 +284,7 @@ internal sealed partial class WindowInputDispatcher
     public void HandleMouseDown(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int clickCount, int timestamp)
     {
+        Mouse.NotifyPress();
         unchecked { _mousePressEpoch++; }
         long packet = unchecked(++_mouseInputGeneration);
         Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
@@ -952,13 +953,21 @@ internal sealed partial class WindowInputDispatcher
     /// 表现就是「拖拽刚起步就断、元素不跟手」。
     /// </para>
     /// </summary>
-    public void HandleNativeCaptureChanged(nint newCaptureWindow, nint selfWindow)
+    public void HandleNativeCaptureChanged(nint newCaptureWindow, nint selfWindow) =>
+        HandleNativeCaptureChangedCore(newCaptureWindow, selfWindow, null);
+
+    internal void HandleNativeCaptureChangedIfCurrent(nint newCaptureWindow, nint selfWindow, Func<bool> current) =>
+        HandleNativeCaptureChangedCore(newCaptureWindow, selfWindow, current);
+
+    private void HandleNativeCaptureChangedCore(nint newCaptureWindow, nint selfWindow, Func<bool>? current)
     {
+        if (current?.Invoke() == false) return;
         if (newCaptureWindow != nint.Zero && newCaptureWindow == selfWindow)
             return;
 
         ResetClientMouseLeaveTracking();
         UIElement.OnNativeCaptureChanged();
+        if (current?.Invoke() == false) return;
         ClearMousePressedChain();
     }
 

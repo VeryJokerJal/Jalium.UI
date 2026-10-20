@@ -137,6 +137,42 @@ public sealed class MacOSSessionEndingTests : MacOSGeometryTestBase
         finally { first.Close(); later.Close(); }
     }
 
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AcceptedDeferredCloseCannotVetoTheFollowingSessionNotification(bool reenter)
+    {
+        var first = new DisplayedTestWindow();
+        var later = new DisplayedTestWindow();
+        var application = ApplicationFor(first, later);
+        int laterEvents = 0, appEvents = 0, closingEvents = 0;
+        typeof(Window).GetField("_renderState", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(later, 1 << 1);
+        first.SessionEnding += (_, _) =>
+        {
+            later.Close();
+            Assert.True(later.IsCloseRequestedForPlatformTermination);
+            Assert.False(later.IsClosedForPlatformTermination);
+            if (reenter) Assert.False(application.RaiseMacOSSessionEnding(ReasonSessionEnding.Shutdown));
+        };
+        later.Closing += (_, _) => closingEvents++;
+        later.SessionEnding += (_, args) => { laterEvents++; args.Cancel = true; };
+        application.SessionEnding += (_, _) => appEvents++;
+        try
+        {
+            Assert.True(application.RaiseMacOSSessionEnding(ReasonSessionEnding.Logoff));
+            Assert.Equal(0, laterEvents);
+            Assert.Equal(1, appEvents);
+            Assert.Equal(1, closingEvents);
+        }
+        finally
+        {
+            typeof(Window).GetField("_renderState", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(later, 0);
+            typeof(Window).GetMethod("CompletePendingManagedTeardown", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(later, null);
+            first.Close(); later.Close();
+        }
+    }
+
     [Theory]
     [InlineData(ShutdownMode.OnLastWindowClose, false)]
     [InlineData(ShutdownMode.OnExplicitShutdown, true)]

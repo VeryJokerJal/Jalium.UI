@@ -161,6 +161,7 @@ internal static class WindowTaskbarChecks
                     menu.Items[0].Submenu!.PerformActionForItem(0);
                     Require(clicks == 1 && command.Executions == 1, "old native menu cannot execute after model replacement");
                     window.TaskbarItemInfo = info;
+                    CheckRoutedDockCommands(window, host, app);
                     other = Create("第二个任务", completed == 1);
                     other.TaskbarItemInfo = new TaskbarItemInfo { Description = "第二个文档", ProgressState = TaskbarItemProgressState.Error, ProgressValue = 0.8 };
                     other.Show(); other.UpdateLayout();
@@ -281,6 +282,63 @@ internal static class WindowTaskbarChecks
         public override nint NativeHandle => 0;
         public override ImageMetadata? Metadata => null;
         protected override Freezable CreateInstanceCore() => new CallbackImage();
+    }
+
+
+    private static void CheckRoutedDockCommands(Window window, JaliumMacApplicationDelegate host, NSApplication app)
+    {
+        static void Require(bool condition, string message)
+        { if (!condition) throw new InvalidOperationException(message); }
+        var original = window.TaskbarItemInfo;
+        try
+        {
+            foreach (int phase in new[] { 0, 1 })
+            foreach (string mutation in new[] { "replace", "remove", "progress" })
+            {
+                bool armed = false, changed = false;
+                int queries = 0, executions = 0;
+                var model = new TaskbarItemInfo();
+                var command = new Jalium.UI.Input.RoutedCommand("Dock lifetime", typeof(WindowTaskbarChecks));
+                ThumbButtonInfo? button = null;
+                void Change()
+                {
+                    if (!armed || changed) return;
+                    changed = true;
+                    if (mutation == "replace") window.TaskbarItemInfo = new();
+                    else if (mutation == "remove") model.ThumbButtonInfos!.Remove(button!);
+                    else model.ProgressValue = .5;
+                }
+                var binding = new Jalium.UI.Input.CommandBinding(command, (_, _) => executions++, (_, args) =>
+                {
+                    if (armed && ++queries == 2 && phase == 0) Change();
+                    args.CanExecute = true;
+                });
+                var preview = new Jalium.UI.Input.ExecutedRoutedEventHandler((_, _) => { if (phase == 1) Change(); });
+                window.CommandBindings.Add(binding);
+                window.AddHandler(Jalium.UI.Input.RoutedCommand.PreviewExecutedEvent, preview);
+                try
+                {
+                    button = new ThumbButtonInfo { Command = command, CommandTarget = window, Description = "Dock lifetime callback" };
+                    model.ThumbButtonInfos!.Add(button);
+                    window.TaskbarItemInfo = model;
+                    using var menu = host.ApplicationDockMenu(app);
+                    Require(menu.Items.Length == 1 && menu.Items[0].Submenu?.Items[0].Title == button.Description,
+                        "routed Dock menu entry missing");
+                    Require(menu.Items[0].Submenu!.Items[0].Enabled, "routed Dock menu entry is disabled before invocation");
+                    armed = true;
+                    menu.Items[0].Submenu!.PerformActionForItem(0);
+                    Require(changed && executions == (mutation == "progress" ? 1 : 0),
+                        $"routed Dock action after {mutation} at phase {phase}: changed={changed}, queries={queries}, executions={executions}");
+                }
+                finally
+                {
+                    window.RemoveHandler(Jalium.UI.Input.RoutedCommand.PreviewExecutedEvent, preview);
+                    window.CommandBindings.Remove(binding);
+                }
+                Console.WriteLine($"PASS: actual Dock routed lease {phase}/{mutation}");
+            }
+        }
+        finally { window.TaskbarItemInfo = original; }
     }
 
     private sealed class TestCommand : ICommand

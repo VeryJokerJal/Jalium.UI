@@ -20,7 +20,7 @@ public partial class Application
             foreach (var window in Windows.Cast<Window>().ToArray())
             {
                 // Earlier callbacks can close later windows in this snapshot.
-                if (window.IsClosedForPlatformTermination) continue;
+                if (window.IsCloseRequestedForPlatformTermination) continue;
                 var args = new SessionEndingCancelEventArgs(reason);
                 window.RaisePlatformSessionEnding(args);
                 cancelled |= args.Cancel;

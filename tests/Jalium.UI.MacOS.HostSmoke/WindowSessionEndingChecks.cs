@@ -11,7 +11,7 @@ namespace Jalium.UI.MacOS;
 /// <summary>Own-process quit Apple events; never requests a desktop logout or shutdown.</summary>
 internal static class WindowSessionEndingChecks
 {
-    private const int CaseCount = 20;
+    private const int CaseCount = 24;
     private const uint CoreEventClass = 0x61657674, Quit = 0x71756974, QuitReason = 0x7768793f;
 
     internal static int RunAll()
@@ -40,6 +40,7 @@ internal static class WindowSessionEndingChecks
     {
         if (!int.TryParse(argument.AsSpan("--window-session-ending-case=".Length), out int index) ||
             index < 0 || index >= CaseCount) return 2;
+        if (index >= 20) return RunDeferredCase(index);
         int mode = index % 10;
         var style = index < 10 ? WindowTitleBarStyle.Native : WindowTitleBarStyle.Custom;
         uint? reason = mode switch { 0 or >= 5 => 0x726c676f, 1 => 0x73687574, 2 => 0x72657374, 4 => 0x71756961, _ => null };
@@ -93,6 +94,7 @@ internal static class WindowSessionEndingChecks
             Require(other == null || other.Handle == 0, "callback-closed main window retained resources");
             Require(closed == 1 && window.Handle == 0, "termination preceded resource teardown");
             Require(closing == (mode is 3 or 4 ? 2 : 1), $"unexpected Closing count {closing}");
+            WritePass(index);
             Console.WriteLine($"PASS: actual AppKit session ending {name}");
         };
         using var watchdog = new System.Threading.Timer(_ =>
@@ -128,6 +130,91 @@ internal static class WindowSessionEndingChecks
         native.Run();
         Console.Error.WriteLine("FAIL: AppKit run loop returned without actual termination");
         return 1;
+    }
+
+
+    private static int RunDeferredCase(int index)
+    {
+        void State(string value)
+        {
+            Console.Error.WriteLine(value);
+            if (Environment.GetEnvironmentVariable("JALIUM_TASKBAR_OUTPUT") is string output)
+                File.AppendAllText(Path.Combine(output, "session-state.log"), value + "\n");
+        }
+        var style = index < 22 ? WindowTitleBarStyle.Native : WindowTitleBarStyle.Custom;
+        uint reason = index % 2 == 0 ? 0x726c676fu : 0x73687574u;
+        JaliumMacApplication.Initialize();
+        var native = NSApplication.SharedApplication;
+        native.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
+        RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
+        var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var first = new Window { Title = "Session notification first", TitleBarStyle = style, Width = 360, Height = 240 };
+        var later = new Window { Title = "Session notification accepted close", TitleBarStyle = style, Width = 320, Height = 200 };
+        application.MainWindow = first;
+        var render = typeof(Window).GetField("_renderState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var finish = typeof(Window).GetMethod("CompletePendingManagedTeardown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        int firstEvents = 0, laterEvents = 0, appEvents = 0, laterClosing = 0;
+        bool checkedPending = false, finished = false;
+        using var host = new SessionEndingTestDelegate();
+        native.Delegate = host;
+        first.SessionEnding += (_, _) =>
+        {
+            State("First session notification entered");
+            firstEvents++;
+            render.SetValue(later, 1 << 1);
+            later.Close();
+            Require(later.IsCloseRequestedForPlatformTermination && !later.IsClosedForPlatformTermination && later.Handle != 0,
+                "close was not accepted with native resources deferred");
+            State("Later close accepted; resources remain deferred");
+        };
+        later.SessionEnding += (_, args) => { laterEvents++; args.Cancel = true; };
+        later.Closing += (_, _) => laterClosing++;
+        application.SessionEnding += (_, _) => appEvents++;
+        host.CheckTermination = () =>
+        {
+            Require(checkedPending && firstEvents == 1 && laterEvents == 0 && appEvents == 1 && laterClosing == 1,
+                "a committed close received another session notification or vetoed quitting");
+            Require(first.Handle == 0 && later.Handle == 0 && host.SawOwnedQuitEvent && host.LastReason == reason,
+                "owned Apple quit did not wait for native resource teardown");
+            finished = true;
+            WritePass(index);
+            Console.WriteLine($"PASS: actual AppKit session ending deferred close {index} {style}");
+        };
+        using var watchdog = new System.Threading.Timer(_ =>
+        { State("FAIL: deferred session-ending watchdog"); Environment.Exit(2); }, null, 8_000, Timeout.Infinite);
+        first.Show(); later.Show();
+        using var send = NSTimer.CreateScheduledTimer(.2, _ =>
+        {
+            try { SendQuitToSelf(reason); }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(1); }
+        });
+        using var release = NSTimer.CreateTimer(.6, _ =>
+        {
+            try
+            {
+                State("Checking pending AppKit termination");
+                Require(host.SawOwnedQuitEvent && firstEvents == 1 && laterEvents == 0 && appEvents == 1,
+                    "accepted deferred window vetoed the owned session-ending event");
+                Require(first.Handle == 0 && later.Handle != 0 && later.IsCloseRequestedForPlatformTermination,
+                    "AppKit Later did not keep only the deferred resources alive");
+                checkedPending = true;
+                render.SetValue(later, 0);
+                finish.Invoke(later, null);
+                State("Deferred teardown completed");
+            }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(1); }
+        });
+        // Terminate(Later) runs AppKit's modal loop until the pending reply.
+        NSRunLoop.Main.AddTimer(release, NSRunLoopMode.Common);
+        NSRunLoop.Main.AddTimer(release, NSRunLoopMode.ModalPanel);
+        native.Run();
+        return finished ? 0 : 1;
+    }
+
+    private static void WritePass(int index)
+    {
+        if (Environment.GetEnvironmentVariable("JALIUM_TASKBAR_OUTPUT") is string output)
+            File.WriteAllText(Path.Combine(output,"sdk-result.json"),$"{{\"case\":{index},\"passed\":true}}");
     }
 
     private static void SendQuitToSelf(uint? reason)

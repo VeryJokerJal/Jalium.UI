@@ -999,23 +999,29 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     internal nint GetPlatformDragSource(ulong sessionId) =>
         _platformWindow is NativePlatformWindow native ? native.GetMacOSDragSource(sessionId) : 0;
 
-    internal void CompletePlatformDragInput()
+    internal void CompletePlatformDragInput() => CompletePlatformDragInputCore(null);
+
+    private void CompletePlatformDragInputCore(Func<bool>? current)
     {
         // AppKit consumes the terminating release/Escape while tracking a drag.
         // End the owned press/capture without synthesizing a Button.Click.
         try
         {
             if (Mouse.Captured is not Visual captured || ReferenceEquals(GetWindow(captured), this))
-                _inputDispatcher.HandleNativeCaptureChanged(0, Handle);
+            {
+                if (current == null) _inputDispatcher.HandleNativeCaptureChanged(0, Handle);
+                else _inputDispatcher.HandleNativeCaptureChangedIfCurrent(0, Handle, current);
+            }
         }
         finally
         {
             // LostMouseCapture handlers may throw or move capture to another
             // window. Always clear this source's press, preserving a new owner.
-            try { _inputDispatcher.ClearMousePressedChain(); }
+            try { if (current?.Invoke() != false) _inputDispatcher.ClearMousePressedChain(); }
             finally
             {
-                if (Mouse.Captured is not Visual captured || ReferenceEquals(GetWindow(captured), this))
+                if (current?.Invoke() != false &&
+                    (Mouse.Captured is not Visual captured || ReferenceEquals(GetWindow(captured), this)))
                     Mouse.UpdateState(Mouse.Position, UIElement.MouseDirectlyOverElement, MouseButtonStates.AllReleased);
             }
         }
@@ -5381,8 +5387,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (TryHandleMacOSWindowChrome(button, position, evt.ClickCount))
                     break;
                 _macOSTextMenuConsumedPointer = false;
+                long precedingPressEpoch = Mouse.PressEpoch;
+                long precedingWindowPressEpoch = _inputDispatcher.MousePressEpoch;
                 try { _inputDispatcher.HandleMouseDown(button, position, buttons, modifiers, evt.ClickCount, Environment.TickCount); }
-                finally { CompleteMacOSTextMenuPointer(); }
+                finally { CompleteMacOSTextMenuPointer(button, precedingPressEpoch, precedingWindowPressEpoch); }
                 break;
             }
 

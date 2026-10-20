@@ -412,9 +412,10 @@ public sealed class ThumbButtonInfo : Freezable, ICommandSource
         ICommand? command = Command;
         if (command is RoutedCommand routedCommand)
         {
-            if (routedCommand.CanExecute(CommandParameter, CommandTarget) && current?.Invoke() != false)
+            if (routedCommand.CanExecute(CommandParameter, CommandTarget, current, out _) && current?.Invoke() != false)
             {
-                routedCommand.Execute(CommandParameter, CommandTarget);
+                if (current != null) routedCommand.Execute(CommandParameter, CommandTarget, current);
+                else routedCommand.Execute(CommandParameter, CommandTarget);
             }
         }
         else if (command?.CanExecute(CommandParameter) == true && current?.Invoke() != false)
