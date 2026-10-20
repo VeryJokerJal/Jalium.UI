@@ -53,7 +53,7 @@ internal static class WindowPopupDragChecks
         ownerBody.Children.Add(new TextBlock { Text = "文件交付后保留文字，拖动结束后释放按压。", FontSize = 15, TextWrapping = TextWrapping.Wrap });
         ownerBody.Children.Add(editor); ownerBody.Children.Add(anchor);
         var ownerCanvas = Body(); ownerBody.Children.Add(ownerCanvas); ownerBody.Children.Add(status);
-        var owner = new Window { Title = "Jalium Window v296 · 弹窗拖放 " + index, Width = custom ? 460 : 760, Height = 720,
+        var owner = new ProbeWindow { Title = "Jalium Window v297 · 弹窗拖放 " + index, Width = custom ? 460 : 760, Height = 720,
             MinWidth = 440, MinHeight = 680, TitleBarStyle = custom ? WindowTitleBarStyle.Custom : WindowTitleBarStyle.Native,
             Content = ownerBody, WindowStartupLocation = WindowStartupLocation.CenterScreen };
         owner.SetResourceReference(Window.BackgroundProperty, "WindowBackground"); Application.Current!.MainWindow = owner;
@@ -129,7 +129,7 @@ internal static class WindowPopupDragChecks
         {
             if (target.VisualParent is Canvas old && !ReferenceEquals(old, sourceBody)) old.Children.Remove(target);
             if (!sourceBody.Children.Contains(target)) sourceBody.Children.Add(target);
-            target.IsEnabled = true; target.Visibility = Visibility.Visible;
+            target.IsEnabled = true; target.Visibility = Visibility.Visible; Canvas.SetLeft(target, 16); Canvas.SetTop(target, 70);
             if (sourcePopup is not null && !sourcePopup.IsOpen) sourcePopup.IsOpen = true;
             entering = retained = null; Pump(); Observe(target);
         }
@@ -153,6 +153,14 @@ internal static class WindowPopupDragChecks
             Require(Mouse.LeftButton == MouseButtonState.Pressed && element.GetValue(UIElement.IsPressedProperty) is true,
                 "an own-process AppKit mouse sample reaches the managed pressed state");
             Require(element.CaptureMouse() && ReferenceEquals(Mouse.Captured, element), "the presenting surface owns the requested capture");
+        }
+        void SendButton(UIElement hit, bool down, NSEventModifierMask flags = 0)
+        {
+            var surface = Physical(hit); var view = View(surface); var point = hit.TranslatePoint(new Point(5, 5), surface);
+            using var sample = NSEvent.MouseEvent(down ? NSEventType.LeftMouseDown : NSEventType.LeftMouseUp,
+                view.ConvertPointToView(new CGPoint(point.X, point.Y), null), flags, NSProcessInfo.ProcessInfo.SystemUptime,
+                view.Window!.WindowNumber, null, 1, 1, down ? 1 : 0);
+            VoidMessage(view.Handle, new Selector(down ? "mouseDown:" : "mouseUp:").Handle, sample!.Handle);
         }
         void Complete(Window window)
         {
@@ -312,6 +320,97 @@ internal static class WindowPopupDragChecks
                     }
                     finally { target.LostMouseCapture -= callback; target.PointerCancel -= canceled; Complete(Physical(next)); }
                 });
+                foreach (string phase in new[] { "preview", "bubble", "pointer-preview", "pointer-bubble" })
+                foreach (string mutation in sourcePopup is null ? new[] { "reparent" } : new[] { "reparent", "policy" })
+                Attempt("native-release-" + phase + "-" + mutation, () =>
+                {
+                    Reset(); Down(target); int changed = 0, late = 0, cancels = 0;
+                    var surface = Physical(target); var moved = new Canvas { Width = 140, Height = 76 };
+                    bool prior = sourcePopup?.StaysOpen ?? true;
+                    var route = phase switch { "preview" => UIElement.PreviewMouseUpEvent, "bubble" => UIElement.MouseUpEvent,
+                        "pointer-preview" => PointerEvents.PreviewPointerUpEvent, _ => PointerEvents.PointerUpEvent };
+                    Action change = () =>
+                    {
+                        changed++;
+                        if (mutation == "policy") sourcePopup!.StaysOpen = !prior;
+                        else
+                        {
+                            sourceBody.Children.Add(moved); Canvas.SetLeft(moved, 16); Canvas.SetTop(moved, 70);
+                            sourceBody.Children.Remove(target); Canvas.SetLeft(target, 0); Canvas.SetTop(target, 0); moved.Children.Add(target);
+                        }
+                    };
+                    System.Delegate handler = phase.StartsWith("pointer") ? new RoutedEventHandler((_, _) => change()) : new MouseButtonEventHandler((_, _) => change());
+                    System.Delegate later = phase.StartsWith("pointer") ? new RoutedEventHandler((_, _) => late++) : new MouseButtonEventHandler((_, _) => late++);
+                    RoutedEventHandler canceled = (_, _) => cancels++;
+                    target.AddHandler(route, handler); target.AddHandler(route, later); target.PointerCancel += canceled;
+                    try
+                    {
+                        SendButton(target, false);
+                        Require(changed == 1 && late == 0 && cancels == 1, "actual native release retires the changed route with one pointer cancellation");
+                        Require(Mouse.Captured is null && Mouse.LeftButton == MouseButtonState.Released && target.GetValue(UIElement.IsPressedProperty) is false &&
+                            sourceBody.GetValue(UIElement.IsPressedProperty) is false, "actual native release clears the old capture and every pressed ancestor");
+                    }
+                    finally
+                    {
+                        target.RemoveHandler(route, handler); target.RemoveHandler(route, later); target.PointerCancel -= canceled;
+                        if (sourcePopup is not null) sourcePopup.StaysOpen = prior;
+                        Reset(); sourceBody.Children.Remove(moved); Complete(surface);
+                    }
+                });
+                foreach (string callback in new[] { "capture", "pressed", "cancel" })
+                foreach (string destination in new[] { "target", "same", "sibling", "foreign-reuse" })
+                Attempt("native-release-successor-" + callback + "-" + destination, () =>
+                {
+                    Reset(); var other = destination is "sibling" or "foreign-reuse" ? Sibling() : same;
+                    UIElement next = destination is "target" or "foreign-reuse" ? target : other;
+                    Down(target); bool restarted = false; int staleCancel = 0;
+                    void Restart()
+                    {
+                        if (restarted) return; restarted = true;
+                        if (destination == "foreign-reuse") { sourceBody.Children.Remove(target); ((Canvas)other.VisualParent!).Children.Add(target); }
+                        Down(next);
+                    }
+                    MouseEventHandler lost = (_, _) => { if (callback == "capture") Restart(); };
+                    Action<DependencyProperty, object?, object?> pressed = (property, _, value) =>
+                    { if (callback == "pressed" && property == UIElement.IsPressedProperty && Equals(value, false)) Restart(); };
+                    RoutedEventHandler canceled = (_, _) => { if (restarted) staleCancel++; else if (callback == "cancel") Restart(); };
+                    target.LostMouseCapture += lost; target.PropertyChangedInternal += pressed; target.PointerCancel += canceled;
+                    owner.SwallowRelease = true;
+                    try
+                    {
+                        SendButton(target, false);
+                        Require(restarted && staleCancel == 0 && ReferenceEquals(Mouse.Captured, next) && Mouse.LeftButton == MouseButtonState.Pressed &&
+                            next.GetValue(UIElement.IsPressedProperty) is true, "actual native release preserves the callback's successor capture press and pointer session");
+                    }
+                    finally
+                    {
+                        owner.SwallowRelease = false; target.LostMouseCapture -= lost; target.PropertyChangedInternal -= pressed; target.PointerCancel -= canceled;
+                        Complete(Physical(next)); Reset();
+                    }
+                });
+                foreach (bool down in new[] { false, true })
+                foreach (var entry in new (NSEventModifierMask Flags, ModifierKeys Physical, ModifierKeys Logical)[]
+                {
+                    (0, ModifierKeys.None, ModifierKeys.None),
+                    (NSEventModifierMask.ControlKeyMask, ModifierKeys.Control, ModifierKeys.Control),
+                    (NSEventModifierMask.CommandKeyMask, ModifierKeys.Windows, ModifierKeys.Control),
+                    (NSEventModifierMask.CommandKeyMask | NSEventModifierMask.ControlKeyMask, ModifierKeys.Windows | ModifierKeys.Control, ModifierKeys.Windows | ModifierKeys.Control)
+                })
+                Attempt("native-outside-capture-" + down + "-" + entry.Physical, () =>
+                {
+                    Reset(); if (!down) Down(target); else { Observe(target); Require(target.CaptureMouse(), "the own scene can request capture before a press"); }
+                    MouseButtonEventArgs? observed = null;
+                    MouseButtonEventHandler outside = (_, args) => observed = args;
+                    var route = down ? Mouse.PreviewMouseDownOutsideCapturedElementEvent : Mouse.PreviewMouseUpOutsideCapturedElementEvent;
+                    target.AddHandler(route, outside);
+                    try
+                    {
+                        SendButton(same, down, entry.Flags);
+                        Require(observed is not null && observed.PhysicalModifiers == entry.Physical && observed.KeyboardModifiers == entry.Logical &&
+                            ReferenceEquals(observed.OriginalSource, target), "actual native capture-outside input preserves the physical modifier snapshot and logical shortcut mapping");
+                    }
+                    finally { target.RemoveHandler(route, outside); Complete(Physical(target)); }
+                });
                 Attempt("final-editing-and-readback", () =>
                 {
                     Replay(); Reset(); Require(editor.Text == "文字保留 Miii 中文🙂", "drag operations preserve the editor's exact text");
@@ -347,6 +446,12 @@ internal static class WindowPopupDragChecks
         var box = new Border { Width = 140, Height = 76, AllowDrop = true, Focusable = true, Padding = new Thickness(10), BorderThickness = new Thickness(1), Child = text };
         box.SetResourceReference(Border.BackgroundProperty, "ControlFillColorDefaultBrush");
         box.SetResourceReference(Border.BorderBrushProperty, "ControlStrokeColorDefaultBrush"); return box;
+    }
+    private sealed class ProbeWindow : Window
+    {
+        internal bool SwallowRelease;
+        protected override bool OnPreviewWindowMouseUp(MouseButton button, Point position) =>
+            SwallowRelease || base.OnPreviewWindowMouseUp(button, position);
     }
     private sealed class Delegate : JaliumMacApplicationDelegate
     {

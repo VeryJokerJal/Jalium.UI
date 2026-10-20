@@ -440,6 +440,48 @@ public sealed class MacOSMouseModifierTests
         }
     }
 
+    public static IEnumerable<object[]> OutsideCapturePackets()
+    {
+        foreach (bool popup in new[] { false, true })
+        foreach (bool subtree in new[] { false, true })
+        foreach (bool down in new[] { false, true })
+        foreach (bool inside in new[] { false, true })
+        foreach (var entry in new (int Native, ModifierKeys Physical, ModifierKeys Logical)[]
+        {
+            (0, ModifierKeys.None, ModifierKeys.None), (1, ModifierKeys.Shift, ModifierKeys.Shift),
+            (2, ModifierKeys.Control, ModifierKeys.Control), (8, ModifierKeys.Windows, ModifierKeys.Control),
+            (10, ModifierKeys.Control | ModifierKeys.Windows, ModifierKeys.Control | ModifierKeys.Windows),
+            (13, ModifierKeys.Windows | ModifierKeys.Shift | ModifierKeys.Alt, ModifierKeys.Control | ModifierKeys.Shift | ModifierKeys.Alt)
+        }) yield return [popup, subtree, down, inside, entry.Native, entry.Physical, entry.Logical];
+    }
+
+    [Theory, MemberData(nameof(OutsideCapturePackets))]
+    public void CaptureOutsidePreviewRetainsTheActualPhysicalSnapshot(bool popup, bool subtree, bool down, bool inside,
+        int native, ModifierKeys physical, ModifierKeys logical)
+    {
+        IDisposable lifetime; Control target; Action<PlatformEvent> send;
+        if (popup) { var host = new PopupHost(); lifetime = host; target = host.Target; send = host.Send; }
+        else { var host = new Host(); lifetime = host; target = host.Target; send = host.Send; }
+        using (lifetime)
+        {
+            var seen = new List<MouseButtonEventArgs>();
+            var routed = down ? Mouse.PreviewMouseDownOutsideCapturedElementEvent : Mouse.PreviewMouseUpOutsideCapturedElementEvent;
+            target.AddHandler(routed, new MouseButtonEventHandler((_, e) => seen.Add(e)));
+            Assert.True(Mouse.Capture(target, subtree ? CaptureMode.SubTree : CaptureMode.Element));
+            send(new PlatformEvent { Type = down ? PlatformEventType.MouseDown : PlatformEventType.MouseUp,
+                MouseX = inside ? 50 : 500, MouseY = inside ? 50 : 500, Button = 0, ClickCount = 1,
+                Modifiers = native, HasMouseButtonStates = true, MouseButtons = down ? 1u : 0 });
+            if (inside) Assert.Empty(seen);
+            else
+            {
+                var args = Assert.Single(seen); Assert.Equal(physical, args.PhysicalModifiers);
+                Assert.Equal(logical, args.KeyboardModifiers); Assert.Same(target, args.OriginalSource);
+                Assert.Equal(down ? MouseButtonState.Pressed : MouseButtonState.Released, args.ButtonState);
+                Assert.Equal(MouseButton.Left, args.ChangedButton); Assert.Equal(1, args.ClickCount);
+            }
+        }
+    }
+
     private static Counter BindClick(Control target)
     {
         var command = new Counter();

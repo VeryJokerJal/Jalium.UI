@@ -319,7 +319,8 @@ public static class Mouse
         int clickCount,
         MouseButtonStates buttons,
         ModifierKeys modifiers,
-        int timestamp)
+        int timestamp,
+        ModifierKeys? physicalModifiers = null)
     {
         if (Captured is not UIElement captured || IsWithinVisualSubtree(hitElement, captured))
             return;
@@ -338,7 +339,7 @@ public static class Mouse
             buttons.XButton1,
             buttons.XButton2,
             modifiers,
-            timestamp);
+            timestamp) { PhysicalModifiers = physicalModifiers };
         captured.RaiseEvent(args);
     }
 

@@ -2941,6 +2941,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     #region Mouse Capture
 
     private static UIElement? _mouseCaptured;
+    private static long _mouseCaptureRevision;
+    internal static long MouseCaptureRevision => System.Threading.Volatile.Read(ref _mouseCaptureRevision);
 
     /// <summary>
     /// Gets the element that currently has mouse capture.
@@ -2996,6 +2998,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // 回声若已经把上一个捕获者清掉，它也已经收到过 LostMouseCapture，这里就别再通知第二遍。
         var previousCaptured = _mouseCaptured;
         _mouseCaptured = this;
+        System.Threading.Interlocked.Increment(ref _mouseCaptureRevision);
         UpdateMouseCaptureDependencyState(previousCaptured, this);
 
         // Notify the previously captured element
@@ -3019,6 +3022,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             var windowHost = GetWindowHostOrNull();
             var previousCaptured = _mouseCaptured;
             _mouseCaptured = null;
+            System.Threading.Interlocked.Increment(ref _mouseCaptureRevision);
             UpdateMouseCaptureDependencyState(previousCaptured, null);
             windowHost?.ReleaseNativeCapture();
             RaiseMouseCaptureChanged(false);
@@ -3035,6 +3039,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         {
             var windowHost = captured.GetWindowHostOrNull();
             _mouseCaptured = null;
+            System.Threading.Interlocked.Increment(ref _mouseCaptureRevision);
             UpdateMouseCaptureDependencyState(captured, null);
             windowHost?.ReleaseNativeCapture();
             captured.RaiseMouseCaptureChanged(false);
@@ -3051,6 +3056,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (captured != null)
         {
             _mouseCaptured = null;
+            System.Threading.Interlocked.Increment(ref _mouseCaptureRevision);
             UpdateMouseCaptureDependencyState(captured, null);
             captured.RaiseMouseCaptureChanged(false);
         }

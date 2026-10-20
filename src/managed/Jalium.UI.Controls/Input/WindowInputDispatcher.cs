@@ -367,7 +367,8 @@ internal sealed partial class WindowInputDispatcher
             clickCount,
             buttons,
             modifiers,
-            timestamp);
+            timestamp,
+            physicalModifiers);
         if (packetLifetime?.Invoke() == false) return;
         var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
@@ -447,11 +448,13 @@ internal sealed partial class WindowInputDispatcher
     }
 
     /// <summary>Handles mouse button up.</summary>
-    public void HandleMouseUp(MouseButton button, Point position, MouseButtonStates buttons,
+    private bool HandleMouseUpCore(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int timestamp)
     {
         long packet = unchecked(++_mouseInputGeneration);
-        Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
+        long pressEpoch = Mouse.PressEpoch;
+        Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ?
+            () => packet == _mouseInputGeneration && pressEpoch == Mouse.PressEpoch : null;
         var physicalModifiers = modifiers;
         modifiers = MouseInputModifiers.ToLogical(modifiers);
         bool suppressPointerRelease = _suppressedMousePointerReleases.Remove(button);
@@ -462,13 +465,13 @@ internal sealed partial class WindowInputDispatcher
             _suppressMouseUpButton = null;
             if (button == MouseButton.Left)
                 ClearMousePressedChain();
-            return;
+            return false;
         }
 
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseUp(button, position))
-            return;
-        if (packetLifetime?.Invoke() == false) return;
+            return false;
+        if (packetLifetime?.Invoke() == false) return false;
 
         // Handle title bar button release (for custom title bar)
         if (_host.IsTitleBarVisible() && button == MouseButton.Left && _pressedTitleBarButton != null)
@@ -493,10 +496,10 @@ internal sealed partial class WindowInputDispatcher
                 }
             }
 
-            if (packetLifetime?.Invoke() == false) return;
+            if (packetLifetime?.Invoke() == false) return false;
             _pressedTitleBarButton = null;
             ClearMousePressedChain();
-            return;
+            return false;
         }
 
         // Release must reach a captured Thumb without first forcing an outstanding layout. That
@@ -506,12 +509,12 @@ internal sealed partial class WindowInputDispatcher
         var hitElement = capturedThumb != null
             ? _lastMouseOverElement ?? UIElement.MouseDirectlyOverElement
             : RedirectInputBlocked(_host.HitTestElement(position, "mouse-up"));
-        if (packetLifetime?.Invoke() == false) return;
+        if (packetLifetime?.Invoke() == false) return false;
         if (capturedThumb == null)
         {
             UpdateMouseOverState(hitElement, timestamp);
         }
-        if (packetLifetime?.Invoke() == false) return;
+        if (packetLifetime?.Invoke() == false) return false;
         Mouse.UpdateState(position, hitElement, buttons);
         if (capturedThumb == null)
         {
@@ -524,10 +527,11 @@ internal sealed partial class WindowInputDispatcher
                 1,
                 buttons,
                 modifiers,
-                timestamp);
+                timestamp,
+                physicalModifiers);
         }
         var target = (UIElement?)capturedThumb ?? Mouse.GetMouseTarget(hitElement) ?? _host.Self;
-        if (packetLifetime?.Invoke() == false) return;
+        if (packetLifetime?.Invoke() == false) return false;
         var buttonInput = _host.CaptureNativeMouseCommandInput(target, packetLifetime);
         Func<bool>? inputLifetime = buttonInput == null ? packetLifetime : buttonInput.IsHostCurrent;
 
@@ -553,7 +557,7 @@ internal sealed partial class WindowInputDispatcher
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
         }
 
-        if (inputLifetime?.Invoke() == false) return;
+        if (inputLifetime?.Invoke() == false) return false;
         if (suppressPointerRelease) CleanupPointerSession(MousePointerId);
         if (!SuppressMouseToPointerPromotion && !suppressPointerRelease)
         {
@@ -567,7 +571,7 @@ internal sealed partial class WindowInputDispatcher
             else if (!sourceHandled)
                 RaisePointerUpPipeline(target, pointerPoint, modifiers, timestamp, inputLifetime: inputLifetime);
 
-            if (inputLifetime?.Invoke() == false) return;
+            if (inputLifetime?.Invoke() == false) return false;
             _activePointerTargets.Remove(MousePointerId);
         }
 
@@ -583,6 +587,7 @@ internal sealed partial class WindowInputDispatcher
             if (Mouse.Captured == null)
                 _host.Self.ReleaseNativeCaptureIfOwned();
         }
+        return true;
     }
 
     /// <summary>Handles mouse wheel.</summary>
@@ -1631,7 +1636,12 @@ internal sealed partial class WindowInputDispatcher
         // A callback may synchronously start a new press; entries adopted by that
         // new chain must stay pressed when the old snapshot finishes unwinding.
         UIElement[] previous = DetachPressedChain(chain);
-        ClearDetachedPressedChain(previous, chain);
+        Exception? failure = null;
+        ClearDetachedPressedChain(previous, chain, notify: action =>
+        {
+            try { action(); } catch (Exception error) { failure ??= error; }
+        });
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     private static UIElement[] DetachPressedChain(List<UIElement> chain)
@@ -1649,7 +1659,8 @@ internal sealed partial class WindowInputDispatcher
         foreach (UIElement element in previous)
         {
             if (!currentChain.Contains(element) && additionalChain?.Contains(element) != true &&
-                KeyboardPressState.CurrentChain?.Contains(element) != true)
+                KeyboardPressState.CurrentChain?.Contains(element) != true &&
+                (!OperatingSystem.IsMacOS() || Window.GetMacOSPhysicalWindow(element)?.OwnsPressedState(element) != true))
             {
                 if (notify is null) element.SetIsPressed(false);
                 else notify(() => element.SetIsPressed(false));

@@ -1364,7 +1364,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         Mouse.UpdateState(position, hitElement, buttons);
         Mouse.RaiseOutsideCapturedElementEvent(
             true, hitElement, position, button, MouseButtonState.Pressed, clickCount,
-            buttons, modifiers, timestamp);
+            buttons, modifiers, timestamp, physicalModifiers);
         var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Raise tunnel event
@@ -1443,7 +1443,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         Mouse.UpdateState(position, hitElement, buttons);
         Mouse.RaiseOutsideCapturedElementEvent(
             false, hitElement, position, button, MouseButtonState.Released, clickCount,
-            buttons, modifiers, timestamp);
+            buttons, modifiers, timestamp, physicalModifiers);
         var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Raise tunnel event

@@ -148,7 +148,8 @@ public sealed class MacOSPhysicalPopupDragTests
     [Theory, MemberData(nameof(Successors))]
     public void TheTrackingLoopsOldFinallyCannotRetireALaterPress(int depth, string destination)
     {
-        using var h = new Scene(depth, false); var next = h.Successor(destination);
+        using var h = new Scene(depth, false); var next = h.Successor(destination); int staleCancels = 0;
+        h.Target.PointerCancel += (_, _) => staleCancels++;
         h.Down(h.Target); Assert.True(h.Target.CaptureMouse());
         // Bind the parent's direct completion, or the current source token, so
         // both products execute their actual completion behavior after tracking.
@@ -156,6 +157,7 @@ public sealed class MacOSPhysicalPopupDragTests
         Action complete = method is null ? h.Surface.CompletePlatformDragInput : (Action)method.Invoke(h.Surface, null)!;
         h.Target.ReleaseMouseCapture(); h.Down(next); Assert.True(next.CaptureMouse());
         complete();
+        Assert.Equal(0, staleCancels);
         Assert.Same(next, Mouse.Captured); Assert.True(Pressed(next)); Assert.False(Pressed(h.Target));
         Assert.Equal(MouseButtonState.Pressed, Mouse.LeftButton);
     }

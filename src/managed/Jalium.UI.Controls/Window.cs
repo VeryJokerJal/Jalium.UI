@@ -1016,7 +1016,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             Action? cancelPointer = null;
             if (_inputDispatcher.MousePressEpoch == windowPress)
-                Notify(() => cancelPointer = _inputDispatcher.PrepareNativeMouseDragCompletion());
+                Notify(() => cancelPointer = _inputDispatcher.PrepareNativeMouseDragCompletion(inputLifetime: () => Mouse.PressEpoch == press));
             if (Mouse.PressEpoch == press) Notify(() => CompletePlatformDragInputCore(() => Mouse.PressEpoch == press));
             if (cancelPointer is not null) Notify(cancelPointer);
             // A callback may start a successor press in another surface.
