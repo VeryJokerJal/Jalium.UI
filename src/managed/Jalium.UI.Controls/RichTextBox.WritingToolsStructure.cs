@@ -75,7 +75,7 @@ public partial class RichTextBox
             if (lists.Count > 32 || cells.Count > 32) throw new NotSupportedException("The document exceeds the native text service nesting limit.");
             var inlineBreaks = new List<int>();
             if (!emptyCell)
-                for (int i = from; i < Math.Min(to, paragraphStart + paragraphLength - Environment.NewLine.Length); ++i)
+                for (int i = from; i < Math.Min(to, paragraphStart + paragraphLength - 1); ++i)
                     if (sourceText[i] is '\n' or '\r' or '\u2029') inlineBreaks.Add(i - rangeStart);
             records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray(), ancestors.ToArray(), emptyCell,
                 inlineBreaks.Count == 0 ? null : inlineBreaks.ToArray()));
@@ -88,7 +88,7 @@ public partial class RichTextBox
         {
             if (block is Paragraph paragraph)
                 yield return (paragraph, paragraph.ContentStart.DocumentOffset,
-                    TextElement.GetContentLength(paragraph) + Environment.NewLine.Length, false);
+                    TextElement.GetContentLength(paragraph) + 1, false);
             else if (block is Table table)
             {
                 foreach (var cell in table.RowGroups.SelectMany(group => group.Rows).SelectMany(row => row.Cells))

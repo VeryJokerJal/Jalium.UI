@@ -44,11 +44,11 @@ internal sealed class MouseWheelGestureRouting
         return previous != null && previous.TryGetTarget(out var target) ? target : null;
     }
 
-    internal static void RaiseCancellation(UIElement target) =>
-        target.RaiseEvent(new MouseWheelEventArgs(UIElement.PreviewMouseWheelEvent, new Point(),
+    internal static void RaiseCancellation(UIElement target, Func<bool>? current = null) =>
+        InputRoute.Raise(target,new MouseWheelEventArgs(UIElement.PreviewMouseWheelEvent, new Point(),
             0, 0, true, MouseButtonState.Released, MouseButtonState.Released, MouseButtonState.Released,
             MouseButtonState.Released, MouseButtonState.Released, ModifierKeys.None, Environment.TickCount,
-            MouseWheelPhase.Cancelled, MouseWheelPhase.None));
+            MouseWheelPhase.Cancelled, MouseWheelPhase.None), current);
 
     internal void ClearWithin(UIElement root)
     {

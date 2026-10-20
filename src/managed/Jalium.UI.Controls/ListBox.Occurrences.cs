@@ -16,6 +16,7 @@ public partial class ListBox
     private ItemOccurrence? ResolveSelectionOccurrence(object requested, ISet<ItemOccurrence>? used = null,
         ItemOccurrence? preferred = null)
     {
+        ItemOccurrence? usedMatch = null;
         for (int match = 0; match < 3; match++)
         {
             bool Matches(object? candidate) => candidate is { } item && GetSelectionValueFromLogicalItem(item) is { } value &&
@@ -29,9 +30,11 @@ public partial class ListBox
                 first ??= row;
                 if (used?.Contains(row) != true) return row;
             }
-            if (first != null) return first;
+            // An exact reference already in the selection must not hide an
+            // unused equal-valued occurrence at a later matching level.
+            usedMatch ??= first;
         }
-        return null;
+        return usedMatch;
     }
 
     private RowSelection SelectionAt(int index, bool keepItem = false)

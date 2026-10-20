@@ -42,7 +42,9 @@ public partial class ListBox
                 if ((uint)index >= (uint)Count) throw new ArgumentOutOfRangeException(nameof(index));
                 Validate(value);
                 var items = new List<RowSelection>(owner._selectionRows);
-                var row = owner.ResolveSelectionOccurrence(value, preferred: items[index].Row)!;
+                var used = new HashSet<ItemOccurrence>(items.Where((_, entry) => entry != index).Select(entry => entry.Row),
+                    ReferenceEqualityComparer.Instance);
+                var row = owner.ResolveSelectionOccurrence(value, used, items[index].Row)!;
                 items[index] = new(row, value);
                 owner.ApplyCollectionSelection(items);
             }

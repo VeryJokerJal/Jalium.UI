@@ -40,8 +40,8 @@ public partial class Window
             else
             {
                 var complete = _inputDispatcher.PrepareMacOSWindowDeactivation();
-                try { SetIsActive(false); }
-                finally { complete(); }
+                try { complete(); }
+                finally { if (IsCurrent()) SetIsActive(false); }
                 if (!IsCurrent()) return;
                 UpdateInputMethodAssociation();
                 owner.QueueMacOSPopupGroupDeactivation();

@@ -351,6 +351,76 @@ public sealed class MacOSActivationInputLifetimeTests
         public event EventHandler? CanExecuteChanged { add { } remove { } }
     }
 
+    public static IEnumerable<object[]> WheelRestarts()
+    {
+        foreach (string callback in new[] { "property", "capture", "pressed" })
+            foreach (bool same in new[] { false, true })
+                foreach (bool momentum in new[] { false, true }) yield return [callback, same, momentum];
+    }
+
+    [Theory, MemberData(nameof(WheelRestarts))]
+    public void DeactivationCannotCancelAWheelStartedByItsCleanup(string callback, bool same, bool momentum)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(); h.Mouse(h.Target); Assert.True(h.Target.CaptureMouse());
+        void Wheel(UIElement target, int time, MouseWheelPhase phase, bool inertia = false)
+            => h.Dispatcher.HandleMouseWheel(target.TranslatePoint(new Point(10, 10), h.Window), 0, -11, true,
+                MouseButtonStates.AllReleased, ModifierKeys.None, time,
+                inertia ? MouseWheelPhase.None : phase, inertia ? phase : MouseWheelPhase.None);
+        Wheel(h.Target, 100, MouseWheelPhase.Began);
+        var next = same ? h.Target : h.Other; bool restarted = false; int oldCancelled = 0, newCancelled = 0, changed = 0;
+        h.Target.PreviewMouseWheel += (_, e) => { if (e.Phase == MouseWheelPhase.Cancelled) { if (restarted) newCancelled++; else oldCancelled++; } };
+        if (!same) h.Other.PreviewMouseWheel += (_, e) => { if (e.Phase == MouseWheelPhase.Cancelled) newCancelled++; };
+        next.MouseWheel += (_, e) => { if (e.Timestamp == 103) changed++; };
+        void Restart()
+        {
+            if (restarted) return; restarted = true; h.Send(PlatformEventType.Activate);
+            Wheel(next, 101, MouseWheelPhase.Began);
+            if (momentum) { Wheel(next, 102, MouseWheelPhase.Ended); Wheel(next, 102, MouseWheelPhase.Began, true); }
+        }
+        h.Window.PropertyChangedInternal += (p, _, value) => { if (callback == "property" && p == Window.IsActiveProperty && Equals(value, false)) Restart(); };
+        h.Target.LostMouseCapture += (_, _) => { if (callback == "capture") Restart(); };
+        h.Target.PropertyChangedInternal += (p, _, value) => { if (callback == "pressed" && p == UIElement.IsPressedProperty && Equals(value, false)) Restart(); };
+        h.Send(PlatformEventType.Deactivate);
+        Assert.True(restarted); Assert.True(h.Window.IsActive); Assert.Equal(1, oldCancelled); Assert.Equal(0, newCancelled);
+        Wheel(same ? h.Other : h.Target, 103, MouseWheelPhase.Changed, momentum);
+        Assert.Equal(1, changed); Assert.Equal(0, newCancelled);
+    }
+
+    [Fact]
+    public void NestedInputStopsTheRemainingOldCancellationHandlers()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(); int later = 0;
+        h.Dispatcher.HandleMouseWheel(new Point(10, 10), 0, -11, true, MouseButtonStates.AllReleased,
+            ModifierKeys.None, 100, MouseWheelPhase.Began);
+        h.Target.PreviewMouseWheel += (_, e) =>
+        {
+            if (e.Phase != MouseWheelPhase.Cancelled) return;
+            h.Send(PlatformEventType.Activate);
+            h.Dispatcher.HandleMouseWheel(new Point(10, 10), 0, -11, true, MouseButtonStates.AllReleased,
+                ModifierKeys.None, 101, MouseWheelPhase.Began);
+        };
+        h.Target.PreviewMouseWheel += (_, e) => { if (e.Phase == MouseWheelPhase.Cancelled) later++; };
+        h.Send(PlatformEventType.Deactivate);
+        Assert.True(h.Window.IsActive); Assert.Equal(0, later);
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void ThrowingRetirementStillClearsTheOldMouseAndKeyboardPresses(bool wheel)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new Host(); h.Mouse(h.Target); h.Dispatcher.ActivateKeyboardPressedChain(h.Other);
+        Assert.True(h.Target.CaptureMouse());
+        h.Dispatcher.HandleMouseWheel(new Point(10, 10), 0, -11, true, MouseButtonStates.AllReleased,
+            ModifierKeys.None, 100, MouseWheelPhase.Began);
+        h.Target.PreviewMouseWheel += (_, e) => { if (wheel && e.Phase == MouseWheelPhase.Cancelled) throw new ApplicationException("cancel"); };
+        h.Target.PropertyChangedInternal += (p, _, value) => { if (!wheel && p == UIElement.IsPressedProperty && Equals(value, false)) throw new ApplicationException("pressed"); };
+        Assert.ThrowsAny<Exception>(() => h.Send(PlatformEventType.Deactivate));
+        Assert.False(h.Window.IsActive); Assert.Null(UIElement.MouseCapturedElement);
+        Assert.False(h.Target.IsPressed); Assert.False(h.Other.IsPressed); Assert.False(h.Panel.IsPressed);
+    }
+
     private sealed class Host : IDisposable
     {
         internal readonly DisplayedTestWindow Window;

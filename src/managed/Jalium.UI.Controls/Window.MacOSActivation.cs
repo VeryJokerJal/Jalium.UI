@@ -38,8 +38,8 @@ public partial class Window
         // can reactivate this window, press again, or activate another window.
         var completeRetiredInput = _inputDispatcher.PrepareMacOSWindowDeactivation();
         bool notify = IsActive;
-        try { SetIsActive(false); }
-        finally { completeRetiredInput(); }
+        try { completeRetiredInput(); }
+        finally { if (IsCurrent()) SetIsActive(false); }
         if (!IsCurrent()) return;
         _inputDispatcher.CompleteMacOSWindowDeactivation(IsCurrent);
         if (!IsCurrent()) return;

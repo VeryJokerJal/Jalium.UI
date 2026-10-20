@@ -13,6 +13,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../Jalium.UI.Tests/ListBoxParityTests.cs" Link="ListBoxParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/FlowDocumentLogicalProjectionTests.cs" Link="FlowDocumentLogicalProjectionTests.cs" />
     <Compile Include="../Jalium.UI.Tests/SelectorSelectionBindingTests.cs" Link="Shared/SelectorSelectionBindingTests.cs" />
     <Compile Include="../Jalium.UI.Tests/SelectorSelectedValueTests.cs" Link="Shared/SelectorSelectedValueTests.cs" />
     <Compile Include="../Jalium.UI.Tests/MultiSelectorParityTests.cs" Link="Shared/MultiSelectorParityTests.cs" />

@@ -1,0 +1,63 @@
+name: Windows document contracts
+
+on:
+  pull_request:
+    paths:
+      - 'src/managed/Jalium.UI.Controls/Documents/**'
+      - 'src/managed/Jalium.UI.Controls/RichTextBox*.cs'
+      - 'tests/Jalium.UI.Tests/FlowDocumentLogicalProjectionTests.cs'
+      - 'tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj'
+      - 'Directory.Build.*'
+      - '.github/workflows/windows-document-contracts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  logical-offsets:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - name: Verify the Windows newline environment
+        shell: pwsh
+        run: |
+          if ([Environment]::NewLine.Length -ne 2) { throw "This contract must run on Windows with CRLF." }
+      - name: Reproduce the previous paragraph projection when applicable
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $baseline = (git rev-parse HEAD^).Trim()
+          $previous = git show "$($baseline):src/managed/Jalium.UI.Controls/Documents/FlowDocument.cs"
+          if (($previous -join "`n") -notmatch 'sb\.AppendLine\(\)') {
+            Write-Output "Parent already uses a platform-independent document projection."
+            exit 0
+          }
+          git worktree add --detach artifacts/windows-document-baseline $baseline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item tests/Jalium.UI.Tests/FlowDocumentLogicalProjectionTests.cs artifacts/windows-document-baseline/tests/Jalium.UI.Tests/
+          dotnet test artifacts/windows-document-baseline/tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release --filter FullyQualifiedName~FlowDocumentLogicalProjectionTests --logger "trx;LogFileName=baseline.trx" --results-directory artifacts/windows-document-baseline-results -p:JaliumBuildRoot="$env:RUNNER_TEMP/document-baseline-build" -p:UseSharedCompilation=false -m:1 --disable-build-servers
+          $testExit = $LASTEXITCODE
+          [xml]$trx = Get-Content artifacts/windows-document-baseline-results/baseline.trx
+          $counters = $trx.TestRun.ResultSummary.Counters
+          if ($testExit -eq 0 -or [int]$counters.failed -ne 14 -or [int]$counters.executed -ne 14 -or [int]$counters.error -ne 0) {
+            throw "The unmodified Windows product did not reproduce all 14 projection failures."
+          }
+          Write-Output "Verified 14 real Windows failures with the unmodified parent product."
+          exit 0
+      - name: Test logical document offsets on Windows
+        run: dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release --filter FullyQualifiedName~FlowDocumentLogicalProjectionTests --logger "trx;LogFileName=document-offsets.trx" --results-directory artifacts/windows-document-contracts -p:JaliumBuildRoot=artifacts/windows-document-build -p:UseSharedCompilation=false -m:1 --disable-build-servers
+      - name: Clean the isolated Windows baseline
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path artifacts/windows-document-baseline) {
+            git worktree remove --force artifacts/windows-document-baseline
+          }

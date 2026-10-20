@@ -1003,14 +1003,25 @@ internal sealed partial class WindowInputDispatcher
         _suppressedMousePointerReleases.Clear();
         return () =>
         {
+            Exception? notificationFailure = null;
+            void Notify(Action notification)
+            {
+                try { notification(); }
+                catch (Exception error) { notificationFailure ??= error; }
+            }
+            // Finish the old scroll before capture/pressed/property callbacks
+            // can start another gesture on this route. Nested input also ends
+            // the cancellation's remaining routed handlers.
+            if (wheelTarget != null)
+                Notify(() => MouseWheelGestureRouting.RaiseCancellation(wheelTarget, () => generation == _mouseInputGeneration));
             if (capture != null && generation == _mouseInputGeneration &&
-                ReferenceEquals(capture, UIElement.MouseCapturedElement)) capture.ReleaseMouseCapture();
-            ClearDetachedPressedChain(mousePressed, _mousePressedChain, _keyboardPressedChain);
-            ClearDetachedPressedChain(keyboardPressed, _keyboardPressedChain, _mousePressedChain);
-            if (hovered != null && !ReferenceEquals(hovered, _hoveredTitleBarButton)) hovered.SetIsMouseOver(false);
+                ReferenceEquals(capture, UIElement.MouseCapturedElement)) Notify(() => capture.ReleaseMouseCapture());
+            ClearDetachedPressedChain(mousePressed, _mousePressedChain, _keyboardPressedChain, Notify);
+            ClearDetachedPressedChain(keyboardPressed, _keyboardPressedChain, _mousePressedChain, Notify);
+            if (hovered != null && !ReferenceEquals(hovered, _hoveredTitleBarButton)) Notify(() => hovered.SetIsMouseOver(false));
             if (pressed != null && !ReferenceEquals(pressed, _pressedTitleBarButton) &&
-                !_mousePressedChain.Contains(pressed) && !_keyboardPressedChain.Contains(pressed)) pressed.SetIsPressed(false);
-            if (wheelTarget != null) MouseWheelGestureRouting.RaiseCancellation(wheelTarget);
+                !_mousePressedChain.Contains(pressed) && !_keyboardPressedChain.Contains(pressed)) Notify(() => pressed.SetIsPressed(false));
+            if (notificationFailure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(notificationFailure).Throw();
         };
     }
 
@@ -1633,13 +1644,16 @@ internal sealed partial class WindowInputDispatcher
     private void ClearDetachedPressedChain(
         UIElement[] previous,
         List<UIElement> currentChain,
-        List<UIElement>? additionalChain = null)
+        List<UIElement>? additionalChain = null, Action<Action>? notify = null)
     {
         foreach (UIElement element in previous)
         {
             if (!currentChain.Contains(element) && additionalChain?.Contains(element) != true &&
                 KeyboardPressState.CurrentChain?.Contains(element) != true)
-                element.SetIsPressed(false);
+            {
+                if (notify is null) element.SetIsPressed(false);
+                else notify(() => element.SetIsPressed(false));
+            }
         }
     }
 

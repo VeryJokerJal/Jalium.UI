@@ -189,6 +189,33 @@ public sealed class ListBoxSelectedItemsMutationTests
         Assert.Single(items); Assert.Equal(1, changes); Assert.Same(items, f.List.SelectedItems);
     }
 
+    [Theory]
+    [InlineData(SelectionMode.Multiple, false)] [InlineData(SelectionMode.Multiple, true)]
+    [InlineData(SelectionMode.Extended, false)] [InlineData(SelectionMode.Extended, true)]
+    public void ReplacingAnEntryChoosesAnUnselectedEqualOccurrence(SelectionMode mode, bool sameObject)
+    {
+        object a = new EqualValue("A"), b = new EqualValue("B"), other = sameObject ? b : new EqualValue("B");
+        var list = new ListBox { SelectionMode = mode }; list.Items.Add(a); list.Items.Add(b); list.Items.Add(other);
+        list.SelectedItems.Add(a); list.SelectedItems.Add(b);
+        int countChanges = 0; var observed = Assert.IsAssignableFrom<INotifyPropertyChanged>(list.SelectedItems);
+        observed.PropertyChanged += (_, e) => { if (e.PropertyName == "Count") countChanges++; };
+        list.SelectedItems[0] = b;
+        Assert.Equal(new[] { 1, 2 }, list.GetSelectedOccurrenceIndices());
+        Assert.Equal(2, list.SelectedItems.Count); Assert.Equal(0, countChanges);
+        Assert.Same(b, list.SelectedItems[0]); Assert.Same(b, list.SelectedItems[1]);
+        list.SelectedItems[0] = b;
+        Assert.Equal(new[] { 1, 2 }, list.GetSelectedOccurrenceIndices());
+    }
+
+    [Fact]
+    public void ReplacingTheOnlyOccurrenceKeepsTheExistingDuplicateSemantics()
+    {
+        var list = new ListBox { SelectionMode = SelectionMode.Multiple };
+        var a = new EqualValue("A"); var b = new EqualValue("B"); list.Items.Add(a); list.Items.Add(b);
+        list.SelectedItems.Add(a); list.SelectedItems.Add(b); list.SelectedItems[0] = b;
+        Assert.Equal(new[] { 1 }, list.GetSelectedOccurrenceIndices()); Assert.Single(list.SelectedItems);
+    }
+
     private sealed class SelectionSource { public int Index { get; set; } = -1; }
 
     [Fact]

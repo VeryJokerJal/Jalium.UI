@@ -835,7 +835,8 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
     #region Methods
 
     /// <summary>
-    /// Gets the plain text content of the document.
+    /// Gets the plain text content of the document, using one LF per structural break.
+    /// Authored Run text is preserved verbatim so offsets match TextPointer on every platform.
     /// </summary>
     public string GetText()
     {
@@ -858,7 +859,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         {
             case Paragraph paragraph:
                 AppendInlinesText(paragraph.Inlines, sb);
-                sb.AppendLine();
+                sb.Append('\n');
                 break;
 
             case Section section:
@@ -882,7 +883,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                             AppendBlocksText(cell.Blocks, sb);
                             sb.Append('\t');
                         }
-                        sb.AppendLine();
+                        sb.Append('\n');
                     }
                 }
                 break;
@@ -910,7 +911,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 break;
 
             case LineBreak:
-                sb.AppendLine();
+                sb.Append('\n');
                 break;
         }
     }

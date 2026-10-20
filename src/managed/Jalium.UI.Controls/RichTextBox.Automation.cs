@@ -32,7 +32,7 @@ public partial class RichTextBox
                 {
                     case Run run: Add(run.Text.Length, Style(run, paragraph)); break;
                     case Span span: Inlines(span.Inlines, paragraph); break;
-                    case LineBreak: Add(Environment.NewLine.Length, Style(null, paragraph)); break;
+                    case LineBreak: Add(1, Style(null, paragraph)); break;
                 }
         }
         void Blocks(IEnumerable<Block> blocks)
@@ -40,7 +40,7 @@ public partial class RichTextBox
             foreach (var block in blocks)
                 switch (block)
                 {
-                    case Paragraph paragraph: Inlines(paragraph.Inlines, paragraph); Add(Environment.NewLine.Length, Style(null, paragraph)); break;
+                    case Paragraph paragraph: Inlines(paragraph.Inlines, paragraph); Add(1, Style(null, paragraph)); break;
                     case Section section: Blocks(section.Blocks); break;
                     case Documents.List list: foreach (var item in list.ListItems) Blocks(item.Blocks); break;
                     case Table table:
@@ -48,7 +48,7 @@ public partial class RichTextBox
                             foreach (var row in group.Rows)
                             {
                                 foreach (var cell in row.Cells) { Blocks(cell.Blocks); Add(1, basic); }
-                                Add(Environment.NewLine.Length, basic);
+                                Add(1, basic);
                             }
                         break;
                 }
