@@ -205,7 +205,7 @@ public partial class RichTextBox
             {
                 y += block.Lines.Sum(line => line.Height);
                 DrawTableSurfaces(context, block.ChildBlocks,
-                    left + (block.Block is Documents.List ? 20 : 0), ref y);
+                    left + block.ChildOffset, ref y);
             }
             y += block.Margin.Bottom;
         }
@@ -303,7 +303,7 @@ public partial class RichTextBox
             else
             {
                 y += block.Lines.Sum(line => line.Height);
-                CollectCellRegions(block.ChildBlocks, left + (block.Block is Documents.List ? 20 : 0), ref y, depth, result, ancestorClip);
+                CollectCellRegions(block.ChildBlocks, left + block.ChildOffset, ref y, depth, result, ancestorClip);
             }
             y += block.Margin.Bottom;
         }

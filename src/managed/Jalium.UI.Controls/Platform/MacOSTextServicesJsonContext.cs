@@ -29,7 +29,7 @@ internal sealed class MacOSTextServicesResponse
     public double[]? Frame { get; set; }
 }
 
-internal sealed record WritingToolsParagraph(int Start, int Length, WritingToolsList[] Lists, WritingToolsCell[] Tables, WritingToolsAncestor[]? Ancestors = null, bool EmptyCell = false);
+internal sealed record WritingToolsParagraph(int Start, int Length, WritingToolsList[] Lists, WritingToolsCell[] Tables, WritingToolsAncestor[]? Ancestors = null, bool EmptyCell = false, int[]? InlineBreaks = null);
 internal sealed record WritingToolsAncestor(string Kind, int Index, string? Item = null);
 internal sealed record WritingToolsList(string Id, string Format, int Start);
 internal sealed record WritingToolsCell(string Id, int Row, int Column, int Rows, int Columns, int TableColumns);

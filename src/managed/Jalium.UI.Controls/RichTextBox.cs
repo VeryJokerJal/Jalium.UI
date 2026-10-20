@@ -1492,6 +1492,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         y += blockLayout.Margin.Top;
         x += blockLayout.Margin.Left;
+        if (blockLayout.ListMarker is { } marker && !MacOSWritingToolsPresentation.IsPreviewing(this))
+            RenderListMarker(dc, blockLayout, marker, x, y, contentBounds);
         if (blockLayout.Table is { } table)
         {
             RenderTable(dc, table, x, y, contentBounds);
@@ -1506,7 +1508,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 y += lineLayout.Height;
             }
             foreach (var child in blockLayout.ChildBlocks)
-                RenderBlockLayout(dc, child, x + (blockLayout.Block is List ? 20 : 0), ref y, contentBounds);
+                RenderBlockLayout(dc, child, x + blockLayout.ChildOffset, ref y, contentBounds);
         }
         y += blockLayout.Margin.Bottom;
     }
@@ -2236,7 +2238,10 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             layout.TotalWidth = Math.Max(layout.TotalWidth, line.x + line.line.Width);
 
         foreach (var block in layout.Blocks)
+        {
             layout.TotalWidth = Math.Max(layout.TotalWidth, TableExtent(block, 0));
+            layout.TotalWidth = Math.Max(layout.TotalWidth, ListMarkerExtent(block, 0));
+        }
         return layout;
     }
 
@@ -2246,7 +2251,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (block.Table is { } table) return x + table.Width + block.Margin.Right;
         double width = 0;
         foreach (var child in block.ChildBlocks)
-            width = Math.Max(width, TableExtent(child, x + (block.Block is List ? 20 : 0)));
+            width = Math.Max(width, TableExtent(child, x + block.ChildOffset));
         return width;
     }
 
@@ -2307,14 +2312,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         }
         else if (block is List list)
         {
-            foreach (var item in list.ListItems)
-            {
-                foreach (var itemBlock in item.Blocks)
-                {
-                    var childLayout = LayoutBlock(itemBlock, maxWidth - block.Margin.Left - block.Margin.Right - 20, ref currentOffset);
-                    blockLayout.ChildBlocks.Add(childLayout);
-                }
-            }
+            LayoutList(list, blockLayout, maxWidth, ref currentOffset);
         }
 
         return blockLayout;
@@ -2449,6 +2447,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         foreach (var block in blocks)
         {
+            if (block.ListMarker is { } marker && marker.FontEpoch != TextMeasurement.FontCacheEpoch) return false;
             if (block.NativeParagraph is not null && (block.NativeFontEpoch != TextMeasurement.FontCacheEpoch ||
                 block.Block is Paragraph paragraph && block.NativeDirection != GetNativeParagraphDirection(paragraph))) return false;
             // Inherited typography can change without a Run content notification.
@@ -3326,7 +3325,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                     y += lineLayout.Height;
                 }
                 CollectAllLines(blockLayout.ChildBlocks,
-                    x + (blockLayout.Block is List ? 20 : 0), ref y, result, clips, ancestorClip);
+                    x + blockLayout.ChildOffset, ref y, result, clips, ancestorClip);
             }
             y += blockLayout.Margin.Bottom;
         }
@@ -4124,6 +4123,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         public List<LineLayoutInfo> Lines { get; } = new();
         public List<BlockLayoutInfo> ChildBlocks { get; } = new();
         public TableLayout? Table { get; set; }
+        public double ChildOffset { get; set; }
+        public ListMarkerLayout? ListMarker { get; set; }
         public NativeTextParagraph? NativeParagraph { get; set; }
         public int NativeDirection { get; set; }
         public List<(Run? Run, Color Color, double Opacity)> NativeColors { get; } = new();

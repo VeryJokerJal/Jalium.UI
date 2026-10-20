@@ -29,6 +29,7 @@ internal sealed class WritingToolsDocumentFragment
         if (through != text.Length || runs.Length > 100000) throw new FormatException("Incomplete style ranges.");
         var rows = new List<Row>();
         through = 0;
+        bool trailingInlineBreak = false;
         var paragraphRecords = packet.GetProperty("paragraphs");
         if (paragraphRecords.ValueKind != JsonValueKind.Array || paragraphRecords.GetArrayLength() > 100000)
             throw new FormatException("Invalid paragraph records.");
@@ -39,6 +40,22 @@ internal sealed class WritingToolsDocumentFragment
                 throw new FormatException("Invalid paragraph range.");
             through += length;
             int end = start + length;
+            var inlineBreaks = new HashSet<int>();
+            if (record.TryGetProperty("inlineBreaks", out var breaks))
+            {
+                if (breaks.ValueKind != JsonValueKind.Array || breaks.GetArrayLength() > length)
+                    throw new FormatException("Invalid inline line breaks.");
+                int previous = start - 1;
+                foreach (var value in breaks.EnumerateArray())
+                {
+                    if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out int offset) ||
+                        offset <= previous || offset < start || offset >= end || text[offset] is not ('\n' or '\r' or '\u2029'))
+                        throw new FormatException("Invalid inline line break position.");
+                    inlineBreaks.Add(offset);
+                    previous = offset;
+                }
+                trailingInlineBreak |= inlineBreaks.Contains(text.Length - 1);
+            }
             bool emptyCell = false;
             if (record.TryGetProperty("emptyCell", out var empty))
             {
@@ -53,6 +70,8 @@ internal sealed class WritingToolsDocumentFragment
                 if (separator.GetBoolean())
                 {
                     if (emptyCell) throw new FormatException("An empty cell cannot also be an omitted storage record.");
+                    if (inlineBreaks.Count != 0)
+                        throw new FormatException("An authored line break cannot be omitted as storage.");
                     // FlowDocument emits virtual tabs/newlines between cells and
                     // rows. They already belong to their table, not a new paragraph.
                     for (int i = start; i < end; i++)
@@ -73,10 +92,10 @@ internal sealed class WritingToolsDocumentFragment
                 rows.Add(new(null, path));
                 continue;
             }
-            if (end > start && text[end - 1] is '\n' or '\r' or '\u2029')
+            if (end > start && text[end - 1] is '\n' or '\r' or '\u2029' && !inlineBreaks.Contains(end - 1))
             {
                 --end;
-                if (end > start && text[end] == '\n' && text[end - 1] == '\r') --end;
+                if (end > start && text[end] == '\n' && text[end - 1] == '\r' && !inlineBreaks.Contains(end - 1)) --end;
             }
             if (tables.GetArrayLength() != 0 && end > start && text[end - 1] == '\t') --end;
             int skip = record.TryGetProperty("skipPrefix", out var marker) ? marker.GetInt32() : 0;
@@ -105,7 +124,7 @@ internal sealed class WritingToolsDocumentFragment
         }
         if (through != text.Length) throw new FormatException("Incomplete paragraph ranges.");
         var fragment = new WritingToolsDocumentFragment
-        { EndsWithParagraphBreak = text.Length > 0 && text[^1] is '\n' or '\r' or '\u2029' };
+        { EndsWithParagraphBreak = text.Length > 0 && text[^1] is '\n' or '\r' or '\u2029' && !trailingInlineBreak };
         fragment.Blocks.AddRange(Build(rows, 0));
         return fragment;
     }
@@ -250,6 +269,7 @@ internal sealed class WritingToolsDocumentFragment
     }
     private static TextMarkerStyle Marker(string format)
     {
+        if (format.Length == 0) return TextMarkerStyle.None;
         format = format.ToLowerInvariant();
         if (format.Contains("{decimal}", StringComparison.Ordinal)) return TextMarkerStyle.Decimal;
         if (format.Contains("{lower-alpha}", StringComparison.Ordinal)) return TextMarkerStyle.LowerLatin;
@@ -257,7 +277,8 @@ internal sealed class WritingToolsDocumentFragment
         if (format.Contains("{lower-roman}", StringComparison.Ordinal)) return TextMarkerStyle.LowerRoman;
         if (format.Contains("{upper-roman}", StringComparison.Ordinal)) return TextMarkerStyle.UpperRoman;
         if (format.Contains("{circle}", StringComparison.Ordinal)) return TextMarkerStyle.Circle;
-        if (format.Contains("{square}", StringComparison.Ordinal) || format.Contains("{box}", StringComparison.Ordinal)) return TextMarkerStyle.Square;
+        if (format.Contains("{square}", StringComparison.Ordinal)) return TextMarkerStyle.Square;
+        if (format.Contains("{box}", StringComparison.Ordinal)) return TextMarkerStyle.Box;
         return TextMarkerStyle.Disc;
     }
     private static void ApplyStyle(Run run, JsonElement style)

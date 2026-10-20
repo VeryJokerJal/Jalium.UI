@@ -68,6 +68,17 @@ static bool AppleTextServiceRect(id object, CGFloat scale, NSRect& rectangle)
 static NSAttributedStringKey const AppleWritingToolsAncestorsAttribute = @"JaliumWritingToolsAncestors";
 static NSAttributedStringKey const AppleWritingToolsStorageSeparatorAttribute = @"JaliumWritingToolsStorageSeparator";
 static NSAttributedStringKey const AppleWritingToolsEmptyCellAttribute = @"JaliumWritingToolsEmptyCell";
+static NSAttributedStringKey const AppleWritingToolsInlineBreakAttribute = @"JaliumWritingToolsInlineBreak";
+static NSString* const AppleWritingToolsInlineBreakValue = @"inline";
+static bool AppleWritingToolsIsInlineBreak(NSAttributedString* text, NSUInteger index)
+{
+    unichar character = [text.string characterAtIndex:index];
+    if (character != '\n' && character != '\r' && character != 0x2029) return false;
+    id value = [text attribute:AppleWritingToolsInlineBreakAttribute atIndex:index effectiveRange:nil];
+    // NSNumber booleans compare equal to 0/1, so attributed-string run
+    // coalescing can replace their concrete type. Keep provenance distinct.
+    return [value isKindOfClass:NSString.class] && [value isEqualToString:AppleWritingToolsInlineBreakValue];
+}
 static NSArray* AppleWritingToolsValidateAncestors(id value, NSUInteger lists, NSUInteger tables)
 {
     if (![value isKindOfClass:NSArray.class] || [value count] != lists + tables || [value count] > 64) return nil;
@@ -115,6 +126,7 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
         [text addAttribute:NSWritingToolsExclusionAttributeName value:@YES range:NSMakeRange(0,text.length)];
         [text addAttribute:AppleWritingToolsStorageSeparatorAttribute value:@YES range:NSMakeRange(0,text.length)];
         [text removeAttribute:AppleWritingToolsEmptyCellAttribute range:NSMakeRange(0,text.length)];
+        [text removeAttribute:AppleWritingToolsInlineBreakAttribute range:NSMakeRange(0,text.length)];
         NSUInteger previousEnd = 0;
         for (id record in records) {
             if (![record isKindOfClass:NSDictionary.class]) return false;
@@ -123,6 +135,25 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
             NSRange range = NSMakeRange([record[@"start"] unsignedIntegerValue],[record[@"length"] unsignedIntegerValue]);
             if (!ValidTextRange(range,text.length)) return false;
             previousEnd = NSMaxRange(range);
+            id inlineBreaks = record[@"inlineBreaks"];
+            if (inlineBreaks) {
+                if (![inlineBreaks isKindOfClass:NSArray.class] || [inlineBreaks count] > range.length) return false;
+                NSUInteger previous = range.location;
+                bool first = true;
+                for (id value in inlineBreaks) {
+                    if (![value isKindOfClass:NSNumber.class] ||
+                        CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) return false;
+                    double number = [value doubleValue];
+                    if (!std::isfinite(number) || number != std::floor(number) ||
+                        number < range.location || number >= NSMaxRange(range)) return false;
+                    NSUInteger index = (NSUInteger)number;
+                    if (!first && index <= previous) return false;
+                    unichar character = [text.string characterAtIndex:index];
+                    if (character != '\n' && character != '\r' && character != 0x2029) return false;
+                    [text addAttribute:AppleWritingToolsInlineBreakAttribute value:AppleWritingToolsInlineBreakValue range:NSMakeRange(index,1)];
+                    previous = index; first = false;
+                }
+            }
             id emptyValue = record[@"emptyCell"];
             if (emptyValue && (![emptyValue isKindOfClass:NSNumber.class] ||
                 CFGetTypeID((__bridge CFTypeRef)emptyValue) != CFBooleanGetTypeID())) return false;
@@ -242,6 +273,15 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
     NSMutableDictionary<NSString*,NSNumber*>* ordinals = [NSMutableDictionary new];
     for (NSUInteger index = 0; index < text.length;) {
         NSRange range = [plain paragraphRangeForRange:NSMakeRange(index,0)];
+        // A framework paragraph can contain authored LF/CR characters. The
+        // source metadata distinguishes them from its final storage newline;
+        // retain that distinction when AppKit splits its own paragraph ranges.
+        while (NSMaxRange(range) < text.length &&
+            AppleWritingToolsIsInlineBreak(text, NSMaxRange(range)-1)) {
+            NSRange next = [plain paragraphRangeForRange:NSMakeRange(NSMaxRange(range),0)];
+            if (NSMaxRange(next) <= NSMaxRange(range)) break;
+            range.length = NSMaxRange(next)-range.location;
+        }
         NSRange searchRange = NSMakeRange(index, NSMaxRange(range)-index), styleRange;
         // An ordinary effective range may end at an unrelated font/color run.
         // Only a real paragraph/cell or provenance change can split this record.
@@ -300,6 +340,10 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
         NSMutableDictionary* paragraph = [@{@"start":@(range.location),@"length":@(range.length),
             @"alignment":@(JaliumBridgeTextAlignment(style.alignment)),@"direction":@(style.baseWritingDirection),
             @"lists":lists,@"tables":tables,@"skipPrefix":@(skipPrefix)} mutableCopy];
+        NSMutableArray* inlineBreaks = [NSMutableArray new];
+        for (NSUInteger i = range.location; i < NSMaxRange(range); ++i)
+            if (AppleWritingToolsIsInlineBreak(text,i)) [inlineBreaks addObject:@(i)];
+        if (inlineBreaks.count) paragraph[@"inlineBreaks"] = inlineBreaks;
         if (ancestry) paragraph[@"ancestors"] = ancestry;
         // Private provenance is useful only while the real table/list style
         // still matches, and it can never suppress newly authored characters.

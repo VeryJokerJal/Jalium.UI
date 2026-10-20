@@ -22,12 +22,12 @@ internal static class WindowWritingToolsStructureChecks
     internal static int Run(string argument)
     {
         int index = int.Parse(argument.Split('=').Last());
-        if (index is < 0 or >= 44) return 2;
+        if (index is < 0 or >= 60) return 2;
         if (!OperatingSystem.IsMacOSVersionAtLeast(15, 2)) return 77;
         string output = Environment.GetEnvironmentVariable("JALIUM_WRITING_STRUCTURE_OUTPUT")!;
         Directory.CreateDirectory(output);
         bool custom = index % 2 == 1, software = index % 4 >= 2;
-        int model = new[] { 0, 1, 4, 5, 9, 11, 12, 13, 14, 15, 16 }[index / 4];
+        int model = new[] { 0, 1, 4, 5, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 }[index / 4];
         var app = NSApplication.SharedApplication; app.ActivationPolicy = NSApplicationActivationPolicy.Regular;
         using var host = new Delegate(); app.Delegate = host; app.FinishLaunching();
         using (var note = NSNotification.FromName(NSApplication.DidFinishLaunchingNotification, app)) host.DidFinishLaunching(note);
@@ -45,7 +45,7 @@ internal static class WindowWritingToolsStructureChecks
         owner.SetResourceReference(Window.BackgroundProperty, "WindowBackground"); Application.Current!.MainWindow = owner;
         var checks = new List<string>(); var failures = new List<string>(); var scenarios = new List<object>(); var focus = new List<object>();
         int unavailable = 0, phase = 0; bool finished = false; var watch = Stopwatch.StartNew();
-        string before = "", shape = ""; Block[] original = []; var contexts = new List<object>(); var geometryRecords = new List<object>(); var replacements = new List<object>(); string previewKind = "not-requested";
+        string before = "", shape = ""; Block[] original = []; var contexts = new List<object>(); var geometryRecords = new List<object>(); var replacements = new List<object>(); var markerPixels = new List<object>(); string previewKind = "not-requested";
         void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); checks.Add(message); }
         void Attempt(string name, Action body)
         {
@@ -194,7 +194,7 @@ internal static class WindowWritingToolsStructureChecks
                 image.Frame.Height <= editor.ActualHeight, "glyph preview excludes the table's full opaque surface");
             File.WriteAllBytes(Path.Combine(output, "preview.png"), image.Png);
         }
-        void Capture(string phase)
+        BitmapSource Capture(string phase)
         {
             owner.UpdateLayout(); double dpi = owner.DpiScale;
             var bitmap = MacOSWritingToolsBitmapCapture.Capture((int)Math.Ceiling(owner.ActualWidth * dpi), (int)Math.Ceiling(owner.ActualHeight * dpi), dpi,
@@ -202,6 +202,7 @@ internal static class WindowWritingToolsStructureChecks
                 ?? throw new InvalidOperationException("Backend readback unavailable.");
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
             using var file = File.Create(Path.Combine(output, phase + ".png")); encoder.Save(file);
+            return bitmap;
         }
         owner.Show(); owner.UpdateLayout(); owner.Activate(); editor.Focus();
         using var timer = NSTimer.CreateRepeatingScheduledTimer(TimeSpan.FromMilliseconds(100), _ =>
@@ -282,6 +283,45 @@ internal static class WindowWritingToolsStructureChecks
                     }
                     finally { editor.Document = previous; owner.UpdateLayout(); }
                 });
+                if (model is 17 or 18) Attempt("actual-list-marker-pixels", () =>
+                {
+                    var list = (DocList)editor.Document.Blocks[0]; var saved = list.MarkerStyle;
+                    try
+                    {
+                        var first = editor.Document.EnumerateParagraphs().First();
+                        list.MarkerStyle = TextMarkerStyle.Box; owner.UpdateLayout();
+                        var box = Capture("marker-box"); var boxRect = first.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+                        list.MarkerStyle = TextMarkerStyle.None; owner.UpdateLayout();
+                        var none = Capture("marker-none"); var noneRect = first.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+                        Require(boxRect.Left >= noneRect.Left && Math.Abs(boxRect.Top - noneRect.Top) < .01 && Math.Abs(boxRect.Height - noneRect.Height) < .01,
+                            "Box reserves its measured glyph width and keeps the same text baseline");
+                        CheckGeometry("marker-none", false);
+                        var point = editor.TranslatePoint(new Point(noneRect.Left - 20, noneRect.Top), owner);
+                        double dpi = owner.DpiScale;
+                        int left = Math.Max(0, (int)Math.Ceiling(point.X * dpi)), top = Math.Max(0, (int)Math.Ceiling(point.Y * dpi));
+                        int right = Math.Min(box.PixelWidth, (int)Math.Floor((point.X + 19) * dpi));
+                        int bottom = Math.Min(box.PixelHeight, (int)Math.Floor((point.Y + noneRect.Height) * dpi));
+                        var a = new byte[box.PixelWidth * box.PixelHeight * 4]; var b = new byte[none.PixelWidth * none.PixelHeight * 4];
+                        box.CopyPixels(a, box.PixelWidth * 4, 0); none.CopyPixels(b, none.PixelWidth * 4, 0);
+                        int changed = 0, contrast = 0; bool uniform = right > left && bottom > top;
+                        int sample = (top * none.PixelWidth + left) * 4;
+                        for (int y = top; y < bottom; ++y) for (int x = left; x < right; ++x)
+                        {
+                            int pixel = (y * box.PixelWidth + x) * 4, difference = 0;
+                            for (int channel = 0; channel < 3; ++channel)
+                            {
+                                difference = Math.Max(difference, Math.Abs(a[pixel + channel] - b[pixel + channel]));
+                                uniform &= b[pixel + channel] == b[sample + channel];
+                            }
+                            if (difference != 0) changed++;
+                            contrast = Math.Max(contrast, difference);
+                        }
+                        markerPixels.Add(new { saved, left, top, right, bottom, changed, contrast, uniform, boxRect, noneRect });
+                        Require(changed > 0 && contrast > 64, "Box paints an actual contrasting marker in the gutter on this backend");
+                        Require(uniform, "None leaves the marker gutter free of glyphs");
+                    }
+                    finally { list.MarkerStyle = saved; owner.UpdateLayout(); }
+                });
                 Capture("after");
             }
             catch (Exception failure) { finished = true; failures.Add("scene: " + failure); }
@@ -292,7 +332,7 @@ internal static class WindowWritingToolsStructureChecks
                 File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
                 {
                     index, model, custom, software, passed = failures.Count == 0 && unavailable == 0, qualifiedWithoutForeground = failures.Count == 0,
-                    failures, checks, scenarios, focus, contexts, geometryRecords, replacements, previewKind, foregroundUnavailable = unavailable, processId = Environment.ProcessId,
+                    failures, checks, scenarios, focus, contexts, geometryRecords, replacements, previewKind, foregroundUnavailable = unavailable, processId = Environment.ProcessId, markerPixels,
                     physicalInput = false, desktopScreenshot = false, appleIntelligenceService = false,
                     serviceAvailable = NSWritingToolsCoordinator.IsWritingToolsAvailable, renderThreadOverride = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD")
                 }));
@@ -331,9 +371,18 @@ internal static class WindowWritingToolsStructureChecks
             14 => RawGrid(true),
             15 => MakeTable([MakeTable([], [P("内层文字🙂")])], []),
             16 => LongParagraph(),
+            17 => MarkerList(TextMarkerStyle.None),
+            18 => MarkerList(TextMarkerStyle.Box),
+            19 => P("Miii 中文🙂\n第二行 e\u0301\n末行"),
+            20 => MakeTable([MakeList([P("前段\n第二行🙂"), P("\n")])], [P("旁边\r\n保持")]),
             _ => MakeList([P(""), MakeTable([P("")], [P("中文 e\u0301 🙂")]), P("")], [P("")])
         };
         return new FlowDocument(value);
+    }
+    private static DocList MarkerList(TextMarkerStyle marker)
+    {
+        var list = MakeList([P("第一项 Miii 中文🙂")], [P("第二项 e\u0301")]);
+        list.MarkerStyle = marker; return list;
     }
     private static Paragraph LongParagraph()
     {

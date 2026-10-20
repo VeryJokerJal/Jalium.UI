@@ -134,6 +134,71 @@ int main()
         jalium_platform_init();Dl_info info{};dladdr(reinterpret_cast<void*>(&jalium_window_create),&info);
         std::printf("LOADED_PLATFORM %s\n",info.dli_fname?:"unknown");
         for(uint32_t style:{uint32_t(0),uint32_t(JALIUM_WINDOW_STYLE_TITLEBAR|JALIUM_WINDOW_STYLE_RESIZABLE)}){
+            Run("empty and box native list markers retain their format",style,[&]{
+                for (NSString* format in @[@"",@"{box}",@"{square}",@"{disc}"]) {
+                    Fixture f(style); f.text=@"中文🙂\n"; f.selection=NSMakeRange(0,0);
+                    f.structure=@[@{@"start":@0,@"length":@(f.text.length),@"lists":@[@{@"id":@"list",@"format":format,@"start":@4}],
+                        @"tables":@[],@"ancestors":@[@{@"kind":@"list",@"index":@0,@"item":@"item"}]}];
+                    auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"marker context");
+                    NSParagraphStyle* paragraph=[context.attributedString attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:nil];
+                    NSTextList* list=paragraph.textLists.lastObject;
+                    Require([list.markerFormat isEqual:format],"native list marker format changed");
+                    Require((![list markerForItemNumber:4].length)==(!format.length),"empty marker fabricated a visible marker");
+                    f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString);
+                    Require([f.proposal[@"paragraphs"][0][@"lists"][0][@"format"] isEqual:format],"proposal changed the list marker format");
+                }
+            });
+            Run("authored inline separators retain one paragraph and exact UTF16",style,[&]{
+                for (NSString* ending in @[@"\n",@"\r",@"\r\n",@"\u2029"]) for (bool table:{false,true}) {
+                    Fixture f(style); f.text=[NSString stringWithFormat:@"a🙂%@b\n",ending];f.selection=NSMakeRange(0,0);
+                    NSMutableArray* breaks=[NSMutableArray new];for(NSUInteger i=0;i<ending.length;++i)[breaks addObject:@(3+i)];
+                    NSMutableDictionary* record=[(table?EmptyCellRecord(0,f.text.length,0,@NO,1):
+                        @{@"start":@0,@"length":@(f.text.length),@"lists":@[],@"tables":@[],@"ancestors":@[]}) mutableCopy];
+                    record[@"inlineBreaks"]=breaks;f.structure=@[record];
+                    auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"inline-break context");
+                    Require([context.attributedString.string isEqual:f.text],"inline-break export rewrote source characters");
+                    f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString);
+                    NSArray* rows=f.proposal[@"paragraphs"];
+                    Require(rows.count==1 && [rows[0][@"length"] unsignedIntegerValue]==f.text.length &&
+                        [rows[0][@"inlineBreaks"] isEqual:breaks],"authored inline break became a paragraph boundary");
+                }
+            });
+            Run("unmarked line endings keep native paragraph semantics",style,[&]{
+                Fixture f(style);auto* context=f.Context();
+                f.ReplaceAttributed(context,NSMakeRange(2,2),[[NSAttributedString alloc]initWithString:@"a\nb\n"]);
+                Require([f.proposal[@"paragraphs"] count]==2 && !f.proposal[@"paragraphs"][0][@"inlineBreaks"],"new paragraphs were folded into one source paragraph");
+            });
+            Run("private inline break values cannot mark ordinary text",style,[&]{
+                Fixture f(style);auto* context=f.Context();
+                auto* value=[[NSMutableAttributedString alloc]initWithString:@"a\nb\n"];
+                [value addAttribute:@"JaliumWritingToolsInlineBreak" value:@YES range:NSMakeRange(0,1)];
+                [value addAttribute:@"JaliumWritingToolsInlineBreak" value:@1 range:NSMakeRange(1,1)];
+                f.ReplaceAttributed(context,NSMakeRange(2,2),value);
+                Require([f.proposal[@"paragraphs"] count]==2 && !f.proposal[@"paragraphs"][0][@"inlineBreaks"],"invalid private attributes altered paragraph boundaries");
+            });
+            Run("malformed inline-break metadata rejects the snapshot",style,[&]{
+                for(id invalid in @[@[@-1],@[@99],@[@0],@[@1,@1],@[@3,@1],@[@1.5],@[@YES],@"1"]) {
+                    Fixture f(style);f.text=@"a\nb\n";f.selection=NSMakeRange(0,0);
+                    f.structure=@[@{@"start":@0,@"length":@4,@"lists":@[],@"tables":@[],@"inlineBreaks":invalid}];
+                    Require(!f.Context(NSWritingToolsCoordinatorContextScopeFullDocument),"invalid inline-break positions reached the SDK");
+                }
+            });
+            Run("partial proposals retain a final authored inline break",style,[&]{
+                Fixture f(style);f.text=@"a\nb\n";f.selection=NSMakeRange(0,0);
+                f.structure=@[@{@"start":@0,@"length":@4,@"lists":@[],@"tables":@[],@"inlineBreaks":@[@1]}];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"partial context");
+                f.ReplaceAttributed(context,NSMakeRange(0,2),[context.attributedString attributedSubstringFromRange:NSMakeRange(0,2)]);
+                Require([f.proposal[@"paragraphs"] count]==1 && [f.proposal[@"paragraphs"][0][@"inlineBreaks"] isEqual:@[@1]],"clipped proposal lost its inline ending");
+            });
+            Run("replacing a tagged newline preserves newly authored letters",style,[&]{
+                Fixture f(style);f.text=@"a\nb\n";f.selection=NSMakeRange(0,0);
+                f.structure=@[@{@"start":@0,@"length":@4,@"lists":@[],@"tables":@[],@"inlineBreaks":@[@1]}];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"tagged context");
+                auto* value=[context.attributedString mutableCopy];[value replaceCharactersInRange:NSMakeRange(1,1) withString:@"z"];
+                f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),value);
+                Require([f.proposal[@"paragraphs"] count]==1 && !f.proposal[@"paragraphs"][0][@"inlineBreaks"] &&
+                    [Text16([[NSData alloc]initWithBase64EncodedString:f.proposal[@"text16"] options:0]) isEqual:@"azb\n"],"stale newline tag changed new text");
+            });
             Run("legacy clients retain their original event stream",style,[&]{Fixture f(style,false);Require(!f.coordinator && f.capabilityQueries==0,"text services require explicit opt-in");});
             Run("opt-in rejects worker threads before touching AppKit",style,[&]{Fixture f(style,false);auto enable=reinterpret_cast<int32_t(*)(JaliumPlatformWindow*,int32_t)>(dlsym(RTLD_DEFAULT,"jalium_apple_window_enable_text_services"));Require(enable,"opt-in entry point");int32_t result=0;std::thread worker([&]{result=enable(f.window,1);});worker.join();Require(result==JALIUM_ERROR_INVALID_STATE && !f.view.writingToolsCoordinator,"worker thread opt-in");});
             Run("opt-in rejects a retired owner",style,[&]{Fixture f(style,false);auto enable=reinterpret_cast<int32_t(*)(JaliumPlatformWindow*,int32_t)>(dlsym(RTLD_DEFAULT,"jalium_apple_window_enable_text_services"));Require(enable,"opt-in entry point");auto* old=f.window;f.window=nullptr;jalium_window_destroy(old);Require(enable(old,1)==JALIUM_ERROR_INVALID_STATE,"retired owner opt-in");});

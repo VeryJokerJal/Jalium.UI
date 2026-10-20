@@ -8,6 +8,7 @@ public partial class RichTextBox
 {
     internal WritingToolsParagraph[] GetWritingToolsStructure(int rangeStart = 0, int rangeLength = -1)
     {
+        string sourceText = _document.GetText();
         var identities = new Dictionary<object, string>(ReferenceEqualityComparer.Instance);
         var grids = new Dictionary<Table, Dictionary<TableCell, (int Row, int Column)>>();
         string Id(object value)
@@ -72,7 +73,12 @@ public partial class RichTextBox
                 }
             }
             if (lists.Count > 32 || cells.Count > 32) throw new NotSupportedException("The document exceeds the native text service nesting limit.");
-            records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray(), ancestors.ToArray(), emptyCell));
+            var inlineBreaks = new List<int>();
+            if (!emptyCell)
+                for (int i = from; i < Math.Min(to, paragraphStart + paragraphLength - Environment.NewLine.Length); ++i)
+                    if (sourceText[i] is '\n' or '\r' or '\u2029') inlineBreaks.Add(i - rangeStart);
+            records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray(), ancestors.ToArray(), emptyCell,
+                inlineBreaks.Count == 0 ? null : inlineBreaks.ToArray()));
         }
         return records.ToArray();
     }
@@ -106,6 +112,7 @@ public partial class RichTextBox
 
     private static string Marker(TextMarkerStyle marker) => marker switch
     {
+        TextMarkerStyle.None => "", TextMarkerStyle.Box => "{box}",
         TextMarkerStyle.Decimal => "{decimal}", TextMarkerStyle.LowerLatin => "{lower-alpha}",
         TextMarkerStyle.UpperLatin => "{upper-alpha}", TextMarkerStyle.LowerRoman => "{lower-roman}",
         TextMarkerStyle.UpperRoman => "{upper-roman}", TextMarkerStyle.Circle => "{circle}",
