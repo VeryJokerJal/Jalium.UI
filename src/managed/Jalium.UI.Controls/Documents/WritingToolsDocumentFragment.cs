@@ -6,12 +6,15 @@ using DocList = Jalium.UI.Documents.List;
 namespace Jalium.UI.Documents;
 
 /// <summary>Imports AppKit's already-parsed attributed text without treating RTF syntax as text.</summary>
-internal sealed class WritingToolsDocumentFragment
+internal sealed partial class WritingToolsDocumentFragment
 {
     internal readonly List<Block> Blocks = new();
     internal bool EndsWithParagraphBreak { get; private init; }
-    private sealed record Container(bool Table, string Id, JsonElement Metadata, string? Item = null);
-    private sealed record Row(Paragraph? Paragraph, Container[] Path);
+    private string _text = "";
+    private List<Row> _rows = new();
+    private sealed record Container(bool Table, string Id, JsonElement Metadata, string? Item = null, string? Origin = null);
+    private sealed record Row(Paragraph? Paragraph, Container[] Path, int Start, int Length,
+        string? Origin, bool ParagraphBreak = false);
     internal static WritingToolsDocumentFragment Parse(JsonElement packet)
     {
         if (packet.GetProperty("version").GetInt32() != 1) throw new FormatException("Unsupported text fragment.");
@@ -39,6 +42,15 @@ internal sealed class WritingToolsDocumentFragment
             if (start != through || length <= 0 || length > text.Length - start || rows.Count >= 100000)
                 throw new FormatException("Invalid paragraph range.");
             through += length;
+            int recordStart = start;
+            string? origin = null;
+            if (record.TryGetProperty("origin", out var sourceIdentity))
+            {
+                if (sourceIdentity.ValueKind != JsonValueKind.String ||
+                    sourceIdentity.GetString() is not { Length: > 0 and <= 1024 } identity)
+                    throw new FormatException("Invalid source paragraph identity.");
+                origin = identity;
+            }
             int end = start + length;
             var inlineBreaks = new HashSet<int>();
             if (record.TryGetProperty("inlineBreaks", out var breaks))
@@ -89,11 +101,13 @@ internal sealed class WritingToolsDocumentFragment
                 if (length != 1 || text[start] != '\t' || path.Length == 0 || !path[^1].Table ||
                     record.TryGetProperty("skipPrefix", out var prefix) && prefix.GetInt32() != 0)
                     throw new FormatException("Invalid empty cell storage.");
-                rows.Add(new(null, path));
+                rows.Add(new(null, path, recordStart, length, origin));
                 continue;
             }
+            bool paragraphBreak = false;
             if (end > start && text[end - 1] is '\n' or '\r' or '\u2029' && !inlineBreaks.Contains(end - 1))
             {
+                paragraphBreak = true;
                 --end;
                 if (end > start && text[end] == '\n' && text[end - 1] == '\r' && !inlineBreaks.Contains(end - 1)) --end;
             }
@@ -120,24 +134,25 @@ internal sealed class WritingToolsDocumentFragment
                 paragraph.Inlines.Add(run);
             }
             if (paragraph.Inlines.Count == 0) paragraph.Inlines.Add(new Run());
-            rows.Add(new(paragraph, path));
+            rows.Add(new(paragraph, path, recordStart, length, origin, paragraphBreak));
         }
         if (through != text.Length) throw new FormatException("Incomplete paragraph ranges.");
         var fragment = new WritingToolsDocumentFragment
-        { EndsWithParagraphBreak = text.Length > 0 && text[^1] is '\n' or '\r' or '\u2029' && !trailingInlineBreak };
+        { EndsWithParagraphBreak = text.Length > 0 && text[^1] is '\n' or '\r' or '\u2029' && !trailingInlineBreak,
+            _text = text, _rows = rows };
         fragment.Blocks.AddRange(Build(rows, 0));
         return fragment;
     }
 
     private static Container[] ReadPath(JsonElement record, JsonElement lists, JsonElement tables)
     {
-        Container Make(bool table, int index, string? item = null)
+        Container Make(bool table, int index, string? item = null, string? origin = null)
         {
             var metadata = (table ? tables : lists)[index];
             if (metadata.ValueKind != JsonValueKind.Object || !metadata.TryGetProperty("id", out var id) ||
                 id.ValueKind != JsonValueKind.String || id.GetString() is not { Length: > 0 and <= 1024 } identity)
                 throw new FormatException("Invalid container identity.");
-            return new(table, identity, metadata, item);
+            return new(table, identity, metadata, item, origin);
         }
         if (!record.TryGetProperty("ancestors", out var ancestors))
         {
@@ -162,13 +177,20 @@ internal sealed class WritingToolsDocumentFragment
             if (value != (isTable ? table++ : list++) || value >= (isTable ? tables.GetArrayLength() : lists.GetArrayLength()))
                 throw new FormatException("Invalid container ancestry index.");
             string? item = null;
+            string? origin = null;
+            if (ancestor.TryGetProperty("origin", out var original))
+            {
+                if (original.ValueKind != JsonValueKind.String || original.GetString() is not { Length: > 0 and <= 1024 })
+                    throw new FormatException("Invalid container source identity.");
+                origin = original.GetString();
+            }
             if (ancestor.TryGetProperty("item", out var owner))
             {
                 if (isTable || owner.ValueKind != JsonValueKind.String || owner.GetString() is not { Length: > 0 and <= 1024 })
                     throw new FormatException("Invalid list item identity.");
                 item = owner.GetString();
             }
-            result.Add(Make(isTable, value, item));
+            result.Add(Make(isTable, value, item, origin));
         }
         return result.ToArray();
     }
@@ -306,6 +328,7 @@ internal sealed class WritingToolsDocumentFragment
 
     internal TextPointer Insert(FlowDocument document, int start, int length, Func<bool> current)
     {
+        if (HasPreparedSource) return InsertPrepared(document, current);
         string original = document.GetText();
         if (start < 0 || length < 0 || start > original.Length || length > original.Length - start)
             throw new ArgumentOutOfRangeException(nameof(start));

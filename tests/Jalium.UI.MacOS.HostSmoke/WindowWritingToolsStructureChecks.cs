@@ -17,7 +17,7 @@ using DocList = Jalium.UI.Documents.List;
 
 namespace Jalium.UI.MacOS;
 
-internal static class WindowWritingToolsStructureChecks
+internal static partial class WindowWritingToolsStructureChecks
 {
     internal static int Run(string argument)
     {
@@ -447,6 +447,7 @@ internal static class WindowWritingToolsStructureChecks
     private static string Shape(IEnumerable<Block> blocks) => string.Join("|", blocks.Select(block => block switch
     {
         Paragraph paragraph => "P(" + string.Concat(paragraph.Inlines.OfType<Run>().Select(run => run.Text)) + ")",
+        Section section => "S[" + Shape(section.Blocks) + "]",
         DocList list => $"L({list.MarkerStyle},{list.StartIndex})[" + string.Join(";", list.ListItems.Select(item => Shape(item.Blocks))) + "]",
         Table table => "T" + table.Columns.Count + "[" + string.Join(";", table.RowGroups.SelectMany(group => group.Rows).Select(row => string.Join(",", row.Cells.Select(cell => $"({cell.RowSpan},{cell.ColumnSpan})" + Shape(cell.Blocks))))) + "]",
         _ => throw new InvalidOperationException(block.GetType().Name)

@@ -61,14 +61,14 @@ public partial class RichTextBox
             {
                 if (owner is ListItem { Parent: DocList list } item)
                 {
-                    ancestors.Add(new("list", lists.Count, Id(item)));
+                    ancestors.Add(new("list", lists.Count, Id(item), WritingToolsDocumentFragment.OriginFor(item)));
                     lists.Add(new(Id(list), Marker(list.MarkerStyle), list.StartIndex));
                 }
                 if (owner is TableCell { Parent: TableRow row } cell && row.Parent is TableRowGroup { Parent: Table table })
                 {
                     var position = Locate(table, cell);
                     int columns = Math.Max(table.Columns.Count, grids[table].Max(pair => pair.Value.Column + pair.Key.ColumnSpan));
-                    ancestors.Add(new("table", cells.Count));
+                    ancestors.Add(new("table", cells.Count, Origin: WritingToolsDocumentFragment.OriginFor(cell)));
                     cells.Add(new(Id(table), position.Row, position.Column, cell.RowSpan, cell.ColumnSpan, columns));
                 }
             }
@@ -78,7 +78,7 @@ public partial class RichTextBox
                 for (int i = from; i < Math.Min(to, paragraphStart + paragraphLength - 1); ++i)
                     if (sourceText[i] is '\n' or '\r' or '\u2029') inlineBreaks.Add(i - rangeStart);
             records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray(), ancestors.ToArray(), emptyCell,
-                inlineBreaks.Count == 0 ? null : inlineBreaks.ToArray()));
+                inlineBreaks.Count == 0 ? null : inlineBreaks.ToArray(), WritingToolsDocumentFragment.OriginFor(element)));
         }
         return records.ToArray();
     }

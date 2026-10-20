@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #include "jalium_platform.h"
 #include <dlfcn.h>
+#include <algorithm>
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
@@ -38,6 +39,7 @@ struct Fixture {
     NSString* animationKey;
     NSArray* structure;
     NSDictionary* proposal;
+    NSDictionary* packet;
     NSString* styles;
     bool wrongSession = false;
     std::function<void(int)> after;
@@ -95,6 +97,7 @@ struct Fixture {
         if(r.kind==0)response=@{@"editor":f.editor,@"canRead":@(f.canRead),@"canEdit":@(f.canEdit),@"resultOptions":@1};
         if(r.kind==1){++f.snapshotQueries;response=f.Snapshot();}
         if(r.kind==2 && f.canEdit){
+            f.packet=args;
             f.proposal=args[@"proposal"];
             ++f.replacements;f.lastRange=NSMakeRange(r.start,r.length);
             NSString* value=Text16([[NSData alloc]initWithBase64EncodedString:args[@"text16"] options:0]);
@@ -134,6 +137,81 @@ int main()
         jalium_platform_init();Dl_info info{};dladdr(reinterpret_cast<void*>(&jalium_window_create),&info);
         std::printf("LOADED_PLATFORM %s\n",info.dli_fname?:"unknown");
         for(uint32_t style:{uint32_t(0),uint32_t(JALIUM_WINDOW_STYLE_TITLEBAR|JALIUM_WINDOW_STYLE_RESIZABLE)}){
+            Run("partial source identities survive context renewal",style,[&]{
+                for (bool table:{false,true}) {
+                    Fixture f(style);f.text=@"lead\nabc\ntrail";f.selection=NSMakeRange(6,1);
+                    NSDictionary* container=table?@{@"id":@"table",@"row":@0,@"column":@0,@"rows":@1,@"columns":@1,@"tableColumns":@1}:
+                        @{@"id":@"list",@"format":@"{decimal}",@"start":@7};
+                    f.structure=@[@{@"start":@5,@"length":@4,@"origin":@"paragraph",@"lists":table?@[]:@[container],
+                        @"tables":table?@[container]:@[],@"ancestors":@[@{@"kind":table?@"table":@"list",@"index":@0,
+                            @"origin":@"owner"}]}];
+                    auto* first=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(first,"first rich context");
+                    NSMutableAttributedString* value=[[first.attributedString attributedSubstringFromRange:NSMakeRange(6,1)] mutableCopy];
+                    [value replaceCharactersInRange:NSMakeRange(0,value.length) withString:@"new"];
+                    Require(f.Context(NSWritingToolsCoordinatorContextScopeFullDocument),"renewed rich context");
+                    Require(f.ReplaceAttributed(first,NSMakeRange(6,1),value),"old live context replacement");
+                    NSDictionary* source=f.packet[@"source"];
+                    Require([f.packet[@"sourceStart"] unsignedIntegerValue]==6 &&
+                        [Text16([[NSData alloc]initWithBase64EncodedString:source[@"text16"] options:0]) isEqual:@"b"],"source snapshot must use the absolute original range");
+                    NSDictionary* old=source[@"paragraphs"][0], *updated=f.proposal[@"paragraphs"][0];
+                    Require([old[@"origin"] isEqual:@"paragraph"] && [updated[@"origin"] isEqual:old[@"origin"]],"paragraph provenance changed across refresh");
+                    Require([old[@"ancestors"][0][@"origin"] isEqual:@"owner"] &&
+                        [updated[@"ancestors"][0][@"origin"] isEqual:old[@"ancestors"][0][@"origin"]],"owner provenance changed across refresh");
+                    NSString* key=table?@"tables":@"lists";
+                    Require(![old[key][0][@"id"] isEqual:updated[key][0][@"id"]],"fixture must cross native and managed identity spaces");
+                }
+            });
+            Run("insertion source anchors are bounded at both document ends",style,[&]{
+                for(NSUInteger at:{NSUInteger(0),NSUInteger(2),NSUInteger(4)}) {
+                    Fixture f(style);f.text=@"abc\n";f.selection=NSMakeRange(at,0);
+                    f.structure=@[@{@"start":@0,@"length":@4,@"origin":@"paragraph",@"lists":@[],@"tables":@[],@"ancestors":@[]}];
+                    auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"insertion context");
+                    auto* value=[[NSMutableAttributedString alloc]initWithString:@"X" attributes:[context.attributedString attributesAtIndex:0 effectiveRange:nil]];
+                    Require(f.ReplaceAttributed(context,NSMakeRange(at,0),value),"insertion completes");
+                    Require([f.packet[@"source"][@"text16"] isKindOfClass:NSString.class],"insertion source snapshot is missing");
+                    Require([f.packet[@"sourceStart"] unsignedIntegerValue]==std::min(at,NSUInteger(3)),"source anchor is outside original document");
+                    NSString* original=Text16([[NSData alloc]initWithBase64EncodedString:f.packet[@"source"][@"text16"] options:0]);
+                    Require(original.length==1 && [original isEqual:[@"abc\n" substringWithRange:NSMakeRange(std::min(at,NSUInteger(3)),1)]],"insertion source is not the original anchor character");
+                }
+            });
+            Run("source snapshot does not inherit mutable proposal list numbering",style,[&]{
+                Fixture f(style);f.text=@"abc\n";f.selection=NSMakeRange(1,1);
+                f.structure=@[@{@"start":@0,@"length":@4,@"origin":@"paragraph",@"lists":@[@{@"id":@"list",@"format":@"{decimal}",@"start":@7}],
+                    @"tables":@[],@"ancestors":@[@{@"kind":@"list",@"index":@0,@"origin":@"item"}]}];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"numbering context");
+                NSParagraphStyle* paragraph=[context.attributedString attribute:NSParagraphStyleAttributeName atIndex:1 effectiveRange:nil];
+                paragraph.textLists.lastObject.startingItemNumber=99;
+                auto* value=[context.attributedString attributedSubstringFromRange:NSMakeRange(1,1)];
+                Require(f.ReplaceAttributed(context,NSMakeRange(1,1),value),"numbering replacement completes");
+                Require([f.packet[@"source"][@"paragraphs"][0][@"lists"][0][@"start"] intValue]==7 &&
+                    [f.proposal[@"paragraphs"][0][@"lists"][0][@"start"] intValue]==99,"mutable native list rewrote original source metadata");
+            });
+            Run("malformed paragraph and owner origins reject the native snapshot",style,[&]{
+                for(id origin in @[NSNull.null,@0,@YES,@"",[@"x" stringByPaddingToLength:1025 withString:@"x" startingAtIndex:0]])
+                for(bool owner:{false,true}) {
+                    Fixture f(style);f.text=@"abc\n";f.selection=NSMakeRange(0,0);
+                    NSMutableDictionary* record=[@{@"start":@0,@"length":@4,@"lists":@[],@"tables":@[],@"ancestors":@[]} mutableCopy];
+                    if(owner) { record[@"lists"]=@[@{@"id":@"list",@"format":@"{decimal}",@"start":@1}];
+                        record[@"ancestors"]=@[@{@"kind":@"list",@"index":@0,@"origin":origin}]; }
+                    else record[@"origin"]=origin;
+                    f.structure=@[record];Require(!f.Context(NSWritingToolsCoordinatorContextScopeFullDocument),"invalid origin entered a native context");
+                }
+            });
+            Run("new inner lists retain the existing outer table provenance",style,[&]{
+                Fixture f(style);f.text=@"abc\n";f.selection=NSMakeRange(1,1);
+                auto* record=[EmptyCellRecord(0,4,0,@NO,1) mutableCopy];record[@"origin"]=@"paragraph";
+                record[@"ancestors"]=@[@{@"kind":@"table",@"index":@0,@"origin":@"cell"}];f.structure=@[record];
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"outer table context");
+                NSMutableDictionary* attrs=[[context.attributedString attributesAtIndex:1 effectiveRange:nil] mutableCopy];
+                NSMutableParagraphStyle* paragraph=[attrs[NSParagraphStyleAttributeName] mutableCopy];
+                paragraph.textLists=@[[[NSTextList alloc]initWithMarkerFormat:@"{decimal}" options:0]];
+                attrs[NSParagraphStyleAttributeName]=paragraph;
+                auto* value=[[NSAttributedString alloc]initWithString:@"new" attributes:attrs];
+                Require(f.ReplaceAttributed(context,NSMakeRange(1,1),value),"nested list replacement");
+                NSArray* ancestors=f.proposal[@"paragraphs"][0][@"ancestors"];
+                Require(ancestors.count==2 && [ancestors[0][@"origin"] isEqual:@"cell"] &&
+                    [ancestors[1][@"kind"] isEqual:@"list"] && !ancestors[1][@"origin"],"new list lost its original outer table identity");
+            });
             Run("empty and box native list markers retain their format",style,[&]{
                 for (NSString* format in @[@"",@"{box}",@"{square}",@"{disc}"]) {
                     Fixture f(style); f.text=@"中文🙂\n"; f.selection=NSMakeRange(0,0);

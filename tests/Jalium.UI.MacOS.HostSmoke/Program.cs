@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-writing-tools-partial-case=", StringComparison.Ordinal))
+    return WindowWritingToolsStructureChecks.RunPartial(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-writing-tools-structure-case=", StringComparison.Ordinal))
     return WindowWritingToolsStructureChecks.Run(args[0]);
 

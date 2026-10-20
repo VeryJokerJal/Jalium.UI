@@ -13,20 +13,41 @@ public partial class RichTextBox
     }
     private bool TryReplaceWritingToolsText(int start, int length, string payload, Func<bool> current)
     {
-        if (!IsEnabled || IsReadOnly || !current() || !ImeTextEncoding.TryNormalizeUtf16Range(_document.GetText(), start, length,
+        var original = _document;
+        var nativeCurrent = current;
+        current = () => ReferenceEquals(original, _document) && IsEnabled && !IsReadOnly && nativeCurrent() &&
+            ReferenceEquals(original, _document) && IsEnabled && !IsReadOnly;
+        string before = original.GetText();
+        if (!IsEnabled || IsReadOnly || !current() || !ImeTextEncoding.TryNormalizeUtf16Range(before, start, length,
             out int normalizedStart, out int normalizedLength) || start != normalizedStart || length != normalizedLength) return false;
         using var json = JsonDocument.Parse(payload);
         var fragment = WritingToolsDocumentFragment.Parse(json.RootElement.GetProperty("proposal"));
+        if (!fragment.TryPrepareSource(_document, before, start, length, json.RootElement)) return false;
         if (!current()) return false;
         using var change = DeclareChangeBlock();
-        _caretPosition = fragment.Insert(_document, start, length, current);
-        if (!current()) return false;
-        _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
-        _selectionAnchor = _caretPosition;
-        OnSelectionChanged();
-        if (!current()) return false;
-        ResetCaretBlink(); EnsureCaretVisible(); InvalidateLayout(); InvalidateVisual();
-        return true;
+        var state = SaveDocumentState();
+        bool committed = false;
+        try
+        {
+            var caret = fragment.Insert(original, start, length, current);
+            if (!current()) return false;
+            _caretPosition = caret;
+            _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
+            _selectionAnchor = _caretPosition;
+            OnSelectionChanged();
+            if (!current()) return false;
+            ResetCaretBlink(); EnsureCaretVisible(); InvalidateLayout(); InvalidateVisual();
+            committed = true;
+            return true;
+        }
+        finally
+        {
+            if (!committed && state.Snapshot.CanRestore(original, this))
+            {
+                if (ReferenceEquals(original, _document)) RestoreDocumentState(state);
+                else state.Snapshot.Restore(original);
+            }
+        }
     }
 }
 

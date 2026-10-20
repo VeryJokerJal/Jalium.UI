@@ -6,6 +6,7 @@ on:
       - 'src/managed/Jalium.UI.Controls/Documents/**'
       - 'src/managed/Jalium.UI.Controls/RichTextBox*.cs'
       - 'tests/Jalium.UI.Tests/FlowDocumentLogicalProjectionTests.cs'
+      - 'tests/Jalium.UI.Tests/WritingToolsPartialFragmentTests.cs'
       - 'tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj'
       - 'Directory.Build.*'
       - '.github/workflows/windows-document-contracts.yml'
@@ -52,8 +53,40 @@ jobs:
           }
           Write-Output "Verified 14 real Windows failures with the unmodified parent product."
           exit 0
-      - name: Test logical document offsets on Windows
-        run: dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release --filter FullyQualifiedName~FlowDocumentLogicalProjectionTests --logger "trx;LogFileName=document-offsets.trx" --results-directory artifacts/windows-document-contracts -p:JaliumBuildRoot=artifacts/windows-document-build -p:UseSharedCompilation=false -m:1 --disable-build-servers
+      - name: Reproduce partial structured fragment failures when applicable
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $baseline = (git rev-parse HEAD^).Trim()
+          $previous = git show "$($baseline):src/managed/Jalium.UI.Controls/RichTextBox.WritingTools.cs"
+          if (($previous -join "`n") -match 'TryPrepareSource') {
+            Write-Output "Parent already rebases partial native fragments."
+            exit 0
+          }
+          if (!(Test-Path artifacts/windows-document-baseline)) {
+            git worktree add --detach artifacts/windows-document-baseline $baseline
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Copy-Item tests/Jalium.UI.Tests/WritingToolsPartialFragmentTests.cs artifacts/windows-document-baseline/tests/Jalium.UI.Tests/
+          dotnet test artifacts/windows-document-baseline/tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release --filter FullyQualifiedName~WritingToolsPartialFragmentTests --logger "trx;LogFileName=partial-baseline.trx" --results-directory artifacts/windows-document-baseline-results -p:JaliumBuildRoot="$env:RUNNER_TEMP/document-baseline-build" -p:UseSharedCompilation=false -m:1 --disable-build-servers
+          $testExit = $LASTEXITCODE
+          [xml]$trx = Get-Content artifacts/windows-document-baseline-results/partial-baseline.trx
+          $counters = $trx.TestRun.ResultSummary.Counters
+          if ($testExit -eq 0 -or [int]$counters.failed -ne 55 -or [int]$counters.passed -ne 2 -or [int]$counters.executed -ne 57 -or [int]$counters.error -ne 0) {
+            throw "The unmodified Windows product did not reproduce 55 partial-fragment failures and 2 compatibility controls."
+          }
+          Write-Output "Verified 55 real Windows partial-fragment failures and 2 passing compatibility controls."
+          exit 0
+      - name: Test logical offsets and structured fragment edits on Windows
+        run: dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release --filter "FullyQualifiedName~FlowDocumentLogicalProjectionTests|FullyQualifiedName~WritingToolsPartialFragmentTests" --logger "trx;LogFileName=document-offsets.trx" --results-directory artifacts/windows-document-contracts -p:JaliumBuildRoot=artifacts/windows-document-build -p:UseSharedCompilation=false -m:1 --disable-build-servers
+      - name: Require all shared document contracts to run
+        shell: pwsh
+        run: |
+          [xml]$trx = Get-Content artifacts/windows-document-contracts/document-offsets.trx
+          $counters = $trx.TestRun.ResultSummary.Counters
+          if ([int]$counters.executed -ne 71 -or [int]$counters.passed -ne 71 -or [int]$counters.failed -ne 0 -or [int]$counters.error -ne 0) {
+            throw "Expected all 71 shared document contracts to pass."
+          }
       - name: Clean the isolated Windows baseline
         if: always()
         shell: pwsh

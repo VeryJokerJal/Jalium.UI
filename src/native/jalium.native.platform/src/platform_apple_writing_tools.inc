@@ -69,6 +69,8 @@ static NSAttributedStringKey const AppleWritingToolsAncestorsAttribute = @"Jaliu
 static NSAttributedStringKey const AppleWritingToolsStorageSeparatorAttribute = @"JaliumWritingToolsStorageSeparator";
 static NSAttributedStringKey const AppleWritingToolsEmptyCellAttribute = @"JaliumWritingToolsEmptyCell";
 static NSAttributedStringKey const AppleWritingToolsInlineBreakAttribute = @"JaliumWritingToolsInlineBreak";
+static NSAttributedStringKey const AppleWritingToolsOriginAttribute = @"JaliumWritingToolsOrigin";
+static NSAttributedStringKey const AppleWritingToolsSourceStructureAttribute = @"JaliumWritingToolsSourceStructure";
 static NSString* const AppleWritingToolsInlineBreakValue = @"inline";
 static bool AppleWritingToolsIsInlineBreak(NSAttributedString* text, NSUInteger index)
 {
@@ -93,6 +95,8 @@ static NSArray* AppleWritingToolsValidateAncestors(id value, NSUInteger lists, N
         if (isTable ? index != table++ || index >= tables : index != list++ || index >= lists) return nil;
         id item = entry[@"item"];
         if (item && (isTable || ![item isKindOfClass:NSString.class] || ![item length] || [item length] > 1024)) return nil;
+        id origin = entry[@"origin"];
+        if (origin && (![origin isKindOfClass:NSString.class] || ![origin length] || [origin length] > 1024)) return nil;
     }
     return value;
 }
@@ -114,6 +118,38 @@ static NSArray* AppleWritingToolsRetainedAncestors(id value, NSParagraphStyle* s
     }
     return AppleWritingToolsValidateAncestors(value[@"ancestors"], lists.count, blocks.count);
 }
+static NSArray* AppleWritingToolsProposalAncestors(id value, NSParagraphStyle* style)
+{
+    if (NSArray* unchanged = AppleWritingToolsRetainedAncestors(value,style)) return unchanged;
+    if (![value isKindOfClass:NSDictionary.class]) return nil;
+    NSArray* lists = value[@"lists"], *tables = value[@"tables"];
+    if (![lists isKindOfClass:NSArray.class] || ![tables isKindOfClass:NSArray.class]) return nil;
+    NSArray* saved = AppleWritingToolsValidateAncestors(value[@"ancestors"],lists.count,tables.count);
+    if (!saved) return nil;
+    NSMutableArray<NSTextTableBlock*>* blocks = [NSMutableArray new];
+    for (NSTextBlock* block in style.textBlocks)
+        if ([block isKindOfClass:NSTextTableBlock.class]) [blocks addObject:(NSTextTableBlock*)block];
+    NSMutableArray* result = [NSMutableArray new]; NSUInteger list = 0, table = 0;
+    for (NSDictionary* entry in saved) {
+        if ([entry[@"kind"] isEqual:@"list"]) {
+            if (list >= style.textLists.count || lists[list] != style.textLists[list]) break;
+            ++list;
+        } else {
+            if (table >= blocks.count || ![tables[table] isKindOfClass:NSTextTableBlock.class]) break;
+            NSTextTableBlock* before = tables[table], *after = blocks[table];
+            if (before.table != after.table || before.startingRow != after.startingRow ||
+                before.startingColumn != after.startingColumn || before.rowSpan != after.rowSpan || before.columnSpan != after.columnSpan) break;
+            ++table;
+        }
+        [result addObject:entry];
+    }
+    if (!result.count) return nil;
+    // Existing enclosing containers keep their order and identity. Newly
+    // introduced inner containers use AppKit's table-then-list convention.
+    while (table < blocks.count) [result addObject:@{@"kind":@"table",@"index":@(table++)}];
+    while (list < style.textLists.count) [result addObject:@{@"kind":@"list",@"index":@(list++)}];
+    return result;
+}
 static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id records)
 {
     if (!records) return true;
@@ -127,6 +163,8 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
         [text addAttribute:AppleWritingToolsStorageSeparatorAttribute value:@YES range:NSMakeRange(0,text.length)];
         [text removeAttribute:AppleWritingToolsEmptyCellAttribute range:NSMakeRange(0,text.length)];
         [text removeAttribute:AppleWritingToolsInlineBreakAttribute range:NSMakeRange(0,text.length)];
+        [text removeAttribute:AppleWritingToolsOriginAttribute range:NSMakeRange(0,text.length)];
+        [text removeAttribute:AppleWritingToolsSourceStructureAttribute range:NSMakeRange(0,text.length)];
         NSUInteger previousEnd = 0;
         for (id record in records) {
             if (![record isKindOfClass:NSDictionary.class]) return false;
@@ -135,6 +173,11 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
             NSRange range = NSMakeRange([record[@"start"] unsignedIntegerValue],[record[@"length"] unsignedIntegerValue]);
             if (!ValidTextRange(range,text.length)) return false;
             previousEnd = NSMaxRange(range);
+            id origin = record[@"origin"];
+            if (origin) {
+                if (![origin isKindOfClass:NSString.class] || ![origin length] || [origin length] > 1024) return false;
+                [text addAttribute:AppleWritingToolsOriginAttribute value:origin range:range];
+            }
             id inlineBreaks = record[@"inlineBreaks"];
             if (inlineBreaks) {
                 if (![inlineBreaks isKindOfClass:NSArray.class] || [inlineBreaks count] > range.length) return false;
@@ -204,6 +247,9 @@ static bool AppleWritingToolsApplyStructure(NSMutableAttributedString* text, id 
             [text addAttribute:NSParagraphStyleAttributeName value:style range:range];
             if (ancestry) [text addAttribute:AppleWritingToolsAncestorsAttribute
                 value:@{@"ancestors":ancestry,@"lists":listObjects,@"tables":tableObjects} range:range];
+            NSMutableDictionary* source = [@{@"lists":listRecords,@"tables":tableRecords} mutableCopy];
+            if (ancestry) source[@"ancestors"] = ancestry;
+            [text addAttribute:AppleWritingToolsSourceStructureAttribute value:source range:range];
             if (emptyCell) [text addAttribute:AppleWritingToolsEmptyCellAttribute value:@YES range:range];
             else [text removeAttribute:NSWritingToolsExclusionAttributeName range:range];
             [text removeAttribute:AppleWritingToolsStorageSeparatorAttribute range:range];
@@ -247,7 +293,7 @@ static NSInteger AppleWritingToolsWeight(NSFont* font)
         return std::lround(i*100 + (actual-weights[i-1])/(weights[i]-weights[i-1])*100);
     return 900;
 }
-static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
+static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text, bool original = false)
 {
     NSMutableArray* runs = [NSMutableArray new]; NSMutableArray* paragraphs = [NSMutableArray new];
     NSString* plain = text.string;
@@ -310,8 +356,9 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
             unichar value = [plain characterAtIndex:i];
             if (value != '\t' && value != '\n' && value != '\r' && value != 0x2029) storageSeparator = NO;
         }
-        NSArray* ancestry = AppleWritingToolsRetainedAncestors(
+        NSArray* ancestry = AppleWritingToolsProposalAncestors(
             [text attribute:AppleWritingToolsAncestorsAttribute atIndex:index effectiveRange:nil], style);
+        NSDictionary* source = original ? [text attribute:AppleWritingToolsSourceStructureAttribute atIndex:index effectiveRange:nil] : nil;
         NSUInteger skipPrefix = 0;
         // Source paragraphs already contain authored content, not generated
         // AppKit list markers, even when that content happens to look like one.
@@ -337,6 +384,10 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
                 @"row":@(cell.startingRow),@"column":@(cell.startingColumn),@"rows":@(cell.rowSpan),
                 @"columns":@(cell.columnSpan),@"tableColumns":@(cell.table.numberOfColumns)}];
         }
+        if ([source isKindOfClass:NSDictionary.class]) {
+            ancestry = source[@"ancestors"]; lists = [source[@"lists"] mutableCopy]; tables = [source[@"tables"] mutableCopy];
+            skipPrefix = 0;
+        }
         NSMutableDictionary* paragraph = [@{@"start":@(range.location),@"length":@(range.length),
             @"alignment":@(JaliumBridgeTextAlignment(style.alignment)),@"direction":@(style.baseWritingDirection),
             @"lists":lists,@"tables":tables,@"skipPrefix":@(skipPrefix)} mutableCopy];
@@ -345,6 +396,9 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text)
             if (AppleWritingToolsIsInlineBreak(text,i)) [inlineBreaks addObject:@(i)];
         if (inlineBreaks.count) paragraph[@"inlineBreaks"] = inlineBreaks;
         if (ancestry) paragraph[@"ancestors"] = ancestry;
+        id origin = [text attribute:AppleWritingToolsOriginAttribute atIndex:index effectiveRange:nil];
+        if ([origin isKindOfClass:NSString.class] && [origin length] && [origin length] <= 1024)
+            paragraph[@"origin"] = origin;
         // Private provenance is useful only while the real table/list style
         // still matches, and it can never suppress newly authored characters.
         if (emptyCell && ancestry && style.textBlocks.count && range.length == 1 &&
@@ -543,11 +597,19 @@ API_AVAILABLE(macos(15.2))
     NSAttributedString* accepted = nil;
     JaliumWritingToolsContext* stored = [self resolve:context range:range];
     if (stored) {
+        NSRange absolute = [self absolute:range context:stored];
+        NSRange source = absolute;
+        if (!source.length && self.document.length) {
+            source.location = std::min(source.location,self.document.length-1);
+            source.length = 1;
+        }
         NSDictionary* proposal = AppleWritingToolsProposal(text);
         NSDictionary* payload = @{@"text16":proposal[@"text16"], @"proposal":proposal,
+            @"source":AppleWritingToolsProposal([self.document attributedSubstringFromRange:source], true),
+            @"sourceStart":@(source.location),
             @"context":context.identifier.UUIDString};
         ++self.applying;
-        NSDictionary* response = [self request:2 range:[self absolute:range context:stored]
+        NSDictionary* response = [self request:2 range:absolute
             flags:static_cast<int32_t>(reason) payload:payload];
         --self.applying;
         if ([response[@"applied"] boolValue] && self.isCurrent) {
