@@ -281,22 +281,21 @@ internal sealed partial class WindowInputDispatcher
     }
 
     /// <summary>Handles mouse button down.</summary>
-    public void HandleMouseDown(MouseButton button, Point position, MouseButtonStates buttons,
+    private bool HandleMouseDownCore(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int clickCount, int timestamp)
     {
-        Mouse.NotifyPress();
-        unchecked { _mousePressEpoch++; }
         long packet = unchecked(++_mouseInputGeneration);
-        Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
+        long press = Mouse.PressEpoch;
+        Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ?
+            () => packet == _mouseInputGeneration && press == Mouse.PressEpoch : null;
         var physicalModifiers = modifiers;
         modifiers = MouseInputModifiers.ToLogical(modifiers);
-        _suppressedMousePointerReleases.Remove(button);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseDown(button, position, clickCount))
-            return;
-        if (packetLifetime?.Invoke() == false) return;
+            return false;
+        if (packetLifetime?.Invoke() == false) return false;
 
         var topLevelMenuItemBehindOverlay = _host.OverlayLayer.HasLightDismissPopups
             ? HitTopLevelMenuItemBehindOverlay(position)
@@ -330,11 +329,11 @@ internal sealed partial class WindowInputDispatcher
                 dismissed = true;
         }
 
-        if (packetLifetime?.Invoke() == false) return;
+        if (packetLifetime?.Invoke() == false) return false;
         if (dismissed)
         {
             _suppressMouseUpButton = button;
-            return;
+            return false;
         }
 
         // Handle title bar button press (for custom title bar)
@@ -346,17 +345,17 @@ internal sealed partial class WindowInputDispatcher
                 ClearMousePressedChain();
                 _pressedTitleBarButton = titleBarButton;
                 titleBarButton.SetIsPressed(true);
-                return;
+                return false;
             }
         }
 
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var hitElement = topLevelMenuItemBehindOverlay ?? _host.HitTestElement(position, "mouse-down");
-        if (packetLifetime?.Invoke() == false) return;
+        if (packetLifetime?.Invoke() == false) return false;
         hitElement = RedirectInputBlocked(hitElement);
         UpdateMouseOverState(hitElement, timestamp);
-        if (packetLifetime?.Invoke() == false) return;
+        if (packetLifetime?.Invoke() == false) return false;
         Mouse.UpdateState(position, hitElement, buttons);
         Mouse.RaiseOutsideCapturedElementEvent(
             true,
@@ -369,14 +368,15 @@ internal sealed partial class WindowInputDispatcher
             modifiers,
             timestamp,
             physicalModifiers);
-        if (packetLifetime?.Invoke() == false) return;
+        if (packetLifetime?.Invoke() == false) return false;
         var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         var commandInput = _host.CaptureNativeMouseCommandInput(target, packetLifetime);
+        Func<bool>? pressLifetime = commandInput == null ? packetLifetime : commandInput.IsCurrent;
         if (button == MouseButton.Left)
         {
-            ActivateMousePressedChain(target);
-            if (packetLifetime?.Invoke() == false) return;
+            ActivateMousePressedChain(target, pressLifetime);
+            if (pressLifetime?.Invoke() == false) return false;
 
             // Activate the DockTabPanel that contains the click target
             UIElement? walk = target;
@@ -392,6 +392,8 @@ internal sealed partial class WindowInputDispatcher
         }
 
         var currentState = MouseButtonState.Pressed;
+
+        if (pressLifetime?.Invoke() == false) return false;
 
         // Raise tunnel event (PreviewMouseDown)
         MouseButtonEventArgs tunnelArgs = new(
@@ -415,20 +417,14 @@ internal sealed partial class WindowInputDispatcher
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
         }
 
-        if (packetLifetime?.Invoke() == false) return;
-        if (commandInput?.IsCurrent() == false)
-        {
-            if (button == MouseButton.Left) ClearMousePressedChain();
-            _suppressedMousePointerReleases.Add(button);
-            return;
-        }
+        if (pressLifetime?.Invoke() == false) return false;
 
         // A handled mouse press never started a pointer session. In particular,
         // a command may have detached or closed this target during dispatch.
         if (sourceHandled && !sourceCanceled)
         {
             _suppressedMousePointerReleases.Add(button);
-            return;
+            return true;
         }
 
         if (!SuppressMouseToPointerPromotion)
@@ -442,9 +438,14 @@ internal sealed partial class WindowInputDispatcher
             if (sourceCanceled)
                 RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp, packetLifetime);
             else if (!sourceHandled)
-                RaisePointerDownPipeline(target, pointerPoint, modifiers, timestamp,
-                    inputLifetime: commandInput == null ? null : commandInput.IsCurrent);
+            {
+                // Until PointerDown starts, a nested physical Up has no matching
+                // pointer press. Only this packet can remove its suppression.
+                _suppressedMousePointerReleases.Remove(button);
+                RaisePointerDownPipeline(target, pointerPoint, modifiers, timestamp, inputLifetime: pressLifetime);
+            }
         }
+        return pressLifetime?.Invoke() != false;
     }
 
     /// <summary>Handles mouse button up.</summary>
@@ -1542,11 +1543,18 @@ internal sealed partial class WindowInputDispatcher
     //  Pressed Chain Management
     // ══════════════════════════════════════════════════════════════
 
-    internal void ActivateMousePressedChain(UIElement target)
+    internal void ActivateMousePressedChain(UIElement target, Func<bool>? inputLifetime = null)
     {
         ClearMousePressedChain();
+        if (inputLifetime?.Invoke() == false) return;
         BuildAncestorChain(target, _mousePressedChain);
-        ApplyPressedState(_mousePressedChain, true);
+        if (inputLifetime is null) { ApplyPressedState(_mousePressedChain, true); return; }
+        // A property observer may replace this whole chain with a newer press.
+        foreach (UIElement element in _mousePressedChain.ToArray())
+        {
+            if (!inputLifetime()) return;
+            element.SetIsPressed(true);
+        }
     }
 
     internal void ClearMousePressedChain()
@@ -2707,44 +2715,37 @@ internal sealed partial class WindowInputDispatcher
         return stylusDevice.StylusButtons.Count > 0 ? stylusDevice.StylusButtons[0] : null;
     }
 
-    private static void RaiseStylusSimpleEvent(UIElement target, StylusDevice stylusDevice, int timestamp, RoutedEvent routedEvent)
+    private static void RaiseStylusSimpleEvent(UIElement target, StylusDevice stylusDevice, int timestamp,
+        RoutedEvent routedEvent, Func<bool>? inputLifetime = null)
     {
+        if (inputLifetime?.Invoke() == false) return;
         var args = new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = routedEvent };
-        target.RaiseEvent(args);
+        InputRoute.Raise(target, args, inputLifetime);
     }
 
-    private static bool RaiseStylusSimpleEventPair(
-        UIElement target,
-        StylusDevice stylusDevice,
-        int timestamp,
-        RoutedEvent previewEvent,
-        RoutedEvent bubbleEvent)
+    private static bool RaiseStylusSimpleEventPair(UIElement target, StylusDevice stylusDevice, int timestamp,
+        RoutedEvent previewEvent, RoutedEvent bubbleEvent, Func<bool>? inputLifetime = null)
     {
+        if (inputLifetime?.Invoke() == false) return false;
         var previewArgs = new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = previewEvent };
-        target.RaiseEvent(previewArgs);
-        if (previewArgs.Handled) return true;
+        InputRoute.Raise(target, previewArgs, inputLifetime);
+        if (previewArgs.Handled || inputLifetime?.Invoke() == false) return previewArgs.Handled;
         var bubbleArgs = new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = bubbleEvent };
-        target.RaiseEvent(bubbleArgs);
+        InputRoute.Raise(target, bubbleArgs, inputLifetime);
         return bubbleArgs.Handled;
     }
 
-    private static void RaiseStylusSystemGestureEvent(UIElement target, StylusDevice stylusDevice, int timestamp, SystemGesture gesture)
+    private static void RaiseStylusSystemGestureEvent(UIElement target, StylusDevice stylusDevice, int timestamp,
+        SystemGesture gesture, Func<bool>? inputLifetime = null)
     {
+        if (inputLifetime?.Invoke() == false) return;
         var previewArgs = new StylusSystemGestureEventArgs(stylusDevice, timestamp, gesture)
-        {
-            RoutedEvent = UIElement.PreviewStylusSystemGestureEvent
-        };
-        target.RaiseEvent(previewArgs);
-        if (previewArgs.Handled)
-        {
-            return;
-        }
-
+        { RoutedEvent = UIElement.PreviewStylusSystemGestureEvent };
+        InputRoute.Raise(target, previewArgs, inputLifetime);
+        if (previewArgs.Handled || inputLifetime?.Invoke() == false) return;
         var bubbleArgs = new StylusSystemGestureEventArgs(stylusDevice, timestamp, gesture)
-        {
-            RoutedEvent = UIElement.StylusSystemGestureEvent
-        };
-        target.RaiseEvent(bubbleArgs);
+        { RoutedEvent = UIElement.StylusSystemGestureEvent };
+        InputRoute.Raise(target, bubbleArgs, inputLifetime);
     }
 
     // ── Touch-mode hit-test fallback ──
@@ -2812,7 +2813,7 @@ internal sealed partial class WindowInputDispatcher
     /// Returns the additional system gestures to fire on Up (Flick, TwoFingerTap).
     /// Always clears the per-pointer tracker.
     /// </summary>
-    private void TrackGestureUpAndEmit(UIElement target, StylusDevice stylusDevice, PointerInputData data, int timestamp)
+    private void TrackGestureUpAndEmit(UIElement target, StylusDevice stylusDevice, PointerInputData data, int timestamp, Func<bool>? inputLifetime = null)
     {
         if (!_gestureTrackers.TryGetValue(data.PointerId, out var tracker)) return;
         _gestureTrackers.Remove(data.PointerId);
@@ -2824,7 +2825,8 @@ internal sealed partial class WindowInputDispatcher
         // Flick: lift velocity exceeds threshold, regardless of tap classification.
         if (tracker.LastSpeedDipsPerMs > FlickVelocityThresholdDipsPerMs)
         {
-            RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.Flick);
+            RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.Flick, inputLifetime);
+            if (inputLifetime?.Invoke() == false) return;
         }
 
         // TwoFingerTap: two touch contacts that lifted within TwoFingerTapTimeoutMs of one another.
@@ -2834,7 +2836,8 @@ internal sealed partial class WindowInputDispatcher
                 && (timestamp - _firstTouchUpTicks) <= TwoFingerTapTimeoutMs
                 && (tracker.LastPosition - _firstTouchUpPosition).Length <= TwoFingerTapDistanceDips)
             {
-                RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.TwoFingerTap);
+                RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.TwoFingerTap, inputLifetime);
+                if (inputLifetime?.Invoke() == false) return;
                 _firstTouchUpTicks = 0;
             }
             else
@@ -2859,88 +2862,79 @@ internal sealed partial class WindowInputDispatcher
     /// <summary>
     /// Called from Down handlers to detect a paired tap → emit DoubleTap and clear the previous-tap latch.
     /// </summary>
-    private bool TryEmitDoubleTap(UIElement target, StylusDevice stylusDevice, PointerInputData data, int timestamp)
+    private bool TryEmitDoubleTap(UIElement target, StylusDevice stylusDevice, PointerInputData data, int timestamp, Func<bool>? inputLifetime = null)
     {
         if (!_lastTapByDevice.TryGetValue(data.Point.PointerDeviceType, out var prev)) return false;
         if (timestamp - prev.ticks > DoubleTapTimeoutMs) { _lastTapByDevice.Remove(data.Point.PointerDeviceType); return false; }
         if ((prev.pos - data.Position).Length > DoubleTapDistanceThresholdDips) return false;
         _lastTapByDevice.Remove(data.Point.PointerDeviceType);
-        RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.DoubleTap);
+        RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.DoubleTap, inputLifetime);
         return true;
     }
 
-    private static bool RaiseStylusButtonEvent(
-        UIElement target,
-        StylusDevice stylusDevice,
-        int timestamp,
-        RoutedEvent previewEvent,
-        RoutedEvent bubbleEvent)
+    private static bool RaiseStylusButtonEvent(UIElement target, StylusDevice stylusDevice, int timestamp,
+        RoutedEvent previewEvent, RoutedEvent bubbleEvent, Func<bool>? inputLifetime = null)
     {
+        if (inputLifetime?.Invoke() == false) return false;
         StylusButton? button = GetBarrelButton(stylusDevice);
         if (button == null) return false;
-
         var previewArgs = new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = previewEvent };
-        target.RaiseEvent(previewArgs);
-        if (previewArgs.Handled) return true;
+        InputRoute.Raise(target, previewArgs, inputLifetime);
+        if (previewArgs.Handled || inputLifetime?.Invoke() == false) return previewArgs.Handled;
         var bubbleArgs = new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = bubbleEvent };
-        target.RaiseEvent(bubbleArgs);
+        InputRoute.Raise(target, bubbleArgs, inputLifetime);
         return bubbleArgs.Handled;
     }
 
-    private static bool RaiseStylusExtendedEvents(
-        UIElement target, StylusDevice stylusDevice, int timestamp,
+    private static bool RaiseStylusExtendedEvents(UIElement target, StylusDevice stylusDevice, int timestamp,
         StylusInputAction inputAction, RealTimeStylusProcessResult processResult,
-        UIElement? rangeExitTarget = null)
+        UIElement? rangeExitTarget = null, Func<bool>? inputLifetime = null)
     {
         bool handled = false;
+        if (inputLifetime?.Invoke() == false) return handled;
         if (processResult.LeftElement && processResult.PreviousTarget != null)
-            RaiseStylusSimpleEvent(processResult.PreviousTarget, stylusDevice, timestamp, UIElement.StylusLeaveEvent);
-
+            RaiseStylusSimpleEvent(processResult.PreviousTarget, stylusDevice, timestamp, UIElement.StylusLeaveEvent, inputLifetime);
         if (processResult.EnteredElement)
-            RaiseStylusSimpleEvent(target, stylusDevice, timestamp, UIElement.StylusEnterEvent);
-
+            RaiseStylusSimpleEvent(target, stylusDevice, timestamp, UIElement.StylusEnterEvent, inputLifetime);
         if (processResult.EnteredRange)
         {
             RaiseStylusSimpleEventPair(target, stylusDevice, timestamp,
-                UIElement.PreviewStylusInRangeEvent, UIElement.StylusInRangeEvent);
-            RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoverEnter);
+                UIElement.PreviewStylusInRangeEvent, UIElement.StylusInRangeEvent, inputLifetime);
+            RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoverEnter, inputLifetime);
         }
-
         if (processResult.ExitedRange)
         {
             UIElement rangeTarget = rangeExitTarget ?? processResult.PreviousTarget ?? target;
             RaiseStylusSimpleEventPair(rangeTarget, stylusDevice, timestamp,
-                UIElement.PreviewStylusOutOfRangeEvent, UIElement.StylusOutOfRangeEvent);
-            RaiseStylusSystemGestureEvent(rangeTarget, stylusDevice, timestamp, SystemGesture.HoverLeave);
+                UIElement.PreviewStylusOutOfRangeEvent, UIElement.StylusOutOfRangeEvent, inputLifetime);
+            RaiseStylusSystemGestureEvent(rangeTarget, stylusDevice, timestamp, SystemGesture.HoverLeave, inputLifetime);
         }
-
         if (processResult.BarrelButtonDown)
             handled |= RaiseStylusButtonEvent(target, stylusDevice, timestamp,
-                UIElement.PreviewStylusButtonDownEvent, UIElement.StylusButtonDownEvent);
-
+                UIElement.PreviewStylusButtonDownEvent, UIElement.StylusButtonDownEvent, inputLifetime);
         if (processResult.BarrelButtonUp)
             handled |= RaiseStylusButtonEvent(target, stylusDevice, timestamp,
-                UIElement.PreviewStylusButtonUpEvent, UIElement.StylusButtonUpEvent);
-
+                UIElement.PreviewStylusButtonUpEvent, UIElement.StylusButtonUpEvent, inputLifetime);
+        if (inputLifetime?.Invoke() == false) return handled;
         switch (inputAction)
         {
             case StylusInputAction.Down:
                 RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp,
                     stylusDevice.StylusButtons.Count > 0 && stylusDevice.StylusButtons[0].StylusButtonState == StylusButtonState.Down
-                        ? SystemGesture.RightTap : SystemGesture.Tap);
-                RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoldEnter);
+                        ? SystemGesture.RightTap : SystemGesture.Tap, inputLifetime);
+                RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoldEnter, inputLifetime);
                 break;
             case StylusInputAction.Move:
                 RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp,
                     stylusDevice.StylusButtons.Count > 0 && stylusDevice.StylusButtons[0].StylusButtonState == StylusButtonState.Down
-                        ? SystemGesture.RightDrag : SystemGesture.Drag);
+                        ? SystemGesture.RightDrag : SystemGesture.Drag, inputLifetime);
                 break;
             case StylusInputAction.InAirMove:
                 handled |= RaiseStylusSimpleEventPair(target, stylusDevice, timestamp,
-                    UIElement.PreviewStylusInAirMoveEvent, UIElement.StylusInAirMoveEvent);
+                    UIElement.PreviewStylusInAirMoveEvent, UIElement.StylusInAirMoveEvent, inputLifetime);
                 break;
             case StylusInputAction.Up:
-                RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoldLeave);
+                RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoldLeave, inputLifetime);
                 break;
         }
         return handled;

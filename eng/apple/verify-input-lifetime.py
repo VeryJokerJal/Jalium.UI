@@ -13,7 +13,8 @@ import time
 
 LIBRARIES = tuple('libjalium.native.' + name + '.dylib' for name in
                   ('core', 'text', 'metal', 'software', 'platform', 'media.core', 'media', 'browser'))
-ASSEMBLIES = ('Jalium.UI.MacOS.HostSmoke.dll', 'Jalium.UI.Managed.dll', 'Jalium.UI.MacOS.dll', 'Jalium.UI.Xaml.dll')
+ASSEMBLIES = ('Jalium.UI.MacOS.HostSmoke.dll', 'Jalium.UI.Managed.dll', 'Jalium.UI.Core.dll',
+              'Jalium.UI.Controls.dll', 'Jalium.UI.Interop.dll', 'Jalium.UI.MacOS.dll', 'Jalium.UI.Xaml.dll')
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -64,7 +65,12 @@ def main():
                 result = json.loads((output / 'result.json').read_text()) if (output / 'result.json').exists() else None
                 dyld = (output / 'app.err').read_text(errors='replace') if (output / 'app.err').exists() else ''
                 loaded = [filename for filename, paths in native_paths.items() if any(str(path) in dyld for path in paths)]
-                failures = [] if result and result['passed'] and result['completed'] == result['expected'] == 5 else ['host scenarios incomplete or failed']
+                failures = [] if result and result['passed'] and result['completed'] == result['expected'] == 75 and len(result['scenarios']) == 75 else ['host scenarios incomplete or failed']
+                if result and (not result.get('requireForeground') or not result.get('foregroundQualified') or
+                               result.get('renderThreadOverride') is not None or not result.get('focus') or
+                               any(not item['active'] or item['frontmost'] != item['processId'] or
+                                   item['responder'] != item['ownResponder'] for item in result['focus'])):
+                    failures.append('native foreground/responder qualification incomplete')
                 if code: failures.append('launcher exit ' + str(code))
                 if len(loaded) != 8 or str(bridge) not in dyld: failures.append('matching native/helper load paths not proven')
                 image = output / 'input.png'
