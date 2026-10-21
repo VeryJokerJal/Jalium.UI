@@ -33,6 +33,10 @@ struct DeferredInkBatch
 std::mutex s_deferredInkMutex;
 std::vector<DeferredInkBatch> s_deferredInkBatches;
 
+} // namespace
+
+// Declared in d3d12_ink_layer.h. File-local state above keeps the registry
+// contained to this TU; the public entry point lets backend shutdown drain it.
 void ReclaimDeferredInkBatches()
 {
     std::lock_guard<std::mutex> lock(s_deferredInkMutex);
@@ -52,8 +56,6 @@ void ReclaimDeferredInkBatches()
             ++it;
     }
 }
-
-} // namespace
 
 D3D12BrushShaderPipeline* D3D12InkLayerBitmap::SharedPipeline(ID3D12Device* device)
 {
@@ -579,10 +581,15 @@ int D3D12InkLayerBitmap::DispatchBrush(
 
     // The list was Reset without an initial PSO (Clear may run first in the
     // batch), so the PSO is always set explicitly — deduped against the
-    // batch's current one.
+    // batch's current one. Retention is deduped too: alternating brushes must
+    // not accumulate one AddRef per switch inside a single batch.
     if (currentPso_ != shader->Pso())
     {
-        batchPsos_.emplace_back(shader->Pso());
+        const bool retained = std::any_of(
+            batchPsos_.begin(), batchPsos_.end(),
+            [&](const ComPtr<ID3D12PipelineState>& p) { return p.Get() == shader->Pso(); });
+        if (!retained)
+            batchPsos_.emplace_back(shader->Pso());
         cmdList_->SetPipelineState(shader->Pso());
         currentPso_ = shader->Pso();
     }

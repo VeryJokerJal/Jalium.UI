@@ -11,6 +11,14 @@ namespace jalium {
 
 using Microsoft::WRL::ComPtr;
 
+// Retires deferred ink batches whose GPU work has completed (or whose device
+// was removed). Batches still in flight keep every dependency alive — texture,
+// heaps, command allocator/list, upload arenas and bound PSOs — until a later
+// call can retire them, so brush/layer destruction can never strand GPU
+// references. Invoked at batch boundaries, on layer teardown and on backend
+// shutdown.
+void ReclaimDeferredInkBatches();
+
 // Persistent GPU-side RGBA8 bitmap that InkCanvas uses as its committed-ink
 // layer. Strokes are painted into this bitmap by brush pixel shaders, and
 // the main render target blits it every frame. Owns its own RTV + SRV
