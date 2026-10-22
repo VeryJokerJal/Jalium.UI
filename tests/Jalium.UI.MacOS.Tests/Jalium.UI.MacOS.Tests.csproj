@@ -131,4 +131,7 @@
     <Compile Include="../Jalium.UI.Tests/WritingToolsEmptyCellTests.cs" Link="WritingToolsEmptyCellTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TextPointerLayoutTests.cs" Link="TextPointerLayoutTests.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/WindowThemeRefreshTests.cs" Link="WindowSystem/WindowThemeRefreshTests.cs" />
+  </ItemGroup>
 </Project>

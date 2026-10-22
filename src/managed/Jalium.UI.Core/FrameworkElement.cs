@@ -1027,13 +1027,13 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     }
 
     /// <summary>
-    /// Notifies resource-dependent state after a theme-key change without reapplying the
-    /// structurally invariant implicit/theme styles. Controls can refresh manual palette caches
-    /// through ResourcesChanged while their existing templates remain intact.
+    /// Refreshes resources and resolves theme-dependent implicit styles after a theme-key
+    /// change. UpdateStyleStack retains unchanged style identities, so palette-only changes
+    /// preserve their existing templates and editable children.
     /// </summary>
     internal void NotifyThemeResourcesChangedFromRoot()
     {
-        RaiseResourcesChangedInSubtree(reEvaluateImplicitStyles: false);
+        RaiseResourcesChangedInSubtree();
     }
 
     // A root can select a palette without modifying shared application dictionaries.
@@ -2284,7 +2284,44 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <param name="oldExplicit">The explicit Style before this update (for Style changes).</param>
     /// <param name="newExplicit">The explicit Style after this update. For non-Style-change
     /// re-evaluation both parameters are the current explicit Style.</param>
+    private bool _updatingStyleStack;
+    private bool _styleStackRefreshPending;
+    private bool _styleStackInitialized;
+    private Style? _appliedExplicitStyle;
+    private Style? _pendingExplicitStyle;
+
     private void UpdateStyleStack(Style? oldExplicit, Style? newExplicit)
+    {
+        if (!_styleStackInitialized)
+        {
+            _styleStackInitialized = true;
+            _appliedExplicitStyle = oldExplicit;
+        }
+        _pendingExplicitStyle = newExplicit;
+        _styleStackRefreshPending = true;
+        if (_updatingStyleStack) return;
+        _updatingStyleStack = true;
+        try
+        {
+            // Setters, triggers and resource callbacks may change Style, the
+            // window theme, or the element's owner. Finish one stack mutation
+            // before resolving the latest request in its current resource scope.
+            while (_styleStackRefreshPending)
+            {
+                _styleStackRefreshPending = false;
+                var requested = _pendingExplicitStyle;
+                UpdateStyleStackCore(_appliedExplicitStyle, requested);
+            }
+        }
+        finally
+        {
+            _updatingStyleStack = false;
+            _styleStackRefreshPending = false;
+            _pendingExplicitStyle = null;
+        }
+    }
+
+    private void UpdateStyleStackCore(Style? oldExplicit, Style? newExplicit)
     {
         var newTheme = LookupThemeStyle();
 
@@ -2312,7 +2349,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             newTop = null;
 
         if (ReferenceEquals(_themeStyle, newTheme) && ReferenceEquals(oldTop, newTop))
+        {
+            _appliedExplicitStyle = newExplicit;
             return; // Stack unchanged.
+        }
 
         // Unwind in LIFO order. Both layers write the same StyleSetter value layer, so
         // removing the top style also clears any overlapping properties the theme style
@@ -2325,6 +2365,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
         _themeStyle = newTheme;
         _implicitStyle = newImplicit;
+        _appliedExplicitStyle = newExplicit;
 
         newTheme?.Apply(this);
         newTop?.Apply(this);

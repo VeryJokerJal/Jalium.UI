@@ -636,7 +636,6 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
                 resourceKey,
                 out var value,
                 out var dictionary) &&
-            value != null &&
             !ReferenceEquals(value, DependencyProperty.UnsetValue))
         {
             return (value, dictionary);
@@ -660,7 +659,6 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         // the WPF lookup chain in the correct override order.
         if (_resources != null &&
             _resources.TryGetValue(resourceKey, out var value) &&
-            value != null &&
             !ReferenceEquals(value, DependencyProperty.UnsetValue))
         {
             return value;

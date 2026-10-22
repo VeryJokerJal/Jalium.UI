@@ -1368,14 +1368,38 @@ public static partial class ResourceLookup
     /// Gets or sets a callback to retrieve application-level resources.
     /// This is set by the Application class in Jalium.UI.Controls.
     /// </summary>
-    public static Func<object, object?>? ApplicationResourceLookup { get; set; }
+    public static Func<object, object?>? ApplicationResourceLookup
+    {
+        get => s_applicationResourceLookup;
+        set
+        {
+            if (Equals(s_applicationResourceLookup, value)) return;
+            s_applicationResourceLookup = value;
+            InvalidateResourceCache();
+        }
+    }
+
+    private static Func<object, object?>? s_applicationResourceLookup;
+    private static Func<object, object?>? s_sourceLookupOwner;
+    private static Func<object, (object? Value, ResourceDictionary? Dictionary)>? s_applicationSourceLookup;
 
     /// <summary>
     /// Optional application lookup that also identifies the dictionary supplying a resource.
-    /// Controls installs this alongside <see cref="ApplicationResourceLookup"/> for diagnostics.
+    /// Controls pairs this with the current value callback so a supplying dictionary preserves
+    /// authored nulls. Public value-callback overrides use the legacy path until the paired
+    /// callback is restored or a new source provider is registered.
     /// </summary>
     internal static Func<object, (object? Value, ResourceDictionary? Dictionary)>?
-        ApplicationResourceLookupWithSource { get; set; }
+        ApplicationResourceLookupWithSource
+    {
+        get => Equals(s_sourceLookupOwner, s_applicationResourceLookup) ? s_applicationSourceLookup : null;
+        set
+        {
+            s_sourceLookupOwner = s_applicationResourceLookup;
+            s_applicationSourceLookup = value;
+            InvalidateResourceCache();
+        }
+    }
 
     /// <summary>
     /// Last-resort system resources supplied by Controls, independently of an Application lifetime.
@@ -1581,8 +1605,20 @@ public static partial class ResourceLookup
         }
 
         // System resources remain available before the first Application and after shutdown.
-        var globalValue = ApplicationResourceLookup?.Invoke(resourceKey)
-            ?? SystemResourceLookup?.Invoke(resourceKey);
+        object? globalValue;
+        if (ApplicationResourceLookupWithSource is { } applicationLookup)
+        {
+            var application = applicationLookup(resourceKey);
+            // A supplying dictionary makes null an authored resource. Only a
+            // missing application entry can fall through to the system value.
+            globalValue = application.Value is not null || application.Dictionary is not null
+                ? application.Value : SystemResourceLookup?.Invoke(resourceKey);
+        }
+        else
+        {
+            globalValue = ApplicationResourceLookup?.Invoke(resourceKey)
+                ?? SystemResourceLookup?.Invoke(resourceKey);
+        }
         return ResolveDynamicResourceValue(element, globalValue, resourceChain);
     }
 

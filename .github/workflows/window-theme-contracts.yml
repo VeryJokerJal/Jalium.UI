@@ -1,0 +1,41 @@
+name: Window theme contracts
+
+on:
+  pull_request:
+    paths:
+      - 'src/managed/Jalium.UI.Core/FrameworkElement*.cs'
+      - 'src/managed/Jalium.UI.Core/ResourceDictionary*.cs'
+      - 'src/managed/Jalium.UI.Core/Style.cs'
+      - 'src/managed/Jalium.UI.Controls/Window.ThemeMode.cs'
+      - 'src/managed/Jalium.UI.Controls/Application.cs'
+      - 'tests/Jalium.UI.Tests/WindowThemeRefreshTests.cs'
+      - 'tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj'
+      - 'eng/apple/check-window-theme-contracts.py'
+      - '.github/workflows/window-theme-contracts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  theme-refresh:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify theme refresh and explicit null resource precedence
+        shell: bash
+        run: python eng/apple/check-window-theme-contracts.py --work-parent "$RUNNER_TEMP"

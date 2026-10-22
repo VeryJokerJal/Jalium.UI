@@ -12,6 +12,8 @@ using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
 using ObjCRuntime;
 using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace Jalium.UI.MacOS;
@@ -21,7 +23,7 @@ internal static class WindowThemeModeChecks
     internal static int Run(string argument)
     {
         int[] cases = argument == "--window-themes" ? [0, 1, 2, 3] : [int.Parse(argument.Split('=')[1])];
-        if (cases.Any(index => index is < 0 or > 3)) return 2;
+        if (cases.Any(index => index is < 0 or > 7)) return 2;
         string output = Environment.GetEnvironmentVariable("JALIUM_WINDOW_THEMES_OUTPUT")
             ?? throw new InvalidOperationException("Set an owned theme output directory.");
         Directory.CreateDirectory(output);
@@ -32,7 +34,13 @@ internal static class WindowThemeModeChecks
         app.FinishLaunching();
         using (var launch = NSNotification.FromName(NSApplication.DidFinishLaunchingNotification, app))
             host.DidFinishLaunching(launch);
-        RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
+        string assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
+        foreach (string module in new[] { "core", "text", "metal", "software", "platform", "media.core", "media", "browser" })
+            _ = NativeLibrary.Load(Path.Combine(assemblyDirectory, "libjalium.native." + module + ".dylib"));
+        bool software = cases[0] >= 4;
+        var context = RenderContext.GetOrCreateCurrent(software ? RenderBackend.Software : RenderBackend.Metal);
+        if (context.Backend != (software ? RenderBackend.Software : RenderBackend.Metal)) throw new InvalidOperationException("Requested rendering backend unavailable.");
+        context.DefaultRenderingEngine = RenderingEngine.Impeller;
         ThemeManager.Initialize(Application.Current!);
         var runner = new Runner(app, output, cases);
         using var timer = NSTimer.CreateRepeatingTimer(.04, _ => runner.Tick());
@@ -48,11 +56,23 @@ internal static class WindowThemeModeChecks
     {
         private readonly List<object> _results = [];
         private readonly List<string> _checks = [];
+        private readonly List<object> _focus = [];
+        private readonly List<object> _panels = [];
+        private readonly List<object> _readbacks = [];
+        private readonly bool _checkNull = Environment.GetEnvironmentVariable("JALIUM_WINDOW_THEMES_THEME_ONLY") != "1";
+        private readonly Dictionary<Window, ThemeCaption> _captions = [];
+        private ThemeCaption? _popupCaption;
         private readonly Stopwatch _phaseTime = Stopwatch.StartNew();
         private readonly Stopwatch _lifetime = Stopwatch.StartNew();
         private readonly NSAppearance? _originalAppearance = app.Appearance;
         private readonly ThemeMode _originalMode = Application.Current!.ThemeMode;
         private readonly ThemeVariant _originalTheme = ThemeManager.CurrentTheme;
+        private readonly (bool Found, object? Value) _originalNullResource = CaptureNullResource();
+        private static (bool Found, object? Value) CaptureNullResource()
+        {
+            bool found = Application.Current!.Resources.TryGetOwnValue(SystemColors.WindowBrushKey, out var value);
+            return (found, value);
+        }
         private int _position;
         private int _phase = -1;
         private Window? _left, _right;
@@ -67,7 +87,8 @@ internal static class WindowThemeModeChecks
         internal int Passed { get; private set; }
         private int Index => cases[_position];
         private bool Custom => Index % 2 == 1;
-        private int Width => Index < 2 ? 760 : 420;
+        private int Width => Index % 4 < 2 ? 760 : 420;
+        private bool Qualified => app.Active && NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier == Environment.ProcessId;
 
         internal void Tick()
         {
@@ -79,17 +100,33 @@ internal static class WindowThemeModeChecks
                 switch (_phase)
                 {
                     case 0:
-                        if (!_left!.IsActive || !_editor!.Focus()) { Await("editor focus"); return; }
+                        if (!Qualified || !_left!.IsActive || !_editor!.Focus()) { Await("editor focus"); return; }
                         _editor.Select(2, 2);
                         _responder = app.KeyWindow?.FirstResponder?.Handle ?? 0;
-                        Require(_responder != 0, "native editor responder is installed");
+                        Require(_responder == (nint)Runtime.GetNSObject<NSView>(_left.Handle)!.Handle, "native editor responder is installed");
+                        Require(Native(_left).StyleMask.HasFlag(NSWindowStyle.Titled) == !Custom,
+                            "actual main native styleMask matches the requested titlebar");
+                        Require(Native(_right!).StyleMask.HasFlag(NSWindowStyle.Titled) == !Custom,
+                            "actual passive native styleMask matches the requested titlebar");
+                        if (_checkNull)
+                        {
+                            Require(Application.Current!.Resources.TryGetValue(SystemColors.WindowBrushKey, out var authoredNull) && authoredNull is null,
+                                "application dictionary contains an explicit null system brush");
+                            Require(_editor.TryFindResource(SystemColors.WindowBrushKey) is null && ResourceLookup.FindResource(null, SystemColors.WindowBrushKey) is null,
+                                "explicit null wins in scoped and root resource lookup");
+                            Require(Application.Current.TryFindResource(SystemColors.WindowBrushKey) is null,
+                                "application public lookup respects the authored null");
+                            Require(ResourceLookup.FindResource(_editor, SystemColors.WindowBrushKey, out var supplyingDictionary) is null &&
+                                ReferenceEquals(supplyingDictionary, Application.Current.Resources), "application null retains its source dictionary");
+                        }
                         Verify(_left, "Light"); Verify(_right!, "Dark");
                         Capture(_left, "light"); Capture(_right!, "dark");
                         _left.ThemeMode = ThemeMode.Dark;
                         Next(); break;
                     case 1:
                         Verify(_left!, "Dark"); Verify(_right!, "Dark"); FocusPreserved();
-                        _popupBody = new Border { Width = 300, Padding = new Thickness(14), Child = Text("来自当前窗口的弹出说明", 15) };
+                        _popupCaption = new ThemeCaption { Text = "来自当前窗口的弹出说明", FontSize = 15, TextWrapping = TextWrapping.Wrap };
+                        _popupBody = new Border { Width = 300, Padding = new Thickness(14), Child = _popupCaption };
                         _popupBody.SetResourceReference(Border.BackgroundProperty, "WindowBackground");
                         _popup = new Popup { PlacementTarget = _anchor, Placement = PlacementMode.Bottom,
                             StaysOpen = true, PreferExternalWindow = true, Child = _popupBody, IsOpen = true };
@@ -114,6 +151,8 @@ internal static class WindowThemeModeChecks
                         Next(); break;
                     case 4:
                         Verify(_left!, "Light"); FocusPreserved();
+                        Require(Native(_left!).StyleMask.HasFlag(NSWindowStyle.Titled) == Custom,
+                            "actual native styleMask reflects the titlebar switch");
                         _left!.Hide();
                         nint keyBefore = app.KeyWindow?.Handle ?? 0;
                         _left.ThemeMode = ThemeMode.Dark;
@@ -123,7 +162,7 @@ internal static class WindowThemeModeChecks
                         _left.Show();
                         Next(); break;
                     case 5:
-                        if (!_left!.IsActive || !_editor!.Focus()) { Await("reopened editor focus"); return; }
+                        if (!Qualified || !_left!.IsActive || !_editor!.Focus()) { Await("reopened editor focus"); return; }
                         Require(_editor.Text == "中文🙂，继续编辑" && _editor.SelectionStart == 2 && _editor.SelectionLength == 2,
                             "hide and show retain text and selection");
                         _responder = app.KeyWindow?.FirstResponder?.Handle ?? 0;
@@ -167,6 +206,18 @@ internal static class WindowThemeModeChecks
                         Verify(_left!, "Dark"); Verify(_right!, "Dark");
                         _left!.UpdateLayout();
                         Capture(_left, "switched");
+                        Application.Current!.ThemeMode = ThemeMode.None;
+                        app.Appearance = Appearance(NSAppearance.NameDarkAqua);
+                        Next(); break;
+                    case 12:
+                        if (!SystemParameters.PrefersDarkColorScheme) { Await("None mode dark appearance"); return; }
+                        Require(ThemeManager.CurrentTheme == ThemeVariant.Dark, "None application mode follows dark appearance");
+                        Verify(_left!, "Dark"); Verify(_right!, "Dark"); FocusPreserved();
+                        app.Appearance = Appearance(NSAppearance.NameAqua); Next(); break;
+                    case 13:
+                        if (SystemParameters.PrefersDarkColorScheme) { Await("None mode light appearance"); return; }
+                        Require(ThemeManager.CurrentTheme == ThemeVariant.Light, "None application mode follows light appearance");
+                        Verify(_left!, "Dark"); Verify(_right!, "Dark"); FocusPreserved();
                         Complete(null); return;
                 }
                 SaveState();
@@ -176,11 +227,14 @@ internal static class WindowThemeModeChecks
 
         private void BeginCase()
         {
-            _checks.Clear();
+            _checks.Clear(); _focus.Clear(); _panels.Clear(); _readbacks.Clear(); _captions.Clear();
+            if (_checkNull) Application.Current!.Resources[SystemColors.WindowBrushKey] = null;
             _left = MakeWindow(ThemeMode.Light, false);
             _right = MakeWindow(ThemeMode.Dark, true);
             Application.Current!.MainWindow = _left;
             _left.Show(); _right.Show(); _left.UpdateLayout(); _right.UpdateLayout();
+            app.Activate(); _left.Activate(); Native(_left).MakeKeyWindow();
+            Native(_left).MakeFirstResponder(Runtime.GetNSObject<NSView>(_left.Handle));
             _phase = 0; _phaseTime.Restart(); SaveState();
         }
 
@@ -194,7 +248,15 @@ internal static class WindowThemeModeChecks
             var panel = new StackPanel { Margin = new Thickness(24), Spacing = 12 };
             panel.Children.Add(Text("窗口外观", 22));
             panel.Children.Add(Text("分别选择外观，切换后继续编辑。", 15));
-            var caption = Text("当前：" + (mode == ThemeMode.Light ? "亮色" : "暗色"), 15);
+            foreach (string variant in new[] { "Light", "Dark", "HighContrast" })
+            {
+                var style = new Style(typeof(ThemeCaption));
+                style.Setters.Add(new Setter(FrameworkElement.TagProperty, variant));
+                style.Setters.Add(new Setter(TextBlock.ForegroundProperty, new SolidColorBrush(Expected(variant, "TextFillColorPrimaryBrush"))));
+                window.Resources.ThemeDictionaries[variant] = new ResourceDictionary { [typeof(ThemeCaption)] = style };
+            }
+            var caption = new ThemeCaption { Text = "当前：" + (mode == ThemeMode.Light ? "亮色" : "暗色"), FontSize = 15, TextWrapping = TextWrapping.Wrap };
+            _captions.Add(window, caption);
             window.ResourcesChanged += (_, _) => caption.Text = "当前：" + (window.ThemeMode.Value switch
             {
                 "Light" => "亮色", "Dark" => "暗色", "System" => "跟随系统", _ => "跟随应用"
@@ -235,6 +297,12 @@ internal static class WindowThemeModeChecks
                 ? ((SystemParameters.PrefersDarkColorScheme ? 1u : 2u) == 1 ? NSAppearance.NameAccessibilityHighContrastDarkAqua : NSAppearance.NameAccessibilityHighContrastAqua)
                 : key == "Dark" ? NSAppearance.NameDarkAqua : NSAppearance.NameAqua;
             Require(Native(window).Appearance?.Name == expectedName, "native appearance agrees with " + key + " palette");
+            ThemeCaption? caption = _captions.GetValueOrDefault(window) ?? (window.IsMacOSPopupHost ? _popupCaption : null);
+            if (caption is not null)
+            {
+                Require(Equals(caption.Tag, key), "implicit caption style follows " + key);
+                Require(BrushColor(caption.Foreground) == Expected(key, "TextFillColorPrimaryBrush"), "implicit caption foreground follows " + key);
+            }
         }
 
         private static Color Expected(string theme, string key)
@@ -290,11 +358,14 @@ internal static class WindowThemeModeChecks
             _inPanel = true;
             Exception? failure = null;
             bool inspected = false;
+            bool attempted = false;
             var wait = Stopwatch.StartNew();
             using var timer = NSTimer.CreateRepeatingTimer(.05, _ =>
             {
-                var panel = Native(_left!).AttachedSheet as NSSavePanel ?? app.ModalWindow as NSSavePanel;
-                if (panel == null)
+                if (attempted) return;
+                var owner = Native(_left!);
+                var panel = owner.AttachedSheet as NSSavePanel;
+                if (panel == null || !panel.IsVisible || panel.SheetParent?.Handle != owner.Handle)
                 {
                     if (wait.Elapsed.TotalSeconds > 12)
                     {
@@ -303,11 +374,15 @@ internal static class WindowThemeModeChecks
                     }
                     return;
                 }
+                attempted = true;
                 try
                 {
-                    Require(panel.EffectiveAppearance.FindBestMatch([NSAppearance.NameAqua, NSAppearance.NameDarkAqua]) ==
-                        Native(_left!).EffectiveAppearance.FindBestMatch([NSAppearance.NameAqua, NSAppearance.NameDarkAqua]),
-                        "owned native file panel follows the dark window");
+                    string? actual = panel.EffectiveAppearance.FindBestMatch([NSAppearance.NameAqua, NSAppearance.NameDarkAqua]);
+                    string? expected = owner.EffectiveAppearance.FindBestMatch([NSAppearance.NameAqua, NSAppearance.NameDarkAqua]);
+                    _panels.Add(new { owner = (long)(nint)owner.Handle, panel = (long)(nint)panel.Handle,
+                        parent = (long)(nint)(panel.SheetParent?.Handle ?? default), visible = panel.IsVisible,
+                        actual, expected, beforeCancellation = true });
+                    Require(actual == expected, "owned native file panel follows the dark window");
                     inspected = true;
                 }
                 catch (Exception error) { failure = error; }
@@ -320,8 +395,8 @@ internal static class WindowThemeModeChecks
                 string directory = Path.Combine(output, "panel"); Directory.CreateDirectory(directory);
                 var dialog = new Microsoft.Win32.OpenFileDialog { Title = "窗口外观检查", InitialDirectory = directory };
                 Require(dialog.ShowDialog(_left) == false, "theme panel cancellation completes");
-                Require(inspected, "native panel appearance was inspected");
                 if (failure != null) throw failure;
+                Require(inspected, "native panel appearance was inspected");
             }
             finally { timer.Invalidate(); _inPanel = false; }
         }
@@ -332,8 +407,27 @@ internal static class WindowThemeModeChecks
             window.UpdateLayout();
             double dpi = window.DpiScale;
             var bitmap = MacOSWritingToolsBitmapCapture.Capture((int)Math.Ceiling(window.ActualWidth * dpi),
-                (int)Math.Ceiling(window.ActualHeight * dpi), dpi, window.Render, () => window.Handle != 0)
+                (int)Math.Ceiling(window.ActualHeight * dpi), dpi, drawing =>
+                {
+                    // Window's frame clears its native surface separately from Render.
+                    // Include that same palette background in this isolated readback.
+                    drawing.DrawRectangle(window.Background, null, new Rect(0, 0, window.ActualWidth, window.ActualHeight));
+                    window.Render(drawing);
+                }, () => window.Handle != 0)
                 ?? throw new InvalidOperationException("Offscreen rendering failed.");
+            int stride = bitmap.PixelWidth * 4;
+            var pixels = new byte[stride * bitmap.PixelHeight];
+            bitmap.CopyPixels(pixels, stride, 0);
+            int x = Math.Max(0, bitmap.PixelWidth - (int)Math.Ceiling(50 * dpi));
+            int y = Math.Max(0, bitmap.PixelHeight - (int)Math.Ceiling(50 * dpi));
+            int sample = y * stride + x * 4;
+            Color background = BrushColor(window.Background);
+            Require(pixels[sample + 3] == 255 && Math.Abs(pixels[sample + 2] - background.R) <= 2 &&
+                Math.Abs(pixels[sample + 1] - background.G) <= 2 && Math.Abs(pixels[sample] - background.B) <= 2,
+                "renderer readback includes the opaque window palette in " + phase);
+            _readbacks.Add(new { phase, width = bitmap.PixelWidth, height = bitmap.PixelHeight, dpi, sampleX = x, sampleY = y,
+                expectedRGBA = new[] { background.R, background.G, background.B, background.A },
+                actualRGBA = new[] { pixels[sample + 2], pixels[sample + 1], pixels[sample], pixels[sample + 3] } });
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
             using var file = File.Create(Path.Combine(output, $"{Index}-{phase}.png")); encoder.Save(file);
         }
@@ -341,7 +435,19 @@ internal static class WindowThemeModeChecks
         { if (!condition) throw new InvalidOperationException(message); _checks.Add(message); }
         private void Await(string message)
         { if (_phaseTime.Elapsed.TotalSeconds > 10) throw new TimeoutException(message); }
-        private void Next() { _phase++; _phaseTime.Restart(); }
+        private void ObserveForeground()
+        {
+            Require(Qualified, "application has real foreground qualification in phase " + _phase);
+            Require(app.KeyWindow?.Handle == Native(_left!).Handle && app.KeyWindow?.FirstResponder?.Handle == _responder,
+                "native key and responder qualification in phase " + _phase);
+            RecordForeground();
+        }
+        private void RecordForeground() => _focus.Add(new { phase = _phase, processId = Environment.ProcessId,
+            frontmost = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier,
+            appActive = app.Active, qualified = Qualified, nativeKey = (long)(nint)(app.KeyWindow?.Handle ?? default),
+            ownWindow = _left is { Handle: not 0 } ? (long)(nint)Native(_left).Handle : 0,
+            responder = (long)(nint)(app.KeyWindow?.FirstResponder?.Handle ?? default), ownResponder = (long)_responder });
+        private void Next() { ObserveForeground(); _phase++; _phaseTime.Restart(); }
         private void SaveState() => File.WriteAllText(Path.Combine(output, "state.json"), JsonSerializer.Serialize(new
         { processId = Environment.ProcessId, index = Index, phase = _phase, appActive = app.Active,
             frontmostPID = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier,
@@ -349,8 +455,15 @@ internal static class WindowThemeModeChecks
 
         private void Complete(Exception? error)
         {
-            _results.Add(new { index = Index, custom = Custom, width = Width, passed = error == null,
-                checks = _checks.ToArray(), failure = error?.ToString(), physicalInput = false, desktopScreenshot = false });
+            if (error == null)
+                try { ObserveForeground(); } catch (Exception qualification) { error = qualification; }
+            if (error is not null)
+            {
+                RecordForeground();
+                try { if (_left is { Handle: not 0 }) Capture(_left, "failure"); } catch { }
+            }
+            _results.Add(new { index = Index, custom = Custom, width = Width, software = Index >= 4, checkNull = _checkNull, passed = error == null,
+                checks = _checks.ToArray(), focus = _focus.ToArray(), panelInspections = _panels.ToArray(), readbacks = _readbacks.ToArray(), failure = error?.ToString(), physicalInput = false, desktopScreenshot = false });
             if (error == null) Passed++;
             Console.WriteLine(JsonSerializer.Serialize(new { index = Index, passed = error == null, checks = _checks.Count, failure = error?.Message }));
             if (_popup != null) _popup.IsOpen = false;
@@ -361,7 +474,10 @@ internal static class WindowThemeModeChecks
             if (++_position < cases.Length) { _phase = -1; return; }
             _finished = true;
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
-            { passed = Passed, expected = cases.Length, cases = _results, physicalInput = false, desktopScreenshot = false, offscreenRendering = true }));
+            { passed = Passed, expected = cases.Length, cases = _results, physicalInput = false, desktopScreenshot = false, offscreenRendering = true,
+                renderThreadOverride = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD"),
+                nativePreloadScope = "load preflight; dormant media/browser modules are not functionally exercised",
+                managedLoadPaths = new[] { typeof(Window).Assembly.Location, typeof(UIElement).Assembly.Location, typeof(JaliumMacApplication).Assembly.Location, Assembly.GetExecutingAssembly().Location } }));
             app.Terminate(app);
         }
         public void Dispose()
@@ -369,7 +485,17 @@ internal static class WindowThemeModeChecks
             if (_popup != null) _popup.IsOpen = false;
             _left?.Close(); _right?.Close();
             app.Appearance = _originalAppearance;
+            if (Application.Current is { } application)
+            {
+                if (_originalNullResource.Found) application.Resources[SystemColors.WindowBrushKey] = _originalNullResource.Value;
+                else application.Resources.Remove(SystemColors.WindowBrushKey);
+            }
         }
+    }
+
+    private sealed class ThemeCaption : TextBlock
+    {
+        internal ThemeCaption() => DefaultStyleKey = typeof(ThemeCaption);
     }
 
     private sealed class ValidationDelegate : JaliumMacApplicationDelegate
