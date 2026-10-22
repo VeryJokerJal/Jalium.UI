@@ -645,7 +645,7 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     target_include_directories(jalium.native.platform.window.writing-tools.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
     target_compile_options(jalium.native.platform.window.writing-tools.tests PRIVATE -fobjc-arc)
-    target_link_libraries(jalium.native.platform.window.writing-tools.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    target_link_libraries(jalium.native.platform.window.writing-tools.tests PRIVATE ${PROJECT_NAME} "-framework AppKit" "-framework CoreText")
     add_dependencies(jalium.native.platform.window.tests jalium.native.platform.window.writing-tools.tests)
     add_test(NAME jalium.native.platform.macos.window.writing-tools COMMAND jalium.native.platform.window.writing-tools.tests)
     set_tests_properties(jalium.native.platform.macos.window.writing-tools PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)

@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <CoreText/CoreText.h>
 #include "jalium_platform.h"
 #include <dlfcn.h>
 #include <algorithm>
@@ -25,6 +26,14 @@ static NSDictionary* EmptyCellRecord(NSUInteger start, NSUInteger length, NSUInt
         @"tables":@[@{@"id":@"empty-table",@"row":@0,@"column":@(column),@"rows":@1,@"columns":@1,@"tableColumns":@(columns)}],
         @"ancestors":@[@{@"kind":@"table",@"index":@0}]};
 }
+static NSString* LanguageStyles(NSString* text, id language)
+{
+    NSDictionary* run = @{@"start":@0, @"length":@(text.length), @"family":@"Helvetica Neue", @"size":@21,
+        @"weight":@400, @"italic":@0, @"underline":@0, @"strike":@0, @"alignment":@0, @"direction":@-1,
+        @"language":language ?: NSNull.null};
+    NSDictionary* packet = @{@"version":@1, @"text16":Base64(text), @"runs":@[run]};
+    return [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:packet options:0 error:nil] encoding:NSUTF8StringEncoding];
+}
 struct Fixture {
     JaliumPlatformWindow* window;
     NSView* view;
@@ -41,7 +50,7 @@ struct Fixture {
     NSDictionary* proposal;
     NSDictionary* packet;
     NSString* styles;
-    bool wrongSession = false;
+    bool wrongSession = false, clearStylesOnReplace = false;
     std::function<void(int)> after;
     explicit Fixture(uint32_t style, bool optIn = true)
     {
@@ -102,7 +111,11 @@ struct Fixture {
             ++f.replacements;f.lastRange=NSMakeRange(r.start,r.length);
             NSString* value=Text16([[NSData alloc]initWithBase64EncodedString:args[@"text16"] options:0]);
             if(f.uppercase)value=value.uppercaseString;
-            f.text=[f.text stringByReplacingCharactersInRange:f.lastRange withString:value];f.Publish();
+            f.text=[f.text stringByReplacingCharactersInRange:f.lastRange withString:value];
+            // This fixture's text-only backend cannot publish the old styled
+            // snapshot after a replacement has changed its text.
+            if(f.clearStylesOnReplace)f.styles=nil;
+            f.Publish();
             response=@{@"editor":f.editor,@"applied":@YES,@"text16":Base64(value)};
         }
         if(r.kind==3){++f.selected;f.ranges=args[@"ranges"];response=@{@"editor":f.editor,@"applied":@YES};}
@@ -137,6 +150,55 @@ int main()
         jalium_platform_init();Dl_info info{};dladdr(reinterpret_cast<void*>(&jalium_window_create),&info);
         std::printf("LOADED_PLATFORM %s\n",info.dli_fname?:"unknown");
         for(uint32_t style:{uint32_t(0),uint32_t(JALIUM_WINDOW_STYLE_TITLEBAR|JALIUM_WINDOW_STYLE_RESIZABLE)}){
+            for (NSString* language in @[@"zh-Hans", @"ja-JP", @"ar", @""]) {
+                std::string name = "language context attributes: " + std::string(language.UTF8String);
+                Run(name.c_str(), style, [&]{
+                    Fixture f(style); f.styles = LanguageStyles(f.text, language);
+                    auto* context = f.Context(NSWritingToolsCoordinatorContextScopeFullDocument); Require(context, "tagged native context");
+                    Require([[context.attributedString attribute:NSLanguageIdentifierAttributeName atIndex:0 effectiveRange:nil] isEqual:language], "Foundation language retained");
+                    id shaping = [context.attributedString attribute:(__bridge NSString*)kCTLanguageAttributeName atIndex:0 effectiveRange:nil];
+                    Require([shaping isEqual:language], "CoreText reads the same language, including explicit empty");
+                });
+            }
+            for (bool coreTextOnly : {false, true}) for (NSString* language in @[@"zh-Hant", @"ja-JP", @"ar"]) {
+                std::string name = std::string("language replacement ") + (coreTextOnly ? "CoreText: " : "Foundation: ") + language.UTF8String;
+                Run(name.c_str(), style, [&]{
+                    Fixture f(style); f.styles = LanguageStyles(f.text, @"en-GB"); f.clearStylesOnReplace = true;
+                    auto* context = f.Context(NSWritingToolsCoordinatorContextScopeFullDocument); Require(context, "source language context");
+                    NSString* key = coreTextOnly ? (__bridge NSString*)kCTLanguageAttributeName : NSLanguageIdentifierAttributeName;
+                    auto* value = [[NSAttributedString alloc] initWithString:@"语言🙂" attributes:@{key:language}];
+                    Require(f.ReplaceAttributed(context, NSMakeRange(0, 1), value), "tagged native replacement accepted");
+                    Require([f.proposal[@"runs"][0][@"language"] isEqual:language], "proposal carries the language");
+                    Require([f.packet[@"source"][@"runs"][0][@"language"] isEqual:@"en-GB"], "source snapshot retains its own language");
+                });
+            }
+            Run("language adjacent runs retain independent UTF-16 ranges", style, [&]{
+                Fixture f(style); auto* context = f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);
+                auto* value = [[NSMutableAttributedString alloc] initWithString:@"汉🙂日本語"];
+                [value addAttribute:NSLanguageIdentifierAttributeName value:@"zh-Hans" range:NSMakeRange(0,3)];
+                [value addAttribute:(__bridge NSString*)kCTLanguageAttributeName value:@"ja-JP" range:NSMakeRange(3,3)];
+                Require(f.ReplaceAttributed(context, NSMakeRange(0, 1), value), "mixed-language native replacement accepted");
+                NSArray* runs=f.proposal[@"runs"];Require(runs.count==2,"languages keep separate native runs");
+                Require([runs[0][@"start"] integerValue]==0 && [runs[0][@"length"] integerValue]==3 && [runs[0][@"language"] isEqual:@"zh-Hans"],"Chinese and emoji range retained");
+                Require([runs[1][@"start"] integerValue]==3 && [runs[1][@"length"] integerValue]==3 && [runs[1][@"language"] isEqual:@"ja-JP"],"Japanese range retained");
+            });
+            Run("language explicit empty proposal preserves clearing", style, [&]{
+                Fixture f(style); auto* context = f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);
+                auto* value = [[NSAttributedString alloc] initWithString:@"unknown" attributes:@{NSLanguageIdentifierAttributeName:@""}];
+                Require(f.ReplaceAttributed(context, NSMakeRange(0, 1), value), "explicit empty language accepted");
+                Require([f.proposal[@"runs"][0][@"language"] isEqual:@""], "empty language is distinct from absent");
+            });
+            Run("language null source leaves native attributes unset", style, [&]{
+                Fixture f(style); f.styles = LanguageStyles(f.text, NSNull.null);
+                auto* context = f.Context(NSWritingToolsCoordinatorContextScopeFullDocument); Require(context, "null-language context accepted");
+                Require(![context.attributedString attribute:NSLanguageIdentifierAttributeName atIndex:0 effectiveRange:nil] &&
+                    ![context.attributedString attribute:(__bridge NSString*)kCTLanguageAttributeName atIndex:0 effectiveRange:nil], "null language inherits system behavior");
+            });
+            Run("language untagged proposal stays untagged", style, [&]{
+                Fixture f(style); auto* context = f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);
+                Require(f.Replace(context, NSMakeRange(0, 1), @"plain"), "untagged replacement accepted");
+                Require(!f.proposal[@"runs"][0][@"language"], "no language synthesized for untagged text");
+            });
             Run("partial source identities survive context renewal",style,[&]{
                 for (bool table:{false,true}) {
                     Fixture f(style);f.text=@"lead\nabc\ntrail";f.selection=NSMakeRange(6,1);

@@ -314,6 +314,8 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text, bool or
             @[@"underlineColor",NSUnderlineColorAttributeName],@[@"strikeColor",NSStrikethroughColorAttributeName]]) {
             NSNumber* color = AppleWritingToolsColor(attributes[item[1]]); if (color) run[item[0]] = color;
         }
+        id language = attributes[NSLanguageIdentifierAttributeName];
+        if ([language isKindOfClass:NSString.class]) run[@"language"] = language;
         [runs addObject:run]; index = NSMaxRange(range);
     }
     NSMutableDictionary<NSString*,NSNumber*>* ordinals = [NSMutableDictionary new];

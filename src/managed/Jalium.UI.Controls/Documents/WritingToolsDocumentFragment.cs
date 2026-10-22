@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Jalium.UI.Markup;
 using Jalium.UI.Media;
 using DocList = Jalium.UI.Documents.List;
 
@@ -313,6 +314,13 @@ internal sealed partial class WritingToolsDocumentFragment
         run.FontFamily = new FontFamily(family); run.FontSize = size;
         run.FontWeight = FontWeight.FromOpenTypeWeight(weight);
         run.FontStyle = style.GetProperty("italic").GetBoolean() ? FontStyles.Italic : FontStyles.Normal;
+        if (style.TryGetProperty("language", out var language) && language.ValueKind != JsonValueKind.Null)
+        {
+            if (language.ValueKind != JsonValueKind.String || language.GetString() is not { Length: <= 1024 } tag)
+                throw new FormatException("Invalid text language.");
+            try { run.Language = XmlLanguage.GetLanguage(tag); }
+            catch (ArgumentException error) { throw new FormatException("Invalid text language.", error); }
+        }
         if (style.TryGetProperty("foreground", out var foreground)) run.Foreground = Brush(foreground);
         if (style.TryGetProperty("background", out var background)) run.Background = Brush(background);
         var decorations = new TextDecorationCollection();

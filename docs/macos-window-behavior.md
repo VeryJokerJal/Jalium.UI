@@ -4,6 +4,67 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v300：Writing Tools 语言往返与外置弹窗继承
+
+富文本样式快照此前统一取编辑器 Language，丢掉文档、节、段落、Span 和 Run 的有效语言。
+现在分别读取各内容元素的有效语言，保留相邻异语言 Run 的 UTF-16 范围，也为换行、嵌入对象
+和表格存储分隔符使用其内容元素语言。外置 macOS 弹窗从当前 owner 绑定 Language，支持 owner
+语言变化、重新绑定及子元素显式覆盖/清除，和既有文字属性采用同一绑定机制。
+
+原生非 AX 属性路径现在携带 NSLanguageIdentifierAttributeName，Writing Tools 提案将语言写回
+language 字段，导入器恢复 Run.Language。显式空语言保留清除语义，缺省/null 继续继承；
+非法类型、无效标记或过长语言在修改文档前拒绝。XmlLanguage 负责既有的标记校验与大小写规范化。
+Foundation 与 CoreText 在本机 SDK 使用同一个 NSLanguage 属性键，避免重复写入。
+参照 [Foundation 语言属性](https://developer.apple.com/documentation/foundation/nsattributedstring/key/languageidentifier)
+和 [CoreText 语言属性](https://developer.apple.com/documentation/coretext/kctlanguageattributename)。
+
+| 最终冻结输入的验证 | PR 历史 | 本地 master 历史 |
+| --- | --- | --- |
+| 共享语言、范围、继承与非法提案 | 33/33 | 33/33 |
+| 完整托管回归 | 5921 通过、0 失败、2 既有跳过 | 5838 通过、0 失败、2 既有跳过 |
+| 原生 Writing Tools SDK 协议用例 | 146/146 | 146/146 |
+| 其中新增语言用例 | 28/28 | 28/28 |
+
+共享用例覆盖六层语言继承、相邻语言的 JSON 快照及 UTF-16 范围、结构占位、八类语言值
+（含显式空和私有标记）、缺省/null、非法提案、弹窗 owner 更新/重绑定/子级覆盖，以及不替换
+Run 的文档快照恢复。固定父产品 3cd6bbba 配同一最终夹具，托管 30 项失败、3 项控制通过，
+0 错误、0 超时。其原生语言用例为 24 项失败、4 项控制通过，原有用例无新增失败；总计
+122 通过、24 失败。父产品 2277 个 src 文件逐一匹配原 Git blob；最终原生夹具在源码树外
+单独编译并链接真实父产品负载，没有向父产品回填候选实现或修改其 CMake。
+
+原生协议夹具调用真实 own-process NSView/NSWritingToolsCoordinator delegate，检查标准与
+CoreText 调用端的语言、原始 source 快照、混合中文/emoji/日文范围、显式空及未标记控制。
+它使用 accessory 应用和进程内协议回调，不要求 OS 前台资格，不代表前台交互、Apple
+Intelligence 服务、物理输入或最终字形图像验收。记录的 platform/core 加载路径和哈希分别
+对应各自独立负载。最初原生夹具错误地认为两种语言常量是不同属性，并在变更文字后返回旧
+样式快照；已通过 SDK 实际值和独立探针定位，修正后的父/候选全部重跑，早期结果排除。
+共享夹具的初次命名空间编译错误也已排除，未计作父产品失败。
+
+并行修改冻结 4138 个文件，增量反向编织本轮改动，使用其自身 618 项原生输入构建官方
+ALL 负载；同一 33 项共享用例、146 项原生协议及 2523 项相关托管回归通过，0 失败、0
+跳过。运行中的托管宿主实际观察到其五份原生库均来自本轮 working-native 目录；此证据只
+对应冻结版本，后续并行修改继续独立保留。
+
+两条候选历史分别有 3499/3492 个 Git 树文件、1829/1828 个宿主输入、547/546 个原生输入。
+各自八份官方预设 ALL 原生库、十六份装包副本的 Mach-O 段/UUID/依赖和七份链接程序集
+逐一核对；运行时着色器编译器保持开启。最终 PR、本地和真正父产品的宿主均构建成功。
+
+--window-embedded-object-case=0..11 继续交叉 Native/Custom、普通/覆盖/外置弹窗与
+Metal/Software，保留对象位置、颜色和原生编辑检查，新增语言导入、重新读取及 Undo。
+eng/apple/verify-embedded-objects.py 现在要求每组 3 场景、74 断言及完整前台/KeyWindow/
+响应者资格。脚本语法和帮助入口已验证；最终 74 断言宿主矩阵、复制装包实际执行、原生
+父宿主负对照和最终颜色/语言图像仍待前台时段，未把编译或后台协议结果计作通过。
+
+Windows 文档 CI 增加本组共享用例后要求 273 项；新提交结果需另行读取。上一提交
+3cd6bbba 的 Windows 240/240、Apple 五个任务和 D3D12 已通过；Linux 的最终结果须独立
+读取。更早 musl arm64 的 OleDropTarget 弱引用释放失败仍保留，不靠重跑掩盖或删测。
+
+本轮限定十三个文件，保持 master、codex/macos-window-behavior 和 PR #177，不合并 PR。
+保留既有 34 处历史差异、39 份共享原生产物、并行 CSS 编辑与 Gallery；独立构建、日志、
+探针、缓存与检查点按本轮所有权清理，回归源码保留。前台/真实设备/IME/VoiceOver、多屏
+混合 DPI、Spaces、最低系统/Intel/生产包、完整嵌入 UI 绘制与其他审查继续保留，完整
+macOS 目标尚未完成。
+
 ## v299：对象后的文字范围与装饰线颜色
 
 `InlineUIContainer` 和 `BlockUIContainer` 在 TextPointer 中各占一个 UTF-16 位置，

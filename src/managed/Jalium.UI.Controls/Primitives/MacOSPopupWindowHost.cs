@@ -36,7 +36,7 @@ internal class MacOSPopupWindowHost : Window
             (FontFamilyProperty, nameof(FontFamily)), (FontSizeProperty, nameof(FontSize)),
             (FontWeightProperty, nameof(FontWeight)), (FontStyleProperty, nameof(FontStyle)),
             (FontStretchProperty, nameof(FontStretch)), (ForegroundProperty, nameof(Foreground)),
-            (FlowDirectionProperty, nameof(FlowDirection)) })
+            (FlowDirectionProperty, nameof(FlowDirection)), (LanguageProperty, nameof(Language)) })
             SetBinding(property, new Binding(name) { Source = parent, Mode = BindingMode.OneWay });
     }
 

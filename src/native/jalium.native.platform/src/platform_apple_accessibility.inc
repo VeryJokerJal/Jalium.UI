@@ -111,6 +111,9 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
         if (underlineColor) attributes[NSUnderlineColorAttributeName] = underlineColor;
         if (strike) attributes[NSStrikethroughStyleAttributeName] = @(strike);
         if (strikeColor) attributes[NSStrikethroughColorAttributeName] = strikeColor;
+        id language = style[@"language"];
+        // AppKit and CoreText share the NSLanguage attributed-string key.
+        if ([language isKindOfClass:NSString.class]) attributes[NSLanguageIdentifierAttributeName] = language;
         NSMutableParagraphStyle* paragraph = [NSMutableParagraphStyle new];
         paragraph.alignment = JaliumNativeTextAlignment([style[@"alignment"] integerValue]);
         paragraph.baseWritingDirection = (NSWritingDirection)[style[@"direction"] intValue];
