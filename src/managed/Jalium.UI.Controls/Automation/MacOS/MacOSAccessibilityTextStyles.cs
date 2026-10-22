@@ -49,14 +49,16 @@ internal sealed unsafe partial class MacOSAccessibilityTree
             length < 0 || length > text.Length - start) return null;
         var runs = capturedRuns ?? styled.GetTextStyles();
         if (!isCurrent() || source.Text != text || !ValidStyleRuns(runs, text.Length)) return null;
-        var fonts = new TextMeasurement.RenderingFont?[runs.Count];
-        for (int index = 0; index < runs.Count; index++)
+        // Validate the entire source above, but only materialize fonts and text
+        // for the requested characters. AX asks for both size and copy, so a
+        // single-character read must not copy every run of a large document.
+        // Capture value spans before font callbacks can change the source list.
+        var selected = new List<AutomationTextStyleSpan>();
+        foreach (var run in runs)
         {
-            var run = runs[index];
-            fonts[index] = TextMeasurement.GetRenderingFont(run.Style.FontFamily,
-                text.Substring(run.Start, run.Length), run.Style.FontSize, run.Style.FontWeight, run.Style.FontStyle);
+            int from = Math.Max(start, run.Start), to = Math.Min(start + length, run.Start + run.Length);
+            if (to > from) selected.Add(new(from - start, to - from, run.Style));
         }
-        // Materializing a CSS font can dispatch user callbacks as well.
         if (!isCurrent() || source.Text != text) return null;
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -66,14 +68,15 @@ internal sealed unsafe partial class MacOSAccessibilityTree
             // raw UTF-16 code units so an AX substring never changes offsets.
             writer.WriteBase64String("text16", MemoryMarshal.AsBytes(text.AsSpan(start, length)));
             writer.WriteStartArray("runs");
-            for (int index = 0; index < runs.Count; index++)
+            foreach (var run in selected)
             {
-                var run = runs[index];
-                int from = Math.Max(start, run.Start), to = Math.Min(start + length, run.Start + run.Length);
-                if (to <= from) continue;
                 var style = run.Style;
-                writer.WriteStartObject(); writer.WriteNumber("start", from - start); writer.WriteNumber("length", to - from);
-                var font = fonts[index];
+                var font = TextMeasurement.GetRenderingFont(style.FontFamily,
+                    text.Substring(start + run.Start, run.Length), style.FontSize, style.FontWeight, style.FontStyle);
+                // A CSS font callback can edit or retire the owner. Stop before
+                // resolving the next font or publishing a partial snapshot.
+                if (!isCurrent() || source.Text != text) return null;
+                writer.WriteStartObject(); writer.WriteNumber("start", run.Start); writer.WriteNumber("length", run.Length);
                 writer.WriteString("family", font?.Family ?? style.FontFamily); writer.WriteNumber("size", font is { } sized ? sized.Size : style.FontSize);
                 writer.WriteNumber("weight", font?.Weight ?? style.FontWeight); writer.WriteNumber("italic", font?.Style ?? style.FontStyle);
                 if (font is { } resolved) writer.WriteNumber("width", resolved.Width);

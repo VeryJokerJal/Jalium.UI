@@ -135,8 +135,10 @@ internal static class WindowFontChecks
                     ("emoji", first.IndexOf("🙂", StringComparison.Ordinal), 2), ("combining", first.Length - 2, 2),
                     ("second-line", first.Length + 1 + 2, 5), ("multiline", first.Length - 2, 6),
                 };
+                using var referenceFormat = TextMeasurement.CreateTextFormatFromFamilyList(context, source, 21, nativeWeight, nativeStyle);
                 foreach (var wrapping in new[] { TextWrapping.NoWrap, TextWrapping.Wrap })
                 {
+                    referenceFormat.SetNoWrap(wrapping == TextWrapping.NoWrap);
                     box.TextWrapping = wrapping;
                     box.Measure(new Size(360, 96)); box.Arrange(new Rect(0, 0, 360, 96));
                     foreach (int dpi in new[] { 1, 2 })
@@ -164,10 +166,17 @@ internal static class WindowFontChecks
                                     double y = 12 + row * lineHeight;
                                     if (endInLine > startInLine)
                                     {
-                                        double left = layouts[row].Caret(0, startInLine, false).X;
-                                        double right = layouts[row].Caret(0, endInLine, false).X;
-                                        drawing.DrawRectangle(Brushes.Blue, null,
-                                            new Rect(Math.Round(12 + left), y, Math.Max(Math.Round(right - left), 1), lineHeight));
+                                        Require(referenceFormat.GetLineMetrics(lines[row], 336, 100000, 0, false, out var paintedRow)
+                                            && paintedRow.Height > 0, "Independent native selection row unavailable");
+                                        // Glyph rows retain their native fractional height. The
+                                        // rounded line pitch only positions successive logical lines.
+                                        foreach (var fragment in layouts[row].Selection(0, startInLine, endInLine - startInLine))
+                                        {
+                                            double left = Math.Round(12 + fragment.X);
+                                            double right = Math.Round(12 + fragment.X + fragment.Width);
+                                            drawing.DrawRectangle(Brushes.Blue, null,
+                                                new Rect(left, Math.Round(y + paintedRow.Y), Math.Max(right - left, 1), Math.Max(paintedRow.Height, 1)));
+                                        }
                                     }
                                     if (row == 0 && range.Start <= lines[row].Length && end > lines[row].Length)
                                         drawing.DrawRectangle(Brushes.Blue, null,
