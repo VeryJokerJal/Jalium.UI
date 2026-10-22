@@ -203,7 +203,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         int TextRenderingMode,
         int TextFormattingMode,
         int TextHintingMode,
-        bool SubpixelPositioning, bool NoWrap, long FontEpoch);
+        bool SubpixelPositioning, bool NoWrap, TextAlignment Alignment, long FontEpoch);
 
     private sealed class BitmapCacheEntry
     {
@@ -1932,7 +1932,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         var width = (float)formattedText.MaxTextWidth;
         var height = (float)formattedText.MaxTextHeight;
-        bool noWrap = OperatingSystem.IsMacOS() && (!float.IsFinite(width) || width <= 0);
+        bool noWrap = OperatingSystem.IsMacOS() && (formattedText.NativeNoWrap || !float.IsFinite(width) || width <= 0);
         if (width <= 0 || float.IsInfinity(width) || float.IsNaN(width)) width = 10000;
         if (height <= 0 || float.IsInfinity(height) || float.IsNaN(height)) height = 10000;
 
@@ -2038,7 +2038,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 formattedText.TextRenderingMode,
                 formattedText.TextFormattingMode,
                 formattedText.TextHintingMode,
-                subpixelPositioning: identitySubpixel, noWrap: noWrap);
+                subpixelPositioning: identitySubpixel, noWrap: noWrap, textAlignment: formattedText.NativeTextAlignment ?? TextAlignment.Left);
             if (format == null) return;
 
             var x = (float)mx;
@@ -2069,7 +2069,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             formattedText.TextRenderingMode,
             formattedText.TextFormattingMode,
             formattedText.TextHintingMode,
-            subpixelPositioning: !s_subpixelPositioningDisabled, noWrap: noWrap);
+            subpixelPositioning: !s_subpixelPositioningDisabled, noWrap: noWrap, textAlignment: formattedText.NativeTextAlignment ?? TextAlignment.Left);
         if (scaledFormat == null) return;
 
         // Screen-space origin = current matrix applied to (mx, my). The origin
@@ -6077,7 +6077,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         int textRenderingMode,
         int textFormattingMode,
         int textHintingMode,
-        bool subpixelPositioning = false, bool noWrap = false)
+        bool subpixelPositioning = false, bool noWrap = false, TextAlignment textAlignment = TextAlignment.Left)
     {
         if (string.IsNullOrWhiteSpace(fontFamily))
         {
@@ -6103,7 +6103,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             textRenderingMode,
             textFormattingMode,
             textHintingMode,
-            subpixelPositioning, noWrap, TextMeasurement.FontCacheEpoch);
+            subpixelPositioning, noWrap, textAlignment, TextMeasurement.FontCacheEpoch);
 
         if (_textFormatCache.TryGetValue(key, out var cached) && cached.IsValid)
         {
@@ -6127,6 +6127,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // LOGFONT.lfQuality). Calling the setter on Auto / Ideal / Auto
             // is harmless because the native side just stores the value.
             if (noWrap) format.SetNoWrap(true);
+            format.SetTextAlignment(textAlignment);
             format.SetTextRenderingMode(textRenderingMode);
             format.SetTextFormattingMode(textFormattingMode);
             format.SetTextHintingMode(textHintingMode);

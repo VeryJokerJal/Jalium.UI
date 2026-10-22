@@ -136,6 +136,10 @@ public sealed class MacOSFontCascadeTests : MacOSGeometryTestBase
         using var actual = Paragraph($"Avenir Next, {alias}, Arial Hebrew", Sample);
         CheckCaretsAndSelection(actual, expected);
         primary.Dispose();
+        // Paragraph shaping may retain temporary formats in TextMeasurement's
+        // cache. Release those format owners before testing registry removal;
+        // the two immutable paragraphs must still own their actual font bytes.
+        TextMeasurement.ClearCache();
         Assert.Equal(0, NativeMethods.FontFamilyIsAvailable(alias));
         CheckCaretsAndSelection(actual, expected);
     }

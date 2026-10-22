@@ -118,10 +118,32 @@ jobs:
           jalium.native.platform.window.accessibility.tests
           jalium.native.platform.window.popup-keyboard.tests
           jalium.native.platform.window.keyboard-focus.tests
+          jalium.native.platform.window.owner.tests
           jalium.native.platform.window.resize.tests
           jalium.native.platform.window.menu.tests
           jalium.native.platform.window.startup.tests
           jalium.native.platform.window.drag.tests
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - name: Verify managed popup ownership and binding reentrancy
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-popup-owner-managed" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter FullyQualifiedName~MacOSPopupOwnershipTests \
+            --logger 'trx;LogFileName=popup-ownership.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-popup-owner-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-popup-owner-results/popup-ownership.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 29 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 29 managed popup ownership contracts executed and passed.')
+          PY
       - name: Verify all Window, clipboard and thread-affinity contracts
         run: >-
           ctest --test-dir "$RUNNER_TEMP/jalium-window-contracts"
@@ -143,6 +165,28 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release -DJALIUM_METAL_BUILD_TESTS=ON -DJALIUM_SOFTWARE_BUILD_TESTS=ON
           -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
       - name: Build focused readback and regression tests
-        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback jalium.native.metal.regression jalium.native.metal.text-glyph-ranges jalium.native.metal.text-metrics jalium.native.metal.fonts jalium.native.software.apple.text --parallel 4
+        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback jalium.native.metal.regression jalium.native.metal.text-glyph-ranges jalium.native.metal.text-metrics jalium.native.metal.fonts jalium.native.software.apple.text jalium.native.platform --parallel 4
       - name: Verify GPU resources, readback and Window rendering regressions
         run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium[.]native[.](metal[.](gpu-.*baseline|readback(-no-resize)?|regression|text-glyph-ranges|text-metrics|fonts)|software[.]apple[.](text-glyph-ranges|coretext))$' --output-on-failure -V
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - name: Verify CoreText family resolution and private fallback lifetimes
+        env:
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/src/native/bin/native/osx-arm64/Release
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-coretext-managed" \
+            -p:JaliumMacNativeGeometryTests=true \
+            --filter 'FullyQualifiedName~MacOSFontResolutionTests|FullyQualifiedName~MacOSFontCascadeTests|FullyQualifiedName~MacOSTextBoxAlignmentTests' \
+            --logger 'trx;LogFileName=font-resolution.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-font-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          counts = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'jalium-font-results/font-resolution.trx').find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 78 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 78 CoreText font and editor alignment contracts executed and passed.')
+          PY

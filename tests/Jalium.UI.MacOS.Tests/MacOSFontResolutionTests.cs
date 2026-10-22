@@ -2,6 +2,7 @@ using System.Collections;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Editor;
 using Jalium.UI.Controls.Helpers;
@@ -48,10 +49,19 @@ public sealed class MacOSFontResolutionTests : MacOSGeometryTestBase
         Css.WaitForFontsAsync(box).WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
 #pragma warning restore xUnit1031
         CssFontFaces.FlushNotifications(box.Dispatcher);
-        Assert.StartsWith("Andale Mono", run.FontFamily.GetRenderingSource(run));
+        // Rendering identities may also encode optical sizing, features or
+        // width. Compare the actual face geometry rather than that wire prefix.
+        using var mono = Paragraph(Sample, "Andale Mono", 360);
+        using var fallback = Paragraph(Sample, "Helvetica", 360);
+        using var attached = Paragraph(Sample, run.FontFamily.GetRenderingSource(run), 360);
+        AssertGeometry(attached, mono);
+        Assert.NotEqual(fallback.Caret(0, Sample.Length, false).X, attached.Caret(0, Sample.Length, false).X);
+        Assert.Equal("DetachedFont40, Helvetica", run.FontFamily.Source);
         box.Document = FlowDocument.FromText("replacement");
         Assert.Null(old.Parent);
-        Assert.Equal("DetachedFont40, Helvetica", run.FontFamily.GetRenderingSource(run));
+        Assert.Equal("DetachedFont40, Helvetica", run.FontFamily.Source);
+        using var detached = Paragraph(Sample, run.FontFamily.GetRenderingSource(run), 360);
+        AssertGeometry(detached, fallback);
         Css.SetStyleSheets(box, null);
     }
 
@@ -277,15 +287,35 @@ public sealed class MacOSFontResolutionTests : MacOSGeometryTestBase
 #pragma warning restore xUnit1031
             CssFontFaces.FlushNotifications(box.Dispatcher);
             Assert.Empty(Css.GetFontLoadErrors(box));
-            Assert.StartsWith("JaliumCss", run.FontFamily.GetRenderingSource(run));
+            string source = run.FontFamily.GetRenderingSource(run);
+            var aliases = Regex.Matches(source, @"JaliumCss[0-9a-f]{16}(?![0-9a-f])")
+                .Select(match => match.Value).Distinct().ToArray();
+            string alias = Assert.Single(aliases);
+            Assert.Equal(1, NativeMethods.FontFamilyIsAvailable(alias));
             var after = NativeParagraph(box); Assert.True(before.IsDisposed);
             using var expected = Paragraph(Sample, "Andale Mono", 360);
-            Assert.Equal(expected.Caret(0, Sample.Length, false).X, after.Caret(0, Sample.Length, false).X);
+            AssertGeometry(after, expected);
         }
         finally { resolver.Complete(File.ReadAllBytes(MonoPath)); Css.SetStyleSheets(box, null); }
     }
 
     private static void Arrange(Control box) { box.Measure(new Size(360, 180)); box.Arrange(new Rect(0, 0, 360, 180)); }
+    private static void AssertGeometry(NativeTextParagraph actual, NativeTextParagraph expected)
+    {
+        Assert.Equal(expected.Text, actual.Text);
+        Assert.Equal(expected.Lines.Length, actual.Lines.Length);
+        for (int offset = 0; offset <= actual.Text.Length; ++offset)
+            foreach (bool backward in new[] { false, true })
+                Assert.Equal(expected.Caret(0, offset, backward).X, actual.Caret(0, offset, backward).X, 3);
+        var reference = expected.Selection(0, 0, expected.Text.Length);
+        var selected = actual.Selection(0, 0, actual.Text.Length);
+        Assert.Equal(reference.Length, selected.Length);
+        for (int i = 0; i < reference.Length; ++i)
+        {
+            Assert.Equal(reference[i].X, selected[i].X, 3);
+            Assert.Equal(reference[i].Width, selected[i].Width, 3);
+        }
+    }
     private static IEnumerable<object> Enumerate(IEnumerator children) { while (children.MoveNext()) yield return children.Current; }
     private static RichTextBox Rich(Run run)
     {

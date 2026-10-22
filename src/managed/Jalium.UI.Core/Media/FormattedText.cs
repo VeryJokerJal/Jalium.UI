@@ -14,6 +14,10 @@ public sealed partial class FormattedText
     // complete shaped layout's coordinates. 1 includes, 2 excludes clusters.
     internal uint[]? GlyphRanges { get; set; }
     internal int GlyphVisibility { get; set; }
+    // Editors opt into a finite native alignment box without changing legacy
+    // callers which already position their own glyph origins.
+    internal TextAlignment? NativeTextAlignment { get; init; }
+    internal bool NativeNoWrap { get; init; }
     // Immutable platform layout used by flow content. Keeping it on the draw
     // command preserves shaping through effect captures and display lists.
     private object? _platformTextLine;

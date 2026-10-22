@@ -22,7 +22,15 @@ public partial class Popup
     private void OnMacOSPlacementTargetChanged()
     {
         if (!OperatingSystem.IsMacOS() || _popupRoot == null) return;
+        var root = _popupRoot;
+        var host = _macOSPopupWindow;
+        var anchor = PlacementTarget;
+        long revision = unchecked(++_macOSOwnerRevision);
+        bool IsCurrent() => revision == _macOSOwnerRevision && IsOpen &&
+            ReferenceEquals(root, _popupRoot) && ReferenceEquals(host, _macOSPopupWindow) &&
+            ReferenceEquals(anchor, PlacementTarget);
         var parent = GetParentWindow();
+        if (!IsCurrent()) return;
         if (_parentWindow != null && parent != null && !ReferenceEquals(parent, _parentWindow) &&
             ReferenceEquals(parent.MacOSInputOwner, _parentWindow.MacOSInputOwner) && IsMacOSPopupAnchorValid(parent))
         {
@@ -34,14 +42,18 @@ public partial class Popup
             {
                 previous.ActiveExternalPopups.Remove(this);
                 if (!parent.ActiveExternalPopups.Contains(this)) parent.ActiveExternalPopups.Add(this);
-                if (!_macOSPopupWindow.ReparentMacOSPopupHost(parent))
+                bool assigned = host!.ReparentMacOSPopupHost(parent);
+                if (!IsCurrent()) return;
+                if (!assigned)
                 { SetCurrentValue(IsOpenProperty, false); return; }
             }
             else if (_overlayLayer != null)
             {
-                _overlayLayer.RemovePopupRoot(_popupRoot);
+                _overlayLayer.RemovePopupRoot(root);
+                if (!IsCurrent()) return;
                 _overlayLayer = parent.OverlayLayer;
-                _overlayLayer.AddPopupRoot(_popupRoot);
+                _overlayLayer.AddPopupRoot(root);
+                if (!IsCurrent()) return;
             }
         }
         ObserveMacOSPopupOwner();

@@ -10,6 +10,7 @@ public partial class Window
     private Window? _macOSPopupParent;
     private Popup? _macOSHostedPopup;
     private PopupRoot? _macOSHostedPopupRoot;
+    private ulong _macOSPopupOwnerRevision;
     private readonly HashSet<Window> _macOSPopupHosts = [];
     private bool _macOSPopupNativeDestroyed;
 
@@ -40,16 +41,29 @@ public partial class Window
         for (Window? node = parent; node != null; node = node._macOSPopupParent)
             if (ReferenceEquals(node, this)) return false;
         var previous = _macOSPopupParent;
+        var platform = _platformWindow;
+        var handle = Handle;
+        ulong revision = ++_macOSPopupOwnerRevision;
         _macOSPopupParent = parent;
-        if (_platformWindow != null && !_platformWindow.SetOwner(parent.Handle))
-        { _macOSPopupParent = previous; return false; }
-        if (this is MacOSPopupWindowHost host) host.BindOwnerTextProperties(parent);
-        return !_isClosing && IsMacOSPopupHostCurrent;
+        bool IsCurrent() => revision == _macOSPopupOwnerRevision && !_isClosing && !_managedTeardownStarted &&
+            ReferenceEquals(_platformWindow, platform) && Handle == handle &&
+            ReferenceEquals(_macOSPopupParent, parent) && IsMacOSPopupHostCurrent;
+        if (platform != null)
+        {
+            bool assigned = platform.SetOwner(parent.Handle);
+            // AppKit can close this host or reenter with a newer owner. An old
+            // failure must not roll that request back, nor bind its text scope.
+            if (!IsCurrent()) return false;
+            if (!assigned) { _macOSPopupParent = previous; return false; }
+        }
+        if (this is MacOSPopupWindowHost host && !host.BindOwnerTextProperties(parent, IsCurrent)) return false;
+        return IsCurrent();
     }
 
     internal void CloseMacOSPopupHost()
     {
         if (!IsMacOSPopupHost) return;
+        ++_macOSPopupOwnerRevision;
         Content = null;
         var owner = MacOSInputOwner;
         _macOSNativeIsKey = false;

@@ -101,6 +101,9 @@ struct JaliumPlatformWindow {
     bool requestedNativeZoom = false;
     bool interactiveResize = false;
     bool nativeClosing = false;
+    uint64_t ownerRequestSequence = 0;
+    bool applyingOwner = false;
+    dispatch_block_t pendingOwnerChange = nil;
     bool fullScreenTransition = false;
     std::shared_ptr<AppleContentFocus> fullScreenContentFocus;
     uint64_t stateRequestSequence = 0;
@@ -5085,20 +5088,115 @@ int32_t jalium_window_set_decorated(JaliumPlatformWindow* w,int32_t value){if(!w
 int32_t jalium_window_set_owner(JaliumPlatformWindow* w,intptr_t owner){if(!w)return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
     bool registered = IsLiveWindow(w);
-    NSWindow* nativeWindow = w->window;
-    NSWindow* ownerWindow = nil;
-    if (owner) {
-        id object = (__bridge id)(void*)owner;
-        if ([object isKindOfClass:NSWindow.class]) ownerWindow = object;
-        else if ([object isKindOfClass:NSView.class]) ownerWindow = [(NSView*)object window];
-        if (!ownerWindow || ownerWindow == w->window) return JALIUM_ERROR_INVALID_ARGUMENT;
-        for (NSWindow* ancestor = ownerWindow; ancestor; ancestor = ancestor.parentWindow)
-            if (ancestor == w->window) return JALIUM_ERROR_INVALID_ARGUMENT;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
+    id __attribute__((objc_precise_lifetime)) object = (__bridge id)(void*)owner;
+    uint64_t request = w->ownerRequestSequence;
+    bool nested = w->applyingOwner;
+    w->applyingOwner = true;
+    auto current = [&] {
+        return (!registered || IsLiveWindow(w, nativeWindow)) && !w->destroying &&
+            w->window == nativeWindow && w->ownerRequestSequence == request;
+    };
+    auto registeredOwner = [](id native) -> JaliumPlatformWindow* {
+        if (!native) return nullptr;
+        std::scoped_lock lock(g_windowsMutex);
+        for (auto* candidate : g_windows)
+            if (candidate->window == native || candidate->view == native) return candidate;
+        return nullptr;
+    };
+    auto* ownerIdentity = registeredOwner(object);
+    NSWindow* __attribute__((objc_precise_lifetime)) knownOwnerWindow = ownerIdentity ? ownerIdentity->window : nil;
+    auto managedOwnerAlive = [](NSWindow* native) {
+        if (![native isKindOfClass:JaliumAppleWindow.class]) return true;
+        auto* owner = ((JaliumAppleWindow*)native).jaliumOwner;
+        return owner && IsLiveWindow(owner, native) && !owner->destroying;
+    };
+    auto queue = [&](id target, NSWindow* targetWindow, JaliumPlatformWindow* targetOwner) {
+        JaliumPlatformWindow* expected = w;
+        NSWindow* expectedWindow = nativeWindow;
+        __weak JaliumAppleView* weakView = w->view;
+        __weak id weakTarget = target;
+        bool required = target != nil;
+        uint64_t queuedRequest = w->ownerRequestSequence;
+        w->pendingOwnerChange = ^{
+            JaliumPlatformWindow* owner = weakView.jaliumOwner;
+            id target = weakTarget;
+            if (owner != expected || !IsLiveWindow(owner, expectedWindow) || owner->destroying ||
+                owner->ownerRequestSequence != queuedRequest || (required && !target) ||
+                (targetOwner && (!IsLiveWindow(targetOwner, targetWindow) || targetOwner->destroying))) return;
+            jalium_window_set_owner(owner, (intptr_t)(__bridge void*)target);
+        };
+    };
+    int32_t result = [&]() -> int32_t {
+        NSWindow* __attribute__((objc_precise_lifetime)) ownerWindow = nil;
+        NSView* __attribute__((objc_precise_lifetime)) ownerView = nil;
+        if (object) {
+            if ([object isKindOfClass:NSWindow.class]) ownerWindow = object;
+            else if ([object isKindOfClass:NSView.class]) {
+                ownerView = object;
+                ownerWindow = ownerView.window;
+            }
+            if (!current()) return JALIUM_OK;
+            if (!ownerWindow || ownerWindow == nativeWindow) return JALIUM_ERROR_INVALID_ARGUMENT;
+            NSWindow* ancestor = ownerWindow;
+            for (int depth = 0; ancestor; ++depth) {
+                if (ancestor == nativeWindow || depth == 4096) return JALIUM_ERROR_INVALID_ARGUMENT;
+                ancestor = ancestor.parentWindow;
+                if (!current()) return JALIUM_OK;
+            }
+        }
+        if (ownerIdentity && (!IsLiveWindow(ownerIdentity, knownOwnerWindow) || ownerIdentity->destroying ||
+            ownerWindow != knownOwnerWindow)) return JALIUM_ERROR_INVALID_STATE;
+        bool available = managedOwnerAlive(ownerWindow);
+        if (!current()) return JALIUM_OK;
+        if (!available) return JALIUM_ERROR_INVALID_STATE;
+        // An invalid nested request never retires a valid outer assignment.
+        // A valid one waits until all AppKit calls on that assignment unwind.
+        request = ++w->ownerRequestSequence;
+        if (nested) { queue(object, ownerWindow, ownerIdentity); return JALIUM_OK; }
+        NSWindow* __attribute__((objc_precise_lifetime)) previous = nativeWindow.parentWindow;
+        if (!current()) return JALIUM_OK;
+        auto* previousIdentity = registeredOwner(previous);
+        auto ownerValid = [&] {
+            if (!managedOwnerAlive(ownerWindow)) return false;
+            if (ownerIdentity && (!IsLiveWindow(ownerIdentity, ownerWindow) || ownerIdentity->destroying)) return false;
+            NSWindow* actual = ownerView ? ownerView.window : ownerWindow;
+            return current() && actual == ownerWindow;
+        };
+        auto recoverPrevious = [&] {
+            // A target can close in remove/add callbacks. Keep a failed call's
+            // old logical owner, but never resurrect a closed native parent.
+            bool available = managedOwnerAlive(previous);
+            if (!current()) return JALIUM_OK;
+            if (!available || (previousIdentity && (!IsLiveWindow(previousIdentity, previous) || previousIdentity->destroying))) previous = nil;
+            ++w->ownerRequestSequence;
+            queue(previous, previous, previous ? previousIdentity : nullptr);
+            return JALIUM_ERROR_INVALID_STATE;
+        };
+        [previous removeChildWindow:nativeWindow];
+        if (!current()) return JALIUM_OK;
+        bool valid = ownerValid();
+        if (!current()) return JALIUM_OK;
+        if (!valid) return recoverPrevious();
+        if (ownerWindow) [ownerWindow addChildWindow:nativeWindow ordered:NSWindowAbove];
+        if (!current()) return JALIUM_OK;
+        valid = ownerValid();
+        if (!current()) return JALIUM_OK;
+        return valid ? JALIUM_OK : recoverPrevious();
+    }();
+    if (!nested && (!registered || IsLiveWindow(w, nativeWindow))) {
+        w->applyingOwner = false;
+        dispatch_block_t pending = w->pendingOwnerChange;
+        w->pendingOwnerChange = nil;
+        if (pending) dispatch_async(dispatch_get_main_queue(), pending);
     }
-    [nativeWindow.parentWindow removeChildWindow:nativeWindow];
-    if (registered && !IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
-    if (ownerWindow) [ownerWindow addChildWindow:nativeWindow ordered:NSWindowAbove];
-    return JALIUM_OK;
+    if (registered && !IsLiveWindow(w, nativeWindow)) {
+        // An embedding addChildWindow: override can close this child before
+        // calling super. Detach that retained, retired NSWindow after unwind;
+        // a replacement has a different native identity and is never touched.
+        [nativeWindow.parentWindow removeChildWindow:nativeWindow];
+    }
+    return result;
 #else
     (void)owner;return JALIUM_ERROR_NOT_SUPPORTED;
 #endif

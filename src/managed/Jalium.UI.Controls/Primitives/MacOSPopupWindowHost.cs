@@ -30,14 +30,19 @@ internal class MacOSPopupWindowHost : Window
         Content = root;
     }
 
-    internal void BindOwnerTextProperties(Window parent)
+    internal bool BindOwnerTextProperties(Window parent, Func<bool>? isCurrent = null)
     {
         foreach (var (property, name) in new[] {
             (FontFamilyProperty, nameof(FontFamily)), (FontSizeProperty, nameof(FontSize)),
             (FontWeightProperty, nameof(FontWeight)), (FontStyleProperty, nameof(FontStyle)),
             (FontStretchProperty, nameof(FontStretch)), (ForegroundProperty, nameof(Foreground)),
             (FlowDirectionProperty, nameof(FlowDirection)), (LanguageProperty, nameof(Language)) })
+        {
+            if (isCurrent?.Invoke() == false) return false;
             SetBinding(property, new Binding(name) { Source = parent, Mode = BindingMode.OneWay });
+            if (isCurrent?.Invoke() == false) return false;
+        }
+        return true;
     }
 
     public override void Close()

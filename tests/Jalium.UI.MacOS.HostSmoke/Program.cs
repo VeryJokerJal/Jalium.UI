@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-popup-owner-case=", StringComparison.Ordinal))
+    return WindowPopupOwnershipChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-embedded-object-case=", StringComparison.Ordinal))
     return WindowEmbeddedObjectChecks.Run(args[0]);
 
