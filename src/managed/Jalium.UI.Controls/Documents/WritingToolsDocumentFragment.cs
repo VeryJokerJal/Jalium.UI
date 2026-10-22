@@ -316,8 +316,20 @@ internal sealed partial class WritingToolsDocumentFragment
         if (style.TryGetProperty("foreground", out var foreground)) run.Foreground = Brush(foreground);
         if (style.TryGetProperty("background", out var background)) run.Background = Brush(background);
         var decorations = new TextDecorationCollection();
-        if (style.GetProperty("underline").GetInt32() != 0) decorations.Add(new TextDecoration { Location = TextDecorationLocation.Underline });
-        if (style.GetProperty("strike").GetInt32() != 0) decorations.Add(new TextDecoration { Location = TextDecorationLocation.Strikethrough });
+        void AddDecoration(string enabled, string colorName, TextDecorationLocation location)
+        {
+            if (style.GetProperty(enabled).GetInt32() == 0) return;
+            var decoration = new TextDecoration { Location = location };
+            if (style.TryGetProperty(colorName, out var color) && color.ValueKind != JsonValueKind.Null)
+            {
+                if (color.ValueKind != JsonValueKind.Number || !color.TryGetUInt32(out _))
+                    throw new FormatException("Invalid text decoration color.");
+                decoration.Brush = Brush(color);
+            }
+            decorations.Add(decoration);
+        }
+        AddDecoration("underline", "underlineColor", TextDecorationLocation.Underline);
+        AddDecoration("strike", "strikeColor", TextDecorationLocation.Strikethrough);
         if (decorations.Count != 0) run.TextDecorations = decorations;
     }
     private static SolidColorBrush Brush(JsonElement value)

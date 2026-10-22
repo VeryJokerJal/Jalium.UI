@@ -837,6 +837,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
     /// <summary>
     /// Gets the plain text content of the document, using one LF per structural break.
     /// Authored Run text is preserved verbatim so offsets match TextPointer on every platform.
+    /// Embedded UI elements occupy one U+FFFC object replacement character; their child text is not flattened.
     /// </summary>
     public string GetText()
     {
@@ -887,6 +888,10 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                     }
                 }
                 break;
+
+            case BlockUIContainer:
+                sb.Append('\uFFFC');
+                break;
         }
     }
 
@@ -912,6 +917,10 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
 
             case LineBreak:
                 sb.Append('\n');
+                break;
+
+            case InlineUIContainer:
+                sb.Append('\uFFFC');
                 break;
         }
     }

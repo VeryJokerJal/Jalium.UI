@@ -2314,6 +2314,10 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         {
             LayoutList(list, blockLayout, maxWidth, ref currentOffset);
         }
+        else if (block is BlockUIContainer)
+        {
+            currentOffset++;
+        }
 
         return blockLayout;
     }
@@ -2366,6 +2370,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         {
             if (inline is Run run) Add(run.Text, run);
             else if (inline is LineBreak) Add("\n", null);
+            else if (inline is InlineUIContainer) Add("\uFFFC", null);
             else if (inline is Span span) foreach (var child in span.Inlines) Flatten(child);
         }
         foreach (var inline in paragraph.Inlines) Flatten(inline);
@@ -2488,6 +2493,11 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 Baseline = GetDefaultLineHeight() * 0.8
             };
             x = 0;
+            currentOffset++;
+        }
+        else if (inline is InlineUIContainer)
+        {
+            // Preserve the object's logical slot in the text-only fallback.
             currentOffset++;
         }
     }
