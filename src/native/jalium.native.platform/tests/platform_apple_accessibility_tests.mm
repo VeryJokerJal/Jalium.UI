@@ -550,7 +550,7 @@ int main(int argc, const char** argv)
         const unichar characters[] = {0x4e2d, 0x6587, 0xd83d, 0xde42};
         NSString* text16 = [[NSData dataWithBytes:characters length:sizeof(characters)] base64EncodedStringWithOptions:0];
         NSDictionary* style = @{@"start":@0, @"length":@4, @"family":@"Arial", @"size":@21, @"weight":@700, @"italic":@2,
-            @"foreground":@0xffa01234, @"underline":@1, @"underlineColor":@0xff123456, @"strike":@1,
+            @"foreground":@0xffa01234, @"background":@0xff336699, @"underline":@1, @"underlineColor":@0xff123456, @"strike":@1,
             @"alignment":@0, @"direction":@0, @"language":@"zh-CN"};
         fixture.stylePayload = payload(@[style], text16);
         NSAttributedString* attributed = [child accessibilityAttributedStringForRange:NSMakeRange(0, 4)];
@@ -560,10 +560,17 @@ int main(int argc, const char** argv)
             "disabled styled text preserves font, color, decoration and Unicode");
         Check([[attributes[NSAccessibilityFontTextAttribute][NSAccessibilityFontNameKey] lowercaseString] containsString:@"bolditalic"],
             "AX font dictionary identifies the selected bold italic face");
+        Check(attributes[NSAccessibilityBackgroundColorTextAttribute]!=nil,"AX exports the text background as a CGColor");
+        NSColor* background=[[NSColor colorWithCGColor:(__bridge CGColorRef)attributes[NSAccessibilityBackgroundColorTextAttribute]] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        Check(background.redComponent>.195 && background.redComponent<.205 && background.greenComponent>.395 && background.greenComponent<.405 && background.blueComponent>.595 && background.blueComponent<.605,
+            "AX background matches the source sRGB components");
         NSData* rtf = [child accessibilityRTFForRange:NSMakeRange(0, 4)];
         NSAttributedString* decoded = [[NSAttributedString alloc] initWithRTF:rtf documentAttributes:nil];
         Check([decoded.string isEqual:@"中文🙂"] && [[[decoded attributesAtIndex:0 effectiveRange:nil] objectForKey:NSFontAttributeName] pointSize] == 21,
             "RTF is decoded by AppKit with the same text and point size");
+        NSColor* rtfBackground=[[decoded attribute:NSBackgroundColorAttributeName atIndex:0 effectiveRange:nil] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        Check(rtfBackground && rtfBackground.redComponent>.195 && rtfBackground.redComponent<.205 && rtfBackground.greenComponent>.395 && rtfBackground.greenComponent<.405 && rtfBackground.blueComponent>.595 && rtfBackground.blueComponent<.605,
+            "RTF retains an opaque run background through AppKit decoding");
         const NSTextAlignment alignments[] = {NSTextAlignmentLeft, NSTextAlignmentRight, NSTextAlignmentCenter, NSTextAlignmentJustified};
         for (NSInteger alignment=0;alignment<4;++alignment) for (NSInteger direction=0;direction<2;++direction) {
             NSMutableDictionary* aligned=[style mutableCopy];aligned[@"alignment"]=@(alignment);aligned[@"direction"]=@(direction);
@@ -580,7 +587,9 @@ int main(int argc, const char** argv)
         Check(NSEqualRanges([child accessibilityStyleRangeForIndex:2], NSMakeRange(0, 4))
             && NSEqualRanges([child accessibilityStyleRangeForIndex:4], NSMakeRange(0, 0)), "style extents include UTF-16 characters and reject EOF as a character");
         for (NSDictionary* changes in @[@{@"start":@1}, @{@"length":@0}, @{@"length":@5}, @{@"size":@(-1)}, @{@"weight":@1001},
-            @{@"italic":@3}, @{@"foreground":@4294967296ULL}, @{@"family":@[]}, @{@"language":@1}, @{@"direction":@2}]) {
+            @{@"italic":@3}, @{@"foreground":@4294967296ULL}, @{@"family":@[]}, @{@"language":@1}, @{@"direction":@2},
+            @{@"background":@(-1)}, @{@"background":@4294967296ULL}, @{@"background":@0.5}, @{@"background":@"red"},
+            @{@"background":NSNull.null}, @{@"background":@YES}, @{@"foreground":@YES}, @{@"underlineColor":@YES}, @{@"strikeColor":@YES}]) {
             NSMutableDictionary* invalid = [style mutableCopy]; [invalid addEntriesFromDictionary:changes];
             fixture.stylePayload = payload(@[invalid], text16);
             Check([child accessibilityAttributedStringForRange:NSMakeRange(0, 4)] == nil

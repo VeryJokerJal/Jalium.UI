@@ -3,6 +3,7 @@
 #include "jalium_platform.h"
 #include <dlfcn.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
@@ -33,6 +34,20 @@ static NSString* LanguageStyles(NSString* text, id language)
         @"language":language ?: NSNull.null};
     NSDictionary* packet = @{@"version":@1, @"text16":Base64(text), @"runs":@[run]};
     return [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:packet options:0 error:nil] encoding:NSUTF8StringEncoding];
+}
+static NSString* BackgroundStyles(NSString* text, id background, NSString* key = @"background")
+{
+    NSData* data=[LanguageStyles(text,NSNull.null) dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableDictionary* packet=[NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
+    if(background)packet[@"runs"][0][key]=background;
+    return [[NSString alloc]initWithData:[NSJSONSerialization dataWithJSONObject:packet options:0 error:nil] encoding:NSUTF8StringEncoding];
+}
+static uint32_t BackgroundArgb(NSColor* input)
+{
+    NSColor* value=[input colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    Require(value,"background resolves into sRGB");
+    auto byte=[](CGFloat n){return static_cast<uint32_t>(std::lround(n*255));};
+    return byte(value.alphaComponent)<<24|byte(value.redComponent)<<16|byte(value.greenComponent)<<8|byte(value.blueComponent);
 }
 struct Fixture {
     JaliumPlatformWindow* window;
@@ -150,6 +165,40 @@ int main()
         jalium_platform_init();Dl_info info{};dladdr(reinterpret_cast<void*>(&jalium_window_create),&info);
         std::printf("LOADED_PLATFORM %s\n",info.dli_fname?:"unknown");
         for(uint32_t style:{uint32_t(0),uint32_t(JALIUM_WINDOW_STYLE_TITLEBAR|JALIUM_WINDOW_STYLE_RESIZABLE)}){
+            for (NSNumber* color in @[@0u,@0x00112233u,@0x01123456u,@0x7f123456u,@0xff336699u,@0xffffffffu]) {
+                std::string name="background context and proposal ARGB "+std::to_string(color.unsignedIntValue);
+                Run(name.c_str(),style,[&]{
+                    Fixture f(style);f.styles=BackgroundStyles(f.text,color);f.clearStylesOnReplace=true;
+                    auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"background context");
+                    id value=[context.attributedString attribute:NSBackgroundColorAttributeName atIndex:0 effectiveRange:nil];
+                    Require([value isKindOfClass:NSColor.class],"the context carries a native background color");
+                    Require(BackgroundArgb(value)==color.unsignedIntValue,"context preserves RGB and alpha, including explicit zero");
+                    Require(f.ReplaceAttributed(context,NSMakeRange(0,f.text.length),context.attributedString),"unchanged attributed text accepted");
+                    Require([f.proposal[@"runs"][0][@"background"] unsignedIntValue]==color.unsignedIntValue && f.proposal[@"runs"][0][@"background"],"proposal preserves background color");
+                    Require([f.packet[@"source"][@"runs"][0][@"background"] unsignedIntValue]==color.unsignedIntValue && f.packet[@"source"][@"runs"][0][@"background"],"source metadata preserves its background");
+                });
+            }
+            for (id invalid in @[@(-1),@4294967296ULL,@0.5,@"red",@[],NSNull.null,@YES]) {
+                std::string name="background rejects invalid wire color "+std::string([[invalid description] UTF8String]);
+                Run(name.c_str(),style,[&]{Fixture f(style);f.styles=BackgroundStyles(f.text,invalid);Require(!f.Context(NSWritingToolsCoordinatorContextScopeFullDocument) && f.replacements==0,"invalid background cannot enter the SDK context");});
+            }
+            for (NSString* key in @[@"foreground",@"underlineColor",@"strikeColor"]) {
+                std::string name="background color contract rejects Boolean "+std::string(key.UTF8String);
+                Run(name.c_str(),style,[&]{Fixture f(style);f.styles=BackgroundStyles(f.text,@YES,key);Require(!f.Context(NSWritingToolsCoordinatorContextScopeFullDocument),"Boolean is not an ARGB integer");});
+            }
+            Run("background refresh observes style changes without a text edit",style,[&]{
+                Fixture f(style);f.styles=BackgroundStyles(f.text,@0xff123456u);
+                auto* first=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(first,"initial background context");
+                f.styles=BackgroundStyles(f.text,@0xff654321u);
+                auto* next=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(next,"renewed background context");
+                NSColor* value=[next.attributedString attribute:NSBackgroundColorAttributeName atIndex:0 effectiveRange:nil];
+                Require(value && BackgroundArgb(value)==0xff654321u,"the refreshed context carries the latest brush");
+            });
+            Run("background absence stays absent",style,[&]{
+                Fixture f(style);f.styles=BackgroundStyles(f.text,nil);
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"uncolored context");
+                Require(![context.attributedString attribute:NSBackgroundColorAttributeName atIndex:0 effectiveRange:nil],"no default surface color is invented");
+            });
             for (NSString* language in @[@"zh-Hans", @"ja-JP", @"ar", @""]) {
                 std::string name = "language context attributes: " + std::string(language.UTF8String);
                 Run(name.c_str(), style, [&]{

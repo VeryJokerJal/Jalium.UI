@@ -82,7 +82,7 @@ def main():
                                 if (match := re.match(r'^dyld\[\d+\]: <[^>]+> (.+)$', line))}
                 loaded = [name for name, paths in native_paths.items() if paths & loaded_paths]
                 failures = []
-                if not result or not result['passed'] or result['completed'] != result['expected'] or result['expected'] != 3 or len(result['scenes']) != 3 or len(result['checks']) != 74:
+                if not result or not result['passed'] or result['completed'] != result['expected'] or result['expected'] != 3 or len(result['scenes']) != 3 or len(result['checks']) != 77:
                     failures.append('host scenes incomplete or failed')
                 if result and (not result.get('requireForeground') or not result.get('foregroundQualified') or
                                result.get('renderThreadOverride') is not None or not result.get('focus') or

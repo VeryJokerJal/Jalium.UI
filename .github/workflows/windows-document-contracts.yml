@@ -9,6 +9,7 @@ on:
       - 'tests/Jalium.UI.Tests/FlowDocumentEmbeddedObjectProjectionTests.cs'
       - 'tests/Jalium.UI.Tests/WritingToolsDecorationColorTests.cs'
       - 'tests/Jalium.UI.Tests/WritingToolsLanguageTests.cs'
+      - 'tests/Jalium.UI.Tests/WritingToolsBackgroundTests.cs'
       - 'tests/Jalium.UI.Tests/WritingToolsPartialFragmentTests.cs'
       - 'tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj'
       - 'Directory.Build.*'
@@ -81,14 +82,14 @@ jobs:
           Write-Output "Verified 55 real Windows partial-fragment failures and 2 passing compatibility controls."
           exit 0
       - name: Test logical offsets and structured fragment edits on Windows
-        run: dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release --filter "FullyQualifiedName~FlowDocumentLogicalProjectionTests|FullyQualifiedName~FlowDocumentEmbeddedObjectProjectionTests|FullyQualifiedName~WritingToolsDecorationColorTests|FullyQualifiedName~WritingToolsLanguageTests|FullyQualifiedName~WritingToolsPartialFragmentTests" --logger "trx;LogFileName=document-offsets.trx" --results-directory artifacts/windows-document-contracts -p:JaliumBuildRoot=artifacts/windows-document-build -p:UseSharedCompilation=false -m:1 --disable-build-servers
+        run: dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release --filter "FullyQualifiedName~FlowDocumentLogicalProjectionTests|FullyQualifiedName~FlowDocumentEmbeddedObjectProjectionTests|FullyQualifiedName~WritingToolsDecorationColorTests|FullyQualifiedName~WritingToolsLanguageTests|FullyQualifiedName~WritingToolsBackgroundTests|FullyQualifiedName~WritingToolsPartialFragmentTests" --logger "trx;LogFileName=document-offsets.trx" --results-directory artifacts/windows-document-contracts -p:JaliumBuildRoot=artifacts/windows-document-build -p:UseSharedCompilation=false -m:1 --disable-build-servers
       - name: Require all shared document contracts to run
         shell: pwsh
         run: |
           [xml]$trx = Get-Content artifacts/windows-document-contracts/document-offsets.trx
           $counters = $trx.TestRun.ResultSummary.Counters
-          if ([int]$counters.executed -ne 273 -or [int]$counters.passed -ne 273 -or [int]$counters.failed -ne 0 -or [int]$counters.error -ne 0) {
-            throw "Expected all 273 shared document contracts to pass."
+          if ([int]$counters.executed -ne 299 -or [int]$counters.passed -ne 299 -or [int]$counters.failed -ne 0 -or [int]$counters.error -ne 0) {
+            throw "Expected all 299 shared document contracts to pass."
           }
       - name: Clean the isolated Windows baseline
         if: always()

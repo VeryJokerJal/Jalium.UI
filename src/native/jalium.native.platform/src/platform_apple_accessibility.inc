@@ -75,6 +75,7 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
     if (!font) return nil;
     const double shear = JaliumAccessibilityFontShear(font);
     NSColor* foreground = JaliumAccessibilityColor(style[@"foreground"]);
+    NSColor* background = JaliumAccessibilityColor(style[@"background"]);
     NSColor* underlineColor = JaliumAccessibilityColor(style[@"underlineColor"]);
     NSColor* strikeColor = JaliumAccessibilityColor(style[@"strikeColor"]);
     int underline = [style[@"underline"] intValue], strike = [style[@"strike"] intValue];
@@ -90,6 +91,7 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
             attributes[NSAccessibilityFontItalicAttribute] = @((traits & NSItalicFontMask) != 0 || shear != 0);
         }
         if (foreground) attributes[NSAccessibilityForegroundColorTextAttribute] = (__bridge id)foreground.CGColor;
+        if (background) attributes[NSAccessibilityBackgroundColorTextAttribute] = (__bridge id)background.CGColor;
         if (underline) attributes[NSAccessibilityUnderlineTextAttribute] = @(underline);
         if (underlineColor) attributes[NSAccessibilityUnderlineColorTextAttribute] = (__bridge id)underlineColor.CGColor;
         if (strike) attributes[NSAccessibilityStrikethroughTextAttribute] = @YES;
@@ -107,6 +109,7 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
         }
         attributes[NSFontAttributeName] = font;
         if (foreground) attributes[NSForegroundColorAttributeName] = foreground;
+        if (background) attributes[NSBackgroundColorAttributeName] = background;
         if (underline) attributes[NSUnderlineStyleAttributeName] = @(underline);
         if (underlineColor) attributes[NSUnderlineColorAttributeName] = underlineColor;
         if (strike) attributes[NSStrikethroughStyleAttributeName] = @(strike);
@@ -162,8 +165,9 @@ static NSAttributedString* JaliumAccessibilityDecodeStyles(NSString* payload, NS
             || !JaliumAccessibilityStyleNumber(style, @"direction", -1, 1)
             || ![style[@"family"] isKindOfClass:NSString.class] || ![style[@"family"] length] || [style[@"family"] length] > 4096
             || style[@"language"] != NSNull.null && (![style[@"language"] isKindOfClass:NSString.class] || [style[@"language"] length] > 1024)) return nil;
-        for (NSString* key in @[@"foreground", @"underlineColor", @"strikeColor"])
-            if (style[key] && !JaliumAccessibilityStyleNumber(style, key, 0, UINT32_MAX)) return nil;
+        for (NSString* key in @[@"foreground", @"background", @"underlineColor", @"strikeColor"])
+            if (style[key] && (!JaliumAccessibilityStyleNumber(style, key, 0, UINT32_MAX) ||
+                CFGetTypeID((__bridge CFTypeRef)style[key]) == CFBooleanGetTypeID())) return nil;
         NSUInteger length = [style[@"length"] unsignedIntegerValue];
         NSDictionary* attributes = JaliumAccessibilityTextAttributes(style, accessibility);
         if (!attributes) return nil;

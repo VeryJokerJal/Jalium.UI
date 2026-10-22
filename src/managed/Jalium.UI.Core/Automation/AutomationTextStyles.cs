@@ -10,7 +10,7 @@ internal readonly record struct AutomationTextStyle(
     string FontFamily, double FontSize, int FontWeight, int FontStyle,
     uint? Foreground, int Underline = 0, uint? UnderlineColor = null,
     int Strikethrough = 0, uint? StrikethroughColor = null,
-    int Alignment = 0, int Direction = -1, string? Language = null);
+    int Alignment = 0, int Direction = -1, string? Language = null, uint? Background = null);
 
 internal readonly record struct AutomationTextStyleSpan(int Start, int Length, AutomationTextStyle Style);
 
@@ -49,6 +49,7 @@ internal static class AutomationTextStyles
         40006 => style.FontSize,
         40007 => style.FontWeight,
         40008 => ColorRef(style.Foreground),
+        40001 => ColorRef(style.Background),
         40009 => style.Alignment switch { 1 => 2, 2 => 1, _ => style.Alignment },
         40014 => style.FontStyle != 0,
         40025 => ColorRef(style.StrikethroughColor),

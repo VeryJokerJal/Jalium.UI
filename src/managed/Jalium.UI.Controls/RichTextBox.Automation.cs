@@ -21,7 +21,8 @@ public partial class RichTextBox
                 AutomationTextStyleFactory.Color(color.Color, color.Opacity),
                 Alignment: (int)(paragraph?.TextAlignment ?? Jalium.UI.TextAlignment.Left),
                 Direction: paragraph == null ? -1 : GetNativeParagraphDirection(paragraph),
-                Language: (languageSource?.Language ?? run?.Language ?? paragraph?.Language ?? _document.Language).IetfLanguageTag);
+                Language: (languageSource?.Language ?? run?.Language ?? paragraph?.Language ?? _document.Language).IetfLanguageTag,
+                Background: AutomationTextStyleFactory.Color(run?.Background));
             return AutomationTextStyleFactory.Decorations(style, run ?? (TextElement?)paragraph);
         }
         void Add(int length, AutomationTextStyle style)

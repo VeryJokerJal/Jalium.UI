@@ -59,7 +59,7 @@ internal static class WindowEmbeddedObjectChecks
         if (kind == "owner") { area.Children.Remove(anchor); area.Children.Add(subject); Canvas.SetLeft(subject, 5); Canvas.SetTop(subject, 5); }
         var root = new StackPanel { Margin = new Thickness(20), Spacing = 12 };
         root.Children.Add(new TextBlock { Text = "嵌入对象后的中文、斜体与 emoji", FontSize = 22, TextWrapping = TextWrapping.Wrap }); root.Children.Add(area);
-        var owner = new Window { Title = "Jalium Window v300 · 文本投影", Width = kind == "owner" && !custom ? 760 : 420, Height = 540,
+        var owner = new Window { Title = "Jalium Window v301 · 文本投影", Width = kind == "owner" && !custom ? 760 : 420, Height = 540,
             TitleBarStyle = custom ? WindowTitleBarStyle.Custom : WindowTitleBarStyle.Native, Content = new ScrollViewer { Content = root, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } };
         Application.Current!.MainWindow = owner; owner.Show(); owner.UpdateLayout();
         Popup? popup = null;
@@ -188,6 +188,7 @@ internal static class WindowEmbeddedObjectChecks
     {
         reference.IsReadOnly = false;
         reference.Language = XmlLanguage.GetLanguage("en-GB");
+        reference.Document.EnumerateParagraphs().Single().Inlines.OfType<Run>().Single().Background = Brushes.Yellow;
         require(reference.Focus(), "the independent editor accepts formatting focus");
         var source = ((AutomationTextProvider)UIElementAutomationPeer.CreatePeerForElement(reference)!.GetPattern(PatternInterface.Text)!).Source;
         var coordinator = view.WritingToolsCoordinator;
@@ -203,16 +204,22 @@ internal static class WindowEmbeddedObjectChecks
         require(context?.AttributedString.Value == Body + "\n", "the native formatting context belongs to the independent editor");
         require((context?.AttributedString.GetAttribute("NSLanguage", 0, out _) as NSString)?.ToString() == "en-gb",
             "the SDK context preserves the independent editor language");
+        using var initialBackground = (context?.AttributedString.GetAttribute("NSBackgroundColor", 0, out _) as NSColor)?.UsingColorSpace(NSColorSpace.SRGBColorSpace);
+        require(initialBackground is not null && initialBackground.RedComponent > .999 && initialBackground.GreenComponent > .999 && initialBackground.BlueComponent < .001,
+            "the SDK context preserves the original run background");
         const string changed = "颜色🙂";
         using var proposal = new NSMutableAttributedString(changed);
         using var underline = new NSString("NSUnderline"); using var strike = new NSString("NSStrikethrough");
         using var underlineColor = new NSString("NSUnderlineColor"); using var strikeColor = new NSString("NSStrikethroughColor");
         using var enabled = NSNumber.FromInt32(1);
         using var languageKey = new NSString("NSLanguage"); using var language = new NSString("ja-JP");
+        using var backgroundKey = new NSString("NSBackgroundColor");
+        using var backgroundColor = NSColor.FromRgba(.2f, .6f, .8f, .5f);
         var range = new NSRange(0, changed.Length);
         proposal.AddAttribute(underline, enabled, range); proposal.AddAttribute(strike, enabled, range);
         proposal.AddAttribute(underlineColor, NSColor.Red, range); proposal.AddAttribute(strikeColor, NSColor.Blue, range);
         proposal.AddAttribute(languageKey, language, range);
+        proposal.AddAttribute(backgroundKey, backgroundColor, range);
         NSAttributedString? accepted = null;
         client.ReplaceRange(coordinator, new NSRange(0, Body.Length), context!, proposal,
             NSWritingToolsCoordinatorTextReplacementReason.Noninteractive, null!, value => accepted = value);
@@ -221,6 +228,8 @@ internal static class WindowEmbeddedObjectChecks
         require(style.Underline != 0 && style.Strikethrough != 0 && style.UnderlineColor == 0xffff0000u && style.StrikethroughColor == 0xff0000ffu,
             "managed underline red and strike blue survive the native proposal");
         require(style.Language == "ja-jp", "the imported run preserves the proposed language");
+        var importedBackground = reference.Document.EnumerateParagraphs().Single().Inlines.OfType<Run>().First().Background as SolidColorBrush;
+        require(importedBackground?.Color == Jalium.UI.Media.Color.FromArgb(128, 51, 153, 204), "the imported run preserves background RGB and alpha");
         var updated = Context();
         bool Color(string key, double red, double green, double blue)
         {
@@ -232,6 +241,10 @@ internal static class WindowEmbeddedObjectChecks
             "a fresh SDK context returns both independent decoration colors");
         require((updated?.AttributedString.GetAttribute("NSLanguage", 0, out _) as NSString)?.ToString() == "ja-jp",
             "a fresh SDK context returns the imported run language");
+        using var currentBackground = (updated?.AttributedString.GetAttribute("NSBackgroundColor", 0, out _) as NSColor)?.UsingColorSpace(NSColorSpace.SRGBColorSpace);
+        require(currentBackground is not null && Math.Abs((double)currentBackground.RedComponent - .2) < .005 &&
+            Math.Abs((double)currentBackground.GreenComponent - .6) < .005 && Math.Abs((double)currentBackground.BlueComponent - .8) < .005 &&
+            Math.Abs((double)currentBackground.AlphaComponent - 128d / 255) < .005, "a fresh SDK context returns the imported background");
         surface.UpdateLayout();
         var bitmap = MacOSWritingToolsBitmapCapture.Capture((int)Math.Ceiling(surface.ActualWidth * surface.DpiScale),
             (int)Math.Ceiling(surface.ActualHeight * surface.DpiScale), surface.DpiScale,
@@ -240,8 +253,9 @@ internal static class WindowEmbeddedObjectChecks
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using (var file = File.Create(Path.Combine(output, "decoration.png"))) encoder.Save(file);
         reference.Undo(); style = reference.GetAutomationTextStyles().First().Style;
-        require(source.Text == Body + "\n" && style.Underline == 0 && style.Strikethrough == 0 && style.Language == "en-gb",
-            "Undo restores the undecorated independent editor and its language");
+        var restoredBackground = reference.Document.EnumerateParagraphs().Single().Inlines.OfType<Run>().First().Background as SolidColorBrush;
+        require(source.Text == Body + "\n" && style.Underline == 0 && style.Strikethrough == 0 && style.Language == "en-gb" && restoredBackground?.Color == Colors.Yellow,
+            "Undo restores the independent editor, language and original background");
         reference.IsReadOnly = true;
         require(editor.Focus(), "the original object-aware editor regains focus after formatting");
     }

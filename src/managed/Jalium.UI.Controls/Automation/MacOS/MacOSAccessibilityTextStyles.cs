@@ -77,7 +77,8 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 writer.WriteString("family", font?.Family ?? style.FontFamily); writer.WriteNumber("size", font is { } sized ? sized.Size : style.FontSize);
                 writer.WriteNumber("weight", font?.Weight ?? style.FontWeight); writer.WriteNumber("italic", font?.Style ?? style.FontStyle);
                 if (font is { } resolved) writer.WriteNumber("width", resolved.Width);
-                WriteColor("foreground", style.Foreground); writer.WriteNumber("underline", style.Underline);
+                WriteColor("foreground", style.Foreground); WriteColor("background", style.Background);
+                writer.WriteNumber("underline", style.Underline);
                 WriteColor("underlineColor", style.UnderlineColor); writer.WriteNumber("strike", style.Strikethrough);
                 WriteColor("strikeColor", style.StrikethroughColor); writer.WriteNumber("alignment", style.Alignment);
                 writer.WriteNumber("direction", style.Direction); writer.WriteString("language", style.Language);
