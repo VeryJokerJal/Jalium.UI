@@ -51,7 +51,7 @@ def main():
                     path.write_text(source, encoding="utf-8")
             receipts = []
             for label, target, expected_code, passed, failed in (("parent", baseline, 1, 9, 21), ("head", repo, 0, 30, 0)):
-                results = work / label
+                results = work / (label + "-results")
                 results.mkdir()
                 command = ["dotnet", "test", str(target / project), "-c", "Debug",
                            "-p:JaliumBuildRoot=" + str(work / (label + "-build")), "-p:JaliumMacNativeGeometryTests=false",
