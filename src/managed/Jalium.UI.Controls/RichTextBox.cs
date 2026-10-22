@@ -1477,6 +1477,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (layout == null)
             return;
 
+        DrawDocumentInlineBackgrounds(dc, layout, contentBounds);
         var y = contentBounds.Top - _verticalOffset;
 
         if (!MacOSWritingToolsPresentation.IsPreviewing(this) && _selection is { IsEmpty: false })

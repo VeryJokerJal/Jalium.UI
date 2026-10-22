@@ -17,7 +17,7 @@ LIBRARIES = tuple('libjalium.native.' + name + '.dylib' for name in
 ASSEMBLIES = ('Jalium.UI.MacOS.HostSmoke.dll', 'Jalium.UI.Managed.dll', 'Jalium.UI.Core.dll',
               'Jalium.UI.Controls.dll', 'Jalium.UI.Interop.dll', 'Jalium.UI.MacOS.dll', 'Jalium.UI.Xaml.dll')
 IMPLEMENTATIONS = ('Jalium.UI.Managed.dll', 'Jalium.UI.MacOS.dll', 'Jalium.UI.MacOS.HostSmoke.dll')
-IMAGES = ('inline', 'block', 'nested', 'decoration')
+IMAGES = ('inline', 'block', 'nested', 'decoration', 'background-original', 'background-undo')
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -81,8 +81,10 @@ def main():
                 loaded_paths = {match.group(1) for line in dyld.splitlines()
                                 if (match := re.match(r'^dyld\[\d+\]: <[^>]+> (.+)$', line))}
                 loaded = [name for name, paths in native_paths.items() if paths & loaded_paths]
+                foreign_native = [path for path in loaded_paths if Path(path).name.startswith('libjalium.native.') and
+                                  path not in native_paths.get(Path(path).name, set())]
                 failures = []
-                if not result or not result['passed'] or result['completed'] != result['expected'] or result['expected'] != 3 or len(result['scenes']) != 3 or len(result['checks']) != 77:
+                if not result or not result['passed'] or result['completed'] != result['expected'] or result['expected'] != 3 or len(result['scenes']) != 3 or len(result['checks']) != 82:
                     failures.append('host scenes incomplete or failed')
                 if result and (not result.get('requireForeground') or not result.get('foregroundQualified') or
                                result.get('renderThreadOverride') is not None or not result.get('focus') or
@@ -92,6 +94,11 @@ def main():
                 expected_managed = {str(app / 'Contents/MonoBundle' / name) for name in IMPLEMENTATIONS}
                 if result and set(result.get('managedLoadPaths', [])) != expected_managed:
                     failures.append('implementation assembly load paths differ')
+                expected_preload = {str(app / 'Contents/MonoBundle' / name) for name in LIBRARIES}
+                if result and set(result.get('nativePreloadRequests', [])) != expected_preload:
+                    failures.append('complete native load preflight missing')
+                if foreign_native:
+                    failures.append('foreign native library loaded: ' + ', '.join(sorted(foreign_native)))
                 if code:
                     failures.append('launcher exit ' + str(code))
                 if len(loaded) != 8:

@@ -18,6 +18,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using DocList = Jalium.UI.Documents.List;
+using UiColor = Jalium.UI.Media.Color;
 
 namespace Jalium.UI.MacOS;
 
@@ -33,6 +34,11 @@ internal static class WindowEmbeddedObjectChecks
         if (!OperatingSystem.IsMacOSVersionAtLeast(15, 2)) return 77;
         string output = Environment.GetEnvironmentVariable("JALIUM_EMBEDDED_OBJECT_OUTPUT") ?? throw new InvalidOperationException("Output directory required.");
         Directory.CreateDirectory(output);
+        // The SDK fixture load-tests the complete payload, including modules dormant in these Window scenes.
+        string nativeDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
+        var nativePreloadRequests = new[] { "core", "text", "metal", "software", "platform", "media.core", "media", "browser" }
+            .Select(name => Path.Combine(nativeDirectory, "libjalium.native." + name + ".dylib")).ToArray();
+        foreach (string path in nativePreloadRequests) _ = System.Runtime.InteropServices.NativeLibrary.Load(path);
         bool software = index >= 6, custom = index % 6 >= 3;
         string kind = new[] { "owner", "overlay", "native" }[index % 3];
         var app = NSApplication.SharedApplication;
@@ -59,7 +65,7 @@ internal static class WindowEmbeddedObjectChecks
         if (kind == "owner") { area.Children.Remove(anchor); area.Children.Add(subject); Canvas.SetLeft(subject, 5); Canvas.SetTop(subject, 5); }
         var root = new StackPanel { Margin = new Thickness(20), Spacing = 12 };
         root.Children.Add(new TextBlock { Text = "嵌入对象后的中文、斜体与 emoji", FontSize = 22, TextWrapping = TextWrapping.Wrap }); root.Children.Add(area);
-        var owner = new Window { Title = "Jalium Window v301 · 文本投影", Width = kind == "owner" && !custom ? 760 : 420, Height = 540,
+        var owner = new Window { Title = "Jalium Window v302 · 文字背景绘制", Width = kind == "owner" && !custom ? 760 : 420, Height = 540,
             TitleBarStyle = custom ? WindowTitleBarStyle.Custom : WindowTitleBarStyle.Native, Content = new ScrollViewer { Content = root, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } };
         Application.Current!.MainWindow = owner; owner.Show(); owner.UpdateLayout();
         Popup? popup = null;
@@ -102,6 +108,7 @@ internal static class WindowEmbeddedObjectChecks
                 index, kind, custom, software, completed, expected = names.Length, passed = failures.Count == 0 && completed == names.Length,
                 checks, failures, focus, scenes, requireForeground = true, foregroundQualified = foregroundQualified && focus.Count > 0,
                 renderThreadOverride = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD"), physicalInput = false, embeddedChildPainting = false,
+                nativePreloadRequests, nativePreloadScope = "SDK fixture load preflight; dormant module functionality is not exercised",
                 managedLoadPaths = new[] { typeof(Window).Assembly.Location, typeof(UIElement).Assembly.Location, typeof(JaliumMacApplication).Assembly.Location, Assembly.GetExecutingAssembly().Location }
             }));
             popup?.SetCurrentValue(Popup.IsOpenProperty, false); owner.Close(); app.Stop(app);
@@ -207,6 +214,11 @@ internal static class WindowEmbeddedObjectChecks
         using var initialBackground = (context?.AttributedString.GetAttribute("NSBackgroundColor", 0, out _) as NSColor)?.UsingColorSpace(NSColorSpace.SRGBColorSpace);
         require(initialBackground is not null && initialBackground.RedComponent > .999 && initialBackground.GreenComponent > .999 && initialBackground.BlueComponent < .001,
             "the SDK context preserves the original run background");
+        surface.UpdateLayout();
+        var originalBitmap = CaptureBackground(surface, Colors.Yellow);
+        require(originalBitmap is not null, "the backend captures the original inline background");
+        SaveBackground(originalBitmap!, output, "background-original");
+        RequireBackgroundPixels(originalBitmap!, reference, surface, require, "original yellow");
         const string changed = "颜色🙂";
         using var proposal = new NSMutableAttributedString(changed);
         using var underline = new NSString("NSUnderline"); using var strike = new NSString("NSStrikethrough");
@@ -246,18 +258,70 @@ internal static class WindowEmbeddedObjectChecks
             Math.Abs((double)currentBackground.GreenComponent - .6) < .005 && Math.Abs((double)currentBackground.BlueComponent - .8) < .005 &&
             Math.Abs((double)currentBackground.AlphaComponent - 128d / 255) < .005, "a fresh SDK context returns the imported background");
         surface.UpdateLayout();
-        var bitmap = MacOSWritingToolsBitmapCapture.Capture((int)Math.Ceiling(surface.ActualWidth * surface.DpiScale),
-            (int)Math.Ceiling(surface.ActualHeight * surface.DpiScale), surface.DpiScale,
-            drawing => { drawing.DrawRectangle(surface.Background, null, new Rect(0, 0, surface.ActualWidth, surface.ActualHeight)); surface.Render(drawing); }, () => surface.Handle != 0)
+        var bitmap = CaptureBackground(surface, UiColor.FromArgb(128, 51, 153, 204))
             ?? throw new InvalidOperationException("Decoration renderer readback unavailable.");
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using (var file = File.Create(Path.Combine(output, "decoration.png"))) encoder.Save(file);
+        RequireBackgroundPixels(bitmap, reference, surface, require, "imported translucent blue");
         reference.Undo(); style = reference.GetAutomationTextStyles().First().Style;
         var restoredBackground = reference.Document.EnumerateParagraphs().Single().Inlines.OfType<Run>().First().Background as SolidColorBrush;
         require(source.Text == Body + "\n" && style.Underline == 0 && style.Strikethrough == 0 && style.Language == "en-gb" && restoredBackground?.Color == Colors.Yellow,
             "Undo restores the independent editor, language and original background");
+        surface.UpdateLayout();
+        var undoBitmap = CaptureBackground(surface, Colors.Yellow);
+        require(undoBitmap is not null, "the backend captures the restored inline background");
+        SaveBackground(undoBitmap!, output, "background-undo");
+        RequireBackgroundPixels(undoBitmap!, reference, surface, require, "undo yellow");
         reference.IsReadOnly = true;
         require(editor.Focus(), "the original object-aware editor regains focus after formatting");
+    }
+    private static Jalium.UI.Media.Imaging.BitmapSource? CaptureBackground(Window surface, UiColor color)
+    {
+        var calibration = new SolidColorBrush(color);
+        return MacOSWritingToolsBitmapCapture.Capture((int)Math.Ceiling(surface.ActualWidth * surface.DpiScale),
+            (int)Math.Ceiling(surface.ActualHeight * surface.DpiScale), surface.DpiScale,
+            drawing =>
+            {
+                drawing.DrawRectangle(surface.Background, null, new Rect(0, 0, surface.ActualWidth, surface.ActualHeight));
+                surface.Render(drawing);
+                // This independent native swatch establishes the backend's single-pass alpha blend.
+                var sample = new Rect(surface.ActualWidth - 28, surface.ActualHeight - 16, 20, 8);
+                drawing.DrawRectangle(Brushes.White, null, sample);
+                drawing.DrawRectangle(calibration, null, sample);
+            }, () => surface.Handle != 0);
+    }
+    private static void SaveBackground(Jalium.UI.Media.Imaging.BitmapSource bitmap, string output, string name)
+    {
+        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var file = File.Create(Path.Combine(output, name + ".png")); encoder.Save(file);
+    }
+    private static void RequireBackgroundPixels(Jalium.UI.Media.Imaging.BitmapSource bitmap, RichTextBox editor,
+        Window surface, Action<bool, string> require, string label)
+    {
+        int stride = checked(bitmap.PixelWidth * 4); byte[] pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        int sampleX = (int)((surface.ActualWidth - 18) * surface.DpiScale);
+        int sampleY = (int)((surface.ActualHeight - 12) * surface.DpiScale);
+        int sample = sampleY * stride + sampleX * 4;
+        // Transaction boundaries may retain empty runs. Sample the complete visible text, not an empty edge node.
+        var runs = editor.Document.EnumerateParagraphs().Single().Inlines.OfType<Run>().Where(run => run.Text.Length > 0).ToArray();
+        var start = runs.First().ContentStart.GetCharacterRect(LogicalDirection.Forward);
+        var end = runs.Last().ContentEnd.GetCharacterRect(LogicalDirection.Backward);
+        var origin = editor.TranslatePoint(new Point(start.Left, start.Top), surface);
+        int left = Math.Clamp((int)Math.Ceiling(origin.X * surface.DpiScale) + 1, 0, bitmap.PixelWidth);
+        int right = Math.Clamp((int)Math.Floor((origin.X + end.Right - start.Left) * surface.DpiScale) - 1, left, bitmap.PixelWidth);
+        int top = Math.Clamp((int)Math.Ceiling(origin.Y * surface.DpiScale) + 1, 0, bitmap.PixelHeight);
+        int bottom = Math.Clamp((int)Math.Floor((origin.Y + start.Height) * surface.DpiScale) - 1, top, bitmap.PixelHeight);
+        int matches = 0, total = (right - left) * (bottom - top);
+        for (int y = top; y < bottom; ++y)
+            for (int x = left; x < right; ++x)
+            {
+                int index = y * stride + x * 4;
+                if (Math.Abs(pixels[index] - pixels[sample]) <= 2 && Math.Abs(pixels[index + 1] - pixels[sample + 1]) <= 2 &&
+                    Math.Abs(pixels[index + 2] - pixels[sample + 2]) <= 2 && pixels[index + 3] >= 253) ++matches;
+            }
+        require(total > 0 && matches >= Math.Max(8, total / 5) && pixels[sample + 3] >= 253,
+            $"{label} background pixels match the independent swatch: {matches}/{total}, RGB {pixels[sample + 2]}/{pixels[sample + 1]}/{pixels[sample]}");
     }
     private sealed record Scene(FlowDocument Document, Run Target, TextElement[] Objects, string Expected);
     private static Scene Create(string kind)

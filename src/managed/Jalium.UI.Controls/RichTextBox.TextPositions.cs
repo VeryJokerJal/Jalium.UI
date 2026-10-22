@@ -51,7 +51,7 @@ public partial class RichTextBox
     internal Rect GetTextPositionCharacterRect(TextPointer position, LogicalDirection direction)
     {
         var layout = GetTextPositionLayout(position, out var bounds);
-        if (layout is null) return Rect.Empty;
+        if (!OwnsTextPosition(position)) return Rect.Empty;
         var text = _document.GetText(); int offset = position.DocumentOffset;
         int start = offset, end = offset;
         bool emptyCell = position.Parent is TableCell { Blocks.Count: 0 };
@@ -64,6 +64,15 @@ public partial class RichTextBox
         {
             start = GraphemeClusters.IsBoundary(text, offset) ? offset : GraphemeClusters.PreviousBoundary(text, offset);
             end = GraphemeClusters.NextBoundary(text, start);
+        }
+        if (layout is null)
+        {
+            // A projected formatter can supply current IME geometry without legacy line records.
+            // Keep authored UTF16/grapheme offsets and revalidate ownership after layout callbacks.
+            bool content = start < end && start < text.Length && text[start] is not ('\r' or '\n' or '\u2029') && !emptyCell;
+            return bounds.Width > 0 && bounds.Height > 0 &&
+                ((IImeSupport)this).TryGetImeTextRangeGeometry(start, content ? end - start : 0, false, out var projected) &&
+                OwnsTextPosition(position) ? projected.Rectangle : Rect.Empty;
         }
         var entry = layout.TextPositionLines[FindTextPositionLine(layout.TextPositionLines, start, false)];
         var line = entry.line;

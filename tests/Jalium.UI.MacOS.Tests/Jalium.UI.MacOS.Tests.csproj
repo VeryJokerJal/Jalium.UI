@@ -18,6 +18,8 @@
     <Compile Include="../Jalium.UI.Tests/WritingToolsDecorationColorTests.cs" Link="WritingToolsDecorationColorTests.cs" />
     <Compile Include="../Jalium.UI.Tests/WritingToolsLanguageTests.cs" Link="WritingToolsLanguageTests.cs" />
     <Compile Include="../Jalium.UI.Tests/WritingToolsBackgroundTests.cs" Link="WritingToolsBackgroundTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RichTextBoxInlineBackgroundTests.cs" Link="Shared/RichTextBoxInlineBackgroundTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RichTextBoxProjectedGeometryTests.cs" Link="Shared/RichTextBoxProjectedGeometryTests.cs" />
     <Compile Include="../Jalium.UI.Tests/WritingToolsPartialFragmentTests.cs" Link="WritingToolsPartialFragmentTests.cs" />
     <Compile Include="../Jalium.UI.Tests/SelectorSelectionBindingTests.cs" Link="Shared/SelectorSelectionBindingTests.cs" />
     <Compile Include="../Jalium.UI.Tests/SelectorSelectedValueTests.cs" Link="Shared/SelectorSelectedValueTests.cs" />
