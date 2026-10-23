@@ -71,6 +71,34 @@ jobs:
           dotnet build src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj -c Release -p:JaliumPlatform=macos
           dotnet build src/packaging/Jalium.UI.iOS/Jalium.UI.iOS.csproj -c Release -f net10.0-ios -p:JaliumPlatform=ios
           dotnet build src/packaging/Jalium.UI.tvOS/Jalium.UI.tvOS.csproj -c Release -f net10.0-tvos -p:JaliumPlatform=tvos
+      - name: Build macOS global preference SDK fixture
+        run: >-
+          dotnet build tests/Jalium.UI.MacOS.HostSmoke/Jalium.UI.MacOS.HostSmoke.csproj
+          -c Release -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-motion-sdk"
+          -p:JaliumMacAutoCompleteNativePayload=false -p:UseSharedCompilation=false
+          -m:1 --disable-build-servers
+      - name: Verify AppKit global preference delivery
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-motion-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-motion-notifications.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 48, receipt
+          assert all(len(case['result']['Scenarios']) == 13 and
+                     all(item['passed'] for item in case['result']['Scenarios'])
+                     for case in receipt['cases']), receipt
+          print('All 48 AppKit global preference combinations and 624 scenarios passed.')
+          PY
       - name: Upload Apple native artifact
         uses: actions/upload-artifact@v4
         with:
@@ -161,6 +189,24 @@ jobs:
           assert all(int(counts[name]) == 601 for name in ['total', 'executed', 'passed']), counts
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
           print('All 601 mouse release ownership and command compatibility contracts executed and passed.')
+          PY
+      - name: Verify global animation preference notification ownership
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-motion-managed" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter FullyQualifiedName~MacOSAnimationPreferenceNotificationTests \
+            --logger 'trx;LogFileName=motion-notifications.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-motion-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-motion-results/motion-notifications.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 40 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 40 global animation preference notification contracts executed and passed.')
           PY
       - name: Verify all Window, clipboard and thread-affinity contracts
         run: >-

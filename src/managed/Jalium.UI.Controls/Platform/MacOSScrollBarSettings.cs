@@ -7,6 +7,8 @@ internal static partial class MacOSScrollBarSettings
 {
     private static bool? s_prefersOverlayScrollBars;
     private static bool? s_prefersReducedMotion;
+    private static long s_motionPreferenceRevision;
+    private static long s_publishedMotionPreferenceRevision;
 
     internal static bool PrefersOverlayScrollBars =>
         s_prefersOverlayScrollBars ??= ReadPreferredStyle();
@@ -42,13 +44,27 @@ internal static partial class MacOSScrollBarSettings
         s_prefersOverlayScrollBars = ReadPreferredStyle();
         bool reducedMotion = ReadReducedMotion();
         s_prefersReducedMotion = reducedMotion;
-        return previousMotion.HasValue && previousMotion.Value != reducedMotion;
+        bool changed = previousMotion.HasValue && previousMotion.Value != reducedMotion;
+        if (changed) unchecked { s_motionPreferenceRevision++; }
+        return changed;
+    }
+
+    internal static void PublishPendingMotionPreferenceChanges()
+    {
+        long revision = s_motionPreferenceRevision;
+        if (s_publishedMotionPreferenceRevision == revision) return;
+        // Claim this wave before resource and property callbacks can reenter
+        // another window or the application observer with the same preference.
+        s_publishedMotionPreferenceRevision = revision;
+        SystemParameters.NotifyMacOSAnimationPreferencesChanged(
+            () => s_motionPreferenceRevision == revision);
     }
 
     internal static void Refresh(Visual root)
     {
         RefreshPreferences();
         ApplyToTree(root);
+        if (OperatingSystem.IsMacOS()) PublishPendingMotionPreferenceChanges();
     }
 
     private static void ApplyToTree(Visual visual)

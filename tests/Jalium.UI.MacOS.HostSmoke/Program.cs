@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-motion-notification-case=", StringComparison.Ordinal))
+    return WindowMotionNotificationChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-mouse-release-case=", StringComparison.Ordinal))
     return WindowMouseReleaseOwnershipChecks.Run(args[0]);
 

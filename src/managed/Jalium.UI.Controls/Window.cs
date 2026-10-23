@@ -5323,7 +5323,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 MacOSScrollBarSettings.Refresh(this);
                 if (OperatingSystem.IsMacOS())
                 {
-                    SystemParameters.NotifyMacOSAnimationPreferencesChanged();
                     if (!IsCloseRequestedForPlatformTermination && !_managedTeardownStarted)
                         RaisePlatformSystemSettingsChanged();
                 }

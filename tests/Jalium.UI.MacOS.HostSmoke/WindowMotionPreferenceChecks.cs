@@ -409,7 +409,7 @@ internal static class WindowMotionPreferenceChecks
         public override NSApplicationTerminateReply ApplicationShouldTerminate(NSApplication sender) => AllowQuit ? NSApplicationTerminateReply.Now : NSApplicationTerminateReply.Cancel;
         public override void WillTerminate(NSNotification note) => Stop();
     }
-    private sealed class PreferenceOverride : IDisposable
+    internal sealed class PreferenceOverride : IDisposable
     {
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int One(int value);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void SetValue(int value);
