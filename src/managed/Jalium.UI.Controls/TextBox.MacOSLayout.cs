@@ -6,6 +6,7 @@ namespace Jalium.UI.Controls;
 
 public partial class TextBox
 {
+    private const long MaxCachedTextBytes = 512 * 1024;
     private readonly Dictionary<MacOSLayoutKey, MacOSAlignedTextLayout> _macOSAlignedLayouts = [];
     private readonly record struct MacOSLayoutKey(RenderContext Context, string Text, string Family,
         double Size, int Weight, int Style, double Width, TextAlignment Alignment, bool NoWrap, long FontEpoch);
@@ -36,7 +37,11 @@ public partial class TextBox
         }
         // A bounded owner cache avoids holding every former edit/font/context.
         // Formats own backend leases and must be retired on unload as well.
-        if (_macOSAlignedLayouts.Count >= 16 || _macOSAlignedLayouts.Keys.Any(item => item.Context != context || item.FontEpoch != key.FontEpoch))
+        // A single oversized current line remains usable, but it must not
+        // retain a second text/viewport/font layout alongside it.
+        if (_macOSAlignedLayouts.Count >= 16 ||
+            _macOSAlignedLayouts.Keys.Any(item => item.Context != context || item.FontEpoch != key.FontEpoch) ||
+            _macOSAlignedLayouts.Keys.Sum(item => 2L * item.Text.Length) + 2L * text.Length > MaxCachedTextBytes)
             ClearMacOSAlignedLayouts();
         var format = TextMeasurement.CreateTextFormatFromFamilyList(context, family, (float)FontSize, key.Weight, key.Style);
         format.SetTextAlignment(alignment); format.SetNoWrap(noWrap);
@@ -56,8 +61,10 @@ public partial class TextBox
 
     private void ClearMacOSAlignedLayouts()
     {
-        foreach (var layout in _macOSAlignedLayouts.Values) layout.Dispose();
+        if (_macOSAlignedLayouts.Count == 0) return;
+        var layouts = _macOSAlignedLayouts.Values.ToArray();
         _macOSAlignedLayouts.Clear();
+        foreach (var layout in layouts) layout.Dispose();
     }
 
     private sealed class MacOSAlignedTextLayout(MacOSLayoutKey key, NativeTextFormat format) : IDisposable

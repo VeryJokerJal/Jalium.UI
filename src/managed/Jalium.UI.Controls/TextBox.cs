@@ -456,6 +456,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
     {
         _macWordLayout.Dispose();
+        _textWidthCache.Clear();
         ClearMacOSAlignedLayouts();
         _imeSubscription?.Detach();
         if (ReferenceEquals(InputMethod.CurrentTarget, this))
@@ -561,6 +562,11 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
             // Fall back to estimation only when native is unavailable
             width = EstimateTextWidth(text);
         }
+
+        // A scalar width does not need to retain an oversized source string.
+        if (2L * text.Length > MaxCachedTextBytes) return width;
+        if (_textWidthCache.Keys.Sum(value => 2L * value.Length) + 2L * text.Length > MaxCachedTextBytes)
+            _textWidthCache.Clear();
 
         // Cache the result (with size limit to prevent memory issues)
         if (_textWidthCache.Count >= MaxCacheSize)
@@ -2537,6 +2543,9 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     {
         if (d is TextBox textBox)
         {
+            // Retire the old revision before layout invalidation or user callbacks.
+            textBox._textWidthCache.Clear();
+            textBox.ClearMacOSAlignedLayouts();
             textBox._caretHasBackwardAffinity = false;
             textBox._linesDirty = true;
             textBox.InvalidateMeasure();

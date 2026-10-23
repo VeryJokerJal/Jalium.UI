@@ -15,13 +15,18 @@ The toolchain versions are recorded in `eng/apple/toolchain.lock.json`. Install
 the pinned SDK first, then its workload:
 
 ```bash
-dotnet workload install macos --version 10.0.300.2
+dotnet workload install macos --version 10.0.302.1
 xcodebuild -downloadComponent MetalToolchain
 ```
 
 The run script also finds ignored tools installed under `.tools/dotnet`,
 `.tools/bin` and `.tools/cmake-*-macos-universal` in the framework checkout.
 Dependencies remain local development tools and are not included in Git.
+The Apple lock now pairs .NET SDK 10.0.302, workload set 10.0.302.1 and Apple
+SDK packs 26.5.10315 with Xcode 26.6, as specified by the
+[official Xcode 26.6 servicing release](https://github.com/dotnet/macios/releases/tag/dotnet-10.0.1xx-xcode26.5-10315).
+The repository's general .NET minimum in global.json remains 10.0.300;
+Apple builds use the platform lock and CI checks the effective versions.
 
 ## Build and run
 
@@ -283,9 +288,10 @@ integration and the complete Gallery control matrix still need separate
 qualification. These are independent of the verified Apple Silicon shader
 effects path.
 
-On a fresh machine, workload set 10.0.300.2 can fail while reading missing
-Xamarin SDK preferences. A local workaround used during validation creates
-`~/Library/Preferences/Xamarin/Settings.plist` with an `AppleSdkRoot` string
-pointing to the selected Xcode bundle, only when no existing SDK settings file
-is present. The underlying issue is tracked in
-[dotnet/macios #25476](https://github.com/dotnet/macios/issues/25476).
+Workload set 10.0.300.2 has both the
+[missing SDK preferences regression](https://github.com/dotnet/macios/issues/25476)
+and an Xcode 26.5 requirement; generating a preferences plist does not make it
+compatible with Xcode 26.6. Use the matched platform lock above. CI no longer
+creates preferences as a workaround and explicitly keeps Xcode validation on.
+Local builds on a different Xcode may still use the documented development
+override, with the actual compiler/workload recorded separately from CI.
