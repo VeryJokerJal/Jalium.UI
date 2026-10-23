@@ -159,6 +159,38 @@ jobs:
                      and case['result']['displayProbeRestored'] for case in receipt['cases']), receipt
           print('All eight Dock motion combinations and 128 scenarios passed.')
           PYDOCK
+      - name: Verify external Dock surface ownership
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PYDOCKOWNER'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-dock-ownership-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-dock-ownership.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 8, receipt
+          assert all(len(case['result']['Scenarios']) == 32 and case['result']['overrideRestored']
+                     for case in receipt['cases']), receipt
+          print('All eight Dock ownership combinations and 256 scenarios passed.')
+          PYDOCKOWNER
+      - name: Preserve AppKit SDK diagnostic receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-sdk-diagnostics
+          path: |
+            ${{ runner.temp }}/jalium-motion-sdk-results
+            ${{ runner.temp }}/jalium-textbox-cache-sdk-results
+            ${{ runner.temp }}/jalium-dock-motion-sdk-results
+            ${{ runner.temp }}/jalium-dock-ownership-sdk-results
+          if-no-files-found: ignore
       - name: Upload Apple native artifact
         uses: actions/upload-artifact@v4
         with:

@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-dock-ownership-case=", StringComparison.Ordinal))
+    return WindowDockOwnershipChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-dock-motion-case=", StringComparison.Ordinal))
     return WindowDockMotionChecks.Run(args[0]);
 

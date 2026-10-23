@@ -75,6 +75,11 @@ def main():
         receipt = {'index': index, 'passed': passed, 'exitCode': code, 'result': result,
                    'ownNativeLibraries': sorted(own), 'foreignNativeLibraryCount': len(foreign), 'helperLoaded': str(helper) in dyld}
         receipts.append(receipt)
+        if not passed:
+            print(json.dumps({'index': index, 'exitCode': code,
+                              'failedScenarios': [item for item in result.get('Scenarios', []) if not item['passed']] if result else [],
+                              'failures': result.get('Failures', []) if result else ['Missing result.json'],
+                              'foreignNativeLibraries': foreign, 'helperLoaded': str(helper) in dyld}, ensure_ascii=False), flush=True)
         print(json.dumps({'index': index, 'passed': passed,
                           'scenariosPassed': sum(item['passed'] for item in result['Scenarios']) if result else None,
                           'failureCount': len(result['Failures']) if result else None}), flush=True)

@@ -19,6 +19,7 @@ internal static class MacOSTaskbar
     private static NSView? _originalApplicationView;
     private static TileView? _applicationView;
     private static bool _applicationOverridden;
+    private static WeakReference<TileView>? _replacedApplicationView;
     private static NSTimer? _timer;
     private static long _timerGeneration;
     private static bool _reduceMotion;
@@ -86,6 +87,41 @@ internal static class MacOSTaskbar
 
     private static bool Chinese => System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "zh";
 
+    private static bool SameView(NSView? first, NSView? second) => first != null && second != null &&
+        (nint)first.Handle != 0 && first.Handle == second.Handle;
+
+    private static void ObserveTileOwner(NSDockTile tile, ref TileView? owned, ref NSView? original,
+        ref bool overridden, ref WeakReference<TileView>? replaced)
+    {
+        var current = tile.ContentView;
+        if (SameView(current, owned))
+        {
+            overridden = false;
+            replaced = null;
+            return;
+        }
+        if (owned != null)
+        {
+            overridden = true;
+            replaced = new WeakReference<TileView>(owned);
+        }
+        if (!overridden) return;
+        if (replaced != null && replaced.TryGetTarget(out var previous) && SameView(current, previous))
+        {
+            owned = previous;
+            overridden = false;
+            replaced = null;
+        }
+        else if (current == null || SameView(current, original))
+        {
+            // The external component restored the base surface or removed its view.
+            owned = null;
+            original = null;
+            overridden = false;
+            replaced = null;
+        }
+    }
+
     private static void RefreshApplication()
     {
         var tile = NSApplication.SharedApplication.DockTile;
@@ -94,8 +130,8 @@ internal static class MacOSTaskbar
             .OrderByDescending(e => e.Native.IsKeyWindow).ThenByDescending(e => e.Activation).FirstOrDefault();
         var info = selected?.Lease.Info;
         bool custom = info != null && (info.ProgressState != TaskbarItemProgressState.None || info.Overlay != null);
-        if (_applicationView != null && tile.ContentView?.Handle != _applicationView.Handle)
-            _applicationOverridden = true;
+        ObserveTileOwner(tile, ref _applicationView, ref _originalApplicationView,
+            ref _applicationOverridden, ref _replacedApplicationView);
         if (!custom)
         {
             if (_applicationView != null && tile.ContentView?.Handle == _applicationView.Handle)
@@ -104,8 +140,12 @@ internal static class MacOSTaskbar
                 tile.Display();
             }
             _applicationView = null;
-            _originalApplicationView = null;
-            _applicationOverridden = false;
+            if (!_applicationOverridden || Entries.Count == 0)
+            {
+                _originalApplicationView = null;
+                _applicationOverridden = false;
+                _replacedApplicationView = null;
+            }
         }
         else if (!_applicationOverridden)
         {
@@ -117,7 +157,7 @@ internal static class MacOSTaskbar
             _applicationView.Update(NSApplication.SharedApplication.ApplicationIconImage,
                 selected!.Overlay.Image, info!, selected.Window.Title);
             tile.ContentView = _applicationView;
-            tile.Display();
+            if (SameView(tile.ContentView, _applicationView)) tile.Display();
         }
         RefreshTimer();
     }
@@ -253,6 +293,7 @@ internal static class MacOSTaskbar
         private TileView? _tileView;
         private NSImage? _thumbnail;
         private bool _overridden;
+        private WeakReference<TileView>? _replacedView;
         private bool _disposed, _refreshing, _refreshAgain;
         private Thickness _capturedMargin;
         private bool _observedVisibility;
@@ -340,9 +381,9 @@ internal static class MacOSTaskbar
             }
             bool custom = Eligible && info != null && (info.ProgressState != TaskbarItemProgressState.None ||
                 info.Overlay != null || info.ThumbnailClipMargin != Thickness.Zero);
-            if (!custom && _tileView == null) return;
+            if (!custom && _tileView == null && !_overridden) return;
             var tile = Native.DockTile;
-            if (_tileView != null && tile.ContentView?.Handle != _tileView.Handle) _overridden = true;
+            ObserveTileOwner(tile, ref _tileView, ref _originalView, ref _overridden, ref _replacedView);
             if (!custom)
             {
                 if (_tileView != null && tile.ContentView?.Handle == _tileView.Handle)
@@ -350,7 +391,8 @@ internal static class MacOSTaskbar
                     SetContentView(tile, _originalView);
                     tile.Display();
                 }
-                _tileView = null; _originalView = null; _thumbnail = null; _overridden = false;
+                _tileView = null; _thumbnail = null;
+                if (!_overridden) { _originalView = null; _replacedView = null; }
                 return;
             }
             if (_overridden) return;
@@ -376,6 +418,9 @@ internal static class MacOSTaskbar
                 }
             }
             if (!Lease.IsCurrent(revision)) return;
+            // Rendering the thumbnail can hand the native surface to another component.
+            ObserveTileOwner(tile, ref _tileView, ref _originalView, ref _overridden, ref _replacedView);
+            if (_overridden) return;
             if (_tileView == null)
             {
                 _originalView = tile.ContentView;
@@ -383,7 +428,7 @@ internal static class MacOSTaskbar
             }
             _tileView.Update(_thumbnail, Overlay.Image, info!, Window.Title);
             tile.ContentView = _tileView;
-            tile.Display();
+            if (Lease.IsCurrent(revision) && SameView(tile.ContentView, _tileView)) tile.Display();
         }
 
         public void Dispose()
