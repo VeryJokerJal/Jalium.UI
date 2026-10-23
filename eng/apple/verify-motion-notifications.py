@@ -31,6 +31,7 @@ def main():
                     '-mmacosx-version-min=15.0', str(source), '-framework', 'AppKit', '-framework', 'Foundation', '-o', str(helper)], check=True)
     subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(helper)], check=True, capture_output=True)
     helper_hash = hashlib.sha256(helper.read_bytes()).hexdigest()
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     receipts = []
     allowed = {name + '.dylib' for name in ('core', 'text', 'metal', 'software', 'platform', 'media.core', 'media', 'browser')}
     for index in cases:
@@ -54,10 +55,17 @@ def main():
         receipt = {'index': index, 'passed': passed, 'exitCode': code, 'result': result,
                    'ownNativeLibraries': sorted(own), 'foreignNativeLibraryCount': len(foreign), 'helperLoaded': str(helper) in dyld}
         receipts.append(receipt)
+        if not passed:
+            print(json.dumps({'index': index, 'exitCode': code,
+                              'failedScenarios': [scene for scene in result.get('Scenarios', []) if not scene['passed']] if result else [],
+                              'failures': result.get('Failures', []) if result else ['Missing result.json'],
+                              'observed': result.get('Observed', []) if result else [],
+                              'foreignNativeLibraries': foreign, 'helperLoaded': str(helper) in dyld}, ensure_ascii=False), flush=True)
         print(json.dumps({'index': index, 'passed': passed, 'scenariosPassed': sum(x['passed'] for x in result['Scenarios']) if result else None,
                           'failureCount': len(result['Failures']) if result else None}), flush=True)
     assert helper_hash == hashlib.sha256(helper.read_bytes()).hexdigest()
-    final = {'cases': receipts, 'passed': sum(x['passed'] for x in receipts), 'total': len(cases), 'helperSHA256': helper_hash,
+    assert source_hash == hashlib.sha256(source.read_bytes()).hexdigest()
+    final = {'cases': receipts, 'passed': sum(x['passed'] for x in receipts), 'total': len(cases), 'helperSHA256': helper_hash, 'helperSourceSHA256': source_hash,
              'physicalInput': False, 'systemPreferencesWritten': False, 'foregroundRequired': False}
     (output / 'receipt.json').write_text(json.dumps(final, ensure_ascii=False))
     return 0 if final['passed'] == final['total'] else 1

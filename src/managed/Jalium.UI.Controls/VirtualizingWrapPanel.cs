@@ -166,6 +166,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     private bool _acceptMeasureCrossAxisAfterItemSizeChange;
     private readonly List<int> _recycleBuffer = new();
     private ScrollViewer? _ancestorScrollViewer;
+    private ViewportWindowObserver? _viewportWindowObserver;
     private double _ancestorPanelStart = double.NaN;
     // Scroll-axis viewport the last MeasureOverride actually used to size its
     // realization window, and the arrange viewport a recovery pass was already
@@ -1010,9 +1011,15 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
             }
         }
 
+        Window? fallbackWindow = null;
+        // Popup input follows its logical owner; viewport dimensions belong
+        // to the physical window that presents the panel.
         if (!IsUsableCrossAxis(viewport) &&
-            Window.GetWindow(this) is { } window)
+            (OperatingSystem.IsMacOS()
+                ? Window.GetMacOSPhysicalWindow(this)
+                : Window.GetWindow(this)) is { } window)
         {
+            fallbackWindow = window;
             viewport = Orientation == Orientation.Horizontal
                 ? window.ActualHeight
                 : window.ActualWidth;
@@ -1023,6 +1030,8 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
                     : window.Width;
             }
         }
+
+        UpdateViewportWindowObserver(OperatingSystem.IsMacOS() ? fallbackWindow : null);
 
         var availableAxis = Orientation == Orientation.Horizontal
             ? layoutSize.Height
@@ -1151,6 +1160,72 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         return true;
     }
 
+    // Observe actual layout size, after Arrange has published it. Window's
+    // native acknowledgement can arrive before that value changes.
+    // Weak endpoints also cover measure-before-Loaded trees.
+    private sealed class ViewportWindowObserver
+    {
+        private readonly WeakReference<VirtualizingWrapPanel> _panel;
+        private readonly WeakReference<Window> _window;
+
+        internal ViewportWindowObserver(VirtualizingWrapPanel panel, Window window)
+        {
+            _panel = new(panel);
+            _window = new(window);
+        }
+
+        internal void Subscribe()
+        {
+            if (_window.TryGetTarget(out var window))
+                window.AddHandler(FrameworkElement.SizeChangedEvent, new SizeChangedEventHandler(OnSizeChanged), handledEventsToo: true);
+        }
+
+        internal bool IsFor(Window? window) => window != null &&
+            _window.TryGetTarget(out var current) && ReferenceEquals(current, window);
+
+        internal void Dispose()
+        {
+            if (_window.TryGetTarget(out var window))
+                window.RemoveHandler(FrameworkElement.SizeChangedEvent, new SizeChangedEventHandler(OnSizeChanged));
+            if (_panel.TryGetTarget(out var panel) && ReferenceEquals(panel._viewportWindowObserver, this))
+                panel._viewportWindowObserver = null;
+        }
+
+        private void OnSizeChanged(object sender, SizeChangedEventArgs args)
+        {
+            if (_panel.TryGetTarget(out var panel) && panel.UseAncestorScrollViewer &&
+                ReferenceEquals(panel._viewportWindowObserver, this) &&
+                ReferenceEquals(Window.GetMacOSPhysicalWindow(panel), sender))
+            {
+                panel.InvalidateMeasure();
+            }
+            else
+            {
+                Dispose();
+            }
+        }
+    }
+
+    private void UpdateViewportWindowObserver(Window? window)
+    {
+        if (_viewportWindowObserver?.IsFor(window) == true) return;
+        _viewportWindowObserver?.Dispose();
+        if (window == null) return;
+        var observer = new ViewportWindowObserver(this, window);
+        _viewportWindowObserver = observer;
+        try
+        {
+            observer.Subscribe();
+            if (!ReferenceEquals(_viewportWindowObserver, observer) || !UseAncestorScrollViewer ||
+                !ReferenceEquals(Window.GetMacOSPhysicalWindow(this), window)) observer.Dispose();
+        }
+        catch
+        {
+            observer.Dispose();
+            throw;
+        }
+    }
+
     private void EnsureAncestorScrollViewer()
     {
         if (!UseAncestorScrollViewer)
@@ -1254,8 +1329,11 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
 
     private void OnPanelUnloaded(
         object? sender,
-        RoutedEventArgs args) =>
+        RoutedEventArgs args)
+    {
         DetachAncestorScrollViewer();
+        UpdateViewportWindowObserver(null);
+    }
 
     private Size CoerceViewport(Size availableSize)
     {
@@ -1565,6 +1643,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         if (args.NewValue is not true)
         {
             panel.DetachAncestorScrollViewer();
+            panel.UpdateViewportWindowObserver(null);
             panel._scrollOffset = 0;
         }
 

@@ -89,6 +89,8 @@ internal static class WindowMotionNotificationChecks
         internal readonly List<string> Checks = [], Failures = [];
         internal readonly List<object> Observed = [];
         private PropertyChangedEventHandler? _changed;
+        private string _phase = "startup";
+        private readonly Stopwatch _timeline = Stopwatch.StartNew();
         private RenderBackend Backend => index % 12 >= 6 ? RenderBackend.Software : RenderBackend.Metal;
         private bool Custom => index % 2 != 0;
         private int Owners => new[] { 0, 1, 3 }[index % 6 / 2];
@@ -98,9 +100,12 @@ internal static class WindowMotionNotificationChecks
         private void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); Checks.Add(message); }
         private void Attempt(string name, Action body)
         {
+            _phase = name;
             int first = Checks.Count; string? error = null;
             try { body(); } catch (Exception failure) { error = failure.ToString(); Failures.Add(name + ": " + error); }
-            Scenarios.Add(new { name, passed = error == null, checks = Checks.Skip(first).ToArray(), error });
+            Scenarios.Add(new { name, passed = error == null, checks = Checks.Skip(first).ToArray(), error,
+                localNotifications = _local.Select(pair => new { handle = (long)pair.Key.Handle,
+                    popup = pair.Key.IsMacOSPopupHost, count = pair.Value }).ToArray() });
         }
         private static void Post()
         {
@@ -146,7 +151,12 @@ internal static class WindowMotionNotificationChecks
         private void Watch(Window window)
         {
             if (_local.ContainsKey(window)) return; _local[window] = 0;
-            window.SystemSettingsChanged += (_, _) => _local[window]++;
+            window.SystemSettingsChanged += (_, _) =>
+            {
+                _local[window]++;
+                Observed.Add(new { phase = _phase, milliseconds = _timeline.Elapsed.TotalMilliseconds,
+                    localSettingsWindow = (long)window.Handle, popup = window.IsMacOSPopupHost, count = _local[window] });
+            };
         }
         private void CloseAll()
         {
