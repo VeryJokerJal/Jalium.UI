@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 1 && args[0].StartsWith("--window-dock-motion-case=", StringComparison.Ordinal))
+    return WindowDockMotionChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-writing-tools-zero-inline-case=", StringComparison.Ordinal))
     return WindowWritingToolsZeroInlineChecks.Run(args[0]);
 

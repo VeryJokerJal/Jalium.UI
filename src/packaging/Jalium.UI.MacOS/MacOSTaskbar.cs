@@ -20,6 +20,8 @@ internal static class MacOSTaskbar
     private static TileView? _applicationView;
     private static bool _applicationOverridden;
     private static NSTimer? _timer;
+    private static long _timerGeneration;
+    private static bool _reduceMotion;
     private static long _activation;
     private static long _nextThumbnail;
 
@@ -122,20 +124,38 @@ internal static class MacOSTaskbar
 
     private static void RefreshTimer()
     {
+        bool reduceMotion = NSWorkspace.SharedWorkspace.AccessibilityDisplayShouldReduceMotion;
+        bool motionChanged = reduceMotion != _reduceMotion;
+        _reduceMotion = reduceMotion;
         bool needed = Entries.Any(e => e.Eligible && e.Lease.Info != null &&
-            (e.Native.IsMiniaturized || e.Overlay.NeedsPolling || e.Lease.Info.ProgressState == TaskbarItemProgressState.Indeterminate));
+            (e.NeedsThumbnailPolling || e.Overlay.NeedsPolling ||
+             (!reduceMotion && e.Lease.Info.ProgressState == TaskbarItemProgressState.Indeterminate)));
         if (needed && _timer == null)
-            _timer = NSTimer.CreateRepeatingScheduledTimer(TimeSpan.FromMilliseconds(100), _ => Tick());
+        {
+            long generation = ++_timerGeneration;
+            _timer = NSTimer.CreateRepeatingScheduledTimer(TimeSpan.FromMilliseconds(100), _ =>
+            {
+                if (generation == _timerGeneration && _timer != null) Tick();
+            });
+        }
         else if (!needed && _timer != null)
         {
-            _timer.Invalidate();
-            _timer.Dispose();
+            var timer = _timer;
             _timer = null;
+            ++_timerGeneration;
+            timer.Invalidate();
+            timer.Dispose();
         }
+        // Present the static phase once, including when this stops the timer.
+        if (motionChanged) DisplayIndeterminateProgress();
     }
+
+    internal static void RefreshMotionPreference() => RefreshTimer();
 
     private static void Tick()
     {
+        RefreshTimer();
+        if (_timer == null) return;
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
         bool capture = now >= _nextThumbnail;
         if (capture) _nextThumbnail = now + System.Diagnostics.Stopwatch.Frequency;
@@ -143,14 +163,18 @@ internal static class MacOSTaskbar
         {
             if (!entry.Eligible) continue;
             if (entry.Overlay.ContentChanged) entry.Refresh();
-            if (capture && entry.Native.IsMiniaturized) entry.RefreshWindowTile(capture: true);
-            if (entry.Lease.Info?.ProgressState == TaskbarItemProgressState.Indeterminate)
-                entry.Native.DockTile.Display();
+            if (capture && entry.NeedsThumbnailPolling) entry.RefreshWindowTile(capture: true);
         }
-        if (_applicationView != null && !_applicationOverridden &&
+        if (!_reduceMotion) DisplayIndeterminateProgress();
+        RefreshTimer();
+    }
+
+    private static void DisplayIndeterminateProgress()
+    {
+        foreach (var entry in Entries.ToArray()) entry.DisplayIndeterminateProgress();
+        if (_applicationView is { HasIndeterminateProgress: true } && !_applicationOverridden &&
             NSApplication.SharedApplication.DockTile.ContentView?.Handle == _applicationView.Handle)
             NSApplication.SharedApplication.DockTile.Display();
-        RefreshTimer();
     }
 
     private static NSImage? CaptureImage(ImageSource? source)
@@ -262,6 +286,15 @@ internal static class MacOSTaskbar
             _view.Window?.Handle == Native.Handle && !Window.IsCloseRequestedForPlatformTermination;
         internal bool Eligible => Alive && Window.ShowInTaskbar && Window.Visibility == Visibility.Visible &&
             (Native.IsVisible || Native.IsMiniaturized);
+        private bool OwnsWindowTile => _tileView != null && !_overridden &&
+            Native.DockTile.ContentView?.Handle == _tileView.Handle;
+        internal bool NeedsThumbnailPolling => Eligible && Native.IsMiniaturized && OwnsWindowTile;
+
+        internal void DisplayIndeterminateProgress()
+        {
+            if (Eligible && _tileView is { HasIndeterminateProgress: true } && OwnsWindowTile)
+                Native.DockTile.Display();
+        }
 
         public void Refresh() => Lease.Refresh();
 
@@ -380,6 +413,7 @@ internal static class MacOSTaskbar
         private NSImage? _baseImage, _overlay;
         private TaskbarItemProgressState _state;
         private double _value;
+        internal bool HasIndeterminateProgress => _state == TaskbarItemProgressState.Indeterminate;
         internal TileView() : base(new CGRect(0, 0, 128, 128))
         {
             AutoresizingMask = NSViewResizingMask.WidthSizable | NSViewResizingMask.HeightSizable;

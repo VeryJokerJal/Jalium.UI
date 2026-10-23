@@ -100,6 +100,7 @@ internal static class MacOSWindowThemes
         Volatile.Write(ref _scheme, scheme);
         _increaseContrast = contrast;
         _reduceTransparency = transparency;
+        MacOSTaskbar.RefreshMotionPreference();
         return changed;
     }
 

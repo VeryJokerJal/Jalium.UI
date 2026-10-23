@@ -28,6 +28,15 @@ SDK packs 26.5.10315 with Xcode 26.6, as specified by the
 The repository's general .NET minimum in global.json remains 10.0.300;
 Apple builds use the platform lock and CI checks the effective versions.
 
+Apple CI installs its pinned SDK under a job-owned `RUNNER_TEMP/jalium-apple-dotnet`
+directory through `DOTNET_INSTALL_DIR`. Installing 10.0.302 into the runner's
+shared SDK directory does not alone select it: this repository intentionally
+uses `latestFeature` in global.json, so a newer preinstalled SDK may win.
+The [setup-dotnet environment variable](https://github.com/actions/setup-dotnet/blob/v4/README.md#environment-variables)
+keeps the Apple selection isolated without changing the general repository
+minimum. CI still checks the effective `dotnet --version` and Xcode version
+before installing the pinned workload set.
+
 ## Build and run
 
 Keep the two repositories next to each other:

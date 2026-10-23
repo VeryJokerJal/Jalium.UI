@@ -41,6 +41,8 @@ jobs:
       - name: Select pinned Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/jalium-apple-dotnet
         with:
           dotnet-version: 10.0.302
       - name: Verify generated template lifetimes
@@ -60,7 +62,8 @@ jobs:
           from pathlib import Path
           import subprocess
           tools = json.loads(Path('eng/apple/toolchain.lock.json').read_text())
-          assert subprocess.check_output(['dotnet', '--version'], text=True).strip() == tools['dotnetSdk']
+          sdk = subprocess.check_output(['dotnet', '--version'], text=True).strip()
+          assert sdk == tools['dotnetSdk'], f"Expected .NET SDK {tools['dotnetSdk']}, got {sdk}"
           xcode = subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0]
           assert xcode == 'Xcode ' + tools['xcode'], xcode
           subprocess.run(['dotnet', 'workload', 'install', 'ios', 'tvos', 'macos',
@@ -135,6 +138,27 @@ jobs:
                      for case in receipt['cases']), receipt
           print('All four TextBox cache combinations, 48 phases and 340 assertions passed.')
           PYCACHE
+      - name: Verify Dock reduced motion and content polling
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PYDOCK'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-dock-motion-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-dock-motion.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 8, receipt
+          assert all(len(case['result']['Scenarios']) == 16 and case['result']['overrideRestored']
+                     and case['result']['displayProbeRestored'] for case in receipt['cases']), receipt
+          print('All eight Dock motion combinations and 128 scenarios passed.')
+          PYDOCK
       - name: Upload Apple native artifact
         uses: actions/upload-artifact@v4
         with:
@@ -188,6 +212,8 @@ jobs:
           jalium.native.platform.window.startup.tests
           jalium.native.platform.window.drag.tests
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/jalium-apple-dotnet
         with:
           dotnet-version: 10.0.302
       - name: Verify managed popup ownership and binding reentrancy
@@ -269,6 +295,8 @@ jobs:
       - name: Verify GPU resources, readback and Window rendering regressions
         run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium[.]native[.](metal[.](gpu-.*baseline|readback(-no-resize)?|regression|text-glyph-ranges|text-metrics|fonts)|software[.]apple[.](text-glyph-ranges|coretext))$' --output-on-failure -V
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/jalium-apple-dotnet
         with:
           dotnet-version: 10.0.302
       - name: Verify CoreText family resolution and private fallback lifetimes
