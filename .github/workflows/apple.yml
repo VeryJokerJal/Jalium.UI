@@ -266,12 +266,12 @@ jobs:
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
           print('All 29 managed popup ownership contracts executed and passed.')
           PY
-      - name: Verify mouse release ownership and command compatibility
+      - name: Verify mouse release ownership, command compatibility and ComboBox forwarding
         run: |
           dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
             -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-mouse-owner-managed" \
             -p:JaliumMacNativeGeometryTests=false \
-            --filter 'FullyQualifiedName~MacOSMouseReleaseRetirementTests|FullyQualifiedName~MacOSMouseModifierTests' \
+            --filter 'FullyQualifiedName~MacOSMouseReleaseRetirementTests|FullyQualifiedName~MacOSMouseModifierTests|FullyQualifiedName~MacOSComboBoxMouseForwardingTests' \
             --logger 'trx;LogFileName=mouse-ownership.trx' \
             --results-directory "$RUNNER_TEMP/jalium-mouse-owner-results"
           python3 - <<'PY'
@@ -280,9 +280,9 @@ jobs:
           import xml.etree.ElementTree as ET
           path = Path(os.environ['RUNNER_TEMP']) / 'jalium-mouse-owner-results/mouse-ownership.trx'
           counts = ET.parse(path).find('.//{*}Counters').attrib
-          assert all(int(counts[name]) == 601 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 633 for name in ['total', 'executed', 'passed']), counts
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
-          print('All 601 mouse release ownership and command compatibility contracts executed and passed.')
+          print('All 633 mouse release ownership, command compatibility and ComboBox forwarding contracts executed and passed.')
           PY
       - name: Verify global animation preference notification ownership
         run: |

@@ -56,7 +56,8 @@ internal static class WindowDockMotionChecks
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
             {
                 index, passed = scene.Failures.Count == 0 && scene.Scenarios.Count == ScenarioCount,
-                scene.Scenarios, scene.Checks, scene.Failures, expected = ScenarioCount,
+                scene.Scenarios, scene.Checks, scene.Failures, scene.WindowTransitions, scene.DisplayObservations,
+                miniaturizationObserversRestored = scene.ObserversRestored, expected = ScenarioCount,
                 software = index >= 4, custom = index % 4 >= 2, initiallyReduced = index % 2 != 0,
                 processId = Environment.ProcessId, overrideRestored = restored, displayProbeRestored = displayRestored,
                 physicalInput = false, systemPreferencesWritten = false, foregroundRequired = false,
@@ -105,6 +106,12 @@ internal static class WindowDockMotionChecks
         private TaskbarItemInfo _info = null!;
         private NSView? _originalAppView;
         private int _capture;
+        private readonly List<NSObject> _stateObservers = [];
+        private readonly Stopwatch _watch = Stopwatch.StartNew();
+        private int _miniCompletions, _restoreCompletions, _awaitedMini, _awaitedRestore;
+        private string _phase = "opening", _observedState = string.Empty;
+        internal readonly List<object> WindowTransitions = [], DisplayObservations = [];
+        internal bool ObserversRestored => _stateObservers.Count == 0;
 
         private void Require(bool condition, string message)
         {
@@ -113,6 +120,7 @@ internal static class WindowDockMotionChecks
         }
         private void Attempt(string name, Action action)
         {
+            _phase = name;
             int first = Checks.Count; string? error = null;
             try { action(); } catch (Exception failure) { error = failure.ToString(); Failures.Add(name + ": " + error); }
             Scenarios.Add(new { name, passed = error == null, checks = Checks.Skip(first).ToArray(), error });
@@ -178,8 +186,14 @@ internal static class WindowDockMotionChecks
             ulong displays = display.Count(_app.DockTile.Handle);
             Pump(wait);
             byte[] after = Capture(AppView, label + "-after");
+            ulong afterDisplays = display.Count(_app.DockTile.Handle);
+            DisplayObservations.Add(new { label, milliseconds = _watch.Elapsed.TotalMilliseconds,
+                beforeDisplays = displays, afterDisplays, miniCompletions = _miniCompletions,
+                restoreCompletions = _restoreCompletions, nativeMiniaturized = _native.IsMiniaturized,
+                nativeVisible = _native.IsVisible, nativeKey = _native.IsKeyWindow, managedState = _window.WindowState.ToString() });
             Require(before.AsSpan().SequenceEqual(after), "reduced indeterminate tile keeps identical pixels: " + label);
-            Require(display.Count(_app.DockTile.Handle) == displays, "no repeated application Dock display: " + label);
+            Require(afterDisplays == displays, "no repeated application Dock display: " + label +
+                "; before=" + displays + "; after=" + afterDisplays + "; completed=" + _miniCompletions + "/" + _restoreCompletions);
         }
         private void AnimatedApplication(string label)
         {
@@ -194,11 +208,39 @@ internal static class WindowDockMotionChecks
             Require(changed, "enabled indeterminate tile advances its rendered phase");
             Require(display.Count(_app.DockTile.Handle) > displays, "real timer requests application Dock display");
         }
+        private void ObserveWindowCompletion()
+        {
+            Window observedWindow = _window;
+            NSWindow observedNative = _native;
+            void Observe(NSString name, Action? completed = null) => _stateObservers.Add(
+                NSNotificationCenter.DefaultCenter.AddObserver(name, _ =>
+                {
+                    if (observedWindow.Handle == 0) return;
+                    completed?.Invoke();
+                    string state = $"{observedNative.IsMiniaturized}/{observedNative.IsVisible}/{observedNative.IsKeyWindow}/{observedWindow.WindowState}";
+                    if (name == NSWindow.DidUpdateNotification && state == _observedState) return;
+                    _observedState = state;
+                    WindowTransitions.Add(new { name = name.ToString(), phase = _phase,
+                        milliseconds = _watch.Elapsed.TotalMilliseconds, nativeMiniaturized = observedNative.IsMiniaturized,
+                        nativeVisible = observedNative.IsVisible, nativeKey = observedNative.IsKeyWindow,
+                        managedState = observedWindow.WindowState.ToString(), applicationDisplays = display.Count(_app.DockTile.Handle),
+                        miniCompletions = _miniCompletions, restoreCompletions = _restoreCompletions });
+                }, observedNative));
+            Observe(NSWindow.DidMiniaturizeNotification, () => _miniCompletions++);
+            Observe(NSWindow.DidDeminiaturizeNotification, () => _restoreCompletions++);
+            Observe(NSWindow.DidBecomeKeyNotification);
+            Observe(NSWindow.DidResignKeyNotification);
+            Observe(NSWindow.DidUpdateNotification);
+        }
         private void WaitMiniaturized(bool expected)
         {
+            int completion = expected ? ++_awaitedMini : ++_awaitedRestore;
+            bool Complete() => _native.IsMiniaturized == expected &&
+                (expected ? _miniCompletions : _restoreCompletions) >= completion &&
+                _window.WindowState == (expected ? WindowState.Minimized : WindowState.Normal);
             var watch = Stopwatch.StartNew();
-            while (_native.IsMiniaturized != expected && watch.Elapsed.TotalSeconds < 5) Pump(.03);
-            Require(_native.IsMiniaturized == expected, "AppKit acknowledges requested miniaturization state");
+            while (!Complete() && watch.Elapsed.TotalSeconds < 5) Pump(.03);
+            Require(Complete(), "AppKit completion notification, native and managed miniaturization states agree");
             Barrier();
         }
         internal void Execute()
@@ -209,6 +251,7 @@ internal static class WindowDockMotionChecks
             Controls.Themes.ThemeManager.Initialize(Application.Current!);
             _originalAppView = _app.DockTile.ContentView;
             _window = Open(); _native = Native(_window); _info = _window.TaskbarItemInfo!;
+            ObserveWindowCompletion();
             Attempt("initial-policy", () =>
             {
                 Require(AppView.AccessibilityLabel == _info.Description && !string.IsNullOrWhiteSpace(AppView.AccessibilityValue?.ToString()), "task description and indeterminate semantic value remain available");
@@ -317,6 +360,8 @@ internal static class WindowDockMotionChecks
         }
         internal void Cleanup()
         {
+            foreach (var token in _stateObservers) { NSNotificationCenter.DefaultCenter.RemoveObserver(token); token.Dispose(); }
+            _stateObservers.Clear();
             foreach (var window in _windows.AsEnumerable().Reverse()) if (window.Handle != 0) window.Close();
             Barrier();
             Require(Timer == null, "all owned windows leave no Dock timer");

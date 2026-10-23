@@ -1250,7 +1250,10 @@ public class ComboBox : Selector
             e.XButton1,
             e.XButton2,
             e.KeyboardModifiers,
-            e.Timestamp);
+            e.Timestamp)
+        {
+            PhysicalModifiers = e.PhysicalModifiers
+        };
 
         _editableTextBox.RaiseEvent(forwardedArgs);
         return forwardedArgs.Handled;

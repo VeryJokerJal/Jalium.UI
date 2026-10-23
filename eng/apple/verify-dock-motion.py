@@ -27,6 +27,8 @@ def main():
     output = args.results_directory.resolve()
     output.mkdir(parents=True, exist_ok=False)
     fixture = Path(__file__).resolve().parents[2] / 'tests/Jalium.UI.MacOS.HostSmoke'
+    helper_sources = {name: hashlib.sha256((fixture / name).read_bytes()).hexdigest()
+                      for name in ['MotionPreferenceOverride.mm', 'DockMotionDisplayProbe.mm']}
     helper = output / 'libjalium.dock-motion-test.dylib'
     subprocess.run(['xcrun', 'clang++', '-std=c++20', '-fobjc-arc', '-dynamiclib', '-arch', 'arm64',
                     '-mmacosx-version-min=15.0', str(fixture / 'MotionPreferenceOverride.mm'),
@@ -46,7 +48,7 @@ def main():
         case = output / ('case-' + str(index)); case.mkdir(); (case / 'tmp').mkdir()
         env = os.environ.copy()
         env.update(JALIUM_DOCK_MOTION_OUTPUT=str(case), JALIUM_MOTION_TEST_LIBRARY=str(helper),
-                   JALIUM_DOCK_MOTION_HOLD_SECONDS=str(args.hold_seconds), TMPDIR=str(case / 'tmp'), DYLD_PRINT_LIBRARIES='1')
+                   JALIUM_DOCK_MOTION_HOLD_SECONDS=str(args.hold_seconds), JALIUM_DOCK_DISPLAY_DIAGNOSTICS='1', TMPDIR=str(case / 'tmp'), DYLD_PRINT_LIBRARIES='1')
         with (case / 'app.log').open('w') as log, (case / 'app.err').open('w') as error:
             process = subprocess.Popen([str(app / 'Contents/MacOS/Jalium.UI.MacOS.HostSmoke'),
                                         '--window-dock-motion-case=' + str(index)], env=env, stdout=log, stderr=error)
@@ -71,21 +73,35 @@ def main():
                       and {item['name'] for item in result['Scenarios']} == expected_scenarios
                       and all(item['checks'] for item in result['Scenarios'])
                       and all(item['passed'] for item in result['Scenarios']) and result['overrideRestored']
-                      and result['displayProbeRestored'] and required <= own <= allowed and not foreign and str(helper) in dyld)
+                      and result['displayProbeRestored'] and result.get('miniaturizationObserversRestored') and required <= own <= allowed and not foreign and str(helper) in dyld)
         receipt = {'index': index, 'passed': passed, 'exitCode': code, 'result': result,
                    'ownNativeLibraries': sorted(own), 'foreignNativeLibraryCount': len(foreign), 'helperLoaded': str(helper) in dyld}
         receipts.append(receipt)
+        traces = []
+        for line in dyld.splitlines():
+            if line.startswith('DOCK_DISPLAY '):
+                traces.append({'header': line, 'count': int(line.rsplit('count=', 1)[1]), 'frames': []})
+            elif line.startswith('DOCK_STACK ') and traces:
+                traces[-1]['frames'].append(line[len('DOCK_STACK '):])
+        failed_ranges = [(item['beforeDisplays'], item['afterDisplays'])
+                         for item in result.get('DisplayObservations', [])
+                         if item['beforeDisplays'] != item['afterDisplays']] if result else []
+        failed_traces = [trace for trace in traces if any(first < trace['count'] <= last for first, last in failed_ranges)]
         if not passed:
             print(json.dumps({'index': index, 'exitCode': code,
                               'failedScenarios': [item for item in result.get('Scenarios', []) if not item['passed']] if result else [],
                               'failures': result.get('Failures', []) if result else ['Missing result.json'],
+                              'windowTransitions': result.get('WindowTransitions', []) if result else [],
+                              'displayObservations': result.get('DisplayObservations', []) if result else [],
+                              'unexpectedDisplayCallStacks': failed_traces,
                               'foreignNativeLibraries': foreign, 'helperLoaded': str(helper) in dyld}, ensure_ascii=False), flush=True)
         print(json.dumps({'index': index, 'passed': passed,
                           'scenariosPassed': sum(item['passed'] for item in result['Scenarios']) if result else None,
                           'failureCount': len(result['Failures']) if result else None}), flush=True)
     assert hashlib.sha256(helper.read_bytes()).hexdigest() == helper_hash
+    assert helper_sources == {name: hashlib.sha256((fixture / name).read_bytes()).hexdigest() for name in helper_sources}
     receipt = {'cases': receipts, 'passed': sum(item['passed'] for item in receipts), 'total': len(cases),
-               'helperSHA256': helper_hash, 'physicalInput': False, 'systemPreferencesWritten': False, 'foregroundRequired': False}
+               'helperSHA256': helper_hash, 'helperSourceSHA256': helper_sources, 'physicalInput': False, 'systemPreferencesWritten': False, 'foregroundRequired': False}
     (output / 'receipt.json').write_text(json.dumps(receipt, ensure_ascii=False))
     return 0 if receipt['passed'] == receipt['total'] else 1
 
