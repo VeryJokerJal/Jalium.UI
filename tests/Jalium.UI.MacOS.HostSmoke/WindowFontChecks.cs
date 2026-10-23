@@ -21,7 +21,7 @@ internal static class WindowFontChecks
 {
     private const string Sample = "MMMM iii1 abc אבג xyz tail";
     private const string MonoPath = "/System/Library/Fonts/Supplemental/Andale Mono.ttf";
-    private const int CheckCount = 34;
+    private const int CheckCount = 41;
     private static readonly string[] WeightFaces = ["AvenirNext-UltraLight", "AvenirNext-UltraLight", "AvenirNext-UltraLight",
         "AvenirNext-Regular", "AvenirNext-Medium", "AvenirNext-DemiBold", "AvenirNext-Bold", "AvenirNext-Heavy", "AvenirNext-Heavy"];
     internal static int RunAll()
@@ -81,6 +81,15 @@ internal static class WindowFontChecks
                 case 31: CheckTextBoxSelectionPixels(context, "SF Pro", FontWeights.Bold, FontStyles.Normal, FontStretches.Normal); break;
                 case 32: CheckTextBoxSelectionPixels(context, "Helvetica Neue", FontWeights.Normal, FontStyles.Italic, FontStretches.Normal); break;
                 case 33: CheckTextBoxSelectionPixels(context, "SF Pro", FontWeights.Bold, FontStyles.Oblique, FontStretches.Normal, 90.25); break;
+                case 34: CheckTextBoxSelectionPixels(context, "PingFang SC", FontWeights.Normal, FontStyles.Italic, FontStretches.Normal); break;
+                case 35: CheckTextBoxSelectionPixels(context, "pingfang sc", FontWeights.Normal, FontStyles.Normal, FontStretches.Normal); break;
+                case 36: CheckTextBoxSelectionPixels(context, "PingFangSC-Semibold", FontWeights.Normal, FontStyles.Normal, FontStretches.Normal); break;
+                case 37: CheckTextBoxCachePixels(context, false); break;
+                case 38: CheckTextBoxCachePixels(context, true); break;
+                case 39:
+                case 40:
+                    context = RenderContext.GetOrCreateCurrent(RenderBackend.Software, forceReplace: true);
+                    CheckTextBoxCachePixels(context, index == 40); break;
             }
             Console.WriteLine($"PASS: native Window font case {index}"); return 0;
         }
@@ -132,8 +141,10 @@ internal static class WindowFontChecks
                     ("emoji", first.IndexOf("🙂", StringComparison.Ordinal), 2), ("combining", first.Length - 2, 2),
                     ("second-line", first.Length + 1 + 2, 5), ("multiline", first.Length - 2, 6),
                 };
+                using var referenceFormat = TextMeasurement.CreateTextFormatFromFamilyList(context, source, 21, nativeWeight, nativeStyle);
                 foreach (var wrapping in new[] { TextWrapping.NoWrap, TextWrapping.Wrap })
                 {
+                    referenceFormat.SetNoWrap(wrapping == TextWrapping.NoWrap);
                     box.TextWrapping = wrapping;
                     box.Measure(new Size(360, 96)); box.Arrange(new Rect(0, 0, 360, 96));
                     foreach (int dpi in new[] { 1, 2 })
@@ -161,10 +172,17 @@ internal static class WindowFontChecks
                                     double y = 12 + row * lineHeight;
                                     if (endInLine > startInLine)
                                     {
-                                        double left = layouts[row].Caret(0, startInLine, false).X;
-                                        double right = layouts[row].Caret(0, endInLine, false).X;
-                                        drawing.DrawRectangle(Brushes.Blue, null,
-                                            new Rect(Math.Round(12 + left), y, Math.Max(Math.Round(right - left), 1), lineHeight));
+                                        Require(referenceFormat.GetLineMetrics(lines[row], 336, 100000, 0, false, out var paintedRow)
+                                            && paintedRow.Height > 0, "Independent native selection row unavailable");
+                                        // Glyph rows retain their native fractional height. The
+                                        // rounded line pitch only positions successive logical lines.
+                                        foreach (var fragment in layouts[row].Selection(0, startInLine, endInLine - startInLine))
+                                        {
+                                            double left = Math.Round(12 + fragment.X);
+                                            double right = Math.Round(12 + fragment.X + fragment.Width);
+                                            drawing.DrawRectangle(Brushes.Blue, null,
+                                                new Rect(left, Math.Round(y + paintedRow.Y), Math.Max(right - left, 1), Math.Max(paintedRow.Height, 1)));
+                                        }
                                     }
                                     if (row == 0 && range.Start <= lines[row].Length && end > lines[row].Length)
                                         drawing.DrawRectangle(Brushes.Blue, null,
@@ -190,6 +208,79 @@ internal static class WindowFontChecks
             }
         }
         finally { Css.SetStyle(box, null); DrawingObjectPool.Clear(); window.Close(); }
+    }
+
+    private static void CheckTextBoxCachePixels(RenderContext context, bool custom)
+    {
+        const string text = "窄斜体 Miii中文🙂e\u0301\n第二行 abc אבג";
+        const BindingFlags hidden = BindingFlags.Instance | BindingFlags.NonPublic;
+        var box = new TextBox { Text = text, FontFamily = new FontFamily("Times"), FontSize = 21,
+            FontWeight = FontWeights.Bold, FontStyle = FontStyles.Italic, Padding = new Thickness(12),
+            BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(0),
+            Foreground = Brushes.Black, Background = Brushes.White, SelectionBrush = Brushes.Blue, SelectionOpacity = 1,
+            VerticalContentAlignment = VerticalAlignment.Top, AcceptsReturn = true, IsReadOnly = true,
+            IsInactiveSelectionHighlightEnabled = true };
+        var window = NewWindow(box); window.Title = "Jalium Text Layout Cache v310";
+        window.TitleBarStyle = custom ? WindowTitleBarStyle.Custom : WindowTitleBarStyle.Native;
+        var cache = (IDictionary)typeof(TextBox).GetField("_macOSAlignedLayouts", hidden)!.GetValue(box)!;
+        var widths = (IDictionary)typeof(TextBox).GetField("_textWidthCache", hidden)!.GetValue(box)!;
+        var get = typeof(TextBox).GetMethod("GetMacOSAlignedLayout", hidden)!;
+        int checks = 0, phases = 0;
+        void Check(bool value, string message) { Require(value, message); checks++; }
+        NativeTextFormat Format(object value) => (NativeTextFormat)value.GetType().GetProperty("Format", hidden)!.GetValue(value)!;
+        try
+        {
+            window.Show(); window.UpdateLayout();
+            foreach (var wrap in new[] { TextWrapping.NoWrap, TextWrapping.Wrap })
+            foreach (var alignment in new[] { TextAlignment.Left, TextAlignment.Right, TextAlignment.Center })
+            foreach (int dpi in new[] { 1, 2 })
+            {
+                box.TextWrapping = wrap; box.TextAlignment = alignment;
+                box.Measure(new Size(360, 96)); box.Arrange(new Rect(0, 0, 360, 96)); box.Select(4, 4);
+                using var surface = new FontSurface(context, dpi);
+                byte[] before = surface.Capture(() => box.Render(surface.Drawing));
+                Check(cache.Count > 0 && InkPixels(before) > 100, "Cache baseline has native layout and painted content");
+                var old = cache.Values.Cast<object>().Select(Format).ToArray();
+                box.Text = text + " changed";
+                Check(old.All(format => format.Handle == 0), "Text edits release the previous native formats");
+                Check(cache.Count == 0 && widths.Count == 0, "Text edits retire both owner caches");
+                box.Measure(new Size(360, 96)); box.Arrange(new Rect(0, 0, 360, 96)); box.Select(4, 4);
+                byte[] changed = surface.Capture(() => box.Render(surface.Drawing));
+                Check(!before.SequenceEqual(changed), "Changed text paints different pixels before restoration");
+                box.Text = text; box.Measure(new Size(360, 96)); box.Arrange(new Rect(0, 0, 360, 96)); box.Select(4, 4);
+                byte[] edited = surface.Capture(() => box.Render(surface.Drawing));
+                Check(before.SequenceEqual(edited), "Restored text paints identical glyphs and highlights");
+                for (int i = 0; i < 6; i++) get.Invoke(box, [new string((char)('a' + i), 70 * 1024), 336d]);
+                long payload = cache.Keys.Cast<object>().Sum(key => 2L * ((string)key.GetType().GetProperty("Text")!.GetValue(key)!).Length);
+                Check(payload <= 512 * 1024, "Native cache retains a bounded UTF-16 payload");
+                byte[] evicted = surface.Capture(() => box.Render(surface.Drawing));
+                Check(before.SequenceEqual(evicted), "Eviction preserves painted glyphs and selection pixels");
+                string name = $"textbox-cache-{context.Backend}-{custom}-{wrap}-{alignment}";
+                Save(name + "-before", dpi, before); Save(name + "-changed", dpi, changed); Save(name + "-restored", dpi, edited); Save(name + "-evicted", dpi, evicted); phases++;
+            }
+            Check(phases == 12, "All alignments, wrap modes and DPI combinations executed");
+            if (Environment.GetEnvironmentVariable("JALIUM_TEXT_CACHE_HOLD_SECONDS") is string duration &&
+                int.TryParse(duration, out int hold) && hold is > 0 and <= 60)
+            {
+                var preview = Stopwatch.StartNew();
+                while (preview.Elapsed.TotalSeconds < hold)
+                {
+                    using var until = NSDate.FromTimeIntervalSinceNow(.02);
+                    NSRunLoop.Main.RunUntil(until);
+                }
+            }
+        }
+        finally
+        {
+            window.Close();
+            if (Environment.GetEnvironmentVariable("JALIUM_MANAGED_FONT_CAPTURE_DIR") is string directory)
+            {
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, "cache-result.json"), System.Text.Json.JsonSerializer.Serialize(new
+                { backend = context.Backend.ToString(), custom, checks, phases, expectedPhases = 12,
+                    ownerCachesRetired = cache.Count == 0 && widths.Count == 0, physicalInput = false, foregroundRequired = false }));
+            }
+        }
     }
 
     private static void CheckRichRecordedPixels(RenderContext context, bool privateFont, bool retainedFrame)

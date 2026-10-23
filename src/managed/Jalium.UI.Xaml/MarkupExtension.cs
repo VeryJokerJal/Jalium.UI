@@ -547,6 +547,7 @@ public sealed class NullExtension : MarkupExtension
 /// </summary>
 public sealed class StaticExtension : MarkupExtension
 {
+    internal Func<string, Type?>? TypeResolver { get; set; }
     /// <summary>
     /// Gets or sets the member name (in TypeName.MemberName format).
     /// </summary>
@@ -578,28 +579,16 @@ public sealed class StaticExtension : MarkupExtension
     [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Override of MarkupExtension.ProvideValue annotated with RequiresDynamicCode.")]
     public override object? ProvideValue(IServiceProvider serviceProvider)
     {
-        if (string.IsNullOrEmpty(Member))
-            return null;
+        if (string.IsNullOrWhiteSpace(Member))
+            throw new XamlParseException("x:Static requires a static member name.");
 
-        // Parse TypeName.MemberName
-        var lastDot = Member.LastIndexOf('.');
-        if (lastDot < 0)
-        {
-            // Check if it's an enum value with MemberType specified
-            if (MemberType != null && MemberType.IsEnum)
-            {
-                return Enum.Parse(MemberType, Member);
-            }
-            return null;
-        }
-
-        var typeName = Member.Substring(0, lastDot);
-        var memberName = Member.Substring(lastDot + 1);
-
-        // Resolve the type
-        var type = MemberType ?? ResolveType(typeName);
-        if (type == null)
-            return null;
+        var member = Member.Trim();
+        var lastDot = member.LastIndexOf('.');
+        var typeName = lastDot < 0 ? string.Empty : member[..lastDot];
+        var memberName = lastDot < 0 ? member : member[(lastDot + 1)..];
+        var type = MemberType ?? (TypeResolver is not null ? TypeResolver(typeName) : ResolveType(typeName));
+        if (type is null)
+            throw new XamlParseException($"Cannot resolve the x:Static owner '{typeName}'.");
 
         // Check for enum value
         if (type.IsEnum)
@@ -617,7 +606,7 @@ public sealed class StaticExtension : MarkupExtension
         if (property != null)
             return property.GetValue(null);
 
-        return null;
+        throw new XamlParseException($"Cannot find public static member '{memberName}' on '{type.FullName}'.");
     }
 
     private static Type? ResolveType(string typeName)
@@ -715,6 +704,7 @@ public sealed class ArrayExtension : MarkupExtension, IAddChild
 /// </summary>
 public sealed class TypeExtension : MarkupExtension
 {
+    internal Func<string, Type?>? TypeResolver { get; set; }
     /// <summary>
     /// Gets or sets the type name.
     /// </summary>
@@ -761,7 +751,7 @@ public sealed class TypeExtension : MarkupExtension
             return null;
 
         // AOT-safe: Use static type registry instead of Type.GetType
-        return XamlTypeRegistry.GetType(TypeName);
+        return TypeResolver is not null ? TypeResolver(TypeName) : XamlTypeRegistry.GetType(TypeName);
     }
 }
 
@@ -1163,7 +1153,24 @@ internal static class MarkupExtensionParser
         };
         serviceProvider.AddService(typeof(IProvideValueTarget), provideValueTarget);
 
-        return extension.ProvideValue(serviceProvider);
+        var value = extension.ProvideValue(serviceProvider);
+        return PreserveResourceReference(extension, targetObject, targetProperty, value);
+    }
+
+    internal static object? PreserveResourceReference(MarkupExtension extension, object targetObject,
+        DependencyProperty? targetProperty, object? value)
+    {
+        // The public extensions return their current value. The parser also needs
+        // the expression for the subsequent property assignment, which must not
+        // turn an installed resource into a literal SetValue replacement.
+        if (targetObject is FrameworkElement && targetProperty is not null)
+        {
+            if (extension is DynamicResourceExtension { ResourceKey: { } dynamicKey })
+                return new DynamicResourceReference(dynamicKey);
+            if (extension is ThemeResourceExtension { ResourceKey: { } themeKey })
+                return new DynamicResourceReference(themeKey);
+        }
+        return value;
     }
 
     /// <summary>
@@ -1210,13 +1217,13 @@ internal static class MarkupExtensionParser
         return name.ToLowerInvariant() switch
         {
             "binding" => CreateBindingExtension(parameters, ambientProvider),
-            "staticresource" => CreateStaticResourceExtension(parameters),
-            "dynamicresource" => CreateDynamicResourceExtension(parameters),
-            "themeresource" => CreateThemeResourceExtension(parameters),
+            "staticresource" => CreateStaticResourceExtension(parameters, ambientProvider),
+            "dynamicresource" => CreateDynamicResourceExtension(parameters, ambientProvider),
+            "themeresource" => CreateThemeResourceExtension(parameters, ambientProvider),
             "templatebinding" => CreateTemplateBindingExtension(parameters),
             "null" => new NullExtension(),
-            "type" => CreateTypeExtension(parameters),
-            "static" => CreateStaticExtension(parameters),
+            "type" => CreateTypeExtension(parameters, ambientProvider),
+            "static" => CreateStaticExtension(parameters, ambientProvider),
             "array" => CreateArrayExtension(parameters),
             _ => null
         };
@@ -1516,25 +1523,25 @@ internal static class MarkupExtensionParser
         return XamlTypeRegistry.GetType(cleanName);
     }
 
-    private static StaticResourceExtension CreateStaticResourceExtension(string parameters)
+    private static StaticResourceExtension CreateStaticResourceExtension(string parameters, IAmbientResourceProvider? ambientProvider)
     {
-        var key = ParseResourceKey(parameters);
+        var key = ParseResourceKey(parameters, ambientProvider);
         return new StaticResourceExtension(key);
     }
 
-    private static DynamicResourceExtension CreateDynamicResourceExtension(string parameters)
+    private static DynamicResourceExtension CreateDynamicResourceExtension(string parameters, IAmbientResourceProvider? ambientProvider)
     {
-        var key = ParseResourceKey(parameters);
+        var key = ParseResourceKey(parameters, ambientProvider);
         return new DynamicResourceExtension(key);
     }
 
-    private static ThemeResourceExtension CreateThemeResourceExtension(string parameters)
+    private static ThemeResourceExtension CreateThemeResourceExtension(string parameters, IAmbientResourceProvider? ambientProvider)
     {
-        var key = ParseResourceKey(parameters);
+        var key = ParseResourceKey(parameters, ambientProvider);
         return new ThemeResourceExtension(key);
     }
 
-    private static object ParseResourceKey(string parameters)
+    private static object ParseResourceKey(string parameters, IAmbientResourceProvider? ambientProvider)
     {
         var trimmed = parameters.Trim();
         if (string.IsNullOrEmpty(trimmed))
@@ -1558,22 +1565,28 @@ internal static class MarkupExtensionParser
 
         keyText = keyText.Trim().Trim('"', '\'');
 
-        // Support x:Type resource keys: {StaticResource {x:Type Button}}
-        // should look up the Type key instead of the literal string.
-        if (keyText.StartsWith("{x:Type", StringComparison.OrdinalIgnoreCase))
+        if (keyText.StartsWith("{}", StringComparison.Ordinal))
+            return keyText[2..];
+
+        // Evaluate typed keys with the same XML namespace context as the outer
+        // expression. A system ResourceKey must not become its markup string.
+        var nested = ParseMarkupExtension(keyText, ambientProvider);
+        if (nested is StaticExtension or TypeExtension)
         {
-            var type = ResolveType(keyText);
-            if (type != null)
-                return type;
+            return ProvideExtensionValue(nested, typeof(object), null, ambientProvider)
+                ?? throw new XamlParseException($"The resource key '{keyText}' resolved to null.");
         }
 
         return keyText;
     }
 
-    private static StaticExtension CreateStaticExtension(string parameters)
+    private static StaticExtension CreateStaticExtension(string parameters, IAmbientResourceProvider? ambientProvider)
     {
         var member = parameters.Trim();
-        return new StaticExtension(member);
+        if (member.StartsWith("Member=", StringComparison.OrdinalIgnoreCase))
+            member = member[7..].Trim();
+        return new StaticExtension(member.Trim('\'', '"'))
+        { TypeResolver = (ambientProvider as XamlParserContext)?.CaptureMarkupTypeResolver() };
     }
 
     private static ArrayExtension CreateArrayExtension(string parameters)
@@ -1600,10 +1613,13 @@ internal static class MarkupExtensionParser
         return extension;
     }
 
-    private static TypeExtension CreateTypeExtension(string parameters)
+    private static TypeExtension CreateTypeExtension(string parameters, IAmbientResourceProvider? ambientProvider)
     {
         var typeName = parameters.Trim();
-        return new TypeExtension(typeName);
+        if (typeName.StartsWith("TypeName=", StringComparison.OrdinalIgnoreCase))
+            typeName = typeName[9..].Trim();
+        return new TypeExtension(typeName.Trim('\'', '"'))
+        { TypeResolver = (ambientProvider as XamlParserContext)?.CaptureMarkupTypeResolver() };
     }
 
     private static TemplateBindingExtension CreateTemplateBindingExtension(string parameters)

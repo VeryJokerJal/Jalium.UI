@@ -231,7 +231,11 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
             // is gone we must resolve every element to a CLR type — walk the AST and ask the
             // Roslyn-backed XmlnsTypeResolver for everything the static table missed.
             if (parseResult.Root != null)
+            {
                 AugmentResolvedTypeNames(parseResult.Root, xmlnsResolver);
+                if (!TemplateNameScope.Apply(parseResult, context, file.Path, SourceText.From(content!)))
+                    return;
+            }
 
             // Path A: x:Class set → the document is a code-behind component (Window /
             // UserControl / Application / etc.). Generate the partial class as before.
@@ -1138,6 +1142,7 @@ public sealed class NamedElement
 {
     public string Name { get; set; } = string.Empty;
     public string TypeName { get; set; } = string.Empty;
+    internal JalxamlAstNode? DeclaringNode { get; set; }
 }
 
 /// <summary>

@@ -102,17 +102,76 @@ public sealed class ListBoxParityTests
         Assert.Equal(0, listBox.SelectedIndex);
     }
 
-    [Fact]
-    public void SetSelectedItemsRejectsReentrantSelectionTransactions()
+    [Theory]
+    [InlineData(SelectionMode.Single)]
+    [InlineData(SelectionMode.Multiple)]
+    [InlineData(SelectionMode.Extended)]
+    public void SetSelectedItemsRejectsReentrantSelectionTransactions(SelectionMode mode)
     {
-        var listBox = CreateSelectionListBox(SelectionMode.Multiple);
-        bool? nestedResult = null;
-        listBox.SelectionChanged += (_, _) => nestedResult = listBox.SetSelection(new[] { "b" });
+        var listBox = CreateSelectionListBox(mode);
+        var nestedResults = new List<bool>();
+        var changes = new List<SelectionChangedEventArgs>();
+        listBox.SelectionChanged += (_, args) => changes.Add(args);
+        // A scalar property changes inside the batch, before it can notify user handlers.
+        listBox.SelectedIndexChanged = () => nestedResults.Add(listBox.SetSelection(new[] { "b" }));
 
         Assert.True(listBox.SetSelection(new[] { "a" }));
 
-        Assert.Equal(false, nestedResult);
+        Assert.False(Assert.Single(nestedResults));
         Assert.Equal(new object[] { "a" }, listBox.SelectedItems.Cast<object>());
+        Assert.Equal(0, listBox.SelectedIndex);
+        Assert.Equal("a", listBox.SelectedItem);
+        Assert.Equal("a", listBox.SelectedValue);
+        Assert.Empty(Assert.Single(changes).RemovedItems);
+        Assert.Equal(new object[] { "a" }, changes[0].AddedItems.Cast<object>());
+    }
+
+    [Theory]
+    [InlineData(SelectionMode.Single)]
+    [InlineData(SelectionMode.Multiple)]
+    [InlineData(SelectionMode.Extended)]
+    public void SetSelectedItemsAllowsNewSelectionAfterCommittedNotification(SelectionMode mode)
+    {
+        var listBox = CreateSelectionListBox(mode);
+        bool? nestedResult = null;
+        var changes = new List<SelectionChangedEventArgs>();
+        var snapshots = new List<(object[] Items, int Index, object? Item, object? Value)>();
+        listBox.SelectionChanged += (_, args) =>
+        {
+            changes.Add(args);
+            snapshots.Add((listBox.SelectedItems.Cast<object>().ToArray(),
+                listBox.SelectedIndex, listBox.SelectedItem, listBox.SelectedValue));
+            if (changes.Count == 1)
+                nestedResult = listBox.SetSelection(new[] { "b" });
+        };
+
+        Assert.True(listBox.SetSelection(new[] { "a" }));
+
+        Assert.Equal(true, nestedResult);
+        Assert.Equal(new object[] { "b" }, listBox.SelectedItems.Cast<object>());
+        Assert.Equal(1, listBox.SelectedIndex);
+        Assert.Equal("b", listBox.SelectedItem);
+        Assert.Equal("b", listBox.SelectedValue);
+        Assert.Collection(snapshots,
+            first =>
+            {
+                Assert.Equal(new object[] { "a" }, first.Items);
+                Assert.Equal(0, first.Index);
+                Assert.Equal("a", first.Item);
+                Assert.Equal("a", first.Value);
+            },
+            second =>
+            {
+                Assert.Equal(new object[] { "b" }, second.Items);
+                Assert.Equal(1, second.Index);
+                Assert.Equal("b", second.Item);
+                Assert.Equal("b", second.Value);
+            });
+        Assert.Equal(2, changes.Count);
+        Assert.Empty(changes[0].RemovedItems);
+        Assert.Equal(new object[] { "a" }, changes[0].AddedItems.Cast<object>());
+        Assert.Equal(new object[] { "a" }, changes[1].RemovedItems.Cast<object>());
+        Assert.Equal(new object[] { "b" }, changes[1].AddedItems.Cast<object>());
     }
 
     [Fact]
@@ -213,6 +272,26 @@ public sealed class ListBoxParityTests
         Assert.False(second.IsSelected);
     }
 
+    [Fact]
+    public void ExplicitContainerSelectedByIndexBeforeGenerationIsSelectedWhenGenerated()
+    {
+        var listBox = new TestListBox();
+        var rows = Enumerable.Range(0, 3)
+            .Select(index => new ListBoxItem { Content = new TextBlock { Text = "row " + index } })
+            .ToArray();
+        foreach (var row in rows) listBox.Items.Add(row);
+
+        // The selection is made before any container exists, as a tool window does when it fills a list.
+        listBox.SelectedIndex = 2;
+        listBox.Measure(new Size(240, 120));
+        listBox.Arrange(new Rect(0, 0, 240, 120));
+
+        Assert.Same(rows[2], listBox.SelectedItem);
+        Assert.True(rows[2].IsSelected);
+        Assert.False(rows[0].IsSelected);
+        Assert.False(rows[1].IsSelected);
+    }
+
     private static TestListBox CreateSelectionListBox(SelectionMode mode)
     {
         var listBox = new TestListBox { SelectionMode = mode };
@@ -227,6 +306,15 @@ public sealed class ListBoxParityTests
 
     private sealed class TestListBox : ListBox
     {
+        public Action? SelectedIndexChanged { get; set; }
+
+        protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+        {
+            base.OnPropertyChanged(e);
+            if (e.Property == SelectedIndexProperty)
+                SelectedIndexChanged?.Invoke();
+        }
+
         public object? Anchor
         {
             get => AnchorItem;

@@ -1,0 +1,25 @@
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Jalium.UI.MacOS.WindowTemplateScopeView">
+    <UserControl.Resources>
+        <ControlTemplate x:Key="first" TargetType="Button">
+            <Border x:Name="Shared" Padding="10" Background="{TemplateBinding Background}" CornerRadius="6">
+                <TextBlock x:Name="Label" Text="{TemplateBinding Content}" Foreground="{TemplateBinding Foreground}" />
+            </Border>
+        </ControlTemplate>
+        <ControlTemplate x:Key="second" TargetType="Button">
+            <Border x:Name="Shared" Padding="10" Background="{TemplateBinding Background}" CornerRadius="6">
+                <TextBlock x:Name="Label" Text="{TemplateBinding Content}" Foreground="{TemplateBinding Foreground}" />
+            </Border>
+        </ControlTemplate>
+    </UserControl.Resources>
+    <Grid x:Name="Shared" Margin="24">
+        <StackPanel Spacing="12">
+            <TextBlock Text="模板名称与窗口焦点" FontSize="22" />
+            <TextBlock Text="两个按钮共用模板，替换模板后仍能独立显示内容。" TextWrapping="Wrap" />
+            <Button x:Name="First" Content="第一项🙂" Template="{StaticResource first}" />
+            <Button x:Name="Second" Content="第二项中文" Template="{StaticResource first}" />
+            <TextBox x:Name="Editor" Text="继续编辑中文🙂" />
+        </StackPanel>
+    </Grid>
+</UserControl>

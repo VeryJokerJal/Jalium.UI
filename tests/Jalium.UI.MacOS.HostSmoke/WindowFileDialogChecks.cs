@@ -15,7 +15,7 @@ namespace Jalium.UI.MacOS;
 // Acceptance, overwrite prompts and keyboard/AX checks use the desktop tool.
 internal static class WindowFileDialogChecks
 {
-    private const int Count = 15;
+    private const int Count = 17;
     private static readonly (string Name, string Pattern)[] Filters =
         [("PNG 图片", "*.png"), ("文本", "*.txt"), ("所有文件", "*.*")];
 
@@ -64,13 +64,17 @@ internal static class WindowFileDialogChecks
             File.WriteAllText(Path.Combine(root, "chosen.custom"), "owned custom");
             File.WriteAllText(Path.Combine(root, "chosen.tar.gz"), "owned archive");
             File.WriteAllText(Path.Combine(root, "chosen.gz"), "owned compressed file");
+            File.WriteAllText(Path.Combine(root, ".editorconfig"), "owned literal file");
+            File.WriteAllText(Path.Combine(root, "report-owned.txt"), "owned wildcard file");
             if (seconds > 0) return Observe(root, seconds);
             var options = new PlatformFileDialogOptions(
-                index < 6 || index >= 12, index == 11, false, "Jalium File Dialog Contract", root,
-                index switch { 4 => "note.custom", 6 => "chosen.png", 7 => "chosen.txt", 8 => "chosen.custom", _ => "note" },
+                index < 6 || index is >= 12 and < 15, index == 11, false, "Jalium File Dialog Contract", root,
+                index switch { 4 => "note.custom", 6 => "chosen.png", 7 => "chosen.txt", 8 => "chosen.custom", 15 => ".editorconfig", 16 => "report-owned.txt", _ => "note" },
                 index == 5 ? "zip" : "txt", index != 2, true, true,
                 index is 0 or 6 ? [] : index is 5 or 9 ? [("归档", "*.tar.gz")]
-                    : index == 10 ? [("文件名", "chosen.?xt")] : Filters,
+                    : index == 10 ? [("文件名", "chosen.?xt")]
+                    : index == 15 ? [("混合字面文件名", "*.json;.editorconfig")]
+                    : index == 16 ? [("混合通配文件名", "*.json;report-*.txt")] : Filters,
                 index is 1 or 7 ? 2 : index is 3 or 8 ? 3 : 1);
             NSSavePanel? observed = null;
             string? confirmedFilename = null;
@@ -98,19 +102,19 @@ internal static class WindowFileDialogChecks
                     // still starting. Cancelling in that phase opens a service-
                     // failure alert instead of exercising normal cancellation.
                     if (watch.Elapsed.TotalSeconds < 1 || !observed.IsVisible) return;
-                    if (options.Save || index is 6 or 8 or 11)
+                    if (options.Save || index is 6 or 8 or 11 or 15 or 16)
                         Require(observed.AllowedContentTypes.Length == 0, "default/all-files/folder options restricted native content types");
-                    if (index is 7 or 9 or 10)
+                    if (index is 7 or 9 or 10 or 15 or 16)
                     {
                         Require(observed.Delegate != null, "native open panel has no exact file-name filter");
-                        using var matching = NSUrl.FromFilename(Path.Combine(root, index == 9 ? "chosen.tar.gz" : "chosen.txt"));
+                        using var matching = NSUrl.FromFilename(Path.Combine(root, index switch { 9 => "chosen.tar.gz", 15 => ".editorconfig", 16 => "report-owned.txt", _ => "chosen.txt" }));
                         using var other = NSUrl.FromFilename(Path.Combine(root, index == 9 ? "chosen.gz" : "chosen.png"));
                         using var directory = NSUrl.FromFilename(root);
                         Require(observed.Delegate!.ShouldEnableUrl(observed, matching), "matching file was disabled");
                         Require(!observed.Delegate.ShouldEnableUrl(observed, other), "nonmatching file was enabled");
                         Require(observed.Delegate.ShouldEnableUrl(observed, directory), "filter prevented directory navigation");
                     }
-                    if (index >= 12)
+                    if (index is >= 12 and < 15)
                     {
                         var selector = observed.AccessoryView as NSPopUpButton;
                         Require(selector != null, "multiple file filters lost their native selector");

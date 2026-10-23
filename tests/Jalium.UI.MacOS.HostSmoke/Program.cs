@@ -11,6 +11,138 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 0 && WindowWritingToolsChecks.TryRunBundled(out int bundledResult))
+    return bundledResult;
+
+if (args.Length == 1 && args[0].StartsWith("--window-popup-viewport-case=", StringComparison.Ordinal))
+    return WindowPopupViewportChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-combo-mouse-case=", StringComparison.Ordinal))
+    return WindowComboMouseForwardingChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-dock-ownership-case=", StringComparison.Ordinal))
+    return WindowDockOwnershipChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-dock-motion-case=", StringComparison.Ordinal))
+    return WindowDockMotionChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-writing-tools-zero-inline-case=", StringComparison.Ordinal))
+    return WindowWritingToolsZeroInlineChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-motion-notification-case=", StringComparison.Ordinal))
+    return WindowMotionNotificationChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-mouse-release-case=", StringComparison.Ordinal))
+    return WindowMouseReleaseOwnershipChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-popup-owner-case=", StringComparison.Ordinal))
+    return WindowPopupOwnershipChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-embedded-object-case=", StringComparison.Ordinal))
+    return WindowEmbeddedObjectChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-popup-drag-case=", StringComparison.Ordinal))
+    return WindowPopupDragChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-writing-tools-partial-case=", StringComparison.Ordinal))
+    return WindowWritingToolsStructureChecks.RunPartial(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-writing-tools-inline-case=", StringComparison.Ordinal))
+    return WindowWritingToolsInlineChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-writing-tools-structure-case=", StringComparison.Ordinal))
+    return WindowWritingToolsStructureChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-selection-transaction-case=", StringComparison.Ordinal))
+    return WindowSelectionTransactionChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-placement-boundary-case=", StringComparison.Ordinal))
+    return WindowPlacementBoundaryChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-occurrence-case=", StringComparison.Ordinal))
+    return WindowOccurrenceChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-gesture-interleave-case=", StringComparison.Ordinal))
+    return WindowGestureInterleaveChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-appearance-default-case=", StringComparison.Ordinal))
+    return WindowAppearanceDefaultsChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-explicit-list-case=", StringComparison.Ordinal))
+    return WindowSelectionNotificationChecks.RunExplicitOwnershipCase(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-appearance-case=", StringComparison.Ordinal))
+    return WindowAppearanceLifetimeChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-keyboard-packet-case=", StringComparison.Ordinal))
+    return WindowKeyboardPacketChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-popup-resource-case=", StringComparison.Ordinal))
+    return WindowPopupResourceChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-deactivation-wheel-case=", StringComparison.Ordinal))
+    return WindowDeactivationWheelChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-input-lifetime-case=", StringComparison.Ordinal))
+    return WindowInputLifetimeChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-hosted-failure-case=", StringComparison.Ordinal))
+    return WindowHostedFailureChecks.Run(args[0]);
+
+if (args.Length == 1 && (args[0] == "--window-themes" || args[0].StartsWith("--window-theme-case=", StringComparison.Ordinal)))
+    return WindowThemeModeChecks.Run(args[0]);
+
+if (args.Length == 1 && args[0] == "--window-template-names")
+    return WindowTemplateScopeChecks.Run();
+
+if (args.Length == 1 && args[0].StartsWith("--window-item-lifetime-case=", StringComparison.Ordinal))
+    return WindowSelectionNotificationChecks.RunItemLifetimeCase(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-combo-selection-case=", StringComparison.Ordinal))
+    return WindowSelectionNotificationChecks.RunComboSelectionCase(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-item-content-case=", StringComparison.Ordinal))
+    return WindowSelectionNotificationChecks.RunItemContentCase(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-virtualized-selection-case=", StringComparison.Ordinal))
+    return WindowSelectionNotificationChecks.RunVirtualizedCase(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-selection-notifications-case=", StringComparison.Ordinal))
+    return WindowSelectionNotificationChecks.RunCase(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-ax-notifications-case=", StringComparison.Ordinal))
+    return WindowAXNotificationAcceptanceChecks.RunCase(args[0]);
+
+if (args.Length == 1 && args[0].StartsWith("--window-file-panel-acceptance-case=", StringComparison.Ordinal))
+    return WindowFilePanelAcceptanceChecks.RunCase(args[0]);
+
+if (args.Length == 1 && args[0] == "--window-taskbar-software")
+    return WindowTaskbarChecks.Run(software: true);
+if (args.Length == 1 && args[0] == "--window-taskbar")
+    return WindowTaskbarChecks.Run();
+
+if (args.Length == 1 && args[0] == "--window-tablets-software")
+    return WindowTabletChecks.Run(software: true);
+if (args.Length == 1 && args[0] == "--window-tablets")
+    return WindowTabletChecks.Run();
+
+if (args.Length == 1 && args[0] == "--window-trackpad-gestures-software")
+    return WindowTrackpadGestureChecks.Run(software: true);
+
+if (args.Length == 1 && args[0] == "--window-trackpad-gestures")
+    return WindowTrackpadGestureChecks.Run();
+
+if (args.Length == 1 && args[0] == "--window-writing-tools-glyphs-software")
+    return WindowWritingToolsGlyphChecks.Run(true);
+if (args.Length == 1 && args[0] == "--window-writing-tools-software")
+    return WindowWritingToolsChecks.Run(true);
+
+if (args.Length == 1 && args[0] == "--window-writing-tools-glyphs")
+    return WindowWritingToolsGlyphChecks.Run();
+
+if (args.Length == 1 && args[0] == "--window-writing-tools")
+    return WindowWritingToolsChecks.Run();
+
 if (args.Length == 1 && args[0] == "--window-notifications-observe")
     return WindowNotificationChecks.Observe(false);
 if (args.Length == 1 && args[0] == "--window-notifications-observe-custom")
@@ -140,6 +272,11 @@ if (args.Length == 1 && args[0] == "--window-editing-actions")
     return WindowEditingActionChecks.RunAll();
 if (args.Length == 1 && args[0].StartsWith("--window-editing-actions-case=", StringComparison.Ordinal))
     return WindowEditingActionChecks.RunCase(args[0]);
+if (args.Length == 1 && args[0] == "--window-text-context-menu")
+    return WindowTextContextMenuChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-text-context-menu-case=", StringComparison.Ordinal))
+    return WindowTextContextMenuChecks.RunCase(args[0]);
+
 if (args.Length == 1 && args[0] == "--window-editing-menu")
     return WindowEditingMenuChecks.RunAll();
 if (args.Length == 1 && args[0] == "--editor-accessibility")
@@ -198,6 +335,10 @@ if (args.Length == 1 && args[0].StartsWith("--window-reopen-foreground-case=", S
     return WindowReopenForegroundChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-quit")
     return WindowQuitChecks.RunAll();
+if (args.Length == 1 && args[0] == "--window-session-ending")
+    return WindowSessionEndingChecks.RunAll();
+if (args.Length == 1 && args[0].StartsWith("--window-session-ending-case=", StringComparison.Ordinal))
+    return WindowSessionEndingChecks.RunCase(args[0]);
 if (args.Length == 1 && args[0] == "--window-native-quit")
     return WindowNativeQuitChecks.RunAll();
 if (args.Length == 1 && args[0].StartsWith("--window-native-quit-case=", StringComparison.Ordinal))
@@ -266,6 +407,7 @@ if (args.Length != 1 || !args[0].StartsWith("--menu-case=", StringComparison.Ord
     return 2;
 }
 JaliumMacApplication.Initialize();
+
 var application = NSApplication.SharedApplication;
 application.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
 using var host = new MenuTestDelegate();

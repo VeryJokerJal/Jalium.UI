@@ -156,14 +156,18 @@ public:
     JaliumResult HitTestPoint(
         const wchar_t*, uint32_t, float, float, float, float,
         JaliumTextHitTestResult* result) override {
-        if (result) memset(result, 0, sizeof(*result));
-        return JALIUM_OK;
+        if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
+        memset(result, 0, sizeof(*result));
+        // This fallback format has no native caret layout. Let the caller use its
+        // measured-text fallback instead of treating an all-zero position as a hit.
+        return JALIUM_ERROR_NOT_SUPPORTED;
     }
     JaliumResult HitTestTextPosition(
         const wchar_t*, uint32_t, float, float, uint32_t, int32_t,
         JaliumTextHitTestResult* result) override {
-        if (result) memset(result, 0, sizeof(*result));
-        return JALIUM_OK;
+        if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
+        memset(result, 0, sizeof(*result));
+        return JALIUM_ERROR_NOT_SUPPORTED;
     }
 };
 
@@ -322,12 +326,15 @@ struct SoftwareTransform {
 
     SoftwareTransform Multiply(const SoftwareTransform& b) const {
         SoftwareTransform r;
-        r.m[0] = m[0] * b.m[0] + m[1] * b.m[2];
-        r.m[1] = m[0] * b.m[1] + m[1] * b.m[3];
-        r.m[2] = m[2] * b.m[0] + m[3] * b.m[2];
-        r.m[3] = m[2] * b.m[1] + m[3] * b.m[3];
-        r.m[4] = m[4] * b.m[0] + m[5] * b.m[2] + b.m[4];
-        r.m[5] = m[4] * b.m[1] + m[5] * b.m[3] + b.m[5];
+        // Push the child's local transform under the current parent transform.
+        // With Apply's column-vector convention this is parent * child; the
+        // opposite order leaves translations unscaled beneath a DPI root.
+        r.m[0] = m[0] * b.m[0] + m[2] * b.m[1];
+        r.m[1] = m[1] * b.m[0] + m[3] * b.m[1];
+        r.m[2] = m[0] * b.m[2] + m[2] * b.m[3];
+        r.m[3] = m[1] * b.m[2] + m[3] * b.m[3];
+        r.m[4] = m[0] * b.m[4] + m[2] * b.m[5] + m[4];
+        r.m[5] = m[1] * b.m[4] + m[3] * b.m[5] + m[5];
         return r;
     }
 };
@@ -394,7 +401,11 @@ class SoftwareRenderTarget : public RenderTarget, public CpuFramebufferStoragePr
     public EllipticalEffectProvider, public SpreadShadowProvider,
     public CssBoxShadowProvider, public CssShadowLayerProvider,
     public FilterDropShadowProvider, public CssTextShadowProvider, public ColorMatrixChainProvider,
-    public InsetShadowLayerProvider {
+    public InsetShadowLayerProvider
+#ifdef __APPLE__
+    , public TextGlyphRangeRenderProvider, public TextParagraphRenderProvider
+#endif
+{
 public:
     SoftwareRenderTarget(SoftwareBackend* backend, int32_t width, int32_t height);
     ~SoftwareRenderTarget() override;
@@ -430,6 +441,10 @@ public:
         float blRadius, float brRadius,
         Brush* fillBrush, Brush* strokeBrush, float strokeWidth) override;
 
+#ifdef __APPLE__
+    JaliumResult SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode) override;
+    void RenderParagraphLine(TextParagraph* paragraph, uint32_t line, float x, float y, float opacity) override;
+#endif
     bool SupportsRetainedLayers() const override { return true; }
     void* RealizeLayerBegin(void* existingLayer, float x, float y, float w, float h) override;
     void RealizeLayerEnd(void* layer) override;
@@ -633,6 +648,11 @@ public:
     friend class SoftwareBackend;
 
 private:
+#ifdef __APPLE__
+    void CompositeAppleGlyphs(const std::vector<uint8_t>& pixels, uint32_t width, uint32_t height, float x, float y);
+    std::vector<uint32_t> glyphRanges_;
+    int32_t glyphVisibility_ = 0;
+#endif
     struct CompactFramebufferStorage {
         std::vector<uint8_t> prefixPixels;
         uint8_t suffixBgra[4] = {};
@@ -903,7 +923,11 @@ private:
 // Backend
 // ============================================================================
 
-class SoftwareBackend : public IRenderBackend {
+class SoftwareBackend : public IRenderBackend
+#ifdef __APPLE__
+    , public TextFormatWidthFactory
+#endif
+{
 public:
     SoftwareBackend();
     ~SoftwareBackend() override;
@@ -930,6 +954,9 @@ public:
         float fontSize,
         int32_t fontWeight,
         int32_t fontStyle) override;
+#ifdef __APPLE__
+    TextFormat* CreateTextFormatWithWidth(const wchar_t* family, float size, int32_t weight, int32_t style, float percentage) override;
+#endif
     Bitmap* CreateBitmapFromMemory(const uint8_t* data, uint32_t dataSize) override;
     Bitmap* CreateBitmapFromPixels(
         const uint8_t* pixels,

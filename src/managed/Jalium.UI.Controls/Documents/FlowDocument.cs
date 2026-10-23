@@ -547,6 +547,24 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 }
             }
         }
+        else if (block is Table table)
+        {
+            foreach (var row in table.RowGroups.SelectMany(group => group.Rows))
+            {
+                foreach (var cell in row.Cells)
+                {
+                    foreach (var child in cell.Blocks)
+                    {
+                        var found = GetPositionInBlock(child, targetOffset, direction, ref currentOffset);
+                        if (found is not null) return found;
+                    }
+                    if (targetOffset == currentOffset) return new TextPointer(this, cell, TextElement.GetContentLength(cell), direction);
+                    currentOffset++; // Cell separator in GetText().
+                }
+                if (targetOffset == currentOffset) return new TextPointer(this, null, currentOffset, direction);
+                currentOffset++; // Row separator in GetText().
+            }
+        }
         else if (block is BlockUIContainer)
         {
             if (targetOffset >= currentOffset && targetOffset < currentOffset + 1)
@@ -675,7 +693,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 }
             }
 
-            if (current is Paragraph)
+            if (current is Paragraph or TableCell or TableRow)
             {
                 cursor++;
             }
@@ -735,7 +753,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         return length;
     }
 
-    private static int GetBlockLength(Block block)
+    internal static int GetBlockLength(Block block)
     {
         if (block is Paragraph p)
         {
@@ -762,6 +780,10 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 }
             }
             return length;
+        }
+        else if (block is Table table)
+        {
+            return table.RowGroups.Sum(group => group.Rows.Sum(row => row.Cells.Sum(cell => cell.Blocks.Sum(GetBlockLength) + 1) + 1));
         }
         else if (block is BlockUIContainer)
         {
@@ -813,7 +835,9 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
     #region Methods
 
     /// <summary>
-    /// Gets the plain text content of the document.
+    /// Gets the plain text content of the document, using one LF per structural break.
+    /// Authored Run text is preserved verbatim so offsets match TextPointer on every platform.
+    /// Embedded UI elements occupy one U+FFFC object replacement character; their child text is not flattened.
     /// </summary>
     public string GetText()
     {
@@ -836,7 +860,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         {
             case Paragraph paragraph:
                 AppendInlinesText(paragraph.Inlines, sb);
-                sb.AppendLine();
+                sb.Append('\n');
                 break;
 
             case Section section:
@@ -860,9 +884,13 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                             AppendBlocksText(cell.Blocks, sb);
                             sb.Append('\t');
                         }
-                        sb.AppendLine();
+                        sb.Append('\n');
                     }
                 }
+                break;
+
+            case BlockUIContainer:
+                sb.Append('\uFFFC');
                 break;
         }
     }
@@ -888,7 +916,11 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 break;
 
             case LineBreak:
-                sb.AppendLine();
+                sb.Append('\n');
+                break;
+
+            case InlineUIContainer:
+                sb.Append('\uFFFC');
                 break;
         }
     }

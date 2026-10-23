@@ -12,6 +12,7 @@ namespace Jalium.UI.Media;
 public abstract class Visual : DependencyObject
 {
     private Visual? _parent;
+    internal ulong InputParentRevision { get; private set; }
     private readonly List<Visual> _children = new();
     private bool _isRenderDirty;
     private bool _isSubtreeDirty;
@@ -441,7 +442,7 @@ public abstract class Visual : DependencyObject
             // should be a no-op. Happens during own-container realization when
             // multiple pipelines (ItemsControl populate + VSP realize) converge
             // on the same container within one layout pass.
-            if (!_children.Contains(child))
+            if (!_children.Any(candidate => ReferenceEquals(candidate, child)))
             {
                 _children.Add(child);
                 ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
@@ -456,6 +457,7 @@ public abstract class Visual : DependencyObject
         }
 
         var oldParent = child._parent;
+        child.InputParentRevision++;
         child._parent = this;
         ((DependencyObject)child).VisualParent = this;
         _children.Add(child);
@@ -523,9 +525,11 @@ public abstract class Visual : DependencyObject
         }
 
         var oldParent = child._parent;
+        child.InputParentRevision++;
         child._parent = null;
         ((DependencyObject)child).VisualParent = null;
-        _children.Remove(child);
+        int index = _children.FindIndex(candidate => ReferenceEquals(candidate, child));
+        if (index >= 0) _children.RemoveAt(index);
         ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
 
         OnVisualChildrenChanged(null, child);

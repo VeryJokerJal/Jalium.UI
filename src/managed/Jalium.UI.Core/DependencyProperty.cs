@@ -83,6 +83,11 @@ public sealed class DependencyProperty
     // A non-brush property can never participate in mutable render-brush
     // ownership, even if its owner also has Background/Foreground entries.
     internal bool IsBrushProperty { get; }
+    // Object-valued item identity must notify even when user data overrides Equals.
+    internal bool UsesReferenceIdentity { get; set; }
+    internal bool AreValuesEqual(object? left, object? right) => UsesReferenceIdentity
+        ? ReferenceEquals(left, right) : Equals(left, right);
+
     private bool _typeMetadataInherits;
     private bool _typeMetadataCoerces;
     private long _inheritanceVersion;

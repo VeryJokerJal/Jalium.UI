@@ -499,7 +499,8 @@ internal sealed class EditorView
         string fontFamily, double fontSize, FontWeight fontWeight, FontStyle fontStyle,
         bool renderLineNumbers = true,
         bool suppressCaret = false,
-        CssCaretShape caretShape = CssCaretShape.Auto)
+        CssCaretShape caretShape = CssCaretShape.Auto,
+        UIElement? writingToolsOwner = null, bool textOnly = false)
     {
         if (Document == null || _lineHeight <= 0) return;
 
@@ -517,7 +518,7 @@ internal sealed class EditorView
             double textAreaWidth = Math.Max(0, renderSize.Width - textAreaLeft);
 
             // Render gutter background
-            if (showLineNumbers && _gutterWidth > 0)
+            if (!textOnly && showLineNumbers && _gutterWidth > 0)
             {
                 dc.DrawRectangle(gutterBackground, null,
                     new Rect(0, 0, TextAreaLeft, renderSize.Height));
@@ -550,7 +551,7 @@ internal sealed class EditorView
                 cachedLine.Y = y;
 
                 // Current line highlight
-                if (highlightCurrentLine && lineNum == caretLine)
+                if (!textOnly && highlightCurrentLine && lineNum == caretLine)
                 {
                     dc.DrawRectangle(currentLineBackground, null,
                         new Rect(textAreaLeft, y, textAreaWidth, _lineHeight));
@@ -558,7 +559,7 @@ internal sealed class EditorView
 
                 // Selection rendering
                 var selRange = selection.GetSelectionOnLine(docLine);
-                if (selRange.HasValue)
+                if (!textOnly && selRange.HasValue)
                 {
                     int selStartColumn = Math.Clamp(selRange.Value.startColumn, 0, lineText.Length);
                     double selStartX = GetColumnX(cachedLine, lineText, selStartColumn, textAreaLeft);
@@ -566,13 +567,14 @@ internal sealed class EditorView
                         ? textAreaLeft + textAreaWidth // Selection extends to end of line
                         : GetColumnX(cachedLine, lineText, Math.Clamp(selRange.Value.endColumn, 0, lineText.Length), textAreaLeft);
 
+                    using var presentation = writingToolsOwner is null ? default : MacOSWritingToolsPresentation.PushHidden(writingToolsOwner, dc);
                     dc.DrawRectangle(selectionBrush, null,
                         new Rect(Math.Max(textAreaLeft, selStartX), y,
                             Math.Max(0, selEndX - Math.Max(textAreaLeft, selStartX)), _lineHeight));
                 }
 
                 // Line number
-                if (showLineNumbers && renderLineNumbers)
+                if (!textOnly && showLineNumbers && renderLineNumbers)
                 {
                     var lineNumBrush = lineNum == caretLine ? foreground : lineNumberForeground;
                     var lineNumText = new FormattedText(lineNum.ToString(), fontFamily, fontSize)
@@ -592,7 +594,8 @@ internal sealed class EditorView
                 }
 
                 // Line text with syntax highlighting
-                RenderLineText(dc, docLine, cachedLine, lineNum, lineText, y, textAreaLeft, fontFamily, fontSize, fontWeight, fontStyle, foreground);
+                using (writingToolsOwner is null ? default(MacOSWritingToolsPresentation.ClipScope) : MacOSWritingToolsPresentation.PushTextClip(writingToolsOwner, dc))
+                    RenderLineText(dc, docLine, cachedLine, lineNum, lineText, y, textAreaLeft, fontFamily, fontSize, fontWeight, fontStyle, foreground, writingToolsOwner);
             }
 
             // Render caret
@@ -677,7 +680,7 @@ internal sealed class EditorView
 
     private void RenderLineText(DrawingContext dc, DocumentLine docLine, EditorViewLine cachedLine, int lineNum, string lineText,
         double y, double textAreaLeft, string fontFamily, double fontSize,
-        FontWeight fontWeight, FontStyle fontStyle, Brush defaultForeground)
+        FontWeight fontWeight, FontStyle fontStyle, Brush defaultForeground, UIElement? writingToolsOwner)
     {
         if (docLine.Length == 0) return;
 
@@ -713,6 +716,7 @@ internal sealed class EditorView
                 var formatted = new FormattedText(tokenText, fontFamily, fontSize)
                 { Foreground = brush, FontWeight = fontWeight.ToOpenTypeWeight(), FontStyle = fontStyle.ToOpenTypeStyle() };
                 double tokenX = GetColumnX(cachedLine, lineText, tokenStart, textAreaLeft);
+                if (writingToolsOwner is not null) MacOSWritingToolsPresentation.ApplyGlyphRanges(writingToolsOwner, formatted, docLine.Offset + tokenStart);
                 dc.DrawText(formatted, new Point(tokenX, y));
             }
         }
@@ -722,6 +726,7 @@ internal sealed class EditorView
             string text = visibleColumnLimit < lineText.Length ? lineText[..visibleColumnLimit] : lineText;
             var formatted = new FormattedText(text, fontFamily, fontSize)
             { Foreground = defaultForeground, FontWeight = fontWeight.ToOpenTypeWeight(), FontStyle = fontStyle.ToOpenTypeStyle() };
+            if (writingToolsOwner is not null) MacOSWritingToolsPresentation.ApplyGlyphRanges(writingToolsOwner, formatted, docLine.Offset);
             dc.DrawText(formatted, new Point(textAreaLeft - HorizontalOffset, y));
         }
     }

@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Specialized;
 using Jalium.UI.Controls;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -6,7 +7,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a control that allows the user to select items from among its child elements.
 /// </summary>
-public abstract class Selector : ItemsControl
+public abstract partial class Selector : ItemsControl
 {
     #region Dependency Properties
 
@@ -273,6 +274,12 @@ public abstract class Selector : ItemsControl
     /// </summary>
     protected IList SelectedItemsImpl => (IList)GetValue(SelectedItemsImplProperty)!;
 
+    internal void SetSelectedItemsCollectionView(IList collection)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        SetValue(SelectedItemsPropertyKey, collection);
+    }
+
     #endregion
 
     #region Fields
@@ -286,6 +293,18 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Initializes a new instance of the <see cref="Selector"/> class.
     /// </summary>
+    static Selector() => SelectedItemProperty.UsesReferenceIdentity = true;
+
+    // A selector with occurrence-aware multi-selection owns its complete scalar
+    // transaction; other selectors keep the existing default implementation.
+    internal virtual bool TryApplySelectionProperty(DependencyProperty property, object? value)
+    {
+        var row = property == SelectedIndexProperty
+            ? Items.GetOccurrenceAt(value is int index ? index : -1) : ResolveSingleOccurrence(value);
+        CommitSingleOccurrence(row);
+        return true;
+    }
+
     protected Selector()
     {
         Focusable = true;
@@ -328,6 +347,8 @@ public abstract class Selector : ItemsControl
     {
         if (item == null) return -1;
 
+        for (int index = 0; index < Items.Count; index++)
+            if (ReferenceEquals(Items.GetItemAt(index), item)) return index;
         return Items.IndexOf(item);
     }
 
@@ -336,7 +357,12 @@ public abstract class Selector : ItemsControl
     /// </summary>
     protected new virtual void OnSelectionChanged(SelectionChangedEventArgs e)
     {
-        RaiseEvent(e);
+        try { RaiseEvent(e); }
+        finally
+        {
+            GetExistingAutomationPeer()?.RaiseAutomationEvent(
+                Jalium.UI.Automation.Peers.AutomationEvents.SelectionPatternOnInvalidated);
+        }
     }
 
     /// <summary>
@@ -358,19 +384,29 @@ public abstract class Selector : ItemsControl
         "Trimming",
         "IL2026:RequiresUnreferencedCode",
         Justification = "This is the multi-selection counterpart of the existing selection property callbacks. SelectedValuePath reflection remains an opt-in consumer responsibility through PropertyAccessorRegistry.")]
-    internal void UpdateSelectionPropertiesFromBatch(int selectedIndex, object? selectedItem)
+    internal void UpdateSelectionPropertiesFromBatch(int selectedIndex, object? selectedItem, Func<bool>? isCurrent = null, bool preserveSelectedValue = false)
     {
+        if (this is not ListBox && !_isReconcilingOccurrence)
+            _selectionOccurrence = Items.GetOccurrenceAt(selectedIndex);
         _isUpdatingSelection = true;
         try
         {
-            SetCurrentValue(SelectedIndexProperty, selectedIndex);
-            SetCurrentValue(SelectedItemProperty, selectedItem);
-            UpdateSelectedValueFromSelection(selectedItem);
+            WriteSingleSelectionProperty(SelectedIndexProperty, selectedIndex);
+            if (isCurrent?.Invoke() == false) return;
+            WriteSingleSelectionProperty(SelectedItemProperty, selectedItem);
+            if (isCurrent?.Invoke() == false) return;
+            if (!preserveSelectedValue) UpdateSelectedValueFromSelection(selectedItem, isCurrent);
+            if (isCurrent?.Invoke() == false) return;
             UpdateContainerSelection();
         }
         finally
         {
             _isUpdatingSelection = false;
+            if (this is not ListBox && _pendingOccurrenceReconciliation && !_isReconcilingOccurrence)
+            {
+                _pendingOccurrenceReconciliation = false;
+                CommitSingleOccurrence(_selectionOccurrence);
+            }
         }
     }
 
@@ -382,103 +418,108 @@ public abstract class Selector : ItemsControl
         // Override in derived classes to update container selection state
     }
 
+    /// <inheritdoc />
+    protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
+    {
+        base.OnItemsChanged(e);
+
+        if (_isUpdatingSelection)
+        {
+            return;
+        }
+
+        SynchronizeSelectionWithItemsChange(e);
+    }
+
+    /// <summary>
+    /// Reconciles selection after the item containers have processed a collection change.
+    /// Multi-selection controls override this to retain every surviving selected item.
+    /// </summary>
+    protected virtual void SynchronizeSelectionWithItemsChange(NotifyCollectionChangedEventArgs e)
+    {
+        // ItemCollection reconciles row identity before collection subscribers
+        // and container callbacks. Indices here already describe the new view.
+    }
+
     #endregion
 
     #region Property Changed Callbacks
 
     private static void OnSelectedIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is Selector selector && !selector._isUpdatingSelection)
+        if (d is not Selector selector) return;
+        if (selector._isUpdatingSelection)
         {
-            selector._isUpdatingSelection = true;
-            try
+            selector.RecordSingleSelectionRequest(SelectedIndexProperty, e.NewValue);
+            return;
+        }
+        if (selector.TryApplySelectionProperty(SelectedIndexProperty, e.NewValue)) return;
+        object? oldItem = selector.SelectedItem;
+        object? newItem = selector.GetItemAt((int)(e.NewValue ?? -1));
+        bool changed = selector.SelectedItem != newItem;
+        selector._isUpdatingSelection = true;
+        try
+        {
+            if (changed)
             {
-                var newIndex = (int)(e.NewValue ?? -1);
-                var newItem = selector.GetItemAt(newIndex);
-
-                if (selector.SelectedItem != newItem)
-                {
-                    var oldItem = selector.SelectedItem;
-                    selector.SelectedItem = newItem;
-                    selector.UpdateSelectedValueFromSelection(newItem);
-                    selector.UpdateContainerSelection();
-                    selector.RaiseSelectionChanged(oldItem, newItem);
-                }
-            }
-            finally
-            {
-                selector._isUpdatingSelection = false;
+                selector.SelectedItem = newItem;
+                selector.UpdateSelectedValueFromSelection(newItem);
+                selector.UpdateContainerSelection();
             }
         }
+        finally { selector._isUpdatingSelection = false; }
+        if (changed) selector.RaiseSelectionChanged(oldItem, newItem);
     }
 
     private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is Selector selector && !selector._isUpdatingSelection)
+        if (d is not Selector selector) return;
+        if (selector._isUpdatingSelection)
         {
-            selector._isUpdatingSelection = true;
-            try
-            {
-                var newItem = e.NewValue;
-                var newIndex = selector.GetIndexOf(newItem);
-
-                // If item is not in the collection, clear selection
-                if (newIndex == -1 && newItem != null)
-                {
-                    selector.SelectedItem = null;
-                    selector.SelectedIndex = -1;
-                    selector.UpdateSelectedValueFromSelection(null);
-                    selector.UpdateContainerSelection();
-                    return;
-                }
-
-                if (selector.SelectedIndex != newIndex)
-                {
-                    selector.SelectedIndex = newIndex;
-                }
-
-                selector.UpdateSelectedValueFromSelection(newItem);
-                selector.UpdateContainerSelection();
-                selector.RaiseSelectionChanged(e.OldValue, e.NewValue);
-            }
-            finally
-            {
-                selector._isUpdatingSelection = false;
-            }
+            selector.RecordSingleSelectionRequest(SelectedItemProperty, e.NewValue);
+            return;
         }
+        if (selector.TryApplySelectionProperty(SelectedItemProperty, e.NewValue)) return;
+        object? newItem = e.NewValue;
+        int newIndex = selector.GetIndexOf(newItem);
+        if (newIndex == -1) newItem = null;
+        selector._isUpdatingSelection = true;
+        try
+        {
+            if (!Equals(selector.SelectedItem, newItem)) selector.SelectedItem = newItem;
+            if (selector.SelectedIndex != newIndex) selector.SelectedIndex = newIndex;
+            selector.UpdateSelectedValueFromSelection(newItem);
+            selector.UpdateContainerSelection();
+        }
+        finally { selector._isUpdatingSelection = false; }
+        selector.RaiseSelectionChanged(e.OldValue, newItem);
     }
 
     private static void OnSelectedValueChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is Selector selector && !selector._isUpdatingSelection)
+        if (d is not Selector selector) return;
+        if (selector._isUpdatingSelection)
         {
-            selector._isUpdatingSelection = true;
-            try
-            {
-                var oldItem = selector.SelectedItem;
-                var (matchedIndex, matchedItem) = selector.FindItemBySelectedValue(e.NewValue);
-
-                if (selector.SelectedItem != matchedItem)
-                {
-                    selector.SelectedItem = matchedItem;
-                }
-
-                if (selector.SelectedIndex != matchedIndex)
-                {
-                    selector.SelectedIndex = matchedIndex;
-                }
-
-                selector.UpdateContainerSelection();
-                if (!Equals(oldItem, matchedItem))
-                {
-                    selector.RaiseSelectionChanged(oldItem, matchedItem);
-                }
-            }
-            finally
-            {
-                selector._isUpdatingSelection = false;
-            }
+            selector.RecordSingleSelectionRequest(SelectedValueProperty, e.NewValue);
+            return;
         }
+        object? oldItem = selector.SelectedItem;
+        var (matchedIndex, matchedItem) = selector.FindItemBySelectedValue(e.NewValue);
+        if (selector is not ListBox)
+        {
+            selector.CommitSingleOccurrence(selector.Items.GetOccurrenceAt(matchedIndex), preserveSelectedValue: true);
+            return;
+        }
+        if (selector.TryApplySelectionProperty(SelectedIndexProperty, matchedIndex)) return;
+        selector._isUpdatingSelection = true;
+        try
+        {
+            if (selector.SelectedItem != matchedItem) selector.SelectedItem = matchedItem;
+            if (selector.SelectedIndex != matchedIndex) selector.SelectedIndex = matchedIndex;
+            selector.UpdateContainerSelection();
+        }
+        finally { selector._isUpdatingSelection = false; }
+        if (!Equals(oldItem, matchedItem)) selector.RaiseSelectionChanged(oldItem, matchedItem);
     }
 
     private static void OnSelectedValuePathChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -503,12 +544,14 @@ public abstract class Selector : ItemsControl
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
         Justification = "Reached only from the SelectedIndex/SelectedItem/SelectedValuePath property-changed callbacks, whose PropertyChangedCallback signature is fixed by the property system and cannot carry the RUC contract. The only reflective work is the opt-in SelectedValuePath lookup via GetSelectedValueForItem -> TryResolvePathValue -> PropertyAccessorRegistry.TryReadProperty, which is a no-op unless the consumer sets a non-empty SelectedValuePath. Per PropertyAccessorRegistry's RUC contract ('Register typed accessors via Register() to opt out of reflection.'), applications that bind SelectedValuePath against user data types under AOT must register accessors for those types; this is a documented consumer prerequisite, not a defect of this site.")]
-    private void UpdateSelectedValueFromSelection(object? selectedItem)
+    private void UpdateSelectedValueFromSelection(object? selectedItem, Func<bool>? isCurrent = null)
     {
         var newValue = GetSelectedValueForItem(selectedItem);
+        if (isCurrent?.Invoke() == false) return;
         if (!Equals(SelectedValue, newValue))
         {
-            SelectedValue = newValue;
+            if (_isReconcilingOccurrence) WriteSingleSelectionProperty(SelectedValueProperty, newValue);
+            else SelectedValue = newValue;
         }
     }
 

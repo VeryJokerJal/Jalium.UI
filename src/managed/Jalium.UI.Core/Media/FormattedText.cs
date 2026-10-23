@@ -10,6 +10,14 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed partial class FormattedText
 {
+    // Internal rendering-only filter: pairs are UTF-16 (start, length), in the
+    // complete shaped layout's coordinates. 1 includes, 2 excludes clusters.
+    internal uint[]? GlyphRanges { get; set; }
+    internal int GlyphVisibility { get; set; }
+    // Editors opt into a finite native alignment box without changing legacy
+    // callers which already position their own glyph origins.
+    internal TextAlignment? NativeTextAlignment { get; init; }
+    internal bool NativeNoWrap { get; init; }
     // Immutable platform layout used by flow content. Keeping it on the draw
     // command preserves shaping through effect captures and display lists.
     private object? _platformTextLine;
@@ -583,6 +591,7 @@ public sealed partial class FormattedText
     internal FormattedText CreateRenderSnapshot(Brush? foreground)
     {
         var snapshot = (FormattedText)MemberwiseClone();
+        snapshot.GlyphRanges = GlyphRanges is null ? null : (uint[])GlyphRanges.Clone();
         if (_platformTextLine is IPlatformTextLine platformLine)
         {
             snapshot._platformTextLine = platformLine.CreateRenderSnapshot();

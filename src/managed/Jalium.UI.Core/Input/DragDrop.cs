@@ -799,7 +799,9 @@ public class DragEventArgs : RoutedEventArgs
         _position = position;
     }
 
-    public Point GetPosition(IInputElement? relativeTo) => _position;
+    internal Func<IInputElement?, Point>? PositionResolver { get; init; }
+
+    public Point GetPosition(IInputElement? relativeTo) => PositionResolver?.Invoke(relativeTo) ?? _position;
 
     /// <summary>
     /// Platform hook that writes a Windows Shell drop description onto the native

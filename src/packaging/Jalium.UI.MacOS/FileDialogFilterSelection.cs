@@ -23,6 +23,10 @@ internal sealed class FileDialogFilterSelection(
         }
     }
 
+    // Native projection is separate from save-name extension inference.
+    public string[] NativeExtensions => Patterns.All(pattern => pattern.StartsWith("*.")
+        && IsExtension(pattern[2..]) && !pattern[2..].Contains('.')) ? Extensions : [];
+
     public bool MatchesFileName(string fileName)
     {
         var patterns = Patterns;

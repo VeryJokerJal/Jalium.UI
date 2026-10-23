@@ -21,6 +21,8 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     private nint _handle;
     private Action<PlatformEvent>? _eventHandler;
     private bool _disposed;
+    private IDisposable? _appearanceMonitor;
+    private bool _startingAppearanceMonitor;
 
     // Event callback delegate must be pinned to prevent GC collection
     private readonly NativeEventCallbackDelegate _nativeCallback;
@@ -83,6 +85,9 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
             WindowSetEventCallback(_handle,
                 Marshal.GetFunctionPointerForDelegate(_nativeCallback),
                 GCHandle.ToIntPtr(_selfHandle));
+            InitializeMacOSGestures();
+            InitializeMacOSTablets();
+            EnsureAppearanceMonitoring();
         }
         catch
         {
@@ -97,6 +102,19 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                 _callbackHandle.Free();
             throw;
         }
+    }
+
+    internal void EnsureAppearanceMonitoring()
+    {
+        if (!OperatingSystem.IsMacOS() || _disposed || _handle == 0 || _appearanceMonitor != null || _startingAppearanceMonitor) return;
+        _startingAppearanceMonitor = true;
+        try
+        {
+            var monitor = PlatformThemeIntegration.MonitorAppearance?.Invoke();
+            if (_disposed || _handle == 0) monitor?.Dispose();
+            else _appearanceMonitor = monitor;
+        }
+        finally { _startingAppearanceMonitor = false; }
     }
 
     public nint NativeHandle => _handle != nint.Zero
@@ -396,8 +414,20 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
 
     public void SetEventHandler(Action<PlatformEvent>? handler)
     {
+        if (handler is null) SetMacOSTextServicesEnabled(false);
         _eventHandler = handler;
+        if (handler is not null) SetMacOSTextServicesEnabled(true);
     }
+
+    private void SetMacOSTextServicesEnabled(bool enabled)
+    {
+        if (!OperatingSystem.IsMacOS() || _handle == 0) return;
+        try { _ = AppleWindowEnableTextServices(_handle, enabled ? 1 : 0); }
+        catch (EntryPointNotFoundException) { } // Older native packages keep the existing text-input behavior.
+    }
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_enable_text_services")]
+    private static partial int AppleWindowEnableTextServices(nint window, int enabled);
 
     // ========================================================================
     // Native Event Marshaling
@@ -427,6 +457,13 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     /// Static callback invoked from native code. Recovers the NativePlatformWindow
     /// instance from userData and dispatches the event.
     /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeTextServicesRequest
+    {
+        internal int Kind, Start, Length, Flags;
+        internal nint Payload, ResponseContext, Respond;
+    }
+
     private static void OnNativeEventStatic(nint eventPtr, nint userData)
     {
         if (eventPtr == nint.Zero || userData == nint.Zero)
@@ -550,6 +587,15 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     break;
                 }
 
+                case PlatformEventType.TextServicesRequest:
+                {
+                    var service = (NativeTextServicesRequest*)*(nint*)data;
+                    if (service != null)
+                        evt.TextServicesRequest = new(service->Kind, service->Start, service->Length,
+                            service->Flags, service->Payload == 0 ? null : Marshal.PtrToStringUTF8(service->Payload));
+                    break;
+                }
+
                 case PlatformEventType.ImeGeometryRequest:
                 {
                     int resultOffset = nint.Size == 8 ? 24 : 20;
@@ -650,6 +696,18 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                 nint applied = Marshal.ReadIntPtr(eventPtr, unionOffset + resultOffset);
                 if (applied != nint.Zero) Marshal.WriteInt32(applied, request.Applied ? 1 : -1);
             }
+            if (evt.TextServicesRequest?.Response is { Length: <= 64 * 1024 * 1024 } reply)
+            {
+                unsafe
+                {
+                    int offset = Marshal.OffsetOf<NativePlatformEvent>(nameof(NativePlatformEvent.Data0)).ToInt32();
+                    var nativeService = (NativeTextServicesRequest*)Marshal.ReadIntPtr(eventPtr, offset);
+                    if (nativeService != null && nativeService->Respond != 0)
+                        fixed (byte* bytes = reply)
+                            ((delegate* unmanaged[Cdecl]<nint, byte*, nuint, void>)nativeService->Respond)
+                                (nativeService->ResponseContext, bytes, (nuint)reply.Length);
+                }
+            }
             if (evt.Type == PlatformEventType.ImeGeometryRequest && evt.ImeGeometryRequest is { } geometry)
             {
                 int unionOffset = Marshal.OffsetOf<NativePlatformEvent>(nameof(NativePlatformEvent.Data0)).ToInt32();
@@ -689,19 +747,21 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     {
         if (_disposed) return;
         _disposed = true;
-
+        ExceptionDispatchInfo? failure = null;
         if (_handle != nint.Zero)
         {
-            // Unregister callback before destroying
-            WindowSetEventCallback(_handle, nint.Zero, nint.Zero);
-            NativeMethods.WindowDestroy(_handle);
-            _handle = nint.Zero;
+            HostedLifecycleCleanup.Attempt(DisposeMacOSTablets, ref failure);
+            HostedLifecycleCleanup.Attempt(DisposeMacOSGestures, ref failure);
+            HostedLifecycleCleanup.Attempt(() => WindowSetEventCallback(_handle, nint.Zero, nint.Zero), ref failure);
+            var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+            HostedLifecycleCleanup.Attempt(() => NativeMethods.WindowDestroy(handle), ref failure);
         }
-
         if (_selfHandle.IsAllocated)
-            _selfHandle.Free();
+            HostedLifecycleCleanup.Attempt(() => _selfHandle.Free(), ref failure);
         if (_callbackHandle.IsAllocated)
-            _callbackHandle.Free();
+            HostedLifecycleCleanup.Attempt(() => _callbackHandle.Free(), ref failure);
+        HostedLifecycleCleanup.Attempt(() => Interlocked.Exchange(ref _appearanceMonitor, null)?.Dispose(), ref failure);
+        failure?.Throw();
     }
 
     // P/Invoke for event callback registration

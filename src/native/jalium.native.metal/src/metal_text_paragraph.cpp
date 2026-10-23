@@ -312,6 +312,25 @@ JaliumResult MetalTextParagraph::HitTest(uint32_t line, float x, JaliumParagraph
     auto closest = std::min_element(carets.begin(), carets.end(), [&](const auto& a, const auto& b) {
         return std::abs(a.x - x) < std::abs(b.x - x);
     });
+#ifdef __APPLE__
+    // A bidi boundary can expose distinct logical offsets at the same visual
+    // caret. Resolve that ambiguity using CoreText's hit for the shaped line,
+    // while retaining the nearest grapheme edge and its affinity.
+    const auto& row = impl_->rows[line];
+    CFIndex hint = row.line ? CTLineGetStringIndexForPosition(row.line,
+        CGPointMake(x - row.originX, 0)) : kCFNotFound;
+    if (hint >= 0) {
+        if (hint < impl_->length) {
+            CFRange cluster = CFStringGetRangeOfComposedCharactersAtIndex(impl_->String(), hint);
+            hint = cluster.location;
+        }
+        const float distance = std::abs(closest->x - x);
+        auto preferred = std::find_if(carets.begin(), carets.end(), [&](const auto& edge) {
+            return edge.textPosition == hint && std::abs(std::abs(edge.x - x) - distance) < 0.001f;
+        });
+        if (preferred != carets.end()) closest = preferred;
+    }
+#endif
     *result = *closest; return JALIUM_OK;
 }
 JaliumResult MetalTextParagraph::GetSelection(uint32_t line, uint32_t start, uint32_t length,
@@ -355,7 +374,8 @@ JaliumResult MetalTextParagraph::GetSelection(uint32_t line, uint32_t start, uin
 
 bool MetalTextParagraph::RasterizeLine(uint32_t line, float x, float y, float opacity,
     const float* matrix, float clipWidth, float clipHeight, std::vector<uint8_t>& pixels,
-    uint32_t& pixelWidth, uint32_t& pixelHeight, float& deviceX, float& deviceY) const
+    uint32_t& pixelWidth, uint32_t& pixelHeight, float& deviceX, float& deviceY,
+    const uint32_t* ranges, uint32_t rangeCount, int32_t visibility) const
 {
     pixels.clear(); pixelWidth = pixelHeight = 0; deviceX = deviceY = 0;
 #ifdef __APPLE__
@@ -404,7 +424,7 @@ bool MetalTextParagraph::RasterizeLine(uint32_t line, float x, float y, float op
         if (number) CFNumberGetValue(number, kCFNumberFloat32Type, &alpha);
         CGContextSaveGState(context.value);
         CGContextSetAlpha(context.value, std::clamp(opacity, 0.0f, 1.0f) * alpha);
-        DrawFontRun(run, context.value, CGPointZero);
+        DrawFontRunRanges(run, context.value, CGPointZero, impl_->String(), ranges, rangeCount, visibility);
         CGContextRestoreGState(context.value);
     }
     deviceX = static_cast<float>(left); deviceY = static_cast<float>(top); return true;

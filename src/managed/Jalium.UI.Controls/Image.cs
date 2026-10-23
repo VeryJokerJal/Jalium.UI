@@ -57,23 +57,24 @@ public class Image : FrameworkElement, IUriContext
     /// anything keeps producing frames. It is self-sustaining, too: the reclaim clears the
     /// published decode state, so the live consumer's next draw re-requests a full decode, which
     /// republishes, which the next scan reclaims again.</para>
-    /// <para>The test is a comparison, not a timeout, so it needs no knowledge of the reclaimer's
-    /// idle window: this element has been idle since <see cref="Visual.LastRenderedTickMs"/>, so a
-    /// source drawn AFTER that instant was drawn by somebody else and must be left alone. A source
-    /// only this element draws stamps the two together on its last frame, the comparison is false,
-    /// and reclamation proceeds exactly as before.</para>
+    /// <para>The comparison also includes this element's own realized draw. Rendering stamps the
+    /// visual before calling <see cref="OnRender"/>, so a draw that crosses a millisecond boundary
+    /// can be newer without having another consumer. A source drawn after both stamps belongs to
+    /// another consumer and must be left alone.</para>
     /// </remarks>
     public void ReclaimIdleResources()
     {
         if (Source is not { } source)
             return;
 
-        if (source.LastDrawnTickMs > LastRenderedTickMs)
+        if (source.LastDrawnTickMs > Math.Max(LastRenderedTickMs, _lastOwnSourceDrawnTickMs))
             return;
 
         (source as IReclaimableResource)?.ReclaimIdleResources();
     }
 
+    private long _lastOwnSourceDrawnTickMs;
+    private bool _hasOwnSourceDrawing;
     private Uri? _baseUri;
     private bool _hasDpiChangedEverFired;
     private ImageSource? _failureEventSource;
@@ -393,6 +394,7 @@ public class Image : FrameworkElement, IUriContext
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        _hasOwnSourceDrawing = false;
         RequestBitmapDecode(RenderSize);
         if (!TryGetSourceSize(out var source, out var imageSize) || source == null)
             return;
@@ -432,8 +434,30 @@ public class Image : FrameworkElement, IUriContext
         // or a native ClipToBounds value leaves the element box unclipped.
         var clipContent = CssImageObjectProperties.NeedsContentClip(this, fit, content, RenderSize);
         if (clipContent) drawingContext.PushClip(new RectangleGeometry(content));
-        drawingContext.DrawImage(source, drawn, mode);
+        long previousDraw = source.LastDrawnTickMs;
+        _hasOwnSourceDrawing = ReferenceEquals(Source, source);
+        try
+        {
+            drawingContext.DrawImage(source, drawn, mode);
+        }
+        finally
+        {
+            // Recording contexts may only enqueue a command. Claim a realization
+            // only when this call actually advanced the source's draw stamp.
+            long ownDraw = source.LastDrawnTickMs;
+            if (ownDraw != previousDraw && ReferenceEquals(Source, source))
+                _lastOwnSourceDrawnTickMs = ownDraw;
+        }
         if (clipContent) drawingContext.Pop();
+    }
+
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        // Cached command replay skips OnRender, but realizes this image before
+        // OnPostRender. Include that draw without changing the render-entry tick.
+        if (_hasOwnSourceDrawing && Source is { } source && source.LastDrawnTickMs > LastRenderedTickMs)
+            _lastOwnSourceDrawnTickMs = source.LastDrawnTickMs;
     }
 
     #region Property Changed Callbacks
@@ -442,6 +466,8 @@ public class Image : FrameworkElement, IUriContext
     {
         if (d is Image image)
         {
+            image._lastOwnSourceDrawnTickMs = 0;
+            image._hasOwnSourceDrawing = false;
             // A new value is a clean slate: the previous source's failure must never suppress the
             // one replacing it. Cleared before the callback can re-report against the NEW source
             // further down.

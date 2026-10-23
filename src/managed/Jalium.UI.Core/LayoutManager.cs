@@ -260,6 +260,10 @@ internal sealed class LayoutManager
         finally
         {
             _isUpdating = false;
+            // Scratch snapshots can contain elements detached during this pass.
+            // Retain their capacity, not the retired visual tree or its data.
+            _measureSorted.Clear();
+            _arrangeSorted.Clear();
             _depthCache.Clear();
             Generation++;
         }

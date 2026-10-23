@@ -164,12 +164,17 @@ public sealed class InputBindingCollection : IList<InputBinding>, IList
     /// <param name="targetElement">The target element.</param>
     /// <param name="inputEventArgs">The input event data.</param>
     /// <returns>The matching binding, or null if not found.</returns>
-    public InputBinding? FindMatch(object targetElement, InputEventArgs inputEventArgs)
+    public InputBinding? FindMatch(object targetElement, InputEventArgs inputEventArgs) =>
+        FindMatch(targetElement, inputEventArgs, null);
+
+    internal InputBinding? FindMatch(object targetElement, InputEventArgs inputEventArgs, Func<bool>? isInputCurrent)
     {
-        foreach (var binding in _bindings)
+        foreach (var binding in _bindings.ToArray())
         {
-            if (binding.Gesture?.Matches(targetElement, inputEventArgs) == true)
-                return binding;
+            if (isInputCurrent?.Invoke() == false) return null;
+            bool matches = binding.Gesture?.Matches(targetElement, inputEventArgs) == true;
+            if (isInputCurrent?.Invoke() == false) return null;
+            if (matches) return binding;
         }
         return null;
     }

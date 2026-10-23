@@ -229,20 +229,20 @@ public static partial class SystemParameters
     // Visual and accessibility effects.
     public static bool ClientAreaAnimation => OperatingSystem.IsLinux()
         ? LinuxDesktopSettings.AnimationsEnabled
-        : GetSpiBool(SPI_GETCLIENTAREAANIMATION, true);
+        : GetAnimationPreference(SPI_GETCLIENTAREAANIMATION);
     public static bool DropShadow => GetSpiBool(SPI_GETDROPSHADOW, true);
     public static bool FlatMenu => GetSpiBool(SPI_GETFLATMENU, true);
     public static int ForegroundFlashCount => (int)GetSpiUInt(SPI_GETFOREGROUNDFLASHCOUNT, 3);
     public static bool GradientCaptions => GetSpiBool(SPI_GETGRADIENTCAPTIONS, true);
     public static bool HighContrast => GetHighContrast();
-    public static bool MenuAnimation => GetSpiBool(SPI_GETMENUANIMATION, true);
+    public static bool MenuAnimation => GetAnimationPreference(SPI_GETMENUANIMATION);
     public static bool MenuDropAlignment => GetMetricBool(SM_MENUDROPALIGNMENT, false);
     public static bool SelectionFade => GetSpiBool(SPI_GETSELECTIONFADE, true);
     public static bool StylusHotTracking => HotTracking;
-    public static bool ToolTipAnimation => GetSpiBool(SPI_GETTOOLTIPANIMATION, true);
+    public static bool ToolTipAnimation => GetAnimationPreference(SPI_GETTOOLTIPANIMATION);
     public static bool UIEffects => OperatingSystem.IsLinux()
         ? LinuxDesktopSettings.AnimationsEnabled
-        : GetSpiBool(SPI_GETUIEFFECTS, true);
+        : GetAnimationPreference(SPI_GETUIEFFECTS);
 
     public static double CaretWidth => PixelDip(GetSpiUInt(SPI_GETCARETWIDTH, 1));
     public static bool IsGlassEnabled => GetIsGlassEnabled();
@@ -716,7 +716,7 @@ public static partial class SystemParameters
 
     // Additional scalar settings and metrics present on WPF's SystemParameters surface.
     public static int Border => (int)Math.Clamp(GetSpiUInt(SPI_GETBORDER, 1), 1u, int.MaxValue);
-    public static bool ComboBoxAnimation => GetSpiBool(SPI_GETCOMBOBOXANIMATION, true);
+    public static bool ComboBoxAnimation => GetAnimationPreference(SPI_GETCOMBOBOXANIMATION);
     public static PopupAnimation ComboBoxPopupAnimation
         => ComboBoxAnimation ? PopupAnimation.Slide : PopupAnimation.None;
     public static bool CursorShadow => GetSpiBool(SPI_GETCURSORSHADOW, true);
@@ -754,7 +754,7 @@ public static partial class SystemParameters
     public static int KeyboardSpeed => OperatingSystem.IsLinux()
         ? LinuxDesktopSettings.KeyboardSpeed
         : (int)Math.Min(31, GetSpiUInt(SPI_GETKEYBOARDSPEED, 31));
-    public static bool ListBoxSmoothScrolling => GetSpiBool(SPI_GETLISTBOXSMOOTHSCROLLING, true);
+    public static bool ListBoxSmoothScrolling => GetAnimationPreference(SPI_GETLISTBOXSMOOTHSCROLLING);
     public static double MaximizedPrimaryScreenHeight => MetricDip(SM_CYMAXIMIZED, 1040);
     public static double MaximizedPrimaryScreenWidth => MetricDip(SM_CXMAXIMIZED, 1920);
     public static double MaximumWindowTrackHeight => MetricDip(SM_CYMAXTRACK, 1080);
@@ -1123,6 +1123,8 @@ public static partial class SystemParameters
 
     private static bool GetHighContrast()
     {
+        if (OperatingSystem.IsMacOS())
+            return Controls.Platform.PlatformThemeIntegration.ReadHighContrast?.Invoke() ?? false;
         if (OperatingSystem.IsLinux())
             return LinuxDesktopSettings.HighContrast;
         if (!OperatingSystem.IsWindows())
@@ -1144,6 +1146,8 @@ public static partial class SystemParameters
     {
         if (OperatingSystem.IsLinux())
             return LinuxDesktopSettings.AnimationsEnabled;
+        if (OperatingSystem.IsMacOS())
+            return !MacOSScrollBarSettings.PrefersReducedMotion;
         if (!OperatingSystem.IsWindows())
             return true;
 

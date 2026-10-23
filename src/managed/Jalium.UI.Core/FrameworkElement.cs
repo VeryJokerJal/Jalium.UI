@@ -942,7 +942,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// 与直接访问 <see cref="Resources"/> 不同——本属性不会触发懒构造，
     /// 用于资源快照 / 诊断等场景，避免对每个元素都生成空字典污染查找。
     /// </summary>
-    internal bool HasResources => _resources != null && _resources.Count > 0;
+    internal bool HasResources => _resources?.HasLookupResources == true;
+    private bool HasResourceScope => HasResources || GetResourceThemeKeyOverride() != null;
 
     /// <summary>
     /// 本地 Resources 字典；未实例化时返回 <see langword="null"/>。
@@ -1026,14 +1027,18 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     }
 
     /// <summary>
-    /// Notifies resource-dependent state after a theme-key change without reapplying the
-    /// structurally invariant implicit/theme styles. Controls can refresh manual palette caches
-    /// through ResourcesChanged while their existing templates remain intact.
+    /// Refreshes resources and resolves theme-dependent implicit styles after a theme-key
+    /// change. UpdateStyleStack retains unchanged style identities, so palette-only changes
+    /// preserve their existing templates and editable children.
     /// </summary>
     internal void NotifyThemeResourcesChangedFromRoot()
     {
-        RaiseResourcesChangedInSubtree(reEvaluateImplicitStyles: false);
+        RaiseResourcesChangedInSubtree();
     }
+
+    // A root can select a palette without modifying shared application dictionaries.
+    // ResourceLookup follows the same ancestry redirects used by normal resources.
+    internal virtual object? GetResourceThemeKeyOverride() => null;
 
     private void RaiseResourcesChangedInSubtree(bool reEvaluateImplicitStyles = true)
     {
@@ -2279,7 +2284,44 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <param name="oldExplicit">The explicit Style before this update (for Style changes).</param>
     /// <param name="newExplicit">The explicit Style after this update. For non-Style-change
     /// re-evaluation both parameters are the current explicit Style.</param>
+    private bool _updatingStyleStack;
+    private bool _styleStackRefreshPending;
+    private bool _styleStackInitialized;
+    private Style? _appliedExplicitStyle;
+    private Style? _pendingExplicitStyle;
+
     private void UpdateStyleStack(Style? oldExplicit, Style? newExplicit)
+    {
+        if (!_styleStackInitialized)
+        {
+            _styleStackInitialized = true;
+            _appliedExplicitStyle = oldExplicit;
+        }
+        _pendingExplicitStyle = newExplicit;
+        _styleStackRefreshPending = true;
+        if (_updatingStyleStack) return;
+        _updatingStyleStack = true;
+        try
+        {
+            // Setters, triggers and resource callbacks may change Style, the
+            // window theme, or the element's owner. Finish one stack mutation
+            // before resolving the latest request in its current resource scope.
+            while (_styleStackRefreshPending)
+            {
+                _styleStackRefreshPending = false;
+                var requested = _pendingExplicitStyle;
+                UpdateStyleStackCore(_appliedExplicitStyle, requested);
+            }
+        }
+        finally
+        {
+            _updatingStyleStack = false;
+            _styleStackRefreshPending = false;
+            _pendingExplicitStyle = null;
+        }
+    }
+
+    private void UpdateStyleStackCore(Style? oldExplicit, Style? newExplicit)
     {
         var newTheme = LookupThemeStyle();
 
@@ -2307,7 +2349,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             newTop = null;
 
         if (ReferenceEquals(_themeStyle, newTheme) && ReferenceEquals(oldTop, newTop))
+        {
+            _appliedExplicitStyle = newExplicit;
             return; // Stack unchanged.
+        }
 
         // Unwind in LIFO order. Both layers write the same StyleSetter value layer, so
         // removing the top style also clears any overlapping properties the theme style
@@ -2320,6 +2365,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
         _themeStyle = newTheme;
         _implicitStyle = newImplicit;
+        _appliedExplicitStyle = newExplicit;
 
         newTheme?.Apply(this);
         newTop?.Apply(this);
@@ -2525,12 +2571,12 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
         while (current != null && depth++ < 2048)
         {
-            if (current.HasResources)
+            if (current.HasResourceScope)
             {
                 return true;
             }
 
-            if (current.Style?.ResourcesOrNull is { Count: > 0 })
+            if (current.Style?.ResourcesOrNull is { HasLookupResources: true })
             {
                 return true;
             }
@@ -2626,8 +2672,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
             // 往下传递时把本节点自己的资源计入：对后代而言它也是祖先。
             chainHasResources = chainHasResources
-                || fe.HasResources
-                || fe.Style?.ResourcesOrNull is { Count: > 0 };
+                || fe.HasResourceScope
+                || fe.Style?.ResourcesOrNull is { HasLookupResources: true };
         }
 
         for (int i = 0; i < visual.InternalVisualChildrenCount; i++)
@@ -2946,7 +2992,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         _logicalChildren ??= new List<object>();
-        if (_logicalChildren.Contains(child))
+        if (_logicalChildren.Any(candidate => ReferenceEquals(candidate, child)))
         {
             return;
         }
@@ -3033,11 +3079,13 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
     protected internal void RemoveLogicalChild(object? child)
     {
-        if (child == null || _logicalChildren == null || !_logicalChildren.Remove(child))
+        int index = child == null ? -1 : _logicalChildren?.FindIndex(candidate => ReferenceEquals(candidate, child)) ?? -1;
+        if (index < 0)
         {
             return;
         }
 
+        _logicalChildren!.RemoveAt(index);
         var preservesVirtualizationResourceScope =
             child is FrameworkElement candidate &&
             candidate.CanPreserveVirtualizationResourceScope(this);

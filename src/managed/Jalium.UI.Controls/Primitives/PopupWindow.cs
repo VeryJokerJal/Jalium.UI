@@ -84,6 +84,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private MouseButtonStates _platformMouseButtons = MouseButtonStates.AllReleased;
     private const uint MousePointerId = 1;
     private readonly Dictionary<uint, UIElement?> _activePointerTargets = [];
+    private readonly HashSet<MouseButton> _suppressedMousePointerReleases = [];
     private readonly Dictionary<uint, PointerPoint> _lastPointerPoints = [];
     private readonly Dictionary<uint, StylusDevice> _activeStylusDevices = [];
     private readonly Dictionary<uint, PointerManipulationSession> _activeManipulationSessions = [];
@@ -1248,7 +1249,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         var position = GetMousePosition(lParam);
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
-        var modifiers = platformModifiers ?? GetModifierKeys();
+        var physicalModifiers = platformModifiers ?? GetModifierKeys();
+        var modifiers = MouseInputModifiers.ToLogical(physicalModifiers);
         int timestamp = Environment.TickCount;
 
         // Track mouse leave
@@ -1298,7 +1300,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         MouseEventArgs tunnelArgs = new(
             PreviewMouseMoveEvent, position,
             left, middle, right,
-            xButton1, xButton2, modifiers, timestamp);
+            xButton1, xButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -1310,7 +1312,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             MouseEventArgs bubbleArgs = new(
                 MouseMoveEvent, position,
                 left, middle, right,
-                xButton1, xButton2, modifiers, timestamp);
+                xButton1, xButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
@@ -1344,8 +1346,10 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         var position = GetMousePosition(lParam);
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
-        var modifiers = platformModifiers ?? GetModifierKeys();
+        var physicalModifiers = platformModifiers ?? GetModifierKeys();
+        var modifiers = MouseInputModifiers.ToLogical(physicalModifiers);
         int timestamp = Environment.TickCount;
+        _suppressedMousePointerReleases.Remove(button);
 
         var hitElement = HitTest(position)?.VisualHit as UIElement;
         UpdateMouseOverState(hitElement);
@@ -1360,14 +1364,14 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         Mouse.UpdateState(position, hitElement, buttons);
         Mouse.RaiseOutsideCapturedElementEvent(
             true, hitElement, position, button, MouseButtonState.Pressed, clickCount,
-            buttons, modifiers, timestamp);
+            buttons, modifiers, timestamp, physicalModifiers);
         var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
             PreviewMouseDownEvent, position, button, MouseButtonState.Pressed, clickCount,
             left, middle, right,
-            xButton1, xButton2, modifiers, timestamp);
+            xButton1, xButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -1379,10 +1383,18 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             MouseButtonEventArgs bubbleArgs = new(
                 MouseDownEvent, position, button, MouseButtonState.Pressed, clickCount,
                 left, middle, right,
-                xButton1, xButton2, modifiers, timestamp);
+                xButton1, xButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
+        }
+
+        // Commands and handled mouse input never started a pointer gesture.
+        // Track its release even when a hover move updates pointer state.
+        if (sourceHandled && !sourceCanceled)
+        {
+            if (!_disposed) _suppressedMousePointerReleases.Add(button);
+            return;
         }
 
         PointerPoint pointerPoint = CreateMousePointerPoint(
@@ -1413,8 +1425,10 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         var position = GetMousePosition(lParam);
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
-        var modifiers = platformModifiers ?? GetModifierKeys();
+        var physicalModifiers = platformModifiers ?? GetModifierKeys();
+        var modifiers = MouseInputModifiers.ToLogical(physicalModifiers);
         int timestamp = Environment.TickCount;
+        bool suppressPointerRelease = _suppressedMousePointerReleases.Remove(button);
 
         var hitElement = HitTest(position)?.VisualHit as UIElement;
         UpdateMouseOverState(hitElement);
@@ -1429,14 +1443,14 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         Mouse.UpdateState(position, hitElement, buttons);
         Mouse.RaiseOutsideCapturedElementEvent(
             false, hitElement, position, button, MouseButtonState.Released, clickCount,
-            buttons, modifiers, timestamp);
+            buttons, modifiers, timestamp, physicalModifiers);
         var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
             PreviewMouseUpEvent, position, button, MouseButtonState.Released, clickCount,
             left, middle, right,
-            xButton1, xButton2, modifiers, timestamp);
+            xButton1, xButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -1448,10 +1462,16 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             MouseButtonEventArgs bubbleArgs = new(
                 MouseUpEvent, position, button, MouseButtonState.Released, clickCount,
                 left, middle, right,
-                xButton1, xButton2, modifiers, timestamp);
+                xButton1, xButton2, modifiers, timestamp) { PhysicalModifiers = physicalModifiers };
             target.RaiseEvent(bubbleArgs);
             sourceHandled = sourceHandled || bubbleArgs.Handled;
             sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
+        }
+
+        if (suppressPointerRelease)
+        {
+            CleanupPointerSession(MousePointerId);
+            return;
         }
 
         PointerPoint pointerPoint = CreateMousePointerPoint(
@@ -1523,7 +1543,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
 
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
-        var modifiers = platformModifiers ?? GetModifierKeys();
+        var physicalModifiers = platformModifiers ?? GetModifierKeys();
+        var modifiers = MouseInputModifiers.ToLogical(physicalModifiers);
         int delta = platformDelta ?? (short)((wParam.ToInt64() >> 16) & 0xFFFF);
         int timestamp = Environment.TickCount;
 
@@ -1544,7 +1565,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         MouseWheelEventArgs tunnelArgs = new(
             PreviewMouseWheelEvent, position, horizontalDelta, verticalDelta ?? delta, hasPreciseScrollingDeltas,
             left, middle, right,
-            xButton1, xButton2, modifiers, timestamp, phase, momentumPhase);
+            xButton1, xButton2, modifiers, timestamp, phase, momentumPhase) { PhysicalModifiers = physicalModifiers };
         target.RaiseEvent(tunnelArgs);
 
         bool sourceHandled = tunnelArgs.Handled;
@@ -1557,6 +1578,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 left, middle, right,
                 xButton1, xButton2, modifiers, timestamp, phase, momentumPhase)
             {
+                PhysicalModifiers = physicalModifiers,
                 IsHorizontalDeltaHandled = tunnelArgs.IsHorizontalDeltaHandled,
                 IsVerticalDeltaHandled = tunnelArgs.IsVerticalDeltaHandled
             };
@@ -2322,6 +2344,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void RaisePointerDownPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         PointerDownEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = PreviewPointerDownEvent };
         target.RaiseEvent(previewArgs);
         if (previewArgs.Cancel)
@@ -2356,6 +2379,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void RaisePointerMovePipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         PointerMoveEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = PreviewPointerMoveEvent };
         target.RaiseEvent(previewArgs);
         if (previewArgs.Cancel)
@@ -2390,6 +2414,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void RaisePointerUpPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         PointerUpEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = PreviewPointerUpEvent };
         target.RaiseEvent(previewArgs);
         if (previewArgs.Cancel)
@@ -2424,6 +2449,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void RaisePointerCancelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         PointerCancelEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = PreviewPointerCancelEvent };
         target.RaiseEvent(previewArgs);
         if (!previewArgs.Handled)
@@ -2435,6 +2461,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private static void RaisePointerWheelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
     {
+        modifiers = MouseInputModifiers.ToLogical(modifiers);
         PointerWheelChangedEventArgs args = new(point, modifiers, timestamp) { RoutedEvent = PointerEvents.PointerWheelChangedEvent };
         target.RaiseEvent(args);
     }

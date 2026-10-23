@@ -924,8 +924,9 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                     ResolveGutterBackgroundBrush(),
                     fontFamily, fontSize, FontWeight, FontStyle,
                     renderLineNumbers: !applyGutterOverflowShield,
-                    suppressCaret: _isImeComposing,
-                    caretShape: Styling.CssCaretShapeProperties.Get(this));
+                    suppressCaret: _isImeComposing || MacOSWritingToolsPresentation.IsPresenting(this),
+                    caretShape: Styling.CssCaretShapeProperties.Get(this), writingToolsOwner: this);
+                MacOSWritingToolsPresentation.DrawInactive(this, dc);
 
                 if (_profiler != null && IsFeatureEnabled(EditFeature.RenderProfiling))
                 {
@@ -1353,9 +1354,11 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         else
         {
             // Single click
-            if (e.KeyboardModifiers.HasFlag(ModifierKeys.Control) && _lspIntegration?.IsActive == true)
+            var definitionModifier = OperatingSystem.IsMacOS() ? ModifierKeys.Windows : ModifierKeys.Control;
+            var definitionModifiers = e.PhysicalModifiers.GetValueOrDefault(e.KeyboardModifiers);
+            if (definitionModifiers.HasFlag(definitionModifier) && _lspIntegration?.IsActive == true)
             {
-                // Ctrl+Click = Go to Definition
+                // Command-click on macOS; Control-click on other platforms.
                 GoToDefinition(offset);
                 e.Handled = true;
                 return;
@@ -2647,12 +2650,14 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
     public void Undo()
     {
+        using var transaction = MacOSWritingToolsPresentation.BeginUndoRedo();
         _document.UndoStack.Undo(_document);
         SyncCaretAfterUndoRedo();
     }
 
     public void Redo()
     {
+        using var transaction = MacOSWritingToolsPresentation.BeginUndoRedo();
         _document.UndoStack.Redo(_document);
         SyncCaretAfterUndoRedo();
     }
@@ -3863,6 +3868,8 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
     {
         geometry = default;
+        // AppKit can query marked-text geometry before the editor's first render.
+        EnsureViewLayoutMetrics();
         if (composition)
             return _isImeComposing && ImeTextGeometry.TryGetFirstLineRange(_imeCompositionString,
                 start, length, GetImeCompositionCaret, out geometry);
@@ -3881,6 +3888,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     bool IImeSupport.TryGetImeCharacterIndex(Point point, bool composition, out int index)
     {
         index = -1;
+        EnsureViewLayoutMetrics();
         double left = ShowLineNumbers ? _view.TextAreaLeft : 0;
         if (point.X < left || point.Y < 0 || point.X >= GetContentRenderWidth(RenderSize.Width) ||
             point.Y >= GetContentRenderHeight(RenderSize.Height)) return false;

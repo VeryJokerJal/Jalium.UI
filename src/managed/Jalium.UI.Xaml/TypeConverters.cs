@@ -721,6 +721,12 @@ internal sealed class FontStretchTypeConverter : TypeConverter
 
 public static class TypeConverterRegistry
 {
+    private sealed class ComponentModelValueConverter(System.ComponentModel.TypeConverter converter) : TypeConverter
+    {
+        public override bool CanConvertFrom(Type sourceType) => converter.CanConvertFrom(sourceType);
+        public override object? ConvertFrom(object? value) => value is string text ? converter.ConvertFromInvariantString(text) : null;
+    }
+
     private static Dictionary<Type, TypeConverter>? _converters;
 
     private static Dictionary<Type, TypeConverter> Converters =>
@@ -743,6 +749,9 @@ public static class TypeConverterRegistry
             [typeof(FontStretch)] = new FontStretchTypeConverter(),
             [typeof(Thickness)] = new ThicknessConverter(),
             [typeof(CornerRadius)] = new CornerRadiusConverter(),
+#pragma warning disable WPF0001
+            [typeof(ThemeMode)] = new ComponentModelValueConverter(new ThemeModeConverter()),
+#pragma warning restore WPF0001
             [typeof(Brush)] = new BrushConverter(),
             [typeof(SolidColorBrush)] = new BrushConverter(),
             [typeof(Color)] = new ColorConverter(),

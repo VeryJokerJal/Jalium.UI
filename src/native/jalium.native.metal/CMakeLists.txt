@@ -8,7 +8,6 @@ set(HEADERS
 
 set(SOURCES
     src/metal_backend.cpp
-    src/metal_text_paragraph.cpp
     src/metal_render_target.cpp
     src/metal_shader_compiler.cpp
     src/metal_vello.cpp
@@ -17,11 +16,9 @@ set(SOURCES
 
 # On Apple platforms, compile as Objective-C++
 if(APPLE)
-    list(APPEND SOURCES src/metal_word_navigation.mm)
     set_source_files_properties(
         src/metal_backend.cpp
-        src/metal_text_paragraph.cpp
-        src/metal_render_target.cpp
+            src/metal_render_target.cpp
         src/metal_shader_compiler.cpp
         src/metal_vello.cpp
         src/metal_init.cpp
@@ -40,6 +37,7 @@ target_include_directories(${PROJECT_NAME}
 )
 
 target_link_libraries(${PROJECT_NAME}
+    PUBLIC jalium.native.text
     PRIVATE
         jalium.native.core
 )
@@ -132,6 +130,14 @@ if(JALIUM_METAL_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         "-framework CoreText" "-framework CoreFoundation" "-framework Foundation")
     add_test(NAME jalium.native.metal.text-metrics COMMAND jalium.native.metal.text-metrics)
     set_tests_properties(jalium.native.metal.text-metrics PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.metal.text-glyph-ranges tests/metal_text_glyph_ranges.mm)
+    target_compile_options(jalium.native.metal.text-glyph-ranges PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.metal.text-glyph-ranges PRIVATE jalium.native.metal jalium.native.core
+        "-framework AppKit" "-framework QuartzCore")
+    add_test(NAME jalium.native.metal.text-glyph-ranges COMMAND jalium.native.metal.text-glyph-ranges)
+    add_dependencies(jalium.native.metal.text-glyph-ranges jalium.native.software)
+    add_test(NAME jalium.native.software.apple.text-glyph-ranges COMMAND jalium.native.metal.text-glyph-ranges --software)
+    set_tests_properties(jalium.native.metal.text-glyph-ranges jalium.native.software.apple.text-glyph-ranges PROPERTIES TIMEOUT 60)
     add_executable(jalium.native.metal.fonts tests/metal_font_resources.mm tests/metal_font_cascade.mm tests/metal_font_width.mm tests/metal_font_matching.mm)
     target_compile_options(jalium.native.metal.fonts PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.metal.fonts PRIVATE jalium.native.metal jalium.native.core

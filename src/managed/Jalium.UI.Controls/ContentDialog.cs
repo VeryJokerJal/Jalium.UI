@@ -142,6 +142,7 @@ public class ContentDialog : ContentControl
     private Window? _hostWindow;
     private TaskCompletionSource<ContentDialogResult>? _showTaskSource;
     internal bool IsModalForCss => _showTaskSource != null;
+    internal object? AccessibilityPresentationToken => _showTaskSource;
     private Task? _closeTask;
     private ContentDialogPlacement _activePlacement;
     private Size _layoutViewport;

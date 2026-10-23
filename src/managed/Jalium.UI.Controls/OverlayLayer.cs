@@ -75,6 +75,15 @@ internal sealed class OverlayLayer : Canvas
         InvalidateVisual();
     }
 
+    internal void RefreshPopupRootLightDismiss(PopupRoot root)
+    {
+        if (!_popupRoots.Contains(root)) return;
+        if (root.IsLightDismiss) _lightDismissRoots.Add(root);
+        else _lightDismissRoots.Remove(root);
+        InvalidateHitTestCache();
+        InvalidateVisual();
+    }
+
     /// <summary>
     /// Adds a modal root that blocks interaction with content behind it.
     /// </summary>
@@ -189,7 +198,7 @@ internal sealed class OverlayLayer : Canvas
     private static double ExplicitOrZero(double length)
         => double.IsNaN(length) || double.IsInfinity(length) || length < 0 ? 0 : length;
 
-    internal int CloseLightDismissPopups()
+    internal int CloseLightDismissPopups(Func<bool>? isCurrent = null)
     {
         if (_lightDismissRoots.Count == 0)
         {
@@ -197,15 +206,19 @@ internal sealed class OverlayLayer : Canvas
         }
 
         var popupsToClose = _lightDismissRoots
-            .Select(r => r.OwnerPopup)
-            .Distinct()
+            .Select(root => (Root: root, Popup: root.OwnerPopup))
+            .DistinctBy(item => item.Popup)
             .ToList();
-        foreach (var popup in popupsToClose)
+        int closed = 0;
+        foreach (var item in popupsToClose)
         {
-            popup.IsOpen = false;
+            if (isCurrent?.Invoke() == false) break;
+            if (!_lightDismissRoots.Contains(item.Root)) continue;
+            item.Popup.IsOpen = false;
+            closed++;
         }
 
-        return popupsToClose.Count;
+        return closed;
     }
 
     /// <summary>

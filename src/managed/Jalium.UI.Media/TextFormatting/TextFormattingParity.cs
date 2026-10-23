@@ -233,6 +233,19 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
 
     public sealed override TextSource TextSource => _textSource!;
 
+    // Semantic Unicode markers avoid platform-specific Wingdings character codes.
+    internal static string GetMarkerText(TextMarkerStyle style, long ordinal) => style switch
+    {
+        TextMarkerStyle.None => "",
+        TextMarkerStyle.Disc => "\u2022",
+        TextMarkerStyle.Circle => "\u25e6",
+        TextMarkerStyle.Square => "\u25aa",
+        TextMarkerStyle.Box => "\u25ab",
+        _ when !IsIndexStyle(style) => "",
+        _ when ordinal is <= 0 or > int.MaxValue => ordinal.ToString(CultureInfo.InvariantCulture) + ".",
+        _ => MarkerTextSource.NumberText(style, (int)ordinal)
+    };
+
     private static bool IsSymbolStyle(TextMarkerStyle style)
         => style is TextMarkerStyle.Disc or TextMarkerStyle.Circle or TextMarkerStyle.Square or TextMarkerStyle.Box;
 
@@ -292,28 +305,30 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
             else
             {
                 _textRunProperties = defaultProperties;
-                marker = markerStyle switch
-                {
-                    TextMarkerStyle.Decimal => new string(ConvertNumberToString(
-                        autoNumberingIndex,
-                        oneBased: false,
-                        DecimalNumerics)),
-                    TextMarkerStyle.LowerLatin => new string(ConvertNumberToString(
-                        autoNumberingIndex,
-                        oneBased: true,
-                        LowerLatinNumerics)),
-                    TextMarkerStyle.UpperLatin => new string(ConvertNumberToString(
-                        autoNumberingIndex,
-                        oneBased: true,
-                        UpperLatinNumerics)),
-                    TextMarkerStyle.LowerRoman => ConvertNumberToRomanString(autoNumberingIndex, uppercase: false),
-                    TextMarkerStyle.UpperRoman => ConvertNumberToRomanString(autoNumberingIndex, uppercase: true),
-                    _ => throw new ArgumentOutOfRangeException(nameof(markerStyle)),
-                };
+                marker = NumberText(markerStyle, autoNumberingIndex);
             }
 
             _characters = marker.ToCharArray();
         }
+
+        internal static string NumberText(TextMarkerStyle markerStyle, int autoNumberingIndex) => markerStyle switch
+        {
+            TextMarkerStyle.Decimal => new string(ConvertNumberToString(
+                autoNumberingIndex,
+                oneBased: false,
+                DecimalNumerics)),
+            TextMarkerStyle.LowerLatin => new string(ConvertNumberToString(
+                autoNumberingIndex,
+                oneBased: true,
+                LowerLatinNumerics)),
+            TextMarkerStyle.UpperLatin => new string(ConvertNumberToString(
+                autoNumberingIndex,
+                oneBased: true,
+                UpperLatinNumerics)),
+            TextMarkerStyle.LowerRoman => ConvertNumberToRomanString(autoNumberingIndex, uppercase: false),
+            TextMarkerStyle.UpperRoman => ConvertNumberToRomanString(autoNumberingIndex, uppercase: true),
+            _ => throw new ArgumentOutOfRangeException(nameof(markerStyle)),
+        };
 
         public override TextRun GetTextRun(int textSourceCharacterIndex)
         {

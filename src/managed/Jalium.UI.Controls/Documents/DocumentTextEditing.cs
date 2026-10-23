@@ -23,6 +23,16 @@ internal static class DocumentTextEditing
             throw new ArgumentOutOfRangeException(nameof(start));
 
         text = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        // A table's virtual separator is also the insertion position in an
+        // empty cell. Keep typing there rather than selecting the next cell's
+        // first paragraph or creating an unrelated root paragraph.
+        if (length == 0 && document.GetPositionAtOffset(start, LogicalDirection.Forward) is { Parent: TableCell { Blocks.Count: 0 } cell } cellPosition)
+        {
+            if (text.Length == 0) return cellPosition;
+            var paragraph = new Paragraph();
+            cell.Blocks.Add(paragraph);
+            return Insert(document, paragraph.ContentStart, text, CaptureCharacterFormatting(cell));
+        }
         var paragraphs = document.EnumerateParagraphs()
             .Select(p => (Paragraph: p, Start: document.GetDocumentOffset(p, 0), Length: TextElement.GetContentLength(p)))
             .ToArray();

@@ -590,7 +590,7 @@ public class UIElementCollection : System.Collections.IList
     public virtual int Add(UIElement item)
     {
         ArgumentNullException.ThrowIfNull(item);
-        if (!PrepareIncomingChild(item)) return _items.IndexOf(item); // already our child — idempotent no-op
+        if (!PrepareIncomingChild(item)) return IndexOf(item); // already our child — idempotent no-op
         _items.Add(item);
         SetLogicalParent(item);
 
@@ -638,7 +638,7 @@ public class UIElementCollection : System.Collections.IList
         {
             // Already our child. Resynchronise _items if it somehow lost the
             // entry and tell the caller this call is a no-op.
-            if (!_items.Contains(item)) _items.Add(item);
+            if (!Contains(item)) _items.Add(item);
             return false;
         }
         if (currentParent != null)
@@ -693,7 +693,7 @@ public class UIElementCollection : System.Collections.IList
     /// <summary>
     /// Determines whether the collection contains a specific element.
     /// </summary>
-    public virtual bool Contains(UIElement item) => _items.Contains(item);
+    public virtual bool Contains(UIElement item) => IndexOf(item) >= 0;
 
     /// <summary>
     /// Copies the elements to an array.
@@ -789,7 +789,7 @@ public class UIElementCollection : System.Collections.IList
     /// <summary>
     /// Returns the index of a specific element.
     /// </summary>
-    public virtual int IndexOf(UIElement item) => _items.IndexOf(item);
+    public virtual int IndexOf(UIElement item) => _items.FindIndex(child => ReferenceEquals(child, item));
 
     /// <summary>
     /// Inserts an element at the specified index.
@@ -822,8 +822,10 @@ public class UIElementCollection : System.Collections.IList
 
     private bool RemoveCore(UIElement item)
     {
-        if (_items.Remove(item))
+        int index = IndexOf(item);
+        if (index >= 0)
         {
+            _items.RemoveAt(index);
             RemoveVisualChild(item);
             ClearLogicalParent(item);
             if (!IsBatchUpdating) _parent.InvalidateMeasure();

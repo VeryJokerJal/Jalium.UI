@@ -4,12 +4,12 @@ using Jalium.UI.Interop;
 
 namespace Jalium.UI.Controls.Automation.MacOS;
 
-internal enum MacOSAXOperation { Info, Child, String, Focus, HitTest, Action, SetValue, TextSelection, SetTextSelection, TextBounds, Attached, WindowButton, TextNavigation, TextStyles, TextStyleRange, BeginChildren, ReadChildren, ReleaseChildren }
+internal enum MacOSAXOperation { PopupCanBecomeKey = 64, Info = 0, Child, String, Focus, HitTest, Action, SetValue, TextSelection, SetTextSelection, TextBounds, Attached, WindowButton, TextNavigation, TextStyles, TextStyleRange, BeginChildren, ReadChildren, ReleaseChildren }
 internal enum MacOSAXTextNavigation { LineForIndex, RangeForIndex, RangeForLine, RangeForPosition, VisibleTextRange, InsertionLine, SetInsertionLine, ReplaceSelection }
 internal enum MacOSAXWindowButton { Default, Cancel, Close, Minimize, Zoom }
 internal enum MacOSAXString { Name, Help, Identifier, Value, Placeholder }
 internal enum MacOSAXAction { Press, SetFocus, Increment, Decrement, Expand, Collapse, Deselect }
-internal enum MacOSAXNotification { Focus, Value, Selection, Layout, Title }
+internal enum MacOSAXNotification { Focus, Value, Selection, Layout, Title, SelectedItems }
 [Flags]
 internal enum MacOSAXFlags : uint
 {
@@ -18,7 +18,7 @@ internal enum MacOSAXFlags : uint
     Expandable = 512, Expanded = 1024, Text = 2048, Multiline = 4096,
     Dialog = 8192, Modal = 16384, Selectable = 32768, Selection = 65536,
     Value = 131072, CloseButton = 1 << 18, MinimizeButton = 1 << 19, ZoomButton = 1 << 20,
-    NavigableText = 1 << 21, EditableText = 1 << 22, Offscreen = 1 << 23, StyledText = 1 << 24
+    NavigableText = 1 << 21, EditableText = 1 << 22, Offscreen = 1 << 23, StyledText = 1 << 24, SelectionWritable = 1 << 25
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -38,6 +38,9 @@ internal unsafe struct MacOSAXRequest
 
 internal static partial class MacOSAccessibilityNative
 {
+    // Shared extension value; each retained history keeps its original child protocol.
+    internal const MacOSAXOperation SetSelectedItems = (MacOSAXOperation)65;
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal unsafe delegate int Callback(MacOSAXRequest* request, nint context);
 

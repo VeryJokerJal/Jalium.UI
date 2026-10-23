@@ -1,6 +1,7 @@
 #include "jalium_media.h"
 #include "jalium_media_internal.h"
 #include "jalium_video_surface.h"
+#include "apple_media_availability.h"
 
 #include <algorithm>
 #include <atomic>
@@ -287,7 +288,15 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_open_file(
     auto decoder=std::make_unique<jalium_video_decoder>();decoder->requestedFormat=format;
     NSURL* url=[NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
     decoder->asset=[AVURLAsset URLAssetWithURL:url options:nil];
+#if TARGET_OS_VISION
+    AVAssetTrack* track = nil;
+    auto loaded = jalium::apple_media::LoadVideoTrack(decoder->asset, &track,
+        dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+    if (loaded != JALIUM_MEDIA_OK) return loaded;
+    decoder->track = track;
+#else
     decoder->track=[[decoder->asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
+#endif
     if(!decoder->track)return JALIUM_MEDIA_E_UNSUPPORTED_CODEC;
     CGSize size=CGSizeApplyAffineTransform(decoder->track.naturalSize,decoder->track.preferredTransform);
     decoder->info.width=(uint32_t)std::abs(size.width);decoder->info.height=(uint32_t)std::abs(size.height);
@@ -339,9 +348,20 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_camera_open(const char* deviceId,u
     return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
 #else
     AVAuthorizationStatus authorization=[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];if(authorization==AVAuthorizationStatusDenied||authorization==AVAuthorizationStatusRestricted)return JALIUM_MEDIA_E_PERMISSION_DENIED;
-    AVCaptureDevice* device=[AVCaptureDevice deviceWithUniqueID:[NSString stringWithUTF8String:deviceId]];if(!device)return JALIUM_MEDIA_E_NO_DEVICE;NSError* error=nil;AVCaptureDeviceInput* input=[AVCaptureDeviceInput deviceInputWithDevice:device error:&error];if(!input)return JALIUM_MEDIA_E_PLATFORM;
+    AVCaptureDevice* device=[AVCaptureDevice deviceWithUniqueID:[NSString stringWithUTF8String:deviceId]];if(!device)return JALIUM_MEDIA_E_NO_DEVICE;NSError* error=nil;AVCaptureDeviceInput* input=nil;
+#if TARGET_OS_VISION
+    input=[[AVCaptureDeviceInput alloc] initWithDevice:device error:&error];
+#else
+    input=[AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
+#endif
+    if(!input)return JALIUM_MEDIA_E_PLATFORM;
     auto source=std::make_unique<jalium_camera_source>();source->format=format;source->session=[AVCaptureSession new];source->output=[AVCaptureVideoDataOutput new];source->output.videoSettings=@{(NSString*)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_32BGRA),(NSString*)kCVPixelBufferMetalCompatibilityKey:@YES};source->output.alwaysDiscardsLateVideoFrames=YES;if(![source->session canAddInput:input]||![source->session canAddOutput:source->output])return JALIUM_MEDIA_E_PLATFORM;[source->session addInput:input];[source->session addOutput:source->output];
+#if TARGET_OS_VISION
+    auto configured = jalium::apple_media::ConfigureDeviceFormat(device, width, height, fps);
+    if (configured != JALIUM_MEDIA_OK) return configured;
+#else
     if(width&&height){if(width>=3840)source->session.sessionPreset=AVCaptureSessionPreset3840x2160;else if(width>=1920)source->session.sessionPreset=AVCaptureSessionPreset1920x1080;else if(width>=1280)source->session.sessionPreset=AVCaptureSessionPreset1280x720;else source->session.sessionPreset=AVCaptureSessionPreset640x480;}
+#endif
     source->delegate=[JaliumCameraDelegate new];source->delegate.owner=source.get();source->queue=dispatch_queue_create("jalium.camera",DISPATCH_QUEUE_SERIAL);source->ready=dispatch_semaphore_create(0);[source->output setSampleBufferDelegate:source->delegate queue:source->queue];[source->session startRunning];*out=source.release();(void)fps;return JALIUM_MEDIA_OK;
 #endif
 }

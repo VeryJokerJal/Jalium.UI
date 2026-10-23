@@ -12,6 +12,8 @@ public sealed class TextCompositionEventArgs : InputEventArgs
 {
     /// <summary>Native AppKit replacement range, in document UTF-16 offsets.</summary>
     internal (int Start, int Length)? ImeReplacementRange { get; init; }
+    internal string? NativeTextServicesPayload { get; init; }
+    internal Func<bool>? NativeEditLifetime { get; init; }
     private readonly string? _text;
 
     /// <summary>

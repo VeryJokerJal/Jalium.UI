@@ -261,26 +261,27 @@ public sealed class ThreadingDispatcherParityTests
     [Fact]
     public void SynchronizationContextAndTimerAcceptCanonicalDispatcherTypes()
     {
-        WpfDispatcher dispatcher = WpfDispatcher.CurrentDispatcher;
-        dispatcher.ProcessQueue();
-        var context = new Jalium.UI.Threading.DispatcherSynchronizationContext(
-            dispatcher,
-            WpfPriority.Background);
-        bool posted = false;
-
-        context.Post(_ => posted = true, null);
-        Assert.False(posted);
-        dispatcher.ProcessQueue();
-        Assert.True(posted);
-
-        var timer = new Jalium.UI.Threading.DispatcherTimer(WpfPriority.Input, dispatcher)
+        RunOnFreshDispatcherThread(dispatcher =>
         {
-            Interval = TimeSpan.FromMilliseconds(25),
-        };
-        Assert.Same(dispatcher, timer.Dispatcher);
-        Assert.Equal(WpfPriority.Input, timer.Priority);
-        Assert.Throws<InvalidEnumArgumentException>(() =>
-            WpfDispatcher.ValidatePriority((WpfPriority)int.MaxValue, "priority"));
+            var context = new Jalium.UI.Threading.DispatcherSynchronizationContext(
+                dispatcher,
+                WpfPriority.Background);
+            bool posted = false;
+
+            context.Post(_ => posted = true, null);
+            Assert.False(posted);
+            dispatcher.ProcessQueue();
+            Assert.True(posted);
+
+            var timer = new Jalium.UI.Threading.DispatcherTimer(WpfPriority.Input, dispatcher)
+            {
+                Interval = TimeSpan.FromMilliseconds(25),
+            };
+            Assert.Same(dispatcher, timer.Dispatcher);
+            Assert.Equal(WpfPriority.Input, timer.Priority);
+            Assert.Throws<InvalidEnumArgumentException>(() =>
+                WpfDispatcher.ValidatePriority((WpfPriority)int.MaxValue, "priority"));
+        });
     }
 
     [Fact]

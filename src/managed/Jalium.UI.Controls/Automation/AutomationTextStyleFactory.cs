@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Documents;
 using Jalium.UI.Media;
@@ -17,6 +18,57 @@ internal static class AutomationTextStyleFactory
     internal static uint Color(Color color, double opacity) =>
         (uint)((byte)Math.Clamp(Math.Round(color.A * Math.Clamp(opacity, 0, 1)), 0, 255) << 24)
         | (uint)color.R << 16 | (uint)color.G << 8 | color.B;
+
+    internal static uint? InlineBackground(Inline? element)
+    {
+        uint? foreground = null;
+        for (Inline? source = element; source is not null; source = source.Parent as Inline)
+        {
+            if (foreground is { } opaque && opaque >> 24 == 255) return opaque;
+            if (source.Background is not { } brush) continue;
+            if (Color(brush) is not { } background)
+            {
+                // A gradient under translucent foreground cannot be represented
+                // by one attributed-string color. Invisible layers add nothing.
+                if (brush.Opacity <= 0) continue;
+                return null;
+            }
+            foreground = foreground is { } top ? Over(top, background) : background;
+        }
+        return foreground;
+
+        static uint Over(uint top, uint bottom)
+        {
+            int a = (int)(top >> 24), b = (int)(bottom >> 24);
+            int coverage = a * 255 + b * (255 - a);
+            if (coverage == 0) return top;
+            uint channel(int shift) => (uint)Math.Round(((top >> shift & 255) * a * 255d +
+                (bottom >> shift & 255) * b * (255d - a)) / coverage);
+            return (uint)Math.Round(coverage / 255d) << 24 | channel(16) << 16 | channel(8) << 8 | channel(0);
+        }
+    }
+
+    private sealed record InlinePathState(string? ParentPath, string Path);
+    private sealed class InlinePathCache { internal volatile InlinePathState? State; }
+    private static readonly ConditionalWeakTable<Span, InlinePathCache> InlinePaths = new();
+
+    internal static string? InlineContext(Inline? element) => element?.Parent is Span parent ? Path(parent, 0) : null;
+
+    private static string? Path(Span span, int depth)
+    {
+        if (depth == 64) return null;
+        string? prefix = null;
+        if (span.Parent is Span parent && (prefix = Path(parent, depth + 1)) is null) return null;
+        var cache = InlinePaths.GetValue(span, static _ => new());
+        var state = cache.State;
+        if (state is not null && state.ParentPath == prefix) return state.Path;
+        string identity = WritingToolsDocumentFragment.OriginFor(span);
+        string value = prefix is null ? identity : prefix + "/" + identity;
+        // Only strings are retained. A cached path cannot keep an old parent or
+        // document alive, and a changed ancestor invalidates descendants lazily.
+        cache.State = new(prefix, value);
+        return value;
+    }
 
     internal static AutomationTextStyle Decorations(AutomationTextStyle style, TextElement? element)
     {

@@ -71,6 +71,11 @@ public sealed class Table : Block
 /// </summary>
 public class TableColumn : FrameworkContentElement
 {
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (Parent is Table table) table.NotifyTextContentChanged();
+    }
     /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
@@ -142,6 +147,7 @@ public sealed class TableColumnCollection : IList<TableColumn>, IList
             _parent.RemoveLogicalChild(previous);
             _items[index] = value;
             _parent.AddLogicalChild(value);
+            _parent.NotifyTextContentChanged();
         }
     }
 
@@ -155,8 +161,10 @@ public sealed class TableColumnCollection : IList<TableColumn>, IList
     int IList.Add(object? value) { Add(Cast(value)); return Count - 1; }
     public void Clear()
     {
-        foreach (var item in _items) _parent.RemoveLogicalChild(item);
-        _items.Clear();
+        if (_items.Count == 0) return;
+        var removed = _items.ToArray(); _items.Clear();
+        foreach (var item in removed) _parent.RemoveLogicalChild(item);
+        _parent.NotifyTextContentChanged();
     }
     public bool Contains(TableColumn item) => _items.Contains(item);
     bool IList.Contains(object? value) => value is TableColumn item && Contains(item);
@@ -171,12 +179,14 @@ public sealed class TableColumnCollection : IList<TableColumn>, IList
         ArgumentNullException.ThrowIfNull(item);
         _items.Insert(index, item);
         _parent.AddLogicalChild(item);
+        _parent.NotifyTextContentChanged();
     }
     void IList.Insert(int index, object? value) => Insert(index, Cast(value));
     public bool Remove(TableColumn item)
     {
         if (!_items.Remove(item)) return false;
         _parent.RemoveLogicalChild(item);
+        _parent.NotifyTextContentChanged();
         return true;
     }
     void IList.Remove(object? value) { if (value is TableColumn item) Remove(item); }
@@ -185,11 +195,15 @@ public sealed class TableColumnCollection : IList<TableColumn>, IList
         var item = _items[index];
         _items.RemoveAt(index);
         _parent.RemoveLogicalChild(item);
+        _parent.NotifyTextContentChanged();
     }
     public void RemoveRange(int index, int count)
     {
-        foreach (var item in _items.GetRange(index, count)) _parent.RemoveLogicalChild(item);
+        var removed = _items.GetRange(index, count);
+        if (removed.Count == 0) return;
         _items.RemoveRange(index, count);
+        foreach (var item in removed) _parent.RemoveLogicalChild(item);
+        _parent.NotifyTextContentChanged();
     }
     public void TrimToSize() => _items.TrimExcess();
 
@@ -253,15 +267,22 @@ public sealed class TableRowGroupCollection : IList<TableRowGroup>, IList
             ArgumentNullException.ThrowIfNull(value);
             var previous = _items[index];
             if (ReferenceEquals(previous, value)) return;
-            Detach(previous);
+            Attach(value, notify: false);
             _items[index] = value;
-            Attach(value);
+            Detach(previous, notify: false);
+            _parent.NotifyTextContentChanged();
         }
     }
     object? IList.this[int index] { get => this[index]; set => this[index] = Cast(value); }
     public void Add(TableRowGroup item) => Insert(Count, item);
     int IList.Add(object? value) { Add(Cast(value)); return Count - 1; }
-    public void Clear() { foreach (var item in _items) Detach(item); _items.Clear(); }
+    public void Clear()
+    {
+        if (_items.Count == 0) return;
+        var removed = _items.ToArray(); _items.Clear();
+        foreach (var item in removed) Detach(item, notify: false);
+        _parent.NotifyTextContentChanged();
+    }
     public bool Contains(TableRowGroup item) => _items.Contains(item);
     bool IList.Contains(object? value) => value is TableRowGroup item && Contains(item);
     public void CopyTo(TableRowGroup[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
@@ -275,10 +296,18 @@ public sealed class TableRowGroupCollection : IList<TableRowGroup>, IList
     public bool Remove(TableRowGroup item) { if (!_items.Remove(item)) return false; Detach(item); return true; }
     void IList.Remove(object? value) { if (value is TableRowGroup item) Remove(item); }
     public void RemoveAt(int index) { var item = _items[index]; _items.RemoveAt(index); Detach(item); }
-    public void RemoveRange(int index, int count) { foreach (var item in _items.GetRange(index, count)) Detach(item); _items.RemoveRange(index, count); }
+    public void RemoveRange(int index, int count)
+    {
+        var removed = _items.GetRange(index, count);
+        if (removed.Count == 0) return;
+        _items.RemoveRange(index, count);
+        foreach (var item in removed) Detach(item, notify: false);
+        _parent.NotifyTextContentChanged();
+    }
     public void TrimToSize() => _items.TrimExcess();
-    private void Attach(TableRowGroup item) { item.Parent = _parent; _parent.AddLogicalChild(item); }
-    private void Detach(TableRowGroup item) { _parent.RemoveLogicalChild(item); item.Parent = null; }
+    private void Attach(TableRowGroup item, bool notify = true) { item.Parent = _parent; _parent.AddLogicalChild(item); item.TextContentChanged += Changed; if (notify) _parent.NotifyTextContentChanged(); }
+    private void Detach(TableRowGroup item, bool notify = true) { item.TextContentChanged -= Changed; _parent.RemoveLogicalChild(item); item.Parent = null; if (notify) _parent.NotifyTextContentChanged(); }
+    private void Changed(object? sender, EventArgs e) => _parent.NotifyTextContentChanged();
     private static TableRowGroup Cast(object? value) => value as TableRowGroup
         ?? throw new ArgumentException("The value must be a TableRowGroup.", nameof(value));
 }
@@ -338,15 +367,22 @@ public sealed class TableRowCollection : IList<TableRow>, IList
             ArgumentNullException.ThrowIfNull(value);
             var previous = _items[index];
             if (ReferenceEquals(previous, value)) return;
-            Detach(previous);
+            Attach(value, notify: false);
             _items[index] = value;
-            Attach(value);
+            Detach(previous, notify: false);
+            _parent.NotifyTextContentChanged();
         }
     }
     object? IList.this[int index] { get => this[index]; set => this[index] = Cast(value); }
     public void Add(TableRow item) => Insert(Count, item);
     int IList.Add(object? value) { Add(Cast(value)); return Count - 1; }
-    public void Clear() { foreach (var item in _items) Detach(item); _items.Clear(); }
+    public void Clear()
+    {
+        if (_items.Count == 0) return;
+        var removed = _items.ToArray(); _items.Clear();
+        foreach (var item in removed) Detach(item, notify: false);
+        _parent.NotifyTextContentChanged();
+    }
     public bool Contains(TableRow item) => _items.Contains(item);
     bool IList.Contains(object? value) => value is TableRow item && Contains(item);
     public void CopyTo(TableRow[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
@@ -360,10 +396,18 @@ public sealed class TableRowCollection : IList<TableRow>, IList
     public bool Remove(TableRow item) { if (!_items.Remove(item)) return false; Detach(item); return true; }
     void IList.Remove(object? value) { if (value is TableRow item) Remove(item); }
     public void RemoveAt(int index) { var item = _items[index]; _items.RemoveAt(index); Detach(item); }
-    public void RemoveRange(int index, int count) { foreach (var item in _items.GetRange(index, count)) Detach(item); _items.RemoveRange(index, count); }
+    public void RemoveRange(int index, int count)
+    {
+        var removed = _items.GetRange(index, count);
+        if (removed.Count == 0) return;
+        _items.RemoveRange(index, count);
+        foreach (var item in removed) Detach(item, notify: false);
+        _parent.NotifyTextContentChanged();
+    }
     public void TrimToSize() => _items.TrimExcess();
-    private void Attach(TableRow item) { item.Parent = _parent; _parent.AddLogicalChild(item); }
-    private void Detach(TableRow item) { _parent.RemoveLogicalChild(item); item.Parent = null; }
+    private void Attach(TableRow item, bool notify = true) { item.Parent = _parent; _parent.AddLogicalChild(item); item.TextContentChanged += Changed; if (notify) _parent.NotifyTextContentChanged(); }
+    private void Detach(TableRow item, bool notify = true) { item.TextContentChanged -= Changed; _parent.RemoveLogicalChild(item); item.Parent = null; if (notify) _parent.NotifyTextContentChanged(); }
+    private void Changed(object? sender, EventArgs e) => _parent.NotifyTextContentChanged();
     private static TableRow Cast(object? value) => value as TableRow
         ?? throw new ArgumentException("The value must be a TableRow.", nameof(value));
 }
@@ -563,15 +607,22 @@ public sealed class TableCellCollection : IList<TableCell>, IList
             ArgumentNullException.ThrowIfNull(value);
             var previous = _items[index];
             if (ReferenceEquals(previous, value)) return;
-            Detach(previous);
+            Attach(value, notify: false);
             _items[index] = value;
-            Attach(value);
+            Detach(previous, notify: false);
+            _parent.NotifyTextContentChanged();
         }
     }
     object? IList.this[int index] { get => this[index]; set => this[index] = Cast(value); }
     public void Add(TableCell item) => Insert(Count, item);
     int IList.Add(object? value) { Add(Cast(value)); return Count - 1; }
-    public void Clear() { foreach (var item in _items) Detach(item); _items.Clear(); }
+    public void Clear()
+    {
+        if (_items.Count == 0) return;
+        var removed = _items.ToArray(); _items.Clear();
+        foreach (var item in removed) Detach(item, notify: false);
+        _parent.NotifyTextContentChanged();
+    }
     public bool Contains(TableCell item) => _items.Contains(item);
     bool IList.Contains(object? value) => value is TableCell item && Contains(item);
     public void CopyTo(TableCell[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
@@ -585,10 +636,18 @@ public sealed class TableCellCollection : IList<TableCell>, IList
     public bool Remove(TableCell item) { if (!_items.Remove(item)) return false; Detach(item); return true; }
     void IList.Remove(object? value) { if (value is TableCell item) Remove(item); }
     public void RemoveAt(int index) { var item = _items[index]; _items.RemoveAt(index); Detach(item); }
-    public void RemoveRange(int index, int count) { foreach (var item in _items.GetRange(index, count)) Detach(item); _items.RemoveRange(index, count); }
+    public void RemoveRange(int index, int count)
+    {
+        var removed = _items.GetRange(index, count);
+        if (removed.Count == 0) return;
+        _items.RemoveRange(index, count);
+        foreach (var item in removed) Detach(item, notify: false);
+        _parent.NotifyTextContentChanged();
+    }
     public void TrimToSize() => _items.TrimExcess();
-    private void Attach(TableCell item) { item.Parent = _parent; _parent.AddLogicalChild(item); }
-    private void Detach(TableCell item) { _parent.RemoveLogicalChild(item); item.Parent = null; }
+    private void Attach(TableCell item, bool notify = true) { item.Parent = _parent; _parent.AddLogicalChild(item); item.TextContentChanged += Changed; if (notify) _parent.NotifyTextContentChanged(); }
+    private void Detach(TableCell item, bool notify = true) { item.TextContentChanged -= Changed; _parent.RemoveLogicalChild(item); item.Parent = null; if (notify) _parent.NotifyTextContentChanged(); }
+    private void Changed(object? sender, EventArgs e) => _parent.NotifyTextContentChanged();
     private static TableCell Cast(object? value) => value as TableCell
         ?? throw new ArgumentException("The value must be a TableCell.", nameof(value));
 }

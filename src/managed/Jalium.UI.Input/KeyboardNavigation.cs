@@ -501,7 +501,8 @@ public sealed partial class KeyboardNavigation
             return;
         }
 
-        if (element.Focusable && element.IsVisible && GetIsTabStop(element))
+        if (element.Focusable && element.IsVisible && GetIsTabStop(element) &&
+            (!OperatingSystem.IsMacOS() || KeyboardFocusHost.IsTargetEligible(element)))
         {
             results.Add((element, visualOrder++));
         }
