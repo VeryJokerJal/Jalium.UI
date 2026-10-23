@@ -357,6 +357,208 @@ public sealed class WritingToolsInlinePreservationTests
         Assert.Same(link, second.Inlines[0]); Assert.Empty(first.Inlines); Assert.Equal(existingUndoRecords, undo.Count);
     }
 
+    public static IEnumerable<object[]> InlineObjectPositions()
+    {
+        foreach (bool control in new[] { false, true })
+        foreach (int position in new[] { 0, 1, 2 })
+        foreach (bool nested in new[] { false, true }) yield return [control, position, nested];
+    }
+
+    [Theory, MemberData(nameof(InlineObjectPositions))]
+    public void WholeDocumentAcceptanceKeepsDirectInlineObjectsAndBreaks(bool control, int position, bool nested)
+    {
+        var button = new Button { Content = "保留控件🙂", Width = 80, Height = 28 };
+        Inline item = control ? new InlineUIContainer(button) : new LineBreak();
+        var paragraph = new Paragraph(); var holder = nested ? new Hyperlink() : null;
+        var children = holder?.Inlines ?? paragraph.Inlines;
+        if (holder is not null) paragraph.Inlines.Add(holder);
+        if (position != 0) children.Add(new Run(position == 1 ? "a" : "ab"));
+        children.Add(item);
+        if (position != 2) children.Add(new Run(position == 1 ? "b" : "ab"));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); string text = editor.Document.GetText();
+        var source = Packet(editor); Apply(editor, source, source.DeepClone().AsObject());
+        Assert.Equal(text, editor.Document.GetText()); Assert.Same(paragraph, editor.Document.Blocks[0]);
+        var live = holder?.Inlines ?? paragraph.Inlines;
+        Assert.Same(item, live[position == 0 ? 0 : 1]);
+        if (control) Assert.Same(button, Assert.IsType<InlineUIContainer>(item).Child);
+    }
+
+    public static IEnumerable<object[]> EmptyInlinePositions()
+    {
+        for (int kind = 0; kind < 4; kind++)
+        foreach (int position in new[] { 0, 1, 2 })
+        foreach (bool nested in new[] { false, true }) yield return [kind, position, nested];
+    }
+
+    [Theory, MemberData(nameof(EmptyInlinePositions))]
+    public void WholeDocumentAcceptanceKeepsZeroLengthSemanticInlinesBesideText(int kind, int position, bool nested)
+    {
+        var link = new Hyperlink(); if (kind != 0) link.Inlines.Add(new Run());
+        int clicked = 0; link.NavigateUri = new Uri("https://jalium.invalid/empty"); link.Click += (_, _) => clicked++;
+        link.RequestNavigate += (_, e) => e.Handled = true;
+        Inline item = kind switch { 2 => new Span(link), 3 => new Run(), _ => link };
+        var paragraph = new Paragraph(); var outer = nested ? new Span() : null;
+        var children = outer?.Inlines ?? paragraph.Inlines;
+        if (outer is not null) paragraph.Inlines.Add(outer);
+        if (position != 0) children.Add(new Run(position == 1 ? "a" : "ab"));
+        children.Add(item);
+        if (position != 2) children.Add(new Run(position == 1 ? "b" : "ab"));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); var source = Packet(editor);
+        Apply(editor, source, source.DeepClone().AsObject());
+        Assert.Equal("ab\n", editor.Document.GetText()); Assert.Same(paragraph, editor.Document.Blocks[0]);
+        var live = outer?.Inlines ?? paragraph.Inlines;
+        Assert.Same(item, live[position == 0 ? 0 : 1]);
+        if (kind != 3)
+        {
+            Assert.Equal(new Uri("https://jalium.invalid/empty"), link.NavigateUri); link.DoClick(); Assert.Equal(1, clicked);
+            if (kind != 0) Assert.Same(link, kind == 2 ? Assert.IsType<Span>(item).Inlines[0] : item);
+        }
+    }
+
+
+    [Theory, MemberData(nameof(InlineObjectPositions))]
+    public void RewritingAroundInlineObjectsKeepsOriginalInstancesAndHistory(bool control, int position, bool nested)
+    {
+        var button = new Button { Content = "保留控件🙂" };
+        Inline item = control ? new InlineUIContainer(button) : new LineBreak();
+        var paragraph = new Paragraph(); var holder = nested ? new Hyperlink() : null;
+        var children = holder?.Inlines ?? paragraph.Inlines;
+        if (holder is not null) paragraph.Inlines.Add(holder);
+        if (position != 0) children.Add(new Run(position == 1 ? "a" : "ab"));
+        children.Add(item);
+        if (position != 2) children.Add(new Run(position == 1 ? "b" : "ab"));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); string before = editor.Document.GetText();
+        var source = Packet(editor); string after = before.Replace("a", "AA").Replace("b", "BB");
+        var proposal = Rewrite(source, after); Apply(editor, source, proposal);
+        Assert.Equal(after, editor.Document.GetText()); Assert.Same(paragraph, editor.Document.Blocks[0]);
+        Assert.Contains(item, children); if (control) Assert.Same(button, Assert.IsType<InlineUIContainer>(item).Child);
+        Assert.True(editor.Undo()); Assert.Equal(before, editor.Document.GetText()); Assert.Contains(item, children);
+        Assert.True(editor.Redo()); Assert.Equal(after, editor.Document.GetText()); Assert.Contains(item, children);
+    }
+
+    [Theory, MemberData(nameof(EmptyInlinePositions))]
+    public void RewritingAroundZeroLengthInlinesKeepsAnchorsAndHistory(int kind, int position, bool nested)
+    {
+        var link = new Hyperlink(); if (kind != 0) link.Inlines.Add(new Run());
+        int clicks = 0, commands = 0, navigations = 0;
+        link.NavigateUri = new Uri("https://jalium.invalid/empty"); link.Click += (_, _) => clicks++;
+        link.Command = new ActionCommand(_ => commands++);
+        link.RequestNavigate += (_, e) => { navigations++; e.Handled = true; };
+        Inline item = kind switch { 2 => new Span(link), 3 => new Run(), _ => link };
+        var paragraph = new Paragraph(); var outer = nested ? new Span() : null;
+        var children = outer?.Inlines ?? paragraph.Inlines;
+        if (outer is not null) paragraph.Inlines.Add(outer);
+        if (position != 0) children.Add(new Run(position == 1 ? "a" : "ab"));
+        children.Add(item);
+        if (position != 2) children.Add(new Run(position == 1 ? "b" : "ab"));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); var source = Packet(editor);
+        Apply(editor, source, Rewrite(source, "AABB\n"));
+        Assert.Equal("AABB\n", editor.Document.GetText()); Assert.Same(paragraph, editor.Document.Blocks[0]);
+        Assert.Same(item, children[^1]); Assert.Equal(4, children.Take(children.IndexOf(item)).Sum(TextElement.GetContentLength));
+        Assert.True(editor.Undo()); Assert.Equal("ab\n", editor.Document.GetText()); Assert.Same(item, children[position == 0 ? 0 : 1]);
+        Assert.True(editor.Redo()); Assert.Equal("AABB\n", editor.Document.GetText()); Assert.Same(item, children[^1]);
+        if (kind != 3) { link.DoClick(); Assert.Equal((1, 1, 1), (clicks, commands, navigations)); }
+    }
+
+    [Theory, InlineData(false, false), InlineData(false, true), InlineData(true, false), InlineData(true, true)]
+    public void AnAmbiguousObjectSlotChangeIsRejectedAtomically(bool control, bool literal)
+    {
+        Inline item = control ? new InlineUIContainer(new Button { Content = "keep" }) : new LineBreak();
+        var paragraph = new Paragraph(new Run("a")); paragraph.Inlines.Add(item); paragraph.Inlines.Add(new Run("b"));
+        if (literal) paragraph.Inlines.Add(new Run(control ? "\ufffc" : "\n"));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); string before = editor.Document.GetText(); var source = Packet(editor);
+        var proposal = Rewrite(source, "rewritten\n");
+        Assert.False(TryApply(editor, source, proposal)); Assert.Equal(before, editor.Document.GetText());
+        Assert.Same(paragraph, editor.Document.Blocks[0]); Assert.Same(item, paragraph.Inlines[1]); Assert.False(editor.CanUndo);
+    }
+
+    [Theory, InlineData(false), InlineData(true)]
+    public void CallbacksCannotReclaimAnEmptyInlineMovedToAnotherDocument(bool span)
+    {
+        var run = new Run("keep"); Inline empty = span ? new Hyperlink(new Run()) : new Run();
+        var paragraph = new Paragraph(run); paragraph.Inlines.Add(empty);
+        var editor = new RichTextBox(new FlowDocument(paragraph)); var foreignParagraph = new Paragraph(); var foreign = new FlowDocument(foreignParagraph);
+        var source = Packet(editor); bool moved = false;
+        run.TextContentChanged += (_, _) =>
+        {
+            if (moved || run.Text != "KEEP") return;
+            moved = true; paragraph.Inlines.Remove(empty); foreignParagraph.Inlines.Add(empty);
+        };
+        Assert.False(TryApply(editor, source, Rewrite(source, "KEEP\n"))); Assert.True(moved);
+        Assert.Same(empty, Assert.Single(foreignParagraph.Inlines)); Assert.Same(foreign, empty.GetFlowDocument());
+    }
+
+    [Theory, InlineData(false), InlineData(true)]
+    public void CollapsedZeroLengthSiblingsRetainOrder(bool insertion)
+    {
+        var first = new Hyperlink(new Run()); var second = new Span(new Hyperlink(new Run())); var third = new Run();
+        var paragraph = new Paragraph(new Run("a"));
+        paragraph.Inlines.Add(first); paragraph.Inlines.Add(second); paragraph.Inlines.Add(third); paragraph.Inlines.Add(new Run("b"));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); var source = Packet(editor);
+        string after = insertion ? "a汉🙂b\n" : "AB\n";
+        Apply(editor, source, Rewrite(source, after));
+        int at = paragraph.Inlines.IndexOf(first);
+        Assert.True(at >= 0); Assert.Same(second, paragraph.Inlines[at + 1]); Assert.Same(third, paragraph.Inlines[at + 2]);
+        Assert.Equal(insertion ? 4 : 2, paragraph.Inlines.Take(at).Sum(TextElement.GetContentLength));
+        Assert.Equal(after, editor.Document.GetText()); Assert.True(editor.Undo()); Assert.True(editor.Redo());
+        Assert.Same(second, paragraph.Inlines[paragraph.Inlines.IndexOf(first) + 1]);
+    }
+
+    [Theory, InlineData("a\u0301b", "a\u0300b", 1, 2), InlineData("🙂b", "🙃b", 1, 2),
+        InlineData("e\u0301tail", "éTAIL", 1, 5), InlineData("a汉🙂b", "a汉🙂LONGb", 4, 8)]
+    public void ZeroLengthAnchorsRespectComposedCharacterChanges(string before, string after, int anchor, int expected)
+    {
+        var empty = new Hyperlink(new Run()); var paragraph = new Paragraph(new Run(before[..anchor]));
+        paragraph.Inlines.Add(empty); paragraph.Inlines.Add(new Run(before[anchor..]));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); var source = Packet(editor);
+        Apply(editor, source, Rewrite(source, after + "\n"));
+        Assert.Equal(after + "\n", editor.Document.GetText());
+        Assert.Equal(expected, paragraph.Inlines.Take(paragraph.Inlines.IndexOf(empty)).Sum(TextElement.GetContentLength));
+        Assert.True(editor.Undo()); Assert.Equal(before + "\n", editor.Document.GetText()); Assert.True(editor.Redo());
+        Assert.Contains(empty, paragraph.Inlines);
+    }
+
+    [Theory, InlineData("a\u0301b"), InlineData("🙂b")]
+    public void FormatOnlyAcceptancePreservesEmptyAnchorsAtRawUtf16Boundaries(string text)
+    {
+        var empty = new Hyperlink(new Run()); var paragraph = new Paragraph(new Run(text[..1]));
+        paragraph.Inlines.Add(empty); paragraph.Inlines.Add(new Run(text[1..]));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); var source = Packet(editor); var proposal = source.DeepClone().AsObject();
+        foreach (var run in proposal["runs"]!.AsArray()) run!["weight"] = 700;
+        Apply(editor, source, proposal); Assert.Equal(text + "\n", editor.Document.GetText());
+        Assert.Equal(1, paragraph.Inlines.Take(paragraph.Inlines.IndexOf(empty)).Sum(TextElement.GetContentLength));
+        Assert.All(paragraph.Inlines.OfType<Run>(), run => Assert.Equal(FontWeights.Bold, run.FontWeight));
+        Assert.True(editor.Undo()); Assert.Same(empty, paragraph.Inlines[1]); Assert.True(editor.Redo()); Assert.Same(empty, paragraph.Inlines[1]);
+    }
+
+
+    [Theory, InlineData(false, false), InlineData(false, true), InlineData(true, false), InlineData(true, true)]
+    public void ObjectCharacterFormattingChangesRetainIdentityAndHistory(bool control, bool nested)
+    {
+        Inline item = control ? new InlineUIContainer(new Button { Content = "keep" }) : new LineBreak();
+        item.FontFamily = new FontFamily("Helvetica Neue"); item.FontSize = 17; item.FontStyle = FontStyles.Italic;
+        var paragraph = new Paragraph(); var span = nested ? new Hyperlink() : null;
+        var children = span?.Inlines ?? paragraph.Inlines; if (span is not null) paragraph.Inlines.Add(span);
+        children.Add(new Run("a")); children.Add(item); children.Add(new Run("b"));
+        var editor = new RichTextBox(new FlowDocument(paragraph)); var source = Packet(editor); var proposal = source.DeepClone().AsObject();
+        var style = proposal["runs"]!.AsArray().Single(run => run!["start"]!.GetValue<int>() <= 1 && run["start"]!.GetValue<int>() + run["length"]!.GetValue<int>() > 1)!;
+        style["size"] = 29; style["weight"] = 700; style["foreground"] = 0xff123456u;
+        Apply(editor, source, proposal); Assert.Same(item, children[1]); Assert.Equal(29, item.FontSize); Assert.Equal(FontWeights.Bold, item.FontWeight);
+        Assert.Equal(Color.FromRgb(0x12, 0x34, 0x56), Assert.IsType<SolidColorBrush>(item.Foreground).Color);
+        Assert.Equal(FontStyles.Italic, item.FontStyle); Assert.True(editor.Undo()); Assert.Same(item, children[1]); Assert.Equal(17, item.FontSize);
+        Assert.True(editor.Redo()); Assert.Same(item, children[1]); Assert.Equal(29, item.FontSize);
+    }
+
+    private static JsonObject Rewrite(JsonObject source, string text)
+    {
+        var proposal = source.DeepClone().AsObject(); proposal["text16"] = Encode(text);
+        var body = source["runs"]![0]!.DeepClone(); body["start"] = 0; body["length"] = text.Length - 1;
+        var terminator = source["runs"]!.AsArray()[^1]!.DeepClone(); terminator["start"] = text.Length - 1; terminator["length"] = 1;
+        proposal["runs"] = new JsonArray(body, terminator); proposal["paragraphs"]![0]!["length"] = text.Length;
+        var breaks = new JsonArray(); for (int i = 0; i < text.Length - 1; i++) if (text[i] == '\n') breaks.Add(i);
+        proposal["paragraphs"]![0]!["inlineBreaks"] = breaks; return proposal;
+    }
+
     private static bool TryApply(RichTextBox editor, JsonObject source, JsonObject proposal, Func<bool>? current = null)
     {
         string text = new(MemoryMarshal.Cast<byte, char>(Convert.FromBase64String(proposal["text16"]!.GetValue<string>())));

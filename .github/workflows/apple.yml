@@ -71,6 +71,21 @@ jobs:
           dotnet build src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj -c Release -p:JaliumPlatform=macos
           dotnet build src/packaging/Jalium.UI.iOS/Jalium.UI.iOS.csproj -c Release -f net10.0-ios -p:JaliumPlatform=ios
           dotnet build src/packaging/Jalium.UI.tvOS/Jalium.UI.tvOS.csproj -c Release -f net10.0-tvos -p:JaliumPlatform=tvos
+      - name: Initialize pinned Apple SDK settings on a fresh runner
+        run: |
+          python3 - <<'PYSETTINGS'
+          from pathlib import Path
+          import plistlib
+          # Work around macios #25462 in pinned workload 26.5.10280.
+          # Preserve an existing MAUI/Xamarin configuration on the runner.
+          preferences = Path.home() / 'Library/Preferences'
+          candidates = [preferences / product / 'Settings.plist' for product in ('maui', 'Xamarin')]
+          if not any(path.is_file() for path in candidates):
+              settings = candidates[0]
+              settings.parent.mkdir(parents=True, exist_ok=True)
+              with settings.open('xb') as stream:
+                  plistlib.dump({'AppleSdkRoot': '/Applications/Xcode_26.6.app'}, stream)
+          PYSETTINGS
       - name: Build macOS global preference SDK fixture
         run: >-
           dotnet build tests/Jalium.UI.MacOS.HostSmoke/Jalium.UI.MacOS.HostSmoke.csproj
@@ -250,7 +265,7 @@ jobs:
           from pathlib import Path
           import xml.etree.ElementTree as ET
           counts = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'jalium-font-results/font-resolution.trx').find('.//{*}Counters').attrib
-          assert all(int(counts[name]) == 131 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 221 for name in ['total', 'executed', 'passed']), counts
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
-          print('All 131 CoreText font, ranged style snapshot and semantic inline contracts executed and passed.')
+          print('All 221 CoreText font, ranged style snapshot and semantic inline contracts executed and passed.')
           PY

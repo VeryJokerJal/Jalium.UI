@@ -91,8 +91,8 @@ jobs:
         run: |
           [xml]$trx = Get-Content artifacts/windows-document-contracts/document-offsets.trx
           $counters = $trx.TestRun.ResultSummary.Counters
-          if ([int]$counters.executed -ne 360 -or [int]$counters.passed -ne 360 -or [int]$counters.failed -ne 0 -or [int]$counters.error -ne 0) {
-            throw "Expected all 360 shared document contracts to pass."
+          if ([int]$counters.executed -ne 450 -or [int]$counters.passed -ne 450 -or [int]$counters.failed -ne 0 -or [int]$counters.error -ne 0) {
+            throw "Expected all 450 shared document contracts to pass."
           }
       - name: Clean the isolated Windows baseline
         if: always()

@@ -8,13 +8,34 @@ internal sealed partial class WritingToolsDocumentFragment
 {
     private WholeInlineSource? _wholeInlineSource;
     private sealed record SourceLeaf(Inline Element, int Start, int Length, string? Context, SourceParagraph Source);
-    private sealed record RunUpdate(Run Target, string Text, Run Incoming, JsonElement? Before, JsonElement After);
+    private sealed record InlineUpdate(Inline Target, string Text, Run Incoming, JsonElement? Before, JsonElement After);
     private sealed record ParagraphUpdate(Paragraph Built, Paragraph Target, Inline[] Children, Paragraph? Before);
+    private sealed class InlineProjection(string before, string after)
+    {
+        private int _prefix, _suffix;
+        internal void Initialize()
+        {
+            while (_prefix < before.Length && _prefix < after.Length && before[_prefix] == after[_prefix]) _prefix++;
+            _prefix = Math.Min(ImeTextEncoding.SnapToGraphemeBoundary(before, _prefix, false),
+                ImeTextEncoding.SnapToGraphemeBoundary(after, _prefix, false));
+            while (_suffix < before.Length - _prefix && _suffix < after.Length - _prefix &&
+                before[before.Length - _suffix - 1] == after[after.Length - _suffix - 1]) _suffix++;
+            _suffix = Math.Min(before.Length - ImeTextEncoding.SnapToGraphemeBoundary(before, before.Length - _suffix, true),
+                after.Length - ImeTextEncoding.SnapToGraphemeBoundary(after, after.Length - _suffix, true));
+        }
+        // Empty semantic nodes have forward affinity in the replaced range,
+        // matching the native coordinator's single contiguous text change.
+        internal int Map(int offset) => offset < _prefix ? offset : offset >= before.Length - _suffix
+            ? offset + after.Length - before.Length : after.Length - _suffix;
+    }
     private sealed class SourceParagraph(Paragraph paragraph, Row row)
     {
         internal readonly Paragraph Paragraph = paragraph;
         internal readonly Row Row = row;
         internal readonly List<SourceLeaf> Leaves = [];
+        internal readonly List<SourceLeaf> Empty = [];
+        internal readonly List<Inline> Nodes = [];
+        internal readonly Dictionary<Inline, int> Order = new(ReferenceEqualityComparer.Instance);
         internal readonly List<(int Start, int Length, JsonElement Style)> Styles = [];
         internal readonly Dictionary<string, Queue<SourceLeaf>> ByContext = new(StringComparer.Ordinal);
         internal readonly Dictionary<string, SourceLeaf> Templates = new(StringComparer.Ordinal);
@@ -84,6 +105,10 @@ internal sealed partial class WritingToolsDocumentFragment
                 bool Visit(IEnumerable<Inline> children, string? context, int depth)
                 {
                     foreach (var child in children)
+                    {
+                        source.Order.Add(child, source.Nodes.Count); source.Nodes.Add(child);
+                        int childLength = TextElement.GetContentLength(child);
+                        if (childLength == 0) source.Empty.Add(new(child, offset, 0, context, source));
                         if (child is Span span)
                         {
                             if (depth == 64) return false;
@@ -93,6 +118,7 @@ internal sealed partial class WritingToolsDocumentFragment
                         else
                         {
                             int length = TextElement.GetContentLength(child);
+                            if (length == 0) continue;
                             var leaf = new SourceLeaf(child, offset, length, context, source);
                             source.Leaves.Add(leaf);
                             if (!source.ByContext.TryGetValue(context ?? "", out var local)) source.ByContext[context ?? ""] = local = new();
@@ -116,17 +142,19 @@ internal sealed partial class WritingToolsDocumentFragment
                             }
                             offset += length;
                         }
+                    }
                     return true;
                 }
             }
             if (row.Origin is { } id) originals[id] = source;
         }
-        if (spans.Count == 0) return !_runStyles.Values.Any(style => ValidateInlineContext(style) is not null);
+        if (spans.Count == 0 && sources.Values.All(source => source.Empty.Count == 0 && source.Leaves.All(leaf => leaf.Element is Run)))
+            return !_runStyles.Values.Any(style => ValidateInlineContext(style) is not null);
         var plan = new WholeInlineSource(this, document);
         foreach (var source in sources.Values)
         {
             plan.Remember(source.Paragraph);
-            foreach (var leaf in source.Leaves) plan.Remember(leaf.Element);
+            foreach (var node in source.Nodes) plan.Remember(node);
         }
         foreach (var span in spans.Values) plan.Remember(span);
         var used = new HashSet<Inline>(ReferenceEqualityComparer.Instance);
@@ -146,7 +174,39 @@ internal sealed partial class WritingToolsDocumentFragment
                 continue;
             }
             bool sourceHasContexts = source?.ByContext.Keys.Any(key => key.Length != 0) == true;
+            var emptyPositions = new Dictionary<Inline, int>(ReferenceEqualityComparer.Instance);
+            var objects = new Dictionary<int, SourceLeaf>();
+            var boundaries = new SortedSet<int>();
+            if (source is not null)
+            {
+                string before = source.Row.Paragraph!.Inlines.GetText(), after = built.Inlines.GetText();
+                var projection = new InlineProjection(before, after);
+                if (!unchanged) projection.Initialize();
+                foreach (var empty in source.Empty)
+                {
+                    int at = unchanged ? empty.Start : projection.Map(empty.Start);
+                    emptyPositions.Add(empty.Element, at); boundaries.Add(at);
+                }
+                if (!unchanged && source.Leaves.Any(leaf => leaf.Element is not Run))
+                {
+                    // Plain text carries no embedded-object identity. Keep the
+                    // ordered slots only when the entire slot sequence survives;
+                    // an ambiguous insertion/deletion must not erase a control.
+                    int[] oldSlots = Slots(before), newSlots = Slots(after);
+                    if (oldSlots.Length != newSlots.Length || oldSlots.Where((at, index) => before[at] != after[newSlots[index]]).Any()) return false;
+                    var indices = oldSlots.Select((at, index) => (at, index)).ToDictionary(value => value.at, value => value.index);
+                    foreach (var leaf in source.Leaves.Where(leaf => leaf.Element is not Run))
+                    {
+                        if (leaf.Length != 1 || !indices.TryGetValue(leaf.Start, out int index)) return false;
+                        int at = newSlots[index]; objects.Add(at, leaf); boundaries.Add(at); boundaries.Add(at + 1);
+                    }
+                }
+            }
+            int[] cuts = boundaries.ToArray(); int cut = 0;
             var roots = new List<Inline>(); int offset = 0;
+            var positions = new Dictionary<Inline, (int Offset, int Order)>(ReferenceEqualityComparer.Instance);
+            var owners = new Dictionary<Inline, List<Inline>>(ReferenceEqualityComparer.Instance);
+            var reorder = new HashSet<List<Inline>>(ReferenceEqualityComparer.Instance);
             foreach (var incoming in built.Inlines.OfType<Run>())
             {
                 if (incoming.Text.Length == 0) continue;
@@ -162,10 +222,15 @@ internal sealed partial class WritingToolsDocumentFragment
                 do
                 {
                     int absolute = offset + through;
-                    var leaf = unchanged ? source?.At(absolute) : null;
+                    var leaf = unchanged ? source?.At(absolute) : objects.GetValueOrDefault(absolute);
+                    bool embedded = leaf?.Element is LineBreak or InlineUIContainer;
+                    int order = (unchanged && leaf is not null || embedded) ? leaf!.Source.Order[leaf.Element] : int.MaxValue;
                     int count = leaf is not null ? Math.Min(incoming.Text.Length - through, leaf.Start + leaf.Length - absolute) : incoming.Text.Length - through;
+                    if (!unchanged && embedded) count = leaf!.Length;
+                    while (cut < cuts.Length && cuts[cut] <= absolute) cut++;
+                    if (cut < cuts.Length) count = Math.Min(count, cuts[cut] - absolute);
                     string? path = context ?? leaf?.Context;
-                    if (leaf?.Context != path) leaf = null;
+                    if (leaf?.Context != path) { if (embedded) return false; leaf = null; }
                     var owner = roots; Span? previous = null;
                     foreach (string identity in path?.Split('/') ?? [])
                     {
@@ -175,7 +240,7 @@ internal sealed partial class WritingToolsDocumentFragment
                         if (assignedSpans.TryGetValue(span, out var assigned) && !ReferenceEquals(assigned, built)) return false;
                         assignedSpans[span] = built;
                         if (!plan.Children.TryGetValue(span, out var children))
-                        { owner.Add(span); plan.Children.Add(span, children = []); plan.SpanOrder.Add(span); }
+                        { owner.Add(span); owners[span] = owner; positions[span] = (absolute, source?.Order.GetValueOrDefault(span, int.MaxValue) ?? int.MaxValue); plan.Children.Add(span, children = []); plan.SpanOrder.Add(span); }
                         else if (owner.Count == 0 || !ReferenceEquals(owner[^1], span)) return false;
                         owner = children; previous = span;
                     }
@@ -188,7 +253,7 @@ internal sealed partial class WritingToolsDocumentFragment
                     string text = incoming.Text.Substring(through, count);
                     Inline target;
                     if (leaf is { Element: Run oldRun } && used.Add(oldRun)) target = oldRun;
-                    else if (unchanged && leaf is { Element: LineBreak or InlineUIContainer } && count == leaf.Length)
+                    else if (embedded && leaf is not null && count == leaf.Length)
                     { target = leaf.Element; if (!used.Add(target)) return false; }
                     else
                     {
@@ -197,27 +262,65 @@ internal sealed partial class WritingToolsDocumentFragment
                             DocumentTextEditing.ApplyCharacterFormatting(fresh, DocumentTextEditing.CaptureCharacterFormatting(template), false);
                         target = fresh; plan.Remember(fresh);
                     }
-                    if (target is Run run)
-                    {
-                        JsonElement? beforeStyle = leaf?.Source.StyleAt(unchanged ? absolute : leaf.Start);
-                        if (leaf is not null && !WholeInlineSource.CanPreserveAncestorPainting(leaf.Element, beforeStyle, style)) return false;
-                        plan.Runs.Add(new(run, text, incoming, beforeStyle, style));
-                    }
-                    owner.Add(target); through += count;
+                    JsonElement? beforeStyle = leaf?.Source.StyleAt(unchanged ? absolute : leaf.Start);
+                    if (leaf is not null && !WholeInlineSource.CanPreserveAncestorPainting(leaf.Element, beforeStyle, style)) return false;
+                    plan.Edits.Add(new(target, text, incoming, beforeStyle, style));
+                    positions[target] = (absolute, order); owner.Add(target); owners[target] = owner; through += count;
                 } while (through < incoming.Text.Length);
                 offset += incoming.Text.Length;
             }
+            if (source is not null)
+            foreach (var empty in source.Empty)
+            {
+                var owner = roots; Span? previous = null;
+                foreach (string identity in empty.Context?.Split('/') ?? [])
+                {
+                    if (!spans.TryGetValue(identity, out var span) ||
+                        previous is not null && !ReferenceEquals(span.Parent, previous)) return false;
+                    if (previous is null && span.Parent is Span) return false;
+                    if (assignedSpans.TryGetValue(span, out var assigned) && !ReferenceEquals(assigned, built)) return false;
+                    assignedSpans[span] = built;
+                    if (!plan.Children.TryGetValue(span, out var children))
+                    {
+                        if (!InsertEmpty(owner, span, emptyPositions[empty.Element])) return false;
+                        plan.Children.Add(span, children = []); plan.SpanOrder.Add(span);
+                    }
+                    else if (!owners.TryGetValue(span, out var existingOwner) || !ReferenceEquals(owner, existingOwner)) return false;
+                    owner = children; previous = span;
+                }
+                if (empty.Element is Span emptySpan)
+                {
+                    if (assignedSpans.TryGetValue(emptySpan, out var assigned) && !ReferenceEquals(assigned, built)) return false;
+                    assignedSpans[emptySpan] = built;
+                    if (!plan.Children.ContainsKey(emptySpan))
+                    { plan.Children.Add(emptySpan, []); plan.SpanOrder.Add(emptySpan); }
+                }
+                else if (!used.Add(empty.Element)) return false;
+                if (!InsertEmpty(owner, empty.Element, emptyPositions[empty.Element])) return false;
+            }
+            foreach (var owner in reorder)
+                owner.Sort((first, second) => positions[first].CompareTo(positions[second]));
             Paragraph destination = source is not null && assignedParagraphs.Add(source.Paragraph) ? source.Paragraph : built;
             plan.Paragraphs.Add(new(built, destination, roots.ToArray(), source?.Row.Paragraph));
+
+            bool InsertEmpty(List<Inline> owner, Inline element, int at)
+            {
+                if (owners.TryGetValue(element, out var existing)) return ReferenceEquals(owner, existing);
+                owner.Add(element); owners[element] = owner;
+                positions[element] = (at, source!.Order[element]); reorder.Add(owner); return true;
+            }
         }
         _wholeInlineSource = plan; return true;
+
+        static int[] Slots(string text) => text.Select((value, index) => (value, index))
+            .Where(value => value.value is '\ufffc' or '\n' or '\r' or '\u2029').Select(value => value.index).ToArray();
     }
 
     private sealed class WholeInlineSource(WritingToolsDocumentFragment fragment, FlowDocument document)
     {
         internal readonly Dictionary<Span, List<Inline>> Children = new(ReferenceEqualityComparer.Instance);
         internal readonly List<Span> SpanOrder = [];
-        internal readonly List<RunUpdate> Runs = [];
+        internal readonly List<InlineUpdate> Edits = [];
         internal readonly List<ParagraphUpdate> Paragraphs = [];
         private readonly Dictionary<TextElement, DependencyObject?> _parents = new(ReferenceEqualityComparer.Instance);
         private bool _applied;
@@ -273,10 +376,10 @@ internal sealed partial class WritingToolsDocumentFragment
         {
             if (_applied) return false;
             _applied = true;
-            foreach (var update in Runs)
+            foreach (var update in Edits)
             {
                 if (!Live(update.Target, current)) return false;
-                if (update.Target.Text != update.Text) update.Target.Text = update.Text;
+                if (update.Target is Run run && run.Text != update.Text) run.Text = update.Text;
                 foreach (var (name, property) in Properties)
                     if (Changed(update.Before, update.After, name))
                     {
