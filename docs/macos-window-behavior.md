@@ -4,6 +4,44 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v316：Writing Tools 选区确认与 Apple 构建目标
+
+Writing Tools 的选择请求原来只在 Select 与 ScrollIntoView 后核对目标／会话寿命。应用的 SelectionChanged 回调可以选择另一个范围，目标、会话和文本仍然不变，旧实现仍回复 Applied=true；回调替换文本时还会先滚动旧范围。现在在滚动之前及之后核对文本、SelectionStart、SelectionLength 和当前寿命，只确认请求的最终范围，不覆盖应用回调选择的范围。完整字素范围的提前拒绝已有实现，保持原行为。
+
+新增 120 项真实托管请求检查，覆盖 TextBox、RichTextBox、EditControl × Native／Custom、读写／只读、普通／emoji／中文／空选区、回调改选区、同选区回调、文本变化、禁用／脱离／失活／移焦、滚动回调以及不完整字素与代理对边界。观察滚动使用派生 AutomationPeer，正常选择、事件与寿命仍经过实际控件及 Window 请求处理。未修改父产品 ffd9ed7b 上，同一最终夹具 120 项全执行，10 项为行为断言失败、110 项兼容通过，零跳过；全部 1704 个父 src/managed Git blob 相同，未回填产品修复。
+
+| 冻结输入 | .cs／.csproj／.props／.targets 输入 | 选区、文档、段落及呈现边界 |
+| --- | --- | --- |
+| 本地 ffd9ed7b 加补修，Release | 2651 | 221/221 |
+| PR 82003f30 加补修，Release | 2656 | 221/221 |
+| 并行工作区稳定快照加补修，Release | 3227 | 221/221 |
+
+三套各包含新增 120、文档 26、段落边界 45、呈现边界 30，均零失败、零跳过、零超时，运行前后所记录源哈希相同。呈现边界用例自行创建真实 Metal／Software 上下文；其他 opt-in 几何标志关闭。它们不代表完整框架回归。最初缺少 Primitives using 的编译失败及错误期待不完整字素会先扩展选择的 6 项夹具失败均单独保留至清理；核对已有 ImeTextEncoding 后改为验证提前拒绝，未修改产品字素校验。
+
+实际 SDK 夹具调用 NSWritingToolsCoordinator 的真实代理与 native→managed 桥，并在原生事件处理后观察真实选择响应。每个组合除新增的 5 项选区检查，还检查原生第一响应者、文本几何、字形预览、动画呈现、替换、撤销重做、只读、密码及旧上下文退役，共 27 项。原事件处理器始终在 finally 恢复。
+
+直接启动可执行文件首次仅 4/6 Metal 组合取得真实前台并完成 108 项检查；重试 0/6，且暴露关闭最后窗口后 Stop 未唤醒 run loop 的夹具退出问题。夹具现在复用既有 ApplicationDefined 自有队列唤醒，未投递 OS／HID 事件。新增调用端可准备签名应用包，通过 CUA／用户正常启动，再由公开 Darwin EVFILT_PROC／NOTE_EXITSTATUS 取得同用户、非子进程的真实退出状态；记录加载的 dyld 原生映像并拒绝异源库。已用已知退出码 13 的独立短进程核对解码；当前 Python 3.9 的 kqueue 用 closing 管理，不依赖较新上下文管理接口。
+
+标准 Metal 应用包取得 6/6、162 项 SDK 检查通过，系统退出码 0，八种已加载原生库均来自自身包，零异源库。最终单个双后端包计划 12 组合，仅两个 Software／Custom 的 RichTextBox 和 EditControl 取得前台并完成 54 项检查，其他 10 组合未通过前台资格，退出码 1；因此完整双后端矩阵未通过。首组合可等待手动前台至 600 秒，后续仍为 12 秒，原前台／第一响应者／选择断言没有放宽。运行已结束，未把等待或工具投递等同于物理验收。已查看 Native／Metal 实际截图和 AX 树中的编辑器、密码框及原生菜单；未取得 Software 完整截图或 VoiceOver 验收。前台结束后已按授权通知 Jalium.One 聊天。
+
+可重复的标准包入口：
+
+```bash
+python3 eng/apple/verify-writing-tools-selections.py --prepare-bundle \
+  --app /absolute/path/Jalium.UI.MacOS.HostSmoke.app --backend both \
+  --hold-seconds 60 --startup-seconds 600 --results-directory /absolute/path/results
+```
+
+通过 CUA 或手动打开输出的 app 路径，启动后、60 秒持有期结束前，以同一 results-directory 和生成的 app 路径调用 --collect-bundle。只有 12 项全部完成、五种选择断言各出现 12 次、加载身份正确及真实退出码 0 才返回通过；缺失、超时或前台不足均不算通过。普通无配置应用及既有命令行入口保持原用法。
+
+父 PR 82003f30 的严格 Apple 39989469376 取得原生渲染 19/19、字体 249/249、视口 SDK 8/8／72 场景／480 断言、全局偏好 48/48／624 场景、缓存 SDK 4/4／48 阶段／340 断言通过，图像与媒体作业通过。此次全局偏好通过不构成历史间歇回调失败根因已消除的证明。Dock 仍为 7/8、127/128；case 2 的 animated-progress 像素变化但未观察到应用 Dock display 计数增加，后续外部所有权门槛被跳过。诊断 ZIP SHA-256 c6afda9c3815a7f85cac074e104fe1660f9a5ea60e6035ceb1b61de63c6ca75d 已核对，偏好 getter、display 探针及窗口通知观察者均恢复。该失败继续开放，未用其他组合通过取代。
+
+同一父运行的 Window 作业在构建前失败：上一轮把输出名 jalium.native.media 当成 CMake 目标；实际目标是 jalium.native.media.apple。现已改正，按工作流从冻结 PR 源构建全部 12 个目标成功，548 个 native Git blob 匹配。注册的 42 个原生合同及各项时限保持，不把仅注册或构建当作执行通过；本轮未重复完整 CTest。新增严格 120 项选区门槛复用 focused 托管构建，既有 340／370／633 等门槛不放宽，三份 YAML 与 Python 调用端已解析。
+
+PR 与并行快照各以 548／746 个原生输入完成生产 ALL、package.complete 和 exports，必需运行时 shader 编译器开启，5 份共享编译器档案不变。最终 SDK 1807 个宿主输入构建前后相同；打包前后原生负载不变，16 份原生副本的 CPU／UUID／实际节／依赖、3 份 shader／清单、10 个程序集与严格深度签名通过，NSPrincipalClass 正确。使用现有只读 SDK 10.0.300／Apple 26.5.10280 及本机 Xcode 27.1 的单次版本校验豁免，不替代远端 SDK 302／Xcode 26.6 严格资格，未安装或升级共享工具。
+
+保持 master、codex/macos-window-behavior 与 PR #177，仅安装本轮七条路径；保留 34 处历史路径及精确增删差异、并行改动和 Gallery。远端与提交核对后清理本轮源码快照、构建、应用包副本、shader 工具输出、缓存、样本、诊断 ZIP、日志、TRX、临时索引、标记及别名，保留可复用测试源。完整 macOS／Window 目标仍开放；完整 Writing Tools 前台矩阵、物理输入／IME／VoiceOver、多屏混合 DPI／Spaces、最低系统／Intel、系统 Writing Tools UI 及分发仍需独立验收。
+
 ## v315：物理弹窗视口与实际布局尺寸依赖
 
 独立 macOS 弹窗中的 VirtualizingWrapPanel 在祖先 ScrollViewer 尚无可用尺寸时，原来从逻辑所有者取得宽高，导致较小弹窗按主窗口尺寸计算虚拟化范围。回退现在使用 GetMacOSPhysicalWindow，保留输入所需的逻辑 Window.GetWindow 语义及其他平台行为。已就绪的 ScrollViewer 仍优先提供视口。

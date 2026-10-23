@@ -11,6 +11,9 @@ using System.Runtime.Versioning;
 
 JaliumMacApplication.Initialize();
 
+if (args.Length == 0 && WindowWritingToolsChecks.TryRunBundled(out int bundledResult))
+    return bundledResult;
+
 if (args.Length == 1 && args[0].StartsWith("--window-popup-viewport-case=", StringComparison.Ordinal))
     return WindowPopupViewportChecks.Run(args[0]);
 

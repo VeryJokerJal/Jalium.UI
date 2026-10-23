@@ -254,7 +254,7 @@ jobs:
       - name: Build Window, clipboard and thread-affinity contract fixtures
         run: >-
           cmake --build "$RUNNER_TEMP/jalium-window-contracts" --parallel 4 --target
-          jalium.native.media
+          jalium.native.media.apple
           jalium.native.platform.clipboard.tests
           jalium.native.platform.thread-affinity.tests
           jalium.native.platform.window.tests
@@ -334,6 +334,27 @@ jobs:
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
           print('All 370 popup viewport, physical drag, resource and wrap contracts executed and passed.')
           PYSURFACE
+      - name: Verify Writing Tools selection acknowledgement
+        run: |
+          export DYLD_LIBRARY_PATH="$RUNNER_TEMP/jalium-window-native/osx-arm64/Release"
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            --no-build --no-restore \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-focus-intent-managed" \
+            -p:JaliumMacNativeRoot="$DYLD_LIBRARY_PATH" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter 'FullyQualifiedName~MacOSWritingToolsSelectionTests' \
+            --logger 'trx;LogFileName=writing-tools-selection.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-writing-tools-selection-results"
+          python3 - <<'PYSELECTION'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-writing-tools-selection-results/writing-tools-selection.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 120 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 120 Writing Tools selection contracts executed and passed.')
+          PYSELECTION
       - name: Verify mouse release ownership, command compatibility and ComboBox forwarding
         run: |
           dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \

@@ -19,7 +19,44 @@ namespace Jalium.UI.MacOS;
 // not invoke Apple Intelligence or inject operating-system input events.
 internal static class WindowWritingToolsChecks
 {
-    internal static int Run(bool software = false)
+    // A copied validation bundle can select this fixture without shell-based
+    // GUI launching. CUA/LaunchServices then supplies normal application startup.
+    internal static bool TryRunBundled(out int exitCode)
+    {
+        exitCode = 0;
+        string file = Path.Combine(NSBundle.MainBundle.ResourcePath, "jalium-writing-tools-launch.json");
+        if (!File.Exists(file)) return false;
+        using var document = JsonDocument.Parse(File.ReadAllText(file));
+        var configuration = document.RootElement;
+        string backend = configuration.GetProperty("backend").GetString()!;
+        if (backend is not ("metal" or "software" or "both")) throw new InvalidDataException("Invalid validation backend.");
+        string output = Path.GetFullPath(configuration.GetProperty("resultsDirectory").GetString()!);
+        string temporary = Path.GetFullPath(configuration.GetProperty("temporaryDirectory").GetString()!);
+        if (!Directory.Exists(output) || !Directory.Exists(temporary)) throw new DirectoryNotFoundException("Validation directories must be prepared first.");
+        File.WriteAllText(Path.Combine(output, "launch.json"), JsonSerializer.Serialize(new { pid = Environment.ProcessId, bundle = NSBundle.MainBundle.BundlePath }));
+        Environment.SetEnvironmentVariable("JALIUM_WRITING_TOOLS_OUTPUT", output);
+        Environment.SetEnvironmentVariable("TMPDIR", temporary);
+        Environment.SetEnvironmentVariable("JALIUM_WRITING_TOOLS_HOLD_SECONDS", configuration.GetProperty("holdSeconds").GetInt32().ToString());
+        Environment.SetEnvironmentVariable("JALIUM_WRITING_TOOLS_STARTUP_SECONDS", configuration.GetProperty("startupSeconds").GetInt32().ToString());
+        exitCode = Run(backend == "software", backend == "both");
+        return true;
+    }
+
+    [System.Runtime.InteropServices.DllImport("/usr/lib/libSystem.B.dylib", EntryPoint = "_dyld_image_count")]
+    private static extern uint DyldImageCount();
+    [System.Runtime.InteropServices.DllImport("/usr/lib/libSystem.B.dylib", EntryPoint = "_dyld_get_image_name")]
+    private static extern nint DyldImageName(uint index);
+    private static string[] NativeImages()
+    {
+        var images = new List<string>();
+        uint count = DyldImageCount();
+        for (uint index = 0; index < count; index++)
+            if (System.Runtime.InteropServices.Marshal.PtrToStringUTF8(DyldImageName(index)) is { } image && image.Contains("/libjalium.native.", StringComparison.Ordinal))
+                images.Add(image);
+        return images.Distinct().Order().ToArray();
+    }
+
+    internal static int Run(bool software = false, bool both = false)
     {
         if (!OperatingSystem.IsMacOSVersionAtLeast(15, 2)) return 77;
         var app = NSApplication.SharedApplication;
@@ -30,10 +67,15 @@ internal static class WindowWritingToolsChecks
         else RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         Jalium.UI.Controls.Themes.ThemeManager.Initialize(Application.Current!);
         var failures = new List<string>(); var checks = new List<string>();
-        var cases = new Queue<(bool Custom, int Editor)>();
-        foreach (bool custom in new[] { false, true }) for (int editor = 0; editor < 3; ++editor) cases.Enqueue((custom, editor));
+        var cases = new Queue<(bool Software, bool Custom, int Editor)>();
+        foreach (bool backend in both ? new[] { false, true } : new[] { software })
+            foreach (bool custom in new[] { false, true }) for (int editor = 0; editor < 3; ++editor) cases.Enqueue((backend, custom, editor));
+        int expected = cases.Count, caseIndex = -1;
+        int startupSeconds = int.TryParse(Environment.GetEnvironmentVariable("JALIUM_WRITING_TOOLS_STARTUP_SECONDS"), out int requestedStartup) ? Math.Clamp(requestedStartup, 12, 600) : 12;
         Window? owner = null; FrameworkElement? control = null; PasswordBox? password = null;
         var wait = Stopwatch.StartNew(); string label = ""; int completed = 0;
+        int holdSeconds = int.TryParse(Environment.GetEnvironmentVariable("JALIUM_WRITING_TOOLS_HOLD_SECONDS"), out int requestedHold) ? Math.Clamp(requestedHold, 0, 120) : 0;
+        bool holding = false; NSTimer? holdTimer = null;
         void Require(bool value, string message)
         {
             if (!value) throw new InvalidOperationException(message);
@@ -49,13 +91,19 @@ internal static class WindowWritingToolsChecks
                 {
                     Directory.CreateDirectory(output);
                     File.WriteAllText(Path.Combine(output,"host-result.json"),JsonSerializer.Serialize(new
-                    { completed,expected=6,passed=checks.Count,failures,checks,serviceAvailable=NSWritingToolsCoordinator.IsWritingToolsAvailable,
-                        physicalInput=false,appleIntelligenceService=false,pid=Environment.ProcessId }));
+                    { completed,expected,passed=checks.Count,failures,checks,serviceAvailable=NSWritingToolsCoordinator.IsWritingToolsAvailable,
+                        physicalInput=false,appleIntelligenceService=false,pid=Environment.ProcessId,nativeImages=NativeImages() }));
                 }
-                Console.WriteLine($"macOS Writing Tools managed host: {completed}/6 cases; {checks.Count} checks; {failures.Count} failures");
-                app.Stop(app); return;
+                Console.WriteLine($"macOS Writing Tools managed host: {completed}/{expected} cases; {checks.Count} checks; {failures.Count} failures");
+                app.Stop(app); using var wake = NSEvent.OtherEvent(NSEventType.ApplicationDefined, default, 0, 0, 0, null, 0, 0, 0); app.PostEvent(wake, false); return;
             }
-            label = $"custom={item.Custom},editor={item.Editor}";
+            caseIndex++;
+            if (RenderContext.Current?.Backend != (item.Software ? RenderBackend.Software : RenderBackend.Metal))
+            {
+                var context = RenderContext.GetOrCreateCurrent(item.Software ? RenderBackend.Software : RenderBackend.Metal, forceReplace: true);
+                if (!item.Software) context.DefaultRenderingEngine = RenderingEngine.Impeller;
+            }
+            label = $"software={item.Software},custom={item.Custom},editor={item.Editor}";
             control = item.Editor switch
             {
                 0 => new TextBox { Text="ab🙂中文 Miii", AcceptsReturn=true },
@@ -66,16 +114,16 @@ internal static class WindowWritingToolsChecks
             ((Control)control).FontStyle=FontStyles.Italic; control.Height=130;
             password = new PasswordBox { Password="private secret",Height=40 };
             var panel = new StackPanel { Margin=new Thickness(24),Spacing=12 }; panel.Children.Add(control);panel.Children.Add(password);
-            owner = new Window { Title="Jalium Writing Tools bridge",Width=500,Height=300,
+            owner = new Window { Title="Jalium Writing Tools · " + (item.Software ? "Software" : "Metal") + " · " + (item.Custom ? "Custom" : "Native"),Width=500,Height=300,
                 TitleBarStyle=item.Custom?WindowTitleBarStyle.Custom:WindowTitleBarStyle.Native,Content=panel };
             Application.Current!.MainWindow=owner;owner.Show();owner.UpdateLayout();control.Focus();app.Activate();owner.Activate();wait.Restart();
         }
         using var timer = NSTimer.CreateRepeatingScheduledTimer(TimeSpan.FromMilliseconds(100), _ =>
         {
-            if (owner is null || control is null) return;
+            if (holding || owner is null || control is null) return;
             bool ready=app.Active && owner.IsActive && app.KeyWindow?.FirstResponder is NSView &&
                 NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier==Environment.ProcessId;
-            if (!ready && wait.Elapsed < TimeSpan.FromSeconds(12)) return;
+            if (!ready && wait.Elapsed < TimeSpan.FromSeconds(caseIndex == 0 ? startupSeconds : 12)) return;
             try
             {
                 Require(ready,"actual AppKit and system foreground agree");
@@ -100,6 +148,56 @@ internal static class WindowWritingToolsChecks
                     Require(calls==1,"context completion runs exactly once");return context;
                 }
                 var context=Context();Require(context?.AttributedString.Value==original,"context preserves original UTF16 and document projection");
+                var platform = (Jalium.UI.Controls.Platform.IPlatformWindow)typeof(Window)
+                    .GetField("_platformWindow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(owner)!;
+                var handler = (Action<Jalium.UI.Controls.Platform.PlatformEvent>)platform.GetType()
+                    .GetField("_eventHandler", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(platform)!;
+                byte[]? selectionReply = null; int selectionRequests = 0;
+                platform.SetEventHandler(evt =>
+                {
+                    handler(evt);
+                    if (evt.TextServicesRequest is { Kind: 3 } request)
+                    { selectionRequests++; selectionReply = request.Response; }
+                });
+                bool Applied()
+                {
+                    if (selectionReply is null) return false;
+                    using var json = JsonDocument.Parse(selectionReply);
+                    return json.RootElement.TryGetProperty("applied", out var applied) && applied.GetBoolean();
+                }
+                try
+                {
+                    using var requested = NSValue.FromRange(new NSRange(0, 2));
+                    int selectionCompletions = 0;
+                    client.SelectRanges(coordinator, [requested], context!, () => selectionCompletions++);
+                    Require(selectionRequests == 1 && selectionCompletions == 1, "SDK selection enters the managed request and completes once");
+                    Require(Applied() && source.SelectionStart == 0 && source.SelectionLength == 2, "exact SDK selection is acknowledged");
+                    source.Select(4, 2);
+                    bool reselected = false;
+                    void ChooseAnotherRange()
+                    {
+                        if (reselected) return;
+                        reselected = true; source.Select(4, 2);
+                    }
+                    RoutedEventHandler routed = (_, _) => ChooseAnotherRange();
+                    EventHandler ordinary = (_, _) => ChooseAnotherRange();
+                    if (control is TextBoxBase textBox) textBox.SelectionChanged += routed;
+                    else ((EditControl)control).SelectionChanged += ordinary;
+                    try
+                    {
+                        selectionReply = null;
+                        client.SelectRanges(coordinator, [requested], context!, () => selectionCompletions++);
+                        Require(reselected && selectionRequests == 2 && selectionCompletions == 2, "reentrant SDK selection still completes exactly once");
+                        Require(!Applied(), "bridge refuses to acknowledge a range changed by SelectionChanged");
+                        Require(source.SelectionStart == 4 && source.SelectionLength == 2, "SDK selection preserves the application's replacement range");
+                    }
+                    finally
+                    {
+                        if (control is TextBoxBase restoringBox) restoringBox.SelectionChanged -= routed;
+                        else ((EditControl)control).SelectionChanged -= ordinary;
+                    }
+                }
+                finally { platform.SetEventHandler(handler); }
                 NSBezierPath[]? paths=null;
                 client.RequestsBoundingBezierPaths(coordinator,new NSRange(0,2),context!,values=>paths=values);
                 Require(paths is {Length:>0} && paths.All(path=>path.Bounds.Width>0),"bridge returns actual text geometry");
@@ -152,12 +250,18 @@ internal static class WindowWritingToolsChecks
                     NSWritingToolsCoordinatorTextReplacementReason.Noninteractive,null!,value=>accepted=value);
                 Require(accepted is null && source.Text==beforeStale,"retired SDK context cannot edit the returning editor");
                 completed++;
+                if (completed == expected && holdSeconds > 0)
+                {
+                    holding = true; holdTimer = NSTimer.CreateScheduledTimer(TimeSpan.FromSeconds(holdSeconds), _ => Next());
+                    return;
+                }
             }
             catch(Exception error){failures.Add(label+": "+error);Console.Error.WriteLine("FAIL Writing Tools "+label+": "+error);}
             Next();
         });
         app.BeginInvokeOnMainThread(Next); app.Run();
-        return failures.Count==0 && completed==6?0:1;
+        holdTimer?.Dispose();
+        return failures.Count==0 && completed==expected?0:1;
     }
 
     private sealed class ValidationDelegate : JaliumMacApplicationDelegate

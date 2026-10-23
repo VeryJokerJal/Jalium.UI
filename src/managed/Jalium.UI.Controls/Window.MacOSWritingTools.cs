@@ -183,9 +183,13 @@ public partial class Window
                     int start = ranges[0][0].GetInt32(), length = ranges[0][1].GetInt32();
                     if (!ValidRange(before, start, length)) return;
                     source.Select(start, length);
-                    if (!IsCurrent()) return;
+                    // Select may normalize graphemes or run application callbacks.
+                    // Acknowledge only the range the native coordinator requested.
+                    bool HasRequestedSelection() => IsCurrent() && source.Text == before &&
+                        source.SelectionStart == start && source.SelectionLength == length && IsCurrent();
+                    if (!HasRequestedSelection()) return;
                     source.ScrollIntoView(start, length);
-                    response.Applied = IsCurrent();
+                    response.Applied = HasRequestedSelection();
                     break;
                 }
                 case 4:
