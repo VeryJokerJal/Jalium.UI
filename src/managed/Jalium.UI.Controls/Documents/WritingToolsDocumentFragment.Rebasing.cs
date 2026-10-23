@@ -29,7 +29,7 @@ internal sealed partial class WritingToolsDocumentFragment
     private FlowDocument? _insertionDocument;
     private readonly Dictionary<DependencyObject, Dictionary<DependencyProperty, object?>> _propertyUpdates = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Table, int> _columnUpdates = new(ReferenceEqualityComparer.Instance);
-    internal bool HasPreparedSource => _insertions is not null || _directInsertion is not null;
+    internal bool HasPreparedSource => _wholeInlineSource is not null || _insertions is not null || _directInsertion is not null;
 
     private static OwnerKey Key(Container value) => value.Table
         ? new(true, value.Origin ?? value.Id, value.Origin is not null, null,
@@ -105,6 +105,7 @@ internal sealed partial class WritingToolsDocumentFragment
                 }
             insertion.Anchor ??= sourcePosition(Math.Max(start, absolute));
         }
+        if (wholeDocument && !PrepareWholeInlineSource(document, original, sourceStart)) return false;
         if (wholeDocument || insertions.Count == 0 || original._rows.All(row => row.Path.Length == 0)) return true;
         foreach (var insertion in insertions)
         {

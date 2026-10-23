@@ -178,7 +178,7 @@ jobs:
           dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
             -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-coretext-managed" \
             -p:JaliumMacNativeGeometryTests=true \
-            --filter 'FullyQualifiedName~MacOSFontResolutionTests|FullyQualifiedName~MacOSFontCascadeTests|FullyQualifiedName~MacOSTextBoxAlignmentTests|FullyQualifiedName~MacOSTextStyleRangeSnapshotTests' \
+            --filter 'FullyQualifiedName~MacOSFontResolutionTests|FullyQualifiedName~MacOSFontCascadeTests|FullyQualifiedName~MacOSTextBoxAlignmentTests|FullyQualifiedName~MacOSTextStyleRangeSnapshotTests|FullyQualifiedName~WritingToolsInlinePreservationTests' \
             --logger 'trx;LogFileName=font-resolution.trx' \
             --results-directory "$RUNNER_TEMP/jalium-font-results"
           python3 - <<'PY'
@@ -186,7 +186,7 @@ jobs:
           from pathlib import Path
           import xml.etree.ElementTree as ET
           counts = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'jalium-font-results/font-resolution.trx').find('.//{*}Counters').attrib
-          assert all(int(counts[name]) == 96 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 131 for name in ['total', 'executed', 'passed']), counts
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
-          print('All 96 CoreText font, editor alignment and ranged style snapshot contracts executed and passed.')
+          print('All 131 CoreText font, ranged style snapshot and semantic inline contracts executed and passed.')
           PY

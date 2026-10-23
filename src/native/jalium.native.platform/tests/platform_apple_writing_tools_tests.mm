@@ -616,6 +616,24 @@ int main()
                 f.after=[&](int kind){if(kind==0)jalium_window_hide(f.window);};
                 Require(focus(f.window)==JALIUM_ERROR_INVALID_STATE && !f.view.window.visible && !f.view.writingToolsCoordinator,"refresh callback hiding a window retires the outer focus request");
             });
+            Run("inline provenance survives native attributed edits and source capture",style,[&]{
+                Fixture f(style); f.text=@"link🙂\n";f.selection=NSMakeRange(0,0);
+                NSString* path=@"0123456789abcdef0123456789abcdef/abcdef0123456789abcdef0123456789";
+                f.styles=BackgroundStyles(f.text,path,@"inlineContext");f.clearStylesOnReplace=true;
+                auto* context=f.Context(NSWritingToolsCoordinatorContextScopeFullDocument);Require(context,"inline provenance context");
+                Require([[context.attributedString attribute:@"JaliumWritingToolsInlineContext" atIndex:0 effectiveRange:nil] isEqual:path],"native context omitted source inline identity");
+                auto* proposal=[[NSMutableAttributedString alloc]initWithAttributedString:context.attributedString];
+                [proposal replaceCharactersInRange:NSMakeRange(0,4) withString:@"rewritten中文"];
+                Require(f.ReplaceAttributed(context,NSMakeRange(0,context.attributedString.length),proposal),"attributed inline rewrite was rejected");
+                Require([f.proposal[@"runs"][0][@"inlineContext"] isEqual:path],"rewrite lost source inline provenance");
+                Require([f.packet[@"source"][@"runs"][0][@"inlineContext"] isEqual:path],"source snapshot lost inline provenance");
+            });
+            Run("invalid inline provenance cannot create native contexts",style,[&]{
+                for(id value in @[@1,NSNull.null,@"",[@"x" stringByPaddingToLength:4097 withString:@"x" startingAtIndex:0]]){
+                    Fixture f(style);f.styles=BackgroundStyles(f.text,value,@"inlineContext");
+                    Require(!f.Context(),"invalid inline provenance was accepted");
+                }
+            });
             Run("read-only storage completes replacement without edits",style,[&]{Fixture f(style);f.canEdit=false;NSString* before=f.text;Require(!f.Replace(f.Context(),NSMakeRange(2,2),@"x") && [f.text isEqual:before] && !f.replacements,"read-only edit");});
             Run("rejected proposals still report a callback's own edit",style,[&]{Fixture f(style);auto* context=f.Context();int snapshots=f.snapshotQueries;f.canEdit=false;
                 f.after=[&](int kind){if(kind==2){f.text=[f.text stringByAppendingString:@" user"];f.Publish();}};

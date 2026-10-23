@@ -316,6 +316,11 @@ static NSDictionary* AppleWritingToolsProposal(NSAttributedString* text, bool or
         }
         id language = attributes[NSLanguageIdentifierAttributeName];
         if ([language isKindOfClass:NSString.class]) run[@"language"] = language;
+        id inlineContext = attributes[AppleWritingToolsInlineContextAttribute];
+        if (inlineContext) {
+            if (![inlineContext isKindOfClass:NSString.class] || ![inlineContext length] || [inlineContext length] > 4096) return nil;
+            run[@"inlineContext"] = inlineContext;
+        }
         [runs addObject:run]; index = NSMaxRange(range);
     }
     NSMutableDictionary<NSString*,NSNumber*>* ordinals = [NSMutableDictionary new];

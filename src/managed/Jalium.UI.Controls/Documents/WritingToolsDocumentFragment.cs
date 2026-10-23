@@ -13,6 +13,8 @@ internal sealed partial class WritingToolsDocumentFragment
     internal bool EndsWithParagraphBreak { get; private init; }
     private string _text = "";
     private List<Row> _rows = new();
+    private readonly Dictionary<Run, JsonElement> _runStyles = new(ReferenceEqualityComparer.Instance);
+    internal bool SourceRetired { get; private set; }
     private sealed record Container(bool Table, string Id, JsonElement Metadata, string? Item = null, string? Origin = null);
     private sealed record Row(Paragraph? Paragraph, Container[] Path, int Start, int Length,
         string? Origin, bool ParagraphBreak = false);
@@ -28,10 +30,12 @@ internal sealed partial class WritingToolsDocumentFragment
         {
             int start = run.GetProperty("start").GetInt32(), length = run.GetProperty("length").GetInt32();
             if (start != through || length <= 0 || length > text.Length - start) throw new FormatException("Invalid style range.");
+            ValidateInlineContext(run);
             through += length;
         }
         if (through != text.Length || runs.Length > 100000) throw new FormatException("Incomplete style ranges.");
         var rows = new List<Row>();
+        var runStyles = new Dictionary<Run, JsonElement>(ReferenceEqualityComparer.Instance);
         through = 0;
         bool trailingInlineBreak = false;
         var paragraphRecords = packet.GetProperty("paragraphs");
@@ -132,6 +136,8 @@ internal sealed partial class WritingToolsDocumentFragment
                 if (to <= from) continue;
                 var run = new Run(text.Substring(from, to - from));
                 ApplyStyle(run, style);
+                ValidateInlineContext(style);
+                runStyles.Add(run, style.Clone());
                 paragraph.Inlines.Add(run);
             }
             if (paragraph.Inlines.Count == 0) paragraph.Inlines.Add(new Run());
@@ -142,6 +148,7 @@ internal sealed partial class WritingToolsDocumentFragment
         { EndsWithParagraphBreak = text.Length > 0 && text[^1] is '\n' or '\r' or '\u2029' && !trailingInlineBreak,
             _text = text, _rows = rows };
         fragment.Blocks.AddRange(Build(rows, 0));
+        foreach (var pair in runStyles) fragment._runStyles.Add(pair.Key, pair.Value);
         return fragment;
     }
 
@@ -348,7 +355,7 @@ internal sealed partial class WritingToolsDocumentFragment
 
     internal TextPointer Insert(FlowDocument document, int start, int length, Func<bool> current)
     {
-        if (HasPreparedSource) return InsertPrepared(document, current);
+        if (_wholeInlineSource is null && HasPreparedSource) return InsertPrepared(document, current);
         string original = document.GetText();
         if (start < 0 || length < 0 || start > original.Length || length > original.Length - start)
             throw new ArgumentOutOfRangeException(nameof(start));
@@ -359,8 +366,20 @@ internal sealed partial class WritingToolsDocumentFragment
             throw new InvalidOperationException("A formatted fragment cannot split a non-mergeable inline.");
         if (start == 0 && length == original.Length)
         {
+            if (_wholeInlineSource is { } pending && !pending.BeforeClear(current))
+            { SourceRetired = true; return document.ContentStart; }
             document.Blocks.Clear();
-            foreach (var block in Blocks) { if (!current()) return document.ContentStart; document.Blocks.Add(block); }
+            if (_wholeInlineSource is { } inlines && !inlines.Apply(current))
+            { SourceRetired = true; return document.ContentStart; }
+            foreach (var block in Blocks)
+            {
+                if (!current()) return document.ContentStart;
+                if (_wholeInlineSource is { } source)
+                { if (!source.Attach(block, current)) { SourceRetired = true; return document.ContentStart; } }
+                else document.Blocks.Add(block);
+            }
+            if (_wholeInlineSource is { } complete && !complete.Complete(current))
+            { SourceRetired = true; return document.ContentStart; }
             return document.ContentEnd;
         }
         TextPointer position = DocumentTextEditing.Replace(document, start, length, string.Empty);

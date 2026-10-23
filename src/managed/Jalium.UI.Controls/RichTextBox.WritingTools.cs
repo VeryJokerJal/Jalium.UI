@@ -31,6 +31,7 @@ public partial class RichTextBox
         {
             var caret = fragment.Insert(original, start, length, current);
             if (!current()) return false;
+            if (fragment.SourceRetired) return false;
             _caretPosition = caret;
             _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
             _selectionAnchor = _caretPosition;

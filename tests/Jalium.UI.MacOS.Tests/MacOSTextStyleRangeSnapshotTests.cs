@@ -35,13 +35,34 @@ public sealed class MacOSTextStyleRangeSnapshotTests(ITestOutputHelper output)
         AssertBoundedQuery(new Source(new string('A', count), runs), count / 2, 1);
     }
 
-    private void AssertBoundedQuery(Source source, int start, int length)
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public void PrivateProvenanceIsFilteredWithinTheRequestedRangeWithoutCopyingTheDocument(bool alternatingFonts)
+    {
+        using var context = RenderContext.GetOrCreateCurrent(RenderBackend.Metal);
+        const int count = 100_000;
+        var runs = Enumerable.Range(0, count).Select(i => new AutomationTextStyleSpan(i, 1,
+            Style with { FontWeight = alternatingFonts && i % 2 == 1 ? 700 : 400, InlineContext = i.ToString("x32") })).ToArray();
+        var source = new Source(new string('A', count), runs);
+        foreach (bool includePrivate in new[] { false, true })
+        {
+            AssertBoundedQuery(source, count / 2, 1, includePrivate);
+            AssertBoundedQuery(source, count / 2, 0, includePrivate);
+            using var packet = JsonDocument.Parse(Snapshot(source, count / 2, 1, includePrivate)!);
+            Assert.Equal(includePrivate, packet.RootElement.GetProperty("runs")[0].TryGetProperty("inlineContext", out _));
+        }
+        var publicRange = AutomationTextStyles.At(runs, count / 2, count, ignoreInlineContext: true)!.Value;
+        Assert.Null(publicRange.Style.InlineContext);
+        Assert.Equal(alternatingFonts ? 1 : count, publicRange.Length);
+    }
+
+    private void AssertBoundedQuery(Source source, int start, int length, bool includePrivate = true)
     {
         // Warm native format/JIT caches before measuring the sizing-and-copy
         // pair. A tiny AX read must not copy megabytes or allocate per document run.
-        for (int i = 0; i < 2; ++i) Assert.NotNull(Snapshot(source, start, length));
+        for (int i = 0; i < 2; ++i) Assert.NotNull(Snapshot(source, start, length, includePrivate));
         long before = GC.GetAllocatedBytesForCurrentThread();
-        string first = Snapshot(source, start, length)!, second = Snapshot(source, start, length)!;
+        string first = Snapshot(source, start, length, includePrivate)!, second = Snapshot(source, start, length, includePrivate)!;
         long bytes = GC.GetAllocatedBytesForCurrentThread() - before;
         output.WriteLine($"two snapshots: {bytes} managed bytes; document={source.Text.Length}, query={start}:{length}");
         Assert.Equal(first, second);
@@ -131,8 +152,8 @@ public sealed class MacOSTextStyleRangeSnapshotTests(ITestOutputHelper output)
         Assert.Equal("BY", source.Text);
     }
 
-    private static string? Snapshot(Source source, int start, int length) =>
-        MacOSAccessibilityTree.CreateTextStyleSnapshot(source, start, length, () => true);
+    private static string? Snapshot(Source source, int start, int length, bool includePrivate = true) =>
+        MacOSAccessibilityTree.CreateTextStyleSnapshot(source, start, length, () => true, includeInlineContext: includePrivate);
 
     private sealed class Source(string text, IReadOnlyList<AutomationTextStyleSpan> runs)
         : IAutomationTextProviderSource, IAutomationTextStyleSource

@@ -22,7 +22,8 @@ public partial class RichTextBox
                 Alignment: (int)(paragraph?.TextAlignment ?? Jalium.UI.TextAlignment.Left),
                 Direction: paragraph == null ? -1 : GetNativeParagraphDirection(paragraph),
                 Language: (languageSource?.Language ?? run?.Language ?? paragraph?.Language ?? _document.Language).IetfLanguageTag,
-                Background: AutomationTextStyleFactory.Color(run?.Background));
+                Background: AutomationTextStyleFactory.InlineBackground(run ?? languageSource as Inline),
+                InlineContext: AutomationTextStyleFactory.InlineContext(run ?? languageSource as Inline));
             return AutomationTextStyleFactory.Decorations(style, run ?? (TextElement?)paragraph);
         }
         void Add(int length, AutomationTextStyle style)

@@ -134,4 +134,5 @@
   <ItemGroup>
     <Compile Include="../Jalium.UI.Tests/WindowThemeRefreshTests.cs" Link="WindowSystem/WindowThemeRefreshTests.cs" />
   </ItemGroup>
+  <ItemGroup><Compile Include="../Jalium.UI.Tests/WritingToolsInlinePreservationTests.cs" Link="WritingToolsInlinePreservationTests.cs" /></ItemGroup>
 </Project>

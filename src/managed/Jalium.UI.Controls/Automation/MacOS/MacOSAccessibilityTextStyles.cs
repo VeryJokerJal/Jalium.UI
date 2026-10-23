@@ -20,6 +20,8 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         int start = request.TextStart, length = request.TextLength;
         if (text.Length > MaximumStyleTextLength || start < 0 || start > text.Length
             || length < 0 || length > text.Length - start) return false;
+        // Keep the captured list intact: public AX omits private provenance
+        // only while serializing the selected range, without copying all runs.
         var runs = styled.GetTextStyles();
         // Highlighting/brush resolution can call user code. Reject a snapshot
         // whose owner is detached, hidden, closed, or edited during that call.
@@ -29,19 +31,20 @@ internal sealed unsafe partial class MacOSAccessibilityTree
         {
             // NSTextView has no character/style at EOF, including an empty document.
             if (start == text.Length) { request.TextStart = 0; request.TextLength = 0; return true; }
-            if (AutomationTextStyles.At(runs, start, text.Length) is not { } run) return false;
+            if (AutomationTextStyles.At(runs, start, text.Length, ignoreInlineContext: true) is not { } run) return false;
             request.TextStart = run.Start; request.TextLength = run.Length; return true;
         }
         string? payload = CreateTextStyleSnapshot(source, start, length,
             () => !_window.IsClosedForPlatformTermination && IsVisible(peer) && !peer.IsPassword() && source.Text == text,
-            runs);
+            runs, includeInlineContext: false);
         return payload is not null && WriteString(payload, ref request);
     }
 
     // Shared by native accessibility and Writing Tools. Both use the same font
     // resolution and raw UTF-16 representation as the actual editor rendering.
     internal static string? CreateTextStyleSnapshot(IAutomationTextProviderSource source,
-        int start, int length, Func<bool> isCurrent, IReadOnlyList<AutomationTextStyleSpan>? capturedRuns = null)
+        int start, int length, Func<bool> isCurrent, IReadOnlyList<AutomationTextStyleSpan>? capturedRuns = null,
+        bool includeInlineContext = true)
     {
         if (source is not IAutomationTextStyleSource styled || !isCurrent()) return null;
         string text = source.Text;
@@ -85,6 +88,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 WriteColor("underlineColor", style.UnderlineColor); writer.WriteNumber("strike", style.Strikethrough);
                 WriteColor("strikeColor", style.StrikethroughColor); writer.WriteNumber("alignment", style.Alignment);
                 writer.WriteNumber("direction", style.Direction); writer.WriteString("language", style.Language);
+                if (includeInlineContext && style.InlineContext is { } context) writer.WriteString("inlineContext", context);
                 writer.WriteEndObject(); writer.Flush();
                 if (stream.Length > MaximumStylePayloadLength) return null;
             }
@@ -107,7 +111,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 || !double.IsFinite(style.FontSize) || style.FontSize <= 0 || style.FontSize > 65536
                 || style.FontWeight is < 1 or > 1000 || style.FontStyle is < 0 or > 2
                 || style.Alignment is < 0 or > 3 || style.Direction is < -1 or > 1
-                || style.Language?.Length > 1024) return false;
+                || style.Language?.Length > 1024 || style.InlineContext?.Length > 4096) return false;
             through += run.Length;
         }
         return runs.Count != 0 && through == textLength;

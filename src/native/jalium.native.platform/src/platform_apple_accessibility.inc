@@ -69,6 +69,8 @@ static NSInteger JaliumBridgeTextAlignment(NSTextAlignment alignment)
     }
 }
 
+static NSAttributedStringKey const AppleWritingToolsInlineContextAttribute = @"JaliumWritingToolsInlineContext";
+
 static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL accessibility)
 {
     NSFont* font = JaliumAccessibilityFont(style);
@@ -100,6 +102,9 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
         id language = style[@"language"];
         if ([language isKindOfClass:NSString.class] && [language length]) attributes[NSAccessibilityLanguageTextAttribute] = language;
     } else {
+        id inlineContext = style[@"inlineContext"];
+        if ([inlineContext isKindOfClass:NSString.class] && [inlineContext length])
+            attributes[AppleWritingToolsInlineContextAttribute] = inlineContext;
         if (shear != 0) {
             CGAffineTransform identity = CGAffineTransformIdentity;
             CTFontRef upright = CTFontCreateCopyWithAttributes((__bridge CTFontRef)font,font.pointSize,&identity,nullptr);
@@ -168,6 +173,9 @@ static NSAttributedString* JaliumAccessibilityDecodeStyles(NSString* payload, NS
         for (NSString* key in @[@"foreground", @"background", @"underlineColor", @"strikeColor"])
             if (style[key] && (!JaliumAccessibilityStyleNumber(style, key, 0, UINT32_MAX) ||
                 CFGetTypeID((__bridge CFTypeRef)style[key]) == CFBooleanGetTypeID())) return nil;
+        id inlineContext = style[@"inlineContext"];
+        if (inlineContext && (![inlineContext isKindOfClass:NSString.class] ||
+            ![inlineContext length] || [inlineContext length] > 4096)) return nil;
         NSUInteger length = [style[@"length"] unsignedIntegerValue];
         NSDictionary* attributes = JaliumAccessibilityTextAttributes(style, accessibility);
         if (!attributes) return nil;
