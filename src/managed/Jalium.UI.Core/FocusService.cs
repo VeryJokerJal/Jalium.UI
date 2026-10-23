@@ -17,7 +17,14 @@ public static class FocusService
     public static IFocusProvider? Provider
     {
         get => _provider;
-        set => _provider = value;
+        set
+        {
+            if (ReferenceEquals(_provider, value)) return;
+            // Replacing a provider retires queued focus intents, even if a
+            // callback restores the previous instance before dispatch resumes.
+            unchecked { FocusIntentRevision++; }
+            _provider = value;
+        }
     }
 
     /// <summary>
@@ -53,6 +60,7 @@ public static class FocusService
     /// </summary>
     public static bool MoveFocus(UIElement element, FocusNavigationDirection direction)
     {
+        unchecked { FocusIntentRevision++; }
         return _provider?.MoveFocus(element, direction) ?? false;
     }
 

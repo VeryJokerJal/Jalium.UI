@@ -266,6 +266,28 @@ jobs:
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
           print('All 29 managed popup ownership contracts executed and passed.')
           PY
+      - name: Verify accessibility focus intent and provider replacement
+        run: |
+          focus_native_root="$RUNNER_TEMP/jalium-window-native/osx-arm64/Release"
+          test -f "$focus_native_root/libjalium.native.platform.dylib"
+          export DYLD_LIBRARY_PATH="$focus_native_root"
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-focus-intent-managed" \
+            -p:JaliumMacNativeRoot="$focus_native_root" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter 'FullyQualifiedName~MacOSAccessibilityFocusHostTests|FullyQualifiedName~MacOSActivationInputLifetimeTests|FullyQualifiedName~MacOSPopupFocusStateTests' \
+            --logger 'trx;LogFileName=focus-intent.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-focus-intent-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-focus-intent-results/focus-intent.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 340 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 340 accessibility focus, activation and popup focus contracts executed and passed.')
+          PY
       - name: Verify mouse release ownership, command compatibility and ComboBox forwarding
         run: |
           dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
