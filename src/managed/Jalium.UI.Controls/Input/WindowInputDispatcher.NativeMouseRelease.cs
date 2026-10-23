@@ -36,11 +36,11 @@ internal sealed partial class WindowInputDispatcher
                 Notify(() => cancel = PrepareNativeMouseDragCompletion(
                     CreateMousePointerPoint(position, buttons, MouseInputModifiers.ToLogical(modifiers), timestamp,
                         MapMouseButtonToPointerUpdateKind(button, isPressed: false)), contact?.IsInContact == true, SamePress));
-            if (buttons.Left == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.Left);
-            if (buttons.Middle == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.Middle);
-            if (buttons.Right == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.Right);
-            if (buttons.XButton1 == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.XButton1);
-            if (buttons.XButton2 == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.XButton2);
+            if (buttons.Left == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.Left);
+            if (buttons.Middle == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.Middle);
+            if (buttons.Right == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.Right);
+            if (buttons.XButton1 == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.XButton1);
+            if (buttons.XButton2 == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.XButton2);
             var pressed = DetachPressedChain(_mousePressedChain);
             bool SameCapture() => SamePress() && UIElement.MouseCaptureRevision == captureRevision && ReferenceEquals(Mouse.Captured, capture);
             if (SameCapture() && (capture is null || ReferenceEquals(Window.GetMacOSPhysicalWindow(capture), _host.Self)))

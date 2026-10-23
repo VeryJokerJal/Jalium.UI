@@ -150,6 +150,81 @@ public sealed class MacOSMouseReleaseRetirementTests
         h.Packet(PlatformEventType.MouseUp, h.Target, 0, 1); Assert.Equal(0, ups); Assert.Equal(MouseButtonState.Released, Mouse.RightButton);
     }
 
+    public static IEnumerable<object[]> DelayedOrphanReleaseCases()
+    {
+        for (int depth = 0; depth < 3; depth++)
+        foreach (bool custom in new[] { false, true })
+        foreach (bool sameElement in new[] { false, true })
+        for (int oldButton = 1; oldButton <= 4; oldButton++)
+        for (int nextButton = 0; nextButton <= 4; nextButton++)
+            if (nextButton != oldButton) yield return [depth, custom, sameElement, oldButton, nextButton];
+    }
+    [Theory, MemberData(nameof(DelayedOrphanReleaseCases))]
+    public void ADelayedOrphanReleaseCannotRemoveTheSuccessorPointerContact(int depth, bool custom, bool sameElement, int oldButton, int nextButton)
+    {
+        using var h = new Scene(depth, custom); bool retired = false;
+        h.Target.MouseUp += (_, e) => { if (!retired && e.ChangedButton == MouseButton.Left) { retired = true; h.Reparent(); } };
+        uint oldMask = ButtonMask(oldButton), nextMask = ButtonMask(nextButton);
+        h.Down(h.Target); h.Packet(PlatformEventType.MouseDown, h.Target, 1 | oldMask, oldButton);
+        h.Packet(PlatformEventType.MouseUp, h.Target, oldMask, 0); h.AssertRetired(); Assert.True(retired);
+        var next = sameElement ? h.Target : h.Same; int ups = 0;
+        next.PointerUp += (_, _) => ups++;
+        h.Packet(PlatformEventType.MouseDown, next, oldMask | nextMask, nextButton); Assert.True(next.CaptureMouse());
+        var input = h.Input(Window.GetMacOSPhysicalWindow(next));
+        var active = (System.Collections.IDictionary)typeof(WindowInputDispatcher).GetField("_activePointerTargets", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(input)!;
+        var points = (System.Collections.IDictionary)typeof(WindowInputDispatcher).GetField("_lastPointerPoints", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(input)!;
+        Assert.Same(next, active[(uint)1]); Assert.True(points.Contains((uint)1));
+        h.Packet(PlatformEventType.MouseUp, next, nextMask, oldButton);
+        Assert.Equal(0, ups); Assert.Same(next, active[(uint)1]); Assert.True(points.Contains((uint)1));
+        Assert.Same(next, Mouse.Captured); if (nextButton == 0) Assert.True(Pressed(next));
+        Assert.Equal(MouseButtonState.Pressed, ButtonState(nextButton)); Assert.Equal(MouseButtonState.Released, ButtonState(oldButton));
+        h.Packet(PlatformEventType.MouseUp, next, 0, nextButton); Assert.Equal(1, ups); Assert.False(active.Contains((uint)1));
+    }
+
+    [Theory, InlineData(0, false), InlineData(1, false), InlineData(2, false), InlineData(0, true), InlineData(1, true), InlineData(2, true)]
+    public void AHandledAdditionalButtonDoesNotOwnTheExistingPointerContact(int depth, bool move)
+    {
+        using var h = new Scene(depth, false); int ups = 0;
+        h.Target.MouseDown += (_, e) => { if (e.ChangedButton == MouseButton.Right) e.Handled = true; };
+        h.Target.PointerUp += (_, _) => ups++;
+        h.Down(h.Target); Assert.True(h.Target.CaptureMouse());
+        var active = (System.Collections.IDictionary)typeof(WindowInputDispatcher).GetField("_activePointerTargets", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(h.Input())!;
+        Assert.Same(h.Target, active[(uint)1]);
+        h.Packet(PlatformEventType.MouseDown, h.Target, 3, 1);
+        if (move) h.Packet(PlatformEventType.MouseMove, h.Target, 3);
+        h.Packet(PlatformEventType.MouseUp, h.Target, 1, 1);
+        Assert.Equal(0, ups); Assert.Same(h.Target, active[(uint)1]); Assert.Same(h.Target, Mouse.Captured);
+        h.Packet(PlatformEventType.MouseUp, h.Target, 0, 0); Assert.Equal(1, ups); Assert.False(active.Contains((uint)1));
+    }
+
+    [Theory, InlineData(0, false), InlineData(1, false), InlineData(2, false), InlineData(0, true), InlineData(1, true), InlineData(2, true)]
+    public void ACanceledPressStillCleansItsOwnContactOnMatchingRelease(int depth, bool move)
+    {
+        using var h = new Scene(depth, false); int cancels = 0, ups = 0;
+        h.Target.MouseDown += (_, e) => e.Cancel = true;
+        h.Target.PointerCancel += (_, _) => cancels++; h.Target.PointerUp += (_, _) => ups++;
+        h.Down(h.Target); Assert.Equal(1, cancels);
+        if (move) h.Packet(PlatformEventType.MouseMove, h.Target, 1);
+        h.Packet(PlatformEventType.MouseUp, h.Target); Assert.Equal(0, ups); h.AssertRetired();
+    }
+
+    [Theory, InlineData(0, false), InlineData(1, false), InlineData(2, false), InlineData(0, true), InlineData(1, true), InlineData(2, true)]
+    public void AHandledPressCleansHoverStateAfterAnEarlierContactEnds(int depth, bool earlierContact)
+    {
+        using var h = new Scene(depth, false); int downs = 0, ups = 0;
+        h.Target.PointerDown += (_, _) => downs++; h.Target.PointerUp += (_, _) => ups++;
+        if (earlierContact) { h.Down(h.Target); h.Packet(PlatformEventType.MouseUp, h.Target); }
+        int expected = earlierContact ? 1 : 0;
+        h.Target.MouseDown += (_, e) => e.Handled = true;
+        h.Down(h.Target); h.Packet(PlatformEventType.MouseMove, h.Target, 1);
+        h.Packet(PlatformEventType.MouseUp, h.Target);
+        Assert.Equal((expected, expected), (downs, ups)); h.AssertRetired();
+    }
+
+    private static uint ButtonMask(int button) => 1u << button;
+    private static MouseButtonState ButtonState(int button) => button switch
+    { 0 => Mouse.LeftButton, 1 => Mouse.RightButton, 2 => Mouse.MiddleButton, 3 => Mouse.XButton1, _ => Mouse.XButton2 };
+
     private static bool Pressed(UIElement element) => element.GetValue(UIElement.IsPressedProperty) is true;
 
     private sealed class SurfaceWindow : Window

@@ -26,7 +26,8 @@ internal sealed partial class WindowInputDispatcher
     private long _mouseOverGeneration;
     private readonly List<UIElement> _mousePressedChain = [];
     private MouseButton? _suppressMouseUpButton;
-    private readonly HashSet<MouseButton> _suppressedMousePointerReleases = [];
+    private readonly Dictionary<MouseButton, long?> _suppressedMousePointerReleases = [];
+    private long? _mousePointerPressEpoch;
     private long _mouseInputGeneration;
     private TitleBarButton? _hoveredTitleBarButton;
     private TitleBarButton? _pressedTitleBarButton;
@@ -423,7 +424,7 @@ internal sealed partial class WindowInputDispatcher
         // a command may have detached or closed this target during dispatch.
         if (sourceHandled && !sourceCanceled)
         {
-            _suppressedMousePointerReleases.Add(button);
+            SuppressMousePointerRelease(button);
             return true;
         }
 
@@ -432,11 +433,15 @@ internal sealed partial class WindowInputDispatcher
             PointerPoint pointerPoint = CreateMousePointerPoint(
                 position, buttons, modifiers, timestamp,
                 MapMouseButtonToPointerUpdateKind(button, isPressed: true));
+            _mousePointerPressEpoch = _mousePressEpoch;
             _activePointerTargets[MousePointerId] = target;
             _lastPointerPoints[MousePointerId] = pointerPoint;
 
             if (sourceCanceled)
+            {
+                SuppressMousePointerRelease(button, _mousePointerPressEpoch);
                 RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp, packetLifetime);
+            }
             else if (!sourceHandled)
             {
                 // Until PointerDown starts, a nested physical Up has no matching
@@ -458,7 +463,7 @@ internal sealed partial class WindowInputDispatcher
             () => packet == _mouseInputGeneration && pressEpoch == Mouse.PressEpoch : null;
         var physicalModifiers = modifiers;
         modifiers = MouseInputModifiers.ToLogical(modifiers);
-        bool suppressPointerRelease = _suppressedMousePointerReleases.Remove(button);
+        bool suppressPointerRelease = _suppressedMousePointerReleases.Remove(button, out long? suppressedPointerPress);
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         if (_suppressMouseUpButton == button)
@@ -559,7 +564,11 @@ internal sealed partial class WindowInputDispatcher
         }
 
         if (inputLifetime?.Invoke() == false) return false;
-        if (suppressPointerRelease) CleanupPointerSession(MousePointerId);
+        // A suppressed release may clear hover-only state (no press owner),
+        // or the contact created by its canceled press. It cannot clear a
+        // later press or a contact whose additional button was handled.
+        if (suppressPointerRelease && _mousePointerPressEpoch == suppressedPointerPress)
+            CleanupPointerSession(MousePointerId);
         if (!SuppressMouseToPointerPromotion && !suppressPointerRelease)
         {
             PointerPoint pointerPoint = CreateMousePointerPoint(
@@ -574,6 +583,7 @@ internal sealed partial class WindowInputDispatcher
 
             if (inputLifetime?.Invoke() == false) return false;
             _activePointerTargets.Remove(MousePointerId);
+            _mousePointerPressEpoch = null;
         }
 
         if (button == MouseButton.Left)
@@ -1224,6 +1234,7 @@ internal sealed partial class WindowInputDispatcher
                     : null));
 
             // Remove every id-owned slot before any LostCapture/Leave/Cancel callback.
+            if (pointerId == MousePointerId) _mousePointerPressEpoch = null;
             _activePointerTargets.Remove(pointerId);
             _lastPointerPoints.Remove(pointerId);
             _lastTouchOverDirect.Remove(pointerId);
@@ -3368,10 +3379,14 @@ internal sealed partial class WindowInputDispatcher
         }
     }
 
+    private void SuppressMousePointerRelease(MouseButton button, long? pointerPress = null)
+        => _suppressedMousePointerReleases[button] = pointerPress;
+
     // ── Session Cleanup ──
 
     internal void CleanupPointerSession(uint pointerId)
     {
+        if (pointerId == MousePointerId) _mousePointerPressEpoch = null;
         _activePointerTargets.Remove(pointerId);
         _lastPointerPoints.Remove(pointerId);
         if (_activeStylusDevices.TryGetValue(pointerId, out var stylusDevice))

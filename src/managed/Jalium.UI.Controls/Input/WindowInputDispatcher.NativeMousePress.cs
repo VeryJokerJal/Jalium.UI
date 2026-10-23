@@ -12,7 +12,7 @@ internal sealed partial class WindowInputDispatcher
         bool nativeMouse = OperatingSystem.IsMacOS() && !SuppressMouseToPointerPromotion;
         _suppressedMousePointerReleases.Remove(button);
         // A nested Up may arrive before this packet ever reaches PointerDown.
-        if (nativeMouse) _suppressedMousePointerReleases.Add(button);
+        if (nativeMouse) SuppressMousePointerRelease(button);
         bool completed = false; Exception? failure = null;
         try { completed = HandleMouseDownCore(button, position, buttons, modifiers, clickCount, timestamp); }
         catch (Exception error) { failure = error; }
@@ -24,12 +24,12 @@ internal sealed partial class WindowInputDispatcher
             }
             bool SamePress() => _mousePressEpoch == press && Mouse.PressEpoch == globalPress;
             // Detach old ownership before notifications can install a successor.
-            _suppressedMousePointerReleases.Add(button);
-            if (buttons.Left == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.Left);
-            if (buttons.Middle == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.Middle);
-            if (buttons.Right == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.Right);
-            if (buttons.XButton1 == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.XButton1);
-            if (buttons.XButton2 == MouseButtonState.Pressed) _suppressedMousePointerReleases.Add(MouseButton.XButton2);
+            SuppressMousePointerRelease(button);
+            if (buttons.Left == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.Left);
+            if (buttons.Middle == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.Middle);
+            if (buttons.Right == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.Right);
+            if (buttons.XButton1 == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.XButton1);
+            if (buttons.XButton2 == MouseButtonState.Pressed) SuppressMousePointerRelease(MouseButton.XButton2);
             Action? cancel = null;
             Notify(() => cancel = PrepareNativeMouseDragCompletion(inputLifetime: SamePress));
             var pressed = DetachPressedChain(_mousePressedChain);
