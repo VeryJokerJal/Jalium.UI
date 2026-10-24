@@ -117,6 +117,8 @@ internal static class DynamicResourceBindingOperations
         ArgumentNullException.ThrowIfNull(property);
         ArgumentNullException.ThrowIfNull(resourceKey);
 
+        target.VerifyResourceReferenceAccess(property);
+        if (!layerSource.HasValue) target.ClearBinding(property);
         var subscriptions = Subscriptions.GetOrCreateValue(target);
         var subscriptionKey = new SubscriptionKey(property, layerSource);
         if (subscriptions.TryGetValue(subscriptionKey, out var existingSubscription))
@@ -872,6 +874,9 @@ internal static class DynamicResourceBindingOperations
             return;
 
         var resolved = ResourceLookup.FindResource(target, subscription.ResourceKey);
+        // Application lookup can run user code and replace this expression.
+        if (!subscriptions.TryGetValue(key, out var currentSubscription) ||
+            !ReferenceEquals(currentSubscription, subscription)) return;
         if (subscription.LayerSource.HasValue)
         {
             var layerSource = subscription.LayerSource.Value;
@@ -894,11 +899,11 @@ internal static class DynamicResourceBindingOperations
 
         if (resolved != null && IsValidResourceValue(key.Property, resolved))
         {
-            target.SetValue(key.Property, resolved);
+            target.SetValueFromResource(key.Property, resolved);
         }
         else if (target.HasLocalValue(key.Property))
         {
-            target.ClearValue(key.Property);
+            target.ClearValueFromResource(key.Property);
         }
     }
 
@@ -957,6 +962,8 @@ internal static class DynamicResourceBindingOperations
         ArgumentNullException.ThrowIfNull(property);
         ArgumentNullException.ThrowIfNull(resourceKey);
 
+        target.VerifyResourceReferenceAccess(property);
+        target.ClearBinding(property);
         ClearDynamicResourceForNonVisual(target, property);
 
         var subscriptions = NonVisualSubscriptions.GetOrCreateValue(target);
@@ -995,13 +1002,15 @@ internal static class DynamicResourceBindingOperations
             return;
 
         var resolved = ResourceLookup.FindResource(subscription.Host, subscription.ResourceKey);
+        if (!subscriptions.TryGetValue(property, out var currentSubscription) ||
+            !ReferenceEquals(currentSubscription, subscription)) return;
         if (resolved != null && IsValidResourceValue(property, resolved))
         {
-            target.SetValue(property, resolved);
+            target.SetValueFromResource(property, resolved);
         }
         else if (target.HasLocalValue(property))
         {
-            target.ClearValue(property);
+            target.ClearValueFromResource(property);
         }
     }
 

@@ -56,6 +56,7 @@ typedef enum JaliumWindowStyle {
     JALIUM_WINDOW_STYLE_POPUP         = 1 << 7,
     JALIUM_WINDOW_STYLE_TRANSPARENT   = 1 << 8,  ///< Per-pixel alpha (WS_EX_NOREDIRECTIONBITMAP)
     JALIUM_WINDOW_STYLE_POPUP_GRAB    = 1 << 9,  ///< Light-dismiss/menu popup with an explicit input grab
+    JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT = 1 << 10, ///< Noninteractive popup surface (macOS)
 } JaliumWindowStyle;
 
 /// Window state.
@@ -87,6 +88,9 @@ typedef enum JaliumEventType {
     // Focus
     JALIUM_EVENT_FOCUS_GAINED     = 20,
     JALIUM_EVENT_FOCUS_LOST       = 21,
+    // Accepted AppKit first-responder changes; independent of activation.
+    JALIUM_EVENT_RESPONDER_FOCUS_GAINED = 22,
+    JALIUM_EVENT_RESPONDER_FOCUS_LOST = 23,
 
     // Mouse
     JALIUM_EVENT_MOUSE_MOVE       = 30,
@@ -106,6 +110,7 @@ typedef enum JaliumEventType {
     JALIUM_EVENT_DELETE_SURROUNDING_TEXT = 46,
     JALIUM_EVENT_IME_TEXT_REQUEST = 47,
     JALIUM_EVENT_IME_GEOMETRY_REQUEST = 48,
+    JALIUM_EVENT_TEXT_SERVICES_REQUEST = 49,
 
     // Pointer (touch/pen)
     JALIUM_EVENT_POINTER_DOWN     = 50,
@@ -245,6 +250,23 @@ typedef struct JaliumImeGeometryResult {
     float x, y, width, height;
 } JaliumImeGeometryResult;
 
+/// Synchronous custom-text service bridge. UTF-8 JSON payloads and replies are
+/// borrowed only during the window callback. respond copies the reply before
+/// returning; clients must never retain either the request or its callback.
+/// Kinds: 0 capabilities, 1 styled snapshot, 2 replace, 3 select, 4 geometry,
+/// 5 transparent preview, 6 prepare animation, 7 finish animation, 8 state.
+/// All text ranges use absolute UTF-16 offsets and rectangles use client pixels.
+typedef void (*JaliumTextServicesResponse)(void* context, const char* utf8, size_t length);
+typedef struct JaliumTextServicesRequest {
+    int32_t kind;
+    int32_t start;
+    int32_t length;
+    int32_t flags;
+    const char* utf8Payload;
+    void* responseContext;
+    JaliumTextServicesResponse respond;
+} JaliumTextServicesRequest;
+
 /// Window creation parameters.
 typedef struct JaliumWindowParams {
     const JaliumUtf16Char* title;    ///< Null-terminated UTF-16 title.
@@ -365,6 +387,8 @@ typedef struct JaliumPlatformEvent {
             JaliumImeGeometryResult* result;
         } imeGeometryRequest;
 
+        struct { JaliumTextServicesRequest* request; } textServicesRequest;
+
         // JALIUM_EVENT_POINTER_DOWN / UP / MOVE / CANCEL
         struct {
             uint32_t pointerId;
@@ -419,6 +443,23 @@ typedef struct JaliumPlatformEvent {
         } drag;
     };
 } JaliumPlatformEvent;
+
+/// Optional AppKit tablet input. The shared 72-byte event remains unchanged.
+/// mouseType is zero for native tablet/proximity packets; otherwise it carries
+/// the original mouse move/down/up type, driver button mapping and click count.
+/// A nonzero callback return consumes the original responder input. A current
+/// declined mouse subtype keeps its ordinary mouse fallback. A negative return
+/// consumes the packet and retires that tablet contact.
+typedef struct JaliumAppleTabletEvent {
+    uint32_t size;
+    JaliumPlatformEvent pointer;
+    int32_t mouseType;
+    int32_t mouseButton;
+    int32_t mouseClickCount;
+    uint32_t mouseButtonStates;
+} JaliumAppleTabletEvent;
+typedef int32_t (*JaliumAppleTabletCallback)(const JaliumAppleTabletEvent* event, void* userData);
+
 
 /// One representation supplied by a native drag source. The native backend
 /// copies both MIME names and bytes before this call returns or enters a nested
@@ -530,6 +571,45 @@ JALIUM_PLATFORM_API void jalium_apple_notify_lifecycle(int32_t eventType);
 /// Shows an AppKit window, optionally preserving the current key window.
 JALIUM_PLATFORM_API void jalium_apple_window_show(
     JaliumPlatformWindow* window, int32_t activate);
+
+/// Opt into synchronous text service requests. Off by default, so existing
+/// native clients keep their original event stream. macOS 15.2+ uses the system
+/// custom-view Writing Tools coordinator; other Apple platforms are unsupported.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_enable_text_services(
+    JaliumPlatformWindow* window, int32_t enabled);
+
+/// Native indirect gestures, separate from the stable platform-event union.
+/// Coordinates are physical client pixels. Scale is an incremental factor;
+/// rotation is clockwise degrees. flags bit 0 retains the generic sequence.
+typedef struct JaliumAppleGestureEvent {
+    uint32_t size;
+    int32_t kind;   // 0 boundary, 1 magnify, 2 rotate
+    int32_t phase;  // 1 begin, 2 update, 3 end, 4 cancel
+    uint32_t flags;
+    uint64_t sequence;
+    double x, y, scale, rotation, timestamp;
+} JaliumAppleGestureEvent;
+typedef enum JaliumAppleGestureKind {
+    JALIUM_APPLE_GESTURE_MAGNIFY = 1, JALIUM_APPLE_GESTURE_ROTATE = 2
+} JaliumAppleGestureKind;
+typedef enum JaliumAppleGesturePhase {
+    JALIUM_APPLE_GESTURE_BEGIN = 1, JALIUM_APPLE_GESTURE_UPDATE = 2,
+    JALIUM_APPLE_GESTURE_END = 3, JALIUM_APPLE_GESTURE_CANCEL = 4
+} JaliumAppleGesturePhase;
+typedef int32_t (*JaliumAppleGestureCallback)(const JaliumAppleGestureEvent* event, void* userData);
+/// Opt in to AppKit gestures; return nonzero to consume a sequence. Null disables.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_gesture_callback(
+    JaliumPlatformWindow* window, JaliumAppleGestureCallback callback, void* userData);
+
+/// Optional macOS-only tablet callback. Registration and removal require the
+/// AppKit main thread. Existing callers without it keep ordinary mouse input.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_tablet_callback(
+    JaliumPlatformWindow* window, JaliumAppleTabletCallback callback, void* userData);
+
+
+/// Selects the AppKit content responder/key window without activating the app,
+/// ordering a hidden window, or restoring a minimized window.
+JALIUM_PLATFORM_API int32_t jalium_apple_window_set_keyboard_focus(JaliumPlatformWindow* window);
 /// Applies the complete window style, including caption button capabilities.
 JALIUM_PLATFORM_API int32_t jalium_apple_window_set_style(
     JaliumPlatformWindow* window, uint32_t style);
@@ -580,6 +660,7 @@ JALIUM_PLATFORM_API void jalium_apple_window_notify_accessibility(
 /// Creates a new platform window.
 /// @param params Window creation parameters.
 /// @return The created window, or NULL on failure.
+/// On macOS, creation is restricted to the main thread; foreign threads return NULL.
 JALIUM_PLATFORM_API JaliumPlatformWindow* jalium_window_create(
     const JaliumWindowParams* params);
 
@@ -700,6 +781,8 @@ JALIUM_PLATFORM_API int32_t jalium_platform_run_message_loop(void);
 /// of events processed (0 if none were pending).
 /// On Linux, only the platform initialization thread processes events; calls
 /// from other threads return 0.
+/// On macOS, only the main thread processes AppKit events; foreign threads
+/// return JALIUM_ERROR_INVALID_STATE without accessing the AppKit queue.
 JALIUM_PLATFORM_API int32_t jalium_platform_poll_events(void);
 
 /// Signals the event loop to exit with the given exit code.

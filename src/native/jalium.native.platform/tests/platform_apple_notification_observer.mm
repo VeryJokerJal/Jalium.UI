@@ -81,6 +81,21 @@ void Notification(AXObserverRef, AXUIElementRef element, CFStringRef notificatio
                 id identifier = Read((__bridge AXUIElementRef)focused, kAXIdentifierAttribute);
                 if ([identifier isKindOfClass:NSString.class]) entry[@"focusedIdentifier"] = identifier;
             }
+            for (NSString* name in @[@"AXSelectedChildren", @"AXSelectedRows"]) {
+                id values = Read(element, (__bridge CFStringRef)name);
+                if (![values isKindOfClass:NSArray.class]) continue;
+                NSMutableArray* selected = [NSMutableArray new];
+                for (id child in values) {
+                    if (CFGetTypeID((__bridge CFTypeRef)child) != AXUIElementGetTypeID()) continue;
+                    NSMutableDictionary* row = [NSMutableDictionary new];
+                    for (NSString* attribute in @[@"AXIdentifier", @"AXRole", @"AXIndex"]) {
+                        id value = Read((__bridge AXUIElementRef)child, (__bridge CFStringRef)attribute);
+                        if ([value isKindOfClass:NSString.class] || [value isKindOfClass:NSNumber.class]) row[attribute] = value;
+                    }
+                    [selected addObject:row];
+                }
+                entry[name] = selected;
+            }
         }
         Emit(state, entry);
     }
@@ -113,6 +128,11 @@ void Discover(ObserverState& state, AXUIElementRef element, unsigned depth,
             names.push_back(kAXValueChangedNotification);
         if ([role isEqualToString:@"AXTextArea"] || [role isEqualToString:@"AXTextField"])
             names.push_back(kAXSelectedTextChangedNotification);
+        if ([role isEqualToString:@"AXList"] || [role isEqualToString:@"AXOutline"] || [role isEqualToString:@"AXTable"] ||
+            [role isEqualToString:@"AXTabGroup"] || [role isEqualToString:@"AXPopUpButton"])
+            names.push_back(kAXSelectedChildrenChangedNotification);
+        if ([role isEqualToString:@"AXOutline"] || [role isEqualToString:@"AXTable"])
+            names.push_back(kAXSelectedRowsChangedNotification);
         NSMutableDictionary* results = [NSMutableDictionary new];
         for (CFStringRef name : names) {
             AXError result = AXObserverAddNotification(state.observer, element, name, &state);

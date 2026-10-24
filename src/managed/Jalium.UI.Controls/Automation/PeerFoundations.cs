@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using Jalium.UI.Automation;
 using Jalium.UI.Automation.Provider;
 using Jalium.UI.Controls;
@@ -8,11 +9,44 @@ namespace Jalium.UI.Automation.Peers;
 /// <summary>Base peer for controls that generate item containers.</summary>
 public abstract class ItemsControlAutomationPeer : FrameworkElementAutomationPeer, IItemContainerProvider
 {
-    private readonly Dictionary<object, ItemAutomationPeer> _itemPeers = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<ItemOccurrence, ItemAutomationPeer> _itemPeers = new();
+    private readonly Dictionary<object, ItemAutomationPeer> _unboundItemPeers = new(ReferenceEqualityComparer.Instance);
 
     protected ItemsControlAutomationPeer(ItemsControl owner)
         : base(owner)
     {
+    }
+
+    private ulong _itemsVersion;
+    private ulong _notifiedVersion;
+    private bool _notificationQueued;
+
+    internal void OnItemsCollectionChanging(NotifyCollectionChangedEventArgs args)
+    {
+        _itemsVersion++;
+        ResetChildrenCache();
+        foreach (var peer in _unboundItemPeers.Values) peer.Retire();
+        _unboundItemPeers.Clear();
+        foreach (var row in _itemPeers.Keys.Where(row => !row.IsAlive).ToArray())
+        {
+            var peer = _itemPeers[row]; _itemPeers.Remove(row); peer.Retire();
+        }
+        if (_notificationQueued || Dispatcher.HasShutdownStarted) return;
+        _notificationQueued = true;
+        var weak = new WeakReference<ItemsControlAutomationPeer>(this);
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!weak.TryGetTarget(out var peer)) return;
+            peer._notificationQueued = false;
+            if (!peer.Dispatcher.HasShutdownStarted && peer._notifiedVersion != peer._itemsVersion)
+                peer.RaiseAutomationEvent(AutomationEvents.StructureChanged);
+        });
+    }
+
+    protected override void OnAutomationEvent(AutomationEvents eventId)
+    {
+        if (eventId == AutomationEvents.StructureChanged) _notifiedVersion = _itemsVersion;
+        base.OnAutomationEvent(eventId);
     }
 
     protected internal ItemsControl ItemsOwner => (ItemsControl)Owner;
@@ -23,22 +57,59 @@ public abstract class ItemsControlAutomationPeer : FrameworkElementAutomationPee
     protected internal virtual ItemAutomationPeer FindOrCreateItemAutomationPeer(object item)
     {
         ArgumentNullException.ThrowIfNull(item);
-        if (!_itemPeers.TryGetValue(item, out ItemAutomationPeer? peer))
+        if (ItemsOwner.Items.FindOccurrence(item) is { } row) return FindOrCreateOccurrencePeer(row);
+        // Tree selection can refer to a descendant rather than a direct item.
+        // Preserve that extensibility surface without assigning a direct-row identity.
+        if (_unboundItemPeers.TryGetValue(item, out var cached)) return cached;
+        ulong version = _itemsVersion;
+        var peer = CreateItemAutomationPeer(item);
+        if (version != _itemsVersion)
         {
-            peer = CreateItemAutomationPeer(item);
-            _itemPeers.Add(item, peer);
+            peer.Retire();
+            throw new InvalidOperationException("The items changed while an automation peer was being created.");
         }
+        if (_unboundItemPeers.TryGetValue(item, out var nested))
+        {
+            if (!ReferenceEquals(peer, nested)) peer.Retire();
+            return nested;
+        }
+        if (peer.IsRetired) throw new InvalidOperationException("The factory returned a retired item peer.");
+        _unboundItemPeers.Add(item, peer);
+        return peer;
+    }
 
+    internal ItemAutomationPeer FindOrCreateItemAutomationPeerAt(int index) => FindOrCreateOccurrencePeer(
+        ItemsOwner.Items.GetOccurrenceAt(index) ?? throw new InvalidOperationException("The item is no longer in this view."));
+
+    private ItemAutomationPeer FindOrCreateOccurrencePeer(ItemOccurrence row)
+    {
+        if (!row.IsAlive || row.Item is null) throw new InvalidOperationException("The item is no longer in this view.");
+        if (!_itemPeers.TryGetValue(row, out var peer))
+        {
+            ulong version = _itemsVersion;
+            peer = CreateItemAutomationPeer(row.Item);
+            peer.AttachOccurrence(row);
+            if (version != _itemsVersion || !row.IsAlive)
+            {
+                if (!_itemPeers.TryGetValue(row, out var current) || !ReferenceEquals(current, peer)) peer.Retire();
+                throw new InvalidOperationException("The items changed while an automation peer was being created.");
+            }
+            if (_itemPeers.TryGetValue(row, out var nested))
+            {
+                if (!ReferenceEquals(peer, nested)) peer.Retire();
+                return nested;
+            }
+            if (peer.IsRetired) throw new InvalidOperationException("The factory returned a retired item peer.");
+            _itemPeers.Add(row, peer);
+        }
         return peer;
     }
 
     protected override List<AutomationPeer> GetChildrenCore()
     {
         List<AutomationPeer> children = [];
-        foreach (object item in ItemsOwner.Items)
-        {
-            children.Add(FindOrCreateItemAutomationPeer(item));
-        }
+        for (int index = 0; index < ItemsOwner.Items.Count; index++)
+            if (ItemsOwner.Items.GetItemAt(index) != null) children.Add(FindOrCreateItemAutomationPeerAt(index));
 
         return children;
     }
@@ -53,9 +124,11 @@ public abstract class ItemsControlAutomationPeer : FrameworkElementAutomationPee
     {
         AutomationPeer? startAfter = startAfterProvider is null ? null : PeerFromProvider(startAfterProvider);
         bool canReturn = startAfter is null;
-        foreach (object item in ItemsOwner.Items)
+        for (int index = 0; index < ItemsOwner.Items.Count; index++)
         {
-            ItemAutomationPeer peer = FindOrCreateItemAutomationPeer(item);
+            object? item = ItemsOwner.Items.GetItemAt(index);
+            if (item is null) continue;
+            ItemAutomationPeer peer = FindOrCreateItemAutomationPeerAt(index);
             if (!canReturn)
             {
                 canReturn = ReferenceEquals(peer, startAfter);
@@ -101,8 +174,23 @@ public class ItemAutomationPeer : AutomationPeer
     public object Item { get; }
     protected internal ItemsControlAutomationPeer? ItemsControlAutomationPeer { get; }
     protected new UIElement Owner => ItemContainer ?? throw new InvalidOperationException("The item has no realized UIElement container.");
-    protected UIElement? ItemContainer => Item as UIElement ??
-        ItemsControlAutomationPeer?.ItemsOwner.ItemContainerGenerator.ContainerFromItem(Item) as UIElement;
+    private bool _isRetired;
+    private ItemOccurrence? _occurrence;
+    protected internal bool IsRetired => _isRetired || _occurrence is { IsAlive: false };
+    internal int OccurrenceIndex => _occurrence?.Index ?? ItemsControlAutomationPeer?.ItemsOwner.Items.FindOccurrence(Item)?.Index ?? -1;
+    internal void AttachOccurrence(ItemOccurrence row)
+    {
+        if (_occurrence != null && !ReferenceEquals(_occurrence, row)) throw new InvalidOperationException("A peer cannot represent another occurrence.");
+        _occurrence = row;
+    }
+    internal void Retire() { _isRetired = true; ResetChildrenCache(); }
+    protected void ThrowIfRetired()
+    {
+        if (IsRetired) throw new InvalidOperationException("The item automation peer has been retired.");
+    }
+    protected UIElement? ItemContainer => IsRetired ? null : _occurrence is { } row
+        ? ItemsControlAutomationPeer?.ItemsOwner.ItemContainerGenerator.ContainerFromOccurrence(row) as UIElement ?? Item as UIElement
+        : Item as UIElement ?? ItemsControlAutomationPeer?.ItemsOwner.ItemContainerGenerator.ContainerFromItem(Item) as UIElement;
 
     public override object? GetPattern(PatternInterface patternInterface) => GetPatternCore(patternInterface);
     protected virtual object? GetPatternCore(PatternInterface patternInterface) => null;
@@ -126,7 +214,7 @@ public class ItemAutomationPeer : AutomationPeer
         return bounds.IsEmpty ? new Point(double.NaN, double.NaN) : new Point(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2);
     }
     protected override AutomationOrientation GetOrientationCore() => AutomationOrientation.None;
-    protected override bool IsEnabledCore() => ItemContainer?.IsEnabled ?? true;
+    protected override bool IsEnabledCore() => !IsRetired && (ItemContainer?.IsEnabled ?? true);
     protected override bool IsKeyboardFocusableCore() => ItemContainer?.Focusable ?? false;
     protected override bool HasKeyboardFocusCore() => ItemContainer?.IsKeyboardFocused ?? false;
     protected override bool IsOffscreenCore() => ItemContainer?.Visibility != Visibility.Visible;
@@ -155,8 +243,8 @@ public abstract class SelectorAutomationPeer : ItemsControlAutomationPeer,
 
     public virtual AutomationPeer[] GetSelection()
     {
-        object? selected = SelectorOwner.SelectedItem;
-        return selected is null ? [] : [FindOrCreateItemAutomationPeer(selected)];
+        int index = SelectorOwner.SelectedIndex;
+        return (uint)index < (uint)ItemsOwner.Items.Count ? [FindOrCreateItemAutomationPeerAt(index)] : [];
     }
 
     protected override object? GetPatternCore(PatternInterface patternInterface) =>
@@ -192,6 +280,7 @@ public class SelectorItemAutomationPeer : ItemAutomationPeer,
     public virtual void RemoveFromSelection() => SetSelected(false);
     public virtual void Realize()
     {
+        ThrowIfRetired();
         if (ItemContainer is UIElement realized)
         {
             LogicalTreeHelper.BringIntoView(realized);
@@ -201,7 +290,7 @@ public class SelectorItemAutomationPeer : ItemAutomationPeer,
         ItemsControl? owner = ItemsControlAutomationPeer?.ItemsOwner;
         if (owner is ListBox listBox)
         {
-            listBox.ScrollIntoView(Item);
+            listBox.ScrollOccurrenceIntoView(OccurrenceIndex);
             return;
         }
 
@@ -216,6 +305,7 @@ public class SelectorItemAutomationPeer : ItemAutomationPeer,
 
     private void SetSelected(bool value)
     {
+        ThrowIfRetired();
         if (ItemContainer is DependencyObject container)
         {
             Selector.SetIsSelected(container, value);

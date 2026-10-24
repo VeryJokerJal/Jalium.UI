@@ -228,7 +228,7 @@ public class GridSplitterAutomationPeer : ThumbAutomationPeer, Jalium.UI.Automat
 /// <summary>
 /// Exposes RichTextBox types to UI Automation.
 /// </summary>
-public class RichTextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProviderSource, IAutomationTextViewSource, IAutomationTextStyleSource
+public class RichTextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProviderSource, IAutomationTextViewSource, IAutomationTextStyleSource, IAutomationTextValueSource
 {
     private readonly Jalium.UI.Automation.Provider.ITextProvider _textProvider;
 
@@ -266,6 +266,9 @@ public class RichTextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProv
         => RichTextBoxOwner.TryGetAutomationInsertionIndex(localPoint, out index);
     bool IAutomationTextViewSource.ReplaceSelection(string text) => IsEnabled() && !RichTextBoxOwner.IsReadOnly
         && RichTextBoxOwner.ReplaceAutomationSelection(text);
+
+    bool IAutomationTextValueSource.TrySetValue(string text) => IsEnabled() && !RichTextBoxOwner.IsReadOnly
+        && RichTextBoxOwner.ReplaceAutomationText(text);
 
     IReadOnlyList<Rect> IAutomationTextProviderSource.GetBoundingRectangles(int start, int length)
         => AutomationVisibility.ClipRectangles(RichTextBoxOwner, GetTextBounds(start, length));

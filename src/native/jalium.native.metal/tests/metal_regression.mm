@@ -548,6 +548,40 @@ static void TestRoundedTextLineHeight(float scale, uint32_t msaa)
     }
 }
 
+static void TestPlainTextBrushAlpha(float scale, uint32_t msaa)
+{
+    Surface surface(320, 64, scale, msaa);
+    std::unique_ptr<JaliumTextFormat, decltype(&jalium_text_format_destroy)> font(
+        jalium_text_format_create(surface.context.get(), reinterpret_cast<const wchar_t*>(u"Helvetica"),
+            32, 400, 0), jalium_text_format_destroy);
+    Check(font != nullptr, "Text alpha font creation failed");
+    for (const char16_t* text : {u"MMMM", u"中文 Miii", u"🙂", u"中文🙂 Miii e\u0301"}) {
+        auto paint = [&](float alpha) {
+            auto ink = Solid(surface, 0.12f, 0.35f, 0.73f, alpha);
+            surface.Begin();
+            jalium_render_target_clear(surface.target.get(), 0, 0, 0, 0);
+            jalium_draw_text(surface.target.get(), reinterpret_cast<const wchar_t*>(text),
+                static_cast<uint32_t>(std::char_traits<char16_t>::length(text)),
+                font.get(), 4.25f, 4.5f, 304, 56, ink.get());
+            return surface.End();
+        };
+        const auto opaque = paint(1);
+        size_t visible = 0;
+        for (size_t offset = 3; offset < opaque.size(); offset += 4) visible += opaque[offset] > 32;
+        Check(visible > 32, "Text alpha reference contains no visible glyphs");
+        for (float alpha : {0.5f, 0.25f, 0.0f, 0.5f}) {
+            const auto pixels = paint(alpha);
+            int maxDifference = 0;
+            for (size_t offset = 0; offset < pixels.size(); ++offset)
+                maxDifference = std::max(maxDifference,
+                    std::abs(int(pixels[offset]) - int(std::lround(opaque[offset] * alpha))));
+            std::fprintf(stderr, "TEXT_ALPHA scale=%g msaa=%u units=%zu alpha=%g max_difference=%d\n",
+                scale, msaa, std::char_traits<char16_t>::length(text), alpha, maxDifference);
+            Check(maxDifference <= 2, "Plain text brush alpha differs from its opaque premultiplied glyph pixels");
+        }
+    }
+}
+
 static void Benchmark()
 {
     Surface surface(800, 500, 2, 4);
@@ -602,6 +636,15 @@ int main(int argc, char** argv)
             }
             catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
         }
+        if (argc > 1 && std::strcmp(argv[1], "--text-alpha") == 0) {
+            try {
+                for (float scale : {1.0f, 2.0f}) for (uint32_t msaa : {1u, 4u})
+                    TestPlainTextBrushAlpha(scale, msaa);
+                std::printf("PASS plain text brush alpha at 1x/2x and 1x/4x MSAA\n");
+                return 0;
+            }
+            catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
+        }
         if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0) {
             try { Benchmark(); return 0; }
             catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
@@ -621,6 +664,7 @@ int main(int argc, char** argv)
             run("hollow maximize/restore glyphs", [&] { TestCaptionGlyphs(scale, msaa); });
             run("compound fill rules/winding/islands", [&] { TestCompoundPathWinding(scale, msaa); });
             run("dirty redraw/text cache", [&] { TestDirtyRendering(scale, msaa); });
+            run("ordinary text brush alpha", [&] { TestPlainTextBrushAlpha(scale, msaa); });
             run("rounded editor text line heights", [&] { TestRoundedTextLineHeight(scale, msaa); });
             run("changing fractional damage", [&] { TestChangingDamage(scale, msaa); });
             run("rounded/excluded/deep/empty clips", [&] { TestClipChanges(scale, msaa); });

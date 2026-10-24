@@ -11,7 +11,7 @@ namespace Jalium.UI;
 /// Provides a hash table/dictionary implementation that contains resources
 /// used by components and other elements of a UI application.
 /// </summary>
-public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Markup.INameScope, Jalium.UI.Markup.IUriContext
+public partial class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Markup.INameScope, Jalium.UI.Markup.IUriContext
 {
     private sealed class DeferredLiteralSolidColorBrushEntry
     {
@@ -195,7 +195,7 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
 
     // Cycle detection for recursive MergedDictionaries lookups
     [ThreadStatic]
-    private static HashSet<ResourceDictionary>? t_lookupChain;
+    private static HashSet<ThemeLookupVisit>? t_lookupChain;
 
     /// <summary>
     /// Event args for resource dictionary changes, carrying the set of changed keys.
@@ -576,16 +576,17 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
         if (_innerDictionary.ContainsKey(key))
             return true;
 
-        var chain = t_lookupChain ??= new HashSet<ResourceDictionary>(ReferenceEqualityComparer.Instance);
-        if (!chain.Add(this))
+        var chain = t_lookupChain ??= new HashSet<ThemeLookupVisit>();
+        var visit = new ThemeLookupVisit(this, EffectiveLookupThemeKey);
+        if (!chain.Add(visit))
             return false; // Cycle detected
 
         try
         {
             // Check theme dictionaries (higher priority than merged)
-            if (_themeDictionaries != null && CurrentThemeKey != null)
+            if (_themeDictionaries != null && EffectiveLookupThemeKey != null)
             {
-                if (_themeDictionaries.TryGetValue(CurrentThemeKey, out var themeDict))
+                if (_themeDictionaries.TryGetValue(EffectiveLookupThemeKey, out var themeDict))
                 {
                     if (themeDict.Contains(key))
                         return true;
@@ -603,7 +604,7 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
         }
         finally
         {
-            chain.Remove(this);
+            chain.Remove(visit);
         }
     }
 
@@ -641,7 +642,7 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
     private static int s_contentGeneration;
 
     [ThreadStatic]
-    private static Dictionary<(int Dictionary, object Key), MergedLookupResult>? t_mergedLookupCache;
+    private static Dictionary<(int Dictionary, object Key, object? Theme), MergedLookupResult>? t_mergedLookupCache;
     [ThreadStatic]
     private static int t_mergedLookupGeneration;
 
@@ -706,8 +707,8 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
         // （FindResourceCore 走完祖先链后落到 ApplicationResourceLookup → 根字典），
         // 一次命中即省掉整棵字典树的穿透，收益不因这个限制而减少。
         var isTopLevelLookup = t_lookupChain is null || t_lookupChain.Count == 0;
-        (int, object) cacheKey = default;
-        Dictionary<(int Dictionary, object Key), MergedLookupResult>? cache = null;
+        (int, object, object?) cacheKey = default;
+        Dictionary<(int Dictionary, object Key, object? Theme), MergedLookupResult>? cache = null;
 
         if (isTopLevelLookup)
         {
@@ -715,7 +716,7 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
             cache = t_mergedLookupCache;
             if (cache is null)
             {
-                cache = t_mergedLookupCache = new Dictionary<(int, object), MergedLookupResult>();
+                cache = t_mergedLookupCache = new Dictionary<(int, object, object?), MergedLookupResult>();
                 t_mergedLookupGeneration = generation;
             }
             else if (t_mergedLookupGeneration != generation)
@@ -724,7 +725,7 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
                 t_mergedLookupGeneration = generation;
             }
 
-            cacheKey = (RuntimeHelpers.GetHashCode(this), key);
+            cacheKey = (RuntimeHelpers.GetHashCode(this), key, EffectiveLookupThemeKey);
             if (cache.TryGetValue(cacheKey, out var cached))
             {
                 value = cached.Value;
@@ -753,8 +754,9 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
         out object? value,
         out ResourceDictionary? sourceDictionary)
     {
-        var chain = t_lookupChain ??= new HashSet<ResourceDictionary>(ReferenceEqualityComparer.Instance);
-        if (!chain.Add(this))
+        var chain = t_lookupChain ??= new HashSet<ThemeLookupVisit>();
+        var visit = new ThemeLookupVisit(this, EffectiveLookupThemeKey);
+        if (!chain.Add(visit))
         {
             value = null;
             sourceDictionary = null;
@@ -764,9 +766,9 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
         try
         {
             // Check theme dictionaries (higher priority than merged)
-            if (_themeDictionaries != null && CurrentThemeKey != null)
+            if (_themeDictionaries != null && EffectiveLookupThemeKey != null)
             {
-                if (_themeDictionaries.TryGetValue(CurrentThemeKey, out var themeDict))
+                if (_themeDictionaries.TryGetValue(EffectiveLookupThemeKey, out var themeDict))
                 {
                     if (themeDict.TryGetValue(key, out value, out sourceDictionary))
                         return true;
@@ -786,7 +788,7 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
         }
         finally
         {
-            chain.Remove(this);
+            chain.Remove(visit);
         }
     }
 
@@ -1360,20 +1362,49 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
 /// <summary>
 /// Provides static methods for finding resources in the element tree.
 /// </summary>
-public static class ResourceLookup
+public static partial class ResourceLookup
 {
     /// <summary>
     /// Gets or sets a callback to retrieve application-level resources.
     /// This is set by the Application class in Jalium.UI.Controls.
     /// </summary>
-    public static Func<object, object?>? ApplicationResourceLookup { get; set; }
+    public static Func<object, object?>? ApplicationResourceLookup
+    {
+        get => s_applicationResourceLookup;
+        set
+        {
+            if (Equals(s_applicationResourceLookup, value)) return;
+            s_applicationResourceLookup = value;
+            InvalidateResourceCache();
+        }
+    }
+
+    private static Func<object, object?>? s_applicationResourceLookup;
+    private static Func<object, object?>? s_sourceLookupOwner;
+    private static Func<object, (object? Value, ResourceDictionary? Dictionary)>? s_applicationSourceLookup;
 
     /// <summary>
     /// Optional application lookup that also identifies the dictionary supplying a resource.
-    /// Controls installs this alongside <see cref="ApplicationResourceLookup"/> for diagnostics.
+    /// Controls pairs this with the current value callback so a supplying dictionary preserves
+    /// authored nulls. Public value-callback overrides use the legacy path until the paired
+    /// callback is restored or a new source provider is registered.
     /// </summary>
     internal static Func<object, (object? Value, ResourceDictionary? Dictionary)>?
-        ApplicationResourceLookupWithSource { get; set; }
+        ApplicationResourceLookupWithSource
+    {
+        get => Equals(s_sourceLookupOwner, s_applicationResourceLookup) ? s_applicationSourceLookup : null;
+        set
+        {
+            s_sourceLookupOwner = s_applicationResourceLookup;
+            s_applicationSourceLookup = value;
+            InvalidateResourceCache();
+        }
+    }
+
+    /// <summary>
+    /// Last-resort system resources supplied by Controls, independently of an Application lifetime.
+    /// </summary>
+    internal static Func<object, object?>? SystemResourceLookup { get; set; }
 
     /// <summary>
     /// Gets or sets an optional callback that can redirect resource lookup
@@ -1385,7 +1416,7 @@ public static class ResourceLookup
     // Resource lookup cache: maps (element identity, resourceKey) to cached result.
     // Invalidated when resources change via InvalidateResourceCache().
     [ThreadStatic]
-    private static Dictionary<(int, object), object?>? t_resourceCache;
+    private static Dictionary<(int, object, object?), object?>? t_resourceCache;
     [ThreadStatic]
     private static int t_cacheGeneration;
     [ThreadStatic]
@@ -1430,8 +1461,10 @@ public static class ResourceLookup
         if (resourceKey == null)
             return null;
 
+        using var themeScope = EnterThemeLookup(element);
+
         // Check cache
-        var cache = t_resourceCache ??= new Dictionary<(int, object), object?>();
+        var cache = t_resourceCache ??= new Dictionary<(int, object, object?), object?>();
         var gen = Volatile.Read(ref s_globalCacheGeneration);
         if (t_cacheGeneration != gen)
         {
@@ -1441,7 +1474,7 @@ public static class ResourceLookup
 
         if (element != null)
         {
-            var cacheKey = (RuntimeHelpers.GetHashCode(element), resourceKey);
+            var cacheKey = (RuntimeHelpers.GetHashCode(element), resourceKey, themeScope.ThemeKey);
             if (cache.TryGetValue(cacheKey, out var cached))
             {
                 return cached;
@@ -1493,6 +1526,7 @@ public static class ResourceLookup
             return null;
         }
 
+        using var themeScope = EnterThemeLookup(element);
         var resourceChain = RentResourceChain();
         try
         {
@@ -1570,13 +1604,22 @@ public static class ResourceLookup
             current = next;
         }
 
-        // Check application resources via callback
-        if (ApplicationResourceLookup != null)
+        // System resources remain available before the first Application and after shutdown.
+        object? globalValue;
+        if (ApplicationResourceLookupWithSource is { } applicationLookup)
         {
-            return ResolveDynamicResourceValue(element, ApplicationResourceLookup.Invoke(resourceKey), resourceChain);
+            var application = applicationLookup(resourceKey);
+            // A supplying dictionary makes null an authored resource. Only a
+            // missing application entry can fall through to the system value.
+            globalValue = application.Value is not null || application.Dictionary is not null
+                ? application.Value : SystemResourceLookup?.Invoke(resourceKey);
         }
-
-        return null;
+        else
+        {
+            globalValue = ApplicationResourceLookup?.Invoke(resourceKey)
+                ?? SystemResourceLookup?.Invoke(resourceKey);
+        }
+        return ResolveDynamicResourceValue(element, globalValue, resourceChain);
     }
 
     private static object? FindResourceCoreWithSource(
@@ -1658,11 +1701,18 @@ public static class ResourceLookup
                     out sourceDictionary);
             }
 
-            return applicationResult.Value;
+            if (applicationResult.Value is not null || sourceDictionary is not null)
+            {
+                return applicationResult.Value;
+            }
+
+            return SystemResourceLookup?.Invoke(resourceKey);
         }
 
         sourceDictionary = null;
-        return ApplicationResourceLookup?.Invoke(resourceKey);
+        return ResolveDynamicResourceValue(element,
+            ApplicationResourceLookup?.Invoke(resourceKey) ?? SystemResourceLookup?.Invoke(resourceKey),
+            resourceChain);
     }
 
     private static object? ResolveDynamicResourceValue(

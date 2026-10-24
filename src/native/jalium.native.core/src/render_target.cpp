@@ -914,6 +914,22 @@ JALIUM_API void jalium_draw_content_border(
     }
 }
 
+JALIUM_API JaliumResult jalium_render_target_set_text_glyph_ranges(
+    JaliumRenderTarget* rt, const uint32_t* pairs, uint32_t count, int32_t mode)
+{
+    if (!rt || mode < 0 || mode > 2 || count > 4096 ||
+        (count && !pairs) || (mode == 0 && count)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (uint32_t i = 0; i < count; ++i)
+        if (pairs[2 * i] > jalium::kMaxManagedTextCodeUnits ||
+            pairs[2 * i + 1] > jalium::kMaxManagedTextCodeUnits - pairs[2 * i])
+            return JALIUM_ERROR_INVALID_ARGUMENT;
+    try {
+        auto* provider = dynamic_cast<jalium::TextGlyphRangeRenderProvider*>(
+            reinterpret_cast<jalium::RenderTarget*>(rt));
+        return provider ? provider->SetTextGlyphRanges(pairs, count, mode) : JALIUM_ERROR_NOT_SUPPORTED;
+    } catch (...) { return JALIUM_ERROR_RESOURCE_CREATION_FAILED; }
+}
+
 JALIUM_API void jalium_draw_text(
     JaliumRenderTarget* rt,
     const wchar_t* text,

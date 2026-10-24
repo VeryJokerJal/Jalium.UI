@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Linq;
 using Jalium.UI.Controls;
 using Jalium.UI.Diagnostics;
@@ -44,8 +45,12 @@ public sealed class JaliumApp : IHost
     private Application? _application;
     private Func<Application>? _applicationFactory;
     private bool _disposed;
+    private int _hostDisposed;
     private int _hostedState; // 0 = not started, 1 = running, 2 = stopped
     private int _hostedExitCode;
+    private int _hostedHostStartAttempted;
+    private int _hostedHostReleased;
+    private int _hostedHostCleanupQueued;
 
     internal JaliumApp(IHost host, Action<Application>[] configureApplication, string[]? args)
     {
@@ -177,6 +182,10 @@ public sealed class JaliumApp : IHost
                 "The Application singleton must be the one produced by the factory.");
         }
 
+        // Retain the validated application before host/configuration callbacks:
+        // a later failure still belongs to this host and must be rolled back.
+        _application = application;
+
         using (StartupDiagnostics.Begin("JaliumApp.AttachHost", blocksUiThread: true))
         {
             application.AttachHost(
@@ -193,7 +202,6 @@ public sealed class JaliumApp : IHost
             _configureApplication[i](application);
         }
 
-        _application = application;
         StartupDiagnostics.Mark("ApplicationInitialized", blocksUiThread: true);
     }
 
@@ -335,32 +343,32 @@ public sealed class JaliumApp : IHost
         if (Interlocked.CompareExchange(ref _hostedState, 1, 0) != 0)
             throw new InvalidOperationException("The hosted application has already been started.");
 
-        EnsureApplication();
-        bool hostStarted = false;
+        var previousApplication = Application.Current;
         try
         {
+            EnsureApplication();
             using (StartupDiagnostics.Begin("JaliumApp.HostStart", blocksUiThread: true))
             {
+                Volatile.Write(ref _hostedHostStartAttempted, 1);
                 RunHostOperationBlocking(() => _host.StartAsync(CancellationToken.None));
-                hostStarted = true;
             }
-
-            _application!.StartHosted(args);
+            if (Volatile.Read(ref _hostedState) == 1) _application!.StartHosted(args);
         }
-        catch
+        catch (Exception error)
         {
+            ExceptionDispatchInfo? failure = ExceptionDispatchInfo.Capture(error);
             Interlocked.Exchange(ref _hostedState, 2);
-            if (hostStarted)
+            Volatile.Write(ref _hostedExitCode, 1);
+            // A factory can construct Application and then throw before returning it.
+            // Never adopt an unrelated singleton that existed before this attempt.
+            var application = _application ?? (previousApplication == null ? Application.Current : null);
+            if (application != null)
             {
-                try
-                {
-                    RunHostOperationBlocking(() => _host.StopAsync(CancellationToken.None));
-                }
-                catch
-                {
-                    // Preserve the startup exception.
-                }
+                HostedLifecycleCleanup.Attempt(() => application.AbortHostedStart(1), ref failure);
+                Volatile.Write(ref _hostedExitCode, application.HostedExitCode);
             }
+            CompleteHostedHost(application, ref failure);
+            failure!.Throw();
             throw;
         }
     }
@@ -369,6 +377,11 @@ public sealed class JaliumApp : IHost
     /// Stops an externally hosted application, raises its Exit event, tears
     /// down rendering state, stops the generic host, and disposes this object.
     /// </summary>
+    /// <remarks>
+    /// Must be called on the application's dispatcher thread. During a render
+    /// callback, final resource/host release waits until the drawing stack exits;
+    /// the external host must keep driving its event loop for that completion.
+    /// </remarks>
     /// <returns>The final exit code after Exit handlers have run.</returns>
     public int StopHosted(int exitCode = 0)
     {
@@ -378,29 +391,52 @@ public sealed class JaliumApp : IHost
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (state == 0)
             throw new InvalidOperationException("The hosted application has not been started.");
+        _application?.VerifyAccess();
         if (Interlocked.CompareExchange(ref _hostedState, 2, 1) != 1)
             return Volatile.Read(ref _hostedExitCode);
 
-        int finalExitCode = exitCode;
+        Volatile.Write(ref _hostedExitCode, exitCode);
+        ExceptionDispatchInfo? failure = null;
         try
         {
-            finalExitCode = _application?.StopHosted(exitCode) ?? exitCode;
+            int finalExitCode = _application?.AbortHostedStart(exitCode) ?? exitCode;
             Volatile.Write(ref _hostedExitCode, finalExitCode);
         }
+        catch (Exception error) { failure = ExceptionDispatchInfo.Capture(error); }
         finally
         {
-            try
-            {
-                RunHostOperationBlocking(() => _host.StopAsync(CancellationToken.None));
-            }
-            catch
-            {
-                // The UI side has already shut down; do not hide its exit code.
-            }
-            Dispose();
+            if (_application != null)
+                Volatile.Write(ref _hostedExitCode, _application.HostedExitCode);
+            CompleteHostedHost(_application, ref failure);
         }
+        failure?.Throw();
+        return Volatile.Read(ref _hostedExitCode);
+    }
 
-        return finalExitCode;
+    private void CompleteHostedHost(Application? application, ref ExceptionDispatchInfo? failure)
+    {
+        if (application?.IsHostedCleanupPending == true)
+        {
+            if (Interlocked.CompareExchange(ref _hostedHostCleanupQueued, 1, 0) != 0) return;
+            if (application.DeferUntilHostedCleanupCompleted(() =>
+            {
+                Volatile.Write(ref _hostedExitCode, application.HostedExitCode);
+                ExceptionDispatchInfo? deferredFailure = null;
+                ReleaseHostedHost(ref deferredFailure);
+                if (deferredFailure != null)
+                    System.Diagnostics.Debug.WriteLine($"Jalium.UI: deferred host release failed: {deferredFailure.SourceException}");
+            })) return;
+        }
+        ReleaseHostedHost(ref failure);
+    }
+
+    private void ReleaseHostedHost(ref ExceptionDispatchInfo? failure)
+    {
+        if (Interlocked.CompareExchange(ref _hostedHostReleased, 1, 0) != 0) return;
+        if (Volatile.Read(ref _hostedHostStartAttempted) != 0)
+            HostedLifecycleCleanup.Attempt(() => RunHostOperationBlocking(
+                () => _host.StopAsync(CancellationToken.None)), ref failure, suppress: true);
+        HostedLifecycleCleanup.Attempt(DisposeHost, ref failure);
     }
 
     /// <summary>
@@ -420,6 +456,20 @@ public sealed class JaliumApp : IHost
         {
             return;
         }
+        _disposed = true;
+        if (_application?.IsHostedCleanupPending == true)
+        {
+            ExceptionDispatchInfo? failure = null;
+            CompleteHostedHost(_application, ref failure);
+            failure?.Throw();
+            return;
+        }
+        DisposeHost();
+    }
+
+    private void DisposeHost()
+    {
+        if (Interlocked.Exchange(ref _hostDisposed, 1) != 0) return;
         _disposed = true;
         _host.Dispose();
     }

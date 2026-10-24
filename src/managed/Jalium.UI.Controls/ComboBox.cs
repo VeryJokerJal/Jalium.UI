@@ -734,26 +734,27 @@ public class ComboBox : Selector
         SyncItemContainerSelection();
     }
 
+    private WeakReference<ComboBoxItem>? _selectedItemContainer;
+
     private void SyncItemContainerSelection()
     {
-        var host = ItemsHost;
-        if (host == null) return;
-
         var selectedItem = SelectedItem;
+        var selectedContainer = selectedItem as ComboBoxItem
+            ?? (selectedItem is null ? null : ItemContainerGenerator.ContainerFromItem(selectedItem) as ComboBoxItem);
+        if (_selectedItemContainer?.TryGetTarget(out var previous) == true
+            && !ReferenceEquals(previous, selectedContainer)
+            && (ItemsControlFromItemContainer(previous) is not { } otherOwner || ReferenceEquals(otherOwner, this)))
+            previous.IsSelected = false;
+        _selectedItemContainer = selectedContainer is null ? null : new(selectedContainer);
+        if (selectedContainer is not null) selectedContainer.IsSelected = true;
+
+        if (ItemsHost is not { } host) return;
         foreach (UIElement child in host.Children)
         {
-            if (child is ComboBoxItem container)
-            {
-                int index = ItemContainerGenerator.IndexFromContainer(container);
-                var logicalItem = index >= 0 && index < GetItemCount()
-                    ? GetItemAt(index)
-                    : container.Content;
-                var shouldBeSelected = Equals(logicalItem, selectedItem);
-                if (container.IsSelected != shouldBeSelected)
-                {
-                    container.IsSelected = shouldBeSelected;
-                }
-            }
+            if (child is not ComboBoxItem container) continue;
+            int index = ItemContainerGenerator.IndexFromContainer(container);
+            bool selected = index >= 0 && index == SelectedIndex;
+            if (container.IsSelected != selected) container.IsSelected = selected;
         }
     }
 
@@ -838,6 +839,7 @@ public class ComboBox : Selector
             else
             {
                 SelectionBoxItem = PlaceholderText;
+                if (!string.IsNullOrEmpty(Text)) SetCurrentValue(TextProperty, string.Empty);
             }
         }
 
@@ -954,6 +956,11 @@ public class ComboBox : Selector
     private void SyncSelectionWithText(string text)
     {
         if (!IsTextSearchEnabled) return;
+        // A selection writes its display text as well. Equal display strings
+        // must not reinterpret that update as a request for the first item.
+        if (SelectedItem is { } selected
+            && string.Equals(GetItemText(selected), text, StringComparison.CurrentCulture)) return;
+
 
         if (string.IsNullOrEmpty(text))
         {
@@ -1243,7 +1250,10 @@ public class ComboBox : Selector
             e.XButton1,
             e.XButton2,
             e.KeyboardModifiers,
-            e.Timestamp);
+            e.Timestamp)
+        {
+            PhysicalModifiers = e.PhysicalModifiers
+        };
 
         _editableTextBox.RaiseEvent(forwardedArgs);
         return forwardedArgs.Handled;
@@ -1658,7 +1668,8 @@ public class ComboBox : Selector
             container.ContentStringFormat = ItemStringFormat;
         }
 
-        container.IsSelected = Equals(item, SelectedItem);
+        int index = ItemContainerGenerator.IndexFromContainer(container);
+        container.IsSelected = index >= 0 && index == SelectedIndex;
 
         // Recycled containers retain exactly one owner callback.
         container.ItemClicked -= OnContainerItemClicked;
@@ -1698,11 +1709,46 @@ public class ComboBox : Selector
         IsDropDownOpen = false;
     }
 
+    internal void SetAutomationValue(DependencyProperty property, object value)
+    {
+        var previous = GetValue(property);
+        try { SetCurrentValue(property, value); }
+        finally
+        {
+            if (!Equals(previous, GetValue(property)))
+                Jalium.UI.Data.BindingOperations.GetBindingExpressionBase(this, property)?.OnTargetValueChanged();
+        }
+    }
+
+    internal void SetAutomationSelection(object item, bool selected)
+    {
+        if (!IsEnabled) throw new InvalidOperationException("Cannot select a disabled ComboBox.");
+        int index = item is ComboBoxItem container
+            ? ItemContainerGenerator.IndexFromContainer(container) : -1;
+        if (index < 0) index = GetIndexOf(item);
+        SetAutomationSelectionAt(index, selected);
+    }
+
+    internal void SetAutomationSelectionAt(int index, bool selected)
+    {
+        if (!IsEnabled) throw new InvalidOperationException("Cannot select a disabled ComboBox.");
+        var row = Items.GetOccurrenceAt(index);
+        var item = row?.Item;
+        if (row is null || !row.IsAlive || item is null)
+            throw new InvalidOperationException("The item no longer belongs to this ComboBox.");
+        var realized = ItemContainerGenerator.ContainerFromOccurrence(row) as UIElement ?? item as UIElement;
+        if (realized is { IsEnabled: false })
+            throw new InvalidOperationException("Cannot select a disabled ComboBox item.");
+        if (!row.IsAlive) throw new InvalidOperationException("The item no longer belongs to this ComboBox.");
+        if (selected) SetAutomationValue(SelectedIndexProperty, row.Index);
+        else if (SelectedIndex == row.Index) SetAutomationValue(SelectedIndexProperty, -1);
+    }
+
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
         "Trimming",
         "IL2026",
         Justification = "Text search supports PropertyAccessorRegistry registrations and retains reflection fallback for unregistered runtime item types.")]
-    private string GetItemText(object? item)
+    internal string GetItemText(object? item)
     {
         if (item == null) return string.Empty;
 

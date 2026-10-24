@@ -151,7 +151,7 @@ public sealed class VisualCollection : ICollection, IEnumerable
     /// </summary>
     public void Remove(Visual visual)
     {
-        int index = _items.IndexOf(visual);
+        int index = IndexOf(visual);
         if (index >= 0)
         {
             RemoveAt(index);
@@ -201,12 +201,12 @@ public sealed class VisualCollection : ICollection, IEnumerable
     /// <summary>
     /// Determines whether the collection contains the specified Visual.
     /// </summary>
-    public bool Contains(Visual visual) => _items.Contains(visual);
+    public bool Contains(Visual visual) => IndexOf(visual) >= 0;
 
     /// <summary>
     /// Returns the index of the specified Visual.
     /// </summary>
-    public int IndexOf(Visual visual) => _items.IndexOf(visual);
+    public int IndexOf(Visual visual) => _items.FindIndex(child => ReferenceEquals(child, visual));
 
     /// <summary>
     /// Copies the elements of the collection to an array.

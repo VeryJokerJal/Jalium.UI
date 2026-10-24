@@ -10,6 +10,34 @@
 
 namespace {
 
+bool TestFallbackHitTestingContract()
+{
+    // Exercise the fallback format directly even when the backend has a full
+    // text engine. A fabricated successful hit pins every managed caret to zero.
+    jalium::SoftwareTextFormat format(L"sans-serif", 14.0f, 400, 0);
+    JaliumTextHitTestResult hit;
+    const auto cleared = [&] {
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&hit);
+        return std::all_of(bytes, bytes + sizeof(hit),
+            [](unsigned char value) { return value == 0; });
+    };
+
+    std::memset(&hit, 0x5A, sizeof(hit));
+    if (format.HitTestPoint(L"pin", 3, 320, 180, 4, 0, &hit) !=
+            JALIUM_ERROR_NOT_SUPPORTED || !cleared())
+        return false;
+
+    std::memset(&hit, 0x5A, sizeof(hit));
+    if (format.HitTestTextPosition(L"pin", 3, 320, 180, 2, 0, &hit) !=
+            JALIUM_ERROR_NOT_SUPPORTED || !cleared())
+        return false;
+
+    return format.HitTestPoint(L"pin", 3, 320, 180, 4, 0, nullptr) ==
+               JALIUM_ERROR_INVALID_ARGUMENT &&
+           format.HitTestTextPosition(L"pin", 3, 320, 180, 2, 0, nullptr) ==
+               JALIUM_ERROR_INVALID_ARGUMENT;
+}
+
 struct RenderResult {
     bool hasInk = false;
     bool hasColoredFringe = false;
@@ -195,8 +223,16 @@ bool TestDashedStrokeUsesAnalyticCoverage()
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    if (!TestFallbackHitTestingContract()) {
+        std::cerr << "FAIL: software fallback hit-testing contract\n";
+        return 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--fallback-hit-testing") == 0) {
+        std::cout << "PASS: software fallback hit-testing contract\n";
+        return 0;
+    }
     const RenderResult aliased = RenderMode(JALIUM_TEXT_AA_ALIASED);
     const RenderResult grayscale = RenderMode(JALIUM_TEXT_AA_GRAYSCALE);
     const RenderResult clearType = RenderMode(JALIUM_TEXT_AA_CLEARTYPE);

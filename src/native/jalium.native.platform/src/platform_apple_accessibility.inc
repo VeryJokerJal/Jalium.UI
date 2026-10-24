@@ -48,12 +48,36 @@ static double JaliumAccessibilityFontShear(NSFont* font)
         && std::isfinite(matrix.c) ? matrix.c : 0;
 }
 
+// The managed wire format is left=0, right=1, center=2, justify=3.
+// AppKit uses iOS enum values on Apple Silicon and macOS values on Intel.
+static NSTextAlignment JaliumNativeTextAlignment(NSInteger alignment)
+{
+    switch (alignment) {
+        case 1: return NSTextAlignmentRight;
+        case 2: return NSTextAlignmentCenter;
+        case 3: return NSTextAlignmentJustified;
+        default: return NSTextAlignmentLeft;
+    }
+}
+static NSInteger JaliumBridgeTextAlignment(NSTextAlignment alignment)
+{
+    switch (alignment) {
+        case NSTextAlignmentRight: return 1;
+        case NSTextAlignmentCenter: return 2;
+        case NSTextAlignmentJustified: return 3;
+        default: return 0;
+    }
+}
+
+static NSAttributedStringKey const AppleWritingToolsInlineContextAttribute = @"JaliumWritingToolsInlineContext";
+
 static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL accessibility)
 {
     NSFont* font = JaliumAccessibilityFont(style);
     if (!font) return nil;
     const double shear = JaliumAccessibilityFontShear(font);
     NSColor* foreground = JaliumAccessibilityColor(style[@"foreground"]);
+    NSColor* background = JaliumAccessibilityColor(style[@"background"]);
     NSColor* underlineColor = JaliumAccessibilityColor(style[@"underlineColor"]);
     NSColor* strikeColor = JaliumAccessibilityColor(style[@"strikeColor"]);
     int underline = [style[@"underline"] intValue], strike = [style[@"strike"] intValue];
@@ -69,14 +93,18 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
             attributes[NSAccessibilityFontItalicAttribute] = @((traits & NSItalicFontMask) != 0 || shear != 0);
         }
         if (foreground) attributes[NSAccessibilityForegroundColorTextAttribute] = (__bridge id)foreground.CGColor;
+        if (background) attributes[NSAccessibilityBackgroundColorTextAttribute] = (__bridge id)background.CGColor;
         if (underline) attributes[NSAccessibilityUnderlineTextAttribute] = @(underline);
         if (underlineColor) attributes[NSAccessibilityUnderlineColorTextAttribute] = (__bridge id)underlineColor.CGColor;
         if (strike) attributes[NSAccessibilityStrikethroughTextAttribute] = @YES;
         if (strikeColor) attributes[NSAccessibilityStrikethroughColorTextAttribute] = (__bridge id)strikeColor.CGColor;
-        attributes[NSAccessibilityTextAlignmentAttribute] = style[@"alignment"];
+        attributes[NSAccessibilityTextAlignmentAttribute] = @(JaliumNativeTextAlignment([style[@"alignment"] integerValue]));
         id language = style[@"language"];
         if ([language isKindOfClass:NSString.class] && [language length]) attributes[NSAccessibilityLanguageTextAttribute] = language;
     } else {
+        id inlineContext = style[@"inlineContext"];
+        if ([inlineContext isKindOfClass:NSString.class] && [inlineContext length])
+            attributes[AppleWritingToolsInlineContextAttribute] = inlineContext;
         if (shear != 0) {
             CGAffineTransform identity = CGAffineTransformIdentity;
             CTFontRef upright = CTFontCreateCopyWithAttributes((__bridge CTFontRef)font,font.pointSize,&identity,nullptr);
@@ -86,12 +114,16 @@ static NSDictionary* JaliumAccessibilityTextAttributes(NSDictionary* style, BOOL
         }
         attributes[NSFontAttributeName] = font;
         if (foreground) attributes[NSForegroundColorAttributeName] = foreground;
+        if (background) attributes[NSBackgroundColorAttributeName] = background;
         if (underline) attributes[NSUnderlineStyleAttributeName] = @(underline);
         if (underlineColor) attributes[NSUnderlineColorAttributeName] = underlineColor;
         if (strike) attributes[NSStrikethroughStyleAttributeName] = @(strike);
         if (strikeColor) attributes[NSStrikethroughColorAttributeName] = strikeColor;
+        id language = style[@"language"];
+        // AppKit and CoreText share the NSLanguage attributed-string key.
+        if ([language isKindOfClass:NSString.class]) attributes[NSLanguageIdentifierAttributeName] = language;
         NSMutableParagraphStyle* paragraph = [NSMutableParagraphStyle new];
-        paragraph.alignment = (NSTextAlignment)[style[@"alignment"] intValue];
+        paragraph.alignment = JaliumNativeTextAlignment([style[@"alignment"] integerValue]);
         paragraph.baseWritingDirection = (NSWritingDirection)[style[@"direction"] intValue];
         attributes[NSParagraphStyleAttributeName] = paragraph;
     }
@@ -138,8 +170,12 @@ static NSAttributedString* JaliumAccessibilityDecodeStyles(NSString* payload, NS
             || !JaliumAccessibilityStyleNumber(style, @"direction", -1, 1)
             || ![style[@"family"] isKindOfClass:NSString.class] || ![style[@"family"] length] || [style[@"family"] length] > 4096
             || style[@"language"] != NSNull.null && (![style[@"language"] isKindOfClass:NSString.class] || [style[@"language"] length] > 1024)) return nil;
-        for (NSString* key in @[@"foreground", @"underlineColor", @"strikeColor"])
-            if (style[key] && !JaliumAccessibilityStyleNumber(style, key, 0, UINT32_MAX)) return nil;
+        for (NSString* key in @[@"foreground", @"background", @"underlineColor", @"strikeColor"])
+            if (style[key] && (!JaliumAccessibilityStyleNumber(style, key, 0, UINT32_MAX) ||
+                CFGetTypeID((__bridge CFTypeRef)style[key]) == CFBooleanGetTypeID())) return nil;
+        id inlineContext = style[@"inlineContext"];
+        if (inlineContext && (![inlineContext isKindOfClass:NSString.class] ||
+            ![inlineContext length] || [inlineContext length] > 4096)) return nil;
         NSUInteger length = [style[@"length"] unsignedIntegerValue];
         NSDictionary* attributes = JaliumAccessibilityTextAttributes(style, accessibility);
         if (!attributes) return nil;
@@ -155,6 +191,16 @@ static bool QueryWindowAccessibilityInfo(JaliumPlatformWindow* window, JaliumAcc
     request->nodeId = 1;
     request->operation = JALIUM_AX_INFO;
     return [window->view.accessibilityBridge query:request] != NO;
+}
+
+static bool QueryWindowPopupKeyboard(JaliumPlatformWindow* window)
+{
+    if (!NSThread.isMainThread || !window || !IsLiveWindow(window) || window->destroying) return false;
+    // Only retain the bridge across the callback: the platform owner may die.
+    JaliumAppleAccessibilityBridge* bridge = window->view.accessibilityBridge;
+    JaliumAccessibilityRequest request{};
+    request.nodeId = 1; request.operation = JALIUM_AX_POPUP_CAN_BECOME_KEY;
+    return [bridge query:&request] && request.resultId == 1;
 }
 
 static id QueryWindowAccessibilityButton(JaliumPlatformWindow* window, int32_t kind)
@@ -177,6 +223,7 @@ static id QueryWindowAccessibilityButton(JaliumPlatformWindow* window, int32_t k
 @property(nonatomic) BOOL postingDestruction;
 - (BOOL)info:(JaliumAccessibilityRequest*)request;
 - (BOOL)action:(int32_t)action;
+- (BOOL)canServeTextService:(BOOL)writing;
 - (void)retire;
 @end
 
@@ -232,7 +279,8 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     NSWindow* window = view.window;
     // Mutations report whether the provider accepted the action, including a
     // close button. Reads must not publish a snapshot of a retired tree.
-    const bool mutation = request->operation == JALIUM_AX_ACTION || request->operation == JALIUM_AX_SET_VALUE ||
+    const bool mutation = request->operation == JALIUM_AX_ACTION || request->operation == JALIUM_AX_SET_SELECTED_ITEMS ||
+        request->operation == JALIUM_AX_SET_VALUE ||
         request->operation == JALIUM_AX_SET_TEXT_SELECTION || (request->operation == JALIUM_AX_TEXT_NAVIGATION &&
         (request->index == JALIUM_AX_SET_INSERTION_LINE || request->index == JALIUM_AX_REPLACE_SELECTION));
     const BOOL accepted = bridge.callback(request, bridge.userData) != 0;
@@ -483,7 +531,8 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     return rows;
 }
 - (NSArray*)accessibilityRows {
-    if (![self.accessibilityRole isEqual:NSAccessibilityOutlineRole]) return nil;
+    NSString* role = self.accessibilityRole;
+    if (![role isEqual:NSAccessibilityOutlineRole] && ![role isEqual:NSAccessibilityTableRole]) return nil;
     NSMutableArray* rows = [NSMutableArray new];
     NSMutableArray* pending = [self.accessibilityChildren mutableCopy];
     while (pending.count) {
@@ -503,6 +552,41 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
         if ([row isAccessibilitySelected]) [rows addObject:row];
     return rows;
 }
+- (void)replaceSelectedItems:(NSArray*)items fromRows:(BOOL)fromRows {
+    if (items && ![items isKindOfClass:[NSArray class]]) return;
+    if (items.count > 65536) return;
+    JaliumAppleAccessibilityBridge* bridge = _bridge;
+    JaliumAccessibilityRequest request{};
+    if (![self info:&request] || !(request.flags & JALIUM_AX_ENABLED)
+        || !(request.flags & JALIUM_AX_SELECTION_WRITABLE)) return;
+    const bool rowContainer = request.role == 23 || request.role == 28 || request.role == 36;
+    if (fromRows != rowContainer) return;
+    NSArray* availableItems = fromRows ? self.accessibilityRows : self.accessibilityChildren;
+    if (!availableItems || _bridge != bridge) return;
+    NSSet* available = [NSSet setWithArray:availableItems];
+    NSMutableArray* ids = [NSMutableArray new];
+    for (id value in items) {
+        if (![value isKindOfClass:[JaliumAppleAccessibilityElement class]]) return;
+        JaliumAppleAccessibilityElement* child = value;
+        JaliumAccessibilityRequest childInfo{};
+        if (child.bridge != bridge || ![available containsObject:child]
+            || ![child info:&childInfo] || !(childInfo.flags & JALIUM_AX_ENABLED)
+            || !(childInfo.flags & JALIUM_AX_SELECTABLE)) return;
+        [ids addObject:@(child.nodeId)];
+    }
+    NSData* data = [NSJSONSerialization dataWithJSONObject:ids options:0 error:nil];
+    NSString* payload = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!payload || payload.length > 2 * 1024 * 1024 || _bridge != bridge
+        || ![self info:&request] || !(request.flags & JALIUM_AX_ENABLED)
+        || !(request.flags & JALIUM_AX_SELECTION_WRITABLE)) return;
+    std::vector<uint16_t> characters(payload.length);
+    [payload getCharacters:characters.data() range:NSMakeRange(0, payload.length)];
+    request.operation = JALIUM_AX_SET_SELECTED_ITEMS;
+    request.text = characters.data(); request.textCount = request.textCapacity = (int32_t)characters.size();
+    [bridge query:&request];
+}
+- (void)setAccessibilitySelectedChildren:(NSArray*)children { [self replaceSelectedItems:children fromRows:NO]; }
+- (void)setAccessibilitySelectedRows:(NSArray*)rows { [self replaceSelectedItems:rows fromRows:YES]; }
 - (NSInteger)accessibilityDisclosureLevel {
     NSInteger level = 0;
     for (id parent = self.accessibilityParent; parent && level < 128
@@ -688,6 +772,49 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     request.text = buffer.data(); request.textCount = request.textCapacity = (int32_t)text.length;
     [_bridge query:&request];
 }
+- (BOOL)canServeTextService:(BOOL)writing {
+    JaliumAppleAccessibilityBridge* bridge = _bridge;
+    JaliumAccessibilityRequest request{};
+    if ([bridge focusedElement] != self || ![self info:&request] ||
+        (request.flags & (JALIUM_AX_ENABLED | JALIUM_AX_TEXT)) != (JALIUM_AX_ENABLED | JALIUM_AX_TEXT) ||
+        (request.flags & (JALIUM_AX_PASSWORD | JALIUM_AX_OFFSCREEN)) ||
+        (writing && !(request.flags & JALIUM_AX_EDITABLE_TEXT)) || request.textCount < 0) return NO;
+    NSRange selected = self.accessibilitySelectedTextRange;
+    return selected.location != NSNotFound && selected.location <= (NSUInteger)request.textCount &&
+        selected.length <= (NSUInteger)request.textCount - selected.location && [bridge focusedElement] == self;
+}
+- (BOOL)writeSelectionToPasteboard:(NSPasteboard*)pasteboard types:(NSArray<NSPasteboardType>*)types {
+    NSPasteboardType type = nil;
+    for (NSPasteboardType candidate in types)
+        if (IsAppleTextServiceType(candidate)) { type = candidate; break; }
+    if (!pasteboard || !type || ![self canServeTextService:NO]) return NO;
+    NSRange selected = self.accessibilitySelectedTextRange;
+    if (selected.location == NSNotFound || !selected.length) return NO;
+    NSString* text = self.accessibilitySelectedText;
+    if (!text.length || ![self canServeTextService:NO] ||
+        !NSEqualRanges(selected, self.accessibilitySelectedTextRange)) return NO;
+    [pasteboard declareTypes:@[type] owner:nil];
+    if (![self canServeTextService:NO] ||
+        !NSEqualRanges(selected, self.accessibilitySelectedTextRange) ||
+        ![text isEqualToString:self.accessibilitySelectedText] || ![self canServeTextService:NO]) return NO;
+    BOOL accepted = [pasteboard setString:text forType:type];
+    return accepted && [self canServeTextService:NO];
+}
+- (BOOL)readSelectionFromPasteboard:(NSPasteboard*)pasteboard {
+    if (!pasteboard || ![self canServeTextService:YES]) return NO;
+    NSRange selected = self.accessibilitySelectedTextRange;
+    NSString* text = [pasteboard stringForType:NSPasteboardTypeString];
+    if (![text isKindOfClass:NSString.class] || text.length > 16 * 1024 * 1024 ||
+        ![self canServeTextService:YES] ||
+        !NSEqualRanges(selected, self.accessibilitySelectedTextRange)) return NO;
+    JaliumAccessibilityRequest request{};
+    request.nodeId = _nodeId; request.operation = JALIUM_AX_TEXT_NAVIGATION;
+    request.index = JALIUM_AX_REPLACE_SELECTION;
+    std::vector<uint16_t> buffer(std::max<NSUInteger>(1, text.length));
+    [text getCharacters:buffer.data() range:NSMakeRange(0, text.length)];
+    request.text = buffer.data(); request.textCount = request.textCapacity = (int32_t)text.length;
+    return [_bridge query:&request];
+}
 - (NSRect)accessibilityFrameForRange:(NSRange)range {
     if (range.location > INT32_MAX || range.length > INT32_MAX) return NSZeroRect;
     JaliumAccessibilityRequest request{};
@@ -711,8 +838,9 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     if (selector == @selector(isAccessibilityDisclosed) || selector == @selector(accessibilityDisclosedRows))
         return row && expandable;
     if (selector == @selector(accessibilityDisclosureLevel)) return row;
-    if (selector == @selector(accessibilityRows)) return request.role == 23;
-    if (selector == @selector(accessibilitySelectedRows)) return request.role == 23 && (request.flags & JALIUM_AX_SELECTION);
+    const bool rowContainer = request.role == 23 || request.role == 28 || request.role == 36;
+    if (selector == @selector(accessibilityRows)) return rowContainer;
+    if (selector == @selector(accessibilitySelectedRows)) return rowContainer && (request.flags & JALIUM_AX_SELECTION);
     if (selector == @selector(accessibilitySelectedChildren)) return (request.flags & JALIUM_AX_SELECTION) != 0;
     if (selector == @selector(accessibilityMinValue) || selector == @selector(accessibilityMaxValue))
         return (request.flags & JALIUM_AX_RANGE) != 0;
@@ -727,7 +855,10 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
         return enabled && (request.flags & JALIUM_AX_RANGE) && (request.flags & JALIUM_AX_WRITABLE) && request.step > 0;
     if (selector == @selector(setAccessibilityExpanded:)) return enabled && expandable;
     if (selector == @selector(setAccessibilityDisclosed:)) return enabled && row && expandable;
-    if (selector == @selector(setAccessibilitySelectedRows:)) return NO;
+    if (selector == @selector(setAccessibilitySelectedRows:))
+        return enabled && rowContainer && (request.flags & JALIUM_AX_SELECTION_WRITABLE);
+    if (selector == @selector(setAccessibilitySelectedChildren:))
+        return enabled && !rowContainer && (request.flags & JALIUM_AX_SELECTION_WRITABLE);
     if (selector == @selector(setAccessibilitySelected:))
         return enabled && selectable;
     if (selector == @selector(setAccessibilitySelectedTextRange:) || selector == @selector(setAccessibilitySelectedTextRanges:))
@@ -804,6 +935,13 @@ void jalium_apple_window_notify_accessibility(JaliumPlatformWindow* window, uint
         case JALIUM_AX_NOTIFY_SELECTION: name = NSAccessibilitySelectedTextChangedNotification; break;
         case JALIUM_AX_NOTIFY_LAYOUT: name = NSAccessibilityLayoutChangedNotification; break;
         case JALIUM_AX_NOTIFY_TITLE: name = NSAccessibilityTitleChangedNotification; break;
+        case JALIUM_AX_NOTIFY_SELECTED_ITEMS: {
+            JaliumAccessibilityRequest selectionInfo{};
+            if (![element info:&selectionInfo] || !hasOriginalContent()) return;
+            name = selectionInfo.role == 23 || selectionInfo.role == 28 || selectionInfo.role == 36
+                ? NSAccessibilitySelectedRowsChangedNotification : NSAccessibilitySelectedChildrenChangedNotification;
+            break;
+        }
     }
     if (name) NSAccessibilityPostNotification(element, name);
 }

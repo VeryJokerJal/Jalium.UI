@@ -10,7 +10,8 @@ internal readonly record struct AutomationTextStyle(
     string FontFamily, double FontSize, int FontWeight, int FontStyle,
     uint? Foreground, int Underline = 0, uint? UnderlineColor = null,
     int Strikethrough = 0, uint? StrikethroughColor = null,
-    int Alignment = 0, int Direction = -1, string? Language = null);
+    int Alignment = 0, int Direction = -1, string? Language = null, uint? Background = null,
+    string? InlineContext = null);
 
 internal readonly record struct AutomationTextStyleSpan(int Start, int Length, AutomationTextStyle Style);
 
@@ -24,7 +25,15 @@ public static class AutomationTextAttributeValues
 internal static class AutomationTextStyles
 {
     internal static IReadOnlyList<AutomationTextStyleSpan> GetRuns(IAutomationTextProviderSource source)
-        => source is IAutomationTextStyleSource styles ? styles.GetTextStyles() : [];
+        => source is IAutomationTextStyleSource styles ? WithoutInlineContext(styles.GetTextStyles()) : [];
+
+    internal static IReadOnlyList<AutomationTextStyleSpan> WithoutInlineContext(IReadOnlyList<AutomationTextStyleSpan> runs)
+    {
+        if (!runs.Any(run => run.Style.InlineContext is not null)) return runs;
+        var result = new List<AutomationTextStyleSpan>();
+        foreach (var run in runs) Add(result, run.Start, run.Length, run.Style with { InlineContext = null });
+        return result;
+    }
 
     internal static void Add(List<AutomationTextStyleSpan> spans, int start, int length, AutomationTextStyle style)
     {
@@ -35,12 +44,24 @@ internal static class AutomationTextStyles
         else spans.Add(new(start, length, style));
     }
 
-    internal static AutomationTextStyleSpan? At(IReadOnlyList<AutomationTextStyleSpan> runs, int offset, int textLength)
+    internal static AutomationTextStyleSpan? At(IReadOnlyList<AutomationTextStyleSpan> runs, int offset, int textLength,
+        bool ignoreInlineContext = false)
     {
         if (offset < 0 || offset > textLength) return null;
-        foreach (var run in runs)
-            if (offset >= run.Start && offset < run.Start + run.Length || run.Length == 0 && offset == run.Start) return run;
-        return offset == textLength && runs.Count != 0 ? runs[^1] : null;
+        for (int index = 0; index < runs.Count; ++index)
+        {
+            var run = runs[index];
+            if (!(offset >= run.Start && offset < run.Start + run.Length || run.Length == 0 && offset == run.Start ||
+                offset == textLength && index == runs.Count - 1)) continue;
+            if (!ignoreInlineContext) return run;
+            var style = run.Style with { InlineContext = null }; int start = run.Start, end = run.Start + run.Length;
+            for (int left = index - 1; left >= 0 && runs[left].Start + runs[left].Length == start &&
+                (runs[left].Style with { InlineContext = null }) == style; --left) start = runs[left].Start;
+            for (int right = index + 1; right < runs.Count && runs[right].Start == end &&
+                (runs[right].Style with { InlineContext = null }) == style; ++right) end += runs[right].Length;
+            return new(start, end - start, style);
+        }
+        return null;
     }
 
     internal static object? Value(AutomationTextStyle style, int attribute) => attribute switch
@@ -49,6 +70,7 @@ internal static class AutomationTextStyles
         40006 => style.FontSize,
         40007 => style.FontWeight,
         40008 => ColorRef(style.Foreground),
+        40001 => ColorRef(style.Background),
         40009 => style.Alignment switch { 1 => 2, 2 => 1, _ => style.Alignment },
         40014 => style.FontStyle != 0,
         40025 => ColorRef(style.StrikethroughColor),

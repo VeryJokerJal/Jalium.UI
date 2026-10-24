@@ -370,6 +370,7 @@ public abstract class ButtonBase : ContentControl, ICommandSource
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
+        if (IsMacOSPopupKeyboardInput(e)) return;
         if (!CanRespondToInput()) return;
 
         if (e.Key == Key.Space)
@@ -395,6 +396,7 @@ public abstract class ButtonBase : ContentControl, ICommandSource
 
     private void OnKeyUpHandler(object sender, KeyEventArgs e)
     {
+        if (IsMacOSPopupKeyboardInput(e)) return;
         if (!CanRespondToInput()) return;
 
         if (e.Key == Key.Space && IsPressed)
@@ -406,6 +408,20 @@ public abstract class ButtonBase : ContentControl, ICommandSource
             }
             e.Handled = true;
         }
+    }
+
+    private bool IsMacOSPopupKeyboardInput(KeyEventArgs e)
+    {
+        if (!OperatingSystem.IsMacOS()) return false;
+        int depth = 0;
+        for (var node = e.OriginalSource as Visual; node != null && depth++ < 4096; node = node.VisualParent)
+        {
+            if (ReferenceEquals(node, this)) return false;
+            // PlacementTarget participates in routing, but is not the focused
+            // button when a key originated inside its detached popup.
+            if (node is PopupRoot) return true;
+        }
+        return false;
     }
 
     /// <summary>

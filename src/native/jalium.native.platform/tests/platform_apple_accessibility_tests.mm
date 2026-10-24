@@ -313,6 +313,91 @@ static int RunNotificationLifecycleCases(int onlyCase)
     return completed == (onlyCase >= 0 ? 1 : 22) ? 0 : 1;
 }
 
+struct TableSelectionFixture {
+    int32_t role; bool selected;
+    bool writable = false, rowEnabled = true;
+    int writes = 0;
+    std::function<void(JaliumAccessibilityRequest*)> duringQuery;
+};
+template<class Operation>
+static int32_t TableSelectionQuery(JaliumAccessibilityRequest* request, void* context)
+{
+    auto& state = *static_cast<TableSelectionFixture*>(context);
+    if (request->nodeId < 1 || request->nodeId > 3) return 0;
+    const bool row = request->nodeId == 3;
+    if (state.duringQuery) state.duringQuery(request);
+    // The two retained histories intentionally use different child protocols.
+    // Exercise the protocol declared by this tree without renumbering either.
+    if constexpr (requires { Operation::JALIUM_AX_BEGIN_CHILDREN; }) {
+        if (request->operation == Operation::JALIUM_AX_BEGIN_CHILDREN) {
+            request->resultId = request->nodeId; request->childCount = row ? 0 : 1; return 1;
+        }
+        if (request->operation == Operation::JALIUM_AX_READ_CHILDREN) {
+            if (row) { request->childCount = 0; return 1; }
+            if (!request->text || request->textCapacity < 1) return 0;
+            uint64_t child = request->nodeId + 1;
+            std::memcpy(request->text, &child, sizeof(child)); request->childCount = 1; return 1;
+        }
+        if (request->operation == Operation::JALIUM_AX_RELEASE_CHILDREN) return 1;
+    }
+    switch (request->operation) {
+        case JALIUM_AX_INFO:
+            request->role = request->nodeId == 1 ? 32 : request->nodeId == 2 ? state.role : 29;
+            request->parentId = request->nodeId == 1 ? 0 : request->nodeId - 1;
+            request->childCount = row ? 0 : 1;
+            request->flags = (row && !state.rowEnabled ? 0 : JALIUM_AX_ENABLED)
+                | (request->nodeId == 2 ? JALIUM_AX_SELECTION | (state.writable ? JALIUM_AX_SELECTION_WRITABLE : 0) : 0);
+            if (row) request->flags |= JALIUM_AX_SELECTABLE | (state.selected ? JALIUM_AX_SELECTED : 0);
+            request->x = 10; request->y = 10; request->width = 100; request->height = 40;
+            return 1;
+        case JALIUM_AX_SET_SELECTED_ITEMS: {
+            Check(request->nodeId == 2 && state.writable, "batch write reaches only a qualified selection container");
+            NSString* text = [[NSString alloc] initWithCharacters:request->text length:request->textCount];
+            NSArray* ids = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+            Check([ids isKindOfClass:NSArray.class], "batch payload is a UTF-16 JSON array");
+            for (NSNumber* id in ids) Check(id.unsignedLongLongValue == 3, "batch payload retains exact uint64 row identity");
+            state.selected = ids.count > 0; state.writes++; return 1;
+        }
+        case JALIUM_AX_ATTACHED: return 1;
+        case JALIUM_AX_CHILD:
+            if (row || request->index != 0) return 0;
+            request->resultId = request->nodeId + 1; return 1;
+        default: return 0;
+    }
+}
+static void RunTableSelectionCases()
+{
+    int completed = 0;
+    for (int titlebar = 0; titlebar < 2; ++titlebar)
+        for (int role : { 28, 36 })
+            for (bool selected : { false, true }) {
+                JaliumWindowParams params{};
+                params.title = reinterpret_cast<const uint16_t*>(u"AX table selection contract");
+                params.x = params.y = JALIUM_DEFAULT_POS; params.width = 320; params.height = 220;
+                params.style = JALIUM_WINDOW_STYLE_CLOSABLE | JALIUM_WINDOW_STYLE_RESIZABLE |
+                    (titlebar ? JALIUM_WINDOW_STYLE_TITLEBAR : JALIUM_WINDOW_STYLE_BORDERLESS);
+                auto* window = jalium_window_create(&params);
+                Check(window != nullptr, "create table selection contract Window");
+                TableSelectionFixture fixture{role, selected};
+                jalium_apple_window_set_accessibility(window, TableSelectionQuery<JaliumAccessibilityOperation>, &fixture);
+                jalium_apple_window_show(window, 0);
+                NSView* view = (__bridge NSView*)reinterpret_cast<void*>(jalium_window_get_native_handle(window));
+                NSAccessibilityElement* root = view.accessibilityChildren.firstObject;
+                NSAccessibilityElement* table = root.accessibilityChildren.firstObject;
+                Check([table.accessibilityRole isEqual:NSAccessibilityTableRole], "data grid and table expose native table role");
+                Check([table isAccessibilitySelectorAllowed:@selector(accessibilityRows)], "table exposes native rows capability");
+                Check([table isAccessibilitySelectorAllowed:@selector(accessibilitySelectedRows)], "selectable table exposes selected rows capability");
+                Check(table.accessibilityRows.count == 1, "native table enumerates direct row objects");
+                NSArray* selectedRows = table.accessibilitySelectedRows;
+                Check(selectedRows.count == (selected ? 1u : 0u), "native selected rows follow provider selection flags");
+                if (selected) Check(selectedRows.firstObject == table.accessibilityRows.firstObject, "selected row retains row identity");
+                jalium_window_destroy(window); completed++;
+            }
+    std::printf("macOS AX table selection: %d/8 passed\n", completed);
+}
+
+#include "platform_apple_selection_collection_tests.inc"
+
 int main(int argc, const char** argv)
 {
     @autoreleasepool {
@@ -465,7 +550,7 @@ int main(int argc, const char** argv)
         const unichar characters[] = {0x4e2d, 0x6587, 0xd83d, 0xde42};
         NSString* text16 = [[NSData dataWithBytes:characters length:sizeof(characters)] base64EncodedStringWithOptions:0];
         NSDictionary* style = @{@"start":@0, @"length":@4, @"family":@"Arial", @"size":@21, @"weight":@700, @"italic":@2,
-            @"foreground":@0xffa01234, @"underline":@1, @"underlineColor":@0xff123456, @"strike":@1,
+            @"foreground":@0xffa01234, @"background":@0xff336699, @"underline":@1, @"underlineColor":@0xff123456, @"strike":@1,
             @"alignment":@0, @"direction":@0, @"language":@"zh-CN"};
         fixture.stylePayload = payload(@[style], text16);
         NSAttributedString* attributed = [child accessibilityAttributedStringForRange:NSMakeRange(0, 4)];
@@ -475,14 +560,36 @@ int main(int argc, const char** argv)
             "disabled styled text preserves font, color, decoration and Unicode");
         Check([[attributes[NSAccessibilityFontTextAttribute][NSAccessibilityFontNameKey] lowercaseString] containsString:@"bolditalic"],
             "AX font dictionary identifies the selected bold italic face");
+        Check(attributes[NSAccessibilityBackgroundColorTextAttribute]!=nil,"AX exports the text background as a CGColor");
+        NSColor* background=[[NSColor colorWithCGColor:(__bridge CGColorRef)attributes[NSAccessibilityBackgroundColorTextAttribute]] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        Check(background.redComponent>.195 && background.redComponent<.205 && background.greenComponent>.395 && background.greenComponent<.405 && background.blueComponent>.595 && background.blueComponent<.605,
+            "AX background matches the source sRGB components");
         NSData* rtf = [child accessibilityRTFForRange:NSMakeRange(0, 4)];
         NSAttributedString* decoded = [[NSAttributedString alloc] initWithRTF:rtf documentAttributes:nil];
         Check([decoded.string isEqual:@"中文🙂"] && [[[decoded attributesAtIndex:0 effectiveRange:nil] objectForKey:NSFontAttributeName] pointSize] == 21,
             "RTF is decoded by AppKit with the same text and point size");
+        NSColor* rtfBackground=[[decoded attribute:NSBackgroundColorAttributeName atIndex:0 effectiveRange:nil] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        Check(rtfBackground && rtfBackground.redComponent>.195 && rtfBackground.redComponent<.205 && rtfBackground.greenComponent>.395 && rtfBackground.greenComponent<.405 && rtfBackground.blueComponent>.595 && rtfBackground.blueComponent<.605,
+            "RTF retains an opaque run background through AppKit decoding");
+        const NSTextAlignment alignments[] = {NSTextAlignmentLeft, NSTextAlignmentRight, NSTextAlignmentCenter, NSTextAlignmentJustified};
+        for (NSInteger alignment=0;alignment<4;++alignment) for (NSInteger direction=0;direction<2;++direction) {
+            NSMutableDictionary* aligned=[style mutableCopy];aligned[@"alignment"]=@(alignment);aligned[@"direction"]=@(direction);
+            fixture.stylePayload=payload(@[aligned],text16);
+            NSAttributedString* ax=[child accessibilityAttributedStringForRange:NSMakeRange(0,4)];
+            Check([[ax attribute:NSAccessibilityTextAlignmentAttribute atIndex:0 effectiveRange:nil] integerValue]==alignments[alignment],
+                "AX paragraph alignment uses the architecture's native enum values");
+            NSAttributedString* rtfValue=[[NSAttributedString alloc]initWithRTF:[child accessibilityRTFForRange:NSMakeRange(0,4)] documentAttributes:nil];
+            NSParagraphStyle* paragraph=[rtfValue attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:nil];
+            Check(paragraph.alignment==alignments[alignment] && paragraph.baseWritingDirection==(NSWritingDirection)direction,
+                "RTF paragraph alignment and writing direction survive native decoding");
+        }
+        fixture.stylePayload=payload(@[style],text16);
         Check(NSEqualRanges([child accessibilityStyleRangeForIndex:2], NSMakeRange(0, 4))
             && NSEqualRanges([child accessibilityStyleRangeForIndex:4], NSMakeRange(0, 0)), "style extents include UTF-16 characters and reject EOF as a character");
         for (NSDictionary* changes in @[@{@"start":@1}, @{@"length":@0}, @{@"length":@5}, @{@"size":@(-1)}, @{@"weight":@1001},
-            @{@"italic":@3}, @{@"foreground":@4294967296ULL}, @{@"family":@[]}, @{@"language":@1}, @{@"direction":@2}]) {
+            @{@"italic":@3}, @{@"foreground":@4294967296ULL}, @{@"family":@[]}, @{@"language":@1}, @{@"direction":@2},
+            @{@"background":@(-1)}, @{@"background":@4294967296ULL}, @{@"background":@0.5}, @{@"background":@"red"},
+            @{@"background":NSNull.null}, @{@"background":@YES}, @{@"foreground":@YES}, @{@"underlineColor":@YES}, @{@"strikeColor":@YES}]) {
             NSMutableDictionary* invalid = [style mutableCopy]; [invalid addEntriesFromDictionary:changes];
             fixture.stylePayload = payload(@[invalid], text16);
             Check([child accessibilityAttributedStringForRange:NSMakeRange(0, 4)] == nil
@@ -526,7 +633,7 @@ int main(int argc, const char** argv)
             Check(nativeWindow.accessibilityCloseButton == nil && nativeWindow.accessibilityMinimizeButton == nil
                 && nativeWindow.accessibilityZoomButton == nil, "foreign caption queries never enter managed callback");
             for (int notification : { JALIUM_AX_NOTIFY_FOCUS, JALIUM_AX_NOTIFY_VALUE, JALIUM_AX_NOTIFY_SELECTION,
-                    JALIUM_AX_NOTIFY_LAYOUT, JALIUM_AX_NOTIFY_TITLE })
+                    JALIUM_AX_NOTIFY_LAYOUT, JALIUM_AX_NOTIFY_TITLE, JALIUM_AX_NOTIFY_SELECTED_ITEMS })
                 jalium_apple_window_notify_accessibility(platformWindow, 1, notification);
             jalium_apple_window_set_accessibility(platformWindow, nullptr, nullptr);
         }});
@@ -548,6 +655,8 @@ int main(int argc, const char** argv)
             "destroyed native Window does not retain managed button references");
         Check(nativeWindow.accessibilityCloseButton == nil && nativeWindow.accessibilityMinimizeButton == nil
             && nativeWindow.accessibilityZoomButton == nil, "destroyed Window does not retain caption references");
+        RunTableSelectionCases();
+        RunSelectionCollectionCases();
         Check(RunReadLifecycleCases(-1) == 0, "complete public read lifecycle regressions");
         Check(RunNotificationLifecycleCases(-1) == 0, "complete public notification lifecycle regressions");
         jalium_platform_shutdown();

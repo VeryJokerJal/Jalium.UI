@@ -110,6 +110,7 @@ option(JALIUM_BUILD_VULKAN "Also build the Vulkan backend on Windows (dev/test)"
 # calling it only inside those subdirectories silently reports "No tests were
 # found" and gives CI a false pass.
 if(JALIUM_PLATFORM_BUILD_TESTS OR
+   JALIUM_MEDIA_APPLE_BUILD_TESTS OR
    JALIUM_MEDIA_LINUX_BUILD_TESTS OR
    JALIUM_SOFTWARE_BUILD_TESTS OR
    JALIUM_TEXT_BUILD_TESTS OR

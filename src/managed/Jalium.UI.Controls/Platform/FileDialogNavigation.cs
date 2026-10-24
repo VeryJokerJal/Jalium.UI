@@ -7,6 +7,10 @@ internal sealed class FileDialogNavigation(string? rootDirectory)
 {
     public string? Root { get; } = ExistingDirectory(rootDirectory);
 
+    public static bool IsSamePath(string? first, string? second) =>
+        Normalize(first) is { } normalized &&
+        string.Equals(normalized, Normalize(second), StringComparison.Ordinal);
+
     public bool Contains(string? path)
     {
         string? candidate = Normalize(path);

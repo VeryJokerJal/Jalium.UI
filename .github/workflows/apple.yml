@@ -6,6 +6,33 @@ on:
   pull_request:
 
 jobs:
+  media-availability:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - name: Build and verify macOS media behavior
+        run: |
+          cmake -S src/native -B "$RUNNER_TEMP/jalium-media-macos" \
+            -DCMAKE_BUILD_TYPE=Release -DJALIUM_MEDIA_APPLE_BUILD_TESTS=ON \
+            -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
+          cmake --build "$RUNNER_TEMP/jalium-media-macos" --parallel 4 \
+            --target jalium.native.media.apple.tests
+          ctest --test-dir "$RUNNER_TEMP/jalium-media-macos" \
+            -R '^jalium[.]native[.]media[.]apple[.]availability$' --output-on-failure -V
+      - name: Compile Apple media device and simulator archives
+        run: |
+          for slice in ios iossimulator tvos tvossimulator visionos visionossimulator; do
+            cmake --preset "apple-$slice-arm64" -S src/native \
+              -B "$RUNNER_TEMP/jalium-media-$slice" \
+              -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+            cmake --build "$RUNNER_TEMP/jalium-media-$slice" --config Release \
+              --target jalium.native.media.apple --parallel 4
+          done
+
   native-and-packages:
     runs-on: macos-26
     timeout-minutes: 360
@@ -14,15 +41,37 @@ jobs:
       - name: Select pinned Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/jalium-apple-dotnet
         with:
-          dotnet-version: 10.0.300
+          dotnet-version: 10.0.302
+      - name: Verify generated template lifetimes
+        run: >-
+          dotnet test tests/Jalium.UI.Template.Tests/Jalium.UI.Template.Tests.csproj
+          -c Release --nologo --disable-build-servers
+          -p:UseSharedCompilation=false -m:1 --logger trx
       - name: Cache pinned Apple shader compiler slices
         uses: actions/cache@v4
         with:
           path: src/native/out/apple-deps
-          key: apple-shader-toolchain-${{ runner.os }}-xcode-26.6-${{ hashFiles('eng/apple/dependencies.lock.json', 'eng/apple/prepare-shader-toolchain.sh') }}
-      - name: Install pinned Apple workloads
-        run: dotnet workload install ios tvos macos --version 10.0.300.2
+          key: apple-shader-toolchain-${{ runner.os }}-xcode-26.6-${{ hashFiles('eng/apple/dependencies.lock.json', 'eng/apple/prepare-shader-toolchain.sh', 'eng/apple/patch-shader-toolchain.py') }}
+      - name: Install and verify pinned Apple workloads
+        run: |
+          python3 - <<'PYTOOLCHAIN'
+          import json
+          from pathlib import Path
+          import subprocess
+          tools = json.loads(Path('eng/apple/toolchain.lock.json').read_text())
+          sdk = subprocess.check_output(['dotnet', '--version'], text=True).strip()
+          assert sdk == tools['dotnetSdk'], f"Expected .NET SDK {tools['dotnetSdk']}, got {sdk}"
+          xcode = subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0]
+          assert xcode == 'Xcode ' + tools['xcode'], xcode
+          subprocess.run(['dotnet', 'workload', 'install', 'ios', 'tvos', 'macos',
+                          '--version', tools['workloadSet']], check=True)
+          info = subprocess.check_output(['dotnet', 'workload', '--info'], text=True)
+          assert tools['workloadSet'] in info and tools['appleSdkPack'] in info, info
+          print(info)
+          PYTOOLCHAIN
       - name: Build Apple native slices
         run: |
           bash eng/apple/build-native.sh macos Release
@@ -39,6 +88,131 @@ jobs:
           dotnet build src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj -c Release -p:JaliumPlatform=macos
           dotnet build src/packaging/Jalium.UI.iOS/Jalium.UI.iOS.csproj -c Release -f net10.0-ios -p:JaliumPlatform=ios
           dotnet build src/packaging/Jalium.UI.tvOS/Jalium.UI.tvOS.csproj -c Release -f net10.0-tvos -p:JaliumPlatform=tvos
+      - name: Build macOS global preference SDK fixture
+        run: >-
+          dotnet build tests/Jalium.UI.MacOS.HostSmoke/Jalium.UI.MacOS.HostSmoke.csproj
+          -c Release -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-motion-sdk"
+          -p:JaliumMacAutoCompleteNativePayload=false -p:ValidateXcodeVersion=true -p:UseSharedCompilation=false
+          -m:1 --disable-build-servers
+      - name: Verify physical popup viewport SDK geometry
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PYVIEWPORT'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-popup-viewport-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-popup-viewports.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 8, receipt
+          assert all(len(case['result']['Scenarios']) == 9 and len(case['result']['Checks']) == 60
+                     and case['result']['cleaned'] for case in receipt['cases']), receipt
+          print('All eight popup viewport SDK combinations, 72 scenarios and 480 assertions passed.')
+          PYVIEWPORT
+      - name: Verify AppKit global preference delivery
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-motion-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-motion-notifications.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 48, receipt
+          assert all(len(case['result']['Scenarios']) == 13 and
+                     all(item['passed'] for item in case['result']['Scenarios'])
+                     for case in receipt['cases']), receipt
+          print('All 48 AppKit global preference combinations and 624 scenarios passed.')
+          PY
+      - name: Verify TextBox cache retention and painted geometry
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PYCACHE'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-textbox-cache-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-textbox-layout-cache.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 4, receipt
+          assert all(case['result']['phases'] == 12 and case['result']['checks'] == 85
+                     and case['pixelContracts'] and case['result']['ownerCachesRetired']
+                     for case in receipt['cases']), receipt
+          print('All four TextBox cache combinations, 48 phases and 340 assertions passed.')
+          PYCACHE
+      - name: Verify Dock reduced motion and content polling
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PYDOCK'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-dock-motion-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-dock-motion.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 8, receipt
+          assert all(len(case['result']['Scenarios']) == 16 and case['result']['overrideRestored']
+                     and case['result']['displayProbeRestored'] for case in receipt['cases']), receipt
+          print('All eight Dock motion combinations and 128 scenarios passed.')
+          PYDOCK
+      - name: Verify external Dock surface ownership
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PYDOCKOWNER'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-dock-ownership-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-dock-ownership.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 8, receipt
+          assert all(len(case['result']['Scenarios']) == 32 and case['result']['overrideRestored']
+                     for case in receipt['cases']), receipt
+          print('All eight Dock ownership combinations and 256 scenarios passed.')
+          PYDOCKOWNER
+      - name: Preserve AppKit SDK diagnostic receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-sdk-diagnostics
+          path: |
+            ${{ runner.temp }}/jalium-motion-sdk-results
+            ${{ runner.temp }}/jalium-textbox-cache-sdk-results
+            ${{ runner.temp }}/jalium-popup-viewport-sdk-results
+            ${{ runner.temp }}/jalium-dock-motion-sdk-results
+            ${{ runner.temp }}/jalium-dock-ownership-sdk-results
+          if-no-files-found: ignore
       - name: Upload Apple native artifact
         uses: actions/upload-artifact@v4
         with:
@@ -66,7 +240,7 @@ jobs:
 
   window-contracts:
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Select pinned Xcode
@@ -77,20 +251,150 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release -DJALIUM_PLATFORM_BUILD_TESTS=ON
           -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
           -DJALIUM_NATIVE_OUTPUT_ROOT="$RUNNER_TEMP/jalium-window-native"
-      - name: Build Window and clipboard contract fixtures
+      - name: Build Window, clipboard and thread-affinity contract fixtures
         run: >-
           cmake --build "$RUNNER_TEMP/jalium-window-contracts" --parallel 4 --target
+          jalium.native.media.apple
           jalium.native.platform.clipboard.tests
+          jalium.native.platform.thread-affinity.tests
           jalium.native.platform.window.tests
           jalium.native.platform.window.accessibility.tests
+          jalium.native.platform.window.popup-keyboard.tests
+          jalium.native.platform.window.keyboard-focus.tests
+          jalium.native.platform.window.owner.tests
           jalium.native.platform.window.resize.tests
           jalium.native.platform.window.menu.tests
           jalium.native.platform.window.startup.tests
           jalium.native.platform.window.drag.tests
-      - name: Verify all Window and clipboard contracts
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/jalium-apple-dotnet
+        with:
+          dotnet-version: 10.0.302
+      - name: Verify managed popup ownership and binding reentrancy
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-popup-owner-managed" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter FullyQualifiedName~MacOSPopupOwnershipTests \
+            --logger 'trx;LogFileName=popup-ownership.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-popup-owner-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-popup-owner-results/popup-ownership.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 29 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 29 managed popup ownership contracts executed and passed.')
+          PY
+      - name: Verify accessibility focus intent and provider replacement
+        run: |
+          focus_native_root="$RUNNER_TEMP/jalium-window-native/osx-arm64/Release"
+          test -f "$focus_native_root/libjalium.native.platform.dylib"
+          export DYLD_LIBRARY_PATH="$focus_native_root"
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-focus-intent-managed" \
+            -p:JaliumMacNativeRoot="$focus_native_root" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter 'FullyQualifiedName~MacOSAccessibilityFocusHostTests|FullyQualifiedName~MacOSActivationInputLifetimeTests|FullyQualifiedName~MacOSPopupFocusStateTests' \
+            --logger 'trx;LogFileName=focus-intent.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-focus-intent-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-focus-intent-results/focus-intent.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 340 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 340 accessibility focus, activation and popup focus contracts executed and passed.')
+          PY
+      - name: Verify physical popup viewports and resource lifetimes
+        run: |
+          surface_native_root="$RUNNER_TEMP/jalium-window-native/osx-arm64/Release"
+          test -f "$surface_native_root/libjalium.native.media.dylib"
+          export DYLD_LIBRARY_PATH="$surface_native_root"
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            --no-build --no-restore \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-focus-intent-managed" \
+            -p:JaliumMacNativeRoot="$surface_native_root" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter 'FullyQualifiedName~MacOSPopupViewportTests|FullyQualifiedName~VirtualizingWrapPanelOffsetTests|FullyQualifiedName~VirtualizingWrapPanelViewportRecoveryTests|FullyQualifiedName~MacOSPhysicalPopupDragTests|FullyQualifiedName~MacOSPopupResourceReclamationTests|FullyQualifiedName~MacOSDragDropTests' \
+            --logger 'trx;LogFileName=popup-surfaces.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-popup-surfaces-results"
+          python3 - <<'PYSURFACE'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-popup-surfaces-results/popup-surfaces.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 370 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 370 popup viewport, physical drag, resource and wrap contracts executed and passed.')
+          PYSURFACE
+      - name: Verify Writing Tools selection acknowledgement
+        run: |
+          export DYLD_LIBRARY_PATH="$RUNNER_TEMP/jalium-window-native/osx-arm64/Release"
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            --no-build --no-restore \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-focus-intent-managed" \
+            -p:JaliumMacNativeRoot="$DYLD_LIBRARY_PATH" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter 'FullyQualifiedName~MacOSWritingToolsSelectionTests' \
+            --logger 'trx;LogFileName=writing-tools-selection.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-writing-tools-selection-results"
+          python3 - <<'PYSELECTION'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-writing-tools-selection-results/writing-tools-selection.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 120 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 120 Writing Tools selection contracts executed and passed.')
+          PYSELECTION
+      - name: Verify mouse release ownership, command compatibility and ComboBox forwarding
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-mouse-owner-managed" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter 'FullyQualifiedName~MacOSMouseReleaseRetirementTests|FullyQualifiedName~MacOSMouseModifierTests|FullyQualifiedName~MacOSComboBoxMouseForwardingTests' \
+            --logger 'trx;LogFileName=mouse-ownership.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-mouse-owner-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-mouse-owner-results/mouse-ownership.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 633 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 633 mouse release ownership, command compatibility and ComboBox forwarding contracts executed and passed.')
+          PY
+      - name: Verify global animation preference notification ownership
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-motion-managed" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter FullyQualifiedName~MacOSAnimationPreferenceNotificationTests \
+            --logger 'trx;LogFileName=motion-notifications.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-motion-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-motion-results/motion-notifications.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 40 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 40 global animation preference notification contracts executed and passed.')
+          PY
+      - name: Verify all Window, clipboard and thread-affinity contracts
         run: >-
           ctest --test-dir "$RUNNER_TEMP/jalium-window-contracts"
-          -R '^jalium[.]native[.]platform[.](clipboard|macos[.]window([.].*)?)$'
+          -R '^jalium[.]native[.]platform[.](clipboard|macos[.](window|thread-affinity)([.].*)?)$'
           --output-on-failure -V
 
   metal-readback:
@@ -105,9 +409,33 @@ jobs:
       - name: Configure focused readback and regression tests
         run: >-
           cmake -S src/native -B /tmp/jalium-readback-tests
-          -DCMAKE_BUILD_TYPE=Release -DJALIUM_METAL_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=Release -DJALIUM_METAL_BUILD_TESTS=ON -DJALIUM_SOFTWARE_BUILD_TESTS=ON
           -DJALIUM_METAL_REQUIRE_RUNTIME_SHADER_COMPILER=OFF
       - name: Build focused readback and regression tests
-        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback jalium.native.metal.regression --parallel 4
+        run: cmake --build /tmp/jalium-readback-tests --target jalium.native.metal.readback jalium.native.metal.regression jalium.native.metal.text-glyph-ranges jalium.native.metal.text-metrics jalium.native.metal.fonts jalium.native.software.apple.text jalium.native.platform --parallel 4
       - name: Verify GPU resources, readback and Window rendering regressions
-        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium[.]native[.]metal[.](gpu-.*baseline|readback(-no-resize)?|regression)$' --output-on-failure -V
+        run: ctest --test-dir /tmp/jalium-readback-tests -R '^jalium[.]native[.](metal[.](gpu-.*baseline|readback(-no-resize)?|regression|text-glyph-ranges|text-metrics|fonts)|software[.]apple[.](text-glyph-ranges|coretext))$' --output-on-failure -V
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/jalium-apple-dotnet
+        with:
+          dotnet-version: 10.0.302
+      - name: Verify CoreText family resolution and private fallback lifetimes
+        env:
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/src/native/bin/native/osx-arm64/Release
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-coretext-managed" \
+            -p:JaliumMacNativeGeometryTests=true \
+            --filter 'FullyQualifiedName~MacOSFontResolutionTests|FullyQualifiedName~MacOSFontCascadeTests|FullyQualifiedName~MacOSTextBoxAlignmentTests|FullyQualifiedName~MacOSTextBoxLayoutCacheTests|FullyQualifiedName~MacOSTextStyleRangeSnapshotTests|FullyQualifiedName~WritingToolsInlinePreservationTests' \
+            --logger 'trx;LogFileName=font-resolution.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-font-results"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          counts = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'jalium-font-results/font-resolution.trx').find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 249 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 249 CoreText font, ranged style snapshot and semantic inline contracts executed and passed.')
+          PY

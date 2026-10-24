@@ -679,6 +679,7 @@ internal static partial class DragDropPlatform
         using var sourceScope = OperatingSystem.IsMacOS()
             ? MacOSDragDataObject.BeginSource(window, data) : null;
         if (OperatingSystem.IsMacOS() && sourceScope == null) return DragDropEffects.None;
+        var completeInput = OperatingSystem.IsMacOS() ? window.CapturePlatformDragInputCompletion() : null;
 
         try
         {
@@ -692,7 +693,7 @@ internal static partial class DragDropPlatform
                 dragImage?.Image);
             return (DragDropEffects)(effect & 0x07);
         }
-        finally { if (OperatingSystem.IsMacOS()) window.CompletePlatformDragInput(); }
+        finally { completeInput?.Invoke(); }
     }
 
     internal static void RaiseNativeGiveFeedback(
@@ -1110,7 +1111,7 @@ internal static class NativeDropTarget
         if (state.CurrentTarget is not { } target) return;
         state.CurrentTarget = null; // A reentrant revocation must never deliver Leave twice.
         s_states.TryGetValue(window, out var activeBefore);
-        _ = RaiseDragEvent(target, DragDrop.PreviewDragLeaveEvent, DragDrop.DragLeaveEvent,
+        _ = RaiseDragEvent(window, target, DragDrop.PreviewDragLeaveEvent, DragDrop.DragLeaveEvent,
             state.CurrentData, MapKeyStates(state.KeyStates), state.AllowedEffects, state.Position,
             () => ReferenceEquals(s_states.GetValueOrDefault(window), activeBefore));
     }
@@ -1128,21 +1129,37 @@ internal static class NativeDropTarget
     }
 
     private static DragDropEffects RaiseTracked(Window window, DropState state, UIElement target,
-        RoutedEvent previewEvent, RoutedEvent bubbleEvent) => RaiseDragEvent(target, previewEvent, bubbleEvent,
+        RoutedEvent previewEvent, RoutedEvent bubbleEvent) => RaiseDragEvent(window, target, previewEvent, bubbleEvent,
             state.CurrentData, MapKeyStates(state.KeyStates), state.AllowedEffects, state.Position,
             () => Current(window, state) && ReferenceEquals(state.CurrentTarget, target) &&
-                ReferenceEquals(Window.GetWindow(target), window) &&
+                // A native visit belongs to its presenting surface. Popup
+                // content's logical input owner may be another NSWindow.
+                ReferenceEquals(Window.GetMacOSPhysicalWindow(target), window) &&
                 ReferenceEquals(DragDropPlatform.FindDropTargetElement(target), target));
 
-    private static DragDropEffects RaiseDragEvent(UIElement target, RoutedEvent previewEvent,
+    private static DragDropEffects RaiseDragEvent(Window window, UIElement target, RoutedEvent previewEvent,
         RoutedEvent bubbleEvent, IDataObject data, DragDropKeyStates keys, DragDropEffects allowed,
         Point position, Func<bool> current)
     {
-        var preview = new DragEventArgs(previewEvent, data, keys, allowed, position);
+        Point Position(IInputElement? relativeTo)
+        {
+            if (relativeTo is not UIElement element) return position;
+            var physical = Window.GetMacOSPhysicalWindow(element);
+            if (physical is null) return position;
+            Point local = position;
+            if (OperatingSystem.IsMacOS() && !ReferenceEquals(physical, window))
+            {
+                var from = window.GetMacOSClientScreenOrigin(); var to = physical.GetMacOSClientScreenOrigin();
+                double ratio = window.DpiScale / physical.DpiScale;
+                local = new Point((from.X + position.X) * ratio - to.X, (from.Y + position.Y) * ratio - to.Y);
+            }
+            return physical.TranslatePoint(local, element);
+        }
+        var preview = new DragEventArgs(previewEvent, data, keys, allowed, position) { PositionResolver = Position };
         target.RaiseEvent(preview);
         if (!current()) return DragDropEffects.None;
         if (preview.Handled) return preview.Effects;
-        var bubble = new DragEventArgs(bubbleEvent, data, keys, allowed, position) { Effects = preview.Effects };
+        var bubble = new DragEventArgs(bubbleEvent, data, keys, allowed, position) { Effects = preview.Effects, PositionResolver = Position };
         target.RaiseEvent(bubble);
         return current() ? bubble.Effects : DragDropEffects.None;
     }

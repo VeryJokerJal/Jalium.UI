@@ -25,6 +25,19 @@ internal static class XamlBuilderInitializer
             return new XamlBuildContext(inner);
         };
 
+        XamlBuilder.CreateTemplateContextImpl = static context =>
+        {
+            var source = CtxOf(context);
+            return new XamlBuildContext(new XamlParserContext
+            {
+                BaseUri = source.BaseUri,
+                SourceAssembly = source.SourceAssembly,
+                CodeBehindInstance = source.CodeBehindInstance,
+                ParentResourceDictionary = source.ParentResourceDictionary,
+                IsRestrictive = source.IsRestrictive,
+            });
+        };
+
         XamlBuilder.PushParentImpl = static (parent, ctx) =>
         {
             CtxOf(ctx).PushParent(parent);

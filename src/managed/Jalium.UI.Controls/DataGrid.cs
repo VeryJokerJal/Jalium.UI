@@ -2491,7 +2491,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         }
         else if (SelectionMode == DataGridSelectionMode.Extended)
         {
-            if (modifiers.HasFlag(ModifierKeys.Control))
+            if (PointerSelectionModifiers.IsToggle(modifiers))
             {
                 if (IsItemSelected(item))
                     RemoveFromSelection(item);
@@ -2541,7 +2541,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         {
             _selectedCells.ReplaceWith([cellInfo]);
         }
-        else if (modifiers.HasFlag(ModifierKeys.Control))
+        else if (PointerSelectionModifiers.IsToggle(modifiers))
         {
             if (_selectedCells.Contains(cellInfo))
             {

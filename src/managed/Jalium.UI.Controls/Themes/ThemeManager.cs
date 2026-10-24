@@ -1106,19 +1106,40 @@ public static class ThemeManager
         object? sender,
         System.ComponentModel.PropertyChangedEventArgs e)
     {
+        bool systemAppearanceChanged = OperatingSystem.IsMacOS() &&
+            (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == "PrefersDarkColorScheme");
         if (!string.IsNullOrEmpty(e.PropertyName) &&
-            !string.Equals(e.PropertyName, nameof(SystemParameters.HighContrast), StringComparison.Ordinal))
+            !string.Equals(e.PropertyName, nameof(SystemParameters.HighContrast), StringComparison.Ordinal) &&
+            !systemAppearanceChanged)
         {
             return;
         }
 
+#pragma warning disable WPF0001
+        if (systemAppearanceChanged &&
+            (_application?.ThemeMode == ThemeMode.System || _application?.ThemeMode == ThemeMode.None))
+        {
+            var requested = SystemParameters.PrefersDarkColorScheme ? ThemeVariant.Dark : ThemeVariant.Light;
+            if (requested != CurrentTheme)
+            {
+                ApplyTheme(requested);
+                return;
+            }
+        }
+#pragma warning restore WPF0001
+
         var effectiveThemeKey = GetEffectiveThemeKey();
-        if (Equals(ResourceDictionary.CurrentThemeKey, effectiveThemeKey))
+        if (Equals(ResourceDictionary.CurrentThemeKey, effectiveThemeKey) && !systemAppearanceChanged)
         {
             return;
         }
 
         ResourceDictionary.CurrentThemeKey = effectiveThemeKey;
+        if (OperatingSystem.IsMacOS() && _application == null)
+        {
+            Window.RefreshAppearanceWithoutApplication();
+            return;
+        }
         ForceThemeRefresh(notifyLiveRoots: true);
 
         if (_application != null)

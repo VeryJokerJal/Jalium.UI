@@ -230,52 +230,24 @@ internal static class KeyboardFocusRevalidation
     }
 
     /// <summary>
-    /// The focus provider maintains <see cref="UIElement.IsKeyboardFocusWithin"/> from the visual
-    /// chain as it stands at each focus change, so a tree move underneath an unchanged focus (or a
-    /// detach that only the deferred pass reacts to) leaves the old ancestors flagged and the new
-    /// ones not. Clear every old-chain entry that is not an ancestor-or-self of the element that
-    /// holds focus now, then flag the live chain.
+    /// Refresh unchanged focus after a tree move, including old parents that
+    /// detached before the focus provider could observe them.
     /// </summary>
     private static void SyncFocusWithinFlags(
         List<UIElement> oldChain,
         ConditionalWeakTable<UIElement, DependencyObject> hops,
         UIElement? newFocused)
     {
-        HashSet<UIElement>? live = null;
-        if (newFocused is not null)
-        {
-            live = new HashSet<UIElement>(ReferenceEqualityComparer.Instance);
-            var depth = 0;
-            for (Visual? current = newFocused; current is not null && depth++ < MaxChainDepth; current = current.VisualParent)
-            {
-                if (current is UIElement uiElement)
-                    live.Add(uiElement);
-            }
-        }
-
-        foreach (var element in oldChain)
-        {
-            if (live is null || !live.Contains(element))
-                element.UpdateIsKeyboardFocusWithin(false);
-        }
-
-        // A subtree that was detached and re-attached elsewhere never needed its hop to build the
-        // chain above, yet the ancestors it was detached from are still flagged from the last
-        // focus change. Walk those recorded old parents too.
+        var old = new HashSet<UIElement>(oldChain, ReferenceEqualityComparer.Instance);
         foreach (var (_, oldParent) in hops)
         {
             var depth = 0;
             for (Visual? current = oldParent as Visual; current is not null && depth++ < MaxChainDepth; current = current.VisualParent)
             {
-                if (current is UIElement uiElement && (live is null || !live.Contains(uiElement)))
-                    uiElement.UpdateIsKeyboardFocusWithin(false);
+                if (current is UIElement uiElement) old.Add(uiElement);
             }
         }
 
-        if (live is null)
-            return;
-
-        foreach (var element in live)
-            element.UpdateIsKeyboardFocusWithin(true);
+        KeyboardFocusWithinState.Update(null, newFocused, old);
     }
 }

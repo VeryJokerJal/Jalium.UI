@@ -86,140 +86,13 @@ public class TextRange
 
     private string GetText()
     {
-        if (IsEmpty)
-            return string.Empty;
-
-        var sb = new StringBuilder();
-        var document = _start.Document;
-
-        CollectTextFromDocument(document, sb);
-
-        return sb.ToString();
-    }
-
-    private void CollectTextFromDocument(FlowDocument document, StringBuilder sb)
-    {
-        int currentOffset = 0;
-        int startOffset = _start.DocumentOffset;
-        int endOffset = _end.DocumentOffset;
-
-        foreach (var block in document.Blocks)
-        {
-            var blockLength = GetBlockLength(block);
-
-            if (currentOffset + blockLength > startOffset && currentOffset < endOffset)
-            {
-                CollectTextFromBlock(block, sb, currentOffset, startOffset, endOffset);
-            }
-
-            currentOffset += blockLength;
-            if (currentOffset >= endOffset)
-                break;
-        }
-    }
-
-    private void CollectTextFromBlock(Block block, StringBuilder sb, int baseOffset, int startOffset, int endOffset)
-    {
-        if (block is Paragraph p)
-        {
-            int currentOffset = baseOffset;
-
-            foreach (var inline in p.Inlines)
-            {
-                var inlineLength = GetInlineLength(inline);
-
-                if (currentOffset + inlineLength > startOffset && currentOffset < endOffset)
-                {
-                    CollectTextFromInline(inline, sb, currentOffset, startOffset, endOffset);
-                }
-
-                currentOffset += inlineLength;
-                if (currentOffset >= endOffset)
-                    break;
-            }
-
-            // Add paragraph break if within range and not at end
-            if (currentOffset >= startOffset && currentOffset < endOffset)
-            {
-                sb.Append('\n');
-            }
-        }
-        else if (block is Section section)
-        {
-            int currentOffset = baseOffset;
-            foreach (var childBlock in section.Blocks)
-            {
-                var blockLength = GetBlockLength(childBlock);
-
-                if (currentOffset + blockLength > startOffset && currentOffset < endOffset)
-                {
-                    CollectTextFromBlock(childBlock, sb, currentOffset, startOffset, endOffset);
-                }
-
-                currentOffset += blockLength;
-                if (currentOffset >= endOffset)
-                    break;
-            }
-        }
-        else if (block is List list)
-        {
-            int currentOffset = baseOffset;
-            foreach (var item in list.ListItems)
-            {
-                foreach (var itemBlock in item.Blocks)
-                {
-                    var blockLength = GetBlockLength(itemBlock);
-
-                    if (currentOffset + blockLength > startOffset && currentOffset < endOffset)
-                    {
-                        CollectTextFromBlock(itemBlock, sb, currentOffset, startOffset, endOffset);
-                    }
-
-                    currentOffset += blockLength;
-                    if (currentOffset >= endOffset)
-                        break;
-                }
-            }
-        }
-    }
-
-    private void CollectTextFromInline(Inline inline, StringBuilder sb, int baseOffset, int startOffset, int endOffset)
-    {
-        if (inline is Run run)
-        {
-            var text = run.Text;
-            int textStart = Math.Max(0, startOffset - baseOffset);
-            int textEnd = Math.Min(text.Length, endOffset - baseOffset);
-
-            if (textStart < textEnd)
-            {
-                sb.Append(text, textStart, textEnd - textStart);
-            }
-        }
-        else if (inline is Span span)
-        {
-            int currentOffset = baseOffset;
-            foreach (var child in span.Inlines)
-            {
-                var childLength = GetInlineLength(child);
-
-                if (currentOffset + childLength > startOffset && currentOffset < endOffset)
-                {
-                    CollectTextFromInline(child, sb, currentOffset, startOffset, endOffset);
-                }
-
-                currentOffset += childLength;
-                if (currentOffset >= endOffset)
-                    break;
-            }
-        }
-        else if (inline is LineBreak)
-        {
-            if (baseOffset >= startOffset && baseOffset < endOffset)
-            {
-                sb.Append('\n');
-            }
-        }
+        if (IsEmpty) return string.Empty;
+        // TextPointer offsets and native text services use this same projection,
+        // including paragraph breaks, table separators and embedded objects.
+        var text = _start.Document.GetText();
+        int start = Math.Clamp(_start.DocumentOffset, 0, text.Length);
+        int end = Math.Clamp(_end.DocumentOffset, start, text.Length);
+        return text[start..end];
     }
 
     private void SetText(string value)
@@ -332,12 +205,12 @@ public class TextRange
         int startOffset = _start.DocumentOffset;
         int endOffset = _end.DocumentOffset;
 
+        int baseOffset = 0;
         foreach (var block in document.Blocks)
         {
-            if (!CheckPropertyInBlock(block, property, ref firstValue, ref isFirst, 0, startOffset, endOffset))
-            {
+            if (!CheckPropertyInBlock(block, property, ref firstValue, ref isFirst, baseOffset, startOffset, endOffset))
                 return DependencyProperty.UnsetValue;
-            }
+            baseOffset += GetBlockLength(block);
         }
 
         return firstValue;
@@ -367,16 +240,10 @@ public class TextRange
                 currentOffset += inlineLength;
             }
         }
-        else if (block is Section section)
-        {
-            int currentOffset = baseOffset;
-            foreach (var childBlock in section.Blocks)
-            {
-                if (!CheckPropertyInBlock(childBlock, property, ref firstValue, ref isFirst, currentOffset, startOffset, endOffset))
+        else
+            foreach (var (child, offset) in ChildBlocks(block, baseOffset))
+                if (!CheckPropertyInBlock(child, property, ref firstValue, ref isFirst, offset, startOffset, endOffset))
                     return false;
-                currentOffset += GetBlockLength(childBlock);
-            }
-        }
 
         return true;
     }
@@ -465,21 +332,10 @@ public class TextRange
                 currentOffset += inlineLength;
             }
         }
-        else if (block is Section section)
-        {
-            int currentOffset = baseOffset;
-            foreach (var childBlock in section.Blocks)
-            {
-                var blockLength = GetBlockLength(childBlock);
-
-                if (currentOffset + blockLength > startOffset && currentOffset < endOffset)
-                {
-                    ApplyPropertyToBlock(childBlock, property, value, currentOffset, startOffset, endOffset);
-                }
-
-                currentOffset += blockLength;
-            }
-        }
+        else
+            foreach (var (child, offset) in ChildBlocks(block, baseOffset))
+                if (offset + GetBlockLength(child) > startOffset && offset < endOffset)
+                    ApplyPropertyToBlock(child, property, value, offset, startOffset, endOffset);
     }
 
     private void ApplyPropertyToInline(Inline inline, DependencyProperty property, object? value, int baseOffset, int startOffset, int endOffset)
@@ -571,19 +427,10 @@ public class TextRange
                 currentOffset += length;
             }
         }
-        else if (block is Section section)
-        {
-            var currentOffset = baseOffset;
-            foreach (var child in section.Blocks)
-            {
-                var length = GetBlockLength(child);
-                if (currentOffset + length > startOffset && currentOffset < endOffset)
-                {
-                    ClearPropertiesInBlock(child, currentOffset, startOffset, endOffset);
-                }
-                currentOffset += length;
-            }
-        }
+        else
+            foreach (var (child, offset) in ChildBlocks(block, baseOffset))
+                if (offset + GetBlockLength(child) > startOffset && offset < endOffset)
+                    ClearPropertiesInBlock(child, offset, startOffset, endOffset);
     }
 
     private static void ClearPropertiesInInline(
@@ -659,44 +506,38 @@ public class TextRange
 
     #region Helper Methods
 
-    private static int GetBlockLength(Block block)
-    {
-        if (block is Paragraph p)
-        {
-            int length = 0;
-            foreach (var inline in p.Inlines)
-            {
-                length += GetInlineLength(inline);
-            }
-            return length + 1; // +1 for paragraph break
-        }
-        else if (block is Section section)
-        {
-            int length = 0;
-            foreach (var childBlock in section.Blocks)
-            {
-                length += GetBlockLength(childBlock);
-            }
-            return length;
-        }
-        else if (block is List list)
-        {
-            int length = 0;
-            foreach (var item in list.ListItems)
-            {
-                foreach (var itemBlock in item.Blocks)
-                {
-                    length += GetBlockLength(itemBlock);
-                }
-            }
-            return length;
-        }
-        else if (block is BlockUIContainer)
-        {
-            return 1;
-        }
+    private static int GetBlockLength(Block block) => FlowDocument.GetBlockLength(block);
 
-        return 0;
+    private static IEnumerable<(Block Block, int Offset)> ChildBlocks(Block block, int offset)
+    {
+        IEnumerable<Block>? children = block switch
+        {
+            Section section => section.Blocks,
+            List list => list.ListItems.SelectMany(item => item.Blocks),
+            _ => null,
+        };
+        if (children is not null)
+        {
+            foreach (var child in children)
+            {
+                yield return (child, offset);
+                offset += GetBlockLength(child);
+            }
+        }
+        else if (block is Table table)
+            foreach (var row in table.RowGroups.SelectMany(group => group.Rows))
+            {
+                foreach (var cell in row.Cells)
+                {
+                    foreach (var child in cell.Blocks)
+                    {
+                        yield return (child, offset);
+                        offset += GetBlockLength(child);
+                    }
+                    ++offset;
+                }
+                ++offset;
+            }
     }
 
     private static int GetInlineLength(Inline inline)
@@ -718,7 +559,7 @@ public class TextRange
         {
             return 1;
         }
-        else if (inline is InlineUIContainer)
+        else if (inline is InlineUIContainer or AnchoredBlock)
         {
             return 1;
         }

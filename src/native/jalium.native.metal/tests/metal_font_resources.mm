@@ -206,6 +206,63 @@ void CheckReference(JaliumTextFormat* actual, CTFontRef font, const std::u16stri
         "Weighted paragraph end caret used a different font");
     CFRelease(line);
 }
+void TestRegularFamilyAndFaceNames(JaliumContext* context)
+{
+    const std::u16string samples[] = {
+        u"MMMM iii1 abc אבג 123 xyz tail", u"Miii 中文🙂 e\u0301 tail"
+    };
+    const auto verify = [&](NSString* requested, NSString* family, bool explicitFace) {
+        std::u16string name(requested.length, 0);
+        [requested getCharacters:reinterpret_cast<unichar*>(name.data()) range:NSMakeRange(0, requested.length)];
+        for (int size : {12, 20, 32}) for (int style : {0, 1, 2}) for (bool widthAware : {false, true}) {
+            referenceWeight = 400; referenceStyle = style; referenceSize = size;
+            NSFontDescriptor* descriptor = explicitFace ? nil : [NSFontDescriptor fontDescriptorWithFontAttributes:@{
+                NSFontFamilyAttribute:family, NSFontTraitsAttribute:@{NSFontWeightTrait:@(NSFontWeightRegular)}}];
+            NSFont* expected = explicitFace ? [NSFont fontWithName:requested size:size] :
+                [NSFont fontWithDescriptor:descriptor size:size];
+            Check(expected != nil, "Family/face reference font unavailable");
+            if (style) expected = [NSFontManager.sharedFontManager convertFont:expected toHaveTrait:NSItalicFontMask];
+            CTFontRef reference = static_cast<CTFontRef>(CFRetain((__bridge CTFontRef)expected));
+            // Width-aware family matching synthesizes an oblique when the
+            // family has no italic face; explicit 100% faces stay unchanged.
+            if (widthAware && !explicitFace && style && !(CTFontGetSymbolicTraits(reference) & kCTFontItalicTrait)) {
+                CGAffineTransform slope = CGAffineTransformMake(1, 0, std::tan(12.0 * M_PI / 180), 1, 0, 0);
+                CTFontRef slanted = CTFontCreateCopyWithAttributes(reference, size, &slope, nullptr);
+                CFRelease(reference); reference = slanted;
+            }
+            Font actual(widthAware ? jalium_text_format_create_with_width(context, Managed(name.c_str()), size, 400, style, 100) :
+                jalium_text_format_create(context, Managed(name.c_str()), size, 400, style), jalium_text_format_destroy);
+            Check(actual != nullptr, "Family/face format creation failed");
+            jalium_text_format_set_word_wrapping(actual.get(), 1);
+            for (const auto& sample : samples) {
+                CheckReference(actual.get(), reference, sample);
+                NSString* text = [[NSString alloc] initWithCharacters:reinterpret_cast<const unichar*>(sample.data()) length:sample.size()];
+                CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)
+                    [[NSAttributedString alloc] initWithString:text attributes:@{NSFontAttributeName:(__bridge id)reference}]);
+                auto paragraph = CreateParagraph(actual.get(), sample);
+                JaliumTextRangeMetrics selection[4]{}; uint32_t count = 0;
+                CGFloat start = CTLineGetOffsetForStringIndex(line, 0, nullptr);
+                CGFloat end = CTLineGetOffsetForStringIndex(line, 4, nullptr);
+                Check(jalium_text_paragraph_get_selection(paragraph.get(), 0, 0, 4, selection, 4, &count) == JALIUM_OK &&
+                    count == 1 && std::abs(selection[0].x - start) < .001 &&
+                    std::abs(selection[0].width - (end - start)) < .001,
+                    "Regular-family selection differs from the independent native reference");
+                CFRelease(line);
+            }
+            CFRelease(reference);
+        }
+    };
+    for (NSString* family : @[@"PingFang SC", @"Helvetica Neue", @"Avenir Next", @"Menlo", @"Helvetica"]) {
+        verify(family, family, false);
+        verify(family.lowercaseString, family, false);
+    }
+    // A normal numeric weight must not replace an explicitly selected light,
+    // condensed, semibold or bold face with its family's regular member.
+    for (NSString* face : @[@"PingFangSC-Regular", @"PingFangSC-Light", @"PingFangSC-Semibold",
+        @"AvenirNext-UltraLight", @"AvenirNext-Medium", @"HelveticaNeue-CondensedBold", @"Menlo-Bold", @"Helvetica-Oblique"])
+        verify(face, nil, true);
+    std::printf("Regular family/face references: 324 configurations, 648 mixed-script samples passed\n");
+}
 void TestNumericWeights(JaliumContext* context)
 {
     const std::u16string text = u"MMMM iii1 abc אבג 123 xyz tail";
@@ -280,7 +337,13 @@ int main(int argc, char** argv)
             std::unique_ptr<JaliumContext, decltype(&jalium_context_destroy)> context(
                 jalium_context_create(JALIUM_BACKEND_METAL), jalium_context_destroy);
             Check(context != nullptr, "Metal font test context failed");
+            if (argc == 2 && std::strcmp(argv[1], "--family-names-only") == 0) {
+                TestRegularFamilyAndFaceNames(context.get());
+                std::printf("Family/face checks: %d passed\n", checks);
+                return 0;
+            }
             if (!weightsOnly) { TestSystemFont(context.get()); TestPrivateFont(context.get()); }
+            TestRegularFamilyAndFaceNames(context.get());
             TestNumericWeights(context.get());
             if (!weightsOnly) checks += TestFontCascades(context.get());
             if (!weightsOnly) checks += TestFontWidths(context.get());

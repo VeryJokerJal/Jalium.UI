@@ -11,6 +11,10 @@ public static partial class SystemParameters
     {
         get
         {
+            if (OperatingSystem.IsMacOS() &&
+                Controls.Platform.PlatformThemeIntegration.ReadColorScheme is { } read)
+                return read() == 1;
+
             var scheme = Volatile.Read(ref s_preferredColorScheme);
             if (scheme == 0 && OperatingSystem.IsWindows())
             {
@@ -48,6 +52,12 @@ public static partial class SystemParameters
         var normalized = scheme == 1 ? 1 : 2;
         if (Interlocked.Exchange(ref s_preferredColorScheme, normalized) != normalized)
             NotifyStaticPropertyChanged(nameof(PrefersDarkColorScheme));
+    }
+
+    internal static void NotifyPlatformAppearanceChanged(uint scheme)
+    {
+        Volatile.Write(ref s_preferredColorScheme, scheme == 1 ? 1 : 2);
+        NotifyStaticPropertyChanged(null);
     }
 
     private static void RefreshPreferredColorSchemeFromPlatform()

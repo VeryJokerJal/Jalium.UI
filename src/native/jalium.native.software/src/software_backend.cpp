@@ -1,4 +1,8 @@
 #include "software_backend.h"
+#ifdef __APPLE__
+#include "apple_text_format.h"
+#include "apple_text_paragraph.h"
+#endif
 #include "jalium_scanline_rasterizer.h"   // PixelRect / RasterizePathToRects
 #include "jalium_impeller_stroke.h"       // ExpandStrokePath (collect-contours mode)
 #include "jalium_triangulate.h"           // FlattenPathToContours
@@ -4628,7 +4632,7 @@ JaliumResult SoftwareRenderTarget::EndDraw()
         CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGImageRef image = provider ? CGImageCreate(width_, height_, 8, 32,
             static_cast<size_t>(width_) * 4, colorSpace,
-            kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+            static_cast<CGBitmapInfo>(kCGImageAlphaFirst) | kCGBitmapByteOrder32Little,
             provider, nullptr, false, kCGRenderingIntentDefault) : nullptr;
         if (image) {
             [CATransaction begin];
@@ -5368,8 +5372,61 @@ void SoftwareRenderTarget::RasterizeCoverageAA(
     }
 }
 
+namespace {
+bool NeedsAffineRectanglePath(const SoftwareTransform& transform)
+{
+    return std::abs(transform.m[1]) > 1e-6f || std::abs(transform.m[2]) > 1e-6f ||
+        transform.m[0] < 0 || transform.m[3] < 0;
+}
+
+std::array<float, 4> CircularSoftwareRectangleRadii(float w, float h,
+    float tl, float tr, float br, float bl)
+{
+    const float limit = std::min(w, h) * .5f;
+    return {std::clamp(tl,0.0f,limit),std::clamp(tr,0.0f,limit),
+        std::clamp(br,0.0f,limit),std::clamp(bl,0.0f,limit)};
+}
+
+struct SoftwareRectanglePath {
+    float x, y;
+    std::vector<float> commands;
+};
+
+SoftwareRectanglePath MakeSoftwareRectanglePath(float x, float y, float w, float h,
+    std::array<float, 4> rx, std::array<float, 4> ry)
+{
+    for (auto& radius : rx) radius = std::clamp(radius, 0.0f, w * .5f);
+    for (auto& radius : ry) radius = std::clamp(radius, 0.0f, h * .5f);
+    SoftwareRectanglePath path{x + rx[0], y, {}};
+    constexpr float k = .5522847498307936f;
+    auto line = [&](float a, float b) { path.commands.insert(path.commands.end(), {static_cast<float>(kTagLineTo), a, b}); };
+    auto curve = [&](float a, float b, float c, float d, float e, float f) {
+        path.commands.insert(path.commands.end(), {static_cast<float>(kTagCubicTo), a, b, c, d, e, f});
+    };
+    line(x+w-rx[1],y);
+    curve(x+w-rx[1]+k*rx[1],y,x+w,y+ry[1]-k*ry[1],x+w,y+ry[1]);
+    line(x+w,y+h-ry[2]);
+    curve(x+w,y+h-ry[2]+k*ry[2],x+w-rx[2]+k*rx[2],y+h,x+w-rx[2],y+h);
+    line(x+rx[3],y+h);
+    curve(x+rx[3]-k*rx[3],y+h,x,y+h-ry[3]+k*ry[3],x,y+h-ry[3]);
+    line(x,y+ry[0]);
+    curve(x,y+ry[0]-k*ry[0],x+rx[0]-k*rx[0],y,x+rx[0],y);
+    path.commands.push_back(static_cast<float>(kTagClosePath));
+    return path;
+}
+} // namespace
+
 void SoftwareRenderTarget::FillScanlineRect(float x, float y, float w, float h, Brush* brush)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {0,0,0,0}, {0,0,0,0});
+        FillPath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, 1);
+        return;
+    }
+
     PreparedPaint paint = PreparePaint(brush);
     if (!paint.IsValid()) return;
 
@@ -5838,6 +5895,15 @@ void SoftwareRenderTarget::DrawRectangle(float x, float y, float w, float h, Bru
 
 void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {rx,rx,rx,rx}, {ry,ry,ry,ry});
+        FillPath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, 1);
+        return;
+    }
+
     if (!brush) return;
     rx = std::min(rx, w * 0.5f);
     ry = std::min(ry, h * 0.5f);
@@ -5969,6 +6035,15 @@ void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float
 
 void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {rx,rx,rx,rx}, {ry,ry,ry,ry});
+        StrokePath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, strokeWidth, true);
+        return;
+    }
+
     if (!brush) return;
     rx = std::min(rx, w * 0.5f);
     ry = std::min(ry, h * 0.5f);
@@ -6047,6 +6122,16 @@ void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float
 void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto radii = CircularSoftwareRectangleRadii(w, h, tl, tr, br, bl);
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, radii, radii);
+        FillPath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, 1);
+        return;
+    }
+
     if (!brush) return;
     tl = std::min(tl, std::min(w, h) * 0.5f);
     tr = std::min(tr, std::min(w, h) * 0.5f);
@@ -6231,6 +6316,16 @@ void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float
 void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush, float strokeWidth)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (!brush || w <= 0 || h <= 0) return;
+        auto radii = CircularSoftwareRectangleRadii(w, h, tl, tr, br, bl);
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, radii, radii);
+        StrokePath(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), brush, strokeWidth, true);
+        return;
+    }
+
     if (!brush) return;
     tl = std::min(tl, std::min(w, h) * 0.5f);
     tr = std::min(tr, std::min(w, h) * 0.5f);
@@ -7835,6 +7930,54 @@ void SoftwareRenderTarget::DestroyRetainedLayer(void* layer)
     }
 }
 
+#ifdef __APPLE__
+JaliumResult SoftwareRenderTarget::SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode)
+{
+    std::vector<std::pair<uint32_t, uint32_t>> sorted;
+    for (uint32_t i = 0; i < count; ++i)
+        if (pairs[2 * i + 1]) sorted.emplace_back(pairs[2 * i], pairs[2 * i] + pairs[2 * i + 1]);
+    std::sort(sorted.begin(), sorted.end());
+    std::vector<uint32_t> merged;
+    for (const auto& span : sorted) {
+        if (!merged.empty() && span.first <= merged[merged.size() - 2] + merged.back())
+            merged.back() = std::max(merged.back(), span.second - merged[merged.size() - 2]);
+        else { merged.push_back(span.first); merged.push_back(span.second - span.first); }
+    }
+    glyphRanges_.swap(merged); glyphVisibility_ = mode;
+    return JALIUM_OK;
+}
+
+void SoftwareRenderTarget::CompositeAppleGlyphs(const std::vector<uint8_t>& pixels,
+    uint32_t width, uint32_t height, float x, float y)
+{
+    const int32_t left = static_cast<int32_t>(x), top = static_cast<int32_t>(y);
+    for (uint32_t row = 0; row < height; ++row) for (uint32_t col = 0; col < width; ++col) {
+        int32_t dx = left + static_cast<int32_t>(col), dy = top + static_cast<int32_t>(row);
+        if (dx < 0 || dy < 0 || dx >= width_ || dy >= height_ || IsClipped(dx + .5f, dy + .5f)) continue;
+        size_t i = (static_cast<size_t>(row) * width + col) * 4;
+        uint32_t alpha = pixels[i + 3]; if (!alpha) continue;
+        // CoreText emits premultiplied BGRA; the Software framebuffer stores
+        // straight BGRA and its common compositor performs the alpha blend.
+        auto straight = [&](int c) { return static_cast<uint8_t>(std::min(255u, (pixels[i + c] * 255u + alpha / 2) / alpha)); };
+        const size_t destination = (static_cast<size_t>(dy) * width_ + dx) * 4;
+        if (fb_.pixels[destination + 3] == 0)
+            fb_.SetPixel(dx, dy, straight(2), straight(1), straight(0), static_cast<uint8_t>(alpha));
+        else
+            fb_.BlendPixel(dx, dy, straight(2), straight(1), straight(0), static_cast<uint8_t>(alpha));
+    }
+}
+
+void SoftwareRenderTarget::RenderParagraphLine(TextParagraph* paragraph, uint32_t line, float x, float y, float opacity)
+{
+    auto* apple = dynamic_cast<AppleTextParagraph*>(paragraph);
+    if (!apple || opacity <= 0 || !isDrawing_) return;
+    std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
+    if (apple->RasterizeLine(line, x, y, opacity * currentOpacity_, currentTransform_.m, width_, height_,
+        pixels, width, height, left, top, glyphRanges_.data(), static_cast<uint32_t>(glyphRanges_.size() / 2), glyphVisibility_))
+        CompositeAppleGlyphs(pixels, width, height, left, top);
+}
+#endif
+
 void SoftwareRenderTarget::RenderText(
     const wchar_t* text, uint32_t textLength,
     TextFormat* format,
@@ -7846,8 +7989,19 @@ void SoftwareRenderTarget::RenderText(
     auto* solid = dynamic_cast<SoftwareSolidBrush*>(brush);
     if (!solid) return;
 
+#ifdef __APPLE__
+    if (auto* apple = dynamic_cast<AppleTextFormat*>(format)) {
+        std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
+        if (apple->Rasterize(text, textLength, x, y, w, h, currentTransform_.m, 0, 0, width_, height_,
+            solid->r, solid->g, solid->b, solid->a * currentOpacity_, pixels, width, height, left, top,
+            glyphRanges_.data(), static_cast<uint32_t>(glyphRanges_.size() / 2), glyphVisibility_))
+            CompositeAppleGlyphs(pixels, width, height, left, top);
+        return;
+    }
+#endif
+
 #ifdef JALIUM_HAS_TEXT_ENGINE
-    // Path 1: FreeType glyph atlas rendering (preferred on all platforms)
+    // Self-hosted glyph atlas on platforms with a discovery provider.
     auto* ftFormat = dynamic_cast<JaliumTextFormat*>(format);
     if (ftFormat && backend_ && backend_->GetTextEngine()) {
         RenderTextWithGlyphAtlas(text, textLength, ftFormat, x, y, w, h, solid);
@@ -8728,6 +8882,16 @@ void SoftwareRenderTarget::PopTransform()
 
 void SoftwareRenderTarget::PushClip(float x, float y, float w, float h)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (w <= 0 || h <= 0) { clipStack_.push({0,0,0,0}); return; }
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {0,0,0,0}, {0,0,0,0});
+        if (PushPathClip(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), 1) != JALIUM_OK)
+            clipStack_.push({0,0,0,0});
+        return;
+    }
+
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
 
@@ -8911,6 +9075,14 @@ JaliumResult SoftwareTextFormat::GetFontMathConstants(JaliumFontMathConstants* c
 
 void SoftwareRenderTarget::PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry)
 {
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (w <= 0 || h <= 0) { clipStack_.push({0,0,0,0}); return; }
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, {rx,rx,rx,rx}, {ry,ry,ry,ry});
+        if (PushPathClip(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), 1) != JALIUM_OK)
+            clipStack_.push({0,0,0,0});
+        return;
+    }
+
     // Symmetric variant: all four corners get the smaller of the two radii so
     // the SDF stays circular, then forward to the per-corner path.
     float r = std::min(rx, ry);
@@ -8938,6 +9110,17 @@ JaliumResult SoftwareRenderTarget::PushEllipticalRectClip(const JaliumElliptical
 void SoftwareRenderTarget::PushPerCornerRoundedRectClip(float x, float y, float w, float h,
     float tl, float tr, float br, float bl)
 {
+    // Two opposite corners do not bound a rotated/sheared rectangle. Reuse
+    // the existing transformed path rasterizer and its balanced clip capture.
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        if (w <= 0 || h <= 0) { clipStack_.push({0,0,0,0}); return; }
+        auto radii = CircularSoftwareRectangleRadii(w, h, tl, tr, br, bl);
+        auto path = MakeSoftwareRectanglePath(x, y, w, h, radii, radii);
+        if (PushPathClip(path.x, path.y, path.commands.data(), static_cast<uint32_t>(path.commands.size()), 1) != JALIUM_OK)
+            clipStack_.push({0,0,0,0});
+        return;
+    }
+
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
 
@@ -11433,12 +11616,27 @@ TextFormat* SoftwareBackend::CreateTextFormat(
     int32_t fontWeight,
     int32_t fontStyle)
 {
+#ifdef __APPLE__
+    auto* format = new AppleTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+    if (!format->IsValid()) { delete format; return nullptr; }
+    return format;
+#else
 #ifdef JALIUM_HAS_TEXT_ENGINE
     if (textEngine_)
         return textEngine_->CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
 #endif
     return new SoftwareTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+#endif
 }
+#ifdef __APPLE__
+TextFormat* SoftwareBackend::CreateTextFormatWithWidth(const wchar_t* family, float size,
+    int32_t weight, int32_t style, float percentage)
+{
+    auto* format = new AppleTextFormat(family, size, weight, style, percentage);
+    if (!format->IsValid()) { delete format; return nullptr; }
+    return format;
+}
+#endif
 
 Bitmap* SoftwareBackend::CreateBitmapFromMemory(const uint8_t* data, uint32_t dataSize)
 {

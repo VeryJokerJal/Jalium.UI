@@ -176,7 +176,9 @@ internal static class DrawingObjectPool
         // Shaped lines carry their own run fonts, colors and native owner.
         // Scalar FormattedText fields cannot establish value equality for
         // them, and the global pool must not retain another layout's handle.
-        if (text.PlatformTextLine is not null)
+        // Filtered draws also carry transient glyph visibility which cannot
+        // share the unfiltered value, or poison it for subsequent normal draws.
+        if (text.PlatformTextLine is not null || text.GlyphVisibility != 0)
         {
             return text.CreateRenderSnapshot(canonicalFg);
         }

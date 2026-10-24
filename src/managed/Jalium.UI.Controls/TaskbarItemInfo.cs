@@ -15,12 +15,12 @@ public enum TaskbarItemProgressState
     None = 0,
 
     /// <summary>
-    /// A green progress indicator is shown.
+    /// An indeterminate progress indicator is shown.
     /// </summary>
     Indeterminate = 1,
 
     /// <summary>
-    /// A pulsing green indicator is shown.
+    /// A determinate progress indicator is shown.
     /// </summary>
     Normal = 2,
 
@@ -51,7 +51,7 @@ public sealed class TaskbarItemInfo : Freezable
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ProgressStateProperty =
         DependencyProperty.Register(nameof(ProgressState), typeof(TaskbarItemProgressState), typeof(TaskbarItemInfo),
-            new PropertyMetadata(TaskbarItemProgressState.None, OnProgressStateChanged));
+            new PropertyMetadata(TaskbarItemProgressState.None));
 
     /// <summary>
     /// Identifies the ProgressValue dependency property.
@@ -59,7 +59,7 @@ public sealed class TaskbarItemInfo : Freezable
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ProgressValueProperty =
         DependencyProperty.Register(nameof(ProgressValue), typeof(double), typeof(TaskbarItemInfo),
-            new PropertyMetadata(0.0, OnProgressValueChanged, CoerceProgressValue));
+            new PropertyMetadata(0.0, null, CoerceProgressValue));
 
     /// <summary>
     /// Identifies the Overlay dependency property.
@@ -67,7 +67,7 @@ public sealed class TaskbarItemInfo : Freezable
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OverlayProperty =
         DependencyProperty.Register(nameof(Overlay), typeof(ImageSource), typeof(TaskbarItemInfo),
-            new PropertyMetadata(null, OnOverlayChanged));
+            new PropertyMetadata(null));
 
     /// <summary>
     /// Identifies the Description dependency property.
@@ -75,7 +75,7 @@ public sealed class TaskbarItemInfo : Freezable
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty DescriptionProperty =
         DependencyProperty.Register(nameof(Description), typeof(string), typeof(TaskbarItemInfo),
-            new PropertyMetadata(string.Empty, OnDescriptionChanged));
+            new PropertyMetadata(string.Empty));
 
     /// <summary>
     /// Identifies the ThumbnailClipMargin dependency property.
@@ -83,7 +83,7 @@ public sealed class TaskbarItemInfo : Freezable
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ThumbnailClipMarginProperty =
         DependencyProperty.Register(nameof(ThumbnailClipMargin), typeof(Thickness), typeof(TaskbarItemInfo),
-            new PropertyMetadata(Thickness.Zero, OnThumbnailClipMarginChanged));
+            new PropertyMetadata(Thickness.Zero));
 
     /// <summary>
     /// Identifies the ThumbButtonInfos dependency property.
@@ -173,99 +173,18 @@ public sealed class TaskbarItemInfo : Freezable
 
     #endregion
 
-    #region Property Changed
-
-    private static void OnProgressStateChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
-        if (d is TaskbarItemInfo taskbar)
-        {
-            taskbar.UpdateProgressStateInternal((TaskbarItemProgressState)e.NewValue!);
-        }
-    }
-
-    private static void OnProgressValueChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is TaskbarItemInfo taskbar)
-        {
-            taskbar.UpdateProgressValueInternal((double)e.NewValue!);
-        }
+        base.OnPropertyChanged(e);
+        NotifyFreezablePropertyChanged(e);
     }
 
     private static object CoerceProgressValue(DependencyObject d, object? value)
     {
-        var progress = (double)(value ?? 0.0);
-        return Math.Clamp(progress, 0.0, 1.0);
+        double progress = (double)(value ?? 0.0);
+        return double.IsNaN(progress) ? 0.0 : Math.Clamp(progress, 0.0, 1.0);
     }
 
-    private static void OnOverlayChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is TaskbarItemInfo taskbar)
-        {
-            taskbar.UpdateOverlayInternal((ImageSource?)e.NewValue);
-        }
-    }
-
-    private static void OnDescriptionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is TaskbarItemInfo taskbar)
-        {
-            taskbar.UpdateDescriptionInternal((string)e.NewValue!);
-        }
-    }
-
-    private static void OnThumbnailClipMarginChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is TaskbarItemInfo taskbar)
-        {
-            taskbar.UpdateThumbnailClipMarginInternal((Thickness)e.NewValue!);
-        }
-    }
-
-    #endregion
-
-    #region Internal Methods (Platform Implementation Hooks)
-
-    /// <summary>
-    /// Updates the progress state on the taskbar.
-    /// </summary>
-    private void UpdateProgressStateInternal(TaskbarItemProgressState state)
-    {
-        // Platform-specific implementation using ITaskbarList3
-    }
-
-    /// <summary>
-    /// Updates the progress value on the taskbar.
-    /// </summary>
-    private void UpdateProgressValueInternal(double value)
-    {
-        // Platform-specific implementation
-    }
-
-    /// <summary>
-    /// Updates the overlay icon on the taskbar.
-    /// </summary>
-    private void UpdateOverlayInternal(ImageSource? icon)
-    {
-        // Platform-specific implementation
-    }
-
-    /// <summary>
-    /// Updates the description tooltip on the taskbar.
-    /// </summary>
-    private void UpdateDescriptionInternal(string description)
-    {
-        // Platform-specific implementation
-    }
-
-    /// <summary>
-    /// Updates the thumbnail clip margin.
-    /// </summary>
-    private void UpdateThumbnailClipMarginInternal(Thickness margin)
-    {
-        // Platform-specific implementation
-    }
-
-    #endregion
 }
 
 /// <summary>
@@ -480,22 +399,35 @@ public sealed class ThumbButtonInfo : Freezable, ICommandSource
     /// <summary>
     /// Raises the Click event.
     /// </summary>
-    internal void RaiseClick()
+    internal void RaiseClick() => RaiseClickCore(null);
+
+    internal void RaiseClickIfCurrent(Func<bool> current) => RaiseClickCore(current);
+
+    private void RaiseClickCore(Func<bool>? current)
     {
+        if (current?.Invoke() == false) return;
         Click?.Invoke(this, EventArgs.Empty);
+        if (current?.Invoke() == false) return;
 
         ICommand? command = Command;
         if (command is RoutedCommand routedCommand)
         {
-            if (routedCommand.CanExecute(CommandParameter, CommandTarget))
+            if (routedCommand.CanExecute(CommandParameter, CommandTarget, current, out _) && current?.Invoke() != false)
             {
-                routedCommand.Execute(CommandParameter, CommandTarget);
+                if (current != null) routedCommand.Execute(CommandParameter, CommandTarget, current);
+                else routedCommand.Execute(CommandParameter, CommandTarget);
             }
         }
-        else if (command?.CanExecute(CommandParameter) == true)
+        else if (command?.CanExecute(CommandParameter) == true && current?.Invoke() != false)
         {
             command.Execute(CommandParameter);
         }
+    }
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        NotifyFreezablePropertyChanged(e);
     }
 
     private static object? CoerceDescription(DependencyObject dependencyObject, object? value)

@@ -1,6 +1,6 @@
 {
-  "dotnetSdk": "10.0.300",
-  "workloadSet": "10.0.300.2",
+  "dotnetSdk": "10.0.302",
+  "workloadSet": "10.0.302.1",
   "xcode": "26.6",
   "cmakeMinimum": "3.28",
   "deploymentTargets": {
@@ -12,5 +12,6 @@
   "shaderToolchain": {
     "dxc": "pinned-by-eng/apple/dependencies.lock.json",
     "spirvCross": "pinned-by-eng/apple/dependencies.lock.json"
-  }
+  },
+  "appleSdkPack": "26.5.10315"
 }

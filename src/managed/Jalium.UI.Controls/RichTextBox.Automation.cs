@@ -14,13 +14,16 @@ public partial class RichTextBox
         if (spans.Count == 0) spans.Add(new(0, 0, basic));
         return spans;
 
-        AutomationTextStyle Style(Run? run, Paragraph? paragraph)
+        AutomationTextStyle Style(Run? run, Paragraph? paragraph, FrameworkContentElement? languageSource = null)
         {
             var font = ResolveNativeRunFont(run); var color = ResolveNativeRunColor(run);
             var style = new AutomationTextStyle(font.Family, font.Size, font.Weight, font.Style,
                 AutomationTextStyleFactory.Color(color.Color, color.Opacity),
                 Alignment: (int)(paragraph?.TextAlignment ?? Jalium.UI.TextAlignment.Left),
-                Direction: paragraph == null ? -1 : GetNativeParagraphDirection(paragraph), Language: Language.IetfLanguageTag);
+                Direction: paragraph == null ? -1 : GetNativeParagraphDirection(paragraph),
+                Language: (languageSource?.Language ?? run?.Language ?? paragraph?.Language ?? _document.Language).IetfLanguageTag,
+                Background: AutomationTextStyleFactory.InlineBackground(run ?? languageSource as Inline),
+                InlineContext: AutomationTextStyleFactory.InlineContext(run ?? languageSource as Inline));
             return AutomationTextStyleFactory.Decorations(style, run ?? (TextElement?)paragraph);
         }
         void Add(int length, AutomationTextStyle style)
@@ -32,7 +35,7 @@ public partial class RichTextBox
                 {
                     case Run run: Add(run.Text.Length, Style(run, paragraph)); break;
                     case Span span: Inlines(span.Inlines, paragraph); break;
-                    case LineBreak: Add(Environment.NewLine.Length, Style(null, paragraph)); break;
+                    case LineBreak or InlineUIContainer: Add(1, Style(null, paragraph, inline)); break;
                 }
         }
         void Blocks(IEnumerable<Block> blocks)
@@ -40,15 +43,16 @@ public partial class RichTextBox
             foreach (var block in blocks)
                 switch (block)
                 {
-                    case Paragraph paragraph: Inlines(paragraph.Inlines, paragraph); Add(Environment.NewLine.Length, Style(null, paragraph)); break;
+                    case Paragraph paragraph: Inlines(paragraph.Inlines, paragraph); Add(1, Style(null, paragraph)); break;
+                    case BlockUIContainer: Add(1, Style(null, null, block)); break;
                     case Section section: Blocks(section.Blocks); break;
                     case Documents.List list: foreach (var item in list.ListItems) Blocks(item.Blocks); break;
                     case Table table:
                         foreach (var group in table.RowGroups)
                             foreach (var row in group.Rows)
                             {
-                                foreach (var cell in row.Cells) { Blocks(cell.Blocks); Add(1, basic); }
-                                Add(Environment.NewLine.Length, basic);
+                                foreach (var cell in row.Cells) { Blocks(cell.Blocks); Add(1, Style(null, null, cell)); }
+                                Add(1, Style(null, null, row));
                             }
                         break;
                 }
@@ -110,4 +114,6 @@ public partial class RichTextBox
 
     internal bool ReplaceAutomationSelection(string text) => TryReplaceImeText(
         Selection.Start.DocumentOffset, Selection.End.DocumentOffset - Selection.Start.DocumentOffset, text);
+
+    internal bool ReplaceAutomationText(string text) => TryReplaceImeText(0, _document.GetText().Length, text);
 }

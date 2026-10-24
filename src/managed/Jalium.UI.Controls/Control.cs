@@ -89,6 +89,14 @@ public class Control : FrameworkElement
             new MouseButtonEventHandler((s, e) => ((Control)s).OnPreviewMouseDoubleClick(e)));
     }
 
+    internal override bool ProcessMouseInputCommand(MouseEventArgs e)
+    {
+        if (e is MouseButtonEventArgs button &&
+            Platform.PlatformTextContextMenus.TryHandleMouseDown(this, button))
+            return true;
+        return base.ProcessMouseInputCommand(e);
+    }
+
     private static void OnMouseDoubleClickThunk(object sender, MouseButtonEventArgs e)
     {
         // 仅左键双击触发 MouseDoubleClick（与 WPF 行为一致）。
@@ -107,10 +115,10 @@ public class Control : FrameworkElement
             e.XButton1,
             e.XButton2,
             e.KeyboardModifiers,
-            e.Timestamp);
+            e.Timestamp) { PhysicalModifiers = e.PhysicalModifiers };
         // RaiseEvent 让 Bubble 路由生效；OnMouseDoubleClick 虚方法由 static Control()
         // 注册的 MouseDoubleClickEvent 类处理器自动调用，避免 inline 调用绕过路由。
-        control.RaiseEvent(args);
+        InputRoute.Raise(control, args, e.CommandInputLifetime);
         if (args.Handled)
             e.Handled = true;
     }
@@ -132,8 +140,8 @@ public class Control : FrameworkElement
             e.XButton1,
             e.XButton2,
             e.KeyboardModifiers,
-            e.Timestamp);
-        control.RaiseEvent(args);
+            e.Timestamp) { PhysicalModifiers = e.PhysicalModifiers };
+        InputRoute.Raise(control, args, e.CommandInputLifetime);
         if (args.Handled)
             e.Handled = true;
     }
