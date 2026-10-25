@@ -23,7 +23,7 @@ macOS 平台能力已经完成。
 
 父 PR 的字体与读回 CI 再次核实为原生 19/19、托管 249/249，零跳过。本轮 Writing Tools 前台尝试为 0/12、零功能断言，12 项均未满足 AppKit 与系统前台一致的前置条件，原进程正常退出 1。CUA 查看了 Native/Metal 实际文字和 AX 树，不能计为完整前台或 Software 截图验收。外置盘包曾停在文件打开；换本机临时目录后能启动，具体访问原因未定。原进程结束后的状态读取出现额外进程，已结束并排除；前台时段结束已按授权通知协作聊天。
 
-维持 master、codex/macos-window-behavior 和 PR #177；本轮只提交两个宿主源文件及本节，保留 34 个既有路径及精确增删内容差异、并行源码和空暂存区。已 fetch 的 origin/master d8b9e689 未合入当前分支。提交核对后仅按所有权清理 v317 独立构建、SDK、应用、读回、诊断、缓存、索引及别名。远端重复回调、完整前台、真实 IME、VoiceOver、多屏/Spaces、最低系统/Intel、Writing Tools 服务 UI 和分发资格仍开放，完整目标尚未完成。
+确认 #177 已于 2026-10-25 00:14（Asia/Shanghai）squash 合并，master d8b9e689 的树与旧 PR bd4af3a0 相同。保留本地 master 和原 codex/macos-window-behavior；仅在远端原分支追加代码树不变的祖先同步，使后续草稿 PR 的差异限于本轮两个宿主源文件及本节。保留 34 个既有路径及精确增删内容差异、并行源码和空暂存区。本地 master 未合入 origin/master d8b9e689。提交核对后仅按所有权清理 v317 独立构建、SDK、应用、读回、诊断、缓存、索引及别名。远端重复回调、完整前台、真实 IME、VoiceOver、多屏/Spaces、最低系统/Intel、Writing Tools 服务 UI 和分发资格仍开放，完整目标尚未完成。
 
 ## v316：Writing Tools 选区确认与 Apple 构建目标
 
