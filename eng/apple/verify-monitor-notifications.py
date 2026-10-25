@@ -27,7 +27,12 @@ def main():
     output = args.results_directory.resolve(); output.mkdir(parents=True, exist_ok=False)
     copied = list(app.rglob('libjalium.native.*.dylib'))
     names = {name + '.dylib' for name in ('core', 'text', 'platform', 'metal', 'software', 'media.core', 'media', 'browser')}
-    assert len(copied) == 16 and {p.name.removeprefix('libjalium.native.') for p in copied} == names
+    # Native code lives in MonoBundle. Some SDK build paths also mirror it as Resources.
+    mono = list((app / 'Contents/MonoBundle').glob('libjalium.native.*.dylib'))
+    resources = list((app / 'Contents/Resources').glob('libjalium.native.*.dylib'))
+    assert len(mono) == 8 and {p.name.removeprefix('libjalium.native.') for p in mono} == names
+    assert not resources or len(resources) == 8 and {p.name.removeprefix('libjalium.native.') for p in resources} == names
+    assert set(copied) == set(mono + resources)
     hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in copied}
     receipts = []
     for index in cases:
@@ -51,9 +56,11 @@ def main():
         own = {Path(p).name.removeprefix('libjalium.native.') for p in images if str(app) in p}
         backend = 'Software' if index % 4 >= 2 else 'Metal'
         required = {'core.dylib', 'text.dylib', 'platform.dylib', backend.lower() + '.dylib'}
-        passed = bool(code == 0 and result and result['passed'] and len(result['Checks']) == 18 and not result['Failures']
+        passed = bool(code == 0 and result and result['passed'] and len(result['Checks']) == 22 and not result['Failures']
             and result['applicationStillNull'] and result['renderBackend'] == backend and len(result['Observed']) == 3
-            and len(list(case.glob('*.png'))) == 3 and required <= own <= names and not foreign)
+            and len(list(case.glob('*.png'))) == 3 and required <= own <= names and not foreign
+            and not result['FrameFailures'] and len(result['NativeDeliveries']) >= (15 if index >= 4 else 10)
+            and all(frame['valid'] for frame in result['NativeDeliveries']))
         receipt = {'index': index, 'passed': passed, 'exitCode': code, 'result': result,
             'ownNativeLibraries': sorted(own), 'foreignNativeLibraries': foreign}
         receipts.append(receipt)
@@ -61,7 +68,7 @@ def main():
             'checks': len(result['Checks']) if result else 0, 'failures': result['Failures'] if result else ['Missing result.json']}), flush=True)
     assert hashes == {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in copied}
     receipt = {'passed': sum(c['passed'] for c in receipts), 'total': len(cases), 'cases': receipts,
-        'copiedNativeSHA256': hashes, 'foregroundRequired': False, 'physicalInput': False, 'systemPreferencesWritten': False}
+        'copiedNativeSHA256': hashes, 'nativeLayout': {'monoBundle': len(mono), 'resources': len(resources)}, 'foregroundRequired': False, 'physicalInput': False, 'systemPreferencesWritten': False}
     (output / 'receipt.json').write_text(json.dumps(receipt, ensure_ascii=False))
     return 0 if receipt['passed'] == receipt['total'] else 1
 

@@ -139,9 +139,9 @@ jobs:
                           '--app', str(apps[0]), '--results-directory', str(results)], check=True)
           receipt = json.loads((results / 'receipt.json').read_text())
           assert receipt['passed'] == receipt['total'] == 8, receipt
-          assert all(len(case['result']['Checks']) == 18 and case['result']['applicationStillNull']
+          assert all(len(case['result']['Checks']) == 22 and case['result']['applicationStillNull']
                      for case in receipt['cases']), receipt
-          print('All eight monitor notification SDK combinations and 144 checks passed.')
+          print('All eight monitor notification SDK combinations and 176 checks passed.')
           PYMONITORLIFETIME
       - name: Verify AppKit global preference delivery
         timeout-minutes: 10
