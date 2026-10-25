@@ -160,10 +160,10 @@ jobs:
                           '--app', str(apps[0]), '--results-directory', str(results)], check=True)
           receipt = json.loads((results / 'receipt.json').read_text())
           assert receipt['passed'] == receipt['total'] == 48, receipt
-          assert all(len(case['result']['Scenarios']) == 13 and
+          assert all(len(case['result']['Scenarios']) == 14 and
                      all(item['passed'] for item in case['result']['Scenarios'])
                      for case in receipt['cases']), receipt
-          print('All 48 AppKit global preference combinations and 624 scenarios passed.')
+          print('All 48 AppKit global preference combinations and 672 scenarios passed.')
           PY
       - name: Verify TextBox cache retention and painted geometry
         timeout-minutes: 10

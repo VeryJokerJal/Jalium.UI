@@ -19,6 +19,7 @@ namespace Jalium.UI.MacOS;
 
 internal static class WindowMotionNotificationChecks
 {
+    internal const int ScenarioCount = 14;
     private static readonly string[] Names = ["ClientAreaAnimation", "ComboBoxAnimation", "ListBoxSmoothScrolling", "MenuAnimation",
         "MinimizeAnimation", "ToolTipAnimation", "UIEffects", "ComboBoxPopupAnimation", "MenuPopupAnimation", "ToolTipPopupAnimation"];
 
@@ -31,26 +32,29 @@ internal static class WindowMotionNotificationChecks
         using var host = new Delegate(Mode(index));
         app.Delegate = host; app.FinishLaunching();
         using (var launch = NSNotification.FromName(NSApplication.DidFinishLaunchingNotification, app)) host.DidFinishLaunching(launch);
-        var scene = new Scene(index, output, preference, host); bool complete = false;
+        var scene = new Scene(index, output, preference, host); bool complete = false, completing = false;
         app.BeginInvokeOnMainThread(() =>
         {
             try { scene.Execute(); } catch (Exception error) { scene.Failures.Add("scene: " + error); }
             complete = true;
         });
         var wait = Stopwatch.StartNew();
-        using var timer = NSTimer.CreateRepeatingScheduledTimer(.05, _ =>
+        using var timer = NSTimer.CreateRepeatingScheduledTimer(.05, tick =>
         {
-            if (!complete) return;
+            if (!complete || completing) return;
             int.TryParse(Environment.GetEnvironmentVariable("JALIUM_MOTION_NOTIFICATION_HOLD_SECONDS"), out int hold);
             if (wait.Elapsed.TotalSeconds < Math.Clamp(hold, 0, 60)) return;
+            completing = true; tick.Invalidate();
             try { scene.Cleanup(); } catch (Exception error) { scene.Failures.Add("cleanup: " + error); }
             bool restored = preference.Restore(); if (!restored) scene.Failures.Add("process-local getter restoration failed");
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
             {
-                index, passed = scene.Failures.Count == 0 && scene.Scenarios.Count == 13, scene.Failures, scene.Scenarios, scene.Checks,
+                index, passed = scene.Failures.Count == 0 && scene.Scenarios.Count == ScenarioCount && scene.AuditPassed && scene.CleanupCount == 1,
+                scene.Failures, scene.Scenarios, scene.Checks, scene.NativeDeliveries, scene.WorkspacePosts, scene.DisplayPosts,
+                scene.FrameFailures, nativeDeliveryAuditPassed = scene.AuditPassed, scene.CleanupCount,
                 owners = new[] { 0, 1, 3 }[index % 6 / 2], custom = index % 2 != 0, software = index % 12 >= 6,
                 mode = Mode(index).ToString(),
-                expected = 13, scene.Observed, processId = Environment.ProcessId, appKitPreferenceOverride = true,
+                expected = ScenarioCount, scene.Observed, processId = Environment.ProcessId, appKitPreferenceOverride = true,
                 systemPreferencesWritten = false, overrideRestored = restored, foregroundRequired = false, physicalInput = false,
                 managedLoadPaths = new[] { typeof(Window).Assembly.Location, typeof(JaliumMacApplication).Assembly.Location,
                     typeof(WindowMotionNotificationChecks).Assembly.Location }
@@ -58,7 +62,7 @@ internal static class WindowMotionNotificationChecks
             complete = false; app.Stop(app);
             using var wake = NSEvent.OtherEvent(NSEventType.ApplicationDefined, default, 0, 0, 0, null, 0, 0, 0); app.PostEvent(wake, false);
         });
-        app.Run(); return scene.Failures.Count == 0 && scene.Scenarios.Count == 13 ? 0 : 1;
+        app.Run(); return scene.Failures.Count == 0 && scene.Scenarios.Count == ScenarioCount && scene.AuditPassed && scene.CleanupCount == 1 ? 0 : 1;
     }
 
     private static ThemeMode Mode(int index) => new[] { ThemeMode.None, ThemeMode.System, ThemeMode.Light, ThemeMode.Dark }[index / 12];
@@ -84,14 +88,26 @@ internal static class WindowMotionNotificationChecks
         private readonly List<(StackPanel Root, Border Probe, TextBox Editor)> _subjects = [];
         private readonly List<StackPanel> _roots = [];
         private readonly List<string> _events = [];
-        private readonly Dictionary<Window, int> _local = [];
+        private readonly Dictionary<Window, int> _local = [], _workspaceLocal = [], _displayLocal = [];
+        private readonly List<Delivery> _deliveries = [];
+        internal readonly List<object> NativeDeliveries = [], WorkspacePosts = [], DisplayPosts = [];
+        internal readonly List<string> FrameFailures = [];
+        internal int CleanupCount;
+        internal bool AuditPassed => FrameFailures.Count == 0 && WorkspacePosts.Count >= 10 && DisplayPosts.Count == 2;
+        private sealed class Delivery(Window window, PlatformEventType type, int workspace, int display)
+        {
+            internal readonly Window Window = window;
+            internal readonly PlatformEventType Type = type;
+            internal readonly int Workspace = workspace, Display = display;
+            internal int Global, Local;
+        }
         internal readonly List<object> Scenarios = [];
         internal readonly List<string> Checks = [], Failures = [];
         internal readonly List<object> Observed = [];
         private PropertyChangedEventHandler? _changed;
         private string _phase = "startup";
-        private PlatformEventType? _nativeDelivery;
-        private int _workspacePostDepth;
+        private Delivery? _delivery;
+        private int _workspacePostDepth, _workspaceSequence, _displaySequence, _workspacePost, _displayPost;
         private readonly Dictionary<IPlatformWindow, Action<PlatformEvent>> _handlers = [];
         private readonly Stopwatch _timeline = Stopwatch.StartNew();
         private RenderBackend Backend => index % 12 >= 6 ? RenderBackend.Software : RenderBackend.Metal;
@@ -108,16 +124,43 @@ internal static class WindowMotionNotificationChecks
             try { body(); } catch (Exception failure) { error = failure.ToString(); Failures.Add(name + ": " + error); }
             Scenarios.Add(new { name, passed = error == null, checks = Checks.Skip(first).ToArray(), error,
                 localNotifications = _local.Select(pair => new { handle = (long)pair.Key.Handle,
-                    popup = pair.Key.IsMacOSPopupHost, count = pair.Value }).ToArray() });
+                    popup = pair.Key.IsMacOSPopupHost, count = pair.Value }).ToArray(),
+                workspaceLocalNotifications = _workspaceLocal.Select(pair => new { handle = (long)pair.Key.Handle, count = pair.Value }).ToArray(),
+                injectedDisplayLocalNotifications = _displayLocal.Select(pair => new { handle = (long)pair.Key.Handle, count = pair.Value }).ToArray() });
         }
         private void Post()
         {
             using var name = new NSString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification");
-            _workspacePostDepth++;
+            int previous = _workspacePost, id = ++_workspaceSequence;
+            var live = _local.Keys.Where(window => window.Handle != 0).ToArray();
+            _workspacePost = id; _workspacePostDepth++;
             try { NSWorkspace.SharedWorkspace.NotificationCenter.PostNotificationName(name, NSWorkspace.SharedWorkspace); }
-            finally { _workspacePostDepth--; }
+            finally { _workspacePostDepth--; _workspacePost = previous; }
+            AuditPost(id, live, workspace: true);
         }
-        private void Reset() { _events.Clear(); foreach (var window in _local.Keys.ToArray()) _local[window] = 0; }
+        private void PostDisplay()
+        {
+            using var name = new NSString("NSApplicationDidChangeScreenParametersNotification");
+            int previous = _displayPost, id = ++_displaySequence;
+            var live = _local.Keys.Where(window => window.Handle != 0).ToArray();
+            _displayPost = id;
+            try { NSNotificationCenter.DefaultCenter.PostNotificationName(name, NSApplication.SharedApplication); }
+            finally { _displayPost = previous; }
+            AuditPost(id, live, workspace: false);
+        }
+        private void AuditPost(int id, Window[] live, bool workspace)
+        {
+            var frames = _deliveries.Where(frame => workspace ? frame.Workspace == id : frame.Display == id).ToArray();
+            bool valid = frames.Length == live.Length && live.All(window => frames.Count(frame => frame.Window == window) == 1);
+            if (!valid) FrameFailures.Add(_phase + ": " + (workspace ? "workspace" : "display") + " post must reach every live physical window once");
+            (workspace ? WorkspacePosts : DisplayPosts).Add(new { phase = _phase, id, valid,
+                expectedWindows = live.Select(window => (long)window.Handle).ToArray(), deliveries = frames.Length });
+        }
+        private void Reset()
+        {
+            _events.Clear();
+            foreach (var window in _local.Keys.ToArray()) _local[window] = _workspaceLocal[window] = _displayLocal[window] = 0;
+        }
         private void Wave(int waves)
         {
             Require(_events.Count == 10 * waves && Names.All(n => _events.Count(e => e == n) == waves), "one global animation wave per observed preference transition");
@@ -155,38 +198,67 @@ internal static class WindowMotionNotificationChecks
         }
         private void Watch(Window window)
         {
-            if (_local.ContainsKey(window)) return; _local[window] = 0;
+            if (_local.ContainsKey(window)) return;
+            _local[window] = _workspaceLocal[window] = _displayLocal[window] = 0;
             var platform = (IPlatformWindow)typeof(Window).GetField("_platformWindow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
             var handler = (Action<PlatformEvent>)platform.GetType().GetField("_eventHandler", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(platform)!;
             _handlers.Add(platform, handler);
             platform.SetEventHandler(evt =>
             {
-                var previous = _nativeDelivery; _nativeDelivery = evt.Type;
+                if (evt.Type is not (PlatformEventType.MonitorsChanged or PlatformEventType.ScrollBarSettingsChanged)) { handler(evt); return; }
+                var previous = _delivery;
+                var frame = new Delivery(window, evt.Type,
+                    evt.Type == PlatformEventType.ScrollBarSettingsChanged ? _workspacePost : 0,
+                    evt.Type == PlatformEventType.MonitorsChanged ? _displayPost : 0);
+                _delivery = frame;
                 try { handler(evt); }
-                finally { _nativeDelivery = previous; }
+                finally
+                {
+                    bool valid = frame.Local == 1 && window.Handle != 0 &&
+                        (frame.Type != PlatformEventType.MonitorsChanged || frame.Global == 1);
+                    if (!valid) FrameFailures.Add(_phase + ": invalid " + frame.Type + " delivery for " + (long)window.Handle);
+                    _deliveries.Add(frame);
+                    NativeDeliveries.Add(new { phase = _phase, window = (long)window.Handle, popup = window.IsMacOSPopupHost,
+                        nativeEvent = frame.Type.ToString(), workspacePost = frame.Workspace, displayPost = frame.Display,
+                        globals = frame.Global, locals = frame.Local, valid });
+                    _delivery = previous;
+                }
             });
             window.SystemSettingsChanged += (_, _) =>
             {
                 _local[window]++;
+                if (_delivery is not { } frame || frame.Window != window) FrameFailures.Add(_phase + ": local notification has no owning native delivery");
+                else
+                {
+                    frame.Local++;
+                    if (frame.Workspace != 0) _workspaceLocal[window]++;
+                    if (frame.Display != 0) _displayLocal[window]++;
+                }
                 Observed.Add(new { phase = _phase, milliseconds = _timeline.Elapsed.TotalMilliseconds,
                     localSettingsWindow = (long)window.Handle, popup = window.IsMacOSPopupHost, count = _local[window],
-                    nativeEvent = _nativeDelivery?.ToString(), postedWorkspaceNotification = _workspacePostDepth != 0 });
+                    nativeEvent = _delivery?.Type.ToString(), postedWorkspaceNotification = _workspacePostDepth != 0,
+                    workspacePost = _delivery?.Workspace ?? 0, injectedDisplayPost = _delivery?.Display ?? 0 });
             };
         }
+
         private void CloseAll()
         {
             foreach (var pair in _handlers) pair.Key.SetEventHandler(pair.Value);
             _handlers.Clear();
             foreach (var popup in _popups.AsEnumerable().Reverse()) popup.IsOpen = false;
             foreach (var window in _windows) if (window.Handle != 0) window.Close();
-            _local.Clear(); _subjects.Clear(); Barrier();
+            _local.Clear(); _workspaceLocal.Clear(); _displayLocal.Clear(); _subjects.Clear(); Barrier();
         }
         internal void Execute()
         {
             var context = RenderContext.GetOrCreateCurrent(Backend, forceReplace: true);
             if (Backend == RenderBackend.Metal) context.DefaultRenderingEngine = RenderingEngine.Impeller;
             Controls.Themes.ThemeManager.Initialize(Application.Current!);
-            _changed = (_, e) => { if (e.PropertyName is { } name && Names.Contains(name)) _events.Add(name); };
+            _changed = (_, e) =>
+            {
+                if (e.PropertyName is { } name && Names.Contains(name)) _events.Add(name);
+                if (string.IsNullOrEmpty(e.PropertyName) && _delivery is { Type: PlatformEventType.MonitorsChanged } frame) frame.Global++;
+            };
             SystemParameters.StaticPropertyChanged += _changed;
             Attempt("application-only-startup", () => { Require(Leases == 1 && Window.SnapshotOpenWindows().Count() == 0, "application owns the only appearance lease"); Require(Application.Current!.ThemeMode == Mode(index), "requested application theme mode"); Verify(); });
             if (Owners == 0) Root();
@@ -207,7 +279,14 @@ internal static class WindowMotionNotificationChecks
             Attempt("changed-workspace", () =>
             {
                 Reset(); preference.Set(!Cached); Post(); Barrier(); Wave(1); Verify();
-                Require(_local.All(p => p.Value == 1), "every live physical window keeps its own local settings callback");
+                Require(_workspaceLocal.All(p => p.Value == 1), "every live physical window keeps its own workspace settings callback");
+            });
+            Attempt("interleaved-display-notifications", () =>
+            {
+                Reset(); preference.Set(!Cached); Post(); PostDisplay(); PostDisplay(); Barrier(); Wave(1); Verify();
+                Require(_workspaceLocal.All(p => p.Value == 1), "each window receives exactly one workspace callback beside display changes");
+                Require(_displayLocal.All(p => p.Value == 2), "both real global display posts reach each live physical window");
+                Require(_local.All(p => p.Value >= 3), "raw local counters retain workspace, injected display and incidental system events");
             });
             Attempt("scroller-style-only", () =>
             {
@@ -276,9 +355,12 @@ internal static class WindowMotionNotificationChecks
                     ?? throw new InvalidOperationException("native backend readback");
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); using var image = File.Create(Path.Combine(output, "window.png")); encoder.Save(image);
             });
+            Require(AuditPassed, "every native settings delivery and explicit post retains its source, owner and exact local publication");
         }
         internal void Cleanup()
         {
+            CleanupCount++;
+            using var until = NSDate.FromTimeIntervalSinceNow(.10); NSRunLoop.Main.RunUntil(until);
             CloseAll(); foreach (var root in _roots) Css.SetStyleSheets(root, null);
             if (_changed != null) SystemParameters.StaticPropertyChanged -= _changed;
             host.Stop();
