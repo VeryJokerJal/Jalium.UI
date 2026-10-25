@@ -90,6 +90,9 @@ internal static class WindowMotionNotificationChecks
         internal readonly List<object> Observed = [];
         private PropertyChangedEventHandler? _changed;
         private string _phase = "startup";
+        private PlatformEventType? _nativeDelivery;
+        private int _workspacePostDepth;
+        private readonly Dictionary<IPlatformWindow, Action<PlatformEvent>> _handlers = [];
         private readonly Stopwatch _timeline = Stopwatch.StartNew();
         private RenderBackend Backend => index % 12 >= 6 ? RenderBackend.Software : RenderBackend.Metal;
         private bool Custom => index % 2 != 0;
@@ -107,10 +110,12 @@ internal static class WindowMotionNotificationChecks
                 localNotifications = _local.Select(pair => new { handle = (long)pair.Key.Handle,
                     popup = pair.Key.IsMacOSPopupHost, count = pair.Value }).ToArray() });
         }
-        private static void Post()
+        private void Post()
         {
             using var name = new NSString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification");
-            NSWorkspace.SharedWorkspace.NotificationCenter.PostNotificationName(name, NSWorkspace.SharedWorkspace);
+            _workspacePostDepth++;
+            try { NSWorkspace.SharedWorkspace.NotificationCenter.PostNotificationName(name, NSWorkspace.SharedWorkspace); }
+            finally { _workspacePostDepth--; }
         }
         private void Reset() { _events.Clear(); foreach (var window in _local.Keys.ToArray()) _local[window] = 0; }
         private void Wave(int waves)
@@ -151,15 +156,27 @@ internal static class WindowMotionNotificationChecks
         private void Watch(Window window)
         {
             if (_local.ContainsKey(window)) return; _local[window] = 0;
+            var platform = (IPlatformWindow)typeof(Window).GetField("_platformWindow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+            var handler = (Action<PlatformEvent>)platform.GetType().GetField("_eventHandler", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(platform)!;
+            _handlers.Add(platform, handler);
+            platform.SetEventHandler(evt =>
+            {
+                var previous = _nativeDelivery; _nativeDelivery = evt.Type;
+                try { handler(evt); }
+                finally { _nativeDelivery = previous; }
+            });
             window.SystemSettingsChanged += (_, _) =>
             {
                 _local[window]++;
                 Observed.Add(new { phase = _phase, milliseconds = _timeline.Elapsed.TotalMilliseconds,
-                    localSettingsWindow = (long)window.Handle, popup = window.IsMacOSPopupHost, count = _local[window] });
+                    localSettingsWindow = (long)window.Handle, popup = window.IsMacOSPopupHost, count = _local[window],
+                    nativeEvent = _nativeDelivery?.ToString(), postedWorkspaceNotification = _workspacePostDepth != 0 });
             };
         }
         private void CloseAll()
         {
+            foreach (var pair in _handlers) pair.Key.SetEventHandler(pair.Value);
+            _handlers.Clear();
             foreach (var popup in _popups.AsEnumerable().Reverse()) popup.IsOpen = false;
             foreach (var window in _windows) if (window.Handle != 0) window.Close();
             _local.Clear(); _subjects.Clear(); Barrier();

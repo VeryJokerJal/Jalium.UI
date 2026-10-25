@@ -56,7 +56,7 @@ internal static class WindowDockMotionChecks
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
             {
                 index, passed = scene.Failures.Count == 0 && scene.Scenarios.Count == ScenarioCount,
-                scene.Scenarios, scene.Checks, scene.Failures, scene.WindowTransitions, scene.DisplayObservations,
+                scene.Scenarios, scene.Checks, scene.Failures, scene.WindowTransitions, scene.DisplayObservations, scene.AnimationObservations,
                 miniaturizationObserversRestored = scene.ObserversRestored, expected = ScenarioCount,
                 software = index >= 4, custom = index % 4 >= 2, initiallyReduced = index % 2 != 0,
                 processId = Environment.ProcessId, overrideRestored = restored, displayProbeRestored = displayRestored,
@@ -110,7 +110,7 @@ internal static class WindowDockMotionChecks
         private readonly Stopwatch _watch = Stopwatch.StartNew();
         private int _miniCompletions, _restoreCompletions, _awaitedMini, _awaitedRestore;
         private string _phase = "opening", _observedState = string.Empty;
-        internal readonly List<object> WindowTransitions = [], DisplayObservations = [];
+        internal readonly List<object> WindowTransitions = [], DisplayObservations = [], AnimationObservations = [];
         internal bool ObserversRestored => _stateObservers.Count == 0;
 
         private void Require(bool condition, string message)
@@ -200,10 +200,15 @@ internal static class WindowDockMotionChecks
             byte[] before = Capture(AppView, label + "-before");
             ulong displays = display.Count(_app.DockTile.Handle);
             bool changed = false;
-            for (int i = 0; i < 4 && !changed; i++)
+            // A manual readback advances the drawn phase even before the timer fires.
+            // Observe both signals within the existing four-pump budget.
+            for (int i = 0; i < 4 && (!changed || display.Count(_app.DockTile.Handle) <= displays); i++)
             {
                 Pump(.16);
                 changed = !before.AsSpan().SequenceEqual(Capture(AppView, label + "-after"));
+                AnimationObservations.Add(new { label, milliseconds = _watch.Elapsed.TotalMilliseconds,
+                    animationPoll = i + 1, changed, displaysBefore = displays,
+                    displaysAfter = display.Count(_app.DockTile.Handle) });
             }
             Require(changed, "enabled indeterminate tile advances its rendered phase");
             Require(display.Count(_app.DockTile.Handle) > displays, "real timer requests application Dock display");
