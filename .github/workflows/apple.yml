@@ -115,6 +115,27 @@ jobs:
                      and case['result']['cleaned'] for case in receipt['cases']), receipt
           print('All eight popup viewport SDK combinations, 72 scenarios and 480 assertions passed.')
           PYVIEWPORT
+      - name: Verify standalone AppKit window appearance
+        timeout-minutes: 5
+        run: |
+          python3 - <<'PYSTANDALONE'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-standalone-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-standalone-appearance.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 8, receipt
+          assert all(len(case['result']['Checks']) == 32 and case['result']['applicationStillNull']
+                     for case in receipt['cases']), receipt
+          print('All eight standalone appearance SDK combinations and 256 checks passed.')
+          PYSTANDALONE
       - name: Verify AppKit global preference delivery
         timeout-minutes: 10
         run: |
@@ -355,6 +376,27 @@ jobs:
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
           print('All 120 Writing Tools selection contracts executed and passed.')
           PYSELECTION
+      - name: Verify standalone system appearance contracts
+        env:
+          DYLD_LIBRARY_PATH: ${{ runner.temp }}/jalium-window-native/osx-arm64/Release
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug --no-build --no-restore \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-focus-intent-managed" \
+            -p:JaliumMacNativeRoot="$DYLD_LIBRARY_PATH" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter 'FullyQualifiedName~MacOSStandaloneAppearanceTests' \
+            --logger 'trx;LogFileName=standalone-appearance.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-standalone-appearance-results"
+          python3 - <<'PYSTANDALONEMANAGED'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-standalone-appearance-results/standalone-appearance.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 26 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 26 standalone system appearance contracts executed and passed.')
+          PYSTANDALONEMANAGED
       - name: Verify mouse release ownership, command compatibility and ComboBox forwarding
         run: |
           dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \

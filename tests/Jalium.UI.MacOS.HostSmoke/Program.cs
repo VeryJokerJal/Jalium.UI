@@ -14,6 +14,9 @@ JaliumMacApplication.Initialize();
 if (args.Length == 0 && WindowWritingToolsChecks.TryRunBundled(out int bundledResult))
     return bundledResult;
 
+if (args.Length == 1 && args[0].StartsWith("--window-standalone-appearance-case=", StringComparison.Ordinal))
+    return WindowStandaloneAppearanceChecks.Run(args[0]);
+
 if (args.Length == 1 && args[0].StartsWith("--window-popup-viewport-case=", StringComparison.Ordinal))
     return WindowPopupViewportChecks.Run(args[0]);
 

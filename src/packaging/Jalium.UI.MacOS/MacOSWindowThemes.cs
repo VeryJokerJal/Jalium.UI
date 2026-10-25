@@ -51,7 +51,8 @@ internal static class MacOSWindowThemes
                     new NSString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification"),
                     _ => ScheduleRefresh(generation));
                 MacOSScrollBarSettings.PublishPendingMotionPreferenceChanges();
-                ScheduleRefresh(generation, forceNotification: changed);
+                // A standalone first window has no Application bootstrap to publish its palette.
+                ScheduleRefresh(generation, forceNotification: changed || Application.Current == null);
             }
             catch
             {
