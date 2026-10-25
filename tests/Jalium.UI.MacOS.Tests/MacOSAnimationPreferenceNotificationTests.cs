@@ -103,6 +103,34 @@ public sealed class MacOSAnimationPreferenceNotificationTests
         Assert.Equal(Names.Order(), scene.Events.Order()); Assert.Equal(!scene.NativeMotion, scene.Targets[0].Tag);
     }
 
+    [Theory]
+    [InlineData(false, false)] [InlineData(true, false)]
+    [InlineData(false, true)] [InlineData(true, true)]
+    public void MonitorPublicationRespectsTheClosingDecision(bool custom, bool cancel)
+    {
+        using var scene = new Scene(0, 1, custom);
+        var window = scene.Windows[0]; bool entered = false, closed = false;
+        EventHandler<CancelEventArgs> closing = (_, e) => e.Cancel = cancel;
+        window.Closing += closing; window.Closed += (_, _) => closed = true;
+        PropertyChangedEventHandler changed = (_, e) =>
+        {
+            if (entered || !string.IsNullOrEmpty(e.PropertyName)) return;
+            entered = true; window.Close();
+        };
+        SystemParameters.StaticPropertyChanged += changed;
+        try
+        {
+            scene.Send(window, PlatformEventType.MonitorsChanged);
+            Assert.True(entered); Assert.Equal(!cancel, closed);
+            Assert.Equal(cancel ? 1 : 0, scene.PerWindowEvents);
+        }
+        finally
+        {
+            SystemParameters.StaticPropertyChanged -= changed;
+            window.Closing -= closing;
+        }
+    }
+
     private sealed class Scene : IDisposable
     {
         private const BindingFlags Static = BindingFlags.Static | BindingFlags.NonPublic;
@@ -141,10 +169,10 @@ public sealed class MacOSAnimationPreferenceNotificationTests
 
         internal void SeedChangedCache() => Motion.SetValue(null, !NativeMotion);
 
-        internal void Send(Window window)
+        internal void Send(Window window, PlatformEventType type = PlatformEventType.ScrollBarSettingsChanged)
         {
             try { typeof(Window).GetMethod("OnPlatformEvent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window,
-                [new PlatformEvent { Type = PlatformEventType.ScrollBarSettingsChanged }]); }
+                [new PlatformEvent { Type = type }]); }
             catch (TargetInvocationException error) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); }
         }
 

@@ -72,22 +72,8 @@ jobs:
           assert tools['workloadSet'] in info and tools['appleSdkPack'] in info, info
           print(info)
           PYTOOLCHAIN
-      - name: Build Apple native slices
-        run: |
-          bash eng/apple/build-native.sh macos Release
-          bash eng/apple/build-native.sh ios Release
-          bash eng/apple/build-native.sh iossimulator Release
-          bash eng/apple/build-native.sh tvos Release
-          bash eng/apple/build-native.sh tvossimulator Release
-          bash eng/apple/build-native.sh visionos Release
-          bash eng/apple/build-native.sh visionsimulator Release
-      - name: Assemble static XCFramework
-        run: bash eng/apple/package-xcframework.sh Release
-      - name: Build Apple entry packages
-        run: |
-          dotnet build src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj -c Release -p:JaliumPlatform=macos
-          dotnet build src/packaging/Jalium.UI.iOS/Jalium.UI.iOS.csproj -c Release -f net10.0-ios -p:JaliumPlatform=ios
-          dotnet build src/packaging/Jalium.UI.tvOS/Jalium.UI.tvOS.csproj -c Release -f net10.0-tvos -p:JaliumPlatform=tvos
+      - name: Build macOS native slice
+        run: bash eng/apple/build-native.sh macos Release
       - name: Build macOS global preference SDK fixture
         run: >-
           dotnet build tests/Jalium.UI.MacOS.HostSmoke/Jalium.UI.MacOS.HostSmoke.csproj
@@ -136,6 +122,27 @@ jobs:
                      for case in receipt['cases']), receipt
           print('All eight standalone appearance SDK combinations and 256 checks passed.')
           PYSTANDALONE
+      - name: Verify AppKit monitor notification lifetimes
+        timeout-minutes: 5
+        run: |
+          python3 - <<'PYMONITORLIFETIME'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-motion-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-monitor-notification-sdk-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-monitor-notifications.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 8, receipt
+          assert all(len(case['result']['Checks']) == 18 and case['result']['applicationStillNull']
+                     for case in receipt['cases']), receipt
+          print('All eight monitor notification SDK combinations and 144 checks passed.')
+          PYMONITORLIFETIME
       - name: Verify AppKit global preference delivery
         timeout-minutes: 10
         run: |
@@ -229,11 +236,28 @@ jobs:
           name: apple-sdk-diagnostics
           path: |
             ${{ runner.temp }}/jalium-motion-sdk-results
+            ${{ runner.temp }}/jalium-standalone-sdk-results
+            ${{ runner.temp }}/jalium-monitor-notification-sdk-results
             ${{ runner.temp }}/jalium-textbox-cache-sdk-results
             ${{ runner.temp }}/jalium-popup-viewport-sdk-results
             ${{ runner.temp }}/jalium-dock-motion-sdk-results
             ${{ runner.temp }}/jalium-dock-ownership-sdk-results
           if-no-files-found: ignore
+      - name: Build remaining Apple native slices
+        run: |
+          bash eng/apple/build-native.sh ios Release
+          bash eng/apple/build-native.sh iossimulator Release
+          bash eng/apple/build-native.sh tvos Release
+          bash eng/apple/build-native.sh tvossimulator Release
+          bash eng/apple/build-native.sh visionos Release
+          bash eng/apple/build-native.sh visionsimulator Release
+      - name: Assemble static XCFramework
+        run: bash eng/apple/package-xcframework.sh Release
+      - name: Build Apple entry packages
+        run: |
+          dotnet build src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj -c Release -p:JaliumPlatform=macos
+          dotnet build src/packaging/Jalium.UI.iOS/Jalium.UI.iOS.csproj -c Release -f net10.0-ios -p:JaliumPlatform=ios
+          dotnet build src/packaging/Jalium.UI.tvOS/Jalium.UI.tvOS.csproj -c Release -f net10.0-tvos -p:JaliumPlatform=tvos
       - name: Upload Apple native artifact
         uses: actions/upload-artifact@v4
         with:
@@ -415,7 +439,7 @@ jobs:
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
           print('All 633 mouse release ownership, command compatibility and ComboBox forwarding contracts executed and passed.')
           PY
-      - name: Verify global animation preference notification ownership
+      - name: Verify global preference and monitor notification ownership
         run: |
           dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug \
             -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-motion-managed" \
@@ -429,9 +453,9 @@ jobs:
           import xml.etree.ElementTree as ET
           path = Path(os.environ['RUNNER_TEMP']) / 'jalium-motion-results/motion-notifications.trx'
           counts = ET.parse(path).find('.//{*}Counters').attrib
-          assert all(int(counts[name]) == 40 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 44 for name in ['total', 'executed', 'passed']), counts
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
-          print('All 40 global animation preference notification contracts executed and passed.')
+          print('All 44 global animation and monitor notification contracts executed and passed.')
           PY
       - name: Verify all Window, clipboard and thread-affinity contracts
         run: >-
