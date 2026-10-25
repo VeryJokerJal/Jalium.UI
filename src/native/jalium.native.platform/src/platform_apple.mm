@@ -502,27 +502,42 @@ void ApplyAppleSurfaceAppearance(JaliumPlatformWindow* window)
 
 void RefreshWindowMenuItem(JaliumPlatformWindow* window)
 {
-    if (!window || !window->window) return;
-    window->window.excludedFromWindowsMenu = !window->showInTaskbar;
-    if (!window->destroying && window->visible && window->showInTaskbar) {
-        // AppKit does not automatically list borderless windows used for
-        // managed chrome. Register them through the public Window-menu API.
-        [NSApp addWindowsItem:window->window title:window->window.title filename:NO];
-        [NSApp changeWindowsItem:window->window title:window->window.title filename:NO];
-        [NSApp updateWindowsItem:window->window];
-    } else [NSApp removeWindowsItem:window->window];
+    if (!window) return;
+    bool registered = IsLiveWindow(window);
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    if (!nativeWindow) return;
+    // A property observer or Window-menu callback can retire the C++ owner.
+    // Destruction still calls this helper to remove its retained native item.
+    auto live = [&] { return !registered || IsLiveWindow(window, nativeWindow); };
+    auto listed = [&] { return live() && !window->destroying && window->visible && window->showInTaskbar; };
+    nativeWindow.excludedFromWindowsMenu = !window->showInTaskbar;
+    if (!live()) return;
+    if (listed()) {
+        NSString* title = nativeWindow.title;
+        if (!listed()) return;
+        // AppKit does not automatically list borderless managed-chrome windows.
+        [NSApp addWindowsItem:nativeWindow title:title filename:NO];
+        if (!listed()) return;
+        title = nativeWindow.title;
+        if (!listed()) return;
+        [NSApp changeWindowsItem:nativeWindow title:title filename:NO];
+        if (!listed()) return;
+        [NSApp updateWindowsItem:nativeWindow];
+    } else [NSApp removeWindowsItem:nativeWindow];
 }
 
 void ApplyAppleWindowParticipation(JaliumPlatformWindow* window)
 {
+    bool registered = IsLiveWindow(window);
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
     // Menu/cycling participation is independent of fullscreen eligibility.
-    // A regular window stays primary even when omitted from the Window list;
-    // only popup surfaces accompany another window's fullscreen Space.
+    // Only popup surfaces accompany another window's fullscreen Space.
     NSUInteger behavior = (window->style & JALIUM_WINDOW_STYLE_POPUP)
         ? NSWindowCollectionBehaviorFullScreenAuxiliary : NSWindowCollectionBehaviorFullScreenPrimary;
     if (!window->showInTaskbar)
         behavior |= NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle;
-    window->window.collectionBehavior = behavior;
+    nativeWindow.collectionBehavior = behavior;
+    if (registered && !IsLiveWindow(window, nativeWindow)) return;
     RefreshWindowMenuItem(window);
 }
 
@@ -629,13 +644,21 @@ void ApplyQueuedWindowState(JaliumPlatformWindow* window);
 
 void SynchronizeRestoreStyle(JaliumPlatformWindow* window)
 {
-    if (!window->hasRestoreFrame || window->restoreStyleMask == window->window.styleMask) return;
+    if (!window->hasRestoreFrame) return;
+    bool registered = IsLiveWindow(window);
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    auto live = [&] { return !registered || IsLiveWindow(window, nativeWindow); };
+    NSUInteger style = nativeWindow.styleMask;
+    if (!live() || window->restoreStyleMask == style) return;
     NSPoint topLeft = NSMakePoint(NSMinX(window->restoreFrame), NSMaxY(window->restoreFrame));
-    NSRect frame = [window->window frameRectForContentRect:NSMakeRect(0, 0,
-        window->restoreContentSize.width, window->restoreContentSize.height)];
+    NSSize content = window->restoreContentSize;
+    NSRect frame = [nativeWindow frameRectForContentRect:NSMakeRect(0, 0, content.width, content.height)];
+    if (!live()) return;
+    style = nativeWindow.styleMask;
+    if (!live()) return;
     frame.origin = NSMakePoint(topLeft.x, topLeft.y - frame.size.height);
     window->restoreFrame = frame;
-    window->restoreStyleMask = window->window.styleMask;
+    window->restoreStyleMask = style;
 }
 
 struct AppleContentFocus {
@@ -747,18 +770,23 @@ void ApplyAppleStyle(JaliumPlatformWindow* window)
     uint32_t appearanceStyle = window->style;
     ApplyAppleSurfaceAppearance(window);
     if (!live() || window->style != appearanceStyle) return;
-    window->window.level = (window->style & JALIUM_WINDOW_STYLE_TOPMOST)
+    nativeWindow.level = (window->style & JALIUM_WINDOW_STYLE_TOPMOST)
         ? NSFloatingWindowLevel : NSNormalWindowLevel;
-    if (window->fullScreenTransition ||
-        (window->window.styleMask & NSWindowStyleMaskFullScreen)) return;
+    if (!live()) return;
+    NSUInteger currentMask = nativeWindow.styleMask;
+    if (!live()) return;
+    if (window->fullScreenTransition || (currentMask & NSWindowStyleMaskFullScreen)) return;
     if (registered && window->state == JALIUM_WINDOW_STATE_NORMAL &&
         !window->applyingWindowState && !window->appKitZooming && !window->miniaturizing &&
         !window->deminiaturizing && !window->pendingStartupPlacement) {
         CaptureNormalFrame(window);
         if (!IsLiveWindow(window, nativeWindow)) return;
     }
-    NSSize contentSize = ((NSView*)window->view).bounds.size;
-    NSPoint topLeft = NSMakePoint(NSMinX(window->window.frame), NSMaxY(window->window.frame));
+    NSSize contentSize = contentView.bounds.size;
+    if (!live()) return;
+    NSRect originalFrame = nativeWindow.frame;
+    if (!live()) return;
+    NSPoint topLeft = NSMakePoint(NSMinX(originalFrame), NSMaxY(originalFrame));
     bool wasApplyingState = window->applyingState;
     bool wasApplyingWindowState = window->applyingWindowState;
     window->applyingAppleStyle = true;
@@ -767,33 +795,45 @@ void ApplyAppleStyle(JaliumPlatformWindow* window)
     NSUInteger mask = AppleStyleMask(window->style);
     bool extended = window->extendedTitleBar && (mask & NSWindowStyleMaskTitled);
     if (extended) mask |= NSWindowStyleMaskFullSizeContentView;
-    window->window.styleMask = mask;
-    if (registered && !IsLiveWindow(window, nativeWindow)) return;
+    nativeWindow.styleMask = mask;
+    if (!live()) return;
     SynchronizeRestoreStyle(window);
+    if (!live()) return;
     bool maximized = window->state == JALIUM_WINDOW_STATE_MAXIMIZED ||
         (window->state == JALIUM_WINDOW_STATE_MINIMIZED && window->beforeMinimize == JALIUM_WINDOW_STATE_MAXIMIZED);
     if (maximized) {
-        NSScreen* screen = nativeWindow.screen ?: NSScreen.mainScreen;
-        [nativeWindow setFrame:MaximizedFrameForScreen(nativeWindow, screen) display:NO];
-        if (registered && !IsLiveWindow(window, nativeWindow)) return;
-        window->maximizedFrame = nativeWindow.frame;
+        NSScreen* screen = nativeWindow.screen;
+        if (!live()) return;
+        if (!screen) { screen = NSScreen.mainScreen; if (!live()) return; }
+        NSRect frame = MaximizedFrameForScreen(nativeWindow, screen);
+        if (!live()) return;
+        [nativeWindow setFrame:frame display:NO];
+        if (!live()) return;
+        frame = nativeWindow.frame;
+        if (!live()) return;
+        window->maximizedFrame = frame;
     } else {
         [nativeWindow setContentSize:contentSize];
         if (registered && !IsLiveWindow(window, nativeWindow)) return;
         [nativeWindow setFrameTopLeftPoint:topLeft];
         if (registered && !IsLiveWindow(window, nativeWindow)) return;
     }
-    window->window.titleVisibility = extended ? NSWindowTitleHidden : NSWindowTitleVisible;
-    window->window.titlebarAppearsTransparent = extended;
+    nativeWindow.titleVisibility = extended ? NSWindowTitleHidden : NSWindowTitleVisible;
+    if (!live()) return;
+    nativeWindow.titlebarAppearsTransparent = extended;
+    if (!live()) return;
     ApplyAppleWindowParticipation(window);
-    [window->window standardWindowButton:NSWindowCloseButton].enabled =
-        window->enabled && (window->style & JALIUM_WINDOW_STYLE_CLOSABLE);
-    [window->window standardWindowButton:NSWindowMiniaturizeButton].enabled =
-        window->enabled && (window->style & JALIUM_WINDOW_STYLE_MINIMIZABLE);
-    [window->window standardWindowButton:NSWindowZoomButton].enabled =
-        window->enabled && (window->style & JALIUM_WINDOW_STYLE_MAXIMIZABLE);
-    [window->window layoutIfNeeded];
-    if (registered && !IsLiveWindow(window, nativeWindow)) return;
+    if (!live()) return;
+    const NSWindowButton buttons[] = {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton};
+    const uint32_t capabilities[] = {JALIUM_WINDOW_STYLE_CLOSABLE, JALIUM_WINDOW_STYLE_MINIMIZABLE, JALIUM_WINDOW_STYLE_MAXIMIZABLE};
+    for (int i = 0; i < 3; ++i) {
+        NSButton* __attribute__((objc_precise_lifetime)) button = [nativeWindow standardWindowButton:buttons[i]];
+        if (!live()) return;
+        button.enabled = window->enabled && (window->style & capabilities[i]);
+        if (!live()) return;
+    }
+    [nativeWindow layoutIfNeeded];
+    if (!live()) return;
     // A field editor is shared by its window and can be detached by a frame
     // replacement. Restore its logical control, retaining the selection,
     // rather than selecting the managed root or a detached NSTextView.
@@ -4348,8 +4388,9 @@ void jalium_apple_window_show(JaliumPlatformWindow* w, int32_t activate)
     if (!w) return;
     w->visible = true;
 #if TARGET_OS_OSX
-    NSWindow* nativeWindow = w->window;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
     RefreshWindowMenuItem(w);
+    if (!IsLiveWindow(w, nativeWindow) || !w->visible) return;
     // orderFront may constrain the first displayed frame to the screen's
     // available area. This is part of Show, and must not clear a maximized
     // state requested before showing or replace its saved normal frame.
@@ -4368,8 +4409,11 @@ void jalium_apple_window_show(JaliumPlatformWindow* w, int32_t activate)
     }
     if (IsLiveWindow(w, nativeWindow)) {
         w->applyingState = wasApplyingState;
-        if (w->state == JALIUM_WINDOW_STATE_MAXIMIZED)
-            w->maximizedFrame = w->window.frame;
+        if (w->state == JALIUM_WINDOW_STATE_MAXIMIZED) {
+            NSRect frame = nativeWindow.frame;
+            if (!IsLiveWindow(w, nativeWindow)) return;
+            w->maximizedFrame = frame;
+        }
         ApplyQueuedWindowState(w);
     }
 #else
@@ -4572,7 +4616,10 @@ int32_t jalium_apple_window_apply_startup_location(JaliumPlatformWindow* w, int3
     bool useRestore = w->state != JALIUM_WINDOW_STATE_NORMAL || w->fullScreenTransition ||
         w->applyingWindowState || w->miniaturizing || w->deminiaturizing;
     if (useRestore && !w->hasRestoreFrame) return JALIUM_ERROR_INVALID_STATE;
-    if (w->applyingAppleStyle) SynchronizeRestoreStyle(w);
+    if (w->applyingAppleStyle) {
+        SynchronizeRestoreStyle(w);
+        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_ERROR_INVALID_STATE;
+    }
     NSRect frame = useRestore ? w->restoreFrame : nativeWindow.frame;
     NSRect work = screen.visibleFrame;
     NSRect reference = work;
@@ -4691,25 +4738,32 @@ int32_t jalium_apple_window_enable_text_services(JaliumPlatformWindow* w, int32_
 }
 void jalium_window_hide(JaliumPlatformWindow* w){if(!w)return;w->visible=false;
 #if TARGET_OS_OSX
-    NSWindow* __strong originalWindow = w->window;
-    InvalidateAppleWritingTools(w->view);
-    if (!IsLiveWindow(w, originalWindow) || w->visible) return;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) view = w->view;
+    auto current = [&] { return IsLiveWindow(w, nativeWindow) && !w->visible; };
+    InvalidateAppleWritingTools(view);
+    if (!current()) return;
     CancelAppleDrag(w);
-    NSWindow* nativeWindow = w->window;
+    if (!current()) return;
     CancelPendingWindowSelection(w);
+    if (!current()) return;
     [w->systemMenu cancelTrackingWithoutAnimation];
-    if (!IsLiveWindow(w, nativeWindow)) return;
+    if (!current()) return;
     RefreshWindowMenuItem(w);
-    [w->view cancelCursorTracking];
-    [w->window orderOut:nil];
+    if (!current()) return;
+    [view cancelCursorTracking];
+    if (!current()) return;
+    [nativeWindow orderOut:nil];
 #else
     w->view.hidden=YES;
 #endif
 }
+
 void jalium_window_set_title(JaliumPlatformWindow* w,const JaliumUtf16Char* title){if(!w)return;
 #if TARGET_OS_OSX
-    w->window.title=StringFromUtf16(title);
-    RefreshWindowMenuItem(w);
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
+    nativeWindow.title=StringFromUtf16(title);
+    if (IsLiveWindow(w, nativeWindow)) RefreshWindowMenuItem(w);
 #else
     (void)title;
 #endif
@@ -4720,6 +4774,7 @@ void jalium_window_resize(JaliumPlatformWindow* w,int32_t width,int32_t height){
     NSSize contentSize = NSMakeSize(width/w->scale,height/w->scale);
     if (w->applyingAppleStyle && w->hasRestoreFrame) {
         SynchronizeRestoreStyle(w);
+        if (!IsLiveWindow(w, nativeWindow)) return;
         w->pendingStartupPlacement = true;
     }
     if (w->pendingStartupPlacement && w->hasRestoreFrame) {
@@ -4753,6 +4808,7 @@ void jalium_window_move(JaliumPlatformWindow* w,int32_t x,int32_t y){if(!w)retur
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
     if (w->applyingAppleStyle && w->hasRestoreFrame) {
         SynchronizeRestoreStyle(w);
+        if (!IsLiveWindow(w, nativeWindow)) return;
         w->pendingStartupPlacement = true;
     }
     bool wasApplyingState = w->applyingState;
