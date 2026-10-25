@@ -11,6 +11,21 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
+
+// Observe real AppKit properties, so reentrancy runs inside the native setter.
+@interface JaliumSettingsAppearanceObserver : NSObject {
+@public
+    std::function<void()> action;
+}
+@end
+@implementation JaliumSettingsAppearanceObserver
+- (void)observeValueForKeyPath:(NSString*)path ofObject:(id)object change:(NSDictionary*)change context:(void*)context
+{
+    auto callback = action;
+    if (callback) callback();
+}
+@end
 
 namespace {
 void Require(bool value, const char* message)
@@ -76,6 +91,22 @@ struct Window {
         jalium_window_destroy(old);
     }
     ~Window() { Close(); }
+};
+struct AppearanceObserver {
+    NSWindow* native;
+    NSString* key;
+    JaliumSettingsAppearanceObserver* observer = [JaliumSettingsAppearanceObserver new];
+    AppearanceObserver(NSWindow* window, NSString* property, std::function<void()> callback)
+        : native(window), key(property)
+    {
+        observer->action = std::move(callback);
+        [native addObserver:observer forKeyPath:key options:0 context:nullptr];
+    }
+    ~AppearanceObserver()
+    {
+        observer->action = {};
+        [native removeObserver:observer forKeyPath:key];
+    }
 };
 void Pump(double duration = .07)
 {
@@ -183,6 +214,81 @@ int Run(bool threadOnly)
                 "disabled or popup settings delivery was lost");
             Require(!owner.native.canBecomeKeyWindow && !owner.native.visible && !popup.native.visible,
                 "settings changed disabled state or visibility");
+        });
+        for (NSString* key : @[@"opaque", @"backgroundColor"]) {
+            auto prepare = [](Window& w) {
+                w.view.wantsLayer = YES;
+                Require(w.view.layer != nil, "appearance control owns a real backing layer");
+                w.native.opaque = NO;
+                w.native.backgroundColor = NSColor.magentaColor;
+            };
+            std::string suffix = std::string(" through ") + key.UTF8String;
+            test(("appearance observer can close during settings" + suffix).c_str(), [&] {
+                Window w(style), survivor(style); prepare(w); bool entered = false;
+                AppearanceObserver observation(w.native, key, [&] {
+                    if (entered) return;
+                    entered = true; w.Close();
+                });
+                source.Post();
+                Require(entered && !w.value && w.notifications == 0 && survivor.notifications == 1,
+                    "property close must retire the settings callback and preserve other windows");
+            });
+            test(("appearance observer can close during style" + suffix).c_str(), [&] {
+                Window w(style); prepare(w); bool entered = false;
+                AppearanceObserver observation(w.native, key, [&] {
+                    if (entered) return;
+                    entered = true; w.Close();
+                });
+                auto result = jalium_apple_window_set_style(w.value, style | JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT);
+                Require(result == JALIUM_OK && entered && !w.value && w.notifications == 0,
+                    "style caller continued after its appearance observer closed the owner");
+            });
+            test(("newer transparent style survives settings" + suffix).c_str(), [&] {
+                Window w(style); prepare(w); bool entered = false;
+                AppearanceObserver observation(w.native, key, [&] {
+                    if (entered) return;
+                    entered = true;
+                    Require(jalium_apple_window_set_style(w.value, style | JALIUM_WINDOW_STYLE_TRANSPARENT) == JALIUM_OK,
+                        "apply nested transparent style");
+                });
+                source.Post();
+                Require(entered && w.value && w.notifications == 1 && !w.native.opaque && !w.view.layer.opaque &&
+                    [w.native.backgroundColor isEqual:NSColor.clearColor], "older appearance overwrote the newer style");
+            });
+            test(("newer transparent style survives style caller" + suffix).c_str(), [&] {
+                Window w(style); prepare(w); bool entered = false;
+                AppearanceObserver observation(w.native, key, [&] {
+                    if (entered) return;
+                    entered = true;
+                    Require(jalium_apple_window_set_style(w.value, style | JALIUM_WINDOW_STYLE_TRANSPARENT) == JALIUM_OK,
+                        "apply nested transparent style");
+                });
+                Require(jalium_apple_window_set_style(w.value, style | JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT) == JALIUM_OK,
+                    "apply outer style");
+                Require(entered && !w.native.opaque && !w.view.layer.opaque && !w.native.ignoresMouseEvents &&
+                    [w.native.backgroundColor isEqual:NSColor.clearColor], "style caller resumed a superseded appearance");
+            });
+        }
+        test("nested settings do not cancel the outer style request", [&] {
+            Window w(style); bool entered = false; w.native.opaque = NO;
+            AppearanceObserver observation(w.native, @"opaque", [&] {
+                if (entered) return;
+                entered = true; source.Post();
+            });
+            Require(jalium_apple_window_set_style(w.value,
+                style | JALIUM_WINDOW_STYLE_RESIZABLE | JALIUM_WINDOW_STYLE_TOPMOST) == JALIUM_OK, "outer style update");
+            Require(entered && w.notifications == 1 && (w.native.styleMask & NSWindowStyleMaskResizable) &&
+                w.native.level == NSFloatingWindowLevel, "nested equal-style appearance canceled native chrome or level");
+        });
+        test("nested settings preserve one callback per notification", [&] {
+            Window w(style); bool entered = false; w.native.opaque = NO;
+            AppearanceObserver observation(w.native, @"opaque", [&] {
+                if (entered) return;
+                entered = true; source.Post();
+            });
+            source.Post();
+            Require(entered && w.notifications == 2 && !w.offMain,
+                "a superseded appearance lost or duplicated a live settings event");
         });
         test("surface appearance is written only when main drains", [&] {
             for (bool transparent : {false, true}) {

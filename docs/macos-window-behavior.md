@@ -4,6 +4,31 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v323：外观属性回调中的窗口关闭与新样式重入
+
+真实 NSWindow 属性观察者可在 opaque 或 backgroundColor 的 setter 中同步关闭窗口，或通过公开 ABI 设置另一套样式。旧刷新在 setter 返回后继续读取已释放的 JaliumPlatformWindow；同一过程也会用旧的不透明背景、图层标志覆盖较新的透明样式。
+
+未修改的 21c556f8 父产品在独立 AddressSanitizer 原生探针中：正向控制退出 0；嵌套透明样式退出 1，NSWindow.opaque 为 false、但图层仍不透明且背景未清空；同步关闭退出 86，报告 ApplyAppleSurfaceAppearance 第 469 行 heap-use-after-free。每项先确认真实 KVO 回调已发生。修复后相同三项均退出 0，关闭后不发布旧设置事件，透明样式保持窗口与图层透明及 clear 背景。
+
+刷新现在先保留原生窗口、视图与材质对象，记录样式及递增的刷新序号。每次可能重入的 AppKit 访问后，先核对已注册窗口的原生身份，再读取 C++ owner，停止已关闭或被较新刷新替代的剩余写入。ApplyAppleStyle 在外观更新后检查寿命和样式；相同样式的嵌套设置通知仍允许外层完成标题栏与置顶更新。存活窗口的每次实际设置通知仍保留一次事件。
+
+| 冻结输入及实际检查 | 本轮结果 |
+| --- | --- |
+| AddressSanitizer 设置通知合约 | 84/84；关闭／样式替换探针及正向控制各退出 0 |
+| PR、本地 master、含原有 CMake 编辑的冻结工作区 | 各 84/84 原生设置通知用例 |
+| PR／本地生产原生相关 CTest | 各 6/6，0 失败／跳过；含 34 项显示参数与四种线程归属入口 |
+| PR 标准 SDK | 48/48、720 场景、11,504 项检查、1,372 次原生投递；越 Dispatcher 0 |
+| 本地后台 SDK | 48/48、720 场景、11,504 项检查、1,360 次原生投递；越 Dispatcher 0 |
+| PR 保留窗口 | 1/1、15 场景、329 项检查；实际截图与 AX 已读取 |
+
+新增 40 项用例覆盖两种标题栏、两类通知、opaque／backgroundColor 真实属性回调中的关闭和新样式，以及嵌套通知的事件数、相同样式刷新后的标题栏和置顶更新。保留原有 44 项后台排队、窗口寿命、透明度与禁用／弹窗用例。原生窗口隐藏，通知仅送本进程，不写系统偏好、不注入输入。
+
+两个 SDK 矩阵的 96 张后端读回均已通过接触表查看，覆盖 Native／Custom、Metal／Software、四种主题和 0／1／3 owner。后台副本仅修改测试进程的激活策略、ShowActivated 与窗口层级，不进入产品或提交。CUA 在存活的 PR 保留窗口读取实际截图和 AX，中文／emoji／Miii 及标题栏正常；截图不替代物理输入或前台资格。标准矩阵 0/48 次系统前台 PID 与验收进程相同，AppKit active 0/48，本机不将其计为完整前台矩阵。SDK 构建仅本机使用 ValidateXcodeVersion=false 适配现有工具链，未放宽 CI。
+
+PR 与 master 各自完成生产 ALL 构建、运行时着色器编译器及导出检查。两个装包位置共三十二份原生库的 arm64 类型、UUID 和所有有文件数据的 Mach-O 节与各自生产负载相同，并通过深度签名检查。保留两条历史原有 34 路径／1593 条精确增删差异及并行编辑；只提交本轮三个文件。清理仅针对本轮独立源码、构建、宿主、读回、诊断和缓存，随后回查 UI／Gallery／共享原生及编译器文件和空暂存区。
+
+本轮仍不证明物理输入、真实 IME、VoiceOver、多屏／Spaces、最低系统／Intel 或分发包。完整 macOS 行为目标继续保留；新提交 CI 以实际终态为准。
+
 ## v322：后台偏好通知回到主线程，并退役已关闭视图的排队工作
 
 两个进程内观察者共用 scrollerStyleChanged:：NSPreferredScrollerStyleDidChangeNotification 与 NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification。旧实现直接更新 NSWindow／NSView 外观并调用平台事件处理器；后台线程投递时，窗口回调也在后台执行。Apple 的[通知中心说明](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Notifications/Articles/NotificationCenters.html)明确通知在投递线程调用观察者，[NSView 线程规则](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/ThreadSafetySummary/ThreadSafetySummary.html)要求将视图操作留在主线程。

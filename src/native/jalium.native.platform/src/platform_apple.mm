@@ -97,6 +97,7 @@ struct JaliumPlatformWindow {
     bool applyingWindowState = false;
     bool applyingAppleStyle = false;
     bool pendingAppleStyle = false;
+    uint64_t surfaceAppearanceSequence = 0;
     bool appKitZooming = false;
     bool requestedNativeZoom = false;
     bool interactiveResize = false;
@@ -459,21 +460,44 @@ NSUInteger AppleStyleMask(uint32_t style)
 
 void ApplyAppleSurfaceAppearance(JaliumPlatformWindow* window)
 {
-    bool explicitTransparency = (window->style & JALIUM_WINDOW_STYLE_TRANSPARENT) != 0;
-    bool hasBackdrop = window->backdropView != nil;
+    bool registered = IsLiveWindow(window);
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
+    NSVisualEffectView* __attribute__((objc_precise_lifetime)) backdrop = window->backdropView;
+    uint32_t style = window->style;
+    uint64_t sequence = ++window->surfaceAppearanceSequence;
+    auto current = [&] {
+        // AppKit setters can synchronously close the owner or apply a newer
+        // appearance through a property observer. Check identity before reading
+        // the C++ owner, even when the old native objects remain retained.
+        return (!registered || IsLiveWindow(window, nativeWindow)) && !window->destroying &&
+            window->surfaceAppearanceSequence == sequence && window->style == style &&
+            (NSView*)window->view == view && window->backdropView == backdrop;
+    };
+    bool explicitTransparency = (style & JALIUM_WINDOW_STYLE_TRANSPARENT) != 0;
+    bool hasBackdrop = backdrop != nil;
     bool reduceTransparency = hasBackdrop &&
         NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
+    if (!current()) return;
     bool transparent = (explicitTransparency || hasBackdrop) && !reduceTransparency;
-    window->window.ignoresMouseEvents = (window->style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT) != 0;
-    window->window.opaque = !transparent;
-    window->window.backgroundColor = transparent ? NSColor.clearColor : NSColor.windowBackgroundColor;
-    window->window.hasShadow = hasBackdrop || !explicitTransparency;
-    window->backdropView.hidden = reduceTransparency;
+    nativeWindow.ignoresMouseEvents = (style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT) != 0;
+    if (!current()) return;
+    nativeWindow.opaque = !transparent;
+    if (!current()) return;
+    NSColor* background = transparent ? NSColor.clearColor : NSColor.windowBackgroundColor;
+    if (!current()) return;
+    nativeWindow.backgroundColor = background;
+    if (!current()) return;
+    nativeWindow.hasShadow = hasBackdrop || !explicitTransparency;
+    if (!current()) return;
+    backdrop.hidden = reduceTransparency;
+    if (!current()) return;
     // A renderer may already have installed a layer before this runtime update.
-    // Keep its alpha contract aligned with the NSWindow and future surfaces.
     // With reduced transparency the window paints an opaque system background
     // beneath the alpha-preserving renderer, instead of losing its clear pixels.
-    ((NSView*)window->view).layer.opaque = !(explicitTransparency || hasBackdrop);
+    CALayer* layer = view.layer;
+    if (!current()) return;
+    layer.opaque = !(explicitTransparency || hasBackdrop);
 }
 
 void RefreshWindowMenuItem(JaliumPlatformWindow* window)
@@ -720,7 +744,9 @@ void ApplyAppleStyle(JaliumPlatformWindow* window)
     if (!live()) return;
     AppleContentFocus focus;
     if (!focus.Capture(nativeWindow, inputRoot, window->visible, live)) return;
+    uint32_t appearanceStyle = window->style;
     ApplyAppleSurfaceAppearance(window);
+    if (!live() || window->style != appearanceStyle) return;
     window->window.level = (window->style & JALIUM_WINDOW_STYLE_TOPMOST)
         ? NSFloatingWindowLevel : NSNormalWindowLevel;
     if (window->fullScreenTransition ||
