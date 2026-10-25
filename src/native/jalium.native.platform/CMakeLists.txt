@@ -433,6 +433,15 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
         ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
     target_compile_options(jalium.native.platform.window.tests PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.platform.window.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_executable(jalium.native.platform.settings-notification.tests tests/platform_apple_settings_notification_tests.mm)
+    target_include_directories(jalium.native.platform.settings-notification.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.settings-notification.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.settings-notification.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.settings-notification.tests)
+    add_test(NAME jalium.native.platform.macos.window.settings-notifications
+        COMMAND jalium.native.platform.settings-notification.tests)
+    set_tests_properties(jalium.native.platform.macos.window.settings-notifications PROPERTIES TIMEOUT 30)
     add_test(NAME jalium.native.platform.macos.window.display-configuration
         COMMAND jalium.native.platform.window.tests --display-configuration-only)
     set_tests_properties(jalium.native.platform.macos.window.display-configuration PROPERTIES TIMEOUT 30)

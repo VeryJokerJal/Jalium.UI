@@ -2678,8 +2678,24 @@ JALIUM_TRACK_VIEW_GEOMETRY(setBoundsRotation, CGFloat, [super boundsRotation] ==
     [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
 }
 - (void)scrollerStyleChanged:(NSNotification*)notification {
-    if (_jaliumOwner) ApplyAppleSurfaceAppearance(_jaliumOwner);
-    DispatchSimple(_jaliumOwner, JALIUM_EVENT_SCROLLBAR_SETTINGS_CHANGED);
+    if (!NSThread.isMainThread) {
+        // Notification centers invoke selectors on the posting thread. Keep
+        // view/owner access on main and do not retain a retired native window.
+        __weak JaliumAppleView* weakView = self;
+        CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+            JaliumAppleView* view = weakView;
+            if (view) [view scrollerStyleChanged:nil];
+        });
+        CFRunLoopWakeUp(CFRunLoopGetMain());
+        return;
+    }
+    JaliumAppleView* __attribute__((objc_precise_lifetime)) view = self;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = view.window;
+    auto* owner = view.jaliumOwner;
+    if (!owner || !IsLiveWindow(owner, nativeWindow) || owner->destroying) return;
+    ApplyAppleSurfaceAppearance(owner);
+    if (IsLiveWindow(owner, nativeWindow) && !owner->destroying)
+        DispatchSimple(owner, JALIUM_EVENT_SCROLLBAR_SETTINGS_CHANGED);
     (void)notification;
 }
 - (BOOL)isFlipped { return YES; }

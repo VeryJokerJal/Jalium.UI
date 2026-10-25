@@ -19,7 +19,7 @@ namespace Jalium.UI.MacOS;
 
 internal static class WindowMotionNotificationChecks
 {
-    internal const int ScenarioCount = 14;
+    internal const int ScenarioCount = 15;
     private static readonly string[] Names = ["ClientAreaAnimation", "ComboBoxAnimation", "ListBoxSmoothScrolling", "MenuAnimation",
         "MinimizeAnimation", "ToolTipAnimation", "UIEffects", "ComboBoxPopupAnimation", "MenuPopupAnimation", "ToolTipPopupAnimation"];
 
@@ -94,11 +94,12 @@ internal static class WindowMotionNotificationChecks
         internal readonly List<string> FrameFailures = [];
         internal int CleanupCount;
         internal bool AuditPassed => FrameFailures.Count == 0 && WorkspacePosts.Count >= 10 && DisplayPosts.Count == 2;
-        private sealed class Delivery(Window window, PlatformEventType type, int workspace, int display)
+        private sealed class Delivery(Window window, PlatformEventType type, int workspace, int display, bool onWindowThread)
         {
             internal readonly Window Window = window;
             internal readonly PlatformEventType Type = type;
             internal readonly int Workspace = workspace, Display = display;
+            internal readonly bool OnWindowThread = onWindowThread;
             internal int Global, Local;
         }
         internal readonly List<object> Scenarios = [];
@@ -110,6 +111,7 @@ internal static class WindowMotionNotificationChecks
         private int _workspacePostDepth, _workspaceSequence, _displaySequence, _workspacePost, _displayPost;
         private readonly Dictionary<IPlatformWindow, Action<PlatformEvent>> _handlers = [];
         private readonly Stopwatch _timeline = Stopwatch.StartNew();
+        private readonly int _mainThread = Environment.CurrentManagedThreadId;
         private RenderBackend Backend => index % 12 >= 6 ? RenderBackend.Software : RenderBackend.Metal;
         private bool Custom => index % 2 != 0;
         private int Owners => new[] { 0, 1, 3 }[index % 6 / 2];
@@ -209,18 +211,19 @@ internal static class WindowMotionNotificationChecks
                 var previous = _delivery;
                 var frame = new Delivery(window, evt.Type,
                     evt.Type == PlatformEventType.ScrollBarSettingsChanged ? _workspacePost : 0,
-                    evt.Type == PlatformEventType.MonitorsChanged ? _displayPost : 0);
+                    evt.Type == PlatformEventType.MonitorsChanged ? _displayPost : 0,
+                    Environment.CurrentManagedThreadId == _mainThread && window.Dispatcher.CheckAccess());
                 _delivery = frame;
                 try { handler(evt); }
                 finally
                 {
-                    bool valid = frame.Local == 1 && window.Handle != 0 &&
+                    bool valid = frame.OnWindowThread && frame.Local == 1 && window.Handle != 0 &&
                         (frame.Type != PlatformEventType.MonitorsChanged || frame.Global == 1);
                     if (!valid) FrameFailures.Add(_phase + ": invalid " + frame.Type + " delivery for " + (long)window.Handle);
                     _deliveries.Add(frame);
                     NativeDeliveries.Add(new { phase = _phase, window = (long)window.Handle, popup = window.IsMacOSPopupHost,
                         nativeEvent = frame.Type.ToString(), workspacePost = frame.Workspace, displayPost = frame.Display,
-                        globals = frame.Global, locals = frame.Local, valid });
+                        globals = frame.Global, locals = frame.Local, onWindowThread = frame.OnWindowThread, valid });
                     _delivery = previous;
                 }
             });
@@ -287,6 +290,21 @@ internal static class WindowMotionNotificationChecks
                 Require(_workspaceLocal.All(p => p.Value == 1), "each window receives exactly one workspace callback beside display changes");
                 Require(_displayLocal.All(p => p.Value == 2), "both real global display posts reach each live physical window");
                 Require(_local.All(p => p.Value >= 3), "raw local counters retain workspace, injected display and incidental system events");
+            });
+            Attempt("background-preference-delivery", () =>
+            {
+                Reset(); preference.Set(!Cached);
+                int first = _deliveries.Count;
+                var live = _local.Keys.Where(window => window.Handle != 0).ToArray();
+                var workspace = NSWorkspace.SharedWorkspace;
+                var center = workspace.NotificationCenter;
+                using var name = new NSString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification");
+                Task.Run(() => center.PostNotificationName(name, workspace)).GetAwaiter().GetResult();
+                Require(_deliveries.Count == first, "worker preference posting does not call window handlers inline");
+                Barrier(); Wave(1); Verify();
+                Require(live.All(window => _deliveries.Skip(first).Any(frame => frame.Window == window &&
+                    frame.Type == PlatformEventType.ScrollBarSettingsChanged && frame.OnWindowThread)),
+                    "queued preference delivery reaches every live window on its dispatcher");
             });
             Attempt("scroller-style-only", () =>
             {

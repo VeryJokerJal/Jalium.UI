@@ -4,6 +4,32 @@
 Gallery 保留现有视觉风格。本文区分实现、自动检查和实际界面验收；它不表示所有
 macOS 平台能力已经完成。
 
+## v322：后台偏好通知回到主线程，并退役已关闭视图的排队工作
+
+两个进程内观察者共用 scrollerStyleChanged:：NSPreferredScrollerStyleDidChangeNotification 与 NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification。旧实现直接更新 NSWindow／NSView 外观并调用平台事件处理器；后台线程投递时，窗口回调也在后台执行。Apple 的[通知中心说明](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Notifications/Articles/NotificationCenters.html)明确通知在投递线程调用观察者，[NSView 线程规则](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/ThreadSafetySummary/ThreadSafetySummary.html)要求将视图操作留在主线程。
+
+现在后台入口只捕获视图的弱引用，将工作投递到主 CFRunLoop 的 common modes 并唤醒它；主线程入口仍同步执行。真正执行前检查视图的窗口身份、原生注册和销毁状态，外观更新后再次确认寿命，再发布本地设置事件。排队工作不强行保留退休视图，也不把旧通知交给后续创建的替代窗口；每个后台通知保留一次投递，没有用合并或丢弃事件掩盖重复。
+
+未修改父产品的原生对照实际运行 8 项：主线程四项通过，工作线程四项失败，四次均在 worker 返回时已观察到 first=1、later=1、offMain=1，进程退出 1。父 platform_apple.mm 与 d6e62ed6 对应 Git 输入逐字相同，测试注册不包含产品修复。首次修复编译中的视图类型名错误、以及未创建真实 backing layer 造成的四项夹具失败均单独记录，不计为产品红例；最终夹具先在主线程创建真实图层，再验证后台阶段不改外观、主线程排队执行后恢复正确透明度契约。
+
+| 冻结输入及实际检查 | 结果 |
+| --- | --- |
+| PR、本地 master、含原有 CMake 编辑的冻结工作区，新增原生用例 | 各 44/44，覆盖两种标题栏 × 两类通知 |
+| PR／本地生产负载的相关 CTest | 各 6/6：新增设置通知、34 项显示参数及四种线程归属入口 |
+| PR 标准 SDK | 48/48、720 场景、11,504 项检查、1,414 次原生投递，越 Dispatcher 投递 0 |
+| 本地后台 SDK | 48/48、720 场景、11,504 项检查、1,360 次原生投递，越 Dispatcher 投递 0 |
+| PR SDK 预检与保留窗口 | 预检 3/3、45 场景、719 项；保留窗口 1/1、15 场景，实际截图及 AX 已读取 |
+
+原生用例覆盖主线程同步、后台返回后再派发、连续三次通知、保留旧视图后的关闭、替代窗口、独立存活窗口、回调中自毁、平台关闭重启、dispatcher 回调内嵌套消息泵、禁用／弹窗物理窗口，以及普通／透明窗口已有图层的外观更新。窗口默认隐藏，通知只发送到本进程中心，不改变系统偏好或注入输入。使用 CFRunLoop 避免在主串行队列回调中泵消息时，另一个同队列块无法运行。
+
+SDK 保留原 14 场景，新增 background-preference-delivery：先在主线程取得通知中心，在 Task 工作线程投递；返回时窗口处理器尚未执行，排空主线程后核对偏好、资源、CSS 与每个存活窗口的设置事件。每条原生投递还检查窗口 Dispatcher 与创建线程。SDK 要求每个存活窗口至少观察到相应主线程回调，允许无法从 ABI 区分的其他同类系统通知；单次后台投递恰好一次的协议由原生用例独立覆盖。CI 固定增加到 48 套／720 场景，并要求每条投递的线程审计通过；新增原生目标是现有 Window 合约目标的依赖，加入现有 CTest 正则，不移除原门禁。
+
+PR 使用普通窗口配置实际运行。本地副本仅改为 Accessory、ShowActivated=false 和窗口后置，其余产品及断言相同；普通本地配置也已编译和签名核对。按用户指定的 Window 优先时段完成 PR 矩阵和标准窗口截图后，已通知协作聊天释放前台，再运行本地后台矩阵。CUA 读取了自绘窗口、文本框、中文／emoji／Miii 和窗口按钮；两套共 96 张读回、八张联系图已全部查看，主题、文字和动态效果条未见相关裁切。本轮没有投递键鼠，不把这些结果计为物理设备、IME、VoiceOver 或完整前台矩阵。
+
+两条历史分别完成必需运行时 shader 编译器开启的生产 ALL、完整负载、exports 和 SDK；PR 普通、本地普通及本地后台三包各 16 份 arm64 原生副本的 UUID、Mach-O 节字节及深度签名匹配各自负载，实际加载无异源 Jalium 原生库。冻结工作区另外独立构建自身 core/platform 和 44 项用例；该聚焦构建未开启运行时 shader 编译器，不能冒充完整生产负载资格。本机继续只读既有 SDK／工作负载并使用单次 Xcode 校验例外，严格新提交 CI 仍待结果。
+
+保留 master、codex/macos-window-behavior 及原 PR，追加七个路径。平台 CMake 文件原有未提交编辑通过三方合并保留，不纳入本轮提交；其余并行源码、34 处历史路径及精确增删差异继续保留。提交核对后按所有权清理本轮内外置快照、构建、应用注册、缓存、日志、读回、收据和临时索引，保留测试与本文。真实热插拔、多屏／混合 DPI／Spaces、完整前台、物理设备、IME、VoiceOver、Writing Tools 服务 UI、最低系统／Intel 和分发资格仍开放，完整 macOS 目标未完成。
+
 ## v321：逐次核对工作区偏好通知，保留穿插的系统显示事件
 
 全局偏好夹具原先在整个 changed-workspace 阶段要求本地回调总数为 1，合法的 MonitorsChanged 穿插时也会被算作重复。现在分别记录原始、本次工作区及本次显示参数回调；每次显式投递都有独立编号，核对每个存活物理窗口恰好收到一次，且逐个原生事件核对所属窗口、本地发布和显示参数的全局发布。原处理器默认仍只调用一次，所有事件继续记录。新增 interleaved-display-notifications 场景，在一次工作区变化旁发送两次真实进程内 NSApplicationDidChangeScreenParametersNotification，要求各窗口收到工作区 1 次、显示参数 2 次，原始总数至少 3。场景从每例 13 增至 14，CI 固定为 48 套／672 场景。
