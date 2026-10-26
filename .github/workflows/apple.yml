@@ -526,3 +526,33 @@ jobs:
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
           print('All 249 CoreText font, ranged style snapshot and semantic inline contracts executed and passed.')
           PY
+
+  window-intel-contracts:
+    name: window-intel (macOS ${{ matrix.macos }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            macos: 15
+            xcode: '26.3'
+          - runner: macos-26-intel
+            macos: 26
+            xcode: '26.6'
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check architecture and result validation controls
+        run: python3 eng/apple/verify-window-native.py --self-test
+      - name: Build and run native Intel Window contracts
+        run: >-
+          python3 eng/apple/verify-window-native.py
+          --architecture x86_64
+          --expected-macos-major '${{ matrix.macos }}'
+          --expected-xcode '${{ matrix.xcode }}'
+          --build-directory "$RUNNER_TEMP/jalium-window-intel-build"
+          --native-root "$RUNNER_TEMP/jalium-window-intel-native"
+          --results-directory "$RUNNER_TEMP/jalium-window-intel-results"

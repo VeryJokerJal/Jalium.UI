@@ -1,0 +1,64 @@
+# macOS Window 状态与剩余验收
+
+此清单按当前 `Window`、`IPlatformWindow` 和 AppKit 桥接的公开能力整理，保留“完整补齐所有 macOS 行为，首先是 Window”的目标。源码接入、定向自动检查、真实界面操作和平台资格分别记录；某一套通过数量不能代替完整 Window 或 macOS 资格。
+
+入口：[Window](../src/managed/Jalium.UI.Controls/Window.cs)、[平台契约](../src/managed/Jalium.UI.Controls/Platform/IPlatformWindow.cs)、[托管桥](../src/managed/Jalium.UI.Controls/Platform/NativePlatformWindow.cs)、[AppKit 实现](../src/native/jalium.native.platform/src/platform_apple.mm)。此前逐轮复现及测量见[行为记录](macos-window-behavior.md)。
+
+## v329：Intel 与编译下限的原生 Window 门禁
+
+在 arm64 主机指定 `CMAKE_OSX_ARCHITECTURES=x86_64` 后，父配置实际编译出 x86_64 Mach-O，却将 30 个映像放入 `osx-arm64` 负载目录。原有 RID 推断使用 `CMAKE_SYSTEM_PROCESSOR`，该值在这种 Apple 架构选择下仍为主机架构。现在优先采用明确的 Apple 目标架构；一个 .NET RID 只接收一个架构，混合架构须分别构建后再组合，错误显式 RID 继续拒绝。
+
+父配置还拒绝正确的显式 `osx-x64`、接受错误的 `osx-arm64`，两项均已实际配置复现。修复后的旧错误缓存须重新配置到独立构建目录；其失败保护没有改写原有负载。
+
+修复后，同一目标的 30 个映像写入 `osx-x64`，46 个原生 Window／剪贴板／线程检查均已构建并列入 CTest 清单。映像 CPU 与编译下限均检查到 x86_64／macOS 15.0。7 项真实 CMake 配置控制覆盖两种架构的自动和显式 RID、交叉错误 RID及混合架构拒绝。本地 arm64 对应路径也独立构建并运行 11 项相关原生合约。
+
+本机为 macOS 27.0.1／arm64、Xcode 27.1，没有可用 Rosetta；本轮本地 x64 只证明构建及负载身份。验证器保留 `executed=false`、`passed=false`，不会把交叉构建写成 Intel 运行通过；真实 arm64 主机冒充 Intel 的运行请求在测试前被拒绝。
+
+新增 [native Window 验证器](../eng/apple/verify-window-native.py) 与 [Apple CI](../.github/workflows/apple.yml) 中的两个 Intel 作业：
+
+| 主机要求 | 工具链 | 必须检查的证据 |
+| --- | --- | --- |
+| macOS 15 / 原生 x86_64 | Xcode 26.3 | 实际主机 OS／CPU、无翻译、RID、薄 Mach-O CPU及 15.0 编译下限；完整 CTest 与 JUnit |
+| macOS 26 / 原生 x86_64 | Xcode 26.6 | 相同的原生 Window 契约与完整性检查 |
+
+作业使用当前完整的 Window／剪贴板／线程正则，不排除显示、焦点、输入或无障碍组。JUnit 必须与配置得到的完整 CTest 清单一一相同；缺失、重复、失败、跳过、未运行或计数不一致均失败。架构、主机、RID 和 JUnit 的 5 项正向／20 项负向控制用于防止错误放行。真实 Intel 运行结论须以 PR 对应提交的这两个作业终态及日志为准；跨编译和 ARM 回归不替代它们。
+
+这两个作业检查原生 Window，关闭不相关的运行时 shader 编译器依赖；原有生产 ALL、运行时编译器、SDK 和包验证不变。它们不证明 Intel SDK 包、渲染器、分发或物理输入已经完成。
+
+运行器及工具链选择已核对 [GitHub 主机表](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)、[macOS 15 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md)和 [macOS 26 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md)。Apple 架构变量的含义见 [CMake 文档](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_ARCHITECTURES.html)。
+
+## Window 能力与验收边界
+
+下表的“已有证据”指仓库中的实现、测试及行为记录，不表示该行全部组合已经验收。未完成项继续作为需求保留。
+
+| 需求组 | 已有实现或专项证据 | 完整验收仍需覆盖 |
+| --- | --- | --- |
+| 创建、取消、关闭、销毁及替代对象 | [创建寿命](../src/native/jalium.native.platform/tests/platform_apple_window_creation_lifetime_tests.mm)、[样式重入](../src/native/jalium.native.platform/tests/platform_apple_style_reentrancy_tests.mm)、托管 Closing/Closed | 系统操作、所属窗口与重开的完整前台组合 |
+| Show、Hide、ShowActivated、首次绘制、重开 | Window 显示事务、visibility 与首次帧检查 | 每种标题栏／渲染器的前台及最后窗口重开组合 |
+| 手动位置、居中、owner 居中和客户区原点 | [启动几何](../src/native/jalium.native.platform/tests/platform_apple_window_creation_geometry_tests.mm)、[启动流程](../src/native/jalium.native.platform/tests/platform_apple_window_startup_tests.mm)、坐标辅助测试 | 混合 DPI、负坐标多屏、显示器断开及用户连续拖动 |
+| 尺寸、Min/Max、SizeToContent、RestoreBounds | 托管布局、[请求重入](../src/native/jalium.native.platform/tests/platform_apple_scalar_reentrancy_tests.mm)、原生几何／还原测试 | 约束、内容动态变化与真实跨屏拖动的组合 |
+| 拖动、八边缩放及中断 | [缩放](../src/native/jalium.native.platform/tests/platform_apple_resize_drag_tests.mm)、Window 输入路由 | 物理拖动、状态切换、嵌套 owner 和多屏组合 |
+| 最小化、还原、缩放／最大化、全屏 | 状态确认、恢复队列、转换失败、[全屏还原](../src/native/jalium.native.platform/tests/platform_apple_fullscreen_restore_tests.mm) | Spaces、多窗口、Dock、系统动画及不同显示布局 |
+| Native／Custom 标题栏、扩展内容、按钮与双击 | 原生属性、标题栏生命周期／动作及焦点测试 | 其余双击系统偏好、前台连续切换及屏幕阅读器 |
+| 标题、图标、置顶、透明度、禁用和鼠标穿透 | Window 属性、标量请求与 287 项样式检查 | 原生图标／Dock 显示、材质、失活及辅助功能组合 |
+| Window 菜单、ShowInTaskbar 与轮换参与 | Window 菜单／system-menu、collectionBehavior 与 excludedFromWindowsMenu 一致性 | 系统轮换、Mission Control、Spaces 与物理菜单键盘操作 |
+| Owner、OwnedWindows、ShowDialog、DialogResult | [owner](../src/native/jalium.native.platform/tests/platform_apple_window_owner_tests.mm)、托管模态及关闭策略 | 嵌套窗口、系统切换、焦点还原与取消异常的前台矩阵 |
+| Activate、Key/Main、Activated/Deactivated | [键盘焦点](../src/native/jalium.native.platform/tests/platform_apple_keyboard_focus_tests.mm)、前台选择门及托管激活寿命 | 当前完整矩阵仍缺系统前台 PID、AppKit active 和目标 Key/Main 同时成立的证据 |
+| 系统菜单、标题栏及编辑菜单命令 | menu-tracking、document-menu、sheet-keyboard、原生编辑命令记录 | 物理键盘／修饰键、真实 sheet 与跨应用路径 |
+| 背景材质、主题和可访问性系统偏好 | SystemBackdrop、standalone appearance、系统通知与动态资源 | 系统偏好真实变更、减少透明度、失活合成和 VoiceOver |
+| DPI、显示配置、刷新率及 Surface | display-configuration、原生坐标、GetSurface/GetMonitorRefreshRate | 不同刷新率／DPI 的实物多屏、热插拔与移动期间绘制 |
+| 键盘、指针、滚轮、手势、平板及捕获 | input-state、cursor-ownership、gestures/tablets 与托管输入检查 | 不同键盘布局、物理功能键／侧键、触控板及平板设备矩阵 |
+| 文本、IME、候选窗和焦点交接 | [文本输入寿命](../src/native/jalium.native.platform/tests/platform_apple_text_input_lifetime_tests.mm)、原生文本服务、历史真实中文及菜单验收 | 更广真实输入法、长文档、复杂格式及前台跨窗口组合 |
+| Popup、ToolTip、菜单和文本编辑焦点 | popup-keyboard、托管 Popup 逻辑焦点／owner 与输入路由 | 真实失活／重开、层级、物理 Escape／修饰键及辅助功能组合 |
+| 剪贴板、拖放、取消和数据所有权 | clipboard、[拖放寿命](../src/native/jalium.native.platform/tests/platform_apple_window_drag_tests.mm)、跨应用历史记录 | 物理修饰键、外部 promised data、多应用和设备组合 |
+| Window AX 的角色、属性、写入、关系及通知 | [原生 Window AX](../src/native/jalium.native.platform/tests/platform_apple_window_accessibility_tests.mm)、托管桥和外部操作记录 | VoiceOver、外部通知订阅、完整可写属性及复杂内容导航 |
+| 应用退出、会话结束及 Dock 重开 | 主应用类、Quit/SessionEnding 策略及 Dock ownership/motion 专项 | 用户实际 Dock、系统注销／关机取消、完整应用生命周期 |
+| Metal／软件后端、首次帧和窗口外观读回 | 生产 ALL、SDK 两套 48 项矩阵、历史实际窗口与 97 张读回 | 物理 live-resize、跨屏、窗口遮挡／恢复及压力场景 |
+| arm64／x64 与系统版本 | arm64 既有实机／CI；本轮 x64 构建、RID 修复及新增 Intel 门禁 | Intel 原生作业终态、完整 SDK/渲染/交互及确切最低系统资格 |
+| SDK、NativeAOT、应用身份和分发 | AppKit 入口、导出、签名及打包校验 | 当前 macOS SDK 原生路径仍默认 arm64；x64 SDK、AOT、签名公证与安装分发继续开放 |
+
+平台契约也需保留语义：`SetDesktopApplicationId` 和键盘移动／缩放能力在当前桥中属于 Linux 能力，macOS 对应应用身份来自 bundle；不能仅因返回 false/None 就认定 AppKit Window 缺陷。Dock 属于应用，ShowInTaskbar 在 macOS 控制窗口菜单／轮换／Mission Control 参与。移动平台的软键盘、方向和安全区不据此替代 macOS 文本输入验收。
+
+## Window 之后的完整 macOS 范围
+
+Window 完成需要上述需求及证据闭合，再继续核对控件与布局、普通／富文本与字体、设备输入与可访问性、渲染／图像／效果、媒体／浏览器、应用宿主和发布分发。各领域此前已有实现与定向检查，仍须按正常、边界、异常及反复操作验证，不能用 Window 或一次 CI 的通过替代全部平台资格。
