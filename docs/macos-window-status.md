@@ -27,6 +27,8 @@
 
 独立基线在同一 Intel 26 镜像复现：系统前台与应用 PID 相同，Dock 进程数为 0；标准和无边框 NSWindow 都收到 will-miniaturize、原生位变真，却在 8 秒内未收到 did-miniaturize。CI 现在先通过 launchd 启动内置 Dock 服务，再要求 Dock 就绪及两种原生窗口完成最小化／恢复。完整 46 项仍须全部实际运行通过；尚未取得新的 Intel 26 通过结果。另修正基本 Window 检查的四处等待：原生位与框架确认都达到预期后才断言，避免把较早的原生位当成完成通知。
 
+启用 Dock 后，独立基线仍缺少完成通知，尚不能把原因归于 Dock 缺失。为区分测试事件循环与运行器行为，基线改为逐个 NSTimer 阶段驱动，阶段间返回 NSApplication 的外层主循环；共用启动协议增加可选异步完成入口，同步合约入口不变。Intel 26 仍须取得实际的两窗口基线及完整 CTest 通过记录。
+
 这两个作业检查原生 Window，关闭不相关的运行时 shader 编译器依赖；原有生产 ALL、运行时编译器、SDK 和包验证不变。它们不证明 Intel SDK 包、渲染器、分发或物理输入已经完成。
 
 运行器及工具链选择已核对 [GitHub 主机表](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)、[macOS 15 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md)和 [macOS 26 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md)。Apple 架构变量的含义见 [CMake 文档](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_ARCHITECTURES.html)。

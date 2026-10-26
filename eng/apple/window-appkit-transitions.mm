@@ -1,95 +1,131 @@
 #import <AppKit/AppKit.h>
 #include "../../src/native/jalium.native.platform/tests/platform_apple_window_validation_app.h"
-#include <functional>
 
-// Qualify the runner's actual AppKit transition delivery independently of the
-// Jalium subclass, delegate, state machine and native library.
-static bool Pump(const std::function<bool()>& complete)
-{
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
-    while (!complete() && std::chrono::steady_clock::now() < deadline) {
-        while (NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:NSDate.date
-            inMode:NSDefaultRunLoopMode dequeue:YES]) [NSApp sendEvent:event];
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-    }
-    return complete();
+// Run independently of the Jalium subclass, delegate, state machine and native
+// library. Every phase returns to the actual NSApplication outer event loop.
+@interface JaliumAppKitTransitionProbe : NSObject
+@property(nonatomic, copy) void (^complete)(int);
+@property(nonatomic, strong) NSWindow* window;
+@property(nonatomic, strong) NSMutableArray* observers;
+@property(nonatomic) int phase;
+@property(nonatomic) int styleIndex;
+@property(nonatomic) int passed;
+@property(nonatomic) int will;
+@property(nonatomic) int did;
+@property(nonatomic) int restored;
+@property(nonatomic) double deadline;
+@property(nonatomic) double started;
+- (void)tick:(NSTimer*)timer;
+@end
+
+@implementation JaliumAppKitTransitionProbe
+- (const char*)label { return self.styleIndex == 0 ? "native" : "borderless"; }
+- (void)setPhase:(int)phase {
+    _phase = phase;
+    _deadline = NSProcessInfo.processInfo.systemUptime + 8;
 }
-
-static bool CheckTransition(NSWindowStyleMask style, const char* label)
-{
-    NSWindow* window = [[NSWindow alloc] initWithContentRect:NSMakeRect(200, 200, 480, 320)
+- (void)logState:(const char*)stage passed:(BOOL)passed {
+    std::printf("APPKIT_%s style=%s passed=%d phase=%d will=%d did=%d restored=%d mini=%d visible=%d elapsed=%.3f\n",
+        stage, self.label, passed, self.phase, self.will, self.did, self.restored,
+        self.window.miniaturized, self.window.visible, NSProcessInfo.processInfo.systemUptime - self.started);
+}
+- (void)createWindow {
+    const auto common = NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+    const auto style = common | (self.styleIndex == 0
+        ? NSWindowStyleMaskTitled | NSWindowStyleMaskClosable : NSWindowStyleMaskBorderless);
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(200, 200, 480, 320)
         styleMask:style backing:NSBackingStoreBuffered defer:NO];
-    window.releasedWhenClosed = NO;
-    window.restorable = NO;
-    window.title = @"Jalium AppKit transition qualification";
-    std::atomic<int> counts[3]{};
-    auto* const values = counts;
-    const double started = NSProcessInfo.processInfo.systemUptime;
-    NSMutableArray* observers = [NSMutableArray new];
+    self.window.releasedWhenClosed = NO;
+    self.window.restorable = NO;
+    self.window.title = @"Jalium AppKit transition qualification";
+    self.will = self.did = self.restored = 0;
+    self.started = NSProcessInfo.processInfo.systemUptime;
+    self.observers = [NSMutableArray new];
+    __weak JaliumAppKitTransitionProbe* weakProbe = self;
     for (NSNotificationName name : {NSWindowWillMiniaturizeNotification,
         NSWindowDidMiniaturizeNotification, NSWindowDidDeminiaturizeNotification}) {
-        [observers addObject:[NSNotificationCenter.defaultCenter addObserverForName:name
-            object:window queue:nil usingBlock:^(NSNotification* note) {
-                if ([note.name isEqual:NSWindowWillMiniaturizeNotification]) ++values[0];
-                if ([note.name isEqual:NSWindowDidMiniaturizeNotification]) ++values[1];
-                if ([note.name isEqual:NSWindowDidDeminiaturizeNotification]) ++values[2];
-                std::printf("APPKIT_NOTIFICATION style=%s name=%s elapsed=%.3f main=%d mini=%d visible=%d\n",
-                    label, note.name.UTF8String, NSProcessInfo.processInfo.systemUptime - started,
-                    NSThread.isMainThread, window.miniaturized, window.visible);
+        [self.observers addObject:[NSNotificationCenter.defaultCenter addObserverForName:name
+            object:self.window queue:nil usingBlock:^(NSNotification* note) {
+                if (!NSThread.isMainThread) {
+                    std::fprintf(stderr, "FAIL: AppKit transition notification arrived off the main thread\n");
+                    return;
+                }
+                JaliumAppKitTransitionProbe* probe = weakProbe;
+                if (!probe) return;
+                if ([note.name isEqual:NSWindowWillMiniaturizeNotification]) ++probe->_will;
+                if ([note.name isEqual:NSWindowDidMiniaturizeNotification]) ++probe->_did;
+                if ([note.name isEqual:NSWindowDidDeminiaturizeNotification]) ++probe->_restored;
+                std::printf("APPKIT_NOTIFICATION style=%s name=%s elapsed=%.3f main=1 mini=%d visible=%d\n",
+                    probe.label, note.name.UTF8String, NSProcessInfo.processInfo.systemUptime - probe.started,
+                    probe.window.miniaturized, probe.window.visible);
             }]];
     }
-    [window makeKeyAndOrderFront:nil];
-    // A plain borderless NSWindow does not accept key selection. Its visible
-    // native window is sufficient for the minimize/restore prerequisite.
-    bool shown = Pump([&] { return window.visible && window.windowNumber > 0; });
-    std::printf("APPKIT_BEFORE style=%s shown=%d active=%d mask=%lu canMini=%d\n",
-        label, shown, NSApp.active, (unsigned long)window.styleMask,
-        [window standardWindowButton:NSWindowMiniaturizeButton].enabled);
-    [window miniaturize:nil];
-    bool minimized = Pump([&] { return counts[1] == 1 && window.miniaturized; });
-    std::printf("APPKIT_MINIMIZED style=%s passed=%d will=%d did=%d mini=%d visible=%d elapsed=%.3f\n",
-        label, minimized, counts[0].load(), counts[1].load(), window.miniaturized, window.visible,
-        NSProcessInfo.processInfo.systemUptime - started);
-    bool deminiaturized = false;
-    if (minimized) {
-        [window deminiaturize:nil];
-        deminiaturized = Pump([&] { return counts[2] == 1 && !window.miniaturized && window.visible; });
-        std::printf("APPKIT_RESTORED style=%s passed=%d did=%d mini=%d visible=%d\n",
-            label, deminiaturized, counts[2].load(), window.miniaturized, window.visible);
-    }
-    for (id observer in observers) [NSNotificationCenter.defaultCenter removeObserver:observer];
-    [window orderOut:nil];
-    [window close];
-    return shown && minimized && deminiaturized && counts[0] == 1 && counts[1] == 1 && counts[2] == 1;
+    self.phase = 1;
+    [self.window makeKeyAndOrderFront:nil];
 }
-
-static int Contracts(int, char**)
-{
-    bool dockReady = Pump([] {
+- (void)finishWindow:(NSTimer*)timer passed:(BOOL)passed {
+    [self logState:"WINDOW" passed:passed];
+    if (passed) ++_passed;
+    for (id observer in self.observers) [NSNotificationCenter.defaultCenter removeObserver:observer];
+    [self.window orderOut:nil];
+    [self.window close];
+    self.window = nil;
+    self.observers = nil;
+    if (++_styleIndex < 2) {
+        [self createWindow];
+    } else {
+        [timer invalidate];
+        std::printf("APPKIT_RESULT passed=%d total=2 outerLoop=1\n", self.passed);
+        self.complete(self.passed == 2 ? 0 : 1);
+    }
+}
+- (void)tick:(NSTimer*)timer {
+    if (self.phase == 0) {
         NSArray<NSRunningApplication*>* apps = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.dock"];
+        bool ready = false;
         for (NSRunningApplication* app in apps)
-            if (app.finishedLaunching && !app.terminated) return true;
-        return false;
-    });
-    NSArray<NSRunningApplication*>* dock = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.dock"];
-    std::printf("APPKIT_ENVIRONMENT os=%s screens=%lu dockCount=%lu active=%d running=%d\n",
-        NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String,
-        (unsigned long)NSScreen.screens.count, (unsigned long)dock.count, NSApp.active, NSApp.running);
-    for (NSRunningApplication* app in dock)
-        std::printf("APPKIT_DOCK pid=%d terminated=%d finishedLaunching=%d\n",
-            app.processIdentifier, app.terminated, app.finishedLaunching);
-    if (!dockReady) {
-        std::fprintf(stderr, "FAIL: The AppKit transition prerequisite requires a running Dock service\n");
-        return 2;
+            if (app.finishedLaunching && !app.terminated) ready = true;
+        if (!ready && NSProcessInfo.processInfo.systemUptime < self.deadline) return;
+        std::printf("APPKIT_ENVIRONMENT os=%s screens=%lu dockCount=%lu active=%d running=%d outerLoop=1\n",
+            NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String,
+            (unsigned long)NSScreen.screens.count, (unsigned long)apps.count, NSApp.active, NSApp.running);
+        for (NSRunningApplication* app in apps)
+            std::printf("APPKIT_DOCK pid=%d terminated=%d finishedLaunching=%d\n",
+                app.processIdentifier, app.terminated, app.finishedLaunching);
+        if (!ready) {
+            [timer invalidate];
+            std::fprintf(stderr, "FAIL: The AppKit transition prerequisite requires a running Dock service\n");
+            self.complete(2);
+        } else [self createWindow];
+        return;
     }
-    const auto common = NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
-    bool native = CheckTransition(common | NSWindowStyleMaskTitled | NSWindowStyleMaskClosable, "native");
-    bool custom = CheckTransition(common | NSWindowStyleMaskBorderless, "borderless");
-    std::printf("APPKIT_RESULT native=%d borderless=%d\n", native, custom);
-    return native && custom ? 0 : 1;
+    if (NSProcessInfo.processInfo.systemUptime >= self.deadline) {
+        [self logState:"TIMEOUT" passed:NO];
+        [self finishWindow:timer passed:NO];
+    } else if (self.phase == 1 && self.window.visible && self.window.windowNumber > 0) {
+        std::printf("APPKIT_BEFORE style=%s active=%d mask=%lu key=%d\n", self.label,
+            NSApp.active, (unsigned long)self.window.styleMask, self.window.keyWindow);
+        self.phase = 2;
+        [self.window miniaturize:nil];
+    } else if (self.phase == 2 && self.did == 1 && self.window.miniaturized) {
+        [self logState:"MINIMIZED" passed:YES];
+        self.phase = 3;
+        [self.window deminiaturize:nil];
+    } else if (self.phase == 3 && self.restored == 1 && !self.window.miniaturized && self.window.visible) {
+        [self logState:"RESTORED" passed:YES];
+        [self finishWindow:timer passed:self.will == 1 && self.did == 1 && self.restored == 1];
+    }
 }
+@end
 
 int main(int argc, char** argv)
 {
-    @autoreleasepool { return RunAutomatedWindowValidation(argc, argv, Contracts); }
+    @autoreleasepool {
+        return RunAutomatedWindowValidation(argc, argv, nullptr, ^(void (^complete)(int)) {
+            JaliumAppKitTransitionProbe* probe = [JaliumAppKitTransitionProbe new];
+            probe.complete = complete;
+            probe.phase = 0;
+            [NSTimer scheduledTimerWithTimeInterval:0.01 repeats:YES block:^(NSTimer* timer) { [probe tick:timer]; }];
+        });
+    }
 }

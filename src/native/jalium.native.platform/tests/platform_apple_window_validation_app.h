@@ -32,7 +32,8 @@ static void ScheduleWindowValidationContracts(dispatch_block_t contracts,
     }];
 }
 
-static int RunAutomatedWindowValidation(int argc, char** argv, int (*contracts)(int, char**))
+static int RunAutomatedWindowValidation(int argc, char** argv, int (*contracts)(int, char**),
+    void (^asyncContracts)(void (^complete)(int)) = nil)
 {
     NSString* directory = nil;
     NSString* nonce = nil;
@@ -79,8 +80,15 @@ static int RunAutomatedWindowValidation(int argc, char** argv, int (*contracts)(
     ScheduleWindowValidationContracts(^{
         std::printf("HOST_READY pid=%d foreground=%d active=%d running=%d\n", getpid(),
             NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier, NSApp.active, NSApp.running);
-        result = contracts(1, argv);
-        finish();
+        if (asyncContracts) {
+            // Return to NSApplication between asynchronous transitions. A
+            // nested polling loop is a separate qualification from delivery
+            // through the application's normal outer event loop.
+            asyncContracts(^(int code) { result = code; finish(); });
+        } else {
+            result = contracts(1, argv);
+            finish();
+        }
     }, ^BOOL {
         pid_t foreground = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
         if (!observedStartup) {
