@@ -97,11 +97,15 @@ def main() -> int:
         # Symbols alone cannot distinguish an ARM library from an Intel one.
         # Ask Apple's Mach-O tool to inspect every shipped dylib, including
         # modules whose symbols are outside the focused Window ABI check.
+        # Keep the input before -verify_arch: pinned lipo consumes the trailing
+        # arguments as architecture names.
         for library in sorted(payload.glob("*.dylib")):
-            result = subprocess.run(["/usr/bin/lipo", "-verify_arch", MACOS_ARCHITECTURES[rid], str(library)],
+            result = subprocess.run(["/usr/bin/lipo", str(library), "-verify_arch", MACOS_ARCHITECTURES[rid]],
                                     capture_output=True, text=True)
             if result.returncode:
-                errors.append(f"{library.name}: does not contain the required {rid} CPU slice")
+                detail = (result.stderr or result.stdout).strip()
+                errors.append(f"{library.name}: does not contain the required {rid} CPU slice"
+                              + (f": {detail}" if detail else ""))
         for module, symbols in required.items():
             library = payload / f"libjalium.native.{module}.dylib"
             if not library.is_file():

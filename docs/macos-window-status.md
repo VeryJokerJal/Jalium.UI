@@ -49,6 +49,22 @@ ARM 对照宿主已实际运行完成 48/48 组、720/720 场景，另保持一�
 
 v329 的最新已发布提交 `15ff3ed2` 已取得 Intel 15 的外层 AppKit 基线 2/2、完整原生 Window 检查 46/46，零失败及跳过。Intel 26 的独立 NSWindow 基线仍缺少最小化完成通知，因此相关资格继续开放。SDK 新作业不替代这个失败门禁，也不关闭多 RID 发布包、NativeAOT、物理输入、VoiceOver、多屏和分发验收。
 
+## v331：双架构 NuGet 与真实消费端
+
+一个包现在按 `JaliumMacNativeOutputRoot` 收集两个完整 RID，应用运行时复制继续只选择自己的 RID。`JaliumMacRequireAllNativeRids=true` 强制两者齐全；单 RID 过滤、显式旧目录、部分输出和错误组合均有实际 `pack --no-build` 检查。每个 RID 要求全部 8 个动态库、离线 Metal 库及匹配的资源清单，并校验 CPU、关键 ABI、资源大小与 SHA-256。
+
+真实 NuGet 消费端发现了仅检查压缩包时未暴露的问题：ARM 构建的 SDK 程序集嵌入了原生资源，x64 应用的 MonoBundle 虽然是 x64，Resources 中仍出现 ARM 动态库与 ARM Metal 清单。现在 SDK 源项目使用明确的发布目录元数据，NuGet 的 `buildTransitive` 资源目标按消费应用 RID 提供 Metal 文件；SDK 程序集不再携带构建 CPU 的资源。两个消费端各只有 8 个原生文件，全部属于其目标 CPU，资源清单 RID 及哈希、深层签名均通过。独立缓存、包源映射和包 SHA-512 回校证明实际使用的是本轮生成的包。
+
+PR 与冻结工作区分别完成 ARM64／x64 原生负载，包含运行时着色器编译器。PR、本地历史和冻结工作区的校验器在两个 RID 分别通过 31 项架构／ABI／MSBuild／预设检查，共 186 项。另外 26 项实际打包及传输控制全部通过，覆盖单／双 RID、显式目录、缺少完成标记或模块／Metal、错误 CPU、来源版本、文件哈希、重复成员、路径穿越、符号链接及目标目录已存在。错误案例按预期失败，不产生可用包或目标目录。
+
+`Jalium.UI.MacOS.PackageSmoke` 只通过 PackageReference 消费 SDK。新增组合包 CI 对两种 RID 实际恢复、构建并检查 app，且运行 ARM Window 启动。本地已执行这个 CI 消费端代码块，两种 app 都通过；ARM 实际运行 Metal Window，窗口句柄、Unicode 文本、运行架构和程序集加载位置检查通过，随后正常退出。CUA 实际截图及无障碍树显示中文标题、说明与“保留中文🙂 Miii”文本框，未见本次画面的文字裁切。此处仍为 `physicalInput=false`、`foregroundRequired=false`；没有重做物理输入或完整字体／前台矩阵。
+
+跨作业原生传输要求 RID、配置、精确提交参数和完整文件哈希匹配，提取到临时目录后重新检查资源与 CPU／ABI，最后原子发布。它用于防止作业输入混用，不是签名或来源证明。组合包作业同时依赖 ARM 和 Intel 生产作业，不能借此绕过失败的 Window 门禁。
+
+v330 的 [ARM 生产作业](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/40280644649/job/121432953254)与 [Intel SDK 作业](https://github.com/VeryJokerJal/Jalium.UI/actions/runs/40280644649/job/121432953241)最终均因新增 `lipo` 参数顺序失败。已把输入文件放在 `-verify_arch` 前，并保留原始工具错误；[Apple cctools 的解析实现](https://github.com/apple-oss-distributions/cctools/blob/main/misc/lipo.c)会把该选项之后的所有参数当作架构。CPU／ABI 通过条件没有放宽。新提交在锁定 Xcode 26.6 的 CI 结果须单独记录，本地 Xcode 27.1 不能替代它。
+
+本地仍使用 .NET 10.0.300／workload 26.5.10280，并明确设置开发用的 Xcode 版本覆盖。x64 仅完成构建、包消费与身份检查，没有执行。Intel 26 的独立 NSWindow 最小化完成通知门禁、完整 Intel SDK 执行、精确最低系统、NativeAOT、物理输入、VoiceOver、多屏／Spaces及签名公证分发继续开放。
+
 ## Window 能力与验收边界
 
 下表的“已有证据”指仓库中的实现、测试及行为记录，不表示该行全部组合已经验收。未完成项继续作为需求保留。
@@ -77,7 +93,7 @@ v329 的最新已发布提交 `15ff3ed2` 已取得 Intel 15 的外层 AppKit 基
 | 应用退出、会话结束及 Dock 重开 | 主应用类、Quit/SessionEnding 策略及 Dock ownership/motion 专项 | 用户实际 Dock、系统注销／关机取消、完整应用生命周期 |
 | Metal／软件后端、首次帧和窗口外观读回 | 生产 ALL、SDK 两套 48 项矩阵、历史实际窗口与 97 张读回 | 物理 live-resize、跨屏、窗口遮挡／恢复及压力场景 |
 | arm64／x64 与系统版本 | arm64 既有实机／CI；本轮 x64 构建、RID 修复及新增 Intel 门禁 | Intel 原生作业终态、完整 SDK/渲染/交互及确切最低系统资格 |
-| SDK、NativeAOT、应用身份和分发 | AppKit 入口、导出、签名及打包校验 | SDK 路径及单 RID 包已按目标架构验证；Intel SDK 执行、多 RID 发布、AOT、签名公证与安装分发继续开放 |
+| SDK、NativeAOT、应用身份和分发 | AppKit 入口、导出、签名及打包校验 | SDK 路径、组合 RID 包及真实消费端本地检查已通过；锁定工具链 CI、完整 Intel SDK 执行、AOT、签名公证与安装分发继续开放 |
 
 平台契约也需保留语义：`SetDesktopApplicationId` 和键盘移动／缩放能力在当前桥中属于 Linux 能力，macOS 对应应用身份来自 bundle；不能仅因返回 false/None 就认定 AppKit Window 缺陷。Dock 属于应用，ShowInTaskbar 在 macOS 控制窗口菜单／轮换／Mission Control 参与。移动平台的软键盘、方向和安全区不据此替代 macOS 文本输入验收。
 

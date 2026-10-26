@@ -46,10 +46,49 @@ selection and existing embedded-target aliases. Apple CI runs both checks;
 an Intel SDK job additionally builds and inspects a single-RID package and
 runs the existing complete 48-case Window motion matrix.
 
+## Combined macOS NuGet package
+
+Runtime copying remains specific to `RuntimeIdentifier`. Packing collects each
+complete RID directory under `JaliumMacNativeOutputRoot` (default:
+`src/native/bin/native`) into one package. Neither opposing-CPU dylibs nor
+pack-only resources are copied into the SDK application's runtime output.
+
+After building both production payloads, pack with an explicit completeness gate:
+
+```bash
+dotnet pack src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj -c Release -r osx-arm64 -p:JaliumMacRequireAllNativeRids=true
+```
+
+`JaliumMacNativePackRid=osx-arm64` or `osx-x64` deliberately selects one package
+payload. An explicit `JaliumMacNativeRoot` retains its single-RID behavior for
+the current `RuntimeIdentifier`; use `JaliumMacNativeOutputRoot` to supply a
+parent directory containing both RIDs. Requiring both RIDs conflicts with these
+single-RID overrides and fails. A present but incomplete selected directory,
+wrong CPU, missing exports or missing offline Metal resources also fails,
+including `pack --no-build`. An absent second RID is allowed for ordinary local
+single-host development; release packaging should require both.
+
+The SDK assembly carries no build-CPU native resources. Source project copies
+use explicit macOS publish-folder metadata. The package's `buildTransitive`
+target adds offline Metal resources to executable app bundles from the
+consumer's own RID, before Apple's resource metadata collection. The
+NuGet-only `Jalium.UI.MacOS.PackageSmoke` fixture guards this delivery path:
+both target app bundles are built and inspected, and the matching ARM app is
+executed on the combined-package CI host.
+
+`macos-native-artifact.py` transfers each native job's complete payload to the
+combined-package job. Extraction requires the exact checkout commit, RID,
+configuration, regular file inventory and SHA-256 hashes, then repeats CPU/ABI
+and Metal resource checks before publishing the extracted directory. It refuses
+an existing target directory. The combined-package CI job waits for both native
+production jobs and compares every packaged native asset with its validated
+input. Transfer receipts identify build inputs; they are not signing or
+provenance attestations.
+
 These are separate qualification layers. Cross-build success is not Intel
-runtime acceptance. The single-RID package checks do not establish combined
-RID release packaging, NativeAOT, notarization, installation or full Window
-and physical-device acceptance. See [the current Window status](macos-window-status.md).
+runtime acceptance. A combined NuGet package does not establish NativeAOT,
+notarization, installation or full Window and physical-device acceptance.
+See [the current Window status](macos-window-status.md).
 
 ## Prerequisites
 

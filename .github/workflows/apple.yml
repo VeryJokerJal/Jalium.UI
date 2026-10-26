@@ -74,6 +74,20 @@ jobs:
           PYTOOLCHAIN
       - name: Build macOS native slice
         run: bash eng/apple/build-native.sh macos Release
+      - name: Record complete osx-arm64 payload for combined packaging
+        run: >-
+          python3 eng/apple/macos-native-artifact.py create
+          --runtime-identifier osx-arm64 --configuration Release
+          --source-revision "$(git rev-parse HEAD)"
+          --payload src/native/bin/native/osx-arm64/Release
+          --archive "$RUNNER_TEMP/jalium-osx-arm64.tar"
+      - name: Transfer complete osx-arm64 native payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-native-osx-arm64
+          path: ${{ runner.temp }}/jalium-osx-arm64.tar
+          retention-days: 3
+          if-no-files-found: error
       - name: Verify pinned shader version generation with spaces
         run: >-
           python3 eng/apple/verify-shader-version-paths.py
@@ -617,6 +631,20 @@ jobs:
           --native-payload src/native/bin/native/osx-x64/Release
           --runtime-identifier osx-x64
           --results-directory "$RUNNER_TEMP/jalium-window-intel-architecture"
+      - name: Record complete osx-x64 payload for combined packaging
+        run: >-
+          python3 eng/apple/macos-native-artifact.py create
+          --runtime-identifier osx-x64 --configuration Release
+          --source-revision "$(git rev-parse HEAD)"
+          --payload src/native/bin/native/osx-x64/Release
+          --archive "$RUNNER_TEMP/jalium-osx-x64.tar"
+      - name: Transfer complete osx-x64 native payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-native-osx-x64
+          path: ${{ runner.temp }}/jalium-osx-x64.tar
+          retention-days: 3
+          if-no-files-found: error
       - name: Build the Intel AppKit SDK host
         run: >-
           dotnet build tests/Jalium.UI.MacOS.HostSmoke/Jalium.UI.MacOS.HostSmoke.csproj
@@ -665,3 +693,163 @@ jobs:
                      for case in receipt['cases']), receipt
           print('Native Intel SDK: 48 Window combinations and 720 scenarios passed.')
           PYSDKWINDOW
+
+  macos-combined-package:
+    name: macOS combined ARM64 and Intel package
+    needs: [native-and-packages, window-intel-sdk]
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/jalium-combined-dotnet
+        with:
+          dotnet-version: 10.0.302
+      - name: Install the pinned macOS workload
+        run: |
+          python3 - <<'PYCOMBINEDTOOLS'
+          import json
+          from pathlib import Path
+          import subprocess
+          tools = json.loads(Path('eng/apple/toolchain.lock.json').read_text())
+          assert subprocess.check_output(['dotnet', '--version'], text=True).strip() == tools['dotnetSdk']
+          assert subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0] == 'Xcode ' + tools['xcode']
+          subprocess.run(['dotnet', 'workload', 'install', 'macos', '--version', tools['workloadSet']], check=True)
+          info = subprocess.check_output(['dotnet', 'workload', '--info'], text=True)
+          assert tools['workloadSet'] in info and tools['appleSdkPack'] in info, info
+          PYCOMBINEDTOOLS
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-native-osx-arm64
+          path: ${{ runner.temp }}/jalium-native-inputs
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-native-osx-x64
+          path: ${{ runner.temp }}/jalium-native-inputs
+      - name: Validate and combine matching source revisions
+        run: |
+          for rid in osx-arm64 osx-x64; do
+            python3 eng/apple/macos-native-artifact.py extract \
+              --runtime-identifier "$rid" --configuration Release \
+              --source-revision "$(git rev-parse HEAD)" \
+              --archive "$RUNNER_TEMP/jalium-native-inputs/jalium-$rid.tar" \
+              --output-root "$RUNNER_TEMP/jalium-combined-native"
+          done
+      - name: Build and pack both macOS runtime asset sets
+        run: |
+          dotnet build src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj \
+            -c Release -r osx-arm64 --disable-build-servers -m:1 \
+            -p:UseSharedCompilation=false -p:JaliumMacAutoCompleteNativePayload=false \
+            -p:JaliumMacNativeOutputRoot="$RUNNER_TEMP/jalium-combined-native" \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-combined-sdk"
+          dotnet pack src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj \
+            -c Release -r osx-arm64 --no-build --no-restore \
+            -p:JaliumMacNativeOutputRoot="$RUNNER_TEMP/jalium-combined-native" \
+            -p:JaliumMacRequireAllNativeRids=true \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-combined-sdk" \
+            -o "$RUNNER_TEMP/jalium-combined-packages"
+      - name: Verify both package payloads byte for byte
+        run: |
+          python3 - <<'PYCOMBINEDPACK'
+          import hashlib
+          import os
+          from pathlib import Path
+          import zipfile
+          parent = Path(os.environ['RUNNER_TEMP'])
+          packages = list((parent / 'jalium-combined-packages').glob('Jalium.UI.MacOS.*.nupkg'))
+          assert len(packages) == 1, packages
+          with zipfile.ZipFile(packages[0]) as archive:
+              names = [name for name in archive.namelist() if name.startswith('runtimes/')]
+              expected = {}
+              for rid in ('osx-arm64', 'osx-x64'):
+                  root = parent / 'jalium-combined-native' / rid / 'Release'
+                  files = [path for path in root.iterdir() if path.suffix in ('.dylib', '.metallib')
+                           or path.name == 'jalium_metal_manifest.json']
+                  assert len([path for path in files if path.suffix == '.dylib']) >= 8, files
+                  expected.update({'runtimes/' + rid + '/native/' + path.name: path for path in files})
+              assert len(names) == len(set(names)) and set(names) == set(expected), names
+              for name, path in expected.items():
+                  assert hashlib.sha256(archive.read(name)).digest() == hashlib.sha256(path.read_bytes()).digest(), name
+          print('Both matching-source macOS runtime payloads are complete and byte-identical in one package.')
+          PYCOMBINEDPACK
+      - name: Pack framework dependencies for a NuGet-only consumer
+        run: |
+          for project in Managed Core Media Input Interop Controls Gpu Xaml; do
+            dotnet pack "src/managed/Jalium.UI.$project/Jalium.UI.$project.csproj" \
+              -c Release --no-build --no-restore \
+              -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-combined-sdk" \
+              -o "$RUNNER_TEMP/jalium-package-feed"
+          done
+          cp "$RUNNER_TEMP"/jalium-combined-packages/*.nupkg "$RUNNER_TEMP/jalium-package-feed/"
+      - name: Verify real ARM64 and Intel NuGet consumer bundles and ARM Window startup
+        timeout-minutes: 10
+        run: |
+          python3 - <<'PYCONSUMER'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import subprocess
+          parent = Path(os.environ['RUNNER_TEMP'])
+          feed = parent / 'jalium-package-feed'
+          configuration = parent / 'jalium-package-nuget.config'
+          configuration.write_text('<configuration><packageSources><clear/>'
+              '<add key="round" value="' + str(feed) + '"/>'
+              '<add key="nuget" value="https://api.nuget.org/v3/index.json"/>'
+              '</packageSources><fallbackPackageFolders><clear/></fallbackPackageFolders>'
+              '<packageSourceMapping><packageSource key="round"><package pattern="Jalium.*"/>'
+              '</packageSource><packageSource key="nuget"><package pattern="*"/></packageSource>'
+              '</packageSourceMapping></configuration>')
+          env = dict(os.environ, NUGET_PACKAGES=str(parent / 'jalium-consumer-nuget'))
+          assert platform.machine() == 'arm64', platform.machine()
+          rows = []
+          for rid, architecture in [('osx-arm64', 'arm64'), ('osx-x64', 'x86_64')]:
+              root = parent / 'jalium-package-consumer' / rid
+              subprocess.run(['dotnet', 'build',
+                  'tests/Jalium.UI.MacOS.PackageSmoke/Jalium.UI.MacOS.PackageSmoke.csproj',
+                  '-c', 'Release', '-r', rid, '--disable-build-servers', '-m:1',
+                  '-p:UseSharedCompilation=false', '-p:JaliumBuildRoot=' + str(root),
+                  '-p:RestoreConfigFile=' + str(configuration)], env=env, check=True)
+              apps = list((root / 'bin').rglob('Jalium.UI.MacOS.PackageSmoke.app'))
+              assert len(apps) == 1, apps
+              app = apps[0]
+              libraries = list(app.rglob('libjalium.native.*.dylib'))
+              expected = {path.name for path in (parent / 'jalium-combined-native' / rid / 'Release').glob('*.dylib')}
+              assert {path.name for path in libraries} == expected and len(expected) >= 8, libraries
+              for path in libraries:
+                  subprocess.run(['/usr/bin/lipo', str(path), '-verify_arch', architecture], check=True)
+              resources = app / 'Contents/Resources'
+              manifest = json.loads((resources / 'jalium_metal_manifest.json').read_text())
+              assert manifest['rid'] == rid, manifest
+              for name in ('jalium_core.metallib', 'jalium_vello.metallib'):
+                  data = (resources / name).read_bytes()
+                  assert len(data) == manifest['libraries'][name]['size'], name
+                  assert hashlib.sha256(data).hexdigest() == manifest['libraries'][name]['sha256'], name
+              subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+              if rid == 'osx-arm64':
+                  result = parent / 'jalium-package-window-result.json'
+                  subprocess.run([str(app / 'Contents/MacOS/Jalium.UI.MacOS.PackageSmoke')],
+                      env=dict(env, JALIUM_MACOS_PACKAGE_SMOKE_RESULT=str(result)), check=True, timeout=60)
+                  assert json.loads(result.read_text())['passed'], result.read_text()
+              rows.append({'rid': rid, 'nativeFiles': len(libraries), 'runtimeExecuted': rid == 'osx-arm64'})
+          packages = list(feed.glob('Jalium.UI.MacOS.*.nupkg'))
+          assert len(packages) == 1, packages
+          cache = parent / 'jalium-consumer-nuget/jalium.ui.macos'
+          receipts = list(cache.glob('*/jalium.ui.macos.*.nupkg.sha512'))
+          assert len(receipts) == 1, receipts
+          assert base64.b64encode(hashlib.sha512(packages[0].read_bytes()).digest()).decode() == receipts[0].read_text().strip()
+          print(json.dumps({'passed': True, 'packageHashMatched': True, 'consumers': rows,
+                            'physicalInput': False, 'foregroundRequired': False}))
+          PYCONSUMER
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jalium-UI-MacOS-combined-package
+          path: ${{ runner.temp }}/jalium-combined-packages/*.nupkg
+          retention-days: 3
+          if-no-files-found: error

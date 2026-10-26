@@ -86,10 +86,23 @@ def main():
             contains=None if selected == rid else 'required ' + selected + ' CPU slice')
         command[-1] = '-getItem:Content'
         command.insert(-1, '-p:JaliumMacNativeRoot=' + str(native))
-        items = json.loads(run('sdk-package-items-' + selected, command))['Items']['Content']
-        files = [item for item in items if item.get('Pack') == 'true']
-        if not files or any(item.get('PackagePath') != 'runtimes/' + selected + '/native' for item in files):
-            raise ValueError('Native package items are not selected by their target RID')
+        items = json.loads(run('sdk-runtime-items-' + selected, command))['Items']['Content']
+        native_items = [item for item in items if Path(item['Identity']).suffix in ('.dylib', '.metallib')]
+        if not native_items or any(item.get('Pack') != 'false' for item in native_items):
+            raise ValueError('Runtime copying must not implicitly pack the current CPU')
+        command[-1] = '-getItem:None'
+        command.insert(-1, '-target:CollectMacOSNativePackageAssets')
+        output = run('sdk-package-items-' + selected, command, expected=0 if selected == rid else 1,
+                     contains=None if selected == rid else 'required ' + selected + ' CPU slice')
+        if selected == rid:
+            items = json.loads(output)['Items']['None']
+            files = [item for item in items if item.get('Pack') == 'true' and
+                     (Path(item['Identity']).suffix in ('.dylib', '.metallib') or
+                      Path(item['Identity']).name == 'jalium_metal_manifest.json')]
+            if not files or any(item.get('PackagePath') != 'runtimes/' + selected + '/native' or
+                                item.get('CopyToOutputDirectory') != 'Never' for item in files):
+                raise ValueError('Pack-only native assets are not selected by the target RID')
+
 
     helper = source / 'eng/apple/resolve-apple-target.sh'
     command = ['bash', '-c', 'set -e; source "$1"; jalium_resolve_apple_target macos; printf "%s %s" "$rid" "$arch"',
