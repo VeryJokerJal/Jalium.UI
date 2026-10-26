@@ -561,3 +561,18 @@ jobs:
           --build-directory "$RUNNER_TEMP/jalium-window-intel-build"
           --native-root "$RUNNER_TEMP/jalium-window-intel-native"
           --results-directory "$RUNNER_TEMP/jalium-window-intel-results"
+      - name: Diagnose failed AppKit environment
+        if: failure()
+        timeout-minutes: 1
+        run: |
+          for service in com.apple.Dock.agent com.apple.iconservices.iconservicesagent; do
+            printf '%s\n' "$service"
+            launchctl print "gui/$(id -u)/$service" | \
+              awk '/state =|pid =|runs =|successive crashes|last exit code|last terminating signal|minimum runtime/' || true
+          done
+          for dock_pid in $(pgrep -x Dock || true); do
+            sample "$dock_pid" 2 -file /dev/stdout | head -n 200 || true
+          done
+          /usr/bin/log show --last 2m --style compact \
+            --predicate 'process == "Dock" OR process == "iconservicesagent"' \
+            2>/dev/null | tail -n 80 || true
