@@ -504,46 +504,80 @@ NSUInteger AppleStyleMask(uint32_t style)
     return mask;
 }
 
+// A prior SDK observer can finish a newer request before the old setter
+// writes. Reconcile only when its requested value changed while unwinding.
+template<typename Requested, typename Setter, typename Getter, typename Live>
+bool ApplyAppleLatestValue(Requested requested, Setter set, Getter get, Live live)
+{
+    while (live()) {
+        auto value = requested();
+        set(value);
+        if (!live()) return false;
+        auto latest = requested();
+        if (value == latest) return true;
+        auto actual = get();
+        if (!live()) return false;
+        if (requested() == latest && actual == latest) return true;
+    }
+    return false;
+}
+
+bool ApplyAppleWindowLevel(JaliumPlatformWindow* window)
+{
+    bool registered = IsLiveWindow(window);
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
+    auto live = [&] { return (!registered || IsLiveWindow(window, nativeWindow)) &&
+        !window->destroying && window->window == nativeWindow; };
+    return ApplyAppleLatestValue(
+        [&] { return (window->style & JALIUM_WINDOW_STYLE_TOPMOST) ? NSFloatingWindowLevel : NSNormalWindowLevel; },
+        [&](NSWindowLevel level) { nativeWindow.level = level; },
+        [&] { return nativeWindow.level; }, live);
+}
+
 void ApplyAppleSurfaceAppearance(JaliumPlatformWindow* window)
 {
     bool registered = IsLiveWindow(window);
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
-    NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
-    NSVisualEffectView* __attribute__((objc_precise_lifetime)) backdrop = window->backdropView;
-    uint32_t style = window->style;
-    uint64_t sequence = ++window->surfaceAppearanceSequence;
-    auto current = [&] {
-        // AppKit setters can synchronously close the owner or apply a newer
-        // appearance through a property observer. Check identity before reading
-        // the C++ owner, even when the old native objects remain retained.
-        return (!registered || IsLiveWindow(window, nativeWindow)) && !window->destroying &&
-            window->surfaceAppearanceSequence == sequence && window->style == style &&
-            (NSView*)window->view == view && window->backdropView == backdrop;
-    };
-    bool explicitTransparency = (style & JALIUM_WINDOW_STYLE_TRANSPARENT) != 0;
-    bool hasBackdrop = backdrop != nil;
-    bool reduceTransparency = hasBackdrop &&
-        NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
-    if (!current()) return;
-    bool transparent = (explicitTransparency || hasBackdrop) && !reduceTransparency;
-    nativeWindow.ignoresMouseEvents = (style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT) != 0;
-    if (!current()) return;
-    nativeWindow.opaque = !transparent;
-    if (!current()) return;
-    NSColor* background = transparent ? NSColor.clearColor : NSColor.windowBackgroundColor;
-    if (!current()) return;
-    nativeWindow.backgroundColor = background;
-    if (!current()) return;
-    nativeWindow.hasShadow = hasBackdrop || !explicitTransparency;
-    if (!current()) return;
-    backdrop.hidden = reduceTransparency;
-    if (!current()) return;
-    // A renderer may already have installed a layer before this runtime update.
-    // With reduced transparency the window paints an opaque system background
-    // beneath the alpha-preserving renderer, instead of losing its clear pixels.
-    CALayer* layer = view.layer;
-    if (!current()) return;
-    layer.opaque = !(explicitTransparency || hasBackdrop);
+    auto live = [&] { return (!registered || IsLiveWindow(window, nativeWindow)) &&
+        !window->destroying && window->window == nativeWindow; };
+    while (live()) {
+        NSView* __attribute__((objc_precise_lifetime)) view = (NSView*)window->view;
+        NSVisualEffectView* __attribute__((objc_precise_lifetime)) backdrop = window->backdropView;
+        uint32_t style = window->style;
+        uint64_t sequence = ++window->surfaceAppearanceSequence;
+        auto current = [&] { return live() && window->surfaceAppearanceSequence == sequence &&
+            window->style == style && (NSView*)window->view == view && window->backdropView == backdrop; };
+        auto apply = [&] {
+            bool explicitTransparency = (style & JALIUM_WINDOW_STYLE_TRANSPARENT) != 0;
+            bool hasBackdrop = backdrop != nil;
+            bool reduceTransparency = hasBackdrop &&
+                NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
+            if (!current()) return;
+            bool transparent = (explicitTransparency || hasBackdrop) && !reduceTransparency;
+            nativeWindow.ignoresMouseEvents = (style & JALIUM_WINDOW_STYLE_INPUT_TRANSPARENT) != 0;
+            if (!current()) return;
+            nativeWindow.opaque = !transparent;
+            if (!current()) return;
+            NSColor* background = transparent ? NSColor.clearColor : NSColor.windowBackgroundColor;
+            if (!current()) return;
+            nativeWindow.backgroundColor = background;
+            if (!current()) return;
+            nativeWindow.hasShadow = hasBackdrop || !explicitTransparency;
+            if (!current()) return;
+            backdrop.hidden = reduceTransparency;
+            if (!current()) return;
+            // A renderer may already have installed a layer before this runtime update.
+            // With reduced transparency the window paints an opaque system background
+            // beneath the alpha-preserving renderer, instead of losing its clear pixels.
+            CALayer* layer = view.layer;
+            if (!current()) return;
+            layer.opaque = !(explicitTransparency || hasBackdrop);
+        };
+        apply();
+        if (!live() || current()) return;
+        // Repair the property written after a prior callback completed the
+        // newer appearance; keep all window and layer flags consistent.
+    }
 }
 
 void RefreshWindowMenuItem(JaliumPlatformWindow* window)
@@ -556,8 +590,10 @@ void RefreshWindowMenuItem(JaliumPlatformWindow* window)
     // Destruction still calls this helper to remove its retained native item.
     auto live = [&] { return !registered || IsLiveWindow(window, nativeWindow); };
     auto listed = [&] { return live() && !window->destroying && window->visible && window->showInTaskbar; };
-    nativeWindow.excludedFromWindowsMenu = !window->showInTaskbar;
-    if (!live()) return;
+    if (!ApplyAppleLatestValue(
+        [&] { return !window->showInTaskbar; },
+        [&](bool excluded) { nativeWindow.excludedFromWindowsMenu = excluded; },
+        [&] { return bool(nativeWindow.excludedFromWindowsMenu); }, live)) return;
     if (listed()) {
         NSString* title = nativeWindow.title;
         if (!listed()) return;
@@ -576,14 +612,20 @@ void ApplyAppleWindowParticipation(JaliumPlatformWindow* window)
 {
     bool registered = IsLiveWindow(window);
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
-    // Menu/cycling participation is independent of fullscreen eligibility.
-    // Only popup surfaces accompany another window's fullscreen Space.
-    NSUInteger behavior = (window->style & JALIUM_WINDOW_STYLE_POPUP)
-        ? NSWindowCollectionBehaviorFullScreenAuxiliary : NSWindowCollectionBehaviorFullScreenPrimary;
-    if (!window->showInTaskbar)
-        behavior |= NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle;
-    nativeWindow.collectionBehavior = behavior;
-    if (registered && !IsLiveWindow(window, nativeWindow)) return;
+    auto live = [&] { return (!registered || IsLiveWindow(window, nativeWindow)) &&
+        !window->destroying && window->window == nativeWindow; };
+    auto requested = [&] {
+        // Menu/cycling participation is independent of fullscreen eligibility.
+        // Only popup surfaces accompany another window's fullscreen Space.
+        NSUInteger behavior = (window->style & JALIUM_WINDOW_STYLE_POPUP)
+            ? NSWindowCollectionBehaviorFullScreenAuxiliary : NSWindowCollectionBehaviorFullScreenPrimary;
+        if (!window->showInTaskbar)
+            behavior |= NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle;
+        return behavior;
+    };
+    if (!ApplyAppleLatestValue(requested,
+        [&](NSUInteger behavior) { nativeWindow.collectionBehavior = behavior; },
+        [&] { return NSUInteger(nativeWindow.collectionBehavior); }, live)) return;
     RefreshWindowMenuItem(window);
 }
 
@@ -816,9 +858,7 @@ void ApplyAppleStyle(JaliumPlatformWindow* window)
     uint32_t appearanceStyle = window->style;
     ApplyAppleSurfaceAppearance(window);
     if (!live() || window->style != appearanceStyle) return;
-    nativeWindow.level = (window->style & JALIUM_WINDOW_STYLE_TOPMOST)
-        ? NSFloatingWindowLevel : NSNormalWindowLevel;
-    if (!live()) return;
+    if (!ApplyAppleWindowLevel(window) || !live()) return;
     NSUInteger currentMask = nativeWindow.styleMask;
     if (!live()) return;
     if (window->fullScreenTransition || (currentMask & NSWindowStyleMaskFullScreen)) return;
@@ -5277,7 +5317,7 @@ int32_t jalium_window_set_topmost(JaliumPlatformWindow* w,int32_t top){if(!w)ret
 #if TARGET_OS_OSX
     if (top) w->style |= JALIUM_WINDOW_STYLE_TOPMOST;
     else w->style &= ~JALIUM_WINDOW_STYLE_TOPMOST;
-    w->window.level=top?NSFloatingWindowLevel:NSNormalWindowLevel;return JALIUM_OK;
+    ApplyAppleWindowLevel(w);return JALIUM_OK;
 #else
     return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
