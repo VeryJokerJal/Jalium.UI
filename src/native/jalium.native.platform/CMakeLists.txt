@@ -450,6 +450,14 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
     add_dependencies(jalium.native.platform.window.tests jalium.native.platform.style-reentrancy.tests)
     add_test(NAME jalium.native.platform.macos.window.style-reentrancy COMMAND jalium.native.platform.style-reentrancy.tests)
     set_tests_properties(jalium.native.platform.macos.window.style-reentrancy PROPERTIES TIMEOUT 30)
+    add_executable(jalium.native.platform.scalar-reentrancy.tests tests/platform_apple_scalar_reentrancy_tests.mm)
+    target_include_directories(jalium.native.platform.scalar-reentrancy.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_compile_options(jalium.native.platform.scalar-reentrancy.tests PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.platform.scalar-reentrancy.tests PRIVATE ${PROJECT_NAME} "-framework AppKit")
+    add_dependencies(jalium.native.platform.window.tests jalium.native.platform.scalar-reentrancy.tests)
+    add_test(NAME jalium.native.platform.macos.window.scalar-reentrancy COMMAND jalium.native.platform.scalar-reentrancy.tests)
+    set_tests_properties(jalium.native.platform.macos.window.scalar-reentrancy PROPERTIES TIMEOUT 30)
     add_executable(jalium.native.platform.creation-lifetime.tests tests/platform_apple_window_creation_lifetime_tests.mm)
     target_include_directories(jalium.native.platform.creation-lifetime.tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)

@@ -202,7 +202,7 @@ internal static class WindowOpacityChecks
                 Directory.CreateDirectory(directory);
                 File.WriteAllText(Path.Combine(directory, $"opacity-{index:D2}.json"), JsonSerializer.Serialize(new
                 {
-                    scenario = Names[scenario], allowsTransparency, activationPolicy = "Prohibited",
+                    scenario = Names[scenario], allowsTransparency, activationPolicy = NSApplication.SharedApplication.ActivationPolicy.ToString(),
                     failures, samples
                 }, new JsonSerializerOptions { WriteIndented = true }));
             }

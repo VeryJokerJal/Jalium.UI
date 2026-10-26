@@ -78,6 +78,15 @@ struct JaliumPlatformWindow {
 #if TARGET_OS_OSX
     NSWindow* window = nil;
     bool creating = false;
+    // A prior AppKit observer may complete a newer request before the old
+    // SDK setter writes its value. Keep the latest intent until unwind.
+    uint64_t titleRequestVersion = 0;
+    NSString* requestedTitle = nil;
+    uint64_t opacityRequestVersion = 0;
+    double requestedOpacity = 1.0;
+    uint64_t sizeLimitsRequestVersion = 0;
+    int32_t requestedMinWidth = 0, requestedMinHeight = 0;
+    int32_t requestedMaxWidth = 0, requestedMaxHeight = 0;
     std::shared_ptr<AppleGestureState> gestures;
     uint64_t gestureDispatchGeneration = 0;
     std::shared_ptr<AppleTabletState> tablets;
@@ -4870,8 +4879,23 @@ void jalium_window_hide(JaliumPlatformWindow* w){if(!w)return;w->visible=false;
 void jalium_window_set_title(JaliumPlatformWindow* w,const JaliumUtf16Char* title){if(!w)return;
 #if TARGET_OS_OSX
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
-    nativeWindow.title=StringFromUtf16(title);
-    if (IsLiveWindow(w, nativeWindow)) RefreshWindowMenuItem(w);
+    w->requestedTitle = StringFromUtf16(title);
+    ++w->titleRequestVersion;
+    for (;;) {
+        auto version = w->titleRequestVersion;
+        NSString* __attribute__((objc_precise_lifetime)) requested = w->requestedTitle;
+        nativeWindow.title = requested;
+        if (!IsLiveWindow(w, nativeWindow)) return;
+        if (w->titleRequestVersion == version) break;
+        auto latestVersion = w->titleRequestVersion;
+        NSString* __attribute__((objc_precise_lifetime)) latest = w->requestedTitle;
+        NSString* __attribute__((objc_precise_lifetime)) actual = nativeWindow.title;
+        if (!IsLiveWindow(w, nativeWindow)) return;
+        bool satisfied = [actual isEqualToString:latest];
+        if (!IsLiveWindow(w, nativeWindow)) return;
+        if (w->titleRequestVersion == latestVersion && satisfied) break;
+    }
+    RefreshWindowMenuItem(w);
 #else
     (void)title;
 #endif
@@ -5073,17 +5097,48 @@ int32_t jalium_platform_get_monitor_info(int32_t index,JaliumMonitorInfo* info){
 
 int32_t jalium_window_set_min_max_size(JaliumPlatformWindow* w,int32_t minW,int32_t minH,int32_t maxW,int32_t maxH){if(!w)return JALIUM_ERROR_INVALID_ARGUMENT;
 #if TARGET_OS_OSX
-    NSWindow* nativeWindow = w->window;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
     minW = std::max(0, minW); minH = std::max(0, minH);
     if (maxW > 0) maxW = std::max(minW, maxW);
     if (maxH > 0) maxH = std::max(minH, maxH);
+    w->requestedMinWidth = minW; w->requestedMinHeight = minH;
+    w->requestedMaxWidth = maxW; w->requestedMaxHeight = maxH;
+    ++w->sizeLimitsRequestVersion;
     bool wasApplyingState = w->applyingState;
     w->applyingState = true;
-    nativeWindow.contentMinSize = NSMakeSize(minW/w->scale, minH/w->scale);
-    if (!IsLiveWindow(w, nativeWindow)) return JALIUM_ERROR_INVALID_STATE;
-    nativeWindow.contentMaxSize = NSMakeSize(maxW > 0 ? maxW/w->scale : CGFLOAT_MAX,
-        maxH > 0 ? maxH/w->scale : CGFLOAT_MAX);
-    if (IsLiveWindow(w, nativeWindow)) w->applyingState = wasApplyingState;
+    auto latestSatisfied = [&]() {
+        auto version = w->sizeLimitsRequestVersion;
+        NSSize minimum = NSMakeSize(w->requestedMinWidth / w->scale, w->requestedMinHeight / w->scale);
+        NSSize maximum = NSMakeSize(w->requestedMaxWidth > 0 ? w->requestedMaxWidth / w->scale : CGFLOAT_MAX,
+            w->requestedMaxHeight > 0 ? w->requestedMaxHeight / w->scale : CGFLOAT_MAX);
+        NSSize actualMinimum = nativeWindow.contentMinSize;
+        if (!IsLiveWindow(w, nativeWindow)) return -1;
+        NSSize actualMaximum = nativeWindow.contentMaxSize;
+        if (!IsLiveWindow(w, nativeWindow)) return -1;
+        return w->sizeLimitsRequestVersion == version && NSEqualSizes(actualMinimum, minimum) &&
+            NSEqualSizes(actualMaximum, maximum) ? 1 : 0;
+    };
+    for (;;) {
+        auto version = w->sizeLimitsRequestVersion;
+        NSSize minimum = NSMakeSize(w->requestedMinWidth / w->scale, w->requestedMinHeight / w->scale);
+        NSSize maximum = NSMakeSize(w->requestedMaxWidth > 0 ? w->requestedMaxWidth / w->scale : CGFLOAT_MAX,
+            w->requestedMaxHeight > 0 ? w->requestedMaxHeight / w->scale : CGFLOAT_MAX);
+        nativeWindow.contentMinSize = minimum;
+        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_ERROR_INVALID_STATE;
+        if (w->sizeLimitsRequestVersion != version) {
+            int satisfied = latestSatisfied();
+            if (satisfied < 0) return JALIUM_ERROR_INVALID_STATE;
+            if (satisfied) break;
+            continue;
+        }
+        nativeWindow.contentMaxSize = maximum;
+        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
+        if (w->sizeLimitsRequestVersion == version) break;
+        int satisfied = latestSatisfied();
+        if (satisfied < 0) return JALIUM_OK;
+        if (satisfied) break;
+    }
+    w->applyingState = wasApplyingState;
     return JALIUM_OK;
 #else
     (void)minW;(void)minH;(void)maxW;(void)maxH;return JALIUM_ERROR_NOT_SUPPORTED;
@@ -5255,11 +5310,26 @@ int32_t jalium_window_set_enabled(JaliumPlatformWindow* w,int32_t enabled){if(!w
 int32_t jalium_window_set_opacity(JaliumPlatformWindow* w,double opacity){if(!w)return JALIUM_ERROR_INVALID_ARGUMENT;opacity=std::clamp(opacity,0.0,1.0);
 #if TARGET_OS_OSX
     if (!std::isfinite(opacity)) return JALIUM_ERROR_INVALID_ARGUMENT;
-    w->window.alphaValue=opacity;
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = w->window;
+    w->requestedOpacity = opacity;
+    ++w->opacityRequestVersion;
+    for (;;) {
+        auto version = w->opacityRequestVersion;
+        double requested = w->requestedOpacity;
+        nativeWindow.alphaValue = requested;
+        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
+        if (w->opacityRequestVersion == version) break;
+        auto latestVersion = w->opacityRequestVersion;
+        double latest = w->requestedOpacity;
+        double actual = nativeWindow.alphaValue;
+        if (!IsLiveWindow(w, nativeWindow)) return JALIUM_OK;
+        if (w->opacityRequestVersion == latestVersion && actual == latest) break;
+    }
 #else
     w->view.alpha=opacity;
 #endif
-    return JALIUM_OK;}
+    return JALIUM_OK;
+}
 int32_t jalium_window_set_show_in_taskbar(JaliumPlatformWindow* w,int32_t show)
 {
     if (!w) return JALIUM_ERROR_INVALID_ARGUMENT;
