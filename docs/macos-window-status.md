@@ -23,6 +23,8 @@
 
 作业使用当前完整的 Window／剪贴板／线程正则，不排除显示、焦点、输入或无障碍组。JUnit 必须与配置得到的完整 CTest 清单一一相同；缺失、重复、失败、跳过、未运行或计数不一致均失败。架构、主机、RID 和 JUnit 的 5 项正向／20 项负向控制用于防止错误放行。真实 Intel 运行结论须以 PR 对应提交的这两个作业终态及日志为准；跨编译和 ARM 回归不替代它们。
 
+首次原生 Intel 结果（提交 `664c4e9e`）：macOS 15.7.9／Xcode 26.3 的 46 项全部通过；macOS 26 的 37 项通过、9 项失败或超时，集中在最小化完成及后续恢复。后者尚未取得资格。新增独立 [NSWindow 基线](../eng/apple/window-appkit-transitions.mm)，在加载 Jalium 之前核实原生和无边框窗口的开始／完成通知、最小化状态及恢复；日志保留 Dock 进程和通知线程，基线失败直接阻止运行门禁，不放宽原有合约。
+
 这两个作业检查原生 Window，关闭不相关的运行时 shader 编译器依赖；原有生产 ALL、运行时编译器、SDK 和包验证不变。它们不证明 Intel SDK 包、渲染器、分发或物理输入已经完成。
 
 运行器及工具链选择已核对 [GitHub 主机表](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)、[macOS 15 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md)和 [macOS 26 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md)。Apple 架构变量的含义见 [CMake 文档](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_ARCHITECTURES.html)。

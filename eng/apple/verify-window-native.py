@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import re
 import struct
 import subprocess
@@ -187,6 +188,25 @@ def self_test():
     print('Architecture/host/RID/JUnit controls: 5 positive and 20 negative checks passed.')
 
 
+def qualify_appkit(args, source, build, results):
+    app = build / 'appkit-environment/JaliumAppKitTransitions.app'
+    executable = app / 'Contents/MacOS/JaliumAppKitTransitions'
+    executable.parent.mkdir(parents=True, exist_ok=False)
+    info = {'CFBundleExecutable': executable.name, 'CFBundleIdentifier': 'com.jalium.ui.validation.appkit-transitions',
+            'CFBundleName': 'Jalium AppKit Transitions', 'CFBundlePackageType': 'APPL',
+            'CFBundleVersion': '1', 'LSMinimumSystemVersion': '15.0', 'NSHighResolutionCapable': True}
+    (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+    invoke(['xcrun', 'clang++', '-std=c++20', '-fobjc-arc', '-arch', args.architecture,
+            '-mmacosx-version-min=15.0', '-framework', 'AppKit',
+            str(source / 'eng/apple/window-appkit-transitions.mm'), '-o', str(executable)], results / 'appkit-build.log')
+    identity = image_identity(executable.read_bytes(), args.architecture)
+    invoke(['codesign', '--force', '--sign', '-', str(app)], results / 'appkit-sign.log')
+    invoke([args.cmake, '-DHOST_APP=' + str(app), '-DHOST_WORK_DIR=' + str(results / 'appkit-protocol'),
+            '-P', str(source / 'src/native/jalium.native.platform/tests/run_apple_window_validation.cmake')],
+           results / 'appkit-transitions.log')
+    return {'passed': True, 'frameworkLinked': False, 'identity': identity}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-test', action='store_true')
@@ -225,6 +245,7 @@ def main():
             raise ValueError('Unexpected Xcode toolchain')
         if not args.build_only:
             check_native_host(host, args.architecture, args.expected_macos_major)
+            report['appkitEnvironment'] = qualify_appkit(args, source, build, results)
         report['ridControls'] = configuration_controls(args, source, build, native, results)
         invoke([args.cmake, '-S', str(source / 'src/native'), '-B', str(build), '-G', 'Unix Makefiles',
                 '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_OSX_ARCHITECTURES=' + args.architecture,
