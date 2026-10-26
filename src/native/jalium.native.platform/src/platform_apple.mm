@@ -77,6 +77,7 @@ struct JaliumAppleDragSource {
 struct JaliumPlatformWindow {
 #if TARGET_OS_OSX
     NSWindow* window = nil;
+    bool creating = false;
     std::shared_ptr<AppleGestureState> gestures;
     uint64_t gestureDispatchGeneration = 0;
     std::shared_ptr<AppleTabletState> tablets;
@@ -283,6 +284,42 @@ bool IsLiveWindow(JaliumPlatformWindow* window, NSWindow* nativeWindow)
     // and require both registration and native identity before continuing.
     return IsLiveWindow(window) && window->window == nativeWindow;
 }
+
+// Keep native close observations local to one factory call, including SDK
+// notifications emitted before its delegate can be attached.
+struct AppleWindowCreationScope {
+    inline static thread_local AppleWindowCreationScope* current = nullptr;
+    AppleWindowCreationScope* parent = current;
+    __unsafe_unretained NSWindow* preparingWindow = nil;
+    bool deferredClose = false;
+    NSHashTable<NSWindow*>* closedWindows = [[NSHashTable alloc] initWithOptions:
+        NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPointerPersonality capacity:0];
+    id closeObserver = nil;
+    AppleWindowCreationScope()
+    {
+        current = this;
+        NSHashTable<NSWindow*>* closed = closedWindows;
+        closeObserver = [NSNotificationCenter.defaultCenter addObserverForName:NSWindowWillCloseNotification
+            object:nil queue:nil usingBlock:^(NSNotification* note) {
+                if (NSThread.isMainThread && [note.object isKindOfClass:NSWindow.class]) [closed addObject:note.object];
+            }];
+    }
+    static bool DeferClose(NSWindow* window)
+    {
+        for (auto* scope = current; scope; scope = scope->parent) {
+            if (scope->preparingWindow == window) { scope->deferredClose = true; return true; }
+        }
+        return false;
+    }
+    bool Closed(NSWindow* window) { return window && [closedWindows containsObject:window]; }
+    void Stop()
+    {
+        id observer = closeObserver; closeObserver = nil;
+        if (observer) [NSNotificationCenter.defaultCenter removeObserver:observer];
+        [closedWindows removeAllObjects];
+    }
+    ~AppleWindowCreationScope() { Stop(); current = parent; }
+};
 
 std::vector<AppleDisplayChangeTarget> CaptureAppleDisplayChangeTargets()
 {
@@ -761,8 +798,8 @@ void ApplyAppleStyle(JaliumPlatformWindow* window)
     bool registered = IsLiveWindow(window);
     NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = window->window;
     NSView* __attribute__((objc_precise_lifetime)) contentView = (NSView*)window->view;
-    auto live = [&] { return !registered || (IsLiveWindow(window, nativeWindow) &&
-        !window->destroying && (NSView*)window->view == contentView); };
+    auto live = [&] { return (!registered || IsLiveWindow(window, nativeWindow)) &&
+        !window->destroying && (NSView*)window->view == contentView; };
     NSView* __attribute__((objc_precise_lifetime)) inputRoot = nativeWindow.contentView;
     if (!live()) return;
     AppleContentFocus focus;
@@ -1144,6 +1181,10 @@ void ObserveWindowStateCompletions(JaliumPlatformWindow* window)
                     CompleteWindowDeminiaturization(window, nativeWindow);
             }];
         [observers addObject:observer];
+        if (window->destroying) {
+            for (id value in observers) [NSNotificationCenter.defaultCenter removeObserver:value];
+            return;
+        }
     }
     window->stateCompletionObservers = observers.copy;
 }
@@ -2014,6 +2055,12 @@ static BOOL PerformNativeSheetEditingEquivalent(JaliumAppleWindow* owner, NSWind
 }
 
 @implementation JaliumAppleWindow
+- (void)close {
+    // SDK initialization can publish this object before ARC ownership has been
+    // configured. Finish that SDK call before honoring a synchronous close.
+    if (AppleWindowCreationScope::DeferClose(self)) return;
+    [super close];
+}
 - (BOOL)makeFirstResponder:(NSResponder*)responder {
     JaliumAppleWindow* __attribute__((objc_precise_lifetime)) keepAlive = self;
     ++_responderFocusSequence;
@@ -4235,44 +4282,102 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     result->width=params->width;result->height=params->height;
     result->x=params->x;result->y=params->y;result->style=params->style;
 #if TARGET_OS_OSX
+    result->creating = true;
+    AppleWindowCreationScope creation;
+    auto cancelled = [&] {
+        if (result->destroying) return true;
+        bool alreadyClosed = creation.Closed(result->window);
+        if (!creation.deferredClose && !alreadyClosed) return false;
+        result->nativeClosing = alreadyClosed;
+        jalium_window_destroy(result.get());
+        return true;
+    };
     AppleKeyboardMapSnapshot();
     NSUInteger mask = AppleStyleMask(params->style);
     CGFloat scale = NSScreen.mainScreen.backingScaleFactor ?: 1.0;
     NSRect rect=NSMakeRect(0, 0, params->width / scale, params->height / scale);
-    result->window=[[JaliumAppleWindow alloc]initWithContentRect:rect styleMask:mask
-        backing:NSBackingStoreBuffered defer:NO];
-    if(!result->window)return nullptr;
-    ((JaliumAppleWindow*)result->window).jaliumOwner = result.get();
-    result->window.releasedWhenClosed=NO;
-    [result->window center];
-    NSRect frame = result->window.frame;
-    NSPoint defaults = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), result->window.screen);
+    NSWindow* __attribute__((objc_precise_lifetime)) nativeWindow = nil;
+    {
+        JaliumAppleWindow* __attribute__((objc_precise_lifetime)) allocated = [JaliumAppleWindow alloc];
+        creation.preparingWindow = allocated;
+        struct FinishPreparation {
+            AppleWindowCreationScope& creation;
+            ~FinishPreparation() { creation.preparingWindow = nil; }
+        } preparation{creation};
+        nativeWindow = [allocated initWithContentRect:rect styleMask:mask backing:NSBackingStoreBuffered defer:NO];
+        result->window = nativeWindow;
+        if (!nativeWindow) return nullptr;
+        nativeWindow.releasedWhenClosed = NO;
+    }
+    if (cancelled()) return nullptr;
+    ((JaliumAppleWindow*)nativeWindow).jaliumOwner = result.get();
+    if (cancelled()) return nullptr;
+    result->delegate = [JaliumAppleWindowDelegate new];
+    result->delegate.owner = result.get();
+    nativeWindow.delegate = result->delegate;
+    if (cancelled()) return nullptr;
+    [nativeWindow center];
+    if (cancelled()) return nullptr;
+    NSRect frame = nativeWindow.frame;
+    if (cancelled()) return nullptr;
+    NSScreen* screen = nativeWindow.screen;
+    if (cancelled()) return nullptr;
+    NSPoint defaults = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), screen);
+    if (cancelled()) return nullptr;
     NSPoint requested = NSMakePoint(params->x == JALIUM_DEFAULT_POS ? defaults.x : params->x,
         params->y == JALIUM_DEFAULT_POS ? defaults.y : params->y);
-    NSScreen* destination = ScreenForFrameworkPoint(requested, result->window.screen);
+    screen = nativeWindow.screen;
+    if (cancelled()) return nullptr;
+    NSScreen* destination = ScreenForFrameworkPoint(requested, screen);
+    if (cancelled()) return nullptr;
     NSPoint topLeft = NativeScreenPoint(requested, destination);
+    if (cancelled()) return nullptr;
     if (params->x == JALIUM_DEFAULT_POS) topLeft.x = NSMinX(frame);
     if (params->y == JALIUM_DEFAULT_POS) topLeft.y = NSMaxY(frame);
-    [result->window setFrameTopLeftPoint:topLeft];
+    [nativeWindow setFrameTopLeftPoint:topLeft];
+    if (cancelled()) return nullptr;
     result->view=[[JaliumAppleView alloc]initWithFrame:NSMakeRect(0,0,rect.size.width,rect.size.height)];
+    if (cancelled()) return nullptr;
     result->view.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+    if (cancelled()) return nullptr;
     result->view.jaliumOwner=result.get();
-    // Keep AppKit's material and the Metal surface as siblings: a visual effect
-    // inside the rendering view would be composited above its drawable contents.
-    NSView* content = [[NSView alloc] initWithFrame:result->view.frame];
+    if (cancelled()) return nullptr;
+    // Keep the native material and renderer as siblings.
+    NSRect contentFrame = result->view.frame;
+    if (cancelled()) return nullptr;
+    NSView* content = [[NSView alloc] initWithFrame:contentFrame];
+    if (cancelled()) return nullptr;
     [content addSubview:result->view];
-    result->window.contentView=content;
-    result->delegate=[JaliumAppleWindowDelegate new];result->delegate.owner=result.get();
-    result->window.delegate=result->delegate;result->window.title=StringFromUtf16(params->title);
-    result->window.acceptsMouseMovedEvents=YES;
-    result->scale=result->window.backingScaleFactor;
-    frame=result->window.frame;
-    NSPoint positioned = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), result->window.screen);
-    result->x=lround(positioned.x);
-    result->y=lround(positioned.y);
+    if (cancelled()) return nullptr;
+    nativeWindow.contentView=content;
+    if (cancelled()) return nullptr;
+    nativeWindow.title=StringFromUtf16(params->title);
+    if (cancelled()) return nullptr;
+    nativeWindow.acceptsMouseMovedEvents=YES;
+    if (cancelled()) return nullptr;
+    CGFloat backingScale = nativeWindow.backingScaleFactor;
+    if (cancelled()) return nullptr;
+    result->scale=backingScale;
+    frame=nativeWindow.frame;
+    if (cancelled()) return nullptr;
+    screen=nativeWindow.screen;
+    if (cancelled()) return nullptr;
+    NSPoint positioned = FrameworkScreenPoint(NSMakePoint(NSMinX(frame), NSMaxY(frame)), screen);
+    if (cancelled()) return nullptr;
+    result->x=lround(positioned.x); result->y=lround(positioned.y);
     ApplyAppleStyle(result.get());
+    if (cancelled()) return nullptr;
     UpdateWindowGeometry(result.get());
-    if (params->parentHandle) jalium_window_set_owner(result.get(), params->parentHandle);
+    if (cancelled()) return nullptr;
+    if (params->parentHandle) {
+        jalium_window_set_owner(result.get(), params->parentHandle);
+        if (cancelled()) return nullptr;
+    }
+    ObserveWindowStateCompletions(result.get());
+    if (cancelled()) return nullptr;
+    creation.Stop();
+    if (cancelled()) return nullptr;
+    result->creating = false;
 #else
     UIView* root=AcquireRootView();if(!root)return nullptr;
     result->sceneRoot=root;
@@ -4291,9 +4396,6 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     result->height=lround(root.bounds.size.height*result->scale);
 #endif
     {std::scoped_lock lock(g_windowsMutex);g_windows.push_back(result.get());}
-#if TARGET_OS_OSX
-    ObserveWindowStateCompletions(result.get());
-#endif
     return result.release();
 }
 
@@ -4374,7 +4476,13 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
     ReleaseRootView(window->sceneRoot);
     [window->view removeFromSuperview];
 #endif
-    DispatchSimple(window,JALIUM_EVENT_DESTROYED);delete window;
+    DispatchSimple(window,JALIUM_EVENT_DESTROYED);
+#if TARGET_OS_OSX
+    // The factory owns an unpublished object until its last SDK callback
+    // unwinds. Cancellation detaches it now; the unique_ptr frees it once.
+    if (window->creating) return;
+#endif
+    delete window;
 }
 void jalium_window_show(JaliumPlatformWindow* w){if(!w)return;w->visible=true;
 #if TARGET_OS_OSX
@@ -5288,7 +5396,8 @@ int32_t jalium_window_set_owner(JaliumPlatformWindow* w,intptr_t owner){if(!w)re
         w->pendingOwnerChange = nil;
         if (pending) dispatch_async(dispatch_get_main_queue(), pending);
     }
-    if (registered && !IsLiveWindow(w, nativeWindow)) {
+    if ((registered && !IsLiveWindow(w, nativeWindow)) || (!registered && w->destroying)) {
+        // This also covers an unpublished child still held by its factory.
         // An embedding addChildWindow: override can close this child before
         // calling super. Detach that retained, retired NSWindow after unwind;
         // a replacement has a different native identity and is never touched.

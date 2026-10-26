@@ -1,6 +1,7 @@
 #include "jalium_platform.h"
 #import <AppKit/AppKit.h>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
@@ -111,9 +112,20 @@ void InitializedChecks(bool create)
         Check(NSEqualRects(frame, native.frame) && responder == native.firstResponder,
             "rejected calls preserve the existing frame and responder");
         Check(markerCount.load() == delivered, "foreign polling leaves the queued marker untouched");
-        int32_t processed = jalium_platform_poll_events();
-        std::fprintf(stderr, "Main queue control: class=%s running=%d processed=%d marker=%u expected=%u\n",
-            NSStringFromClass(NSApp.class).UTF8String, NSApp.running, processed, markerCount.load(), delivered + 1);
+        int32_t processed = 0;
+        unsigned attempts = 0;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        do {
+            int32_t count = jalium_platform_poll_events();
+            if (count < 0) throw std::runtime_error("main polling rejected its own thread");
+            processed += count; ++attempts;
+            if (markerCount.load() != delivered) break;
+            // Do not run AppKit's event loop here: only the public poll entry
+            // may dispatch the marker. A zero-wait peek can precede delivery.
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } while (std::chrono::steady_clock::now() < deadline);
+        std::fprintf(stderr, "Main queue control: class=%s running=%d processed=%d marker=%u expected=%u attempts=%u\n",
+            NSStringFromClass(NSApp.class).UTF8String, NSApp.running, processed, markerCount.load(), delivered + 1, attempts);
         Check(processed >= 1, "main thread still drains its AppKit events");
         Check(markerCount.load() == delivered + 1 && !markerOffMain.load(),
             "main polling alone delivers the original marker exactly once");
