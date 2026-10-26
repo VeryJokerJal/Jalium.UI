@@ -548,10 +548,19 @@ jobs:
       - name: Check architecture and result validation controls
         run: python3 eng/apple/verify-window-native.py --self-test
       - name: Ensure the AppKit Dock service is running
+        timeout-minutes: 1
         run: |
+          # https://github.com/actions/runner-images/issues/14751
+          if [[ '${{ matrix.macos }}' == '26' ]]; then
+            icon_agent="gui/$(id -u)/com.apple.iconservices.iconservicesagent"
+            if [[ "$(launchctl print "$icon_agent")" == *'last terminating signal = Abort trap: 6'* ]]; then
+              launchctl bootout "$icon_agent"
+              echo 'JALIUM_WINDOW_ICONSERVICES_UNLOADED=1' >> "$GITHUB_ENV"
+            fi
+          fi
           service="gui/$(id -u)/com.apple.Dock.agent"
           launchctl print "$service"
-          launchctl kickstart -p "$service"
+          launchctl kickstart -k -p "$service"
       - name: Build and run native Intel Window contracts
         run: >-
           python3 eng/apple/verify-window-native.py
@@ -576,3 +585,10 @@ jobs:
           /usr/bin/log show --last 2m --style compact \
             --predicate 'process == "Dock" OR process == "iconservicesagent"' \
             2>/dev/null | tail -n 80 || true
+      - name: Restore runner IconServices
+        if: always() && env.JALIUM_WINDOW_ICONSERVICES_UNLOADED == '1'
+        timeout-minutes: 1
+        run: |
+          launchctl bootstrap "gui/$(id -u)" \
+            /System/Library/LaunchAgents/com.apple.iconservices.iconservicesagent.plist
+          launchctl kickstart -k -p "gui/$(id -u)/com.apple.Dock.agent"
