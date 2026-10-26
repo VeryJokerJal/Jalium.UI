@@ -1,8 +1,55 @@
 # macOS development and Gallery
 
-The Apple Silicon development path uses an AppKit application host, the native
+The macOS development path uses an AppKit application host, the native
 platform library and the Metal renderer. The standalone Gallery entry lives in
 the sibling `Jalium.UI.Gallery` repository as `Jalium.UI.Gallery.MacOS`.
+
+## SDK/native architecture selection
+
+The macOS native scripts select the current host CPU by default. Set
+`JALIUM_APPLE_ARCHITECTURE=arm64` or `x86_64` to select another native slice;
+`x64` is also accepted as an input alias. The corresponding RIDs are
+`osx-arm64` and `osx-x64`. Both regular and development CMake presets exist.
+
+For example, an ARM Mac can build an Intel payload without Rosetta:
+
+```bash
+JALIUM_APPLE_ARCHITECTURE=x86_64 bash eng/apple/build-native.sh macos Release --development --build-only
+dotnet build tests/Jalium.UI.MacOS.HostSmoke/Jalium.UI.MacOS.HostSmoke.csproj -c Release -r osx-x64
+```
+
+A cross-architecture native build requires `--build-only`; it builds the full
+payload and runtime shader compiler, but does not execute its tests. Native
+host tests remain required on the matching CPU. Host LLVM table generators
+remain native to the build machine when the target compiler library is cross-built.
+
+The SDK preserves an explicit `RuntimeIdentifier`; its default follows the
+.NET SDK host. The target RID selects the native directory, the development
+CMake directory and the package's `runtimes/<rid>/native` paths. An explicit
+`JaliumMacNativeRoot` still undergoes CPU and ABI checks. Every native dylib
+must contain the requested CPU, and required exports are checked in that
+specific Mach-O slice, so another slice cannot hide missing symbols.
+Validation also runs when packing without Build. Existing native-host CMake
+builds may use their default architecture; a different cached RID or explicit
+architecture cannot be completed for the requested SDK target.
+
+`run-gallery.sh` passes the selected RID to the Gallery build and locates that
+RID's app. Its `--build-only` option also suppresses native test execution and
+application launch. Normal Gallery runs retain the native test step.
+
+The pinned DXC version generator keeps CMake paths unescaped until generation;
+using `TO_NATIVE_PATH` there corrupts Ninja output paths containing spaces.
+`verify-shader-version-paths.py` builds the real pinned version targets in a
+build directory containing spaces. `verify-macos-architecture.py` exercises
+real thin/universal Mach-O inputs, target-specific ABI failures, MSBuild
+selection and existing embedded-target aliases. Apple CI runs both checks;
+an Intel SDK job additionally builds and inspects a single-RID package and
+runs the existing complete 48-case Window motion matrix.
+
+These are separate qualification layers. Cross-build success is not Intel
+runtime acceptance. The single-RID package checks do not establish combined
+RID release packaging, NativeAOT, notarization, installation or full Window
+and physical-device acceptance. See [the current Window status](macos-window-status.md).
 
 ## Prerequisites
 

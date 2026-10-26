@@ -74,6 +74,17 @@ jobs:
           PYTOOLCHAIN
       - name: Build macOS native slice
         run: bash eng/apple/build-native.sh macos Release
+      - name: Verify pinned shader version generation with spaces
+        run: >-
+          python3 eng/apple/verify-shader-version-paths.py
+          --checkout src/native/out/apple-deps/src/DirectXShaderCompiler
+          --results-directory "$RUNNER_TEMP/jalium-shader-version-paths"
+      - name: Verify macOS SDK architecture and selected-slice ABI
+        run: >-
+          python3 eng/apple/verify-macos-architecture.py
+          --native-payload src/native/bin/native/osx-arm64/Release
+          --runtime-identifier osx-arm64
+          --results-directory "$RUNNER_TEMP/jalium-macos-architecture"
       - name: Build macOS global preference SDK fixture
         run: >-
           dotnet build tests/Jalium.UI.MacOS.HostSmoke/Jalium.UI.MacOS.HostSmoke.csproj
@@ -561,3 +572,96 @@ jobs:
           --build-directory "$RUNNER_TEMP/jalium-window-intel-build"
           --native-root "$RUNNER_TEMP/jalium-window-intel-native"
           --results-directory "$RUNNER_TEMP/jalium-window-intel-results"
+
+  window-intel-sdk:
+    name: window-intel SDK (macOS 26)
+    runs-on: macos-26-intel
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/jalium-window-intel-dotnet
+        with:
+          dotnet-version: 10.0.302
+      - name: Verify native Intel and install the pinned macOS workload
+        run: |
+          python3 - <<'PYSDKTOOLS'
+          import json
+          from pathlib import Path
+          import platform
+          import subprocess
+          assert platform.machine() == 'x86_64', platform.machine()
+          translated = subprocess.run(['sysctl', '-n', 'sysctl.proc_translated'], capture_output=True, text=True)
+          assert translated.returncode != 0 or translated.stdout.strip() != '1', 'Translation cannot qualify Intel'
+          tools = json.loads(Path('eng/apple/toolchain.lock.json').read_text())
+          assert subprocess.check_output(['dotnet', '--version'], text=True).strip() == tools['dotnetSdk']
+          assert subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0] == 'Xcode ' + tools['xcode']
+          subprocess.run(['dotnet', 'workload', 'install', 'macos', '--version', tools['workloadSet']], check=True)
+          info = subprocess.check_output(['dotnet', 'workload', '--info'], text=True)
+          assert tools['workloadSet'] in info and tools['appleSdkPack'] in info, info
+          PYSDKTOOLS
+      - name: Cache architecture-specific Intel shader compiler inputs
+        uses: actions/cache@v4
+        with:
+          path: src/native/out/apple-deps
+          key: apple-window-sdk-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('eng/apple/dependencies.lock.json', 'eng/apple/prepare-shader-toolchain.sh', 'eng/apple/patch-shader-toolchain.py') }}
+      - name: Build the complete Intel dynamic payload and runtime shader compiler
+        run: bash eng/apple/build-native.sh macos Release --development --build-only
+      - name: Verify Intel payload, SDK selection and universal ABI guards
+        run: >-
+          python3 eng/apple/verify-macos-architecture.py
+          --native-payload src/native/bin/native/osx-x64/Release
+          --runtime-identifier osx-x64
+          --results-directory "$RUNNER_TEMP/jalium-window-intel-architecture"
+      - name: Build the Intel AppKit SDK host
+        run: >-
+          dotnet build tests/Jalium.UI.MacOS.HostSmoke/Jalium.UI.MacOS.HostSmoke.csproj
+          -c Release -r osx-x64 --disable-build-servers -m:1
+          -p:UseSharedCompilation=false
+          -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-window-intel-sdk"
+      - name: Pack and inspect the Intel macOS entry package
+        run: |
+          dotnet pack src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj \
+            -c Release -r osx-x64 --no-build --no-restore \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-window-intel-sdk" \
+            -o "$RUNNER_TEMP/jalium-window-intel-packages"
+          python3 - <<'PYSDKPACK'
+          import os
+          from pathlib import Path
+          import zipfile
+          parent = Path(os.environ['RUNNER_TEMP'])
+          packages = list((parent / 'jalium-window-intel-packages').glob('Jalium.UI.MacOS.*.nupkg'))
+          assert len(packages) == 1, packages
+          expected = {path.name for path in Path('src/native/bin/native/osx-x64/Release').glob('*.dylib')}
+          with zipfile.ZipFile(packages[0]) as archive:
+              paths = archive.namelist()
+              assert not any(path.startswith('runtimes/') and not path.startswith('runtimes/osx-x64/native/') for path in paths), paths
+              actual = {Path(path).name for path in paths if path.startswith('runtimes/osx-x64/native/') and path.endswith('.dylib')}
+              assert expected and actual == expected, (expected, actual)
+          print('Intel package contains every selected native dylib under osx-x64.')
+          PYSDKPACK
+      - name: Run the complete Intel Window motion SDK matrix
+        timeout-minutes: 15
+        run: |
+          python3 - <<'PYSDKWINDOW'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          parent = Path(os.environ['RUNNER_TEMP'])
+          apps = list((parent / 'jalium-window-intel-sdk/bin').rglob('Jalium.UI.MacOS.HostSmoke.app'))
+          assert len(apps) == 1, apps
+          results = parent / 'jalium-window-intel-motion-results'
+          subprocess.run([sys.executable, 'eng/apple/verify-motion-notifications.py',
+                          '--app', str(apps[0]), '--results-directory', str(results)], check=True)
+          receipt = json.loads((results / 'receipt.json').read_text())
+          assert receipt['passed'] == receipt['total'] == 48, receipt
+          assert all(len(case['result']['Scenarios']) == 15 and all(item['passed'] for item in case['result']['Scenarios'])
+                     for case in receipt['cases']), receipt
+          print('Native Intel SDK: 48 Window combinations and 720 scenarios passed.')
+          PYSDKWINDOW

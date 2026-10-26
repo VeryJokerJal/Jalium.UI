@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import platform
 import re
 import subprocess
 import sys
@@ -12,9 +13,11 @@ from pathlib import Path
 
 COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\r\n]*", re.DOTALL)
 SYMBOL_RE = re.compile(r"\b_(jalium_[A-Za-z0-9_]+)$", re.MULTILINE)
+MACOS_ARCHITECTURES = {"osx-arm64": "arm64", "osx-x64": "x86_64"}
 
 
-def complete_native_build(build: Path, native: Path, payload: Path, configuration: str) -> None:
+def complete_native_build(build: Path, native: Path, payload: Path, configuration: str,
+                          runtime_identifier: str) -> None:
     """Finish an existing matching CMake build; never manufacture its stamp."""
     cache = build.resolve() / "CMakeCache.txt"
     values = {}
@@ -26,7 +29,10 @@ def complete_native_build(build: Path, native: Path, payload: Path, configuratio
     output = Path(values.get("JALIUM_NATIVE_OUTPUT_ROOT", ""))
     rid = values.get("JALIUM_NATIVE_RID", "")
     configurations = values.get("CMAKE_CONFIGURATION_TYPES", values.get("CMAKE_BUILD_TYPE", "")).split(";")
+    cached_architectures = [arch for arch in values.get("CMAKE_OSX_ARCHITECTURES", "").split(";") if arch]
     if (Path(values.get("CMAKE_HOME_DIRECTORY", "")).resolve() != native
+            or rid != runtime_identifier
+            or (cached_architectures and cached_architectures != [MACOS_ARCHITECTURES[runtime_identifier]])
             or output.joinpath(rid, configuration).resolve() != payload
             or values.get("JALIUM_BUILD_STATIC", "").upper() not in ("OFF", "FALSE", "0", "NO")
             or configuration not in configurations):
@@ -62,15 +68,23 @@ def main() -> int:
     parser.add_argument("payload", type=Path)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--configuration", choices=("Debug", "Release"), default="Debug")
+    parser.add_argument("--runtime-identifier", choices=MACOS_ARCHITECTURES,
+                        help="Required target CPU; defaults to the payload RID directory or current host")
     parser.add_argument("--complete-build", type=Path,
                         help="Complete this existing CMake build if the payload stamp is missing")
     args = parser.parse_args()
     payload = args.payload.resolve()
     native = args.repo_root.resolve() / "src" / "native"
+    rid = args.runtime_identifier
+    if rid is None:
+        rid = payload.parent.name if payload.parent.name in MACOS_ARCHITECTURES else {
+            "arm64": "osx-arm64", "x86_64": "osx-x64"}.get(platform.machine())
     errors: list[str] = []
     try:
+        if rid not in MACOS_ARCHITECTURES:
+            raise ValueError("A supported macOS runtime identifier is required")
         if args.complete_build is not None and not (payload / ".jalium-native-complete").is_file():
-            complete_native_build(args.complete_build, native, payload, args.configuration)
+            complete_native_build(args.complete_build, native, payload, args.configuration, rid)
         required = {
             "core": declared_symbols(native / "jalium.native.core" / "include", "JALIUM_API"),
             "platform": declared_symbols(native / "jalium.native.platform" / "include", "JALIUM_PLATFORM_API"),
@@ -80,13 +94,21 @@ def main() -> int:
         required["core"].discard("jalium_text_copy_outline_path")
         if not (payload / ".jalium-native-complete").is_file():
             errors.append(f"Native payload completion stamp not found: {payload}")
+        # Symbols alone cannot distinguish an ARM library from an Intel one.
+        # Ask Apple's Mach-O tool to inspect every shipped dylib, including
+        # modules whose symbols are outside the focused Window ABI check.
+        for library in sorted(payload.glob("*.dylib")):
+            result = subprocess.run(["/usr/bin/lipo", "-verify_arch", MACOS_ARCHITECTURES[rid], str(library)],
+                                    capture_output=True, text=True)
+            if result.returncode:
+                errors.append(f"{library.name}: does not contain the required {rid} CPU slice")
         for module, symbols in required.items():
             library = payload / f"libjalium.native.{module}.dylib"
             if not library.is_file():
                 errors.append(f"Native library not found: {library}")
                 continue
             result = subprocess.run(
-                ["/usr/bin/nm", "-gU", str(library)],
+                ["/usr/bin/nm", "-arch", MACOS_ARCHITECTURES[rid], "-gU", str(library)],
                 check=True, capture_output=True, text=True,
             )
             missing = sorted(symbols - set(SYMBOL_RE.findall(result.stdout)))
@@ -100,7 +122,7 @@ def main() -> int:
         command = args.repo_root.resolve() / "eng" / "apple" / "build-native.sh"
         print(f'Rebuild the native payload: bash "{command}" macos {args.configuration} --development', file=sys.stderr)
         return 1
-    print(f"Validated macOS core/platform/Metal entry points in {payload}")
+    print(f"Validated {rid} CPUs and macOS core/platform/Metal entry points in {payload}")
     return 0
 
 

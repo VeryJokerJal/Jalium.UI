@@ -23,7 +23,7 @@ def target_conditions(source: str) -> str:
 def patch(checkout: Path) -> list[Path]:
     relative = ["tools/clang/tools/dxcompiler/CMakeLists.txt",
                 "lib/Support/Unix/Process.inc", "lib/Support/Unix/Program.inc",
-                "lib/Support/Unix/Signals.inc"]
+                "lib/Support/Unix/Signals.inc", "utils/version/CMakeLists.txt"]
     originals = {name: (checkout / name).read_text(encoding="utf-8-sig") for name in relative}
     updated = dict(originals)
     name = relative[0]
@@ -66,6 +66,15 @@ def patch(checkout: Path) -> list[Path]:
         "#if defined(__APPLE__) && defined(ENABLE_CRASH_OVERRIDES) && TARGET_OS_OSX\n"
         "  // Environment variable to disable any kind of crash dialog.",
         "desktop crash-dialog exception ports")
+
+    # Keep CMake paths unescaped until its generator writes the command. The
+    # native-path conversion inserts a literal backslash before spaces, which
+    # Ninja later normalizes into a different output path on macOS.
+    name = relative[4]
+    updated[name] = replace_once(originals[name],
+        'FILE(TO_NATIVE_PATH "${output_file}.gen" gen_file)',
+        'set(gen_file "${output_file}.gen")',
+        "version include path with spaces")
 
     # Check every pinned anchor before modifying the dependency checkout.
     changed = []

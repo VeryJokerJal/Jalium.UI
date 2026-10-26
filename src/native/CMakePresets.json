@@ -139,6 +139,24 @@
       }
     },
     {
+      "name": "apple-macos-x64",
+      "displayName": "Apple macOS 15 x64",
+      "inherits": "apple-macos-arm64",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "x86_64",
+        "JALIUM_NATIVE_RID": "osx-x64"
+      }
+    },
+    {
+      "name": "apple-macos-dev-x64",
+      "displayName": "Apple macOS x64 development (dynamic Metal payload)",
+      "inherits": "apple-macos-x64",
+      "generator": "Ninja Multi-Config",
+      "cacheVariables": {
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": null
+      }
+    },
+    {
       "name": "apple-embedded-base",
       "hidden": true,
       "inherits": "apple-base",

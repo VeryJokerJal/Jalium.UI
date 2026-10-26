@@ -33,6 +33,22 @@
 
 运行器及工具链选择已核对 [GitHub 主机表](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)、[macOS 15 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md)和 [macOS 26 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md)。Apple 架构变量的含义见 [CMake 文档](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_ARCHITECTURES.html)。
 
+## v330：SDK 目标架构、负载 CPU 和依赖路径
+
+原有 SDK 在 `RuntimeIdentifier=osx-x64` 时仍选择 ARM 原生目录、ARM CMake 目录及 `runtimes/osx-arm64/native`。现在三个位置均由目标 RID 选择，并保留显式目标和原生目录覆盖。默认值跟随 .NET SDK 主机；原生构建、Metal 资源和 Gallery 入口共用架构选择，提供 x64 的普通／开发预设及明确的交叉构建模式。
+
+导出符号并不足以证明目标 CPU。所有待复制的 dylib 现在须包含指定 CPU，核心／平台／Metal 的 ABI 符号也在同一切片中查询。已用真实通用 Mach-O 复现旧校验漏检：ARM 切片完整，而 x64 切片缺少接口时，合并查询仍放行；新校验正确拒绝。打包不执行 Build 的路径同样保留检查。
+
+三份源码的架构／ABI／MSBuild 实际调用及平台别名回归各通过 29 项。PR、现有本地历史和冻结工作区分别完成包含运行时着色器编译器的 x64 原生负载；另在原生 ARM 主机完成没有显式 `CMAKE_OSX_ARCHITECTURES` 的真实 CMake 负载，核实默认架构完成流程。PR／本地历史的 x64 SDK 宿主和 NuGet 包、PR 的 ARM 对照宿主和包均已实际构建；包内 8 个动态库位于各自 RID，文件内容与所选负载一致。各 app 的原生文件 CPU 与深层签名检查通过。每个 app 实际校验 Resources 与 MonoBundle 中的 16 个文件，对应 8 个不同库。
+
+本轮同时修复锁定 DXC 的版本文件生成路径：`TO_NATIVE_PATH` 给带空格路径插入转义后，Ninja 将其解释为错误目录；改为保留 CMake 原始路径。原失败构建中的两个版本目标已成功恢复，独立的带空格目录探针也生成两个有效版本文件。
+
+ARM 对照宿主已实际运行完成 48/48 组、720/720 场景，另保持一个窗口经 CUA 查看了截图和无障碍树，标题、进度条及包含中文／emoji／Miii 的文本框均正常显示。这不是物理输入、IME、VoiceOver 或多屏资格。
+
+本机工具链仍为 .NET 10.0.300／macOS workload 26.5.10280、Xcode 27.1，SDK 本地构建明确使用开发用的 `ValidateXcodeVersion=false`。这些结果证明本地构建及负载身份，不是锁定发布工具链或 Intel 执行通过；没有安装 Rosetta或把 x64 程序当作已运行。新增 Intel SDK CI 使用仓库锁定工具链，检查实际打包并运行现有 48 组／720 场景的 Window 通知矩阵，须以其提交及终态为准。
+
+v329 的最新已发布提交 `15ff3ed2` 已取得 Intel 15 的外层 AppKit 基线 2/2、完整原生 Window 检查 46/46，零失败及跳过。Intel 26 的独立 NSWindow 基线仍缺少最小化完成通知，因此相关资格继续开放。SDK 新作业不替代这个失败门禁，也不关闭多 RID 发布包、NativeAOT、物理输入、VoiceOver、多屏和分发验收。
+
 ## Window 能力与验收边界
 
 下表的“已有证据”指仓库中的实现、测试及行为记录，不表示该行全部组合已经验收。未完成项继续作为需求保留。
@@ -61,7 +77,7 @@
 | 应用退出、会话结束及 Dock 重开 | 主应用类、Quit/SessionEnding 策略及 Dock ownership/motion 专项 | 用户实际 Dock、系统注销／关机取消、完整应用生命周期 |
 | Metal／软件后端、首次帧和窗口外观读回 | 生产 ALL、SDK 两套 48 项矩阵、历史实际窗口与 97 张读回 | 物理 live-resize、跨屏、窗口遮挡／恢复及压力场景 |
 | arm64／x64 与系统版本 | arm64 既有实机／CI；本轮 x64 构建、RID 修复及新增 Intel 门禁 | Intel 原生作业终态、完整 SDK/渲染/交互及确切最低系统资格 |
-| SDK、NativeAOT、应用身份和分发 | AppKit 入口、导出、签名及打包校验 | 当前 macOS SDK 原生路径仍默认 arm64；x64 SDK、AOT、签名公证与安装分发继续开放 |
+| SDK、NativeAOT、应用身份和分发 | AppKit 入口、导出、签名及打包校验 | SDK 路径及单 RID 包已按目标架构验证；Intel SDK 执行、多 RID 发布、AOT、签名公证与安装分发继续开放 |
 
 平台契约也需保留语义：`SetDesktopApplicationId` 和键盘移动／缩放能力在当前桥中属于 Linux 能力，macOS 对应应用身份来自 bundle；不能仅因返回 false/None 就认定 AppKit Window 缺陷。Dock 属于应用，ShowInTaskbar 在 macOS 控制窗口菜单／轮换／Mission Control 参与。移动平台的软键盘、方向和安全区不据此替代 macOS 文本输入验收。
 

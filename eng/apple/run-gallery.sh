@@ -13,12 +13,14 @@ for argument in "$@"; do
   esac
 done
 
-if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
-  echo "The macOS Gallery currently requires Apple Silicon and Xcode." >&2
+if [[ "$(uname -s)" != Darwin ]]; then
+  echo "The macOS Gallery requires macOS with Xcode." >&2
   exit 2
 fi
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$repo_root/eng/apple/resolve-apple-target.sh"
+jalium_resolve_apple_target macos
 gallery_root="${JALIUM_GALLERY_ROOT:-$(dirname "$repo_root")/Jalium.UI.Gallery}"
 project="$gallery_root/Jalium.UI.Gallery.MacOS/Jalium.UI.Gallery.MacOS.csproj"
 build_root="${JALIUM_GALLERY_BUILD_ROOT:-$repo_root/artifacts/macos-gallery}"
@@ -45,9 +47,11 @@ for tool in cmake ctest ninja python3 xcrun; do
   command -v "$tool" >/dev/null || { echo "Required tool not found: $tool" >&2; exit 2; }
 done
 
-bash "$repo_root/eng/apple/build-native.sh" macos "$configuration" --development
+native_arguments=(macos "$configuration" --development)
+if [[ "$build_only" == true ]]; then native_arguments+=(--build-only); fi
+JALIUM_APPLE_ARCHITECTURE="$arch" bash "$repo_root/eng/apple/build-native.sh" "${native_arguments[@]}"
 build_arguments=(
-  build "$project" -c "$configuration"
+  build "$project" -c "$configuration" -r "$rid"
   "-p:JaliumBuildRoot=$build_root"
 )
 if [[ "$allow_newer_xcode" == true ]]; then
@@ -56,7 +60,7 @@ if [[ "$allow_newer_xcode" == true ]]; then
 fi
 "$dotnet_command" "${build_arguments[@]}"
 
-app="$build_root/bin/Jalium.UI.Gallery.MacOS/$configuration/net10.0-macos/osx-arm64/Jalium.UI.Gallery.MacOS.app"
+app="$build_root/bin/Jalium.UI.Gallery.MacOS/$configuration/net10.0-macos/$rid/Jalium.UI.Gallery.MacOS.app"
 [[ -d "$app" ]] || { echo "Expected application bundle not found: $app" >&2; exit 3; }
 echo "Gallery application: $app"
 if [[ "$build_only" == false ]]; then open "$app"; fi
