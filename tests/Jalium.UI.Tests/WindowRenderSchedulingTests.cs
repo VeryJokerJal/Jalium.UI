@@ -316,6 +316,10 @@ public class WindowRenderSchedulingTests
     {
         var weakWindow = RegisterSyntheticOleStateAndRevoke(new nint(0x2110));
 
+        // CSS work can temporarily own this Window independently of OLE. Drain
+        // that transient owner before checking the registration lifetime.
+        Assert.True(Styling.CssEvaluationScheduler.HasPending(Dispatcher.CurrentDispatcher));
+        Styling.CssEvaluationScheduler.FlushIfPending(Dispatcher.CurrentDispatcher);
         ForceFinalizers();
 
         Assert.False(weakWindow.TryGetTarget(out _));
@@ -785,6 +789,7 @@ public class WindowRenderSchedulingTests
     public void Window_FullLayout_ElidesOnlyUiThreadArrangeRectsWithinScope()
     {
         var window = new Window { Width = 300, Height = 200 };
+        PrepareWindowForLayout(window);
         var probe = new DirtyRectDuringMeasureElement(window);
         window.Content = probe;
 
@@ -804,6 +809,7 @@ public class WindowRenderSchedulingTests
     public void Window_FullLayout_ElidesOnlyUiThreadDirtyElementsWithinScope()
     {
         var window = new Window { Width = 300, Height = 200 };
+        PrepareWindowForLayout(window);
         var probe = new DirtyElementDuringMeasureElement(window);
         window.Content = probe;
 
@@ -829,6 +835,8 @@ public class WindowRenderSchedulingTests
             Height = 200,
             Content = new ThrowOnMeasureElement()
         };
+
+        PrepareWindowForLayout(window);
 
         var exception = Assert.Throws<TargetInvocationException>(
             () => InvokePrivateMethod(window, "UpdateLayoutForRender"));
@@ -1038,6 +1046,18 @@ public class WindowRenderSchedulingTests
         property!.SetValue(instance, value);
     }
 
+    private static void PrepareWindowForLayout(Window window)
+    {
+        // macOS windows start Collapsed. These isolated layout contracts need
+        // the display visibility, without requesting a native Show operation.
+        if (OperatingSystem.IsMacOS())
+        {
+            InvokePrivateMethod(window, "SetMacOSVisibilityForDisplay", Visibility.Visible);
+        }
+        Assert.Equal(Visibility.Visible, window.Visibility);
+        Assert.Equal(nint.Zero, window.Handle);
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference<Window> RegisterSyntheticOleStateAndRevoke(nint hwnd)
     {
@@ -1046,6 +1066,8 @@ public class WindowRenderSchedulingTests
         var state = Activator.CreateInstance(stateType!, nonPublic: true);
         Assert.NotNull(state);
         var window = new Window();
+        // Exercise the real queue without enabling process-wide CSS styles.
+        Styling.CssEvaluationScheduler.InvalidateElement(window);
         var weakWindow = new WeakReference<Window>(window);
         var selfHandle = GCHandle.Alloc(state);
         var comObject = Marshal.AllocHGlobal(nint.Size * 2);
@@ -1066,6 +1088,12 @@ public class WindowRenderSchedulingTests
         OleDropTarget.RevokeWindow(hwnd, nativeWindowAlive: false);
 
         Assert.False(states.Contains(hwnd));
+        Assert.Null(stateType.GetField("Window", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
+            .GetValue(state));
+        Assert.False(((GCHandle)stateType.GetField("SelfHandle", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
+            .GetValue(state)!).IsAllocated);
+        Assert.Equal(nint.Zero, (nint)stateType.GetField("ComObject", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
+            .GetValue(state)!);
         return weakWindow;
     }
 

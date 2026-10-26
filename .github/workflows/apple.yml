@@ -300,6 +300,7 @@ jobs:
         run: >-
           cmake --build "$RUNNER_TEMP/jalium-window-contracts" --parallel 4 --target
           jalium.native.media.apple
+          jalium.native.software
           jalium.native.platform.clipboard.tests
           jalium.native.platform.thread-affinity.tests
           jalium.native.platform.window.tests
@@ -457,6 +458,26 @@ jobs:
           assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
           print('All 44 global animation and monitor notification contracts executed and passed.')
           PY
+      - name: Verify managed Window rendering and OLE lifetime
+        env:
+          DYLD_LIBRARY_PATH: ${{ runner.temp }}/jalium-window-native/osx-arm64/Release
+        run: |
+          dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug --no-build --no-restore \
+            -p:JaliumBuildRoot="$RUNNER_TEMP/jalium-focus-intent-managed" \
+            -p:JaliumMacNativeGeometryTests=false \
+            --filter FullyQualifiedName~WindowRenderSchedulingTests \
+            --logger 'trx;LogFileName=window-render-scheduling.trx' \
+            --results-directory "$RUNNER_TEMP/jalium-window-render-scheduling-results"
+          python3 - <<'PYWINDOWRENDER'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path(os.environ['RUNNER_TEMP']) / 'jalium-window-render-scheduling-results/window-render-scheduling.trx'
+          counts = ET.parse(path).find('.//{*}Counters').attrib
+          assert all(int(counts[name]) == 34 for name in ['total', 'executed', 'passed']), counts
+          assert all(int(counts[name]) == 0 for name in ['failed', 'error', 'timeout', 'notExecuted']), counts
+          print('All 34 shared Window rendering and OLE lifetime contracts executed and passed.')
+          PYWINDOWRENDER
       - name: Verify all Window, clipboard and thread-affinity contracts
         run: >-
           ctest --test-dir "$RUNNER_TEMP/jalium-window-contracts"

@@ -31,6 +31,9 @@
     <Compile Include="../Jalium.UI.Tests/MouseDoubleClickLifetimeTests.cs" Link="MouseDoubleClickLifetimeTests.cs" />
     <Compile Include="../Jalium.UI.Tests/WritingToolsParagraphFormattingTests.cs" Link="WritingToolsParagraphFormattingTests.cs" />
     <Compile Include="../Jalium.UI.Tests/HierarchicalDataTemplateParityTests.cs" Link="HierarchicalDataTemplateParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ApplicationCollectionFixture.cs" Link="ApplicationCollectionFixture.cs" />
+    <Compile Include="../Jalium.UI.Tests/WindowRenderSchedulingTests.cs" Link="WindowRenderSchedulingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RenderTargetTestNative.cs" Link="RenderTargetTestNative.cs" />
     <Compile Include="../Jalium.UI.Tests/MouseWheelSignConsumerTests.cs" Link="MouseWheelSignConsumerTests.cs" />
     <Compile Include="../../src/packaging/Jalium.UI.MacOS/FileDialogFilterSelection.cs" Link="FileDialogFilterSelection.cs" />
     <Compile Include="../../src/packaging/Jalium.UI.MacOS/MacOSSessionEndReason.cs" Link="MacOSSessionEndReason.cs" />
