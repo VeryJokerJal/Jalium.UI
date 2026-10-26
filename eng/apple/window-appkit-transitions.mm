@@ -25,9 +25,10 @@
     _deadline = NSProcessInfo.processInfo.systemUptime + 8;
 }
 - (void)logState:(const char*)stage passed:(BOOL)passed {
-    std::printf("APPKIT_%s style=%s passed=%d phase=%d will=%d did=%d restored=%d mini=%d visible=%d elapsed=%.3f\n",
+    std::printf("APPKIT_%s style=%s passed=%d phase=%d will=%d did=%d restored=%d mini=%d visible=%d elapsed=%.3f occlusion=%lu activeSpace=%d\n",
         stage, self.label, passed, self.phase, self.will, self.did, self.restored,
-        self.window.miniaturized, self.window.visible, NSProcessInfo.processInfo.systemUptime - self.started);
+        self.window.miniaturized, self.window.visible, NSProcessInfo.processInfo.systemUptime - self.started,
+        (unsigned long)self.window.occlusionState, self.window.onActiveSpace);
 }
 - (void)createWindow {
     const auto common = NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
@@ -102,7 +103,10 @@
     if (NSProcessInfo.processInfo.systemUptime >= self.deadline) {
         [self logState:"TIMEOUT" passed:NO];
         [self finishWindow:timer passed:NO];
-    } else if (self.phase == 1 && self.window.visible && self.window.windowNumber > 0) {
+    } else if (self.phase == 1 && self.window.visible && self.window.windowNumber > 0 &&
+        self.window.onActiveSpace && (self.window.occlusionState & NSWindowOcclusionStateVisible)) {
+        // Ordering a window does not prove that WindowServer has exposed it.
+        // Qualify the visible window before asking the Dock to animate it.
         std::printf("APPKIT_BEFORE style=%s active=%d mask=%lu key=%d\n", self.label,
             NSApp.active, (unsigned long)self.window.styleMask, self.window.keyWindow);
         self.phase = 2;
