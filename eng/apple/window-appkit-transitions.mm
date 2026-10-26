@@ -39,7 +39,9 @@ static bool CheckTransition(NSWindowStyleMask style, const char* label)
             }]];
     }
     [window makeKeyAndOrderFront:nil];
-    bool shown = Pump([&] { return window.visible && window.keyWindow; });
+    // A plain borderless NSWindow does not accept key selection. Its visible
+    // native window is sufficient for the minimize/restore prerequisite.
+    bool shown = Pump([&] { return window.visible && window.windowNumber > 0; });
     std::printf("APPKIT_BEFORE style=%s shown=%d active=%d mask=%lu canMini=%d\n",
         label, shown, NSApp.active, (unsigned long)window.styleMask,
         [window standardWindowButton:NSWindowMiniaturizeButton].enabled);
@@ -63,6 +65,12 @@ static bool CheckTransition(NSWindowStyleMask style, const char* label)
 
 static int Contracts(int, char**)
 {
+    bool dockReady = Pump([] {
+        NSArray<NSRunningApplication*>* apps = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.dock"];
+        for (NSRunningApplication* app in apps)
+            if (app.finishedLaunching && !app.terminated) return true;
+        return false;
+    });
     NSArray<NSRunningApplication*>* dock = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.dock"];
     std::printf("APPKIT_ENVIRONMENT os=%s screens=%lu dockCount=%lu active=%d running=%d\n",
         NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String,
@@ -70,6 +78,10 @@ static int Contracts(int, char**)
     for (NSRunningApplication* app in dock)
         std::printf("APPKIT_DOCK pid=%d terminated=%d finishedLaunching=%d\n",
             app.processIdentifier, app.terminated, app.finishedLaunching);
+    if (!dockReady) {
+        std::fprintf(stderr, "FAIL: The AppKit transition prerequisite requires a running Dock service\n");
+        return 2;
+    }
     const auto common = NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
     bool native = CheckTransition(common | NSWindowStyleMaskTitled | NSWindowStyleMaskClosable, "native");
     bool custom = CheckTransition(common | NSWindowStyleMaskBorderless, "borderless");

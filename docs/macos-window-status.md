@@ -25,6 +25,8 @@
 
 首次原生 Intel 结果（提交 `664c4e9e`）：macOS 15.7.9／Xcode 26.3 的 46 项全部通过；macOS 26 的 37 项通过、9 项失败或超时，集中在最小化完成及后续恢复。后者尚未取得资格。新增独立 [NSWindow 基线](../eng/apple/window-appkit-transitions.mm)，在加载 Jalium 之前核实原生和无边框窗口的开始／完成通知、最小化状态及恢复；日志保留 Dock 进程和通知线程，基线失败直接阻止运行门禁，不放宽原有合约。
 
+独立基线在同一 Intel 26 镜像复现：系统前台与应用 PID 相同，Dock 进程数为 0；标准和无边框 NSWindow 都收到 will-miniaturize、原生位变真，却在 8 秒内未收到 did-miniaturize。CI 现在先通过 launchd 启动内置 Dock 服务，再要求 Dock 就绪及两种原生窗口完成最小化／恢复。完整 46 项仍须全部实际运行通过；尚未取得新的 Intel 26 通过结果。另修正基本 Window 检查的四处等待：原生位与框架确认都达到预期后才断言，避免把较早的原生位当成完成通知。
+
 这两个作业检查原生 Window，关闭不相关的运行时 shader 编译器依赖；原有生产 ALL、运行时编译器、SDK 和包验证不变。它们不证明 Intel SDK 包、渲染器、分发或物理输入已经完成。
 
 运行器及工具链选择已核对 [GitHub 主机表](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)、[macOS 15 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md)和 [macOS 26 映像](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md)。Apple 架构变量的含义见 [CMake 文档](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_ARCHITECTURES.html)。

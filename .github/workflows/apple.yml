@@ -547,6 +547,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check architecture and result validation controls
         run: python3 eng/apple/verify-window-native.py --self-test
+      - name: Ensure the AppKit Dock service is running
+        run: |
+          service="gui/$(id -u)/com.apple.Dock.agent"
+          launchctl print "$service"
+          launchctl kickstart -p "$service"
       - name: Build and run native Intel Window contracts
         run: >-
           python3 eng/apple/verify-window-native.py
