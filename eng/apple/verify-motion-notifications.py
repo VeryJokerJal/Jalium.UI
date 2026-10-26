@@ -50,8 +50,14 @@ def main():
         own = {line.split('/libjalium.native.')[-1].split()[0] for line in lines if str(app) in line}
         foreign = [line for line in lines if str(app) not in line]
         required = {'core.dylib', 'text.dylib', 'platform.dylib', 'software.dylib' if index % 12 >= 6 else 'metal.dylib'}
-        passed = bool(code == 0 and result and result['passed'] and len(result['Scenarios']) == result['expected'] == 13
-                      and result['overrideRestored'] and required <= own <= allowed and not foreign and str(helper) in dyld)
+        passed = bool(code == 0 and result and result['passed'] and len(result['Scenarios']) == result['expected'] == 15
+                      and result['overrideRestored'] and required <= own <= allowed and not foreign and str(helper) in dyld
+                      and result['nativeDeliveryAuditPassed'] and result['CleanupCount'] == 1 and not result['FrameFailures']
+                      and len(result['WorkspacePosts']) >= 10 and len(result['DisplayPosts']) == 2
+                      and all(post['valid'] for post in result['WorkspacePosts'] + result['DisplayPosts'])
+                      and all(frame['valid'] and frame['onWindowThread'] for frame in result['NativeDeliveries'])
+                      and sum(scene['name'] == 'background-preference-delivery' and scene['passed'] for scene in result['Scenarios']) == 1
+                      and sum(scene['name'] == 'interleaved-display-notifications' and scene['passed'] for scene in result['Scenarios']) == 1)
         receipt = {'index': index, 'passed': passed, 'exitCode': code, 'result': result,
                    'ownNativeLibraries': sorted(own), 'foreignNativeLibraryCount': len(foreign), 'helperLoaded': str(helper) in dyld}
         receipts.append(receipt)

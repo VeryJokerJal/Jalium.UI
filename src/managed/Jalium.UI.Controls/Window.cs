@@ -5650,6 +5650,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.MonitorsChanged:
                 SystemParameters.NotifyStaticPropertyChanged(null);
+                if (IsCloseRequestedForPlatformTermination || _managedTeardownStarted)
+                    break;
                 RaisePlatformSystemSettingsChanged();
                 UpdateRefreshRateForCurrentMonitor(force: true);
                 break;

@@ -389,6 +389,14 @@ public static class ThemeLoader
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Defers to LoadResourceDictionary which carries the same RUC contract.")]
     public static ResourceDictionary? LoadGenericTheme()
     {
+        // In-box dictionaries are generated builders rather than manifest streams.
+        // Match the normal ThemeManager loading path before the legacy stream fallback.
+        if (TryBuildFromPrebuiltRegistryByResourceName(
+            "Themes/Generic.jalxaml", ThemeManager.ControlsAssembly, out var prebuilt))
+        {
+            return prebuilt;
+        }
+
         using var stream = ThemeManager.GetGenericThemeStream();
         if (stream == null)
             return null;

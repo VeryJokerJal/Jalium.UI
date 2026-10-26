@@ -202,6 +202,16 @@ endfunction()
 
 if(ANDROID AND CMAKE_ANDROID_ARCH_ABI)
     set(_jalium_target_processor "${CMAKE_ANDROID_ARCH_ABI}")
+elseif(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    # On macOS CMAKE_SYSTEM_PROCESSOR can still describe the host when
+    # -arch selects another target. A RID must contain exactly one slice.
+    list(LENGTH CMAKE_OSX_ARCHITECTURES _jalium_apple_arch_count)
+    if(NOT _jalium_apple_arch_count EQUAL 1)
+        message(FATAL_ERROR
+            "Build one Apple architecture per native RID; combine slices after the build. "
+            "CMAKE_OSX_ARCHITECTURES='${CMAKE_OSX_ARCHITECTURES}'")
+    endif()
+    list(GET CMAKE_OSX_ARCHITECTURES 0 _jalium_target_processor)
 elseif(CMAKE_GENERATOR_PLATFORM)
     set(_jalium_target_processor "${CMAKE_GENERATOR_PLATFORM}")
 elseif(CMAKE_SYSTEM_PROCESSOR)

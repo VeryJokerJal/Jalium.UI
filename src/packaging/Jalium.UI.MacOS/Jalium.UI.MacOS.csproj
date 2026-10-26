@@ -2,15 +2,20 @@
   <PropertyGroup>
     <TargetFramework>net10.0-macos</TargetFramework>
     <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
-    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(RuntimeIdentifiers)' == ''">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
     <RootNamespace>Jalium.UI.MacOS</RootNamespace>
     <AssemblyName>Jalium.UI.MacOS</AssemblyName>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.MacOS</PackageId>
-    <Description>Jalium.UI native AppKit and Metal entry package for Apple Silicon macOS.</Description>
+    <Description>Jalium.UI native AppKit and Metal entry package for arm64 and x64 macOS.</Description>
     <JaliumPlatform>macos</JaliumPlatform>
-    <JaliumMacNativeRoot Condition="'$(JaliumMacNativeRoot)' == ''">$(MSBuildThisFileDirectory)..\..\native\bin\native\osx-arm64\$(Configuration)</JaliumMacNativeRoot>
-    <JaliumMacNativeBuildDirectory Condition="'$(JaliumMacNativeBuildDirectory)' == ''">$(MSBuildThisFileDirectory)..\..\native\out\build\apple-macos-dev-arm64</JaliumMacNativeBuildDirectory>
+    <_JaliumMacNativePresetArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">arm64</_JaliumMacNativePresetArchitecture>
+    <_JaliumMacNativePresetArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-x64'">x64</_JaliumMacNativePresetArchitecture>
+    <_JaliumMacNativeRootWasExplicit Condition="'$(JaliumMacNativeRoot)' != ''">true</_JaliumMacNativeRootWasExplicit>
+    <JaliumMacNativeOutputRoot Condition="'$(JaliumMacNativeOutputRoot)' == ''">$(MSBuildThisFileDirectory)..\..\native\bin\native</JaliumMacNativeOutputRoot>
+    <JaliumMacRequireAllNativeRids Condition="'$(JaliumMacRequireAllNativeRids)' == ''">false</JaliumMacRequireAllNativeRids>
+    <JaliumMacNativeRoot Condition="'$(JaliumMacNativeRoot)' == ''">$(JaliumMacNativeOutputRoot)\$(RuntimeIdentifier)\$(Configuration)</JaliumMacNativeRoot>
+    <JaliumMacNativeBuildDirectory Condition="'$(JaliumMacNativeBuildDirectory)' == ''">$(MSBuildThisFileDirectory)..\..\native\out\build\apple-macos-dev-$(_JaliumMacNativePresetArchitecture)</JaliumMacNativeBuildDirectory>
     <JaliumMacAutoCompleteNativePayload Condition="'$(JaliumMacAutoCompleteNativePayload)' == ''">true</JaliumMacAutoCompleteNativePayload>
   </PropertyGroup>
   <ItemGroup>
@@ -24,35 +29,35 @@
     <ProjectReference Include="..\..\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
   </ItemGroup>
   <ItemGroup Condition="Exists('$(JaliumMacNativeRoot)/.jalium-native-complete')">
-    <Content Include="$(JaliumMacNativeRoot)/*.dylib" Pack="true"
-             PackagePath="runtimes/osx-arm64/native" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="$(JaliumMacNativeRoot)/*.metallib" Pack="true"
-             PackagePath="runtimes/osx-arm64/native" />
-    <Content Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" Pack="true"
-             PackagePath="runtimes/osx-arm64/native" Condition="Exists('$(JaliumMacNativeRoot)/jalium_metal_manifest.json')" />
-    <BundleResource Include="$(JaliumMacNativeRoot)/*.metallib" LogicalName="%(Filename)%(Extension)" />
-    <BundleResource Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" LogicalName="jalium_metal_manifest.json" Condition="Exists('$(JaliumMacNativeRoot)/jalium_metal_manifest.json')" />
+    <Content Include="$(JaliumMacNativeRoot)/*.dylib" Pack="false"
+             PackagePath="runtimes/$(RuntimeIdentifier)/native" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"  PublishFolderType="Assembly" />
+    <Content Include="$(JaliumMacNativeRoot)/*.metallib" Pack="false"
+             PackagePath="runtimes/$(RuntimeIdentifier)/native"  PublishFolderType="Resource" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" Pack="false"
+             PackagePath="runtimes/$(RuntimeIdentifier)/native" Condition="Exists('$(JaliumMacNativeRoot)/jalium_metal_manifest.json')"  PublishFolderType="Resource" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- Partial native targets invalidate the payload stamp. Debug can finish an
        existing development build, then retain the normal stamp/export checks. -->
-  <Target Name="ValidateMacOSNativeExports" BeforeTargets="MaciOSPrepareForBuild;PrepareForBuild;AssignTargetPaths"
-          Condition="$([MSBuild]::IsOSPlatform('OSX')) and '$(DesignTimeBuild)' != 'true'">
+  <Target Name="ValidateMacOSNativeExports" BeforeTargets="MaciOSPrepareForBuild;PrepareForBuild;AssignTargetPaths;_GetPackageFiles;GenerateNuspec"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) and '$(DesignTimeBuild)' != 'true' and '$(RuntimeIdentifier)' != ''">
     <PropertyGroup>
       <_JaliumMacPayloadWasIncomplete Condition="!Exists('$(JaliumMacNativeRoot)/.jalium-native-complete')">true</_JaliumMacPayloadWasIncomplete>
       <_JaliumMacCompleteNativeArgs Condition="'$(Configuration)' == 'Debug' and '$(JaliumMacAutoCompleteNativePayload)' == 'true' and Exists('$(JaliumMacNativeBuildDirectory)/CMakeCache.txt')">--complete-build &quot;$(JaliumMacNativeBuildDirectory)&quot;</_JaliumMacCompleteNativeArgs>
     </PropertyGroup>
-    <Exec Command="/usr/bin/python3 &quot;$(MSBuildThisFileDirectory)../../../eng/apple/check-native-exports.py&quot; &quot;$(JaliumMacNativeRoot)&quot; --configuration &quot;$(Configuration)&quot; $(_JaliumMacCompleteNativeArgs)" />
+    <Exec Command="/usr/bin/python3 &quot;$(MSBuildThisFileDirectory)../../../eng/apple/check-native-exports.py&quot; &quot;$(JaliumMacNativeRoot)&quot; --configuration &quot;$(Configuration)&quot; --runtime-identifier &quot;$(RuntimeIdentifier)&quot; $(_JaliumMacCompleteNativeArgs)" />
     <!-- Re-evaluate globs after completion: the stamp may have been absent at
          project evaluation, and CMake may have produced previously missing files. -->
     <ItemGroup Condition="'$(_JaliumMacPayloadWasIncomplete)' == 'true'">
-      <Content Include="$(JaliumMacNativeRoot)/*.dylib" Exclude="@(Content)" Pack="true"
-               PackagePath="runtimes/osx-arm64/native" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-      <Content Include="$(JaliumMacNativeRoot)/*.metallib" Exclude="@(Content)" Pack="true"
-               PackagePath="runtimes/osx-arm64/native" />
-      <Content Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" Exclude="@(Content)" Pack="true"
-               PackagePath="runtimes/osx-arm64/native" Condition="Exists('$(JaliumMacNativeRoot)/jalium_metal_manifest.json')" />
-      <BundleResource Include="$(JaliumMacNativeRoot)/*.metallib" Exclude="@(BundleResource)" LogicalName="%(Filename)%(Extension)" />
-      <BundleResource Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" Exclude="@(BundleResource)" LogicalName="jalium_metal_manifest.json" Condition="Exists('$(JaliumMacNativeRoot)/jalium_metal_manifest.json')" />
+      <Content Include="$(JaliumMacNativeRoot)/*.dylib" Exclude="@(Content)" Pack="false"
+               PackagePath="runtimes/$(RuntimeIdentifier)/native" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"  PublishFolderType="Assembly" />
+      <Content Include="$(JaliumMacNativeRoot)/*.metallib" Exclude="@(Content)" Pack="false"
+               PackagePath="runtimes/$(RuntimeIdentifier)/native"  PublishFolderType="Resource" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+      <Content Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" Exclude="@(Content)" Pack="false"
+               PackagePath="runtimes/$(RuntimeIdentifier)/native" Condition="Exists('$(JaliumMacNativeRoot)/jalium_metal_manifest.json')"  PublishFolderType="Resource" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
   </Target>
+  <ItemGroup>
+    <None Include="buildTransitive/Jalium.UI.MacOS.targets" Pack="true" PackagePath="buildTransitive/" />
+  </ItemGroup>
+  <Import Project="MacOSNativePackaging.targets" />
 </Project>

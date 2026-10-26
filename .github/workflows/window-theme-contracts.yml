@@ -7,6 +7,8 @@ on:
       - 'src/managed/Jalium.UI.Core/ResourceDictionary*.cs'
       - 'src/managed/Jalium.UI.Core/Style.cs'
       - 'src/managed/Jalium.UI.Controls/Window.ThemeMode.cs'
+      - 'src/managed/Jalium.UI.Controls/Themes/ThemeManager.cs'
+      - 'tests/Jalium.UI.MacOS.Tests/MacOSStandaloneAppearanceTests.cs'
       - 'src/managed/Jalium.UI.Controls/Application.cs'
       - 'tests/Jalium.UI.Tests/WindowThemeRefreshTests.cs'
       - 'tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj'

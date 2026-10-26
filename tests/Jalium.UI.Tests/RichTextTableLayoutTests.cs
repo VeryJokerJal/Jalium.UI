@@ -6,6 +6,8 @@ using DocList = Jalium.UI.Documents.List;
 
 namespace Jalium.UI.Tests;
 
+// Editor rendering shares application theme and text-formatting state.
+[Collection("Application")]
 public class RichTextTableLayoutTests
 {
     public static IEnumerable<object[]> ModelsAndWidths =>

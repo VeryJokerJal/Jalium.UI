@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
+    <JaliumMacOSPackageVersion Condition="'$(JaliumMacOSPackageVersion)' == ''">$(Version)</JaliumMacOSPackageVersion>
+    <LinkMode>None</LinkMode>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Jalium.UI.MacOS" Version="$(JaliumMacOSPackageVersion)" />
+  </ItemGroup>
+</Project>

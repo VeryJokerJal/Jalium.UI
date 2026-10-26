@@ -8,16 +8,9 @@ fi
 
 target="${1:?usage: generate-metal-shaders.sh <macos|ios|iossimulator|tvos|tvossimulator|visionos|visionsimulator> [Debug|Release]}"
 configuration="${2:-Release}"
-case "$target" in
-  macos) sdk=macosx; rid=osx-arm64 ;;
-  ios) sdk=iphoneos; rid=ios-arm64 ;;
-  iossimulator) sdk=iphonesimulator; rid=iossimulator-arm64 ;;
-  tvos) sdk=appletvos; rid=tvos-arm64 ;;
-  tvossimulator) sdk=appletvsimulator; rid=tvossimulator-arm64 ;;
-  visionos) sdk=xros; rid=visionos-arm64 ;;
-  visionsimulator) sdk=xrsimulator; rid=visionossimulator-arm64 ;;
-  *) echo "unsupported target: $target" >&2; exit 2 ;;
-esac
+# shellcheck source=resolve-apple-target.sh
+source "$(cd "$(dirname "$0")" && pwd)/resolve-apple-target.sh"
+jalium_resolve_apple_target "$target"
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 deps_root="${JALIUM_APPLE_DEPS_ROOT:-$repo_root/src/native/out/apple-deps}"

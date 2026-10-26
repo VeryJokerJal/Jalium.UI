@@ -1598,7 +1598,10 @@ static int RunWindowContracts(int argc, char** argv)
         arguments[@"AppleActionOnDoubleClick"] = @"Minimize";
         [defaults setVolatileDomain:arguments forName:NSArgumentDomain];
         Check(jalium_apple_window_titlebar_double_click(window) == 0, "title-bar minimize preference");
-        bool minimizedByCaption = WaitUntil([&] { return native.miniaturized; });
+        // The native bit may change before AppKit's did-miniaturize delivery.
+        // Assert the framework acknowledgement only after both have settled.
+        bool minimizedByCaption = WaitUntil([&] { return native.miniaturized &&
+            jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MINIMIZED; });
         if (!minimizedByCaption)
             std::fprintf(stderr, "Caption minimize: preference=%s state=%d mask=%lu visible=%d active=%d\n",
                 [defaults stringForKey:@"AppleActionOnDoubleClick"].UTF8String ?: "(null)",
@@ -1607,13 +1610,14 @@ static int RunWindowContracts(int argc, char** argv)
         Check(jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MINIMIZED, "native minimize callback");
         [defaults setVolatileDomain:savedArguments forName:NSArgumentDomain];
         [native deminiaturize:nil];
-        Check(WaitUntil([&] { return !native.miniaturized; }) &&
-            jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MAXIMIZED, "deminiaturize restores previous state");
+        Check(WaitUntil([&] { return !native.miniaturized &&
+            jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MAXIMIZED; }), "deminiaturize restores previous state");
         [native performMiniaturize:nil];
-        Check(WaitUntil([&] { return native.miniaturized; }), "minimize before reactivation");
+        Check(WaitUntil([&] { return native.miniaturized &&
+            jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MINIMIZED; }), "minimize before reactivation");
         Check(jalium_window_activate(window) == 0 &&
-            WaitUntil([&] { return !native.miniaturized; }) &&
-            jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MAXIMIZED,
+            WaitUntil([&] { return !native.miniaturized &&
+            jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MAXIMIZED; }),
             "reactivation preserves maximized state");
         jalium_window_set_state(window, JALIUM_WINDOW_STATE_NORMAL);
         Check(NSEqualRects(native.frame, normal), "restore after maximize and minimize");

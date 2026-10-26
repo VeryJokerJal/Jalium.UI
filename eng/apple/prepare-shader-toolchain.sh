@@ -10,16 +10,9 @@ target="${1:?usage: prepare-shader-toolchain.sh <macos|ios|iossimulator|tvos|tvo
 configuration="${2:-Release}"
 case "$configuration" in Debug|Release) ;; *) echo "configuration must be Debug or Release" >&2; exit 2;; esac
 
-case "$target" in
-  macos) sdk=macosx; system_name=Darwin; deployment=15.0; rid=osx-arm64 ;;
-  ios) sdk=iphoneos; system_name=iOS; deployment=18.0; rid=ios-arm64 ;;
-  iossimulator) sdk=iphonesimulator; system_name=iOS; deployment=18.0; rid=iossimulator-arm64 ;;
-  tvos) sdk=appletvos; system_name=tvOS; deployment=18.0; rid=tvos-arm64 ;;
-  tvossimulator) sdk=appletvsimulator; system_name=tvOS; deployment=18.0; rid=tvossimulator-arm64 ;;
-  visionos) sdk=xros; system_name=visionOS; deployment=2.0; rid=visionos-arm64 ;;
-  visionsimulator) sdk=xrsimulator; system_name=visionOS; deployment=2.0; rid=visionossimulator-arm64 ;;
-  *) echo "unsupported Apple target: $target" >&2; exit 2 ;;
-esac
+# shellcheck source=resolve-apple-target.sh
+source "$(cd "$(dirname "$0")" && pwd)/resolve-apple-target.sh"
+jalium_resolve_apple_target "$target"
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 deps_root="${JALIUM_APPLE_DEPS_ROOT:-$repo_root/src/native/out/apple-deps}"
@@ -34,7 +27,7 @@ dxc_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[
 spirv_cross_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependencies"]["SPIRV-Cross"]["revision"])' "$lock_file")"
 patch_file="$repo_root/eng/apple/patch-shader-toolchain.py"
 patch_hash="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$patch_file")"
-fingerprint="static-runtime-v5:$patch_hash:$dxc_revision:$spirv_cross_revision:$sdk:$deployment:$configuration:$(xcodebuild -version | tr '\n' ' ')"
+fingerprint="static-runtime-v6:$arch:$patch_hash:$dxc_revision:$spirv_cross_revision:$sdk:$deployment:$configuration:$(xcodebuild -version | tr '\n' ' ')"
 
 if [[ -f "$slice_root/.complete" ]] && [[ "$(cat "$slice_root/.complete")" == "$fingerprint" ]] && [[ -f "$env_file" ]]; then
   echo "$env_file"
@@ -70,7 +63,7 @@ python3 "$patch_file" "$dxc_source"
 # Build the host compiler once. It is used by the offline shader pipeline; the
 # target slice below is linked into Jalium for dynamic SourceHlsl compilation.
 host_dxc_build="$host_root/dxc"
-if [[ "$target" != macos && ( ! -x "$host_dxc_build/bin/llvm-tblgen" || ! -x "$host_dxc_build/bin/clang-tblgen" ) ]]; then
+if [[ ( "$target" != macos || "$arch" != "$(uname -m)" ) && ( ! -x "$host_dxc_build/bin/llvm-tblgen" || ! -x "$host_dxc_build/bin/clang-tblgen" ) ]]; then
   cmake -S "$dxc_source" -B "$host_dxc_build" -G Ninja \
     -C "$dxc_source/cmake/caches/PredefinedParams.cmake" \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
@@ -83,7 +76,7 @@ fi
 
 apple_generator=Xcode
 common_apple_args=(
-  -DCMAKE_OSX_ARCHITECTURES=arm64
+  -DCMAKE_OSX_ARCHITECTURES="$arch"
   -DCMAKE_OSX_SYSROOT="$sdk"
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment"
   -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
@@ -95,11 +88,11 @@ if [[ "$target" == macos ]]; then
   # the first frame and duplicates several gigabytes of dependency objects.
   apple_generator=Ninja
   common_apple_args=( -DCMAKE_BUILD_TYPE=Release
-    -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT="$sdk"
+    -DCMAKE_OSX_ARCHITECTURES="$arch" -DCMAKE_OSX_SYSROOT="$sdk"
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment" )
   compiler_configuration=Release
 fi
-if [[ "$system_name" != Darwin ]]; then
+if [[ "$system_name" != Darwin || "$arch" != "$(uname -m)" ]]; then
   common_apple_args+=( -DCMAKE_SYSTEM_NAME="$system_name" )
 fi
 
@@ -115,7 +108,7 @@ cmake --build "$spirv_cross_build" --config "$configuration" \
 
 dxc_build="$build_root/dxc"
 tablegen_args=(-DLLVM_OPTIMIZED_TABLEGEN=OFF)
-if [[ "$target" != macos ]]; then
+if [[ "$target" != macos || "$arch" != "$(uname -m)" ]]; then
   tablegen_args=( -DLLVM_TABLEGEN="$host_dxc_build/bin/llvm-tblgen"
     -DCLANG_TABLEGEN="$host_dxc_build/bin/clang-tblgen" )
   # Preserve any prior Xcode cache when switching device slices to Ninja.

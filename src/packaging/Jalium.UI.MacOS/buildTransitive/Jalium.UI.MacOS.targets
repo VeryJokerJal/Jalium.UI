@@ -1,0 +1,17 @@
+<Project>
+  <!-- Keep the SDK assembly independent of the CPU used to build the package.
+       The consuming application's RID chooses its offline Metal resources. -->
+  <Target Name="JaliumMacOSCollectNativeResources" BeforeTargets="_SetResourceMetadata"
+          Condition="'$(TargetPlatformIdentifier)' == 'macos' and ('$(OutputType)' == 'Exe' or '$(IsAppExtension)' == 'true') and ('$(RuntimeIdentifier)' == 'osx-arm64' or '$(RuntimeIdentifier)' == 'osx-x64')">
+    <PropertyGroup>
+      <_JaliumMacPackageNativeRoot>$(MSBuildThisFileDirectory)../runtimes/$(RuntimeIdentifier)/native</_JaliumMacPackageNativeRoot>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_JaliumMacPackageNativeRoot)/jalium_core.metallib') or !Exists('$(_JaliumMacPackageNativeRoot)/jalium_vello.metallib') or !Exists('$(_JaliumMacPackageNativeRoot)/jalium_metal_manifest.json')"
+           Text="The Jalium.UI.MacOS package is missing offline Metal resources for $(RuntimeIdentifier)." />
+    <ItemGroup>
+      <BundleResource Include="$(_JaliumMacPackageNativeRoot)/jalium_core.metallib" LogicalName="jalium_core.metallib" />
+      <BundleResource Include="$(_JaliumMacPackageNativeRoot)/jalium_vello.metallib" LogicalName="jalium_vello.metallib" />
+      <BundleResource Include="$(_JaliumMacPackageNativeRoot)/jalium_metal_manifest.json" LogicalName="jalium_metal_manifest.json" />
+    </ItemGroup>
+  </Target>
+</Project>
