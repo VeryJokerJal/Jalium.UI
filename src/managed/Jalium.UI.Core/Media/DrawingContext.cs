@@ -864,8 +864,8 @@ public sealed class Pen : Animatable
     /// <param name="thickness">The stroke thickness.</param>
     public Pen(Brush brush, double thickness)
     {
-        Brush = brush;
-        Thickness = thickness;
+        SetInitialLocalValue(BrushProperty, brush);
+        SetInitialLocalValue(ThicknessProperty, thickness);
     }
 
     /// <summary>

@@ -410,9 +410,9 @@ private:
 
     bool RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry);
     bool AllocateAtlasRect(uint16_t w, uint16_t h, uint16_t& outX, uint16_t& outY);
-    bool EnsureUploadBuffer();
+    bool EnsureUploadBuffer(uint32_t rowCount);
     void QueueUploadBufferKeepaliveAfterCopy();
-    // Grow atlasTexture_/uploadBuffer_/atlasBitmap_ to at least (reqW, reqH),
+    // Grow atlasTexture_/atlasBitmap_ to at least (reqW, reqH),
     // capped at kMaxAtlasDim.  Preserves all already-packed glyph pixels.
     // Safe to call only between frames or during batch-collect (before any
     // SRV referencing atlasTexture_ has been recorded onto the open command

@@ -516,6 +516,7 @@ public class WindowRenderSchedulingTests
         Assert.True(renderTarget.TryBeginDraw());
         var workerMarker = new Thread(static () => { });
         SetPrivateField(window, "_rtActive", true);
+        SetPrivateField(window, "_rtCaptureScheduler", new Jalium.UI.Rendering.RenderCaptureScheduler());
         SetPrivateField(window, "_renderThread", workerMarker);
         SetPrivateField(window, "_fullInvalidation", true);
 
@@ -531,7 +532,7 @@ public class WindowRenderSchedulingTests
         {
             SetPrivateField(window, "_rtActive", false);
             SetPrivateField(window, "_renderThread", null);
-            SetPrivateField(window, "_rtPendingFrame", null);
+            InvokePrivateMethod(window, "ClearPendingRenderThreadCapture");
             _ = renderTarget.TryEndDraw();
         }
     }

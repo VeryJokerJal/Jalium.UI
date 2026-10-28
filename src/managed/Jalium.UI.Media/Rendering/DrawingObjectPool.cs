@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace Jalium.UI.Media.Rendering;
 
@@ -17,14 +18,10 @@ namespace Jalium.UI.Media.Rendering;
 /// <list type="number">
 ///   <item>
 ///     <description>
-///     The rendering backend (<c>RenderTargetDrawingContext</c>) keeps a
-///     <c>Dictionary&lt;Brush, NativeBrush&gt;</c> identity cache that only
-///     hits when the same managed brush reference is used across frames.
-///     User code that writes <c>new SolidColorBrush(color)</c> in a hot
-///     <c>OnRender</c> loop produces a fresh reference every frame and
-///     forces a native-brush miss every draw. Canonicalizing at record
-///     time redirects all such references onto one pooled instance, so
-///     the native cache hits on subsequent frames.
+///     Canonical brushes and pens are frozen, so draw-input snapshots can
+///     share them directly. User code that constructs equivalent mutable
+///     primitives in a hot <c>OnRender</c> loop otherwise requires fresh
+///     freeze-clones and their dependency-property storage on every capture.
 ///     </description>
 ///   </item>
 ///   <item>
@@ -37,17 +34,13 @@ namespace Jalium.UI.Media.Rendering;
 ///   </item>
 /// </list>
 /// <para>
-/// The pool does not try to canonicalize gradient brushes, image brushes,
-/// or pens with custom dash / cap / join / miter settings. Those fall
-/// through as-is; users who want them deduplicated should cache them
-/// themselves (standard WPF pattern).
+/// Gradient brushes, image brushes, and custom dash patterns keep their
+/// specialized snapshot paths. Undashed solid pens preserve all stroke settings.
 /// </para>
 /// <para>
-/// Each sub-pool has a hard cap (<see cref="MaxPoolSize"/>); overflowing
-/// clears the pool wholesale rather than evicting one-by-one. This is
-/// intentionally coarse — in normal apps the pool stabilises at &lt;100
-/// entries, and a pathological creation rate is better served by the
-/// full reset than by an LRU walk on every hit.
+/// Each sub-pool has a hard cap (<see cref="MaxPoolSize"/>). Clock eviction
+/// gives recently used values a second chance without flushing every hot
+/// value when an animation introduces new colors.
 /// </para>
 /// </remarks>
 internal static class DrawingObjectPool
@@ -56,9 +49,68 @@ internal static class DrawingObjectPool
 
     private static readonly object s_lock = new();
 
-    private static readonly ConcurrentDictionary<uint, SolidColorBrush> s_solidBrushes = new();
-    private static readonly ConcurrentDictionary<long, Pen> s_simplePens = new();
-    private static readonly ConcurrentDictionary<int, FormattedText> s_formattedTexts = new();
+    private readonly record struct SolidBrushKey(uint Color, long Opacity);
+    private readonly record struct SolidPenKey(SolidBrushKey Brush, long Thickness,
+        PenLineCap StartCap, PenLineCap EndCap, PenLineCap DashCap, PenLineJoin Join, long MiterLimit);
+
+    private static readonly ValueCache<SolidBrushKey, SolidColorBrush> s_solidBrushes = new();
+    private static readonly ValueCache<SolidPenKey, Pen> s_simplePens = new();
+    private static readonly ValueCache<int, FormattedText> s_formattedTexts = new();
+
+    // 写入与清空由 s_lock 串行化；命中只读字典并设置一个引用位，不分配对象。
+    private sealed class ValueCache<TKey, TValue> where TKey : notnull where TValue : class
+    {
+        private sealed class Entry(TKey key, TValue value)
+        {
+            internal readonly TKey Key = key;
+            internal readonly TValue Value = value;
+            internal int Referenced;
+        }
+
+        private readonly ConcurrentDictionary<TKey, Entry> _values = new();
+        private readonly Queue<Entry> _clock = new(MaxPoolSize);
+
+        internal bool TryGetValue(TKey key, out TValue value)
+        {
+            if (_values.TryGetValue(key, out var entry))
+            {
+                Volatile.Write(ref entry.Referenced, 1);
+                value = entry.Value;
+                return true;
+            }
+            value = null!;
+            return false;
+        }
+
+        internal TValue this[TKey key]
+        {
+            set
+            {
+                int secondChances = MaxPoolSize;
+                while (_clock.Count >= MaxPoolSize)
+                {
+                    var candidate = _clock.Dequeue();
+                    if (!_values.TryGetValue(candidate.Key, out var current) || !ReferenceEquals(candidate, current))
+                        continue;
+                    if (Interlocked.Exchange(ref candidate.Referenced, 0) != 0 && secondChances-- > 0)
+                    {
+                        _clock.Enqueue(candidate);
+                        continue;
+                    }
+                    _values.TryRemove(candidate.Key, out _);
+                }
+                var entry = new Entry(key, value);
+                _values[key] = entry;
+                _clock.Enqueue(entry);
+            }
+        }
+
+        internal void Clear()
+        {
+            _values.Clear();
+            _clock.Clear();
+        }
+    }
 
     /// <summary>
     /// Returns a canonical instance for <paramref name="brush"/> when it is
@@ -67,12 +119,14 @@ internal static class DrawingObjectPool
     /// </summary>
     public static Brush? CanonicalizeBrush(Brush? brush)
     {
-        if (brush is not SolidColorBrush scb)
+        if (brush is not SolidColorBrush scb || scb.CssGradientLayout is not null)
         {
             return brush;
         }
 
-        uint key = PackArgb(scb.Color);
+        var color = scb.Color;
+        double opacity = scb.Opacity;
+        var key = new SolidBrushKey(PackArgb(color), BitConverter.DoubleToInt64Bits(opacity));
         if (s_solidBrushes.TryGetValue(key, out var cached))
         {
             return cached;
@@ -85,25 +139,20 @@ internal static class DrawingObjectPool
                 return canonical;
             }
 
-            if (s_solidBrushes.Count >= MaxPoolSize)
-            {
-                s_solidBrushes.Clear();
-            }
-
             // Store a fresh copy so mutation of the user's brush after record
             // cannot leak into the canonical (user's Color could legally be
             // changed later — we don't want that to change pool entries).
-            var pooled = new SolidColorBrush(scb.Color);
+            var pooled = new SolidColorBrush(color);
+            if (opacity != 1.0) pooled.Opacity = opacity;
+            pooled.Freeze();
             s_solidBrushes[key] = pooled;
             return pooled;
         }
     }
 
     /// <summary>
-    /// Returns a canonical instance for a "simple" pen — solid-color brush,
-    /// no dash style, flat caps, miter join, default miter limit — so that
-    /// identical stroke settings across visuals share a reference. Any pen
-    /// with non-default attributes is returned unchanged.
+    /// Returns a frozen canonical instance for an undashed solid pen,
+    /// preserving opacity, thickness, caps, join, and miter limit.
     /// </summary>
     public static Pen? CanonicalizePen(Pen? pen)
     {
@@ -111,29 +160,24 @@ internal static class DrawingObjectPool
         {
             return null;
         }
-        if (pen.DashStyle is not null)
+        if (pen.DashStyle.Dashes.Count != 0)
         {
             return pen;
         }
-        if (pen.StartLineCap != PenLineCap.Flat ||
-            pen.EndLineCap != PenLineCap.Flat ||
-            pen.DashCap != PenLineCap.Flat ||
-            pen.LineJoin != PenLineJoin.Miter)
-        {
-            return pen;
-        }
-        if (pen.MiterLimit != 10)
-        {
-            return pen;
-        }
-        if (pen.Brush is not SolidColorBrush scb)
+        if (pen.Brush is not SolidColorBrush scb || scb.CssGradientLayout is not null)
         {
             return pen;
         }
 
-        uint colorKey = PackArgb(scb.Color);
-        long thicknessBits = BitConverter.DoubleToInt64Bits(pen.Thickness);
-        long key = ((long)colorKey << 32) ^ thicknessBits;
+        var brushKey = new SolidBrushKey(PackArgb(scb.Color), BitConverter.DoubleToInt64Bits(scb.Opacity));
+        double thickness = pen.Thickness;
+        var startCap = pen.StartLineCap;
+        var endCap = pen.EndLineCap;
+        var dashCap = pen.DashCap;
+        var join = pen.LineJoin;
+        double miter = pen.MiterLimit;
+        var key = new SolidPenKey(brushKey, BitConverter.DoubleToInt64Bits(thickness),
+            startCap, endCap, dashCap, join, BitConverter.DoubleToInt64Bits(miter));
 
         if (s_simplePens.TryGetValue(key, out var cached))
         {
@@ -147,17 +191,15 @@ internal static class DrawingObjectPool
                 return canonical;
             }
 
-            if (s_simplePens.Count >= MaxPoolSize)
-            {
-                s_simplePens.Clear();
-            }
-
             // Use the canonical brush too so the native side also deduplicates.
-            var canonicalBrush = s_solidBrushes.TryGetValue(colorKey, out var existingBrush)
-                ? existingBrush
-                : s_solidBrushes[colorKey] = new SolidColorBrush(scb.Color);
-
-            var pooledPen = new Pen(canonicalBrush, pen.Thickness);
+            var canonicalBrush = CanonicalizeBrush(scb)!;
+            var pooledPen = new Pen(canonicalBrush, thickness);
+            if (startCap != PenLineCap.Flat) pooledPen.StartLineCap = startCap;
+            if (endCap != PenLineCap.Flat) pooledPen.EndLineCap = endCap;
+            if (dashCap != PenLineCap.Square) pooledPen.DashCap = dashCap;
+            if (join != PenLineJoin.Miter) pooledPen.LineJoin = join;
+            if (miter != 10.0) pooledPen.MiterLimit = miter;
+            pooledPen.Freeze();
             s_simplePens[key] = pooledPen;
             return pooledPen;
         }
@@ -187,11 +229,6 @@ internal static class DrawingObjectPool
                 FormattedTextValueEquals(canonical, text, canonicalFg))
             {
                 return canonical;
-            }
-
-            if (s_formattedTexts.Count >= MaxPoolSize)
-            {
-                s_formattedTexts.Clear();
             }
 
             // Snapshot the already-computed value state. Reconstructing the

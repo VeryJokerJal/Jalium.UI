@@ -271,15 +271,21 @@ public sealed class DispatcherTimer
     /// <summary>
     /// Determines if this timer's interval is short enough to piggyback on
     /// CompositionTarget.Rendering instead of creating a dedicated timer.
-    /// Any interval at or below one display refresh period (e.g. 16ms at 60Hz)
-    /// is merged into the centralized frame timer. This eliminates timer
+    /// Any interval at or below one display refresh period (e.g. 16ms at 60Hz),
+    /// or a nominal 60fps interval on faster displays, is merged into the frame timer.
+    /// This eliminates timer
     /// proliferation for frame-rate timers (animations, spring physics, etc.).
     /// </summary>
     private bool ShouldUseCompositionTarget()
     {
-        int intervalMs = (int)_interval.TotalMilliseconds;
-        int frameMs = 1000 / Math.Max(CompositionTarget.RefreshRate, 30);
-        return intervalMs <= frameMs + 2;
+        return ShouldUseCompositionTarget(_interval, CompositionTarget.RefreshRate);
+    }
+
+    // 高刷屏仍将常见的 60fps 动画接到高精度帧钟，避免反复重启普通定时器时的粗粒度等待。
+    internal static bool ShouldUseCompositionTarget(TimeSpan interval, int refreshRate)
+    {
+        int frameMs = 1000 / Math.Max(refreshRate, 30);
+        return interval.TotalMilliseconds <= Math.Max(frameMs + 2, 1000.0 / 60);
     }
 
     private void StartTimer()

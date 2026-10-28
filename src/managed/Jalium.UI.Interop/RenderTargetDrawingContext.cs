@@ -173,8 +173,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// A relative gradient's native coordinates depend on the destination
     /// bounds. Keying only by managed brush identity made a shared gradient
     /// thrash between every differently-positioned control on every frame.
-    /// Keep reference identity semantics while retaining one native resource
-    /// per distinct mapping rectangle.
+    /// Solid brushes share native resources by RGB and effective alpha. Other
+    /// brushes retain reference identity and their mapping rectangle.
     /// </summary>
     private readonly struct BrushCacheKey : IEquatable<BrushCacheKey>
     {
@@ -184,7 +184,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             BoundsKey = boundsKey;
         }
 
-        public Brush Brush { get; }
+        public BrushCacheKey(Color color, float alpha)
+        {
+            Brush = null;
+            uint rgb = ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
+            BoundsKey = ((long)rgb << 32) | (uint)BitConverter.SingleToInt32Bits(alpha);
+        }
+
+        public Brush? Brush { get; }
         public long BoundsKey { get; }
 
         public bool Equals(BrushCacheKey other) =>
@@ -194,7 +201,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             obj is BrushCacheKey other && Equals(other);
 
         public override int GetHashCode() =>
-            HashCode.Combine(RuntimeHelpers.GetHashCode(Brush), BoundsKey);
+            HashCode.Combine(Brush is null ? 0 : RuntimeHelpers.GetHashCode(Brush), BoundsKey);
     }
 
     private readonly record struct TextFormatCacheKey(
@@ -1426,7 +1433,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (_closed || pen?.Brush == null ||
             !double.IsFinite(pen.Thickness) || pen.Thickness <= 0) return;
 
-        if (TryDrawImageBrushStroke(pen, new LineGeometry(point0, point1))) return;
+        if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen, new LineGeometry(point0, point1))) return;
 
         var brush = GetNativeBrush(pen.Brush);
         if (brush == null) return;
@@ -1495,7 +1502,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
-            if (TryDrawImageBrushStroke(pen, new RectangleGeometry(rectangle))) return;
+            if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen, new RectangleGeometry(rectangle))) return;
             if (pen.DashStyle.Dashes.Count > 0)
             {
                 DrawPathFigureNative(null, pen,
@@ -1547,7 +1554,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
-            if (TryDrawImageBrushStroke(pen,
+            if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen,
                     new RectangleGeometry(rectangle, radiusX, radiusY))) return;
             var strokeRight = SnapCoordinate(rectangle.X + rectangle.Width + Offset.X);
             var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
@@ -1605,7 +1612,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         if (pen?.Brush != null)
         {
-            if (TryDrawImageBrushStroke(pen,
+            if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen,
                     new RectangleGeometry(rectangle, cornerRadius))) return;
             if (pen.DashStyle.Dashes.Count > 0)
             {
@@ -1788,7 +1795,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // Stroke
         if (pen?.Brush != null)
         {
-            if (TryDrawImageBrushStroke(pen,
+            if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen,
                     new EllipseGeometry(center, radiusX, radiusY))) return;
             if (pen.DashStyle.Dashes.Count > 0 && radiusX > 0 && radiusY > 0)
             {
@@ -2281,14 +2288,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             pen.StartLineCap != PenLineCap.Flat ||
             pen.EndLineCap != PenLineCap.Flat);
 
-        // Compute geometry bounds once for gradient brush coordinate mapping.
+        // 纯色描边不需要边界或填充轮廓，跳过临时几何的缓存分析。
         long boundsTickStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
-        var frozenInfo = pathGeom.IsFrozen
+        bool needsBrushBounds = NeedsGeometryBounds(brush) || NeedsGeometryBounds(pen?.Brush);
+        var frozenInfo = pathGeom.IsFrozen && (brush is not null || needsBrushBounds)
             ? s_frozenPathGeometryInfo.GetValue(
                 pathGeom,
                 static geometry => new FrozenPathGeometryInfo(geometry))
             : null;
-        var geoBounds = frozenInfo?.Bounds ?? pathGeom.Bounds;
+        var geoBounds = needsBrushBounds ? frozenInfo?.Bounds ?? pathGeom.Bounds : default;
         if (_svgDiagActive)
             _svgBoundsCalcTicks += Stopwatch.GetTimestamp() - boundsTickStart;
 
@@ -2413,6 +2421,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
         }
     }
+
+    private static bool NeedsGeometryBounds(Brush? brush)
+        => brush is not null && (brush is not SolidColorBrush || brush.CssGradientLayout is not null);
 
     /// <summary>
     /// Sends multiple path figures as a single compound path to native FillPath,
@@ -2917,54 +2928,85 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // segments, so anti-aliased diagonals render at their natural weight.
         bool isAxisAligned = !hasCurvedSegments && IsAxisAlignedPath(points);
 
-        var pointArray = new float[points.Count * 2];
-        double snapDx = 0, snapDy = 0;
-        bool hasStroke = pen?.Brush != null && pen.Thickness > 0;
-        if (isAxisAligned && points.Count > 0
-            && TryComputeAxisAlignedSnap(
-                points[0].X + Offset.X, points[0].Y + Offset.Y,
-                hasStroke ? pen!.Thickness : 0.0, hasStroke,
-                out snapDx, out snapDy))
+        // 纯色多边形将视口位移留在变换中，使原生路径缓存可跨平移复用同一份坐标。
+        bool translateOffset = (brush is null or SolidColorBrush) &&
+            (pen?.Brush is null or SolidColorBrush) && (Offset.X != 0 || Offset.Y != 0);
+        double pointOffsetX = translateOffset ? 0 : Offset.X;
+        double pointOffsetY = translateOffset ? 0 : Offset.Y;
+        int coordinateCount = checked(points.Count * 2);
+        float[]? rentedCoordinates = null;
+        Span<float> pointArray = coordinateCount <= 256
+            ? stackalloc float[coordinateCount]
+            : (rentedCoordinates = ArrayPool<float>.Shared.Rent(coordinateCount)).AsSpan(0, coordinateCount);
+        try
         {
-            appliedSnapDx = snapDx;
-            appliedSnapDy = snapDy;
-            for (int i = 0; i < points.Count; i++)
+            double snapDx = 0, snapDy = 0;
+            bool hasStroke = pen?.Brush != null && pen.Thickness > 0;
+            if (isAxisAligned && points.Count > 0
+                && TryComputeAxisAlignedSnap(
+                    points[0].X + Offset.X, points[0].Y + Offset.Y,
+                    hasStroke ? pen!.Thickness : 0.0, hasStroke,
+                    out snapDx, out snapDy))
             {
-                pointArray[i * 2] = (float)(points[i].X + Offset.X + snapDx);
-                pointArray[i * 2 + 1] = (float)(points[i].Y + Offset.Y + snapDy);
+                appliedSnapDx = snapDx;
+                appliedSnapDy = snapDy;
+                for (int i = 0; i < points.Count; i++)
+                {
+                    pointArray[i * 2] = (float)(points[i].X + pointOffsetX + snapDx);
+                    pointArray[i * 2 + 1] = (float)(points[i].Y + pointOffsetY + snapDy);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < points.Count; i++)
+                {
+                    pointArray[i * 2] = (float)(points[i].X + pointOffsetX);
+                    pointArray[i * 2 + 1] = (float)(points[i].Y + pointOffsetY);
+                }
+            }
+
+            var ox = Offset.X;
+            var oy = Offset.Y;
+            float bx = (float)(geoBounds.X + ox), by = (float)(geoBounds.Y + oy);
+            float bw = (float)geoBounds.Width, bh = (float)geoBounds.Height;
+
+            if (translateOffset)
+            {
+                // 原生栈右乘，先通过现有线性部分换算位移，保持 (point + Offset) * current。
+                float nativeDx = (float)(ox * _currentNativeMatrix[0] + oy * _currentNativeMatrix[2]);
+                float nativeDy = (float)(ox * _currentNativeMatrix[1] + oy * _currentNativeMatrix[3]);
+                _renderTarget.PushTransformTranslation(nativeDx, nativeDy);
+            }
+            try
+            {
+                if (brush != null && figure.IsFilled && points.Count >= 3)
+                {
+                    int rule = fillRule == FillRule.Nonzero ? 1 : 0;
+                    var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
+                    if (nativeBrush != null)
+                    {
+                        _renderTarget.FillPolygon(pointArray, nativeBrush, rule);
+                    }
+                }
+
+                if (pen?.Brush != null && points.Count >= 2)
+                {
+                    var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
+                    if (strokeBrush != null)
+                    {
+                        _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit);
+                    }
+                }
+            }
+            finally
+            {
+                if (translateOffset) _renderTarget.PopTransform();
             }
         }
-        else
+        finally
         {
-            for (int i = 0; i < points.Count; i++)
-            {
-                pointArray[i * 2] = (float)(points[i].X + Offset.X);
-                pointArray[i * 2 + 1] = (float)(points[i].Y + Offset.Y);
-            }
-        }
-
-        var ox = Offset.X;
-        var oy = Offset.Y;
-        float bx = (float)(geoBounds.X + ox), by = (float)(geoBounds.Y + oy);
-        float bw = (float)geoBounds.Width, bh = (float)geoBounds.Height;
-
-        if (brush != null && figure.IsFilled && points.Count >= 3)
-        {
-            int rule = fillRule == FillRule.Nonzero ? 1 : 0;
-            var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
-            if (nativeBrush != null)
-            {
-                _renderTarget.FillPolygon(pointArray, nativeBrush, rule);
-            }
-        }
-
-        if (pen?.Brush != null && points.Count >= 2)
-        {
-            var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
-            if (strokeBrush != null)
-            {
-                _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit);
-            }
+            if (rentedCoordinates is not null)
+                ArrayPool<float>.Shared.Return(rentedCoordinates);
         }
     }
 
@@ -5254,22 +5296,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         if (brush is SolidColorBrush solidBrush)
         {
-            var cacheKey = new BrushCacheKey(brush, 0);
             var color = solidBrush.Color;
             double opacity = Math.Clamp(solidBrush.Opacity, 0.0, 1.0);
-            // Cache based on (brush reference, current color) to invalidate
-            // when the same brush object's color or opacity changes.
+            float alpha = EffectiveBrushAlpha(color.A, opacity);
+            // 缓存实际传给原生的值，临时画刷和属性往返变化均可复用资源。
+            var cacheKey = new BrushCacheKey(color, alpha);
             if (_brushCache.TryGetValue(cacheKey, out var cached))
             {
-                if (cached.CachedColor == color &&
-                    cached.CachedOpacity == opacity)
-                {
-                    cached.LastAccessSequence = ++_brushCacheSequence;
-                    return cached;
-                }
-                // Color changed — dispose old native brush and recreate
-                cached.Dispose();
-                _brushCache.Remove(cacheKey);
+                cached.LastAccessSequence = ++_brushCacheSequence;
+                return cached;
             }
 
             // Pass sRGB values to native: D2D expects sRGB, and the direct D3D12
@@ -5278,7 +5313,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 color.R / 255f,
                 color.G / 255f,
                 color.B / 255f,
-                EffectiveBrushAlpha(color.A, opacity));
+                alpha);
             nb.CachedColor = color;
             nb.CachedOpacity = opacity;
             nb.LastAccessSequence = ++_brushCacheSequence;

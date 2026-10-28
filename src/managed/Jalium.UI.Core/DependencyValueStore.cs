@@ -9,7 +9,8 @@ namespace Jalium.UI;
 /// effective value consequently performed as many as six independent hash lookups,
 /// while an element using styles and templates could allocate several dictionaries.
 /// This store indexes a property once, keeps its effective value beside the key, and
-/// allocates a <see cref="LayerValues"/> only when two value sources coexist.
+/// allocates a <see cref="LayerValues"/> when two value sources coexist or a
+/// current value has a source outside the compact representation.
 /// </remarks>
 internal sealed class DependencyValueStore
 {
@@ -43,6 +44,7 @@ internal sealed class DependencyValueStore
 
     private sealed class LayerValues
     {
+        public object? EffectiveValue;
         public object? Local;
         public object? ParentTemplateTrigger;
         public object? ParentTemplate;
@@ -57,25 +59,104 @@ internal sealed class DependencyValueStore
 
     private struct Entry
     {
-        public DependencyProperty Property;
+        public int PropertyIndex;
         public LayerMask Mask;
-        public object? EffectiveValue;
-        public BaseValueSource EffectiveSource;
-        public LayerValues? Values;
+        private const byte ExtendedSource = byte.MaxValue;
+        private byte _effectiveSource;
+        public readonly DependencyProperty Property => DependencyProperty.FromGlobalIndex(PropertyIndex);
+
+        public BaseValueSource EffectiveSource
+        {
+            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+            readonly get => _effectiveSource == ExtendedSource
+                ? LayerStorage.CurrentSource : (BaseValueSource)_effectiveSource;
+            set
+            {
+                if ((uint)value < ExtendedSource)
+                {
+                    _effectiveSource = (byte)value;
+                    return;
+                }
+
+                // Keep the full enum domain, including negative/unknown casts.
+                // Framework sources fit in a byte; only an exceptional Current
+                // source needs the sidecar that already stores layered values.
+                if (!_hasValues)
+                {
+                    System.Diagnostics.Debug.Assert(Mask == LayerMask.Current);
+                    _payload = new LayerValues { EffectiveValue = _payload, Current = _payload };
+                    _hasValues = true;
+                }
+                LayerStorage.CurrentSource = value;
+                _effectiveSource = ExtendedSource;
+            }
+        }
+        // A single source normally stores its value directly. LayerValues also
+        // holds the cached effective value and exceptional Current sources. Keep
+        // the discriminator separate so reading a scalar does not inspect the
+        // value's runtime type, and every object remains a valid user payload.
+        private object? _payload;
+        private bool _hasValues;
+
+        // In an expanded store the second inline slot holds the backing array
+        // instead of a value. The store's discriminator owns that switch;
+        // an arbitrary user payload can never select the storage representation.
+        public object? StoragePayload
+        {
+            readonly get => _payload;
+            set => _payload = value;
+        }
+
+        private readonly LayerValues LayerStorage
+        {
+            get
+            {
+                System.Diagnostics.Debug.Assert(_hasValues && _payload is LayerValues);
+                return System.Runtime.CompilerServices.Unsafe.As<LayerValues>(_payload)!;
+            }
+        }
+
+        public object? EffectiveValue
+        {
+            readonly get => _hasValues ? LayerStorage.EffectiveValue : _payload;
+            set
+            {
+                if (_hasValues) LayerStorage.EffectiveValue = value;
+                else _payload = value;
+            }
+        }
+
+        public LayerValues? Values
+        {
+            readonly get => _hasValues ? LayerStorage : null;
+            set
+            {
+                if (value is null && _effectiveSource == ExtendedSource)
+                    return;
+                _payload = value ?? EffectiveValue;
+                _hasValues = value is not null;
+            }
+        }
     }
 
-    // Linear lookup is cheaper than allocating and hashing for the small stores used by
-    // Geometry/Freezable objects. Controls normally cross this threshold and get one
-    // GlobalIndex lookup instead of a scan or six layer dictionaries.
-    private const int IndexedThreshold = 4;
-    // A solid brush and many geometry objects store just one property. Keep that
-    // entry in the store itself rather than allocating four array slots for it.
-    // The array and index retain their existing growth policy once more values
-    // are present, so controls still use the same indexed representation.
-    private Entry _singleEntry;
-    private Entry[]? _entries;
-    private Dictionary<int, int>? _indices;
+    // Keep short scans for render primitives and binary-search larger stores.
+    // Sorted overflow entries need no separately allocated property index.
+    private const int BinarySearchThreshold = 4;
+    // Two values fit in the same space previously occupied by one entry and
+    // the array/index references. On the third property, move the second value
+    // to the overflow array and reuse its payload reference for that array.
+    // The first property stays inline after growth as well.
+    // The store remains 56 bytes on x64, including for one-property primitives.
+    private Entry _firstEntry;
+    private Entry _secondEntry;
     private int _count;
+    private bool _expanded;
+
+    private Entry[] ExpandedEntries
+    {
+        get => System.Runtime.CompilerServices.Unsafe.As<Entry[]>(_secondEntry.StoragePayload)!;
+        set => _secondEntry.StoragePayload = value;
+    }
 
     internal int Count => _count;
 
@@ -127,16 +208,17 @@ internal sealed class DependencyValueStore
             return false;
         }
 
-        if (entry.Values is null)
+        var values = entry.Values;
+        if (values is null)
         {
             value = entry.EffectiveValue;
             source = entry.EffectiveSource;
             return true;
         }
 
-        value = GetLayerValue(entry.Values, layer);
+        value = GetLayerValue(values, layer);
         source = layer == Layer.Current
-            ? entry.Values.CurrentSource
+            ? values.CurrentSource
             : GetFixedSource(layer);
         return true;
     }
@@ -152,7 +234,8 @@ internal sealed class DependencyValueStore
         }
 
         ref readonly var entry = ref GetEntry(index);
-        if (entry.Values is null)
+        var values = entry.Values;
+        if (values is null)
         {
             value = entry.Mask is LayerMask.CssState or LayerMask.CssBase ? null : entry.EffectiveValue;
             return entry.Mask is not (LayerMask.CssState or LayerMask.CssBase);
@@ -172,7 +255,7 @@ internal sealed class DependencyValueStore
             value = null;
             return false;
         }
-        value = GetLayerValue(entry.Values, layer.Value);
+        value = GetLayerValue(values, layer.Value);
         return true;
     }
 
@@ -186,33 +269,26 @@ internal sealed class DependencyValueStore
         var index = FindIndex(property);
         if (index < 0)
         {
-            EnsureCapacity(_count + 1);
-            index = _count++;
-            GetEntry(index) = new Entry
+            ref var inserted = ref AddEntry(property.GlobalIndex);
+            inserted = new Entry
             {
-                Property = property,
+                PropertyIndex = property.GlobalIndex,
                 Mask = mask,
                 EffectiveValue = value,
                 EffectiveSource = layer == Layer.Current ? currentSource : GetFixedSource(layer),
             };
-
-            EnsureIndexIfNeeded();
-            if (_indices is not null)
-            {
-                _indices[property.GlobalIndex] = index;
-            }
             return;
         }
 
         ref var entry = ref GetEntry(index);
-        if (entry.Values is null && entry.Mask == mask)
+        var values = entry.Values;
+        if (values is null && entry.Mask == mask)
         {
             entry.EffectiveValue = value;
             entry.EffectiveSource = layer == Layer.Current ? currentSource : GetFixedSource(layer);
             return;
         }
 
-        var values = entry.Values;
         if (values is null)
         {
             values = new LayerValues();
@@ -224,6 +300,8 @@ internal sealed class DependencyValueStore
         SetLayerValue(values, layer, value, currentSource);
         entry.Mask |= mask;
         RecomputeEffective(ref entry);
+        if (entry.Mask == mask)
+            entry.Values = null;
     }
 
     internal bool RemoveLayer(DependencyProperty property, Layer layer)
@@ -265,52 +343,90 @@ internal sealed class DependencyValueStore
             if ((entry.Mask & mask) == 0)
                 continue;
 
-            object? value = entry.Values is null
+            var values = entry.Values;
+            object? value = values is null
                 ? entry.EffectiveValue
-                : GetLayerValue(entry.Values, layer);
+                : GetLayerValue(values, layer);
             result.Add(new KeyValuePair<DependencyProperty, object?>(entry.Property, value));
         }
 
         return result.ToArray();
     }
 
-    internal DependencyProperty[] SnapshotEffectiveProperties()
+    internal EffectivePropertySnapshot SnapshotEffectiveProperties()
     {
-        var result = new List<DependencyProperty>(_count);
+        if (_count == 0)
+            return default;
+
+        DependencyProperty? first = null, second = null, third = null, fourth = null;
+        var result = _count > 4 ? new DependencyProperty[_count] : null;
+        var resultCount = 0;
         for (var i = 0; i < _count; i++)
         {
             ref readonly var entry = ref GetEntry(i);
             var nonCurrentMask = entry.Mask & ~LayerMask.Current;
-            if (nonCurrentMask != LayerMask.None)
+            bool included = nonCurrentMask != LayerMask.None ||
+                entry.EffectiveSource != BaseValueSource.Inherited;
+            if (included)
             {
-                result.Add(entry.Property);
-                continue;
-            }
-
-            if (TryGetLayer(entry.Property, Layer.Current, out _, out var currentSource) &&
-                currentSource != BaseValueSource.Inherited)
-            {
-                result.Add(entry.Property);
+                var property = entry.Property;
+                if (result is not null) result[resultCount] = property;
+                else
+                {
+                    switch (resultCount)
+                    {
+                        case 0: first = property; break;
+                        case 1: second = property; break;
+                        case 2: third = property; break;
+                        case 3: fourth = property; break;
+                    }
+                }
+                resultCount++;
             }
         }
 
-        return result.ToArray();
+        if (resultCount == 0)
+            return default;
+        return result is not null
+            ? new EffectivePropertySnapshot(result, resultCount)
+            : new EffectivePropertySnapshot(first, second, third, fourth, resultCount);
     }
 
     internal bool HasAnyLayer(DependencyProperty property)
         => FindIndex(property) >= 0;
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private int FindIndex(DependencyProperty property)
     {
-        if (_indices is not null)
+        if (_count == 0)
+            return -1;
+        var propertyIndex = property.GlobalIndex;
+        if (_firstEntry.PropertyIndex == propertyIndex)
+            return 0;
+        if (!_expanded)
         {
-            return _indices.TryGetValue(property.GlobalIndex, out var index) ? index : -1;
+            return _count == 2 && _secondEntry.PropertyIndex == propertyIndex ? 1 : -1;
         }
 
-        for (var i = 0; i < _count; i++)
+        var entries = ExpandedEntries;
+        int overflowCount = _count - 1;
+        if (_count <= BinarySearchThreshold)
         {
-            if (ReferenceEquals(GetEntry(i).Property, property))
-                return i;
+            for (var i = 0; i < overflowCount; i++)
+                if (entries[i].PropertyIndex == propertyIndex)
+                    return i + 1;
+            return -1;
+        }
+
+        int low = 0, high = overflowCount - 1;
+        while (low <= high)
+        {
+            int middle = low + ((high - low) >> 1);
+            int candidate = entries[middle].PropertyIndex;
+            if (candidate == propertyIndex)
+                return middle + 1;
+            if (candidate < propertyIndex) low = middle + 1;
+            else high = middle - 1;
         }
 
         return -1;
@@ -318,70 +434,87 @@ internal sealed class DependencyValueStore
 
     private void EnsureCapacity(int required)
     {
-        if (_entries is null)
+        if (!_expanded)
         {
-            if (required <= 1)
+            if (required <= 2)
                 return;
 
-            var entries = new Entry[Math.Max(required, IndexedThreshold)];
-            if (_count != 0)
-                entries[0] = _singleEntry;
-            _singleEntry = default;
-            _entries = entries;
+            var promoted = new Entry[Math.Max(required, BinarySearchThreshold) - 1];
+            promoted[0] = _secondEntry;
+            _secondEntry = default;
+            ExpandedEntries = promoted;
+            _expanded = true;
             return;
         }
 
-        if (required <= _entries.Length)
+        var entries = ExpandedEntries;
+        if (required <= entries.Length + 1)
             return;
 
-        Array.Resize(ref _entries, Math.Max(required, _entries.Length * 2));
+        Array.Resize(ref entries, Math.Max(required, (entries.Length + 1) * 2) - 1);
+        ExpandedEntries = entries;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private ref Entry GetEntry(int index)
     {
-        if (_entries is null)
-            return ref _singleEntry;
+        if (index == 0)
+            return ref _firstEntry;
 
-        return ref _entries[index];
+        if (_expanded)
+            return ref ExpandedEntries[index - 1];
+
+        return ref _secondEntry;
     }
 
-    private void EnsureIndexIfNeeded()
+    private ref Entry AddEntry(int propertyIndex)
     {
-        if (_indices is not null || _count <= IndexedThreshold)
-            return;
+        EnsureCapacity(_count + 1);
+        if (!_expanded)
+            return ref GetEntry(_count++);
 
-        var indices = new Dictionary<int, int>(_count);
-        for (var i = 0; i < _count; i++)
+        var entries = ExpandedEntries;
+        int insertion = _count - 1;
+        while (insertion > 0 && entries[insertion - 1].PropertyIndex > propertyIndex)
         {
-            indices[GetEntry(i).Property.GlobalIndex] = i;
+            entries[insertion] = entries[insertion - 1];
+            insertion--;
         }
-        _indices = indices;
+        _count++;
+        return ref entries[insertion];
     }
 
     private void RemoveEntry(int index)
     {
-        var removedGlobalIndex = GetEntry(index).Property.GlobalIndex;
-        var lastIndex = --_count;
-        if (index != lastIndex)
+        if (_count == 1)
         {
-            GetEntry(index) = GetEntry(lastIndex);
-            if (_indices is not null)
-            {
-                _indices[GetEntry(index).Property.GlobalIndex] = index;
-            }
+            _firstEntry = default;
+            _secondEntry = default;
+            _expanded = false;
+            _count = 0;
+            return;
         }
 
-        GetEntry(lastIndex) = default;
-        _indices?.Remove(removedGlobalIndex);
-        if (_count <= IndexedThreshold)
+        int lastIndex = _count - 1;
+        if (index == 0)
         {
-            _indices = null;
+            _firstEntry = GetEntry(lastIndex);
+            index = lastIndex;
         }
-
-        if (_count == 0)
+        if (_expanded)
         {
-            _entries = null;
+            var entries = ExpandedEntries;
+            int removed = index - 1;
+            int last = lastIndex - 1;
+            if (removed < last)
+                Array.Copy(entries, removed + 1, entries, removed, last - removed);
+            entries[last] = default;
         }
+        else
+        {
+            _secondEntry = default;
+        }
+        _count--;
     }
 
     /// <summary>
