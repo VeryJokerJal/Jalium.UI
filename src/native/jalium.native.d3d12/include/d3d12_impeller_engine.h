@@ -8,8 +8,9 @@
 #include "jalium_scanline_rasterizer.h"  // PixelRect — needed by stroke rasterized cache
 #include "jalium_path_cache.h"        // PathGeometryCache (cross-backend source-space cache)
 #include "d3d12_backend.h"
-#include "d3d12_triangulate.h"
+#include "d3d12_coverage_rect.h"
 #include "d3d12_stroke_mask_cache.h"
+#include "d3d12_triangulate.h"
 #include <vector>
 #include <cstdint>
 #include <cmath>
@@ -45,10 +46,11 @@ struct ImpellerVertex {
 static_assert(sizeof(ImpellerVertex) == 24, "ImpellerVertex must be 24 bytes");
 
 /// A batch of triangles to draw with a single PSO.
-/// pipelineType: 0=solid fill (CPU-tessellated), 1=stencil-then-cover (GPU, deferred)
+/// pipelineType: 0=solid fill, 1=stencil-then-cover, 2=shared analytic coverage masks
 struct ImpellerDrawBatch {
     std::vector<ImpellerVertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<D3D12CoverageMaskRun> coverageMaskRuns;
     uint32_t pipelineType = 0;
 
     // --- Per-batch scissor (snapshot at encode time) ---
@@ -148,7 +150,16 @@ public:
 
     ID3D12Resource* GetOutputTexture() const { return outputTexture_.Get(); }
     const std::vector<ImpellerDrawBatch>& GetBatches() const { return batches_; }
-    void ClearBatches() { batches_.clear(); }
+    void ClearBatches();
+    // Only the hybrid DirectRenderer executor consumes rectangle batches.
+    // The standalone engine keeps its existing triangle representation.
+    void SetCoverageRectBatches(bool enabled) { coverageRectBatches_ = enabled; }
+    void ReclaimBatchBuffers() {
+        std::vector<RecycledBatchBuffers>().swap(recycledBatchBuffers_);
+        recycledBatchBytes_ = 0;
+        recycledStrokeAnalyticEntry_.reset();
+        protectedStrokeAnalyticCache_.ReleaseScratch();
+    }
 
     /// Push a batch with current scissor state automatically captured.
     /// Also computes the batch's screen-space tile coverage AABB from its
@@ -475,6 +486,19 @@ private:
     std::vector<float> flatPoints_;
 
     std::vector<ImpellerDrawBatch> batches_;
+    struct RecycledBatchBuffers {
+        std::vector<ImpellerVertex> vertices;
+        std::vector<uint32_t> indices;
+        std::vector<D3D12CoverageMaskRun> coverageMaskRuns;
+        size_t CapacityBytes() const {
+            return vertices.capacity() * sizeof(ImpellerVertex) + indices.capacity() * sizeof(uint32_t)
+                 + coverageMaskRuns.capacity() * sizeof(D3D12CoverageMaskRun);
+        }
+    };
+    std::vector<RecycledBatchBuffers> recycledBatchBuffers_;
+    size_t recycledBatchBytes_ = 0;
+    ImpellerDrawBatch& EmplaceBatch();
+    bool coverageRectBatches_ = false;
     uint32_t encodedPathCount_ = 0;
 
     float flattenTolerance_ = 0.25f;
@@ -583,19 +607,21 @@ private:
     // rect alpha coverage that fill already gets — matches Vulkan stroke
     // exactly. HashStrokeInputs is shared with the binary cache; the cache key
     // partitions Antialiased vs Aliased entries via the trailing edgeMode byte.
-    struct CachedStrokeAnalyticRects {
-        std::vector<jalium::PixelRect> rects;
-        void Reset() { rects.clear(); }
-    };
+    using CachedStrokeAnalyticRects = D3D12CoverageMask;
 
     struct StrokeAnalyticRectsNode {
         uint64_t key;
-        std::shared_ptr<const CachedStrokeAnalyticRects> entry;
+        std::shared_ptr<CachedStrokeAnalyticRects> entry;
     };
 
     std::list<StrokeAnalyticRectsNode> strokeAnalyticCacheList_;
     std::unordered_map<uint64_t, std::list<StrokeAnalyticRectsNode>::iterator> strokeAnalyticCacheMap_;
     static constexpr size_t kStrokeAnalyticCacheCapacity = 512;
+    // Keep one evicted allocation for the next miss. Readers retain const
+    // ownership; an entry can be recycled only after the cache is its sole owner.
+    std::shared_ptr<CachedStrokeAnalyticRects> recycledStrokeAnalyticEntry_;
+
+    jalium::StrokeContourBuffer strokeContourBuffer_;
 
     static uint64_t HashStrokeInputs(
         float startX, float startY,
@@ -610,6 +636,7 @@ private:
     void StrokeCacheInsert(uint64_t key, std::shared_ptr<const CachedStrokeRects> entry);
 
     std::shared_ptr<const CachedStrokeAnalyticRects> StrokeAnalyticCacheFind(uint64_t key);
+    std::shared_ptr<CachedStrokeAnalyticRects> AcquireStrokeAnalyticCacheEntry();
     void StrokeAnalyticCacheInsert(uint64_t key, std::shared_ptr<CachedStrokeAnalyticRects> entry);
 
     // ─── Solid fill rasterization cache ───────────────────────────────────
@@ -655,12 +682,15 @@ private:
 
     std::shared_ptr<const CachedFillRects> FillCacheFind(uint64_t key);
     void FillCacheInsert(uint64_t key, std::shared_ptr<const CachedFillRects> entry);
-    // Preserve the original 512-entry hit path. Expensive masks survive short
-    // animated-key churn in this secondary cache; its budget counts vector
-    // capacity, excluding primary storage, containers and pending borrowers.
+
+    // The original 512-entry cache remains the first lookup. This additional
+    // lane retains expensive masks on a primary miss and bounds its own vector
+    // capacity separately. Primary entries and pending draws can share masks;
+    // its 32 MiB limit does not include the original cache or those borrowers.
+    static constexpr size_t kProtectedStrokeAnalyticMinRects = 128;
     D3D12StrokeMaskCache<CachedStrokeAnalyticRects> protectedStrokeAnalyticCache_{
-        D3D12StrokeMaskCache<CachedStrokeAnalyticRects>::Limits{
-            128, 0, 0, 1024, 32u << 20, 1u << 20}};
+        D3D12StrokeMaskCache<CachedStrokeAnalyticRects>::Limits{kProtectedStrokeAnalyticMinRects, 0, 0,
+                                    1024, 32u << 20, 1u << 20}};
 };
 
 } // namespace jalium

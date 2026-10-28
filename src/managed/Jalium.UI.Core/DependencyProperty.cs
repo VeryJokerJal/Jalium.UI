@@ -10,6 +10,43 @@ public sealed class DependencyProperty
     private static readonly ConcurrentDictionary<(Type, string), DependencyProperty> _registered = new();
     private static readonly ConcurrentDictionary<Type, byte> _cctorPrimed = new();
     private static int _globalIndex;
+    private static readonly object _globalIndexSync = new();
+    private static DependencyProperty?[] _propertiesByGlobalIndex = new DependencyProperty?[128];
+
+    // Value stores retain the integer key rather than another property reference
+    // in every entry. Only enumeration needs to resolve that key. Registration
+    // publishes the lookup before exposing the property through _registered.
+    internal static DependencyProperty FromGlobalIndex(int index)
+        => Volatile.Read(ref _propertiesByGlobalIndex)[index]!;
+
+    private static void PublishGlobalIndex(DependencyProperty property)
+    {
+        lock (_globalIndexSync)
+        {
+            var properties = _propertiesByGlobalIndex;
+            if (property.GlobalIndex >= properties.Length)
+            {
+                var expanded = new DependencyProperty?[Math.Max(property.GlobalIndex + 1, properties.Length * 2)];
+                Array.Copy(properties, expanded, properties.Length);
+                expanded[property.GlobalIndex] = property;
+                Volatile.Write(ref _propertiesByGlobalIndex, expanded);
+            }
+            else
+            {
+                Volatile.Write(ref properties[property.GlobalIndex], property);
+            }
+        }
+    }
+
+    private static void DiscardGlobalIndex(DependencyProperty property)
+    {
+        // Concurrent duplicate registrations create a temporary candidate. It
+        // must not become a permanent root in the index when another one wins.
+        lock (_globalIndexSync)
+        {
+            Volatile.Write(ref _propertiesByGlobalIndex[property.GlobalIndex], null);
+        }
+    }
 
     /// <summary>
     /// Represents an unset value for a dependency property.
@@ -139,7 +176,7 @@ public sealed class DependencyProperty
         ReadOnly = readOnly;
         ValidateValueCallback = validateValueCallback;
         GlobalIndex = Interlocked.Increment(ref _globalIndex);
-
+        PublishGlobalIndex(this);
     }
 
     /// <summary>
@@ -215,10 +252,13 @@ public sealed class DependencyProperty
         ValidateDefaultValue(metadata, propertyType, ownerType, name, validateValueCallback);
 
         var key = (ownerType, name);
+        if (_registered.TryGetValue(key, out var existing))
+            return existing;
         var dp = new DependencyProperty(name, propertyType, ownerType, metadata, readOnly: false, validateValueCallback);
 
         if (!_registered.TryAdd(key, dp))
         {
+            DiscardGlobalIndex(dp);
             // Return the existing property if already registered (handles concurrent registration)
             return _registered[key];
         }
@@ -256,10 +296,13 @@ public sealed class DependencyProperty
         ValidateDefaultValue(metadata, propertyType, ownerType, name, validateValueCallback);
 
         var key = (ownerType, name);
+        if (_registered.TryGetValue(key, out var existing))
+            return new DependencyPropertyKey(existing);
         var dp = new DependencyProperty(name, propertyType, ownerType, metadata, readOnly: true, validateValueCallback);
 
         if (!_registered.TryAdd(key, dp))
         {
+            DiscardGlobalIndex(dp);
             // Return the existing property key if already registered (handles concurrent registration)
             return new DependencyPropertyKey(_registered[key]);
         }

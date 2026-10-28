@@ -155,7 +155,7 @@ public static partial class TextMeasurement
     // DirectWrite 做一次完整的 CreateTextLayout + 整形（昂贵）。虚拟化大列表滚动时，每个新实例化的行单元
     // 都会冷测量，回滚或重复文本更是反复测量同一串。这里按完整测量签名缓存 TextMetrics 结果：命中即 O(1)
     // 返回，免去 DWrite 整形。键用 struct 避免命中路径分配字符串；LRU 有界，唯一文本不会无界增长。
-    private const int MaxMeasureCacheEntries = 4096;
+    private const int MaxMeasureCacheEntries = 8192;
 
     private readonly struct MeasureKey : IEquatable<MeasureKey>
     {
@@ -416,7 +416,10 @@ public static partial class TextMeasurement
 
     private static void TrimMeasureCacheIfNeeded()
     {
-        while (_measureCache.Count > MaxMeasureCacheEntries && _measureLruKeys.First is { } oldest)
+        // Insertions, evictions and clears update both collections under
+        // _measureLock. The LRU count is exact here and avoids acquiring every
+        // ConcurrentDictionary stripe lock just to check the capacity.
+        while (_measureLruKeys.Count > MaxMeasureCacheEntries && _measureLruKeys.First is { } oldest)
         {
             _measureLruKeys.RemoveFirst();
             _measureCache.TryRemove(oldest.Value, out _);

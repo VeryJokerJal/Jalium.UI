@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
 using Jalium.UI.Controls.Primitives;
@@ -53,6 +54,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     private int _cachedFontStyle;
     private int _cachedFontStretch;
     private const int MaxCacheSize = 256;
+    private RenderLineCache? _renderLineCache;
 
     // IME support
     private bool _isImeComposing;
@@ -1740,6 +1742,22 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         var wrapWidth = Math.Max(0, contentRect.Width);
         EnsureVisualLineCounts(wrapWidth, lineHeight);
 
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
+        var fontWeight = FontWeight.ToOpenTypeWeight();
+        var fontStyle = FontStyle.ToOpenTypeStyle();
+        var trimming = TextTrimming;
+        var maxTextWidth = wrapMode == TextWrapping.NoWrap ? double.MaxValue : wrapWidth;
+        var culture = CultureInfo.CurrentCulture;
+        var renderCache = _renderLineCache;
+        if (renderCache is null || !renderCache.Matches(text, fontFamily, fontSize, fontWeight,
+                fontStyle, trimming, maxTextWidth, textBrush, culture))
+        {
+            _renderLineCache = renderCache = new RenderLineCache(text, fontFamily, fontSize,
+                fontWeight, fontStyle, trimming, maxTextWidth, textBrush, culture);
+        }
+        bool beganVisibleRange = false;
+
         var firstDecoratedLine = -1;
         var lastDecoratedLine = -1;
         var decorationInset = CssTextDecorationProperties.Inset(this);
@@ -1778,26 +1796,19 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
             if (line.Length == 0)
                 continue;
 
-            var lineText = text.Substring(line.StartIndex, line.Length);
             // When wrap is disabled, let the line extend horizontally past the
             // viewport and rely on the dirty-region clip to hide the overflow.
             // If we instead hand DirectWrite a finite MaxTextWidth, it wraps
             // the glyphs into additional visual rows that paint over the next
             // logical line's y position and produce the "overlapping text"
             // artifact users see in PropertyGrid inline editors.
-            double maxTextWidth = wrapMode == TextWrapping.NoWrap
-                ? double.MaxValue
-                : wrapWidth;
-
-            var formattedText = new FormattedText(lineText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+            if (!beganVisibleRange)
             {
-                Foreground = textBrush,
-                MaxTextWidth = maxTextWidth,
-                MaxTextHeight = lineBlockHeight,
-                Trimming = TextTrimming,
-                FontWeight = FontWeight.ToOpenTypeWeight(),
-                FontStyle = FontStyle.ToOpenTypeStyle(),
-            };
+                renderCache.BeginVisibleRange(i);
+                beganVisibleRange = true;
+            }
+            var formattedText = renderCache.GetLine(i, line, lineBlockHeight);
+            var lineText = formattedText.Text;
 
             var x = contentRect.X - roundedHorizontalOffset;
 
@@ -2453,6 +2464,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         if (d is TextBox textBox)
         {
             textBox._linesDirty = true;
+            textBox._renderLineCache = null;
             textBox.InvalidateMeasure();
             textBox.InvalidateTextContentMeasure();
 
@@ -2578,6 +2590,64 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     #endregion
 
     #region Helper Types
+
+    private sealed class RenderLineCache(
+        string text, string fontFamily, double fontSize, int fontWeight, int fontStyle,
+        TextTrimming trimming, double maxTextWidth, Brush textBrush, CultureInfo culture)
+    {
+        // Keep only a bounded prefix of the current visible range, never a
+        // FormattedText/string for every line the user has scrolled through.
+        private const int MaxLines = 256;
+        private readonly List<FormattedText?> _lines = new();
+        private int _firstLine = -1;
+
+        public bool Matches(string currentText, string currentFamily, double currentSize,
+            int currentWeight, int currentStyle, TextTrimming currentTrimming,
+            double currentWidth, Brush currentBrush, CultureInfo currentCulture)
+            => ReferenceEquals(text, currentText)
+            && string.Equals(fontFamily, currentFamily, StringComparison.Ordinal)
+            && fontSize.Equals(currentSize) && fontWeight == currentWeight && fontStyle == currentStyle
+            && trimming == currentTrimming && maxTextWidth.Equals(currentWidth)
+            && ReferenceEquals(textBrush, currentBrush) && ReferenceEquals(culture, currentCulture);
+
+        public void BeginVisibleRange(int firstLine)
+        {
+            if (_firstLine == firstLine) return;
+            _lines.Clear();
+            _firstLine = firstLine;
+        }
+
+        public FormattedText GetLine(int index, TextLine line, double height)
+        {
+            int slot = index - _firstLine;
+            if ((uint)slot < (uint)_lines.Count && _lines[slot] is { } cached &&
+                cached.MaxTextHeight.Equals(height) && cached.HasSimpleRenderFormatting &&
+                cached.MaxTextWidth.Equals(maxTextWidth) && cached.FontSize.Equals(fontSize) &&
+                string.Equals(cached.FontFamily, fontFamily, StringComparison.Ordinal) &&
+                cached.FontWeight == fontWeight && cached.FontStyle == fontStyle &&
+                cached.FontStretch == 5 && cached.Trimming == trimming &&
+                ReferenceEquals(cached.Foreground, textBrush))
+                return cached;
+
+            // Retained instances are never rewritten when style/layout changes:
+            // a recording or custom context may still hold the previous value.
+            var formatted = new FormattedText(text.Substring(line.StartIndex, line.Length), fontFamily, fontSize)
+            {
+                Foreground = textBrush,
+                MaxTextWidth = maxTextWidth,
+                MaxTextHeight = height,
+                Trimming = trimming,
+                FontWeight = fontWeight,
+                FontStyle = fontStyle,
+            };
+            if ((uint)slot < MaxLines)
+            {
+                while (_lines.Count <= slot) _lines.Add(null);
+                _lines[slot] = formatted;
+            }
+            return formatted;
+        }
+    }
 
     private struct TextLine
     {

@@ -101,6 +101,8 @@ public abstract partial class CompositionTarget
     /// </summary>
     internal static bool IsInRenderingPhase => _inRaiseRendering;
 
+    internal static bool IsRenderingSuspended => _suspended;
+
     /// <summary>
     /// Gets the detected monitor refresh rate in Hz (e.g., 60, 120, 144).
     /// </summary>

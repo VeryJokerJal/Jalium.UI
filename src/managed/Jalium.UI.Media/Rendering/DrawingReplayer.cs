@@ -5,7 +5,7 @@ namespace Jalium.UI.Media.Rendering;
 /// The observable effect of <c>Replay(drawing, target)</c> is indistinguishable
 /// from re-running the original <c>OnRender</c> body against <paramref name="target"/>,
 /// except that no user code runs, no temporary brushes / pens / geometries
-/// are allocated, and the command list is iterated as a dense array.
+/// are allocated, and the command buffer is iterated in order.
 /// </summary>
 /// <remarks>
 /// Replay never invokes the base-class fallback paths on <see cref="DrawingContext"/>
@@ -17,6 +17,16 @@ namespace Jalium.UI.Media.Rendering;
 internal static class DrawingReplayer
 {
     public static void Replay(RecordedDrawing drawing, DrawingContext target)
+    {
+        // Custom draw targets can invalidate/release their visual cache from a
+        // callback. Borrow the root until replay is complete; it owns every
+        // nested drawing, so recursive replay needs no additional references.
+        drawing.Retain();
+        try { ReplayCore(drawing, target); }
+        finally { drawing.Release(); }
+    }
+
+    private static void ReplayCore(RecordedDrawing drawing, DrawingContext target)
     {
         if (drawing.Count == 0)
         {
@@ -262,7 +272,7 @@ internal static class DrawingReplayer
                     // transform state was emitted immediately before this node.
                     // The nested drawing is immutable and can be replayed directly
                     // without rebuilding or copying its command list on the UI thread.
-                    Replay((RecordedDrawing)c.A!, target);
+                    ReplayCore((RecordedDrawing)c.A!, target);
                     break;
 
             }

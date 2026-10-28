@@ -20,6 +20,7 @@ mask, list, or map storage.
 
 The production engine keeps its existing 512-entry primary cache and enables
 only the protected lane: masks with at least 128 rectangles, up to 1,024 entries
-and 32 MiB of rectangle capacity. One uniquely owned allocation of up to 1 MiB
-can be retained for recycling. These limits exclude container overhead, primary
+and 32 MiB of rectangle capacity. The secondary can retain one uniquely owned
+allocation of up to 1 MiB for recycling; the primary has its own bounded scratch
+allocation. These limits exclude container overhead, primary
 cache storage, and masks still owned by pending draws.

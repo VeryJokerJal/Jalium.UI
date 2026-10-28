@@ -6,12 +6,15 @@
 #include "d3d12_direct_renderer.h"
 #include "d3d12_impeller_engine.h"
 #include "d3d12_ink_layer.h"
+#include "d3d12_path_engine_selection.h"
+#include "d3d12_frame_latency_selection.h"
 #include <dcomp.h>
 #include <dcompanimation.h>   // IDCompositionAnimation — off-thread indicator-visual probe
 #include <stack>
 #include <unordered_map>
 #include <vector>
 #include <memory>
+#include <atomic>
 
 namespace jalium {
 
@@ -37,6 +40,11 @@ public:
 
     /// Override: set rendering engine with hot-switch support.
     JaliumResult SetRenderingEngine(JaliumRenderingEngine engine) override;
+    JaliumRenderingEngine GetRenderingEngine() const override {
+        return hasBegunFrame_.load(std::memory_order_acquire)
+            ? publishedEngine_.load(std::memory_order_acquire)
+            : ResolveRenderingEngine(requestedEngine_.load(std::memory_order_acquire), JALIUM_BACKEND_D3D12);
+    }
 
     /// Override: report glyph atlas / path cache / texture usage for DevTools.
     JaliumResult QueryGpuStats(JaliumGpuStats* out) const override;
@@ -62,7 +70,8 @@ public:
     /// if driver stripped optional flags during swap chain creation.
     JaliumResult GetPresentInfo(JaliumPresentInfo* out) const override;
 
-    /// Override: drop the D3D12 glyph atlas at the next BeginFrame boundary.
+    /// Override: after two quiet seconds and completed GPU submissions, drop
+    /// the D3D12 glyph atlas at the next BeginFrame boundary.
     /// We deliberately do NOT call `D3D12GlyphAtlas::Reset()` directly here —
     /// glyph entries already emitted earlier in the frame carry baked UV
     /// coordinates that point into the existing atlas, and a mid-frame reset
@@ -357,10 +366,17 @@ private:
     static constexpr uint32_t kDefaultSwapBufferCount = 2;
     uint32_t swapBufferCount_ = kDefaultSwapBufferCount;
 
-    // SetMaximumFrameLatency 的值。核显独显一律 1（最低延迟）。历史上核显曾放宽到
-    // 2+3buffer，实测只多攒一帧输入延迟、对 DWM 的 buffer 释放节奏毫无影响，已撤回
-    // （见 CreateSwapChain 内注释）。
+    // Start at one frame. Sustained, refresh-budget-limited rendering can trial
+    // two frames; slow compositors and explicit host overrides bypass the trial.
     uint32_t maxFrameLatency_ = 1;
+    bool maxFrameLatencyFromEnv_ = false;
+    bool adaptiveLatencyUnavailable_ = false;
+    D3D12FrameLatencySelection frameLatencySelection_;
+    uint64_t frameRefreshPeriodNs_ = 0;
+    uint64_t previousPresentEndNs_ = 0;
+    uint64_t frameProducerGapNs_ = 0;
+    bool CanAdaptFrameLatency() const;
+    void ApplyAdaptiveFrameLatency();
 
     // 是否核显(UMA)。仅用于诊断/标签。
     bool isIntegratedAdapter_ = false;
@@ -565,6 +581,17 @@ private:
     // interval 0 so the UI thread never blocks on the compositor. See
     // RenderTarget::SetExternalPresentPacing.
     bool externalPresentPacing_ = false;
+
+    // SetRenderingEngine may run on the UI thread while the render worker is
+    // encoding. Only the frame owner changes the renderer's pipeline state.
+    std::atomic<JaliumRenderingEngine> requestedEngine_{JALIUM_ENGINE_AUTO};
+    std::atomic<JaliumRenderingEngine> publishedEngine_{JALIUM_ENGINE_IMPELLER};
+    std::atomic<bool> hasBegunFrame_{false};
+    JaliumRenderingEngine lastEngineRequest_ = JALIUM_ENGINE_AUTO;
+    D3D12PathEngineSelection autoPathEngine_;
+    uint64_t framePathPoints_ = 0;
+    uint32_t framePathCalls_ = 0;
+    uint64_t framePathPreparationNs_ = 0;
 
     // Opacity stack (DirectRenderer only has SetOpacity, so we manage the stack here)
     std::stack<float> opacityStack_;

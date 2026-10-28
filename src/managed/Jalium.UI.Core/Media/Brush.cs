@@ -232,7 +232,7 @@ public sealed class SolidColorBrush : Brush
     /// </summary>
     public SolidColorBrush()
     {
-        Color = Color.Transparent;
+        SetInitialLocalValue(ColorProperty, Color.Transparent);
     }
 
     /// <summary>
@@ -241,7 +241,7 @@ public sealed class SolidColorBrush : Brush
     /// <param name="color">The brush color.</param>
     public SolidColorBrush(Color color)
     {
-        Color = color;
+        SetInitialLocalValue(ColorProperty, color);
     }
 
     /// <summary>
@@ -251,7 +251,7 @@ public sealed class SolidColorBrush : Brush
     internal SolidColorBrush(Dispatcher dispatcher, Color color)
         : base(dispatcher)
     {
-        Color = color;
+        SetInitialLocalValue(ColorProperty, color);
     }
 
     public new SolidColorBrush Clone() => (SolidColorBrush)base.Clone();

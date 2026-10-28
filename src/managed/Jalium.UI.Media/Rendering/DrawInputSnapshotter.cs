@@ -188,13 +188,12 @@ internal static class DrawInputSnapshotter
         }
 
         var snapshot = geometry.CloneCurrentValue();
-        if (!snapshot.CanFreeze)
+        if (!snapshot.TryFreeze())
         {
             DrawingContext.MarkCurrentFrameUnrecordable();
             return geometry;
         }
 
-        snapshot.Freeze();
         return snapshot;
     }
 

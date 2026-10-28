@@ -1,10 +1,12 @@
 #pragma once
 
 #include "d3d12_backend.h"
+#include "d3d12_coverage_rect.h"
 #include "d3d12_glyph_atlas.h"
 #include "jalium_stencil_path.h"
 #include "jalium_elliptical_clip.h"
 #include "jalium_gradient_sample.h"   // EngineBrushData / SampleBrushGradient (AddText gradients)
+#include <algorithm>
 #include <vector>
 #include <stack>
 #include <memory>
@@ -85,7 +87,7 @@ struct SdfRectInstance {
     // --- shape type (16 bytes) ---
     float shapeType;            // 0=rounded, 1=local continuous corners, 2=internal ellipse
     float shapeN;               // SuperEllipse exponent (e.g. 4.0)
-    float paintMode;            // 0=normal fill/border, 1=gradient stroke only
+    float paintMode;            // 0=fill/border, 1=gradient stroke
     float _pad3;
 
     // --- render transform (32 bytes, two 16-byte-aligned float4s) ---
@@ -164,6 +166,7 @@ enum class DrawBatchType : uint8_t {
     Triangle,       // flat-shaded triangles for path/polygon fill
     StencilPath,    // stencil-then-cover SVG path fill (see d3d12_path_pipeline)
     LiquidGlass,    // full liquid glass effect (SDF refraction, highlight, shadow)
+    CoverageRect,   // analytic coverage boxes and solid ellipse fills
 };
 
 struct DrawBatch {
@@ -297,6 +300,8 @@ public:
         uint32_t count,
         uint32_t& startOffset);
     void AddSdfRect(const SdfRectInstance& inst);
+    void AddCoverageRectsPreTransformed(const D3D12CoverageRect* rects, uint32_t count, float positionScale);
+    void AddCoverageMasksPreTransformed(const D3D12CoverageMaskRun* runs, uint32_t count, float positionScale);
     /// Records a text draw. `aaMode` (JALIUM_TEXT_AA_*) and `hintingMode`
     /// (0=Auto, 1=Fixed, 2=Animated) come from the source TextFormat's
     /// per-element TextOptions; they are forwarded straight to
@@ -340,6 +345,11 @@ public:
     /// Used by Impeller engine which produces vertices already in pixel-space with
     /// opacity baked into vertex colors.
     void AddTrianglesPreTransformed(const TriangleVertex* vertices, uint32_t vertexCount);
+
+    // Source uses TriangleVertex's packed 24-byte layout. Expand indices and
+    // convert pixel coordinates directly into the final triangle buffer.
+    void AddIndexedTrianglesPreTransformed(const void* vertices, uint32_t vertexCount,
+        const uint32_t* indices, uint32_t indexCount, float positionScale);
 
     /// Stencil-then-cover path fill (solid color brush). Uses the current
     /// transform stack + dpiScale to project local-space verts into pixels
@@ -669,8 +679,9 @@ public:
     }
 
     // Serialized with drawing by the host; never waits for an unfinished GPU
-    // submission. Large working buffers are released only after a quiet period.
-    void ReclaimIdleResources();
+    // submission. Returns true only after a quiet period and completed GPU
+    // work, when the target may also release its glyph and shader caches.
+    bool ReclaimIdleResources();
 
     // Flush pending graphics draws so compute or external code can safely read
     // the current render target contents.  Called by D3D12RenderTarget before
@@ -1048,6 +1059,7 @@ private:
     // Pipeline state
     ComPtr<ID3D12RootSignature> rootSignature_;
     ComPtr<ID3D12PipelineState> sdfRectPSO_;
+    ComPtr<ID3D12PipelineState> coverageRectPSO_;
     ComPtr<ID3D12PipelineState> textPSO_;
     ComPtr<ID3D12PipelineState> textSmoothPSO_;   // deformed text: bilinear atlas sampling
     ComPtr<ID3D12PipelineState> bitmapPSO_;
@@ -1057,6 +1069,8 @@ private:
     // Compiled shaders (cached)
     ComPtr<ID3DBlob> sdfRectVS_;
     ComPtr<ID3DBlob> sdfRectPS_;
+    ComPtr<ID3DBlob> coverageRectVS_;
+    ComPtr<ID3DBlob> coverageRectPS_;
     ComPtr<ID3DBlob> textVS_;
     ComPtr<ID3DBlob> textPS_;
     ComPtr<ID3DBlob> textSmoothPS_;   // bilinear variant of the text PS (deformed text)
@@ -1179,10 +1193,13 @@ private:
 
     // Instance collection (CPU side, per frame)
     std::vector<SdfRectInstance> rectInstances_;
+    CoverageInstanceStream coverageInstances_;
     std::vector<SdfGradientStop> gradientStops_;
     std::vector<GlyphQuadInstance> textInstances_;
     std::vector<BitmapQuadInstance> bitmapInstances_;
     std::vector<TriangleVertex> triangleVertices_;
+    void RecordRectBatch(uint32_t startInstance, uint32_t instanceCount, DrawBatchType type);
+    void RecordTriangleBatch(uint32_t startVertex, uint32_t vertexCount);
     std::vector<DrawBatch> batches_;
     float drawOrder_ = 0.0f;
 
@@ -1294,6 +1311,8 @@ private:
     DirectFrameConstants currentFrameConstants_ = {};
     bool initialized_ = false;
     size_t gradientStopBufferByteOffset_ = 0;
+    size_t coverageBufferByteOffset_ = 0;
+    uint32_t coverageIndexByteOffset_ = 0; // relative to the raw coverage SRV
     size_t textBufferByteOffset_ = 0;    // byte offset of text instances in upload buffer
     size_t bitmapBufferByteOffset_ = 0;  // byte offset of bitmap instances in upload buffer
     size_t triBufferByteOffset_ = 0;     // byte offset of triangle vertices in upload buffer

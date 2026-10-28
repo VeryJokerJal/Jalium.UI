@@ -17,13 +17,36 @@ public class DependencyObject : DispatcherObject
     // single source stays inline; only genuine precedence conflicts allocate layered storage.
     // Keeping the whole store null preserves the zero-allocation path for render primitives.
     private DependencyValueStore? _valueStore;
-    private Dictionary<DependencyProperty, BindingExpressionBase>? _bindings;
-    private Dictionary<DependencyProperty, AnimatedPropertyValue>? _animatedValues;
-    private Dictionary<DependencyProperty, object?>? _cssAnimatedValues;
-    private HashSet<DependencyProperty>? _cssImportantProperties;
-    private Dictionary<DependencyProperty, Brush>? _mutableRenderBrushValues;
-    private WeakReference<FrameworkElement>? _bindingMentor;
-    private List<WeakReference<DependencyObject>>? _bindingMentees;
+    // Temporary geometries, pens and brushes normally use none of these
+    // features. Keep their references out of every DependencyObject instance.
+    // Once published the state remains attached, so reentrant mutations and
+    // concurrent event subscriptions always operate on the same container.
+    private OptionalState? _optionalState;
+
+    private sealed class OptionalState
+    {
+        public Dictionary<DependencyProperty, BindingExpressionBase>? Bindings;
+        public Dictionary<DependencyProperty, AnimatedPropertyValue>? AnimatedValues;
+        public Dictionary<DependencyProperty, object?>? CssAnimatedValues;
+        public HashSet<DependencyProperty>? CssImportantProperties;
+        public Dictionary<DependencyProperty, Brush>? MutableRenderBrushValues;
+        public WeakReference<FrameworkElement>? BindingMentor;
+        public List<WeakReference<DependencyObject>>? BindingMentees;
+        public event Action<DependencyProperty, object?, object?>? PropertyChanged;
+        public event Action? CssCornerRadiusChanged;
+        public event Action? CssBorderChanged;
+
+        public void NotifyPropertyChanged(DependencyProperty property, object? oldValue, object? newValue)
+            => PropertyChanged?.Invoke(property, oldValue, newValue);
+        public void NotifyCssCornerRadiusChanged() => CssCornerRadiusChanged?.Invoke();
+        public void NotifyCssBorderChanged() => CssBorderChanged?.Invoke();
+    }
+
+    private OptionalState EnsureOptionalState()
+    {
+        var state = Volatile.Read(ref _optionalState);
+        return state ?? Interlocked.CompareExchange(ref _optionalState, new OptionalState(), null) ?? _optionalState!;
+    }
 
     #region Binding reactivation epoch
 
@@ -136,7 +159,10 @@ public class DependencyObject : DispatcherObject
     internal DependencyObject(Dispatcher dispatcher)
         : base(dispatcher)
     {
-        GetVisualChild = GetVisualChildCompatibility;
+        // 几何等非可视对象也继承本类，共享失败入口，避免每个临时绘图对象分配实例委托。
+        GetVisualChild = this is Visual
+            ? GetVisualChildCompatibility
+            : static _ => throw new InvalidOperationException("The object is not a Visual.");
     }
 
     private Visual? GetVisualChildCompatibility(int index)
@@ -161,20 +187,32 @@ public class DependencyObject : DispatcherObject
     /// <summary>
     /// Internal event for property change notification used by triggers.
     /// </summary>
-    internal event Action<DependencyProperty, object?, object?>? PropertyChangedInternal;
-    internal event Action? CssCornerRadiusPresentationChanged;
-    internal event Action? CssBorderPresentationChanged;
+    internal event Action<DependencyProperty, object?, object?>? PropertyChangedInternal
+    {
+        add { if (value is not null) EnsureOptionalState().PropertyChanged += value; }
+        remove { if (_optionalState is { } state) state.PropertyChanged -= value; }
+    }
+    internal event Action? CssCornerRadiusPresentationChanged
+    {
+        add { if (value is not null) EnsureOptionalState().CssCornerRadiusChanged += value; }
+        remove { if (_optionalState is { } state) state.CssCornerRadiusChanged -= value; }
+    }
+    internal event Action? CssBorderPresentationChanged
+    {
+        add { if (value is not null) EnsureOptionalState().CssBorderChanged += value; }
+        remove { if (_optionalState is { } state) state.CssBorderChanged -= value; }
+    }
 
     internal void NotifyCssCornerRadiusPresentationChanged()
     {
         if (this is UIElement visual) visual.InvalidateVisual();
-        CssCornerRadiusPresentationChanged?.Invoke();
+        _optionalState?.NotifyCssCornerRadiusChanged();
     }
 
     internal void NotifyCssBorderPresentationChanged()
     {
         if (this is UIElement visual) visual.InvalidateVisual();
-        CssBorderPresentationChanged?.Invoke();
+        _optionalState?.NotifyCssBorderChanged();
     }
 
     internal DependencyValueStore.Layer? GetEffectiveValueLayer(DependencyProperty property)
@@ -344,11 +382,8 @@ public class DependencyObject : DispatcherObject
             // diagnostic ValueState and probing binding/expression flags on
             // every Width, Margin and font read. Coercion retains its complete
             // existing path, including the re-entrancy guard and base value.
-            if (_animatedValues?.TryGetValue(dp, out var animated) == true)
-                value = animated.CurrentValue;
-            else if (_cssAnimatedValues?.TryGetValue(dp, out var cssAnimated) == true &&
-                     _cssImportantProperties?.Contains(dp) != true && !HasLocalValue(dp))
-                value = cssAnimated;
+            if (_optionalState is { } optional && TryGetAnimatedEffectiveValue(optional, dp, out var animated))
+                value = animated;
             else if (_valueStore?.TryGetEffective(dp, out var stored, out var source) == true &&
                      (source != BaseValueSource.Default || !dp.MayInherit))
                 value = stored;
@@ -367,12 +402,30 @@ public class DependencyObject : DispatcherObject
         // previously registered brush must be detached because this property's value changed.
         if (dp.IsBrushProperty &&
             (value is Brush { IsFrozen: false }
-             || (_mutableRenderBrushValues?.ContainsKey(dp) ?? false)))
+             || (_optionalState?.MutableRenderBrushValues?.ContainsKey(dp) ?? false)))
         {
             return TrackMutableRenderBrushValue(dp, value);
         }
 
         return value;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private bool TryGetAnimatedEffectiveValue(OptionalState state, DependencyProperty dp, out object? value)
+    {
+        if (state.AnimatedValues is { } native && native.TryGetValue(dp, out var animated))
+        {
+            value = animated.CurrentValue;
+            return true;
+        }
+        if (state.CssAnimatedValues is { } css && css.TryGetValue(dp, out var cssAnimated) &&
+            state.CssImportantProperties?.Contains(dp) != true && !HasLocalValue(dp))
+        {
+            value = cssAnimated;
+            return true;
+        }
+        value = null;
+        return false;
     }
 
     /// <summary>
@@ -396,7 +449,7 @@ public class DependencyObject : DispatcherObject
         }
 
         Brush? oldBrush = null;
-        bool hadOldBrush = _mutableRenderBrushValues?.TryGetValue(dp, out oldBrush) == true;
+        bool hadOldBrush = _optionalState?.MutableRenderBrushValues?.TryGetValue(dp, out oldBrush) == true;
         if (newBrush is null && !hadOldBrush)
         {
             return value;
@@ -416,17 +469,17 @@ public class DependencyObject : DispatcherObject
         if (oldBrush is not null)
         {
             oldBrush.RemoveRenderOwner(renderOwner);
-            _mutableRenderBrushValues!.Remove(dp);
+            _optionalState?.MutableRenderBrushValues!.Remove(dp);
         }
 
         if (newBrush is not null)
         {
-            (_mutableRenderBrushValues ??= new Dictionary<DependencyProperty, Brush>())[dp] = newBrush;
+            (EnsureOptionalState().MutableRenderBrushValues ??= new Dictionary<DependencyProperty, Brush>())[dp] = newBrush;
             newBrush.AddRenderOwner(renderOwner);
         }
-        else if (_mutableRenderBrushValues?.Count == 0)
+        else if (_optionalState?.MutableRenderBrushValues?.Count == 0)
         {
-            _mutableRenderBrushValues = null;
+            _optionalState!.MutableRenderBrushValues = null;
         }
 
         return value;
@@ -442,10 +495,10 @@ public class DependencyObject : DispatcherObject
     /// CSS layout-state override must never displace (used by the %-margin guard).
     /// </summary>
     internal bool HasLocalOrAnimatedValue(DependencyProperty dp)
-        => HasLocalValue(dp) || _animatedValues?.ContainsKey(dp) == true;
+        => HasLocalValue(dp) || _optionalState?.AnimatedValues?.ContainsKey(dp) == true;
 
     internal bool HasCssAnimatedValue(DependencyProperty dp)
-        => _cssAnimatedValues?.ContainsKey(dp) == true;
+        => _optionalState?.CssAnimatedValues?.ContainsKey(dp) == true;
 
     public bool HasLocalValue(DependencyProperty dp)
     {
@@ -493,6 +546,43 @@ public class DependencyObject : DispatcherObject
             ValueMutation.ForSetLocalCore(value),
             notifyBinding: true,
             allowAutoTransition: true);
+    }
+
+    // Constructor-only path for the sealed drawing primitives' own properties.
+    // Preserve the public write guards and virtual notifications, but an unused,
+    // non-inheriting/non-coerced property needs no repeated value/layer resolution.
+    internal void SetInitialLocalValue(DependencyProperty dp, object? value)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        ThrowIfReadOnly(dp);
+        CheckSealedAccess();
+        ValidateValueOrThrow(dp, value);
+
+        var ownerType = GetType();
+        var metadata = dp.DefaultMetadata;
+        if ((this is Media.Pen || this is Media.SolidColorBrush) &&
+            dp.OwnerType == ownerType && _optionalState is null &&
+            !metadata.Inherits && metadata.CoerceValueCallback is null &&
+            !IsNullForNonNullableValueType(dp, value) &&
+            _valueStore?.HasAnyLayer(dp) != true)
+        {
+            var oldValue = metadata.DefaultValue;
+            if (oldValue is null && dp.PropertyType.IsValueType)
+                oldValue = dp.GetEffectiveDefaultValue(ownerType);
+
+            SetStoredValue(dp, DependencyValueStore.Layer.Local, value);
+            OnEffectiveValueSourceChanged(dp);
+            if (!Equals(oldValue, value))
+            {
+                OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, value));
+                if (_optionalState?.Bindings?.TryGetValue(dp, out var binding) == true)
+                    binding.UpdateSource();
+            }
+            return;
+        }
+
+        MutateValue(dp, ValueMutation.ForSetLocalCore(value),
+            notifyBinding: true, allowAutoTransition: true);
     }
 
     /// <summary>
@@ -679,7 +769,7 @@ public class DependencyObject : DispatcherObject
 
         // Create and activate the binding expression
         var expression = binding.CreateBindingExpression(this, dp);
-        (_bindings ??= new())[dp] = expression;
+        (EnsureOptionalState().Bindings ??= new())[dp] = expression;
         expression.Activate();
 
         Styling.CssOptionalityState.NotifyBindingChange(this, requiredBefore);
@@ -696,7 +786,7 @@ public class DependencyObject : DispatcherObject
     internal BindingExpressionBase? GetBindingExpression(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        return _bindings?.GetValueOrDefault(dp);
+        return _optionalState?.Bindings?.GetValueOrDefault(dp);
     }
 
     /// <summary>
@@ -713,7 +803,7 @@ public class DependencyObject : DispatcherObject
     {
         get
         {
-            if (_bindingMentor?.TryGetTarget(out var mentor) == true)
+            if (_optionalState?.BindingMentor?.TryGetTarget(out var mentor) == true)
             {
                 return mentor;
             }
@@ -733,12 +823,12 @@ public class DependencyObject : DispatcherObject
     {
         var previousMentor = BindingMentor;
         if (ReferenceEquals(previousMentor, mentor) &&
-            (mentor != null || _bindingMentor == null))
+            (mentor != null || _optionalState?.BindingMentor == null))
         {
             return;
         }
 
-        var bindings = _bindings?.Values.ToArray();
+        var bindings = _optionalState?.Bindings?.Values.ToArray();
         if (bindings != null)
         {
             foreach (var expression in bindings)
@@ -748,7 +838,7 @@ public class DependencyObject : DispatcherObject
         }
 
         previousMentor?.RemoveBindingMentee(this);
-        _bindingMentor = mentor == null
+        EnsureOptionalState().BindingMentor = mentor == null
             ? null
             : new WeakReference<FrameworkElement>(mentor);
         mentor?.AddBindingMentee(this);
@@ -764,13 +854,13 @@ public class DependencyObject : DispatcherObject
 
     private void AddBindingMentee(DependencyObject mentee)
     {
-        _bindingMentees ??= new List<WeakReference<DependencyObject>>();
+        var mentees = EnsureOptionalState().BindingMentees ??= new List<WeakReference<DependencyObject>>();
 
-        for (int i = _bindingMentees.Count - 1; i >= 0; i--)
+        for (int i = mentees.Count - 1; i >= 0; i--)
         {
-            if (!_bindingMentees[i].TryGetTarget(out var existing))
+            if (!mentees[i].TryGetTarget(out var existing))
             {
-                _bindingMentees.RemoveAt(i);
+                mentees.RemoveAt(i);
             }
             else if (ReferenceEquals(existing, mentee))
             {
@@ -778,28 +868,29 @@ public class DependencyObject : DispatcherObject
             }
         }
 
-        _bindingMentees.Add(new WeakReference<DependencyObject>(mentee));
+        mentees.Add(new WeakReference<DependencyObject>(mentee));
     }
 
     private void RemoveBindingMentee(DependencyObject mentee)
     {
-        if (_bindingMentees == null)
+        var state = _optionalState;
+        if (state?.BindingMentees is not { } mentees)
         {
             return;
         }
 
-        for (int i = _bindingMentees.Count - 1; i >= 0; i--)
+        for (int i = mentees.Count - 1; i >= 0; i--)
         {
-            if (!_bindingMentees[i].TryGetTarget(out var existing) ||
+            if (!mentees[i].TryGetTarget(out var existing) ||
                 ReferenceEquals(existing, mentee))
             {
-                _bindingMentees.RemoveAt(i);
+                mentees.RemoveAt(i);
             }
         }
 
-        if (_bindingMentees.Count == 0)
+        if (mentees.Count == 0)
         {
-            _bindingMentees = null;
+            state.BindingMentees = null;
         }
     }
 
@@ -811,12 +902,12 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        if (_bindings?.TryGetValue(dp, out var expression) == true)
+        if (_optionalState?.Bindings?.TryGetValue(dp, out var expression) == true)
         {
             var requiredBefore = Styling.CssOptionalityState.GetRequired(this);
             var rangeBefore = Styling.CssRangeState.GetInRange(this);
             expression.Deactivate();
-            RemoveStoredValue(ref _bindings, dp);
+            RemoveStoredValue(ref _optionalState!.Bindings, dp);
             Styling.CssOptionalityState.NotifyBindingChange(this, requiredBefore);
             Styling.CssRangeState.NotifyBindingChange(this, rangeBefore);
         }
@@ -827,7 +918,7 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     public void ClearAllBindings()
     {
-        var bindings = _bindings;
+        var bindings = _optionalState?.Bindings;
         if (bindings is null)
             return;
 
@@ -839,8 +930,8 @@ public class DependencyObject : DispatcherObject
             expression.Deactivate();
         }
         bindings.Clear();
-        if (ReferenceEquals(_bindings, bindings))
-            _bindings = null;
+        if (ReferenceEquals(_optionalState?.Bindings, bindings))
+            _optionalState!.Bindings = null;
         Styling.CssOptionalityState.NotifyBindingChange(this, requiredBefore);
         Styling.CssRangeState.NotifyBindingChange(this, rangeBefore);
     }
@@ -855,7 +946,7 @@ public class DependencyObject : DispatcherObject
         // 无条件写入：非展开期 epoch 为 0，写 0 等于把戳清掉，下次展开不会误判为已算过。
         _bindingReactivationEpoch = t_currentBindingReactivationEpoch;
 
-        if (_bindings is { } bindings)
+        if (_optionalState?.Bindings is { } bindings)
         {
             foreach (var expression in bindings.Values)
             {
@@ -877,20 +968,21 @@ public class DependencyObject : DispatcherObject
 
     internal void InvalidateTemplateParentBindings()
     {
-        if (_bindings is not { Count: > 0 } bindings) return;
+        if (_optionalState?.Bindings is not { Count: > 0 } bindings) return;
         foreach (var expression in bindings.Values.ToArray()) expression.OnTemplateParentChanged();
     }
 
     private void ReactivateBindingMentees()
     {
-        if (_bindingMentees == null)
+        var state = _optionalState;
+        if (state?.BindingMentees is not { } liveMentees)
         {
             return;
         }
 
         // Work from a snapshot because reactivation may replace a series collection and
         // consequently add or remove mentor relationships.
-        var mentees = _bindingMentees.ToArray();
+        var mentees = liveMentees.ToArray();
         foreach (var weakMentee in mentees)
         {
             if (weakMentee.TryGetTarget(out var mentee) &&
@@ -900,17 +992,20 @@ public class DependencyObject : DispatcherObject
             }
         }
 
-        for (int i = _bindingMentees.Count - 1; i >= 0; i--)
+        if (state.BindingMentees is not { } remainingMentees)
+            return;
+
+        for (int i = remainingMentees.Count - 1; i >= 0; i--)
         {
-            if (!_bindingMentees[i].TryGetTarget(out _))
+            if (!remainingMentees[i].TryGetTarget(out _))
             {
-                _bindingMentees.RemoveAt(i);
+                remainingMentees.RemoveAt(i);
             }
         }
 
-        if (_bindingMentees.Count == 0)
+        if (remainingMentees.Count == 0)
         {
-            _bindingMentees = null;
+            state.BindingMentees = null;
         }
     }
 
@@ -962,7 +1057,7 @@ public class DependencyObject : DispatcherObject
     public void InvalidateProperty(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        if (_bindings?.TryGetValue(dp, out BindingExpressionBase? binding) == true)
+        if (_optionalState?.Bindings?.TryGetValue(dp, out BindingExpressionBase? binding) == true)
         {
             binding.UpdateTarget();
         }
@@ -1070,7 +1165,7 @@ public class DependencyObject : DispatcherObject
         }
 
         // Notify internal listeners (triggers, etc.)
-        PropertyChangedInternal?.Invoke(e.Property, e.OldValue, e.NewValue);
+        _optionalState?.NotifyPropertyChanged(e.Property, e.OldValue, e.NewValue);
     }
 
     #region Animation Value Support
@@ -1089,7 +1184,7 @@ public class DependencyObject : DispatcherObject
         }
 
         var oldValue = GetValue(dp);
-        (_cssAnimatedValues ??= new())[dp] = value;
+        (EnsureOptionalState().CssAnimatedValues ??= new())[dp] = value;
         dp.InvalidateInheritedSources();
         return NotifyCssAnimatedValueChanged(dp, oldValue);
     }
@@ -1097,15 +1192,15 @@ public class DependencyObject : DispatcherObject
     internal bool ClearCssAnimatedValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        if (_cssAnimatedValues?.ContainsKey(dp) != true) return false;
+        if (_optionalState?.CssAnimatedValues?.ContainsKey(dp) != true) return false;
         var oldValue = GetValue(dp);
-        RemoveStoredValue(ref _cssAnimatedValues, dp);
+        RemoveStoredValue(ref _optionalState!.CssAnimatedValues, dp);
         return NotifyCssAnimatedValueChanged(dp, oldValue);
     }
 
     internal void ClearAllCssAnimatedValues()
     {
-        if (_cssAnimatedValues is not { Count: > 0 } values) return;
+        if (_optionalState?.CssAnimatedValues is not { Count: > 0 } values) return;
         foreach (var property in values.Keys.ToArray()) ClearCssAnimatedValue(property);
     }
 
@@ -1114,12 +1209,15 @@ public class DependencyObject : DispatcherObject
     {
         var incoming = properties.ToHashSet();
         var changed = new List<(DependencyProperty Property, object? OldValue)>();
-        if (_cssAnimatedValues is { Count: > 0 } animated)
+        if (_optionalState?.CssAnimatedValues is { Count: > 0 } animated)
             foreach (var property in animated.Keys)
-                if ((_cssImportantProperties?.Contains(property) == true) != incoming.Contains(property))
+                if ((_optionalState?.CssImportantProperties?.Contains(property) == true) != incoming.Contains(property))
                     changed.Add((property, GetValue(property)));
 
-        _cssImportantProperties = incoming.Count == 0 ? null : incoming;
+        if (incoming.Count != 0)
+            EnsureOptionalState().CssImportantProperties = incoming;
+        else if (_optionalState is { } state)
+            state.CssImportantProperties = null;
         foreach (var (property, oldValue) in changed)
             NotifyCssAnimatedValueChanged(property, oldValue);
     }
@@ -1156,7 +1254,7 @@ public class DependencyObject : DispatcherObject
 
         var oldValue = GetValue(dp);
 
-        var animatedValues = _animatedValues ??= new();
+        var animatedValues = EnsureOptionalState().AnimatedValues ??= new();
         dp.InvalidateInheritedSources();
         if (!animatedValues.TryGetValue(dp, out var existing))
         {
@@ -1220,10 +1318,10 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        if (_animatedValues?.TryGetValue(dp, out var animated) == true)
+        if (_optionalState?.AnimatedValues?.TryGetValue(dp, out var animated) == true)
         {
             var oldValue = animated.CurrentValue;
-            RemoveStoredValue(ref _animatedValues, dp);
+            RemoveStoredValue(ref _optionalState!.AnimatedValues, dp);
 
             if (animated.HoldEndValue)
             {
@@ -1283,10 +1381,10 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        if (_animatedValues?.TryGetValue(dp, out var animated) == true)
+        if (_optionalState?.AnimatedValues?.TryGetValue(dp, out var animated) == true)
         {
             var oldValue = animated.CurrentValue;
-            RemoveStoredValue(ref _animatedValues, dp);
+            RemoveStoredValue(ref _optionalState!.AnimatedValues, dp);
 
             var newValue = GetValue(dp);
 
@@ -1307,7 +1405,7 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     internal void DiscardAllAnimatedValues()
     {
-        if (_animatedValues is not { Count: > 0 } animatedValues)
+        if (_optionalState?.AnimatedValues is not { Count: > 0 } animatedValues)
             return;
 
         var keys = new DependencyProperty[animatedValues.Count];
@@ -1327,7 +1425,7 @@ public class DependencyObject : DispatcherObject
     internal bool HasAnimatedValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        return _animatedValues?.ContainsKey(dp) == true;
+        return _optionalState?.AnimatedValues?.ContainsKey(dp) == true;
     }
 
     /// <summary>
@@ -1339,7 +1437,7 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        if (_animatedValues?.TryGetValue(dp, out var animated) == true)
+        if (_optionalState?.AnimatedValues?.TryGetValue(dp, out var animated) == true)
         {
             return animated.BaseValue;
         }
@@ -1362,7 +1460,7 @@ public class DependencyObject : DispatcherObject
     internal bool HasValueAboveInherited(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        if (_animatedValues?.ContainsKey(dp) == true || _cssAnimatedValues?.ContainsKey(dp) == true ||
+        if (_optionalState?.AnimatedValues?.ContainsKey(dp) == true || _optionalState?.CssAnimatedValues?.ContainsKey(dp) == true ||
             _valueStore?.HasAnyLayer(dp) == true)
             return true;
 
@@ -1412,16 +1510,17 @@ public class DependencyObject : DispatcherObject
     {
         var (baseValue, source) = GetUncoercedBaseValueInternal(dp);
         bool isAnimated = false;
-        bool isExpression = _bindings?.ContainsKey(dp) == true;
+        var optional = _optionalState;
+        bool isExpression = optional?.Bindings?.ContainsKey(dp) == true;
 
         object? effectiveValue = baseValue;
-        if (_cssAnimatedValues?.TryGetValue(dp, out var cssAnimated) == true &&
-            _cssImportantProperties?.Contains(dp) != true && !HasLocalValue(dp))
+        if (optional?.CssAnimatedValues?.TryGetValue(dp, out var cssAnimated) == true &&
+            optional.CssImportantProperties?.Contains(dp) != true && !HasLocalValue(dp))
         {
             effectiveValue = cssAnimated;
             isAnimated = true;
         }
-        if (_animatedValues?.TryGetValue(dp, out var animated) == true)
+        if (optional?.AnimatedValues?.TryGetValue(dp, out var animated) == true)
         {
             effectiveValue = animated.CurrentValue;
             isAnimated = true;
@@ -1481,7 +1580,7 @@ public class DependencyObject : DispatcherObject
     private ValueState GetBaseValueState(DependencyProperty dp, bool forceCoerce = false)
     {
         var (baseValue, source) = GetUncoercedBaseValueInternal(dp);
-        bool isExpression = _bindings?.ContainsKey(dp) == true;
+        bool isExpression = _optionalState?.Bindings?.ContainsKey(dp) == true;
         object? effectiveValue = baseValue;
         bool isCoerced = false;
         PropertyMetadata metadata = dp.GetMetadata(GetType());
@@ -1570,7 +1669,7 @@ public class DependencyObject : DispatcherObject
         {
             if (!cssTransitionCleared)
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
-            if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
+            if (notifyBinding && _optionalState?.Bindings?.TryGetValue(dp, out var binding) == true)
             {
                 binding.UpdateSource();
             }
@@ -1643,7 +1742,7 @@ public class DependencyObject : DispatcherObject
         InvalidateCssBorderPrecedence(dp);
         if (uiElement.StopCssTransitionForLocalValue(dp))
         {
-            if (notifyBinding && _bindings?.TryGetValue(dp, out var localBinding) == true)
+            if (notifyBinding && _optionalState?.Bindings?.TryGetValue(dp, out var localBinding) == true)
                 localBinding.UpdateSource();
             return true;
         }
@@ -1666,7 +1765,7 @@ public class DependencyObject : DispatcherObject
         }
         else if (uiElement.TryStartAutomaticTransition(dp, oldDisplayedValue, newBaseValue))
         {
-            if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
+            if (notifyBinding && _optionalState?.Bindings?.TryGetValue(dp, out var binding) == true)
             {
                 binding.UpdateSource();
             }
@@ -1679,7 +1778,7 @@ public class DependencyObject : DispatcherObject
             ClearAnimatedValue(dp);
         }
 
-        if (notifyBinding && _bindings?.TryGetValue(dp, out var fallbackBinding) == true)
+        if (notifyBinding && _optionalState?.Bindings?.TryGetValue(dp, out var fallbackBinding) == true)
         {
             fallbackBinding.UpdateSource();
         }
@@ -1840,22 +1939,26 @@ public class DependencyObject : DispatcherObject
     // CloneCurrentValue / FreezeCore 需要"所有高于默认值的有效属性"集合，对应 WPF 的
     // EffectiveValues 数组（不含纯默认值）。排除纯 Inherited 值，避免把继承值烤进克隆体
     // （Freezable 极少参与属性继承），但保留 SetCurrentValue 写出的 modified-default。
-    internal DependencyProperty[] GetEffectiveSetPropertiesInternal()
+    internal EffectivePropertySnapshot GetEffectiveSetPropertiesInternal()
     {
-        var set = new HashSet<DependencyProperty>(
-            _valueStore?.SnapshotEffectiveProperties() ?? Array.Empty<DependencyProperty>());
-        if (_animatedValues is not null)
-            foreach (var k in _animatedValues.Keys) set.Add(k);
+        var properties = _valueStore?.SnapshotEffectiveProperties() ?? default;
+        // 值仓里的键已经唯一；没有动画时无需再建集合和复制数组。
+        if (_optionalState?.AnimatedValues is not { Count: > 0 } animatedValues)
+            return properties;
+
+        var set = new HashSet<DependencyProperty>();
+        foreach (var property in properties) set.Add(property);
+        foreach (var k in animatedValues.Keys) set.Add(k);
         var result = new DependencyProperty[set.Count];
         set.CopyTo(result);
-        return result;
+        return new EffectivePropertySnapshot(result, result.Length);
     }
 
     // True 当该属性绑定了表达式（WPF 中表达式不可冻结、且 base 克隆需特殊复制）。
-    internal bool HasBindingInternal(DependencyProperty dp) => _bindings?.ContainsKey(dp) == true;
+    internal bool HasBindingInternal(DependencyProperty dp) => _optionalState?.Bindings?.ContainsKey(dp) == true;
 
     internal IReadOnlyCollection<BindingExpressionBase> GetBindingExpressionsInternal() =>
-        _bindings?.Values.ToArray() ?? Array.Empty<BindingExpressionBase>();
+        _optionalState?.Bindings?.Values.ToArray() ?? Array.Empty<BindingExpressionBase>();
 
     /// <summary>
     /// 值写入守卫钩子。基类不封闭；Freezable 冻结后重写为抛异常，使属性系统层面（而非

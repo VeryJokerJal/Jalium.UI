@@ -153,7 +153,7 @@ inline void SortCrossings(Crossing* cr, uint32_t n) noexcept {
 //     edges that were already being rejected.
 // ----------------------------------------------------------------------------
 inline void RasterizePathToRects(
-    const std::vector<Contour>& contours,
+    const Contour* contours, size_t contourCount,
     FillRule rule,
     std::vector<PixelRect>& outRects)
 {
@@ -161,7 +161,7 @@ inline void RasterizePathToRects(
     using scanline_detail::Crossing;
     using scanline_detail::RunSpan;
 
-    if (contours.empty()) return;
+    if (contourCount == 0) return;
 
     auto& scratch = scanline_detail::Scratch();
     auto& edges = scratch.edges;
@@ -202,7 +202,8 @@ inline void RasterizePathToRects(
         edges.push_back(e);
     };
 
-    for (const auto& c : contours) {
+    for (size_t contourIndex = 0; contourIndex < contourCount; ++contourIndex) {
+        const auto& c = contours[contourIndex];
         uint32_t n = c.VertexCount();
         if (n < 2) continue;
         const float* p = c.points.data();
@@ -225,6 +226,7 @@ inline void RasterizePathToRects(
     int pxX1 = (int)std::ceil (maxX) + 1;
     int pxWidth = pxX1 - pxX0;
     if (pxWidth <= 0) return;
+    const bool unitPixelStepsExact = pxX0 >= -8388608 && pxX1 <= 8388608;
 
     int yStart = (int)std::floor(minY);
     int yEnd   = (int)std::ceil (maxY);
@@ -407,7 +409,7 @@ inline void RasterizePathToRects(
                     if (pxA < touchedLo) touchedLo = pxA;
                     if (pxB > touchedHi) touchedHi = pxB;
 
-                    for (int px = pxA; px < pxB; ++px) {
+                    auto addPartialPixel = [&](int px) {
                         float pxLeft  = (float)(px + pxX0);
                         float pxRight = pxLeft + 1.0f;
                         float l = pxLeft  > fillFrom ? pxLeft  : fillFrom;
@@ -415,6 +417,18 @@ inline void RasterizePathToRects(
                         if (r > l) {
                             coverage[px] += (r - l) * kSubStep;
                         }
+                    };
+                    if (unitPixelStepsExact && pxB - pxA >= 4) {
+                        // Only a span's two boundary pixels need clipping.
+                        // Interior pixels receive exactly one sub-row's weight;
+                        // the simple add loop also lets the compiler vectorize
+                        // wide fills without per-pixel min/max operations.
+                        addPartialPixel(pxA);
+                        for (int px = pxA + 1; px < pxB - 1; ++px)
+                            coverage[px] += kSubStep;
+                        addPartialPixel(pxB - 1);
+                    } else {
+                        for (int px = pxA; px < pxB; ++px) addPartialPixel(px);
                     }
                 }
             }
@@ -496,6 +510,15 @@ inline void RasterizePathToRects(
             }
         }
     }
+}
+
+// Existing callers keep their vector interface; reusable stroke buffers pass
+// the current contour range without destroying unused point-buffer capacity.
+inline void RasterizePathToRects(
+    const std::vector<Contour>& contours, FillRule rule,
+    std::vector<PixelRect>& outRects)
+{
+    RasterizePathToRects(contours.data(), contours.size(), rule, outRects);
 }
 
 } // namespace jalium
