@@ -1819,14 +1819,18 @@ std::shared_ptr<const ImpellerD3D12Engine::CachedStrokeAnalyticRects>
 ImpellerD3D12Engine::StrokeAnalyticCacheFind(uint64_t key)
 {
     auto it = strokeAnalyticCacheMap_.find(key);
-    if (it == strokeAnalyticCacheMap_.end()) return nullptr;
+    if (it == strokeAnalyticCacheMap_.end()) return protectedStrokeAnalyticCache_.Find(key);
     strokeAnalyticCacheList_.splice(strokeAnalyticCacheList_.begin(), strokeAnalyticCacheList_, it->second);
     return it->second->entry;
 }
 
 void ImpellerD3D12Engine::StrokeAnalyticCacheInsert(
-    uint64_t key, std::shared_ptr<const CachedStrokeAnalyticRects> entry)
+    uint64_t key, std::shared_ptr<CachedStrokeAnalyticRects> entry)
 {
+    if (entry->rects.size() >= 128) {
+        const size_t evictions = protectedStrokeAnalyticCache_.Insert(key, entry);
+        if (evictions) path_stats::AddCacheEviction(evictions);
+    }
     auto existing = strokeAnalyticCacheMap_.find(key);
     if (existing != strokeAnalyticCacheMap_.end()) {
         existing->second->entry = std::move(entry);
@@ -2763,10 +2767,10 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
     // ──────────────────────────────────────────────────────────────
     if (useAnalytic) {
         if (strokeContours.empty()) {
-            StrokeAnalyticCacheInsert(cacheKey, std::make_shared<CachedStrokeAnalyticRects>());
+            StrokeAnalyticCacheInsert(cacheKey, protectedStrokeAnalyticCache_.Acquire());
             return false;
         }
-        auto cached = std::make_shared<CachedStrokeAnalyticRects>();
+        auto cached = protectedStrokeAnalyticCache_.Acquire();
         cached->rects.reserve(256);
         // Stroke widening always produces NonZero-fill polygons (cap/join
         // tessellations are convex and don't cross themselves with
