@@ -6,6 +6,7 @@ set(HEADERS
     include/d3d12_direct_renderer.h
     include/d3d12_glyph_atlas.h
     include/d3d12_impeller_engine.h
+    include/d3d12_stroke_mask_cache.h
     include/d3d12_ink_layer.h
     include/d3d12_pipeline.h
     include/d3d12_render_target.h

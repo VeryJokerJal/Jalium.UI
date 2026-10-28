@@ -84,6 +84,7 @@
     <ClInclude Include="include\d3d12_liquid_glass_bytecode.h" />
     <ClInclude Include="include\d3d12_glyph_atlas.h" />
     <ClInclude Include="include\d3d12_impeller_engine.h" />
+    <ClInclude Include="include\d3d12_stroke_mask_cache.h" />
     <ClInclude Include="include\d3d12_ink_layer.h" />
     <ClInclude Include="include\d3d12_pipeline.h" />
     <ClInclude Include="include\d3d12_render_target.h" />

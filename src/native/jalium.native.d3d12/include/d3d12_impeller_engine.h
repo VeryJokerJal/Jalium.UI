@@ -9,6 +9,7 @@
 #include "jalium_path_cache.h"        // PathGeometryCache (cross-backend source-space cache)
 #include "d3d12_backend.h"
 #include "d3d12_triangulate.h"
+#include "d3d12_stroke_mask_cache.h"
 #include <vector>
 #include <cstdint>
 #include <cmath>
@@ -584,6 +585,7 @@ private:
     // partitions Antialiased vs Aliased entries via the trailing edgeMode byte.
     struct CachedStrokeAnalyticRects {
         std::vector<jalium::PixelRect> rects;
+        void Reset() { rects.clear(); }
     };
 
     struct StrokeAnalyticRectsNode {
@@ -608,7 +610,7 @@ private:
     void StrokeCacheInsert(uint64_t key, std::shared_ptr<const CachedStrokeRects> entry);
 
     std::shared_ptr<const CachedStrokeAnalyticRects> StrokeAnalyticCacheFind(uint64_t key);
-    void StrokeAnalyticCacheInsert(uint64_t key, std::shared_ptr<const CachedStrokeAnalyticRects> entry);
+    void StrokeAnalyticCacheInsert(uint64_t key, std::shared_ptr<CachedStrokeAnalyticRects> entry);
 
     // ─── Solid fill rasterization cache ───────────────────────────────────
     //
@@ -653,6 +655,12 @@ private:
 
     std::shared_ptr<const CachedFillRects> FillCacheFind(uint64_t key);
     void FillCacheInsert(uint64_t key, std::shared_ptr<const CachedFillRects> entry);
+    // Preserve the original 512-entry hit path. Expensive masks survive short
+    // animated-key churn in this secondary cache; its budget counts vector
+    // capacity, excluding primary storage, containers and pending borrowers.
+    D3D12StrokeMaskCache<CachedStrokeAnalyticRects> protectedStrokeAnalyticCache_{
+        D3D12StrokeMaskCache<CachedStrokeAnalyticRects>::Limits{
+            128, 0, 0, 1024, 32u << 20, 1u << 20}};
 };
 
 } // namespace jalium
