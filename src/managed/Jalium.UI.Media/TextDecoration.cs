@@ -302,7 +302,7 @@ public sealed class TextDecorationCollection : Animatable, IList<TextDecoration>
     /// <summary>Adds one decoration to the collection.</summary>
     public void Add(TextDecoration value) => _items.Add(value);
 
-    public TextDecoration this[int index] { get => _items[index]; set => _items[index] = value; }
+    public TextDecoration this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<TextDecoration>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<TextDecoration>.IsReadOnly => _items.IsReadOnly;
@@ -421,13 +421,7 @@ public sealed class TextDecorationCollection : Animatable, IList<TextDecoration>
 
     protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking) && _items.Freeze(isChecking);
 
-    private AnimatableListStorage<TextDecoration> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<TextDecoration> CreateStorage(int capacity = 0) => new(this, capacity);
 
     /// <summary>Enumerates the collection while detecting concurrent modification.</summary>
     public struct Enumerator : IEnumerator<TextDecoration>, IEnumerator

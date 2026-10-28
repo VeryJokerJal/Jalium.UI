@@ -197,7 +197,7 @@ public sealed class MaterialCollection : Animatable, IList<Material>, IList
         _items.AddRange(collection);
     }
 
-    public Material this[int index] { get => _items[index]; set => _items[index] = value; }
+    public Material this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Material>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<Material>.IsReadOnly => _items.IsReadOnly;
@@ -234,13 +234,7 @@ public sealed class MaterialCollection : Animatable, IList<Material>, IList
     protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((MaterialCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
     protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((MaterialCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
 
-    private AnimatableListStorage<Material> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<Material> CreateStorage(int capacity = 0) => new(this, capacity);
 
     public struct Enumerator : IEnumerator<Material>
     {

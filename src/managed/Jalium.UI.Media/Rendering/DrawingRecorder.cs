@@ -71,6 +71,8 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     /// </summary>
     public void Bind(object target)
     {
+        if (_wholeFrame) DrawingContext.EndWholeFrameRecordingScope(_wholeFrameSavedScope);
+        ReleaseNestedDrawings();
         _commands.Clear();
         _bounds.Reset();
         ResetFrameClips();
@@ -97,8 +99,11 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     /// </summary>
     public void BindWholeFrame(bool simplifyElementEffects = false)
     {
+        if (_wholeFrame) DrawingContext.EndWholeFrameRecordingScope(_wholeFrameSavedScope);
+        ReleaseNestedDrawings();
         _commands.Clear();
         _bounds.Reset();
+        _bounds.MarkUnknown();
         ResetFrameClips();
         _offsetProxy = null;
         _wholeFrame = true;
@@ -138,7 +143,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
                 : new RecordedDrawing(System.Array.Empty<DrawCommand>(), 0, null, fullyRecordable: false);
         }
 
-        var arr = _commands.ToArray();
+        var arr = DrawCommandBuffer.CopyFrom(_commands);
         // Whole-frame captures span many per-child offsets, so the accumulator's
         // single bounds rect is meaningless (it ignores SetOffset) — null it to
         // disable the replay-time AABB short-circuit and replay everything.
@@ -151,7 +156,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         _snapshotInputs = false;
         _simplifyElementEffects = false;
 
-        return new RecordedDrawing(arr, arr.Length, drawingBounds, fullyRecordable);
+        return new RecordedDrawing(arr, arr.Length, drawingBounds, fullyRecordable, ownsNestedReferences: true);
     }
 
     /// <summary>
@@ -162,6 +167,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     {
         // Close the whole-frame scope if we were abandoned mid-capture.
         if (_wholeFrame) DrawingContext.EndWholeFrameRecordingScope(_wholeFrameSavedScope);
+        ReleaseNestedDrawings();
         _commands.Clear();
         _bounds.Reset();
         ResetFrameClips();
@@ -223,9 +229,17 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         }
         if (drawing.Count != 0)
         {
+            drawing.Retain();
             _commands.Add(DrawCommand.RecordedDrawingCmd(drawing));
         }
         return true;
+    }
+
+    private void ReleaseNestedDrawings()
+    {
+        foreach (var command in _commands)
+            if (command.Kind == DrawCommandKind.DrawRecordedDrawing)
+                DrawingLifetime.Release(command.A);
     }
 
     // ── Whole-frame freeze-clone (increment 3) ──────────────────────────
@@ -412,11 +426,15 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
     {
-        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush), geometry.Bounds);
+        var canonicalBrush = DrawingObjectPool.CanonicalizeBrush(brush);
+        canonicalBrush = canonicalBrush?.CssGradientLayout is not null
+            ? SnapBrush(canonicalBrush, geometry.Bounds)
+            : SnapBrush(canonicalBrush);
         var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         var capturedGeometry = SnapGeometry(geometry);
         _commands.Add(DrawCommand.GeometryCmd(canonicalBrush, canonicalPen, capturedGeometry));
-        _bounds.AccumulateRect(capturedGeometry.Bounds, StrokeSlop(canonicalPen));
+        if (!_wholeFrame)
+            _bounds.AccumulateRect(capturedGeometry.Bounds, StrokeSlop(canonicalPen));
     }
 
     public override void SetShapeType(int type, float exponent)
@@ -491,7 +509,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     public override void PushTransform(Transform transform)
     {
         _commands.Add(DrawCommand.PushTransformCmd(SnapTransform(transform)));
-        _bounds.PushTransform(transform);
+        if (!_wholeFrame) _bounds.PushTransform(transform);
         PushFrameClipState(transform: true);
     }
 
@@ -499,7 +517,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     {
         var capturedGeometry = SnapGeometry(clipGeometry);
         _commands.Add(DrawCommand.PushClipCmd(capturedGeometry));
-        _bounds.PushClip(capturedGeometry);
+        if (!_wholeFrame) _bounds.PushClip(capturedGeometry);
         PushFrameClipState();
         if (_wholeFrame && _frameTransformDepth == 0 &&
             capturedGeometry is not RectangleGeometry { BoundsClipEdges: not ClipEdges.All })
@@ -520,14 +538,14 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     public override void PushOpacity(double opacity)
     {
         _commands.Add(DrawCommand.PushOpacityCmd(opacity));
-        _bounds.PushOpacity();
+        if (!_wholeFrame) _bounds.PushOpacity();
         PushFrameClipState();
     }
 
     public override void Pop()
     {
         _commands.Add(DrawCommand.PopCmd());
-        _bounds.Pop();
+        if (!_wholeFrame) _bounds.Pop();
         if (_wholeFrame && _frameClipStates.TryPop(out var state))
         {
             _frameClipBounds = state.Clip;

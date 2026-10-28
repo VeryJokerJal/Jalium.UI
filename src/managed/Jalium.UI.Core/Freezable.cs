@@ -28,7 +28,58 @@ public abstract class Freezable : DependencyObject
     /// <summary>
     /// Occurs when the Freezable or an object it contains is modified.
     /// </summary>
-    public event EventHandler? Changed;
+    public event EventHandler? Changed
+    {
+        add { if (value is not null) AddChangedListener(value); }
+        remove { if (value is not null) RemoveChangedListener(value); }
+    }
+
+    // A child usually has one Freezable owner. Keep that owner in the same
+    // slot used by public handlers instead of allocating a delegate for every
+    // edge of a temporary geometry. Multiple/mixed listeners use an ordinary
+    // immutable multicast delegate, preserving event order and removal rules.
+    private object? _changedListeners;
+
+    private static EventHandler? AsChangedHandler(object? listener)
+        => listener is Freezable owner ? owner.OnSubPropertyChanged : (EventHandler?)listener;
+
+    private void AddChangedListener(object listener)
+    {
+        object? previous, next;
+        do
+        {
+            previous = Volatile.Read(ref _changedListeners);
+            next = previous is null
+                ? listener
+                : Delegate.Combine(AsChangedHandler(previous), AsChangedHandler(listener));
+        }
+        while (!ReferenceEquals(Interlocked.CompareExchange(ref _changedListeners, next, previous), previous));
+    }
+
+    private void RemoveChangedListener(object listener)
+    {
+        while (true)
+        {
+            object? previous = Volatile.Read(ref _changedListeners);
+            if (previous is null) return;
+            object? next;
+            if (ReferenceEquals(previous, listener))
+            {
+                next = null;
+            }
+            else if (previous is Freezable && listener is Freezable)
+            {
+                return; // distinct single owners cannot match
+            }
+            else
+            {
+                var handlers = AsChangedHandler(previous);
+                next = Delegate.Remove(handlers, AsChangedHandler(listener));
+                if (ReferenceEquals(next, handlers)) return;
+            }
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _changedListeners, next, previous), previous)) return;
+        }
+    }
 
     /// <summary>
     /// Gets a value that indicates whether the object can be made unmodifiable.
@@ -82,6 +133,10 @@ public abstract class Freezable : DependencyObject
 
         Freeze(this, isChecking: false);
     }
+
+    // 快照需要失败回退；沿用两阶段冻结，避免先 CanFreeze 再重复检查整图。
+    internal bool TryFreeze()
+        => _isFrozen || (Freeze(this, isChecking: true) && Freeze(this, isChecking: false));
 
     /// <summary>
     /// Tests or freezes an arbitrary Freezable through its virtual freeze hook.
@@ -158,17 +213,10 @@ public abstract class Freezable : DependencyObject
                 return false;       // 活动动画不可冻结
 
             var (baseValue, _) = GetUncoercedBaseValueInternal(dp);
-            if (baseValue is Freezable child)
+            if (baseValue is Freezable child && !Freeze(child, isChecking))
             {
-                if (isChecking)
-                {
-                    if (!child.CanFreeze)
-                        return false;
-                }
-                else
-                {
-                    child.Freeze();
-                }
+                // 检查阶段已验证整图，提交时沿用同一阶段，避免逐层重启两阶段遍历。
+                return false;
             }
         }
 
@@ -216,7 +264,9 @@ public abstract class Freezable : DependencyObject
     /// </summary>
     protected virtual void OnChanged()
     {
-        Changed?.Invoke(this, EventArgs.Empty);
+        object? listeners = Volatile.Read(ref _changedListeners);
+        if (listeners is Freezable owner) owner.OnSubPropertyChanged(this, EventArgs.Empty);
+        else ((EventHandler?)listeners)?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
@@ -229,13 +279,13 @@ public abstract class Freezable : DependencyObject
         // Unsubscribe from old value's change notifications
         if (oldValue is Freezable oldFreezable)
         {
-            oldFreezable.Changed -= OnSubPropertyChanged;
+            oldFreezable.RemoveChangedListener(this);
         }
 
         // Subscribe to new value's change notifications
         if (newValue is Freezable newFreezable && !newFreezable.IsFrozen)
         {
-            newFreezable.Changed += OnSubPropertyChanged;
+            newFreezable.AddChangedListener(this);
         }
     }
 
@@ -310,6 +360,13 @@ public abstract class Freezable : DependencyObject
     {
         OnChanged();
     }
+
+    // 集合存储直接保留所有者，避免每个临时集合分配五个适配委托。
+    internal void ReadCollectionPreamble() => ReadPreamble();
+    internal void WriteCollectionPreamble() => WritePreamble();
+    internal void WriteCollectionPostscript() => WritePostscript();
+    internal void ChangeCollectionOwner(DependencyObject? oldValue, DependencyObject? newValue)
+        => OnFreezablePropertyChanged(oldValue, newValue);
 
     /// <summary>
     /// Creates a new instance of the Freezable class.
@@ -720,14 +777,7 @@ public class FreezableCollection<T> : Media.Animation.Animatable, IList, IList<T
             T item = _items[i];
             if (item is Freezable freezable)
             {
-                if (isChecking)
-                {
-                    canFreeze = freezable.CanFreeze;
-                }
-                else
-                {
-                    freezable.Freeze();
-                }
+                canFreeze = Freeze(freezable, isChecking);
             }
             else
             {

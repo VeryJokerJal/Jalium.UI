@@ -3373,9 +3373,6 @@ public partial class ScrollViewer : ContentControl
             horizontalBarReserved);
         _viewportWidth = viewport.Width;
         _viewportHeight = viewport.Height;
-        if (UsesClassicGutter && (measuredViewportWidth != _viewportWidth ||
-            measuredViewportHeight != _viewportHeight))
-            InvalidateMeasure();
 
         // Content is arranged at max(extent, viewport) below. While the extent is the
         // larger of the two, shrinking the viewport leaves that rect byte-identical,
@@ -3393,6 +3390,15 @@ public partial class ScrollViewer : ContentControl
             _lastArrangedViewportHeight != _viewportHeight;
         _lastArrangedViewportWidth = _viewportWidth;
         _lastArrangedViewportHeight = _viewportHeight;
+
+        // A parent can consistently arrange less space than it offered to Measure,
+        // including a zero-height empty list. Retry only when the arranged viewport
+        // changes; comparing against Measure alone would invalidate every pass forever.
+        if (UsesClassicGutter && viewportMoved &&
+            (measuredViewportWidth != _viewportWidth || measuredViewportHeight != _viewportHeight))
+        {
+            InvalidateMeasure();
+        }
 
         if (ContentElement != null && _scrollInfo == null && viewportMoved)
         {

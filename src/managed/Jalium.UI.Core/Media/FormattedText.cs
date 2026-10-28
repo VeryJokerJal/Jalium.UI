@@ -594,6 +594,15 @@ public sealed partial class FormattedText
         return snapshot;
     }
 
+    // Controls may retain simple paint inputs between frames. A custom drawing
+    // context can measure or range-format an input, so those values must be
+    // recreated rather than reused as the control's original plain text.
+    internal bool HasSimpleRenderFormatting => !IsMeasured && _characterFormats is null &&
+        _maxTextWidths is null && _typeface is null && _numberSubstitution is null &&
+        _pixelsPerDip == 1 && _maxLineCount == int.MaxValue &&
+        _flowDirection == FlowDirection.LeftToRight && _textAlignment == TextAlignment.Left &&
+        TextRenderingMode == 0 && TextFormattingMode == 0 && TextHintingMode == 0;
+
     private void InitializeCharacterFormats()
     {
         // The renderer consumes the scalar font properties for ordinary text.

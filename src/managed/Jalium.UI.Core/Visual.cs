@@ -306,7 +306,9 @@ public abstract class Visual : DependencyObject
         }
 
         if (_cachedDrawing == null) return;
+        var previousDrawing = _cachedDrawing;
         _cachedDrawing = null;
+        global::Jalium.UI.Rendering.DrawingLifetime.Release(previousDrawing);
         // Force RenderDirect's record-or-replay branch to re-record next time.
         _isRenderDirty = true;
     }
@@ -1046,8 +1048,17 @@ public abstract class Visual : DependencyObject
             if (_isRenderDirty || _cachedDrawing == null)
             {
                 var recorder = cacheHost.CreateRecorder(drawingContext);
-                OnRender(recorder);
-                _cachedDrawing = cacheHost.FinishRecord(recorder);
+                bool recorded = false;
+                object? replacement = null;
+                try { OnRender(recorder); recorded = true; }
+                finally
+                {
+                    replacement = cacheHost.FinishRecord(recorder);
+                    if (!recorded) global::Jalium.UI.Rendering.DrawingLifetime.Release(replacement);
+                }
+                var previousDrawing = _cachedDrawing;
+                _cachedDrawing = replacement;
+                global::Jalium.UI.Rendering.DrawingLifetime.Release(previousDrawing);
                 System.Threading.Interlocked.Increment(ref s_retainedCacheRecords);
             }
             else

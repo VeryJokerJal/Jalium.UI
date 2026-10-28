@@ -802,25 +802,46 @@ bool D3D12VelloRenderer::EnsureBuffer(ComPtr<ID3D12Resource>& buf, uint64_t& cap
 
 bool D3D12VelloRenderer::EnsureOutputTexture(uint32_t w, uint32_t h)
 {
-    if (outputTexture_ && outputW_ == w && outputH_ == h) return true;
+    if (w == 0 || h == 0 || w > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        h > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION) return false;
+    if (outputTexture_ && outputW_ >= w && outputH_ >= h) return true;
     RetireOutputTexture();
 
-    // Reuse a recycled texture of the same size before allocating. Sub-scene
-    // regions repeat heavily across frames (the same icons redraw), so the
-    // pool converges after a frame or two and steady-state allocation is nil.
+    // Panning changes a sub-scene's bounds by a few pixels. Exact dimensions
+    // made those frames allocate and evict otherwise reusable textures. Keep
+    // physical capacity separate from LastRegion's valid texels; the composite
+    // crops its UVs so unused capacity can never expose a previous scene.
+    constexpr uint32_t alignment = 64;
+    const uint32_t capacityW = (w + alignment - 1) & ~(alignment - 1);
+    const uint32_t capacityH = (h + alignment - 1) & ~(alignment - 1);
+    const uint64_t maxArea = static_cast<uint64_t>(capacityW) * capacityH * 2;
+    size_t best = outputFreeList_.size();
+    uint64_t bestArea = UINT64_MAX;
     for (size_t i = 0; i < outputFreeList_.size(); i++) {
-        if (outputFreeList_[i].w == w && outputFreeList_[i].h == h) {
-            outputTexture_ = std::move(outputFreeList_[i].tex);
-            outputAllocationBytes_ = outputFreeList_[i].allocationBytes;
-            outputFreeBytes_ -= outputAllocationBytes_;
-            outputFreeList_[i] = std::move(outputFreeList_.back());
-            outputFreeList_.pop_back();
-            outputW_ = w;
-            outputH_ = h;
-            if (VelloPerfEnabled()) g_perf.outputReuses++;
-            return true;
+        const auto& candidate = outputFreeList_[i];
+        const uint64_t area = static_cast<uint64_t>(candidate.w) * candidate.h;
+        // Avoid spending a canvas-sized allocation on a small icon, or a tall
+        // texture on a wide strip. The existing byte/count pool limits remain.
+        if (candidate.w >= w && candidate.h >= h && area <= maxArea &&
+            candidate.w <= capacityW * 2 && candidate.h <= capacityH * 2 &&
+            area < bestArea) {
+            best = i;
+            bestArea = area;
         }
     }
+    if (best != outputFreeList_.size()) {
+        outputW_ = outputFreeList_[best].w;
+        outputH_ = outputFreeList_[best].h;
+        outputTexture_ = std::move(outputFreeList_[best].tex);
+        outputAllocationBytes_ = outputFreeList_[best].allocationBytes;
+        outputFreeBytes_ -= outputAllocationBytes_;
+        outputFreeList_[best] = std::move(outputFreeList_.back());
+        outputFreeList_.pop_back();
+        if (VelloPerfEnabled()) g_perf.outputReuses++;
+        return true;
+    }
+    w = capacityW;
+    h = capacityH;
 
     D3D12_HEAP_PROPERTIES heap = {};
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;

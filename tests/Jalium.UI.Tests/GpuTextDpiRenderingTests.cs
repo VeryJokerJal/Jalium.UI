@@ -47,6 +47,8 @@ public sealed class GpuTextDpiRenderingTests
         using var whiteBrush = context.CreateSolidBrush(1f, 1f, 1f, 1f);
         using var sentinelFormat = context.CreateTextFormat("Consolas", 20f);
 
+        var initialGlyphCapacity = 0;
+
         const string warmupText =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         var warmupFormats = new List<NativeTextFormat>();
@@ -77,6 +79,15 @@ public sealed class GpuTextDpiRenderingTests
                     // remains invisible on the black capture background.
                     target.DrawText(
                         warmupText, format, 0f, 0f, Width, Height, blackBrush);
+
+                    // Backend startup sizes vary. Observe capacity before the
+                    // first frame boundary rather than assuming 1,024 slots.
+                    if (initialGlyphCapacity == 0)
+                    {
+                        Assert.True(target.TryQueryGpuStats(out var initialStats));
+                        initialGlyphCapacity = initialStats.GlyphSlotsTotal;
+                        Assert.True(initialGlyphCapacity > 0);
+                    }
                 }
 
                 // This glyph is deliberately requested after the warm-up has
@@ -104,9 +115,9 @@ public sealed class GpuTextDpiRenderingTests
                 {
                     Assert.True(target.TryQueryGpuStats(out var stats));
                     Assert.True(
-                        stats.GlyphSlotsTotal > 1024,
+                        stats.GlyphSlotsTotal > initialGlyphCapacity,
                         $"{backend}: stress run did not grow the initial atlas " +
-                        $"(capacity={stats.GlyphSlotsTotal}).");
+                        $"(initial={initialGlyphCapacity}, capacity={stats.GlyphSlotsTotal}).");
                 }
             }
 

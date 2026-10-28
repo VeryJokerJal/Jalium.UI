@@ -100,6 +100,10 @@
     <ClInclude Include="include\d3d12_glyph_atlas.h" />
     <ClInclude Include="include\d3d12_impeller_engine.h" />
     <ClInclude Include="include\d3d12_stroke_mask_cache.h" />
+    <ClInclude Include="include\d3d12_coverage_rect.h" />
+    <ClInclude Include="include\d3d12_frame_latency_selection.h" />
+    <ClInclude Include="include\d3d12_path_engine_selection.h" />
+    <ClInclude Include="include\d3d12_simple_stroke.h" />
     <ClInclude Include="include\d3d12_ink_layer.h" />
     <ClInclude Include="include\d3d12_pipeline.h" />
     <ClInclude Include="include\d3d12_render_target.h" />

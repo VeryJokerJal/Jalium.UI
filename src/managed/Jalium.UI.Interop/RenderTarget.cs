@@ -848,9 +848,14 @@ public sealed class RenderTarget : IDisposable
     /// <param name="brush">Brush to fill with.</param>
     /// <param name="fillRule">Fill rule: 0 = EvenOdd, 1 = NonZero.</param>
     public void FillPolygon(float[] points, NativeBrush brush, int fillRule = 0)
+        => FillPolygon(points.AsSpan(), brush, fillRule);
+
+    // Only the active coordinates are pinned; callers can borrow a stack or
+    // pooled buffer without submitting its unused capacity to the backend.
+    internal void FillPolygon(ReadOnlySpan<float> points, NativeBrush brush, int fillRule = 0)
     {
         ThrowIfDisposed();
-        if (brush == null || !brush.IsValid || points == null || points.Length < 6) return;
+        if (brush == null || !brush.IsValid || points.Length < 6) return;
         long t0 = ApiStart();
         unsafe
         {
@@ -870,9 +875,12 @@ public sealed class RenderTarget : IDisposable
     /// <param name="strokeWidth">Width of stroke.</param>
     /// <param name="closed">Whether to close the polygon.</param>
     public void DrawPolygon(float[] points, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true, int lineJoin = 0, float miterLimit = 10.0f)
+        => DrawPolygon(points.AsSpan(), brush, strokeWidth, closed, lineJoin, miterLimit);
+
+    internal void DrawPolygon(ReadOnlySpan<float> points, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true, int lineJoin = 0, float miterLimit = 10.0f)
     {
         ThrowIfDisposed();
-        if (brush == null || !brush.IsValid || points == null || points.Length < 4) return;
+        if (brush == null || !brush.IsValid || points.Length < 4) return;
         long t0 = ApiStart();
         unsafe
         {

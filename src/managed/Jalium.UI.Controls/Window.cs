@@ -266,7 +266,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public (double LayoutMs, double RenderMs) CaptureSplitForDeferredPresent()
             => (_layoutMs, Math.Max(0, _renderMs - _layoutMs));
 
-        public void OnDeferredPresent(double layoutMs, double renderMs, double presentMs, int dirtyElements)
+        public void OnDeferredPresent(double layoutMs, double renderMs, double presentMs, int dirtyElements,
+            long captureTimestampTicks, long replayTimestampTicks)
         {
             if (Volatile.Read(ref _shutdown) != 0) return;
 
@@ -278,7 +279,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (total > _worstFrameMs) _worstFrameMs = total;
             Interlocked.Increment(ref _frameCount);
             FrameHistory.Push(new Jalium.UI.Diagnostics.FrameHistory.Sample(
-                layoutMs, renderMs, presentMs, total, dirtyElements));
+                layoutMs, renderMs, presentMs, total, dirtyElements, 0, captureTimestampTicks, replayTimestampTicks));
         }
 
         public void OnEndDraw()
@@ -4932,7 +4933,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _hasPendingResize = false;
         _pendingResizeRequiresNativeSameSize = false;
-        lock (_rtChannelLock) { _rtPendingFrame = null; }
+        ClearPendingRenderThreadCapture();
 
         // Android currently renders inline, but retain a hard join boundary in
         // case a platform render worker is enabled later.  Returning while that
@@ -4950,7 +4951,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 stalledRenderThread.Join();
                 _ = Interlocked.CompareExchange(ref _renderThread, null, stalledRenderThread);
-                lock (_rtChannelLock) { _rtPendingFrame = null; }
+                ClearPendingRenderThreadCapture();
             }
             catch (Exception ex)
             {
@@ -8295,7 +8296,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // on the publishing (UI) thread, so discard that queued capture before
             // retiring the old target. Recovery already requests a full repaint;
             // the next capture is rebuilt entirely against the replacement device.
-            lock (_rtChannelLock) { _rtPendingFrame = null; }
+            ClearPendingRenderThreadCapture();
 
             RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
             if (failedBackend == RenderBackend.Auto &&
@@ -8397,7 +8398,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             // See the exception overload above: no pre-recovery command stream
             // may be replayed after its creating device has been retired.
-            lock (_rtChannelLock) { _rtPendingFrame = null; }
+            ClearPendingRenderThreadCapture();
 
             RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
 
@@ -9243,6 +9244,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void ProcessRender()
     {
+        _rtPipelineTrace?.Mark(RenderPipelineStage.ProcessRender, detail: Volatile.Read(ref _renderState));
         ClearRenderFlag(RenderFlag_Scheduled);
         if (_isClosing || Handle == nint.Zero) return;
         CancelDeferredRender();
@@ -9331,7 +9333,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // which is what finally takes the ~110ms iGPU present off the message pump.
     // D3D12 defaults to a dedicated render worker on Windows. WM_SIZE and layout
     // remain synchronous on the UI thread, while native Resize/Replay/Present run
-    // on the worker and consume a latest-frame-wins mailbox. An explicit
+    // on the worker. Capture requests coalesce until the worker is ready for
+    // the latest UI state. An explicit
     // JALIUM_RENDER_THREAD=0 retains the inline path for diagnostics and the
     // device-loss harness; =1 still forces the worker as before.
     private static readonly bool EnableRenderThread = ResolveRenderThreadEnabled();
@@ -9366,39 +9369,40 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        object drawing;
+        object? drawing = null;
         try
         {
-            Render(recorder);                          // walk tree → command list
-        }
-        finally
-        {
-            // Always exit the whole-frame recording scope, even if the tree walk
-            // throws — otherwise s_wholeFrameRecording would leak true on this thread.
-            drawing = host.FinishRecord(recorder);     // immutable Drawing
-        }
+            try
+            {
+                Render(recorder);                     // walk tree → command list
+            }
+            finally
+            {
+                // Always exit the whole-frame recording scope, even if the tree walk throws.
+                drawing = host.FinishRecord(recorder);
+            }
 
-        // schema-gap: if the capture hit content it can't represent (windowless
-        // WebView punch, video surface, ink-layer blit, transition shader …),
-        // discard it and direct-render so nothing is silently dropped.
-        if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing dr && !dr.IsFullyRecordable)
-        {
-            Render(ctx);
-            return;
-        }
+            // Schema gaps need direct rendering, but the discarded capture still owns buffers.
+            if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing dr && !dr.IsFullyRecordable)
+            {
+                Render(ctx);
+                return;
+            }
 
-        var savedOffset = ctx.Offset;
-        ctx.Offset = Point.Zero;                       // whole-frame Drawing is absolute from 0
-        host.Replay(drawing, ctx);                     // issue native draws
-        ctx.Offset = savedOffset;
+            var savedOffset = ctx.Offset;
+            ctx.Offset = Point.Zero;                   // whole-frame Drawing is absolute from 0
+            try { host.Replay(drawing, ctx); }
+            finally { ctx.Offset = savedOffset; }
+        }
+        finally { DrawingLifetime.Release(drawing); }
     }
 
     // ── Render thread (Increment 2) ─────────────────────────────────────
     // When EnableRenderThread is on AND the window is a non-composition HWND, the
     // GPU-blocking work (BeginDraw waitable+fence, Replay, EndDraw/Present) runs on
     // this dedicated thread instead of the UI/message-pump thread. The UI thread
-    // records the whole frame into a Drawing and publishes it (latest-frame-wins
-    // mailbox) then returns to GetMessage immediately — so the ~110ms iGPU present
+    // records the latest state when the worker is ready, then returns to the
+    // message pump immediately — so the ~110ms iGPU present
     // no longer blocks input/animation. FULL render only in this first version
     // (no dirty-rect partial present): on iGPU the present cost is dominated by the
     // DWM flip release regardless of dirty area, so full-frame is the simpler, safe
@@ -9415,6 +9419,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public long ResizeVersion;
         public bool RequireNativeSameSize;
         public bool SimplifyEffects;
+        public RenderCaptureScheduler? Scheduler;
+        public long SchedulerTicket;
+        public bool Requeued;
+        public long CaptureTimestampTicks;
+        public long UiStartedTimestampTicks;
+        public long RecordedTimestampTicks;
+        public long ReplayStartedTimestampTicks;
+        public bool DeferCaptureCompletion;
+        public bool PresentedSuccessfully;
         // HUD/FrameHistory split measured on the UI thread while producing this capture.
         // The worker adds its own present time and pushes the completed sample.
         public double HudLayoutMs;
@@ -9427,6 +9440,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private volatile bool _renderThreadStop;
     private readonly object _rtChannelLock = new();
     private FrameCapture? _rtPendingFrame;
+    private RenderCaptureScheduler? _rtCaptureScheduler;
+    private RenderPipelineTrace? _rtPipelineTrace;
+    private Jalium.UI.Core.Platform.IFrameTimer? _rtCaptureTimer;
+    private RenderCaptureTiming _rtCaptureTiming;
+    private volatile bool _rtPhaseCaptureEnabled;
+    private long _rtUiFrameStartTimestamp;
+    private long _rtRecordedFrameCount;
     private AutoResetEvent? _rtFrameAvailable;
     private volatile bool _rtPause;
     private ManualResetEventSlim? _rtIdle;
@@ -9473,6 +9493,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _renderThreadStop = false;
         _rtFrameAvailable ??= new AutoResetEvent(false);
         _rtIdle ??= new ManualResetEventSlim(false);
+        _rtCaptureScheduler = new RenderCaptureScheduler();
+        _rtPipelineTrace = RenderPipelineTrace.TryCreate();
         var t = new Thread(RenderThreadLoop) { IsBackground = true, Name = "Jalium.Render" };
         _renderThread = t;
         _rtActive = true;
@@ -9508,6 +9530,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool StopRenderThread()
     {
+        _rtCaptureScheduler?.Stop();
         var t = _renderThread;
         if (t == null) return true;
         _rtActive = false;
@@ -9526,7 +9549,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         _ = Interlocked.CompareExchange(ref _renderThread, null, t);
-        lock (_rtChannelLock) { _rtPendingFrame = null; }
+        ClearPendingRenderThreadCapture();
         return true;
     }
 
@@ -9631,7 +9654,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (Interlocked.CompareExchange(
                         ref _renderThread, null, stalledRenderThread) == stalledRenderThread)
                 {
-                    lock (_rtChannelLock) { _rtPendingFrame = null; }
+                    ClearPendingRenderThreadCapture();
                     ReleaseRenderResourcesAfterRenderThreadStopped();
                 }
             }
@@ -9672,6 +9695,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         try
         {
+            _rtCaptureTiming = default;
+            string? phaseSetting = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD_PHASE_CAPTURE");
+            if (!VSyncDisabledByEnv &&
+                (string.IsNullOrWhiteSpace(phaseSetting) || IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD_PHASE_CAPTURE")))
+            {
+                try { _rtCaptureTimer = new Jalium.UI.Core.Platform.NativeFrameTimer(); }
+                catch { }
+            }
+            _rtPhaseCaptureEnabled = _rtCaptureTimer != null;
             var wake = _rtFrameAvailable;
             while (!_renderThreadStop)
             {
@@ -9681,26 +9713,45 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 FrameCapture? cap;
                 lock (_rtChannelLock) { cap = _rtPendingFrame; _rtPendingFrame = null; }
                 if (cap == null) continue;
-                try { PresentCaptureOnRenderThread(cap); }
-                catch (RenderPipelineException ex) { MarshalRenderRecovery(ex); }
-                catch (Exception ex)
+                _rtPipelineTrace?.Mark(RenderPipelineStage.WorkerClaim, cap.SchedulerTicket);
+                try
                 {
-                    if (IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD_DIAGNOSTICS"))
+                    if (ShouldRefreshRenderThreadCapture(cap))
                     {
-                        Console.Error.WriteLine($"[Jalium.Render] Frame replay failed: {ex}");
+                        CompleteRenderThreadCapture(cap);
+                        continue;
                     }
-                    // The capture is lost and dirty was already cleared at publish
-                    // time — without re-invalidation a static scene would keep the
-                    // stale frame on screen until the next external invalidation.
-                    // Marshal a full invalidation back to the UI thread so the
-                    // scene re-records and re-publishes.
-                    try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
-                    catch { /* shutting down */ }
+                    cap.Requeued = false;
+                    cap.PresentedSuccessfully = false;
+                    try
+                    {
+                        PresentCaptureOnRenderThread(cap);
+                        WaitForRenderCaptureDeadline(cap);
+                    }
+                    catch (RenderPipelineException ex) { MarshalRenderRecovery(ex); }
+                    catch (Exception ex)
+                    {
+                        if (IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD_DIAGNOSTICS"))
+                        {
+                            Console.Error.WriteLine($"[Jalium.Render] Frame replay failed: {ex}");
+                        }
+                        // The capture is lost and dirty was already cleared at publish
+                        // time — without re-invalidation a static scene would keep the
+                        // stale frame on screen until the next external invalidation.
+                        // Marshal a full invalidation back to the UI thread so the
+                        // scene re-records and re-publishes.
+                        try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
+                        catch { /* shutting down */ }
+                    }
+                    finally { CompleteRenderThreadCapture(cap); }
                 }
+                finally { DrawingLifetime.Release(cap.Drawing); }
             }
         }
         finally
         {
+            StopRenderCaptureTimer(reason: 0);
+            _rtPipelineTrace?.Export();
             // DrawingContext inherits DispatcherObject and implicitly registers
             // a dispatcher on this dedicated worker. Its global registry holds
             // the Thread strongly, even after Join succeeds. Retire that private
@@ -9724,16 +9775,127 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    private void WaitForRenderCaptureDeadline(FrameCapture cap)
+    {
+        if (!cap.DeferCaptureCompletion || !cap.PresentedSuccessfully || _rtCaptureTimer is not { } timer) return;
+        // Keep the recording slot until its phase deadline even when no request
+        // is pending yet. Input/frame-clock work arriving during this interval
+        // coalesces into the newest capture at that deadline.
+        bool traced = false;
+        while (!_renderThreadStop && !_rtPause)
+        {
+            long delay = _rtCaptureTiming.GetCaptureDelayMicroseconds(
+                cap.ReplayStartedTimestampTicks, Stopwatch.GetTimestamp(), Stopwatch.Frequency, CompositionTarget.RefreshRate);
+            if (delay <= 0) break;
+            if (!traced) { _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureDelayStart, cap.SchedulerTicket); traced = true; }
+            uint timeout = (uint)Math.Clamp((delay + 999) / 1000 + 5, 10, 1000);
+            bool fired;
+            try
+            {
+                timer.Arm(delay);
+                fired = timer.Wait(timeout);
+            }
+            catch
+            {
+                StopRenderCaptureTimer(reason: 2);
+                break;
+            }
+            if (!fired)
+            {
+                StopRenderCaptureTimer(reason: 1);
+                break;
+            }
+            // Recheck QPC after each timer wake before releasing the slot.
+        }
+        if (traced) _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureDelayEnd, cap.SchedulerTicket);
+    }
+
+    private void StopRenderCaptureTimer(int reason)
+    {
+        _rtPhaseCaptureEnabled = false;
+        var timer = _rtCaptureTimer;
+        _rtCaptureTimer = null;
+        if (timer == null) return;
+        _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureTimerStopped, detail: reason);
+        try { timer.Dispose(); } catch { }
+    }
+
+    private static bool ShouldRefreshRenderThreadCapture(FrameCapture cap)
+    {
+        if (cap.Scheduler?.HasPendingCapture(cap.SchedulerTicket) != true) return false;
+        // A stalled compositor must not leave a superseded capture waiting in
+        // front of newer input. Quiet/static captures remain retryable.
+        return cap.Requeued || (cap.CaptureTimestampTicks != 0 &&
+            Stopwatch.GetElapsedTime(cap.CaptureTimestampTicks).TotalMilliseconds > CompositionTarget.FrameIntervalMs * 2);
+    }
+
     private void RequeueRenderThreadCaptureUnlessSuperseded(FrameCapture cap)
     {
+        cap.Requeued = true;
         lock (_rtChannelLock)
         {
-            // The UI may already have published a newer layout while this frame
-            // was waiting on the GPU. Never replace that newer state with stale
-            // geometry; otherwise retry this exact capture.
-            _rtPendingFrame ??= cap;
+            // Keep static scenes retryable. Completion replaces this capture
+            // when the UI has requested newer state while the GPU was busy.
+            if (_rtPendingFrame is null)
+            {
+                // The worker still owns its reference until its finally block.
+                // A queued retry needs a separate reference to the same drawing.
+                DrawingLifetime.Retain(cap.Drawing);
+                _rtPendingFrame = cap;
+            }
         }
         _rtFrameAvailable?.Set();
+    }
+
+    private void CompleteRenderThreadCapture(FrameCapture cap)
+    {
+        var scheduler = cap.Scheduler;
+        if (scheduler is null) return;
+        var completion = scheduler.Complete(cap.SchedulerTicket, cap.Requeued);
+        _rtPipelineTrace?.Mark(RenderPipelineStage.SlotCompleted, cap.SchedulerTicket, (int)completion);
+        if (completion != RenderCaptureCompletion.CaptureRequested) return;
+        FrameCapture? dropped = null;
+        lock (_rtChannelLock)
+        {
+            if (ReferenceEquals(_rtPendingFrame, cap))
+            {
+                dropped = _rtPendingFrame;
+                _rtPendingFrame = null;
+            }
+        }
+        DrawingLifetime.Release(dropped?.Drawing);
+        ScheduleLatestRenderThreadCapture(scheduler, cap.SchedulerTicket, cap.LifecycleGeneration, cap.Target);
+    }
+
+    private void ClearPendingRenderThreadCapture()
+    {
+        FrameCapture? dropped;
+        lock (_rtChannelLock) { dropped = _rtPendingFrame; _rtPendingFrame = null; }
+        DrawingLifetime.Release(dropped?.Drawing);
+    }
+
+    private void ScheduleLatestRenderThreadCapture(
+        RenderCaptureScheduler scheduler, long ticket, int lifecycleGeneration, RenderTarget renderTarget)
+    {
+        _rtPipelineTrace?.Mark(RenderPipelineStage.RefreshPosted, ticket);
+        try
+        {
+            _dispatcher?.BeginInvokeCritical(() =>
+            {
+                _rtPipelineTrace?.Mark(RenderPipelineStage.RefreshDispatch, ticket);
+                if (!ReferenceEquals(_rtCaptureScheduler, scheduler) || !_rtActive ||
+                    !scheduler.IsAwaitingCapture(ticket) ||
+                    !IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
+                if (_rtPhaseCaptureEnabled && (_nativeWindowHidden || base.Visibility != Visibility.Visible ||
+                    WindowState == WindowState.Minimized || CompositionTarget.IsRenderingSuspended)) return;
+
+                // 等待期间输入与布局照常更新，此时只录制当前状态，不回放过期快照。
+                RequestFullInvalidation();
+                ClearRenderFlag(RenderFlag_DirtyBetween);
+                if (TrySetRenderFlag(RenderFlag_Scheduled)) ProcessRender();
+            });
+        }
+        catch { /* dispatcher shutting down */ }
     }
 
     private void PresentCaptureOnRenderThreadCore(FrameCapture cap)
@@ -9790,6 +9952,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         rt.SetFullInvalidation();
         long presentStartTimestamp = Stopwatch.GetTimestamp();
+        _rtPipelineTrace?.Mark(RenderPipelineStage.BeforeBegin, cap.SchedulerTicket, timestampTicks: presentStartTimestamp);
         if (!rt.TryBeginDraw())
         {
             // GPU/swap-chain busy. Do NOT silently drop the capture: dirty was
@@ -9806,11 +9969,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         bool ended = false;
+        long replayTimestampTicks = Stopwatch.GetTimestamp();
+        cap.ReplayStartedTimestampTicks = replayTimestampTicks;
+        cap.DeferCaptureCompletion = _rtPhaseCaptureEnabled && !_rtCaptureTiming.OverlapRecording;
+        _rtPipelineTrace?.Mark(RenderPipelineStage.AfterBegin, cap.SchedulerTicket, timestampTicks: replayTimestampTicks);
         try
         {
             ClearBackground(rt);
             dc.Offset = Point.Zero;
+            // The worker keeps its immutable drawing alive through replay and
+            // present. Release the recording slot now so at most one newer
+            // capture can overlap this work. Superseded captures that outlive
+            // the refresh budget are refreshed before replay (see the loop).
+            if (!cap.DeferCaptureCompletion) CompleteRenderThreadCapture(cap);
+            _rtPipelineTrace?.Mark(RenderPipelineStage.ReplayStart, cap.SchedulerTicket);
             host.Replay(cap.Drawing, dc);
+            _rtPipelineTrace?.Mark(RenderPipelineStage.ReplayEnd, cap.SchedulerTicket);
             if (!IsRenderLifecycleCurrent(cap.LifecycleGeneration, rt) ||
                 !ReferenceEquals(rt.OwnerContext, cap.OwnerContext))
             {
@@ -9822,10 +9996,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 return;
             }
+            _rtPipelineTrace?.Mark(RenderPipelineStage.BeforeEnd, cap.SchedulerTicket);
             JaliumResult endResult = rt.TryEndDraw();   // non-throwing; Ok or failure result
+            _rtPipelineTrace?.Mark(RenderPipelineStage.Submitted, cap.SchedulerTicket, (int)endResult);
             ended = endResult == JaliumResult.Ok;
+            cap.PresentedSuccessfully = ended;
             if (ended)
             {
+                if (_rtPhaseCaptureEnabled)
+                    _rtCaptureTiming.Observe(
+                        cap.RecordedTimestampTicks - cap.UiStartedTimestampTicks,
+                        Stopwatch.GetTimestamp() - replayTimestampTicks,
+                        Stopwatch.Frequency, CompositionTarget.RefreshRate);
                 Interlocked.Increment(ref _successfulPresentCount);
                 // Interlocked + plain bool store — safe from this worker (see
                 // ResetEndDrawInvalidStateTracking for the ordering argument).
@@ -9836,7 +10018,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     cap.HudLayoutMs,
                     cap.HudRecordMs,
                     Stopwatch.GetElapsedTime(presentStartTimestamp).TotalMilliseconds,
-                    cap.HudDirtyElements);
+                    cap.HudDirtyElements,
+                    cap.CaptureTimestampTicks,
+                    replayTimestampTicks);
             }
             // Per-frame draw-API counters are accumulated per THREAD, so this worker owns
             // the ones it just produced: publish (or drop, when another window is the
@@ -9882,6 +10066,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 Jalium.UI.Diagnostics.RenderDiagnostics.PublishAndResetApiStats(
                     publishWorkerDiagnostics, beginBlockingWaitNs, presentBlockNs);
+                if (publishWorkerDiagnostics)
+                {
+                    // Worker-owned presents bypass inline EndDraw. Publish the
+                    // native path counters here too, so DevTools does not keep
+                    // displaying the pre-show frame while the canvas is moving.
+                    PublishPathCacheStatsFromNative();
+                }
                 // The inline EndDraw path publishes the previous completed
                 // frame's hardware timestamps, but render-thread frames used
                 // to publish only Draw-API counters. Query here while this
@@ -10019,17 +10210,39 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
-    // UI thread: record the whole tree into a Drawing and hand it to the render
-    // thread (overwriting any un-consumed pending frame = latest-frame-wins), then
-    // return immediately. Never blocks on the present.
+    // UI thread: coalesce recording requests while the worker owns a capture.
+    // Completion asks for the newest UI state without blocking the message pump.
     private void PublishFrameToRenderThread(int lifecycleGeneration, RenderTarget renderTarget)
     {
-        if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
+        _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureRequested);
+        var scheduler = _rtCaptureScheduler;
+        if (scheduler is null || !IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
+        if (!scheduler.TryBeginCapture(out long ticket))
+        {
+            _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureCoalesced);
+            return;
+        }
+        _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureAcquired, ticket);
 
-        // Snapshot the exact native viewport that belongs to this layout. Keep
-        // recording while the worker is busy: publishing overwrites the mailbox,
-        // so every render opportunity contains the newest responsive layout and
-        // never waits for a resize quiet period.
+        bool published = false;
+        try
+        {
+            published = RecordAndPublishFrameToRenderThread(lifecycleGeneration, renderTarget, scheduler, ticket);
+        }
+        finally
+        {
+            if (!published && scheduler.Complete(ticket, retryPending: false) == RenderCaptureCompletion.CaptureRequested)
+                ScheduleLatestRenderThreadCapture(scheduler, ticket, lifecycleGeneration, renderTarget);
+        }
+    }
+
+    private bool RecordAndPublishFrameToRenderThread(int lifecycleGeneration, RenderTarget renderTarget, RenderCaptureScheduler scheduler, long ticket)
+    {
+        if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return false;
+
+        // Snapshot the native viewport belonging to the newest settled layout.
+        // Input/layout keep advancing while a previous capture is on the worker;
+        // this method runs as soon as it is ready, without a resize quiet period.
         long captureResizeVersion = _pendingResizeVersion;
         bool captureHasPendingResize = _hasPendingResize;
         int capturePhysicalWidth = captureHasPendingResize
@@ -10056,97 +10269,125 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // (StartRenderThreadIfSupported won't resurrect the thread: the latch
             // blocks it), so a slow compositor can't pin the UI thread here either.
             ScheduleDeferredRender(1);
-            return;
+            return false;
         }
 
+        _rtRecordedFrameCount++;
+        long captureTimestampTicks = Stopwatch.GetTimestamp();
+        long recordedTimestampTicks = 0;
+        _rtPipelineTrace?.Mark(RenderPipelineStage.RecordStart, ticket, timestampTicks: captureTimestampTicks);
         object drawing;
+        bool recorded = false;
         try
         {
             Render(recorder);
             try { DevToolsOverlay?.DrawOverlay(recorder); } catch { }
+            recorded = true;
         }
         finally
         {
             // Always exit the whole-frame scope even if the tree walk throws.
             drawing = host.FinishRecord(recorder);
+            recordedTimestampTicks = _rtPhaseCaptureEnabled ? Stopwatch.GetTimestamp() : 0;
+            _rtPipelineTrace?.Mark(RenderPipelineStage.RecordEnd, ticket, timestampTicks: recordedTimestampTicks);
+            if (!recorded) DrawingLifetime.Release(drawing);
         }
 
-        // Render(recorder) walks user-extensible visuals. A callback can close
-        // or externally destroy the window; never publish that stale capture to
-        // the render thread after its lifecycle token has been invalidated.
-        if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
-        if (_pendingResizeVersion != captureResizeVersion)
+        bool transferred = false;
+        FrameCapture? replaced = null;
+        try
         {
-            // A re-entrant WM_SIZE superseded the layout while user rendering was
-            // being recorded. Drop only this stale capture and immediately render
-            // the already-current managed size on the next frame-clock turn.
-            RequestFullInvalidation();
-            InvalidateWindow();
-            return;
-        }
-
-        // schema-gap (render-thread path): the capture hit content it can't
-        // represent (windowless WebView punch, video surface, ink-layer blit, …).
-        // Don't publish a lossy frame — permanently fall back to the inline UI
-        // path for this window (latch so RT recreation can't resurrect the lossy
-        // path) and STOP+JOIN the render thread before the UI resumes RT ownership.
-        // Dirty state is preserved so the rescheduled inline frame repaints.
-        if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing d && !d.IsFullyRecordable)
-        {
-            _renderThreadDisabledForSchemaGap = true;
-            _ = TryCompleteRenderThreadSchemaFallback();
-            // Same as the host-null latch above: the inline path this window
-            // falls back to gets event-driven present pacing.
-            ScheduleDeferredRender(1);   // repaint inline (dirty intact)
-            return;
-        }
-
-        // Close the UI-thread half of the frame clock here: everything after this point
-        // (BeginDraw wait, Replay, Present) is the worker's, and it reports that back.
-        _debugHud.MarkRender();
-        var (hudLayoutMs, hudRecordMs) = _debugHud.CaptureSplitForDeferredPresent();
-
-        var cap = new FrameCapture
-        {
-            Drawing = drawing,
-            Target = renderTarget,
-            OwnerContext = renderTarget.OwnerContext,
-            ContextGeneration = renderTarget.OwnerContextGeneration,
-            LifecycleGeneration = lifecycleGeneration,
-            PhysicalWidth = capturePhysicalWidth,
-            PhysicalHeight = capturePhysicalHeight,
-            ResizeVersion = captureHasPendingResize ? captureResizeVersion : 0,
-            RequireNativeSameSize = captureRequiresNativeSameSize,
-            SimplifyEffects = captureSimplifiesEffects,
-            HudLayoutMs = hudLayoutMs,
-            HudRecordMs = hudRecordMs,
-            HudDirtyElements = _dirtyElements.Count,
-        };
-
-        // Publish and consume dirty state as one lifecycle transaction. If
-        // teardown, recovery, or schema fallback won the race after recording,
-        // leave dirty intact and never expose this stale capture to the worker.
-        lock (_renderLifecycleGate)
-        {
-            if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget) ||
-                !_rtActive || _renderThread == null || _renderThreadStop ||
-                !ReferenceEquals(renderTarget.OwnerContext, cap.OwnerContext))
+            // Render(recorder) walks user-extensible visuals. A callback can close
+            // or externally destroy the window; never publish that stale capture to
+            // the render thread after its lifecycle token has been invalidated.
+            if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return false;
+            if (_pendingResizeVersion != captureResizeVersion)
             {
-                return;
+                // A re-entrant WM_SIZE superseded the layout while user rendering was
+                // being recorded. Drop only this stale capture and immediately render
+                // the already-current managed size on the next frame-clock turn.
+                RequestFullInvalidation();
+                InvalidateWindow();
+                return false;
             }
 
-            lock (_rtChannelLock)
+            // schema-gap (render-thread path): the capture hit content it can't
+            // represent (windowless WebView punch, video surface, ink-layer blit, …).
+            // Don't publish a lossy frame — permanently fall back to the inline UI
+            // path for this window (latch so RT recreation can't resurrect the lossy
+            // path) and STOP+JOIN the render thread before the UI resumes RT ownership.
+            // Dirty state is preserved so the rescheduled inline frame repaints.
+            if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing d && !d.IsFullyRecordable)
             {
-                _rtPendingFrame = cap;
-                lock (_dirtyLock)
+                _renderThreadDisabledForSchemaGap = true;
+                _ = TryCompleteRenderThreadSchemaFallback();
+                // Same as the host-null latch above: the inline path this window
+                // falls back to gets event-driven present pacing.
+                ScheduleDeferredRender(1);   // repaint inline (dirty intact)
+                return false;
+            }
+
+            // Close the UI-thread half of the frame clock here: everything after this point
+            // (BeginDraw wait, Replay, Present) is the worker's, and it reports that back.
+            _debugHud.MarkRender();
+            var (hudLayoutMs, hudRecordMs) = _debugHud.CaptureSplitForDeferredPresent();
+
+            var cap = new FrameCapture
+            {
+                Drawing = drawing,
+                CaptureTimestampTicks = captureTimestampTicks,
+                UiStartedTimestampTicks = _rtUiFrameStartTimestamp != 0 ? _rtUiFrameStartTimestamp : captureTimestampTicks,
+                RecordedTimestampTicks = recordedTimestampTicks,
+                Scheduler = scheduler,
+                SchedulerTicket = ticket,
+                Target = renderTarget,
+                OwnerContext = renderTarget.OwnerContext,
+                ContextGeneration = renderTarget.OwnerContextGeneration,
+                LifecycleGeneration = lifecycleGeneration,
+                PhysicalWidth = capturePhysicalWidth,
+                PhysicalHeight = capturePhysicalHeight,
+                ResizeVersion = captureHasPendingResize ? captureResizeVersion : 0,
+                RequireNativeSameSize = captureRequiresNativeSameSize,
+                SimplifyEffects = captureSimplifiesEffects,
+                HudLayoutMs = hudLayoutMs,
+                HudRecordMs = hudRecordMs,
+                HudDirtyElements = _dirtyElements.Count,
+            };
+
+            // Publish and consume dirty state as one lifecycle transaction. If
+            // teardown, recovery, or schema fallback won the race after recording,
+            // leave dirty intact and never expose this stale capture to the worker.
+            lock (_renderLifecycleGate)
+            {
+                if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget) ||
+                    !_rtActive || _renderThread == null || _renderThreadStop ||
+                    !ReferenceEquals(renderTarget.OwnerContext, cap.OwnerContext))
                 {
-                    _dirtyElements.Clear();
-                    _dirtyFreeRects.Clear();
-                    _fullInvalidation = false;
+                    return false;
+                }
+
+                lock (_rtChannelLock)
+                {
+                    replaced = _rtPendingFrame;
+                    _rtPendingFrame = cap;
+                    _rtPipelineTrace?.Mark(RenderPipelineStage.Published, ticket);
+                    transferred = true;
+                    lock (_dirtyLock)
+                    {
+                        _dirtyElements.Clear();
+                        _dirtyFreeRects.Clear();
+                        _fullInvalidation = false;
+                    }
                 }
             }
+            _rtFrameAvailable?.Set();
+            return true;
         }
-        _rtFrameAvailable?.Set();
+        finally
+        {
+            DrawingLifetime.Release(replaced?.Drawing);
+            if (!transferred) DrawingLifetime.Release(drawing);
+        }
     }
 
     private void StartFramePacerIfSupported()
@@ -10602,6 +10843,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void RenderFrame()
     { _debugHud.OnRenderFrame();
+        _rtPipelineTrace?.Mark(RenderPipelineStage.RenderFrame, detail: Volatile.Read(ref _renderState));
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.RF);
         int frameLifecycleGeneration;
         lock (_renderLifecycleGate)
@@ -10623,6 +10865,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ClearRenderFlag(RenderFlag_Requested);
             frameLifecycleGeneration = _renderLifecycleGeneration;
         }
+        _rtUiFrameStartTimestamp = _rtPhaseCaptureEnabled ? Stopwatch.GetTimestamp() : 0;
 
         // RC4-a 帧事务状态：swapped=true 表示本帧已把活动脏集捕获为帧独占集且尚未
         // 收尾（Discard/RetainOrDrop 会把它翻回 false）；finally 兜底对仍未收尾的
@@ -12090,6 +12333,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void OnFrameStarting()
     {
+        _rtPipelineTrace?.Mark(RenderPipelineStage.FrameClock, detail: Volatile.Read(ref _renderState));
         if (_isClosing || Handle == nint.Zero) return;
 
         ProcessPendingInputDetachesForFrame();
@@ -12101,6 +12345,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // (RequestFullInvalidation runs on resize anyway). Holding the dirty
         // flag avoids dropping invalidations that arrived during minimize.
         if (WindowState == WindowState.Minimized) return;
+        if (_rtPhaseCaptureEnabled && _rtActive && (_nativeWindowHidden || base.Visibility != Visibility.Visible)) return;
 
         // A window whose render-target creation failed otherwise depends on the
         // DispatcherTimer retry chain, which bottoms out in the thread pool and
@@ -12235,6 +12480,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // a 125 Hz hover burst still coalesces to one render per refresh interval.
         SetRenderFlag(RenderFlag_DirtyBetween);
         Jalium.UI.Media.CompositionTarget.RequestFrame();
+        if (_rtPhaseCaptureEnabled && _rtActive && CheckAccess() && !_nativeWindowHidden && base.Visibility == Visibility.Visible && WindowState != WindowState.Minimized &&
+            !CompositionTarget.IsRenderingSuspended && _rtCaptureScheduler is { } scheduler &&
+            scheduler.RequestCapture() && TrySetRenderFlag(RenderFlag_Scheduled))
+        {
+            _dispatcher?.BeginInvokeCritical(ProcessPhaseInvalidation);
+        }
+    }
+
+    private void ProcessPhaseInvalidation()
+    {
+        if (_nativeWindowHidden || base.Visibility != Visibility.Visible || WindowState == WindowState.Minimized ||
+            CompositionTarget.IsRenderingSuspended)
+        {
+            ClearRenderFlag(RenderFlag_Scheduled);
+            return;
+        }
+        if (_rtActive && _rtPhaseCaptureEnabled) ClearRenderFlag(RenderFlag_DirtyBetween);
+        ProcessRender();
     }
 
     /// <summary>
