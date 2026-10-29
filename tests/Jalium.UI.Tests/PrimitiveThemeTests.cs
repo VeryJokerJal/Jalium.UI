@@ -281,7 +281,7 @@ public class PrimitiveThemeTests
             Assert.IsType<Style>(styleObj);
 
             Assert.False(slider.HasLocalValue(FrameworkElement.HeightProperty));
-            Assert.Equal(32, slider.Height);
+            Assert.True(double.IsNaN(slider.Height));
             Assert.True(slider.RenderSize.Height >= 32);
         }
         finally

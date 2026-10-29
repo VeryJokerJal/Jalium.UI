@@ -1,5 +1,6 @@
 using System.Reflection;
 using Jalium.UI.Controls;
+using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
 
@@ -228,5 +229,59 @@ public sealed class ScrollViewerVirtualizedContentRealizationTests
         var (_, passes) = Settle(list, new Size(ViewerWidth, ViewerHeight));
 
         Assert.True(passes < 9, $"layout needed {passes + 1} passes to settle");
+    }
+
+    [Theory]
+    [InlineData(false, 700)]
+    [InlineData(true, 300)]
+    public void TemplatedList_WheelSequence_ReachesTheLastVirtualizedRow(
+        bool useSmoothInertia,
+        int wheelEvents)
+    {
+        var list = new ProbeListBox(itemCount: 600);
+        Settle(list, new Size(ViewerWidth, ViewerHeight));
+        var viewer = Assert.IsType<ScrollViewer>(FindDescendant<ScrollViewer>(list));
+        viewer.IsScrollInertiaEnabled = useSmoothInertia;
+        viewer.ScrollInertiaDurationMs = 300;
+
+        for (var index = 0; index < wheelEvents; index++)
+        {
+            viewer.RaiseEvent(new MouseWheelEventArgs(
+                UIElement.MouseWheelEvent,
+                new Point(8, 8),
+                delta: -120,
+                leftButton: MouseButtonState.Released,
+                middleButton: MouseButtonState.Released,
+                rightButton: MouseButtonState.Released,
+                xButton1: MouseButtonState.Released,
+                xButton2: MouseButtonState.Released,
+                modifiers: ModifierKeys.None,
+                timestamp: index + 1));
+        }
+
+        var advance = typeof(ScrollViewer).GetMethod(
+            "AdvanceSmoothScrollByMilliseconds",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var isSmoothScrolling = typeof(ScrollViewer).GetField(
+            "_isSmoothScrolling",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(advance);
+        Assert.NotNull(isSmoothScrolling);
+        for (var frame = 0;
+             frame < 256 && (bool)isSmoothScrolling!.GetValue(viewer)!;
+             frame++)
+        {
+            advance!.Invoke(viewer, [16L]);
+        }
+
+        var (panel, _) = Settle(list, new Size(ViewerWidth, ViewerHeight));
+
+        Assert.False((bool)isSmoothScrolling!.GetValue(viewer)!);
+        Assert.InRange(
+            Math.Abs(viewer.VerticalOffset - viewer.ScrollableHeight),
+            0,
+            0.5);
+        Assert.NotNull(list.ItemContainerGenerator.ContainerFromIndex(599));
+        Assert.NotNull(panel);
     }
 }

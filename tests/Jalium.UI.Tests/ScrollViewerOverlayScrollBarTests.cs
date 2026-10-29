@@ -233,15 +233,15 @@ public class ScrollViewerOverlayScrollBarTests
     }
 
     [Fact]
-    public void DesktopScrollBar_StillReservesItsTwelveDipGutter()
+    public void DesktopScrollBars_ReserveViewportSpace()
     {
         var viewer = new ScrollViewer
         {
-            Content = new Border { Width = 100, Height = 300 },
+            Content = new Border { Width = 300, Height = 300 },
             Width = 200,
             Height = 120,
             IsOverlayScrollBarEnabled = false,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
 
@@ -249,7 +249,12 @@ public class ScrollViewerOverlayScrollBarTests
         viewer.Arrange(new Rect(0, 0, 200, 120));
 
         Assert.Equal(188, viewer.ViewportWidth, precision: 3);
-        Assert.Equal(120, viewer.ViewportHeight, precision: 3);
+        Assert.Equal(108, viewer.ViewportHeight, precision: 3);
+
+        var verticalBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+        var horizontalBar = GetPrivateField<ScrollBar>(viewer, "_horizontalScrollBar");
+        Assert.Equal(new Rect(188, 0, 12, 108), verticalBar.VisualBounds);
+        Assert.Equal(new Rect(0, 108, 188, 12), horizontalBar.VisualBounds);
     }
 
     [Fact]

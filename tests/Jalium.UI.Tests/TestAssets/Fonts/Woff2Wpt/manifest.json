@@ -1,0 +1,248 @@
+[
+  {
+    "id": "css/WOFF2/directory-knowntags-001.xht",
+    "font": "directory-knowntags-001.woff2",
+    "assertion": "Valid TTF flavored SFNT font with table directory using custom tag instead of known table flag for some know tables.",
+    "sha256": "0c10f0d4589b20fc0305175e805f7b2bd4c11e5d759da8ff8841279d7229111d"
+  },
+  {
+    "id": "css/WOFF2/directory-mismatched-tables-001.xht",
+    "font": "directory-mismatched-tables-001.woff2",
+    "assertion": "Invalid TTF flavored WOFF font collection with two pairs of mismatched glyf/loca tables",
+    "sha256": "ed144837bbe272203e1a57e9ad36d84df565714d5933bd313f4ce8b56541083f"
+  },
+  {
+    "id": "css/WOFF2/header-length-001.xht",
+    "font": "header-length-001.woff2",
+    "assertion": "The length field contains a value that is four bytes shorter than the actual data.",
+    "sha256": "9831401ab231fccb0a5d19f501632a7cea1f865b1cfdfbbe9955608dbb9b1166"
+  },
+  {
+    "id": "css/WOFF2/header-length-002.xht",
+    "font": "header-length-002.woff2",
+    "assertion": "The length field contains a value that is four bytes longer than the actual data.",
+    "sha256": "30c20546c4adc6d50d3f61cd97790f179ac75f349318dc3b35e2e440244523ab"
+  },
+  {
+    "id": "css/WOFF2/header-numTables-001.xht",
+    "font": "header-numTables-001.woff2",
+    "assertion": "The header contains 0 in the numTables field. A table directory and table data are present.",
+    "sha256": "822ccfbd2870c8081b6563f8fa3a4bea1792e3e441cd7b91a6955ba3a3ac5534"
+  },
+  {
+    "id": "css/WOFF2/header-reserved-001.xht",
+    "font": "header-reserved-001.woff2",
+    "assertion": "The reserved field contains 1.",
+    "sha256": "f689ea05e29dd4c1a57af3f4f89aef8912920acb04f75cac10e89278cd456df1"
+  },
+  {
+    "id": "css/WOFF2/header-signature-001.xht",
+    "font": "header-signature-001.woff2",
+    "assertion": "The signature field contains XXXX instead of wOFF.",
+    "sha256": "2e04651e1694ce1feb694bd446af14302fbe801ba8adffd29dfb9563de80f721"
+  },
+  {
+    "id": "css/WOFF2/header-totalsfntsize-001.xht",
+    "font": "header-totalsfntsize-001.woff2",
+    "assertion": "The totalSfntSize field contains a too small incorrect value.",
+    "sha256": "b3b5b7acca6badafeea93966e1ec4c8450e0efeac6d05a30a9033c443fa22001"
+  },
+  {
+    "id": "css/WOFF2/header-totalsfntsize-002.xht",
+    "font": "header-totalsfntsize-002.woff2",
+    "assertion": "The totalSfntSize field contains a too big incorrect value.",
+    "sha256": "d89e2c52a5bfe224f4c2cb92ee5759b4b082e419d0fb9dafd8328462956dde93"
+  },
+  {
+    "id": "css/WOFF2/privatedata-noeffect-001.xht",
+    "font": "privatedata-noeffect-001.woff2",
+    "assertion": "The file has no private data.",
+    "sha256": "92cd7b916e02cb77a9b21fce3b89f588ba060eda31784c693093438a1a9a8a69"
+  },
+  {
+    "id": "css/WOFF2/privatedata-noeffect-002.xht",
+    "font": "privatedata-noeffect-002.woff2",
+    "assertion": "The file has private data.",
+    "sha256": "f05ac62769c759bab3fa1b22914715f96dd3222cb7dc03ff5ab9ffa0dc79b8db"
+  },
+  {
+    "id": "css/WOFF2/tabledata-bad-origlength-loca-001.xht",
+    "font": "tabledata-bad-origlength-loca-001.woff2",
+    "assertion": "The origLength of the loca table is 4 bytes less than the calculated size",
+    "sha256": "ec5afc166a3d4a033648cc0f65679a54aafcf8c077ee26454ffcd8eb83465ae6"
+  },
+  {
+    "id": "css/WOFF2/tabledata-bad-origlength-loca-002.xht",
+    "font": "tabledata-bad-origlength-loca-002.woff2",
+    "assertion": "The origLength of the loca table is 4 bytes more than the calculated size",
+    "sha256": "3f37b8b33d758f72ee4f06899e7cc555beeaede849935bc4fd5deccc341a9179"
+  },
+  {
+    "id": "css/WOFF2/tabledata-brotli-001.xht",
+    "font": "tabledata-brotli-001.woff2",
+    "assertion": "Font table data is compressed with zlib instead of Brotli.",
+    "sha256": "ff937a5586fb546627d618607216a3632fd61e48e422c62f9e2deeba235d5346"
+  },
+  {
+    "id": "css/WOFF2/tabledata-decompressed-length-001.xht",
+    "font": "tabledata-decompressed-length-001.woff2",
+    "assertion": "The original length of the first table in the directory is increased by 1, making the decompressed length of the table data less than the sum of original table lengths.",
+    "sha256": "cc0b676000203175db5d27ee966fa12de13a38c67d17388295376bcc667f9de2"
+  },
+  {
+    "id": "css/WOFF2/tabledata-decompressed-length-002.xht",
+    "font": "tabledata-decompressed-length-002.woff2",
+    "assertion": "The original length of the first table in the directory is decreased by 1, making the decompressed length of the table data greater than the sum of original table lengths.",
+    "sha256": "719136a8ad576915caeff78d53a0d42d42584161b4cc1fa0723f9132e5250340"
+  },
+  {
+    "id": "css/WOFF2/tabledata-decompressed-length-003.xht",
+    "font": "tabledata-decompressed-length-003.woff2",
+    "assertion": "The transformed length of the glyf table in the directory is increased by 1, making the decompressed length of the table data less than the sum of transformed table lengths.",
+    "sha256": "9925d99043bac7b0c43c51687fbcf520ca0aa662c60e7b83dbfc61f62de7dd71"
+  },
+  {
+    "id": "css/WOFF2/tabledata-decompressed-length-004.xht",
+    "font": "tabledata-decompressed-length-004.woff2",
+    "assertion": "The transformed length of the glyf table in the directory is decreased by 1, making the decompressed length of the table data greater than the sum of transformed table lengths.",
+    "sha256": "c20faeeb8385f22101d0363e1e05cb22bdfdefce87efe8debbfa39b8ba3ae2ea"
+  },
+  {
+    "id": "css/WOFF2/tabledata-extraneous-data-001.xht",
+    "font": "tabledata-extraneous-data-001.woff2",
+    "assertion": "There is extraneous data before the last table.",
+    "sha256": "122ab26cfafee3a8bf0f2d75d9ff33b5fd439b71365c482591d18143562b619f"
+  },
+  {
+    "id": "css/WOFF2/tabledata-glyf-bbox-001.xht",
+    "font": "tabledata-glyf-bbox-001.woff2",
+    "assertion": "Valid TTF flavored WOFF with a glyph with no explicit bounding box",
+    "sha256": "92cd7b916e02cb77a9b21fce3b89f588ba060eda31784c693093438a1a9a8a69"
+  },
+  {
+    "id": "css/WOFF2/tabledata-glyf-bbox-002.xht",
+    "font": "tabledata-glyf-bbox-002.woff2",
+    "assertion": "Invalid TTF flavored WOFF due to composite glyphs without bounding box",
+    "sha256": "440b02e0d33a1160aeb9172f64f0c0dcf377af771aa6e5cf425dade4237d5219"
+  },
+  {
+    "id": "css/WOFF2/tabledata-glyf-bbox-003.xht",
+    "font": "tabledata-glyf-bbox-003.woff2",
+    "assertion": "Invalid TTF flavored WOFF due to empty glyph with bounding box",
+    "sha256": "b8234dac39ef0e71eca1deae5d61bd129602b0cae9c93d63c520ebfaeee64784"
+  },
+  {
+    "id": "css/WOFF2/tabledata-glyf-origlength-001.xht",
+    "font": "tabledata-glyf-origlength-001.woff2",
+    "assertion": "The origLength field of glyf table contains a too small incorrect value.",
+    "sha256": "589d118b956814b948bd5c42612dd552ef0ebaf5d838fe097788a402643c9cde"
+  },
+  {
+    "id": "css/WOFF2/tabledata-glyf-origlength-002.xht",
+    "font": "tabledata-glyf-origlength-002.woff2",
+    "assertion": "The origLength field of glyf table contains a too big incorrect value.",
+    "sha256": "42062e850370cd5ed2f7f97d3373de9294d3189f3d2e15f1078c5595380691a1"
+  },
+  {
+    "id": "css/WOFF2/tabledata-glyf-origlength-003.xht",
+    "font": "tabledata-glyf-origlength-003.woff2",
+    "assertion": "The origLength field of glyf table is larger than constructed table.",
+    "sha256": "4c8908acaeaa4e3599e5bffa0eb2a78ed99c638b7a885214763a315f55b9f6ba"
+  },
+  {
+    "id": "css/WOFF2/tabledata-non-zero-loca-001.xht",
+    "font": "tabledata-non-zero-loca-001.woff2",
+    "assertion": "The transformed loca table contains 4 zero bytes and its transformLength is 4.",
+    "sha256": "559ca5b5cd33cbc6e9739ba88873d93d33c93780846de49a3fbc0798782aee41"
+  },
+  {
+    "id": "css/WOFF2/tabledata-recontruct-loca-001.xht",
+    "font": "tabledata-recontruct-loca-001.woff2",
+    "assertion": "Valid TTF flavored WOFF with simple composite glyphs where the loca table uses the short format, to check loca reconstruction",
+    "sha256": "5b685a0022d53b9352c3adf56cf1602c6fc39c66b4be60f8dcac42e9ef11f247"
+  },
+  {
+    "id": "css/WOFF2/tabledata-transform-bad-flag-001.xht",
+    "font": "tabledata-transform-bad-flag-001.woff2",
+    "assertion": "Invalid CFF flavored WOFF with head table having transform version 1.",
+    "sha256": "85972dd5a29f887513c1e8b8cc876a5d094d8f3d13da57b76ed390da8ff6b8ec"
+  },
+  {
+    "id": "css/WOFF2/tabledata-transform-bad-flag-002.xht",
+    "font": "tabledata-transform-bad-flag-002.woff2",
+    "assertion": "Invalid TTF flavored WOFF with glyf table having transform version 3.",
+    "sha256": "e546fd9060691bb8ae47642bdca27a5a64300ba0e0b3b88217c0d4d408baeb9d"
+  },
+  {
+    "id": "css/WOFF2/tabledata-transform-hmtx-001.xht",
+    "font": "tabledata-transform-hmtx-001.woff2",
+    "assertion": "Valid TTF flavored WOFF with transformed hmtx table.",
+    "sha256": "62a9934d08c576ce59cdfda6e1b31746e5785f58562b3fd545df791075e5796c"
+  },
+  {
+    "id": "css/WOFF2/tabledata-transform-hmtx-002.xht",
+    "font": "tabledata-transform-hmtx-002.woff2",
+    "assertion": "Valid TTF flavored WOFF with transformed hmtx table and correct flags field.",
+    "sha256": "62a9934d08c576ce59cdfda6e1b31746e5785f58562b3fd545df791075e5796c"
+  },
+  {
+    "id": "css/WOFF2/tabledata-transform-hmtx-003.xht",
+    "font": "tabledata-transform-hmtx-003.woff2",
+    "assertion": "Invalid TTF flavored WOFF with transformed hmtx table that has all flags bits (including reserved bits) set.",
+    "sha256": "e77458187f4813f1050c3ac02332cc2565cb5103ddaa4a674029b3db83bc6b98"
+  },
+  {
+    "id": "css/WOFF2/tabledata-transform-hmtx-004.xht",
+    "font": "tabledata-transform-hmtx-004.woff2",
+    "assertion": "Invalid TTF flavored WOFF with transformed hmtx table that has 0 flags (null transform).",
+    "sha256": "f2a58d2da594853a89ea58ce366389b6a7416326263da5d70e5e00c41c4874e8"
+  },
+  {
+    "id": "css/WOFF2/valid-001.xht",
+    "font": "valid-001.woff2",
+    "assertion": "Valid CFF flavored WOFF with no metadata and no private data",
+    "sha256": "92cd7b916e02cb77a9b21fce3b89f588ba060eda31784c693093438a1a9a8a69"
+  },
+  {
+    "id": "css/WOFF2/valid-002.xht",
+    "font": "valid-002.woff2",
+    "assertion": "Valid CFF flavored WOFF with metadata",
+    "sha256": "8fae2c2464070f0ad828d214735fdc7a7ff2025be4b0de4325699fbaf722ed42"
+  },
+  {
+    "id": "css/WOFF2/valid-003.xht",
+    "font": "valid-003.woff2",
+    "assertion": "Valid CFF flavored WOFF with private data",
+    "sha256": "f05ac62769c759bab3fa1b22914715f96dd3222cb7dc03ff5ab9ffa0dc79b8db"
+  },
+  {
+    "id": "css/WOFF2/valid-004.xht",
+    "font": "valid-004.woff2",
+    "assertion": "Valid CFF flavored WOFF with metadata and private data",
+    "sha256": "73cc5516a1e0b1aa9734a1ce56053c5312d3229004d4fd08a3356254be9c50d6"
+  },
+  {
+    "id": "css/WOFF2/valid-005.xht",
+    "font": "valid-005.woff2",
+    "assertion": "Valid TTF flavored WOFF with no metadata and no private data",
+    "sha256": "62a9934d08c576ce59cdfda6e1b31746e5785f58562b3fd545df791075e5796c"
+  },
+  {
+    "id": "css/WOFF2/valid-006.xht",
+    "font": "valid-006.woff2",
+    "assertion": "Valid TTF flavored WOFF with metadata",
+    "sha256": "62a9934d08c576ce59cdfda6e1b31746e5785f58562b3fd545df791075e5796c"
+  },
+  {
+    "id": "css/WOFF2/valid-007.xht",
+    "font": "valid-007.woff2",
+    "assertion": "Valid TTF flavored WOFF with private data",
+    "sha256": "62a9934d08c576ce59cdfda6e1b31746e5785f58562b3fd545df791075e5796c"
+  },
+  {
+    "id": "css/WOFF2/valid-008.xht",
+    "font": "valid-008.woff2",
+    "assertion": "Valid TTF flavored WOFF with metadata and private data",
+    "sha256": "62a9934d08c576ce59cdfda6e1b31746e5785f58562b3fd545df791075e5796c"
+  }
+]

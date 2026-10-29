@@ -396,12 +396,12 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     {
         if (Jalium.UI.Styling.CssFontFaces.IsBlocked(formattedText.FontFamily)) return;
         var canonical = DrawingObjectPool.CanonicalizeFormattedText(formattedText);
-        // A gradient/image text foreground is shared by-reference (the pool only
-        // canonicalizes a solid foreground); on the whole-frame path a later UI
-        // mutation would race the render-thread replay. Rare enough (most text is
-        // solid-colored) to fall back to direct render rather than snapshot the
-        // whole FormattedText.
-        if (_snapshotInputs && canonical.Foreground is not (null or SolidColorBrush))
+        // Hover can reveal gradient text (for example a launcher wordmark).
+        // Snapshot its brush and already-shaped text instead of permanently
+        // moving the entire window's rendering back onto the input thread.
+        if (_snapshotInputs && canonical.Foreground is LinearGradientBrush or RadialGradientBrush)
+            canonical = canonical.CreateRenderSnapshot(DrawInputSnapshotter.SnapshotBrush(canonical.Foreground));
+        else if (_snapshotInputs && canonical.Foreground is not (null or SolidColorBrush))
             DrawingContext.MarkCurrentFrameUnrecordable();
         _commands.Add(DrawCommand.Text(canonical, origin));
 

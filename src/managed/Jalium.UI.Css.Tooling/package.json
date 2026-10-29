@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@vercel/ncc": "0.38.4",
+    "less": "4.8.1",
+    "prettier": "3.9.0",
+    "sass": "1.105.0"
+  }
+}

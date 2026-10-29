@@ -6184,12 +6184,21 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (_transitionNoProperties)
             return false;
 
+        // Most writes during hover are not transition targets (pointer state,
+        // scale, layout metadata). Reject them before querying OS motion policy.
+        var cssTransitionData = Jalium.UI.Styling.CssEngine.IsActive
+            ? GetValue(Jalium.UI.Styling.CssTransitions.DataProperty) as Jalium.UI.Styling.CssTransitionData
+            : null;
+        if (cssTransitionData is null && !_transitionAllProperties &&
+            _transitionPropertyLookup?.ContainsKey(dp.Name) != true)
+            return false;
+
         if (AutomaticTransitionsEnabledProvider is { } transitionsEnabled && !transitionsEnabled())
             return false;
         if (GetAutomaticTransitionAnimationFactory() == null)
             return false;
 
-        if (Jalium.UI.Styling.CssEngine.IsActive && GetValue(Jalium.UI.Styling.CssTransitions.DataProperty) is Jalium.UI.Styling.CssTransitionData cssData)
+        if (cssTransitionData is { } cssData)
         {
             if (HasLocalValue(dp)) return false;
             var cssTransition = cssData.Find(this, dp);

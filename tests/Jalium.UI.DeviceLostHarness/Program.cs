@@ -762,9 +762,11 @@ internal static class Program
         // looked for _cachedLayer==0 therefore missed the transient zero and then
         // saw a stable, valid, non-zero handle forever — raising the frame budget
         // could not help because the zero never returns (this was the ~50% flake).
-        // "cached != escaped" latches once and is race-free; the ORPHAN assertion
-        // below then proves the departed handle was actually destroyed through the
-        // removed-device orphan branch — i.e. released, not merely dropped/leaked.
+        // A newly realized layer may reuse the freed wrapper's address. Pointer
+        // inequality alone therefore has an ABA hole: the old wrapper can be
+        // correctly destroyed while every poll sees the same numeric address.
+        // The native orphan-destruction counter is independent of allocation
+        // reuse. Keep the exact +1 assertion below as proof of actual destruction.
         root.Children.Add(scene.Animated);
         bool released = false;
         for (int i = 0; i < 600 && !released; i++)
@@ -775,8 +777,22 @@ internal static class Program
             // device handle (the common case): either way the stale handle is
             // gone from _cachedLayer. The orphan-count check below proves it was
             // destroyed rather than left dangling.
-            if (GetCachedLayer(scene.Animated) != escaped) released = true;
-            else yield return null;
+            if (GetCachedLayer(scene.Animated) != escaped)
+            {
+                released = true;
+            }
+            else
+            {
+                var target = window.RenderTarget;
+                if (target != null &&
+                    DebugRetainedDestroyCounts(target.Handle, out ulong observedOrphans, out _) == 1 &&
+                    observedOrphans == o0 + 1)
+                {
+                    Marker("ESCAPED_ADDRESS_REUSED_AFTER_DESTROY");
+                    released = true;
+                }
+                else yield return null;
+            }
         }
         AssertTrue(released,
             "escaped stale-device layer was RELEASED after the native guard refused it (not retained forever / leaked)");

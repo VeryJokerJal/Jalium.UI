@@ -4,12 +4,51 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Tests;
 
 [Collection("Application")]
 public class ContentDialogTests
 {
+    [Fact]
+    public void CssModalSelector_FollowsInPlaceDialogLifecycle()
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+
+        try
+        {
+            var root = new Grid();
+            var dialog = new ContentDialog { Title = "Dialog" };
+            root.Children.Add(dialog);
+            var window = CreateWindow(root);
+            app.MainWindow = window;
+            Css.SetStyleSheet(root, "ContentDialog:modal { opacity:.6 }");
+            MeasureWindow(window);
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(1, dialog.Opacity);
+
+            var showTask = dialog.ShowAsync(ContentDialogPlacement.InPlace);
+            MeasureWindow(window);
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(.6, dialog.Opacity);
+            Assert.False(showTask.IsCompleted);
+
+            dialog.Hide();
+            ProcessUiQueue();
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(1, dialog.Opacity);
+            Assert.True(showTask.IsCompletedSuccessfully);
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
     [Fact]
     public void ShowAsync_DetachedDialog_ShouldResolveMainWindow()
     {
@@ -27,12 +66,20 @@ public class ContentDialogTests
                 Title = "Dialog",
                 PrimaryButtonText = "OK"
             };
+            Css.SetStyleSheet(dialog, "ContentDialog:modal { opacity:.6 }");
+            var modal = Assert.Single(CssSelectorParser.ParseGroup(":modal", out _)!);
+            Assert.False(CssMatcher.Matches(dialog, modal, evaluateStates: true));
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(1, dialog.Opacity);
 
             var showTask = dialog.ShowAsync();
             MeasureWindow(window);
             ProcessUiQueue();
 
             Assert.False(showTask.IsCompleted);
+            Assert.True(CssMatcher.Matches(dialog, modal, evaluateStates: true));
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(.6, dialog.Opacity);
             Assert.Same(dialog, window.ActiveContentDialog);
             Assert.Equal(Visibility.Visible, dialog.Visibility);
             Assert.NotNull(GetPrivateField<ContentDialogOverlayHost>(dialog, "_popupHost"));
@@ -41,6 +88,9 @@ public class ContentDialogTests
             ProcessUiQueue();
 
             Assert.True(showTask.IsCompletedSuccessfully);
+            Assert.False(CssMatcher.Matches(dialog, modal, evaluateStates: true));
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(1, dialog.Opacity);
             Assert.Equal(ContentDialogResult.None, GetCompleted(showTask));
             Assert.Null(window.ActiveContentDialog);
         }
@@ -829,8 +879,8 @@ public class ContentDialogTests
         Assert.Equal(width, dialog.ActualWidth);
         Assert.Equal(height, dialog.ActualHeight);
 
-        Assert.Equal((width - card.ActualWidth) / 2, card.VisualBounds.X, 3);
-        Assert.Equal((height - card.ActualHeight) / 2, card.VisualBounds.Y, 3);
+        Assert.Equal(card.RoundLayoutValue((width - card.ActualWidth) / 2), card.VisualBounds.X, 3);
+        Assert.Equal(card.RoundLayoutValue((height - card.ActualHeight) / 2), card.VisualBounds.Y, 3);
     }
 
     private static void ProcessUiQueue()

@@ -1506,7 +1506,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             else
             {
-                _ = ShowWindow(Handle, value == Visibility.Visible
+                _ = ShowWin32WindowState(value == Visibility.Visible
                     ? (ShowActivated ? SW_SHOW : SW_SHOWNA)
                     : SW_HIDE);
             }
@@ -2225,108 +2225,36 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return null;
         }
 
-        var titleBarBounds = TitleBar.VisualBounds;
-
-        // Convert to TitleBar-local coordinates so they can be compared with button VisualBounds.
-        var localPoint = new Point(point.X - titleBarBounds.X, point.Y - titleBarBounds.Y);
-
         var closeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Close);
-        if (IsTitleBarButtonHit(localPoint, closeButton))
+        if (IsTitleBarButtonHit(point, closeButton, windowWidth))
         {
             return closeButton;
         }
 
         var maximizeButton = GetTitleBarButtonByKind(TitleBar.IsMaximized ? TitleBarButtonKind.Restore : TitleBarButtonKind.Maximize);
-        if (IsTitleBarButtonHit(localPoint, maximizeButton))
+        if (IsTitleBarButtonHit(point, maximizeButton, windowWidth))
         {
             return maximizeButton;
         }
 
         var minimizeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Minimize);
-        if (IsTitleBarButtonHit(localPoint, minimizeButton))
+        if (IsTitleBarButtonHit(point, minimizeButton, windowWidth))
         {
             return minimizeButton;
         }
 
-        // Fallback for cases before first arrange: use current button widths,
-        // not a hardcoded value, so hit-test math stays aligned with layout.
-        var titleBarWidth = windowWidth > 0
-            ? windowWidth
-            : (TitleBar.ActualWidth > 0 ? TitleBar.ActualWidth : Width);
-
-        return GetTitleBarButtonByWidthFallback(localPoint, titleBarWidth, closeButton, maximizeButton, minimizeButton);
-    }
-
-    private static bool IsTitleBarButtonHit(Point localPoint, TitleBarButton? button)
-    {
-        if (button == null || button.Visibility != Visibility.Visible)
-        {
-            return false;
-        }
-
-        var bounds = button.VisualBounds;
-        if (bounds.Width <= 0 || bounds.Height <= 0)
-        {
-            return false;
-        }
-
-        // Use the largest known dimension so styled Width/Height can expand NC hit-testing
-        // even when layout is temporarily constrained to native caption metrics.
-        double width = Math.Max(bounds.Width, GetTitleBarButtonHitWidth(button));
-        double height = Math.Max(bounds.Height, GetTitleBarButtonHitHeight(button));
-
-        return localPoint.X >= bounds.X &&
-               localPoint.X < bounds.X + width &&
-               localPoint.Y >= bounds.Y &&
-               localPoint.Y < bounds.Y + height;
-    }
-
-    private TitleBarButton? GetTitleBarButtonByWidthFallback(
-        Point localPoint,
-        double titleBarWidth,
-        TitleBarButton? closeButton,
-        TitleBarButton? maximizeButton,
-        TitleBarButton? minimizeButton)
-    {
-        double buttonX = titleBarWidth;
-
-        if (TitleBar!.ShowCloseButton && closeButton != null)
-        {
-            var closeWidth = GetTitleBarButtonHitWidth(closeButton);
-            var closeHeight = GetTitleBarButtonHitHeight(closeButton);
-            buttonX -= closeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + closeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < closeHeight)
-            {
-                return closeButton;
-            }
-        }
-
-        if (TitleBar.ShowMaximizeButton && maximizeButton != null)
-        {
-            var maximizeWidth = GetTitleBarButtonHitWidth(maximizeButton);
-            var maximizeHeight = GetTitleBarButtonHitHeight(maximizeButton);
-            buttonX -= maximizeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + maximizeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < maximizeHeight)
-            {
-                return maximizeButton;
-            }
-        }
-
-        if (TitleBar.ShowMinimizeButton && minimizeButton != null)
-        {
-            var minimizeWidth = GetTitleBarButtonHitWidth(minimizeButton);
-            var minimizeHeight = GetTitleBarButtonHitHeight(minimizeButton);
-            buttonX -= minimizeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + minimizeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < minimizeHeight)
-            {
-                return minimizeButton;
-            }
-        }
-
         return null;
+    }
+
+    private bool IsTitleBarButtonHit(Point point, TitleBarButton? button, double windowWidth)
+    {
+        if (!TryGetTitleBarButtonClientBoundsDip(button, out var bounds, windowWidth))
+        {
+            return false;
+        }
+
+        return point.X >= bounds.left && point.X < bounds.right &&
+               point.Y >= bounds.top && point.Y < bounds.bottom;
     }
 
     private static double GetTitleBarButtonHitWidth(TitleBarButton button)
@@ -2513,7 +2441,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         var maxButton = GetTitleBarButtonByKind(TitleBar.IsMaximized ? TitleBarButtonKind.Restore : TitleBarButtonKind.Maximize);
-        if (!TryGetCustomMaxButtonClientBoundsDip(maxButton, out var customMaxClientRectDip))
+        if (!TryGetTitleBarButtonClientBoundsDip(maxButton, out var customMaxClientRectDip))
         {
             return false;
         }
@@ -2527,18 +2455,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return TryGetCustomMaxButtonScreenBounds(customMaxClientRectDip, _dpiScale, (clientOrigin.X, clientOrigin.Y), out customMaxRect);
     }
 
-    private bool TryGetCustomMaxButtonClientBoundsDip(
-        TitleBarButton? maxButton,
-        out (double left, double top, double right, double bottom) clientRect)
+    private bool TryGetTitleBarButtonClientBoundsDip(
+        TitleBarButton? button,
+        out (double left, double top, double right, double bottom) clientRect,
+        double windowWidth = 0)
     {
         clientRect = default;
-        if (TitleBar == null || maxButton == null || maxButton.Visibility != Visibility.Visible)
+        if (TitleBar == null || button == null || button.Visibility != Visibility.Visible)
         {
             return false;
         }
 
         var titleBarBounds = TitleBar.VisualBounds;
-        var buttonBounds = maxButton.VisualBounds;
+        var buttonBounds = button.VisualBounds;
         double left;
         double top;
         double width;
@@ -2546,23 +2475,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (buttonBounds.Width > 0 && buttonBounds.Height > 0)
         {
+            width = Math.Max(buttonBounds.Width, GetTitleBarButtonHitWidth(button));
+            height = Math.Max(buttonBounds.Height, GetTitleBarButtonHitHeight(button));
+            if (TitleBar.IsAncestorOf(button))
+            {
+                // Template parts may sit inside padded or offset containers. Their
+                // VisualBounds are parent-relative, not title-bar-relative.
+                var bounds = Rect.Transform(new Rect(0, 0, width, height), button.GetRenderMatrixTo(this));
+                clientRect = (bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
+                return bounds.Width > 0 && bounds.Height > 0;
+            }
+
             left = titleBarBounds.X + buttonBounds.X;
             top = titleBarBounds.Y + buttonBounds.Y;
-            width = buttonBounds.Width;
-            height = buttonBounds.Height;
         }
         else
         {
-            double titleBarWidth = TitleBar.ActualWidth > 0
-                ? TitleBar.ActualWidth
-                : (TitleBar.DesiredSize.Width > 0 ? TitleBar.DesiredSize.Width : Width);
+            // Only unarranged buttons use a width fallback. An arranged button
+            // must not leave a second, invisible hit region at its old position.
+            double titleBarWidth = windowWidth > 0 ? windowWidth :
+                (TitleBar.ActualWidth > 0 ? TitleBar.ActualWidth :
+                    (TitleBar.DesiredSize.Width > 0 ? TitleBar.DesiredSize.Width : Width));
             if (titleBarWidth <= 0)
             {
                 return false;
             }
 
             double buttonX = titleBarBounds.X + titleBarWidth;
-            if (TitleBar.ShowCloseButton)
+            if (button.Kind != TitleBarButtonKind.Close && TitleBar.ShowCloseButton)
             {
                 var closeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Close);
                 if (closeButton != null && closeButton.Visibility == Visibility.Visible)
@@ -2571,8 +2511,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
             }
 
-            width = GetTitleBarButtonHitWidth(maxButton);
-            height = GetTitleBarButtonHitHeight(maxButton);
+            if (button.Kind == TitleBarButtonKind.Minimize && TitleBar.ShowMaximizeButton)
+            {
+                var maximizeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Maximize);
+                if (maximizeButton != null && maximizeButton.Visibility == Visibility.Visible)
+                {
+                    buttonX -= GetTitleBarButtonHitWidth(maximizeButton);
+                }
+            }
+
+            width = GetTitleBarButtonHitWidth(button);
+            height = GetTitleBarButtonHitHeight(button);
             buttonX -= width;
             left = buttonX;
             top = titleBarBounds.Y;
@@ -2790,7 +2739,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             double effectiveTitleBarHeight = GetEffectiveTitleBarHeightDip();
             TitleBar.Measure(new Size(contentWidth, effectiveTitleBarHeight));
-            titleBarHeight = GetElementHeightDip(TitleBar, effectiveTitleBarHeight);
+            // ActualHeight still belongs to the previous arrange pass here.
+            titleBarHeight = TitleBar.DesiredSize.Height;
         }
 
         // Measure content with remaining space
@@ -2829,7 +2779,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Arrange title bar at top (offset by safe area)
         if (IsTitleBarVisible() && TitleBar != null)
         {
-            titleBarHeight = GetCurrentTitleBarHeightDip();
+            titleBarHeight = TitleBar.DesiredSize.Height;
             Rect titleBarRect = new(safeLeft, safeTop, contentWidth, titleBarHeight);
             TitleBar.Arrange(titleBarRect);
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
@@ -2882,6 +2832,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual void Show()
     {
+        if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
         if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
             throw new InvalidOperationException("A closing or closed window cannot be shown again.");
 
@@ -2912,6 +2863,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             _lastThemeSyncVersion = themeVersion;
         }
 
+        Application.Current?.NotifyWindowShowing(this);
+        if (_managedTeardownStarted) return;
         _dispatcher = Dispatcher.CurrentDispatcher;
 
         // Capture desired state before EnsureHandle, because Win32 calls inside
@@ -2999,7 +2952,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             else
             {
-                _ = ShowWindow(Handle, showCmd);
+                _ = ShowWin32WindowState(showCmd);
                 // Fullscreen needs a second step on Win32: strip the frame + resize
                 // to cover the monitor. Done AFTER ShowWindow so the HWND has valid
                 // window rect / monitor assignment.  The pre-show background frame
@@ -3273,7 +3226,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Win32 path
         if (WindowState == WindowState.Minimized)
         {
-            _ = ShowWindow(Handle, SW_RESTORE);
+            _ = ShowWin32WindowState(SW_RESTORE);
         }
 
         return SetForegroundWindow(Handle);
@@ -4006,9 +3959,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         RegisterWindowClass();
 
         // Determine window style based on WindowStyle/ResizeMode/TitleBarStyle.
-        // For custom title bar we keep standard caption style bits and remove the
-        // visible caption via NCCALCSIZE; for WindowStyle=None we use WS_POPUP so
-        // the window has no native frame or caption at all.
+        // Custom chrome owns the caption geometry. WS_CAPTION makes Windows use
+        // the system caption height for Snap hover, even when NCHITTEST returns
+        // HTMAXBUTTON below that band. Keep the system menu and resize/button
+        // styles, but let the custom layout define the caption hit regions.
         uint dwStyle;
         if (WindowStyle == WindowStyle.None)
         {
@@ -4108,6 +4062,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (isCustomTitleBar)
         {
+            // USER32 adds WS_CAPTION when creating an overlapped window. Remove
+            // it after creation so Snap uses our HTMAXBUTTON geometry at every
+            // title-bar height, then apply the custom frame below.
+            _ = SetWindowLong(Handle, GWL_STYLE, GetWindowLong(Handle, GWL_STYLE) & ~(long)WS_CAPTION);
             EnableRoundedCorners();
         }
 
@@ -4133,6 +4091,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 needsDpiAdjust ? physicalHeight : 0,
                 needsDpiAdjust ? (flags | SWP_NOMOVE) : flags);
         }
+
+        // Creation messages arrive before _windows contains the HWND, so
+        // WM_GETMINMAXINFO cannot enforce our constraints yet. Check the live
+        // client size after DPI and custom-frame setup, before the first frame.
+        ApplyInitialWin32SizeConstraints();
 
         // Create render target for this window.
         // During GPU switching this can fail transiently; defer to render-loop recovery.
@@ -4179,6 +4142,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         int physicalWidth = (int)(Width * _dpiScale);
         int physicalHeight = (int)(Height * _dpiScale);
+        int constrainedWidth = ConstrainClientSizeInPixels(physicalWidth, MinWidth, MaxWidth, _dpiScale);
+        int constrainedHeight = ConstrainClientSizeInPixels(physicalHeight, MinHeight, MaxHeight, _dpiScale);
+        if (constrainedWidth != physicalWidth && constrainedWidth > 0)
+            Width = constrainedWidth / _dpiScale;
+        if (constrainedHeight != physicalHeight && constrainedHeight > 0)
+            Height = constrainedHeight / _dpiScale;
+        physicalWidth = constrainedWidth;
+        physicalHeight = constrainedHeight;
         int x = double.IsNaN(Left) ? -1 : (int)(Left * _dpiScale);
         int y = double.IsNaN(Top) ? -1 : (int)(Top * _dpiScale);
 
@@ -5479,17 +5450,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         MARGINS margins = new() { Left = 0, Right = 0, Top = topMarginPhysical, Bottom = 0 };
-        _ = DwmExtendFrameIntoClientArea(Handle, ref margins);
-        _appliedDwmTopMarginPhysical = topMarginPhysical;
+        if (DwmExtendFrameIntoClientArea(Handle, ref margins) >= 0)
+        {
+            _appliedDwmTopMarginPhysical = topMarginPhysical;
+        }
     }
 
-    // DWM uses the Top margin to decide where the caption frame starts and
-    // whether to arm the Windows 11 Snap Layouts flyout over the maximize
-    // button. If we pass 0/1 here the flyout stops appearing entirely; if
-    // we pass the full custom title-bar height DWM still anchors the caption
-    // button rect to the system height at the top of that region. So mirror
-    // the title-bar height (or at least enough to cover it) to keep DWM's
-    // caption semantics aligned with our custom chrome.
+    // Cover the current title bar and any caption buttons extending below it.
+    // Use the same client bounds as NC hit testing, converted to physical pixels.
     private int GetCustomTitleBarTopMarginPhysical()
     {
         if (!IsTitleBarVisible())
@@ -5497,13 +5465,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return 0;
         }
 
-        double titleBarHeightDip = GetEffectiveTitleBarHeightDip();
-        if (TitleBar != null)
-        {
-            titleBarHeightDip = GetElementHeightDip(TitleBar, titleBarHeightDip);
-        }
+        double bottomDip = TitleBar!.VisualBounds.Y + GetCurrentTitleBarHeightDip();
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Minimize));
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Maximize));
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Close));
+        return Math.Max((int)Math.Ceiling(bottomDip * _dpiScale), 1);
 
-        return Math.Max((int)Math.Ceiling(titleBarHeightDip * _dpiScale), 1);
+        void IncludeButton(TitleBarButton? button)
+        {
+            if (TryGetTitleBarButtonClientBoundsDip(button, out var bounds))
+            {
+                bottomDip = Math.Max(bottomDip, bounds.bottom);
+            }
+        }
     }
 
     private static double GetElementHeightDip(FrameworkElement element, double fallback)
@@ -5673,10 +5647,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         else if (TitleBarStyle == WindowTitleBarStyle.Custom)
         {
-            // Keep WS_CAPTION so the OS preserves native caption semantics
-            // (Snap, system menu, NC button behavior). We remove the visual
-            // caption in WM_NCCALCSIZE instead.
-            style |= WS_CAPTION | WS_SYSMENU;
+            // A native caption constrains Snap hover to the system caption
+            // height. Custom buttons supply their own HT* regions instead.
+            style |= WS_SYSMENU;
             if (ResizeMode != ResizeMode.NoResize)
             {
                 style |= WS_MINIMIZEBOX;
@@ -6361,7 +6334,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                             WindowState.Minimized => SW_MINIMIZE,
                             _ => SW_RESTORE
                         };
-                        _ = ShowWindow(window.Handle, cmd);
+                        _ = window.ShowWin32WindowState(cmd);
                     }
                 }
             }
@@ -6786,6 +6759,33 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 (clientRect.bottom - clientRect.top)));
     }
 
+    private void ApplyInitialWin32SizeConstraints()
+    {
+        if (!GetClientRect(Handle, out RECT clientRect))
+            return;
+
+        int clientWidth = clientRect.right - clientRect.left;
+        int clientHeight = clientRect.bottom - clientRect.top;
+        int constrainedWidth = ConstrainClientSizeInPixels(clientWidth, MinWidth, MaxWidth, _dpiScale);
+        int constrainedHeight = ConstrainClientSizeInPixels(clientHeight, MinHeight, MaxHeight, _dpiScale);
+        if (constrainedWidth == clientWidth && constrainedHeight == clientHeight)
+            return;
+
+        var frame = GetNonClientFrameSize(Handle);
+        _ = SetWindowPos(Handle, nint.Zero, 0, 0,
+            ComputeWindowTrackSizeFromClientDip(constrainedWidth, 1, frame.width, isMinimum: true),
+            ComputeWindowTrackSizeFromClientDip(constrainedHeight, 1, frame.height, isMinimum: true),
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+    }
+
+    internal static int ConstrainClientSizeInPixels(
+        int clientSizePixels, double minimumDip, double maximumDip, double dpiScale)
+    {
+        int minimum = ComputeWindowTrackSizeFromClientDip(minimumDip, dpiScale, 0, isMinimum: true);
+        int maximum = ComputeWindowTrackSizeFromClientDip(maximumDip, dpiScale, 0, isMinimum: false);
+        return Math.Clamp(clientSizePixels, minimum, Math.Max(minimum, maximum));
+    }
+
     internal static int ComputeWindowTrackSizeFromClientDip(
         double clientSizeDip,
         double dpiScale,
@@ -7177,6 +7177,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     break;
                 }
 
+                case WM_SYSCOMMAND:
+                {
+                    int command = (int)(wParam.ToInt64() & 0xFFF0);
+                    if (command is SC_MAXIMIZE or SC_MINIMIZE or SC_RESTORE)
+                    {
+                        using var animation = window.BeginNativeCaptionAnimation(hWnd);
+                        return DefWindowProc(hWnd, msg, wParam, lParam);
+                    }
+                    break;
+                }
+
                 case WM_CLOSE:
                     // Route through Close() so Closing event can cancel
                     window.Close();
@@ -7277,6 +7288,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
                     {
+                        window.UpdateCustomTitleBarFrameMargins();
                         var customHitResult = window.HandleNcHitTest(lParam);
 
                         // WM_NCCALCSIZE deliberately extends a custom title bar into
@@ -7287,17 +7299,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                             return customHitResult;
                         }
 
-                        // DWM still gets the non-resize hit before our custom result.
-                        // This primes the Windows 11 Snap Layouts state machine for
-                        // HTMAXBUTTON and preserves native caption-button behavior.
-                        if (DwmDefWindowProc(hWnd, msg, wParam, lParam, out nint dwmHit) && dwmHit != nint.Zero)
-                        {
-                            return dwmHit;
-                        }
+                        // Keep DWM informed, but the current custom layout owns the
+                        // button hit regions. DWM's system-sized caption bounds can
+                        // overlap a different custom button after a size/style change.
+                        bool dwmHandled = DwmDefWindowProc(hWnd, msg, wParam, lParam, out nint dwmHit);
 
                         if (customHitResult != HTNOWHERE)
                         {
                             return customHitResult;
+                        }
+                        if (dwmHandled)
+                        {
+                            return dwmHit;
                         }
                     }
                     break;
@@ -12210,6 +12223,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 measureTicks: fMeasureEnd - fMeasureStart,
                 arrangeTicks: fEnd - fMeasureEnd,
                 measureCount: 1, arrangeCount: 1, iterations: 1);
+            UpdateCustomTitleBarFrameMargins();
             return;
         }
 
@@ -12217,6 +12231,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         PublishLayoutPassStatsFromTicks(
             result.TotalTicks, result.MeasureTicks, result.ArrangeTicks,
             result.MeasureCount, result.ArrangeCount, result.Iterations);
+        // A queued layout can arrange just a template subtree, skipping Window.ArrangeOverride.
+        UpdateCustomTitleBarFrameMargins();
     }
 
     private void UpdateLayoutForRender()

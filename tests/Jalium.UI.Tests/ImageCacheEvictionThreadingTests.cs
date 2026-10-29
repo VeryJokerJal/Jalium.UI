@@ -55,6 +55,54 @@ public sealed class ImageCacheEvictionThreadingTests
     private const int RaceFrames = 60;
     private const int RaceSources = 8;
 
+    [RequiresWindowsBackendFact(RenderBackend.D3D12)]
+    public void ConfiguredEntryBudgetEvictsOldImagesAndProtectsCurrentFrame()
+    {
+        using var first = CreateOpaqueWhiteBitmap();
+        using var second = CreateOpaqueWhiteBitmap();
+        using var third = CreateOpaqueWhiteBitmap();
+        using var surface = new GpuSurface(bitmapCapacity: 2);
+        var pixels = surface.DrawFrameAndReadBack(context =>
+        {
+            context.DrawImage(first, PaintRect);
+            context.DrawImage(second, PaintRect);
+            context.DrawImage(third, PaintRect);
+        });
+        surface.TrimCaches();
+        Assert.Equal(3, surface.CachedBitmapCount);
+        Assert.True(SampleChannelAverage(pixels, PaintRect) > 240);
+
+        surface.DrawFrame(context => context.DrawImage(third, PaintRect));
+        surface.TrimCaches();
+        Assert.Equal(2, surface.CachedBitmapCount);
+
+        pixels = surface.DrawFrameAndReadBack(context => context.DrawImage(first, PaintRect));
+        surface.TrimCaches();
+        Assert.Equal(2, surface.CachedBitmapCount);
+        Assert.True(SampleChannelAverage(pixels, PaintRect) > 240);
+    }
+
+    [RequiresWindowsBackendFact(RenderBackend.D3D12)]
+    public void ConfiguredByteBudgetEvictsOnlyImagesFromEarlierFrames()
+    {
+        using var first = CreateOpaqueWhiteBitmap();
+        using var second = CreateOpaqueWhiteBitmap();
+        using var surface = new GpuSurface(bitmapByteBudget: SourcePixels * SourcePixels * 4);
+        surface.DrawFrame(context => context.DrawImage(first, PaintRect));
+        surface.TrimCaches();
+        surface.DrawFrame(context => context.DrawImage(second, PaintRect));
+        surface.TrimCaches();
+        Assert.Equal(1, surface.CachedBitmapCount);
+
+        surface.DrawFrame(context =>
+        {
+            context.DrawImage(first, PaintRect);
+            context.DrawImage(second, PaintRect);
+        });
+        surface.TrimCaches();
+        Assert.Equal(2, surface.CachedBitmapCount);
+    }
+
     /// <summary>
     /// An eviction raised off the owning thread must be RECORDED there and APPLIED here — not
     /// applied by the raiser.
@@ -332,10 +380,12 @@ public sealed class ImageCacheEvictionThreadingTests
         private readonly RenderTarget _target;
         private readonly RenderTargetDrawingContext _drawingContext;
 
-        internal GpuSurface()
+        internal GpuSurface(int bitmapCapacity = 192, long bitmapByteBudget = 256L * 1024 * 1024)
         {
             _window = new HiddenNativeWindow(SurfaceWidth, SurfaceHeight);
             _context = new RenderContext(RenderBackend.D3D12);
+            _context.BitmapCacheCapacity = bitmapCapacity;
+            _context.BitmapCacheByteBudget = bitmapByteBudget;
             _target = _context.CreateRenderTarget(_window.Hwnd, SurfaceWidth, SurfaceHeight);
             _drawingContext = new RenderTargetDrawingContext(_target, _context);
         }
@@ -346,6 +396,8 @@ public sealed class ImageCacheEvictionThreadingTests
 
         /// <summary>What window teardown, the render-thread handover and a low-memory purge call.</summary>
         internal void ClearCaches() => _drawingContext.ClearCache();
+
+        internal void TrimCaches() => _drawingContext.TrimCacheIfNeeded();
 
         /// <summary>
         /// The owning thread's frame prologue, verbatim what <c>Window</c>, <c>PopupWindow</c> and

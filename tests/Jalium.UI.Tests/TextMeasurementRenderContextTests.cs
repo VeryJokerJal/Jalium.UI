@@ -8,6 +8,11 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public sealed class TextMeasurementRenderContextTests : IDisposable
 {
+    private static readonly FieldInfo ActiveResourceCountField =
+        typeof(RenderContext).GetField(
+            "_activeRenderTargetCount",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
     public TextMeasurementRenderContextTests()
     {
         ResetState();
@@ -118,6 +123,76 @@ public sealed class TextMeasurementRenderContextTests : IDisposable
     }
 
     [Fact]
+    public async Task ClearCache_DefersFormatDestroyUntilActiveNativeUseCompletes()
+    {
+        var context = RenderContext.GetOrCreateCurrent(RenderBackend.Software);
+        _ = TextMeasurement.GetFontMetrics("Segoe UI", 18.125, 500, 0);
+        var format = GetOnlyCachedFormat();
+        var nativeFormatHandle = format.Handle;
+
+        Assert.NotEqual(nint.Zero, nativeFormatHandle);
+        Assert.Equal(1, GetActiveResourceCount(context));
+
+        using var nativeUseEntered = new ManualResetEventSlim(initialState: false);
+        using var releaseNativeUse = new ManualResetEventSlim(initialState: false);
+        var inFlightUse = Task.Run(() =>
+            format.InvokeWithNativeUseForTesting(_ =>
+            {
+                nativeUseEntered.Set();
+                Assert.True(releaseNativeUse.Wait(TimeSpan.FromSeconds(10)));
+            }));
+
+        Assert.True(nativeUseEntered.Wait(TimeSpan.FromSeconds(10)));
+
+        TextMeasurement.ClearCache();
+
+        Assert.False(format.IsValid);
+        Assert.Equal(nativeFormatHandle, format.Handle);
+        Assert.Equal(1, GetActiveResourceCount(context));
+
+        releaseNativeUse.Set();
+        await inFlightUse.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(nint.Zero, format.Handle);
+        Assert.Equal(0, GetActiveResourceCount(context));
+    }
+
+    [Fact]
+    public void LateFormatMiss_FromRetiredContext_DoesNotRepopulateGlobalCache()
+    {
+        var retired = RenderContext.GetOrCreateCurrent(RenderBackend.Software);
+        var externalFormat = retired.CreateTextFormat("Segoe UI", 13f);
+        var retiredNativeHandle = retired.Handle;
+
+        var current = RenderContext.GetOrCreateCurrent(
+            RenderBackend.Software,
+            forceReplace: true);
+
+        Assert.NotSame(retired, current);
+        Assert.True(retired.IsValid);
+        Assert.Equal(1, GetActiveResourceCount(retired));
+
+        var lateFormat = InvokeGetOrCreateFormat(
+            retired,
+            "Segoe UI",
+            17.375f,
+            600,
+            1);
+
+        Assert.Null(lateFormat);
+        Assert.DoesNotContain(
+            GetFormatCache().Keys.Cast<object>(),
+            key => GetCacheKeyProperty<int>(key, "ContextGeneration") == retired.Generation);
+        Assert.Equal(1, GetActiveResourceCount(retired));
+
+        externalFormat.Dispose();
+
+        Assert.False(retired.IsValid);
+        Assert.Equal(nint.Zero, retired.Handle);
+        Assert.NotEqual(nint.Zero, retiredNativeHandle);
+    }
+
+    [Fact]
     public void GetFontMetrics_ConcurrentWarmHits_AreStable()
     {
         _ = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
@@ -156,6 +231,35 @@ public sealed class TextMeasurementRenderContextTests : IDisposable
         var key = cache.Keys.Cast<object>().Single();
         Assert.True(key.GetType().IsValueType);
         return key;
+    }
+
+    private static NativeTextFormat GetOnlyCachedFormat()
+    {
+        var cache = GetFormatCache();
+        Assert.Single(cache.Values.Cast<object>());
+        var entry = cache.Values.Cast<object>().Single();
+        var property = entry.GetType().GetProperty("Format");
+        Assert.NotNull(property);
+        return Assert.IsType<NativeTextFormat>(property!.GetValue(entry));
+    }
+
+    private static int GetActiveResourceCount(RenderContext context)
+        => Assert.IsType<int>(ActiveResourceCountField.GetValue(context));
+
+    private static NativeTextFormat? InvokeGetOrCreateFormat(
+        RenderContext context,
+        string fontFamily,
+        float fontSize,
+        int fontWeight,
+        int fontStyle)
+    {
+        var method = typeof(TextMeasurement).GetMethod(
+            "GetOrCreateFormat",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        return (NativeTextFormat?)method!.Invoke(
+            null,
+            [context, fontFamily, fontSize, fontWeight, fontStyle]);
     }
 
     private static T GetCacheKeyProperty<T>(object key, string propertyName)

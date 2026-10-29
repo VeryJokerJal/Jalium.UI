@@ -47,6 +47,77 @@ public class ToolTipAndTreeThemeTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ToolTipOwner_Unloaded_ShouldCancelPendingOrOpenToolTip(bool openBeforeUnload)
+    {
+        ToolTipService.Cleanup();
+        _ = new ToolTip(); // Initializes the FrameworkElement tooltip callbacks.
+
+        var owner = new Button { ToolTip = "Hint" };
+        owner.SetLoadedState(true);
+
+        try
+        {
+            owner.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = owner });
+
+            var current = GetCurrentToolTip();
+            Assert.NotNull(current);
+            if (openBeforeUnload)
+            {
+                current!.IsOpen = true;
+            }
+
+            // A popup/dialog transition can unload the hovered owner without another
+            // pointer sample. Its delayed tooltip must not survive that transition.
+            owner.SetLoadedState(false);
+
+            Assert.Null(GetCurrentToolTip());
+            Assert.False(current!.IsOpen);
+        }
+        finally
+        {
+            ToolTipService.Cleanup();
+        }
+    }
+
+    [Fact]
+    public void PointerMoveOffToolTipOwner_ShouldCancelPendingToolTip()
+    {
+        ToolTipService.Cleanup();
+        _ = new ToolTip();
+        UIElement.ForceReleaseMouseCapture();
+
+        using var host = new CountingInputHost();
+        var input = new WindowInputDispatcher(host);
+        var owner = new Button { ToolTip = "Hint" };
+        var sibling = new Border();
+        var panel = new StackPanel();
+        panel.Children.Add(owner);
+        panel.Children.Add(sibling);
+
+        try
+        {
+            host.HitTarget = owner;
+            input.HandleMouseMove(
+                new Point(10, 10), MouseButtonStates.AllReleased, ModifierKeys.None, 1);
+            Assert.NotNull(GetCurrentToolTip());
+
+            host.HitTarget = sibling;
+            input.HandleMouseMove(
+                new Point(20, 10), MouseButtonStates.AllReleased, ModifierKeys.None, 2);
+
+            Assert.Null(GetCurrentToolTip());
+            Assert.False(owner.IsMouseOver);
+        }
+        finally
+        {
+            input.HandleMouseLeave();
+            ToolTipService.Cleanup();
+        }
+    }
+
     [Fact]
     public void TreeViewItem_ImplicitThemeStyle_ShouldApplyWithoutLocalPaddingOverride()
     {
@@ -103,5 +174,13 @@ public class ToolTipAndTreeThemeTests
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         return field?.GetValue(instance) as T;
+    }
+
+    private static ToolTip? GetCurrentToolTip()
+    {
+        var field = typeof(ToolTipService).GetField(
+            "_currentToolTip",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        return field?.GetValue(null) as ToolTip;
     }
 }

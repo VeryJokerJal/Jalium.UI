@@ -91,12 +91,25 @@ public sealed class TextControlCanonicalApiShapeTests
     }
 
     [Fact]
-    public void PlatformTextHelpers_AreNotExported()
+    public void ImeExtensionContract_IsExportedThroughCoreFacade()
+    {
+        Assert.True(typeof(IImeSupport).IsPublic);
+        Assert.True(typeof(ImeSurroundingTextSnapshot).IsPublic);
+
+        Type[] exports = typeof(TextBox).Assembly.GetExportedTypes();
+        Assert.Contains(typeof(IImeSupport), exports);
+        Assert.Contains(typeof(ImeSurroundingTextSnapshot), exports);
+
+        Type[] coreForwarders = Assembly.Load("Jalium.UI.Core").GetForwardedTypes();
+        Assert.Contains(typeof(IImeSupport), coreForwarders);
+        Assert.Contains(typeof(ImeSurroundingTextSnapshot), coreForwarders);
+    }
+
+    [Fact]
+    public void TextImplementationHelpers_AreNotExported()
     {
         string[] forbidden =
         [
-            "Jalium.UI.IImeSupport",
-            "Jalium.UI.ImeSurroundingTextSnapshot",
             "Jalium.UI.Controls.SpellChecker",
             "Jalium.UI.Controls.PasswordRevealMode",
             "Jalium.UI.Controls.FormattedRegion",

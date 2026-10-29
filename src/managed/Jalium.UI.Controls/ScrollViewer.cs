@@ -3414,6 +3414,9 @@ public partial class ScrollViewer : ContentControl
             _verticalOffset = VerticalScrollBarVisibility == ScrollBarVisibility.Disabled
                 ? 0
                 : Math.Clamp(_verticalOffset, 0, Math.Max(0, _extentHeight - _viewportHeight));
+            if (!_isDeferredScrolling &&
+                (_requestedHorizontalOffset != _horizontalOffset || _requestedVerticalOffset != _verticalOffset))
+                UpdateRequestedOffsetsFromContent();
         }
 
         if (ContentElement != null)

@@ -10,6 +10,88 @@ namespace Jalium.UI.Tests;
 public class MenuPopupAndArrowRegressionTests
 {
     [Fact]
+    public void MenuPopupScrollHost_RepeatedMeasure_PreservesFiniteScrollViewport()
+    {
+        var host = CreateOverflowingMenuPopupHost(out var hostType);
+        var viewer = GetPrivateField<ScrollViewer>(hostType, host, "_scrollViewer");
+        var panel = GetPrivateField<StackPanel>(hostType, host, "_itemsPanel");
+
+        for (var pass = 0; pass < 3; pass++)
+        {
+            host.InvalidateMeasure();
+            host.Measure(new Size(220, 120));
+            host.Arrange(new Rect(0, 0, 220, 120));
+
+            Assert.True(double.IsFinite(panel.ViewportHeight));
+            Assert.Equal(viewer.ViewportHeight, panel.ViewportHeight);
+            Assert.True(panel.ExtentHeight > panel.ViewportHeight);
+            viewer.ScrollToVerticalOffset(32 * (pass + 1));
+            Assert.True(viewer.VerticalOffset > 0);
+            Assert.Equal(viewer.VerticalOffset, panel.VerticalOffset);
+        }
+    }
+
+    [Fact]
+    public void MenuPopupScrollHost_NativeWheelRoute_AppliesEachDeltaOnce()
+    {
+        var host = CreateOverflowingMenuPopupHost(out var hostType);
+        var viewer = GetPrivateField<ScrollViewer>(hostType, host, "_scrollViewer");
+        var panel = GetPrivateField<StackPanel>(hostType, host, "_itemsPanel");
+        var step = ScrollViewer.LineScrollAmount * 2;
+
+        // Follow PopupWindow: preview first; bubble only when the preview is unhandled.
+        var preview = CreateMouseWheel(new Point(20, 30), delta: -120, timestamp: 1);
+        preview.RoutedEvent = UIElement.PreviewMouseWheelEvent;
+        panel.Children[0].RaiseEvent(preview);
+        if (!preview.Handled)
+            panel.Children[0].RaiseEvent(CreateMouseWheel(new Point(20, 30), delta: -120, timestamp: 1));
+
+        Assert.True(preview.Handled);
+        Assert.Equal(step, viewer.VerticalOffset);
+    }
+
+    [Fact]
+    public void MenuPopupScrollHost_ArrowClicksAfterRemeasure_ScrollAndUpdateBoundaryState()
+    {
+        var host = CreateOverflowingMenuPopupHost(out var hostType);
+        var viewer = GetPrivateField<ScrollViewer>(hostType, host, "_scrollViewer");
+        var up = GetPrivateField<RepeatButton>(hostType, host, "_scrollUpButton");
+        var down = GetPrivateField<RepeatButton>(hostType, host, "_scrollDownButton");
+        host.InvalidateMeasure();
+        host.Measure(new Size(220, 120));
+        host.Arrange(new Rect(0, 0, 220, 120));
+
+        Assert.False(up.IsEnabled);
+        Assert.True(down.IsEnabled);
+        down.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Assert.True(viewer.VerticalOffset > 0);
+        Assert.True(up.IsEnabled);
+        viewer.ScrollToVerticalOffset(viewer.ScrollableHeight);
+        Assert.False(down.IsEnabled);
+        var bottom = viewer.VerticalOffset;
+        up.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Assert.True(viewer.VerticalOffset < bottom);
+        Assert.True(down.IsEnabled);
+    }
+
+    [Fact]
+    public void MenuPopupScrollHost_GrowingViewportToFitContent_RemovesScrollArrows()
+    {
+        var host = CreateOverflowingMenuPopupHost(out var hostType);
+        var viewer = GetPrivateField<ScrollViewer>(hostType, host, "_scrollViewer");
+        var up = GetPrivateField<RepeatButton>(hostType, host, "_scrollUpButton");
+        var down = GetPrivateField<RepeatButton>(hostType, host, "_scrollDownButton");
+        viewer.ScrollToVerticalOffset(32);
+
+        host.Measure(new Size(220, 1000));
+        host.Arrange(new Rect(0, 0, 220, 1000));
+
+        Assert.Equal(0, viewer.VerticalOffset);
+        Assert.Equal(Visibility.Collapsed, up.Visibility);
+        Assert.Equal(Visibility.Collapsed, down.Visibility);
+    }
+
+    [Fact]
     public void MenuPopupScrollHost_MouseWheelHandledByRepeatButton_ShouldStillScroll()
     {
         var host = CreateOverflowingMenuPopupHost(out var hostType);
