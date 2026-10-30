@@ -31,10 +31,11 @@ public sealed class FontSizeSafetyTests
     }
 
     [Theory]
+    [InlineData(0.0)]
     [InlineData(0.0011)]
     [InlineData(14.0)]
     [InlineData(35791.0)]
-    public void WpfFontSizeBoundaryValuesRemainAccepted(double value)
+    public void FontSizeBoundaryValuesRemainAccepted(double value)
     {
         var control = new Button { FontSize = value };
         var formatted = new FormattedText("text", "Arial", value);

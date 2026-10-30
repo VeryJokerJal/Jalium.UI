@@ -107,6 +107,11 @@
     <ClInclude Include="include\d3d12_ink_layer.h" />
     <ClInclude Include="include\d3d12_pipeline.h" />
     <ClInclude Include="include\d3d12_render_target.h" />
+    <ClInclude Include="include\d3d12_window_composition.h" />
+    <ClInclude Include="include\d3d12_coverage_rect.h" />
+    <ClInclude Include="include\d3d12_frame_latency_selection.h" />
+    <ClInclude Include="include\d3d12_path_engine_selection.h" />
+    <ClInclude Include="include\d3d12_simple_stroke.h" />
     <ClInclude Include="include\d3d12_resources.h" />
     <ClInclude Include="include\d3d12_shader_bytecode.h" />
     <ClInclude Include="include\d3d12_shader_source.h" />
@@ -132,6 +137,7 @@
     <ClCompile Include="src\d3d12_path_pipeline.cpp" />
     <ClCompile Include="src\d3d12_pipeline.cpp" />
     <ClCompile Include="src\d3d12_render_target.cpp" />
+    <ClCompile Include="src\d3d12_window_composition.cpp" />
     <ClCompile Include="src\d3d12_text.cpp" />
     <ClCompile Include="src\d3d12_video_surface.cpp" />
     <ClCompile Include="src\d3d12_vello.cpp" />

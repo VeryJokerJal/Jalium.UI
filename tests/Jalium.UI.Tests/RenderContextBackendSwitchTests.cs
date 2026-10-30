@@ -64,6 +64,17 @@ public sealed class RenderContextBackendSwitchTests : IDisposable
 
         Assert.Same(installed, viaAuto);
         Assert.Same(installed, RenderContext.Current);
+        Assert.False(RenderContext.IsBackendSelectionAutomatic(viaAuto));
+    }
+
+    [Fact]
+    public void UnpinnedAutoRequest_IsMarkedForPresentationCompatibilityFallback()
+    {
+        var automatic = RenderContext.GetOrCreateCurrent(
+            RenderBackend.Auto,
+            forceReplace: true);
+
+        Assert.True(RenderContext.IsBackendSelectionAutomatic(automatic));
     }
 
     [RequiresBackendFact(RenderBackend.D3D12)]
@@ -106,6 +117,67 @@ public sealed class RenderContextBackendSwitchTests : IDisposable
         Assert.Same(working, afterUnavailable);
         Assert.Equal(workingBackend, afterUnavailable.Backend);
         Assert.Same(working, RenderContext.Current);
+    }
+
+    /// <summary>
+    /// The regression that made <c>GetOrCreateCurrent(RenderBackend.Vulkan)</c>
+    /// look like a no-op on Windows: an Auto request normalizes to the platform
+    /// default (D3D12) and then normalizes its Auto GPU preference to
+    /// HighPerformance, while the explicitly installed Vulkan context carries
+    /// GpuPreference.Auto. Comparing those two normalized defaults made every
+    /// Auto caller — the GPU prewarm first of all — retire the Vulkan context
+    /// and install a fresh D3D12 one. A normalized default must never act as a
+    /// reuse requirement, so the Auto request has to hand back the very same
+    /// Vulkan instance.
+    /// </summary>
+    [RequiresBackendFact(RenderBackend.Vulkan)]
+    public void AutoRequest_DefersToExplicitlyInstalledVulkanContext()
+    {
+        var installed = RenderContext.GetOrCreateCurrent(RenderBackend.Vulkan, forceReplace: true);
+        Assert.Equal(RenderBackend.Vulkan, installed.Backend);
+
+        var viaAuto = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+
+        Assert.Same(installed, viaAuto);
+        Assert.Equal(RenderBackend.Vulkan, RenderContext.Current!.Backend);
+    }
+
+    /// <summary>
+    /// An honored explicit selection is sticky for the rest of the process: the
+    /// device-lost call sites (PopupWindow, DockIndicatorWindow,
+    /// <c>TryRecoverFromDeviceLost</c>) all pass <c>RenderBackend.Auto</c> with
+    /// <c>forceReplace: true</c>, and must rebuild on the application's backend
+    /// instead of silently dropping back to the platform default.
+    /// </summary>
+    [RequiresBackendFact(RenderBackend.Vulkan)]
+    public void ForcedAutoReplace_RebuildsOnExplicitlySelectedBackend()
+    {
+        var installed = RenderContext.GetOrCreateCurrent(RenderBackend.Vulkan, forceReplace: true);
+        Assert.Equal(RenderBackend.Vulkan, installed.Backend);
+
+        var rebuilt = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: true);
+
+        Assert.NotSame(installed, rebuilt);
+        Assert.Equal(RenderBackend.Vulkan, rebuilt.Backend);
+        Assert.Same(rebuilt, RenderContext.Current);
+    }
+
+    /// <summary>
+    /// Disposing the current context ends the sticky selection: a later Auto
+    /// request resolves the platform default again instead of resurrecting a
+    /// choice that belonged to a torn-down application.
+    /// </summary>
+    [RequiresBackendFact(RenderBackend.Vulkan)]
+    public void DisposingCurrentContext_ClearsStickyBackendSelection()
+    {
+        var installed = RenderContext.GetOrCreateCurrent(RenderBackend.Vulkan, forceReplace: true);
+        Assert.Equal(RenderBackend.Vulkan, installed.Backend);
+        installed.Dispose();
+
+        var expected = RenderBackendSelector.GetPreferredBackend();
+        var fresh = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+
+        Assert.Equal(expected, fresh.Backend);
     }
 
     /// <summary>

@@ -910,7 +910,11 @@ public partial class Popup : FrameworkElement
         if (Child == null || _popupRoot == null || _parentWindow == null)
             return;
 
-        var popupSize = new Size(_popupRoot.Width, _popupRoot.Height);
+        // Assistance and menus can change content while open. Keep the host size
+        // in sync before placing it; the dimensions captured at opening may be stale.
+        var popupSize = MeasurePopupChild(Child);
+        _popupRoot.Width = popupSize.Width;
+        _popupRoot.Height = popupSize.Height;
         var windowLocalPos = CalculateWindowLocalPosition(popupSize);
         var windowSize = new Size(_parentWindow.ActualWidth, _parentWindow.ActualHeight);
         var supportsExternalPopup = Platform.PlatformFactory.IsWindows || Platform.PlatformFactory.IsLinux;

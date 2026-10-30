@@ -5,8 +5,8 @@ namespace Jalium.UI.Styling;
 /// <c>Css.Style</c> — an inline declaration block ("background-color: red; margin: 4px 8px"),
 /// <c>Css.Class</c> — space-separated class names for style-sheet selectors,
 /// <c>Css.StyleSheet</c> — style-sheet text scoped to the element's subtree (the markup
-/// equivalent of HTML's &lt;style&gt;), <c>Css.StyleSheets</c> — the same scope as a collection
-/// of pre-parsed sheets.
+/// equivalent of HTML's &lt;style&gt;), <c>Css.StyleSheetSource</c> — a CSS resource URI,
+/// <c>Css.StyleSheets</c> — the same scope as a collection of pre-parsed sheets.
 /// </summary>
 public static partial class Css
 {
@@ -81,6 +81,40 @@ public static partial class Css
 
     public static void SetStyleSheet(DependencyObject element, string value)
         => element.SetValue(StyleSheetProperty, value);
+
+    /// <summary>
+    /// A CSS resource URI scoped to this element's subtree. Paths such as
+    /// <c>Styles/app.css</c> use the application resource assembly. Use an
+    /// assembly-qualified component URI for CSS in another assembly. File URIs also work.
+    /// </summary>
+    public static readonly DependencyProperty StyleSheetSourceProperty =
+        DependencyProperty.RegisterAttached(
+            "StyleSheetSource", typeof(string), typeof(Css),
+            new PropertyMetadata(string.Empty, OnStyleSheetSourceChanged));
+
+    public static string GetStyleSheetSource(DependencyObject element)
+        => (string)(element.GetValue(StyleSheetSourceProperty) ?? string.Empty);
+
+    public static void SetStyleSheetSource(DependencyObject element, string value)
+        => element.SetValue(StyleSheetSourceProperty, value);
+
+    private static void OnStyleSheetSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not (FrameworkElement or FrameworkContentElement)) return;
+
+        // Load first so a failed replacement keeps the previously applied sheet.
+        var source = e.NewValue as string;
+        var replacement = string.IsNullOrWhiteSpace(source)
+            ? null : LoadSourceStyleSheet(new Uri(source.Trim(), UriKind.RelativeOrAbsolute));
+
+        var element = CssNode.Get(d);
+        var state = CssEngine.EnsureState(element);
+        if (state.SourceStyleSheet is null && replacement is null) return;
+        var sheets = GetStyleSheets(element.Target);
+        if (state.SourceStyleSheet is { } previous) sheets.Remove(previous);
+        state.SourceStyleSheet = replacement;
+        if (replacement is not null) sheets.Add(replacement);
+    }
 
     private static void OnStyleSheetTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {

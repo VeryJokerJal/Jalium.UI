@@ -314,11 +314,11 @@ public class WindowRenderSchedulingTests
     [Fact]
     public void OleDropTarget_RevokeAfterNativeDestroy_ReleasesManagedWindowRoot()
     {
-        var weakWindow = RegisterSyntheticOleStateAndRevoke(new nint(0x2110));
+        using var registration = RegisterSyntheticOleStateAndRevoke(new nint(0x2110));
 
         ForceFinalizers();
 
-        Assert.False(weakWindow.TryGetTarget(out _));
+        Assert.False(registration.WeakWindow.TryGetTarget(out _));
     }
 
     [Fact]
@@ -463,6 +463,22 @@ public class WindowRenderSchedulingTests
     }
 
     [Fact]
+    public void D3D12CompositionTarget_PreservesCompositionTargetPolicy()
+    {
+        var native = new RenderTargetTestNative();
+        using var renderTarget = CreateRenderTarget(
+            native,
+            300,
+            200,
+            new nint(0x2118),
+            useComposition: true);
+        var window = new Window { Width = 300, Height = 200 };
+        SetPrivateProperty(window, "RenderTarget", renderTarget);
+
+        Assert.True(InvokePrivateMethod<bool>(window, "ShouldUseCompositionRenderTarget"));
+    }
+
+    [Fact]
     public void RenderThreadPublish_WhenWorkerOwnershipIsGone_PreservesDirtyState()
     {
         MediaRenderCacheHost.Bootstrap();
@@ -537,8 +553,10 @@ public class WindowRenderSchedulingTests
         }
     }
 
-    [Fact]
-    public void Window_D3D12LiveResize_UpdatesLogicalViewportBeforeReturning()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Window_D3D12HwndLiveResize_CoalescesResizeBuffersAtFrameBoundary(bool isSizingAtFrameBoundary)
     {
         var window = new Window { Width = 300, Height = 200 };
         SetPrivateField(window, "_dispatcher", Dispatcher.GetForCurrentThread());
@@ -554,6 +572,7 @@ public class WindowRenderSchedulingTests
             InvokePrivateMethod(window, "OnSizeChanged", 360, 240);
 
             Assert.Equal(0, native.ResizeCalls);
+            Assert.Empty(native.ResizeSizes);
             Assert.True(GetPrivateField<bool>(window, "_hasPendingResize"));
             Assert.Equal(360, GetPrivateField<int>(window, "_pendingResizeWidth"));
             Assert.Equal(240, GetPrivateField<int>(window, "_pendingResizeHeight"));
@@ -567,8 +586,9 @@ public class WindowRenderSchedulingTests
             Assert.True(HasRenderFlag(window, RenderFlag_Scheduled));
             Assert.False(HasRenderFlag(window, RenderFlag_DirtyBetween));
 
-            // The latest native size is committed at a safe frame boundary.
-            SetPrivateField(window, "_isSizing", false);
+            // HWND swap chains resize their buffers at the safe frame boundary.
+            // Multiple WM_SIZE notifications collapse to the latest dimensions.
+            SetPrivateField(window, "_isSizing", isSizingAtFrameBoundary);
             InvokePrivateMethod(window, "FlushPendingRenderTargetResize");
 
             Assert.Equal(1, native.ResizeCalls);
@@ -851,13 +871,14 @@ public class WindowRenderSchedulingTests
     }
 
     [Fact]
-    public void Window_LiveResize_DoesNotDelayAlternateBufferConvergence()
+    public void Window_BackBufferConvergence_DebouncesNormalActivity_ButNotLiveResize()
     {
         int normalDelay = Window.ComputeBackBufferConvergenceDelayMs(isSizing: false);
         int liveResizeDelay = Window.ComputeBackBufferConvergenceDelayMs(isSizing: true);
 
         Assert.InRange(normalDelay, 8, 50);
         Assert.Equal(1, liveResizeDelay);
+        Assert.True(normalDelay > liveResizeDelay);
     }
 
     [Fact]
@@ -915,15 +936,20 @@ public class WindowRenderSchedulingTests
         Assert.Same(fullWindow, history[0]);
     }
 
-    private static RenderTarget CreateRenderTarget(RenderTargetTestNative native, int width, int height, nint hwnd)
+    private static RenderTarget CreateRenderTarget(
+        RenderTargetTestNative native,
+        int width,
+        int height,
+        nint hwnd,
+        bool useComposition = false)
     {
         return new RenderTarget(
             backend: RenderBackend.D3D12,
             contextHandle: new nint(0x1234),
-            surface: NativeSurfaceDescriptor.ForWindowsHwnd(hwnd),
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(hwnd, composition: useComposition),
             width: width,
             height: height,
-            useComposition: false,
+            useComposition: useComposition,
             native: native);
     }
 
@@ -1040,34 +1066,106 @@ public class WindowRenderSchedulingTests
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static WeakReference<Window> RegisterSyntheticOleStateAndRevoke(nint hwnd)
+    private static SyntheticOleRegistration RegisterSyntheticOleStateAndRevoke(nint hwnd)
     {
         var stateType = typeof(Window).Assembly.GetType("Jalium.UI.OleDropTarget+DropTargetState");
         Assert.NotNull(stateType);
         var state = Activator.CreateInstance(stateType!, nonPublic: true);
         Assert.NotNull(state);
+
+        const BindingFlags instanceFields =
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var windowField = stateType!.GetField("Window", instanceFields);
+        var selfHandleField = stateType.GetField("SelfHandle", instanceFields);
+        var comObjectField = stateType.GetField("ComObject", instanceFields);
+        var hwndField = stateType.GetField("Hwnd", instanceFields);
+        var refCountField = stateType.GetField("RefCount", instanceFields);
+        var destroyedField = stateType.GetField("Destroyed", instanceFields);
+        var registeredField = stateType.GetField("Registered", instanceFields);
+        Assert.NotNull(windowField);
+        Assert.NotNull(selfHandleField);
+        Assert.NotNull(comObjectField);
+        Assert.NotNull(hwndField);
+        Assert.NotNull(refCountField);
+        Assert.NotNull(destroyedField);
+        Assert.NotNull(registeredField);
+
         var window = new Window();
         var weakWindow = new WeakReference<Window>(window);
+
+        // Full-suite CSS tests leave the process-wide engine active. In that state,
+        // Window construction queues attached subtree roots on this Dispatcher, and
+        // those roots keep their Window alive until the next dispatcher turn. Queue
+        // the same work explicitly so the native-destroy lifecycle is covered when
+        // this test runs by itself too.
+        Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(window.OverlayLayer);
+        Assert.True(Jalium.UI.Styling.CssEvaluationScheduler.HasPending(window.Dispatcher));
+
         var selfHandle = GCHandle.Alloc(state);
         var comObject = Marshal.AllocHGlobal(nint.Size * 2);
 
-        stateType!.GetField("Window", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
-            .SetValue(state, window);
-        stateType.GetField("SelfHandle", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
-            .SetValue(state, selfHandle);
-        stateType.GetField("ComObject", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
-            .SetValue(state, comObject);
+        // Model the ownership after a successful RegisterDragDrop call: _states owns
+        // one reference and OLE owns one COM reference. Native HWND destruction can
+        // release those references in either order, so managed revocation must sever
+        // the Window root while the native reference still keeps the COM block alive.
+        windowField!.SetValue(state, window);
+        selfHandleField!.SetValue(state, selfHandle);
+        comObjectField!.SetValue(state, comObject);
+        hwndField!.SetValue(state, hwnd);
+        refCountField!.SetValue(state, 2);
+        registeredField!.SetValue(state, true);
+        Marshal.WriteIntPtr(comObject, 0, nint.Zero);
+        Marshal.WriteIntPtr(comObject, nint.Size, GCHandle.ToIntPtr(selfHandle));
 
         var statesField = typeof(OleDropTarget).GetField(
             "_states", BindingFlags.Static | BindingFlags.NonPublic);
+        var statesGateField = typeof(OleDropTarget).GetField(
+            "_statesGate", BindingFlags.Static | BindingFlags.NonPublic);
+        var releaseStateReference = typeof(OleDropTarget).GetMethod(
+            "ReleaseStateReference", BindingFlags.Static | BindingFlags.NonPublic);
         Assert.NotNull(statesField);
+        Assert.NotNull(statesGateField);
+        Assert.NotNull(releaseStateReference);
         var states = (IDictionary)statesField!.GetValue(null)!;
-        states.Add(hwnd, state);
+        var statesGate = statesGateField!.GetValue(null)!;
+        lock (statesGate)
+        {
+            states.Add(hwnd, state);
+        }
 
-        OleDropTarget.RevokeWindow(hwnd, nativeWindowAlive: false);
+        SetPrivateField(window, "<Handle>k__BackingField", hwnd);
+        SetPrivateField(window, "_dropTargetRegistrationStarted", true);
+        InvokePrivateMethod(window, "OnNativeDestroyed", hwnd);
+        window.Dispatcher.ProcessQueue();
+        Assert.False(Jalium.UI.Styling.CssEvaluationScheduler.HasPending(window.Dispatcher));
 
-        Assert.False(states.Contains(hwnd));
-        return weakWindow;
+        lock (statesGate)
+        {
+            Assert.False(states.Contains(hwnd));
+        }
+        Assert.True(GetPrivateField<bool>(window, "_managedTeardownCompleted"));
+        Assert.True(GetPrivateField<bool>(window, "_dropTargetWindowClosing"));
+        Assert.False(GetPrivateField<bool>(window, "_dropTargetRegistrationStarted"));
+        Assert.Equal(nint.Zero, window.Handle);
+        Assert.Null(windowField.GetValue(state));
+        Assert.False((bool)registeredField.GetValue(state)!);
+        Assert.Equal(1, (int)refCountField.GetValue(state)!);
+        Assert.Equal(0, (int)destroyedField!.GetValue(state)!);
+        Assert.True(((GCHandle)selfHandleField.GetValue(state)!).IsAllocated);
+        Assert.Equal(comObject, (nint)comObjectField.GetValue(state)!);
+
+        // A real apartment lease is deliberately not fabricated here: it is
+        // apartment-affine and is covered by the dedicated STA registration tests.
+        // The outstanding COM reference is released by Dispose after the weak-root
+        // assertion, exactly as OLE would release it after native destruction.
+        return new SyntheticOleRegistration(
+            weakWindow,
+            state,
+            releaseStateReference!,
+            refCountField,
+            destroyedField,
+            selfHandleField,
+            comObjectField);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -1099,6 +1197,52 @@ public class WindowRenderSchedulingTests
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
+    }
+
+    private sealed class SyntheticOleRegistration : IDisposable
+    {
+        private object? _state;
+        private readonly MethodInfo _releaseStateReference;
+        private readonly FieldInfo _refCountField;
+        private readonly FieldInfo _destroyedField;
+        private readonly FieldInfo _selfHandleField;
+        private readonly FieldInfo _comObjectField;
+
+        public SyntheticOleRegistration(
+            WeakReference<Window> weakWindow,
+            object state,
+            MethodInfo releaseStateReference,
+            FieldInfo refCountField,
+            FieldInfo destroyedField,
+            FieldInfo selfHandleField,
+            FieldInfo comObjectField)
+        {
+            WeakWindow = weakWindow;
+            _state = state;
+            _releaseStateReference = releaseStateReference;
+            _refCountField = refCountField;
+            _destroyedField = destroyedField;
+            _selfHandleField = selfHandleField;
+            _comObjectField = comObjectField;
+        }
+
+        public WeakReference<Window> WeakWindow { get; }
+
+        public void Dispose()
+        {
+            var state = Interlocked.Exchange(ref _state, null);
+            if (state is null)
+            {
+                return;
+            }
+
+            var remaining = (uint)_releaseStateReference.Invoke(null, [state])!;
+            Assert.Equal(0u, remaining);
+            Assert.Equal(0, (int)_refCountField.GetValue(state)!);
+            Assert.Equal(1, (int)_destroyedField.GetValue(state)!);
+            Assert.False(((GCHandle)_selfHandleField.GetValue(state)!).IsAllocated);
+            Assert.Equal(nint.Zero, (nint)_comObjectField.GetValue(state)!);
+        }
     }
 
     private sealed class CloseOnRenderWindow : Window

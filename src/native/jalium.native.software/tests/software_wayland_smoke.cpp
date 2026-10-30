@@ -35,6 +35,29 @@ bool PumpUntilPresentSucceeds(JaliumRenderTarget* renderTarget,
     return false;
 }
 
+bool PumpUntilPartialPresentSucceeds(JaliumRenderTarget* renderTarget)
+{
+    for (int attempt = 0; attempt < 250; ++attempt)
+    {
+        (void)jalium_platform_poll_events();
+        jalium_render_target_add_dirty_rect(renderTarget, 17, 19, 53, 37);
+        if (jalium_render_target_begin_draw(renderTarget) == JALIUM_OK)
+        {
+            // Software Clear honors the accumulated damage rectangle. The
+            // presenter must preserve every pixel outside this region while a
+            // rotating wl_shm buffer catches up via its 64x64 tile versions.
+            jalium_render_target_clear(renderTarget, 0.55f, 0.15f, 0.75f, 1.0f);
+            const JaliumResult result = jalium_render_target_end_draw(renderTarget);
+            if (result == JALIUM_OK)
+                return true;
+            if (result != JALIUM_ERROR_PRESENT_FAILED)
+                return false;
+        }
+        std::this_thread::sleep_for(2ms);
+    }
+    return false;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -154,6 +177,11 @@ int main(int argc, char** argv)
         std::cerr << "FAILED: compositor did not accept another software frame\n";
         return 1;
     }
+    if (!PumpUntilPartialPresentSucceeds(renderTarget))
+    {
+        std::cerr << "FAILED: compositor did not accept a partial software frame\n";
+        return 1;
+    }
 
     jalium_window_resize(window, 480, 300);
     if (jalium_render_target_resize(renderTarget, 480, 300) != JALIUM_OK ||
@@ -179,6 +207,7 @@ int main(int argc, char** argv)
         }
 
         jalium_window_hide(window);
+        jalium_render_target_set_full_invalidation(renderTarget);
         if (jalium_wayland_surface_is_ready(surface.handle1) != 0 ||
             jalium_render_target_begin_draw(renderTarget) != JALIUM_OK)
         {

@@ -7,29 +7,46 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
 {
     public nint CreatedHandle { get; set; } = new(0xCAFE);
     public NativeSurfaceDescriptor? LastSurface { get; private set; }
+    public int CreateCalls { get; private set; }
+    public bool LastCreateUsedComposition { get; private set; }
     public int ContextLastError { get; set; } = (int)JaliumResult.Unknown;
     public int ResizeResult { get; set; } = (int)JaliumResult.Ok;
     public int BeginDrawResult { get; set; } = (int)JaliumResult.Ok;
     public int EndDrawResult { get; set; } = (int)JaliumResult.Ok;
+    public bool FramebufferStorageAbiAvailable { get; set; }
+    public int CompactIdleStorageResult { get; set; } = (int)JaliumResult.Ok;
+    public int QueryMainFramebufferOwnedBytesResult { get; set; } = (int)JaliumResult.Ok;
+    public ulong MainFramebufferOwnedBytes { get; set; }
     public bool SupportsPartialPresentationValue { get; set; } = true;
     public bool ThrowOnSupportsPartialPresentation { get; set; }
     public int BeginDrawCalls { get; private set; }
     public int EndDrawCalls { get; private set; }
     public int ResizeCalls { get; private set; }
+    public int CompactIdleStorageCalls { get; private set; }
+    public int QueryMainFramebufferOwnedBytesCalls { get; private set; }
     public List<(int Width, int Height)> ResizeSizes { get; } = new();
     public int DestroyCalls { get; private set; }
+    public Action? OnCreate { get; set; }
     public Action<int, int>? OnResize { get; set; }
+    public Action? OnBeginDraw { get; set; }
+    public Action? OnCompactIdleStorage { get; set; }
     public Action? OnDestroy { get; set; }
 
     public nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
     {
+        CreateCalls++;
+        LastCreateUsedComposition = false;
         LastSurface = surface;
+        OnCreate?.Invoke();
         return CreatedHandle;
     }
 
     public nint CreateForCompositionSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
     {
+        CreateCalls++;
+        LastCreateUsedComposition = true;
         LastSurface = surface;
+        OnCreate?.Invoke();
         return CreatedHandle;
     }
 
@@ -46,6 +63,7 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
     public int BeginDraw(nint renderTarget)
     {
         BeginDrawCalls++;
+        OnBeginDraw?.Invoke();
         return BeginDrawResult;
     }
 
@@ -53,6 +71,40 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
     {
         EndDrawCalls++;
         return EndDrawResult;
+    }
+
+    public bool TryCompactIdleFramebufferStorage(
+        nint renderTarget,
+        out int resultCode)
+    {
+        if (!FramebufferStorageAbiAvailable)
+        {
+            resultCode = (int)JaliumResult.NotSupported;
+            return false;
+        }
+
+        CompactIdleStorageCalls++;
+        OnCompactIdleStorage?.Invoke();
+        resultCode = CompactIdleStorageResult;
+        return true;
+    }
+
+    public bool TryQueryMainFramebufferOwnedBytes(
+        nint renderTarget,
+        out int resultCode,
+        out ulong ownedBytes)
+    {
+        if (!FramebufferStorageAbiAvailable)
+        {
+            resultCode = (int)JaliumResult.NotSupported;
+            ownedBytes = 0;
+            return false;
+        }
+
+        QueryMainFramebufferOwnedBytesCalls++;
+        resultCode = QueryMainFramebufferOwnedBytesResult;
+        ownedBytes = MainFramebufferOwnedBytes;
+        return true;
     }
 
     /// <summary>

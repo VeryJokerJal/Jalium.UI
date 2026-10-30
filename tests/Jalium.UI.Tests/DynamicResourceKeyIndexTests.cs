@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
@@ -210,12 +211,77 @@ public class DynamicResourceKeyIndexTests
         }
     }
 
+    [Fact]
+    public void AutomaticCompaction_RemovesDeadEntries_ButPreservesLiveDetachedSubscriber()
+    {
+        ResetApplicationState();
+        var liveKey = new object();
+        var deadKey = new object();
+        var triggerKey = new object();
+        var initial = new SolidColorBrush(Color.FromRgb(2, 3, 4));
+        var updated = new SolidColorBrush(Color.FromRgb(8, 9, 10));
+        var detached = new Border();
+        detached.Resources[liveKey] = initial;
+        detached.SetResourceReference(Border.BackgroundProperty, liveKey);
+        var deadTarget = CreateTransientBorder(deadKey);
+
+        try
+        {
+            Assert.Same(initial, detached.Background);
+            ForceFullCollection();
+            Assert.False(deadTarget.TryGetTarget(out _));
+
+            var liveTriggers = new Border[128];
+            for (var index = 0; index < liveTriggers.Length; index++)
+            {
+                var target = new Border();
+                target.SetResourceReference(Border.BackgroundProperty, triggerKey);
+                liveTriggers[index] = target;
+            }
+
+            var keyIndex = GetKeyIndex();
+            Assert.False(keyIndex.Contains(deadKey));
+            Assert.Single(((System.Collections.IEnumerable)keyIndex[liveKey]!).Cast<object>());
+
+            // A detached target is still a live dynamic-resource subscriber. Automatic cleanup
+            // is based on weak reachability and current subscription identity, never IsLoaded.
+            detached.Resources[liveKey] = updated;
+            Assert.Same(updated, detached.Background);
+            Assert.Single(((System.Collections.IEnumerable)GetKeyIndex()[liveKey]!).Cast<object>());
+
+            GC.KeepAlive(detached);
+            GC.KeepAlive(liveTriggers);
+        }
+        finally
+        {
+            ResetApplicationState();
+            GC.KeepAlive(deadTarget);
+        }
+    }
+
     private static System.Collections.IDictionary GetKeyIndex()
     {
         var type = typeof(DependencyObject).Assembly.GetType("Jalium.UI.DynamicResourceBindingOperations")!;
         var field = type.GetField("KeyIndex", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(field);
         return (System.Collections.IDictionary)field!.GetValue(null)!;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<FrameworkElement> CreateTransientBorder(object key)
+    {
+        var target = new Border();
+        target.SetResourceReference(Border.BackgroundProperty, key);
+        return new WeakReference<FrameworkElement>(target);
+    }
+
+    private static void ForceFullCollection()
+    {
+        for (var index = 0; index < 3; index++)
+        {
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+        }
     }
 
     /// <summary>

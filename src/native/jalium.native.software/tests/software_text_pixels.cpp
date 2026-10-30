@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -193,6 +194,52 @@ bool TestDashedStrokeUsesAnalyticCoverage()
            maxAlphaNearArcLength(17.0f) > 128;
 }
 
+std::vector<uint8_t> RenderSimdParityScene(const char* mode)
+{
+    setenv("JALIUM_SOFTWARE_SIMD", mode, 1);
+
+    jalium::SoftwareBackend backend;
+    std::unique_ptr<jalium::RenderTarget> target(
+        backend.CreateRenderTarget(nullptr, 192, 128));
+    std::unique_ptr<jalium::Brush> opaque(
+        backend.CreateSolidBrush(0.13f, 0.31f, 0.71f, 1.0f));
+    std::unique_ptr<jalium::Brush> translucent(
+        backend.CreateSolidBrush(0.87f, 0.16f, 0.08f, 0.63f));
+    if (!target || !opaque || !translucent ||
+        target->BeginDraw() != JALIUM_OK) {
+        return {};
+    }
+
+    target->Clear(0.03f, 0.05f, 0.09f, 1.0f);
+    target->FillRectangle(7.25f, 9.5f, 143.5f, 72.25f, opaque.get());
+    target->FillRectangle(19.5f, 23.25f, 156.25f, 83.5f, translucent.get());
+    target->FillRoundedRectangle(
+        31.25f, 34.5f, 118.75f, 62.25f, 17.0f, 11.0f,
+        translucent.get());
+    target->FillEllipse(137.5f, 65.25f, 31.5f, 22.75f, opaque.get());
+    if (target->EndDraw() != JALIUM_OK) return {};
+
+    auto* software = dynamic_cast<jalium::SoftwareRenderTarget*>(target.get());
+    if (!software) return {};
+    return software->GetFramebuffer().pixels;
+}
+
+bool TestScalarAndSimdAreByteIdentical()
+{
+    const std::vector<uint8_t> scalar = RenderSimdParityScene("scalar");
+    if (scalar.empty()) return false;
+
+#if defined(__aarch64__)
+    const std::vector<uint8_t> baseline = RenderSimdParityScene("neon");
+#elif defined(__x86_64__) || defined(__amd64__)
+    const std::vector<uint8_t> baseline = RenderSimdParityScene("sse2");
+#else
+    const std::vector<uint8_t> baseline = RenderSimdParityScene("auto");
+#endif
+    const std::vector<uint8_t> widest = RenderSimdParityScene("auto");
+    return scalar == baseline && scalar == widest;
+}
+
 } // namespace
 
 int main()
@@ -228,6 +275,11 @@ int main()
         std::cerr << "FAIL: dashed software stroke did not preserve analytic AA/gaps\n";
         return 1;
     }
-    std::cout << "PASS: software text AA, frame readback, DPI bitmap transform, and dashed analytic stroke\n";
+    if (!TestScalarAndSimdAreByteIdentical()) {
+        std::cerr << "FAIL: scalar and SIMD software compositors differ byte-for-byte\n";
+        return 1;
+    }
+    std::cout << "PASS: software text AA, frame readback, DPI bitmap transform, "
+                 "dashed analytic stroke, and byte-identical SIMD\n";
     return 0;
 }

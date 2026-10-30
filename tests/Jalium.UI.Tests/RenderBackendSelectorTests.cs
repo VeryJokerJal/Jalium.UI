@@ -28,6 +28,23 @@ public sealed class RenderBackendSelectorTests
         Assert.Equal(RenderBackend.Metal, backend);
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void ResolvePreferredBackend_PrefersMetalOnEmbeddedApple(bool ios, bool tvos)
+    {
+        var backend = RenderBackendSelector.ResolvePreferredBackend(
+            isAvailable: available => available is RenderBackend.Metal or RenderBackend.Software,
+            isWindows: false,
+            isMacOS: false,
+            isLinux: false,
+            isAndroid: false,
+            isIOS: ios,
+            isTvOS: tvos);
+
+        Assert.Equal(RenderBackend.Metal, backend);
+    }
+
     [Fact]
     public void ResolvePreferredBackend_UsesOverrideWhenAvailable()
     {

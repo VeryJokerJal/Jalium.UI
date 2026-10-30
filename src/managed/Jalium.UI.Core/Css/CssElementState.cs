@@ -62,6 +62,9 @@ internal sealed class CssElementState
     /// <summary>The sheet parsed from <c>Css.StyleSheet</c>, tracked so a re-set can replace it.</summary>
     public CssStyleSheet? DeclaredStyleSheet;
 
+    /// <summary>The sheet loaded from <c>Css.StyleSheetSource</c>, tracked independently of inline sheet text.</summary>
+    public CssStyleSheet? SourceStyleSheet;
+
     /// <summary>DP values the CSS engine currently owns on this element, by layer.</summary>
     public Dictionary<DependencyProperty, AppliedCssValue>? Applied;
     public CssAnimationRunner? AnimationRunner;

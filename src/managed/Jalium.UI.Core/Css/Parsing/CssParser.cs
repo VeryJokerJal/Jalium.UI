@@ -87,7 +87,7 @@ internal static partial class CssParser
                     fonts.AddRange(nested.FontFaces.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     keyframes.AddRange(nested.Keyframes.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     foreach (var diagnostic in nested.Diagnostics)
-                        diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1));
+                        diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : brace + 1 + diagnostic.Start, diagnostic.Length));
                     continue;
                 }
                 if(name.Equals("namespace",StringComparison.OrdinalIgnoreCase))
@@ -117,7 +117,7 @@ internal static partial class CssParser
                     properties.AddRange(nested.Properties.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     fonts.AddRange(nested.FontFaces.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     keyframes.AddRange(nested.Keyframes.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
-                    foreach (var diagnostic in nested.Diagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1));
+                    foreach (var diagnostic in nested.Diagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : brace + 1 + diagnostic.Start, diagnostic.Length));
                     continue;
                 }
                 if (name.Equals("property", StringComparison.OrdinalIgnoreCase))
@@ -216,7 +216,7 @@ internal static partial class CssParser
                                 fonts.AddRange(nested.FontFaces.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                                 keyframes.AddRange(nested.Keyframes.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                                 foreach (var diagnostic in nested.Diagnostics)
-                                    diagnostics.Add(new CssParseDiagnostic(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1));
+                                    diagnostics.Add(new CssParseDiagnostic(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : brace + 1 + diagnostic.Start, diagnostic.Length));
                                 continue;
                             }
                         }
@@ -278,7 +278,7 @@ internal static partial class CssParser
                             rules.Add(nestedRule);
                         }
                         foreach (var diagnostic in nested.Diagnostics)
-                            diagnostics.Add(new CssParseDiagnostic(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1));
+                            diagnostics.Add(new CssParseDiagnostic(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : brace + 1 + diagnostic.Start, diagnostic.Length));
                         continue;
                     }
                 }
@@ -347,7 +347,7 @@ internal static partial class CssParser
             foreach (var rule in children.Rules) { rule.RuleIndex = rules.Count; rules.Add(rule); }
             layers.AddRange(children.Layers.Select(entry => entry with { Offset = entry.Offset + bodyStart }));
             properties.AddRange(children.Properties.Select(entry => entry with { Offset = entry.Offset + bodyStart }));
-            foreach (var diagnostic in children.Diagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, startLine + diagnostic.Line - 1));
+            foreach (var diagnostic in children.Diagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, startLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : bodyStart + diagnostic.Start, diagnostic.Length));
             if (pos == text.Length && (pos == 0 || text[pos - 1] != '}')) diagnostics.Add(new(CssDiagnosticSeverity.Warning, "unterminated declaration block", selectorLine));
             importsAllowed = false;
             namespacesAllowed=false;
@@ -384,7 +384,7 @@ internal static partial class CssParser
                 if (stopAtCloseBrace)
                 {
                     diagnostics.Add(new CssParseDiagnostic(
-                        CssDiagnosticSeverity.Warning, "unterminated declaration block", line));
+                        CssDiagnosticSeverity.Warning, "unterminated declaration block", line, pos));
                 }
 
                 break;
@@ -411,7 +411,8 @@ internal static partial class CssParser
             if (name.IsEmpty || pos >= text.Length || text[pos] != ':')
             {
                 diagnostics.Add(new CssParseDiagnostic(
-                    CssDiagnosticSeverity.Warning, "malformed declaration; skipped", declLine));
+                    CssDiagnosticSeverity.Warning, "malformed declaration; skipped", declLine,
+                    nameStart, Math.Max(1, pos - nameStart)));
                 SkipToDeclarationBoundary(text, ref pos, ref line, stopAtCloseBrace);
                 continue;
             }
@@ -433,14 +434,16 @@ internal static partial class CssParser
             if ((isCustomProperty && name.Length == 2) || !CssDeclarationValueSyntax.IsValid(rawValue))
             {
                 diagnostics.Add(new CssParseDiagnostic(
-                    CssDiagnosticSeverity.Warning, $"invalid declaration '{name.ToString()}'; skipped", declLine));
+                    CssDiagnosticSeverity.Warning, $"invalid declaration '{name.ToString()}'; skipped", declLine,
+                    nameStart, Math.Max(1, name.Length)));
                 continue;
             }
 
             if (rawValue.IsEmpty && !isCustomProperty)
             {
                 diagnostics.Add(new CssParseDiagnostic(
-                    CssDiagnosticSeverity.Warning, $"declaration '{name.ToString()}' has an empty value; skipped", declLine));
+                    CssDiagnosticSeverity.Warning, $"declaration '{name.ToString()}' has an empty value; skipped", declLine,
+                    nameStart, Math.Max(1, name.Length)));
                 continue;
             }
 
