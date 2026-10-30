@@ -5,51 +5,59 @@ namespace Jalium.UI;
 
 public partial class Window
 {
+    private bool _suppressNativeCaptionForLiveResize;
+    private bool _nativeSizingCommand;
+
+    private void BeginLiveResizeCaptionSuppression()
+    {
+        if (!_nativeSizingCommand || TitleBarStyle != WindowTitleBarStyle.Custom || WindowStyle == WindowStyle.None || _isFullScreen)
+            return;
+
+        // USER32 can expose a native-caption snapshot when a resize outruns
+        // composition. Keep that snapshot out of the interactive transaction.
+        _suppressNativeCaptionForLiveResize = true;
+        UpdateNativeCaptionForSnapHover(false);
+    }
+
+    private void EndLiveResizeCaptionSuppression()
+    {
+        ClearLiveResizeEdge();
+        _nativeSizingCommand = false;
+        _suppressNativeCaptionForLiveResize = false;
+        UpdateNativeCaptionForSnapHover(false);
+    }
+
     private bool ShowWin32WindowState(int command)
     {
-        if (command is not (SW_MAXIMIZE or SW_MINIMIZE or SW_RESTORE))
+        if (command is SW_MAXIMIZE or SW_MINIMIZE or SW_RESTORE)
         {
-            return ShowWindow(Handle, command);
+            // End the Snap hover exception before starting a native transition.
+            // Leave the caption in place for the whole DWM animation.
+            EndLiveResizeCaptionSuppression();
         }
 
-        using var animation = BeginNativeCaptionAnimation(Handle);
         return ShowWindow(Handle, command);
     }
 
-    private NativeCaptionAnimationScope BeginNativeCaptionAnimation(nint hwnd)
+    private void UpdateNativeCaptionForSnapHover(bool isOverMaximizeButton)
     {
-        if (!OperatingSystem.IsWindows() || hwnd == nint.Zero || hwnd != Handle ||
+        if (!OperatingSystem.IsWindows() || Handle == nint.Zero ||
             TitleBarStyle != WindowTitleBarStyle.Custom || WindowStyle == WindowStyle.None || _isFullScreen)
         {
-            return default;
+            return;
         }
 
-        long style = GetWindowLong(hwnd, GWL_STYLE);
-        if ((style & WS_CAPTION) == WS_CAPTION)
+        // Keep the native caption for normal window behavior and system animations.
+        // Snap hover needs the full custom HTMAXBUTTON bounds; interactive
+        // resizing also suppresses the native-caption snapshot until mouse-up.
+        bool snapHover = isOverMaximizeButton && ShouldUseWin11SnapNcRouting() && !HasOpenLightDismissPopup();
+        long style = GetWindowLong(Handle, GWL_STYLE);
+        long updatedStyle = snapHover || _suppressNativeCaptionForLiveResize
+            ? style & ~(long)WS_CAPTION
+            : style | WS_CAPTION;
+        if (updatedStyle != style)
         {
-            return default;
-        }
-
-        // DWM selects the system animation when the state transition starts.
-        // Keep the native caption only for that call; custom caption hit regions
-        // must own the idle window so Snap hover works at any title-bar height.
-        _ = SetWindowLong(hwnd, GWL_STYLE, style | WS_CAPTION);
-        return new NativeCaptionAnimationScope(this, hwnd);
-    }
-
-    private readonly struct NativeCaptionAnimationScope(Window window, nint hwnd) : IDisposable
-    {
-        public void Dispose()
-        {
-            if (window == null || window.Handle != hwnd ||
-                window.TitleBarStyle != WindowTitleBarStyle.Custom || window._isFullScreen)
-            {
-                return;
-            }
-
-            // Read the live style: ShowWindow/DefWindowProc changed WS_MAXIMIZE
-            // or WS_MINIMIZE, and restoring the old style would undo that state.
-            _ = SetWindowLong(hwnd, GWL_STYLE, GetWindowLong(hwnd, GWL_STYLE) & ~(long)WS_CAPTION);
+            _ = SetWindowLong(Handle, GWL_STYLE, updatedStyle);
         }
     }
 }

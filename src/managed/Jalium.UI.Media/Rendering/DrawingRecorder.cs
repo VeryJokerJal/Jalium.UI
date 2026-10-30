@@ -202,23 +202,21 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     // A whole-frame capture instead belongs to one layout/offset snapshot and is
     // rebuilt on the next scroll. Exposing its clips lets Visual skip offscreen
     // subtrees before allocating/replaying commands for every expanded tree row.
-    // Transform and effect scopes conservatively defer to the replay backend:
-    // native transforms change the comparison space, and effects need complete
-    // offscreen input even outside an ancestor's viewport.
+    // Axis-aligned transforms map the clip into the new drawing space. Only
+    // unsupported transforms and effects defer culling to the replay backend.
     Rect? IClipBoundsDrawingContext.CurrentClipBounds =>
         _wholeFrame && _frameTransformDepth == 0 && _frameEffectDepth == 0
             ? _frameClipBounds
             : null;
 
     /// <summary>
-    /// Appends an immutable per-visual drawing as one scene-graph node instead
-    /// of flattening all of its commands into the whole-frame list. Returns
-    /// false for ordinary per-visual recorders, whose callers should use normal
-    /// command replay.
+    /// Appends an immutable drawing as one retained scene-graph node. Nested
+    /// visual caches keep their own commands instead of copying them into each
+    /// dirty parent (for example an editor's static minimap under its caret).
     /// </summary>
     internal bool TryAppendRecordedDrawing(RecordedDrawing drawing)
     {
-        if (!_wholeFrame)
+        if (!_wholeFrame && !drawing.IsFullyRecordable)
         {
             return false;
         }
@@ -229,6 +227,11 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         }
         if (drawing.Count != 0)
         {
+            if (!_wholeFrame)
+            {
+                if (drawing.Bounds is Rect bounds) _bounds.AccumulateRect(bounds);
+                else _bounds.MarkUnknown();
+            }
             drawing.Retain();
             _commands.Add(DrawCommand.RecordedDrawingCmd(drawing));
         }
@@ -510,7 +513,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     {
         _commands.Add(DrawCommand.PushTransformCmd(SnapTransform(transform)));
         if (!_wholeFrame) _bounds.PushTransform(transform);
-        PushFrameClipState(transform: true);
+        PushFrameTransform(transform.Value);
     }
 
     public override void PushClip(Geometry clipGeometry)
@@ -674,6 +677,28 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
+
+    private void PushFrameTransform(Matrix matrix)
+    {
+        if (!_wholeFrame) return;
+        // Rotation/skew require a conservative polygon bound. Keep their
+        // established fallback; zoom/pan use invertible axis-aligned matrices.
+        bool unsupported = _frameTransformDepth != 0 || matrix.M12 != 0 || matrix.M21 != 0
+            || matrix.M11 == 0 || matrix.M22 == 0
+            || !double.IsFinite(matrix.M11) || !double.IsFinite(matrix.M22)
+            || !double.IsFinite(matrix.OffsetX) || !double.IsFinite(matrix.OffsetY);
+        PushFrameClipState(transform: unsupported);
+        if (unsupported || _frameClipBounds is not Rect clip) return;
+        // Replay conjugates the local matrix around the managed Offset. Undo
+        // that same transform on the ancestor clip before testing descendants.
+        double left = (clip.Left - _recordedOffset.X - matrix.OffsetX) / matrix.M11 + _recordedOffset.X;
+        double right = (clip.Right - _recordedOffset.X - matrix.OffsetX) / matrix.M11 + _recordedOffset.X;
+        double top = (clip.Top - _recordedOffset.Y - matrix.OffsetY) / matrix.M22 + _recordedOffset.Y;
+        double bottom = (clip.Bottom - _recordedOffset.Y - matrix.OffsetY) / matrix.M22 + _recordedOffset.Y;
+        _frameClipBounds = double.IsFinite(left) && double.IsFinite(right) && double.IsFinite(top) && double.IsFinite(bottom)
+            ? new Rect(Math.Min(left, right), Math.Min(top, bottom), Math.Abs(right - left), Math.Abs(bottom - top))
+            : null;
+    }
 
     private void PushFrameClipState(bool transform = false)
     {

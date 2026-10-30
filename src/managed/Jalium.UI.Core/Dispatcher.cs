@@ -1417,6 +1417,7 @@ internal sealed partial class DispatcherCore : IDisposable
                 CompleteCleanup(operation.AbortInternal);
         }
 
+        CompleteCleanup(ShutdownWindowsCompositionQueue);
         _dispatchers.TryRemove(_thread, out _);
 
         void ReleaseWakeResources()

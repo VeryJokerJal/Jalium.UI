@@ -25,6 +25,7 @@ public class CompositionSurfacePolicyTests
     private const uint WS_EX_TOOLWINDOW = 0x00000080;
     private const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
 
+
     [Theory]
     [InlineData(RenderBackend.D3D12, true)]
     [InlineData(RenderBackend.Metal, true)]

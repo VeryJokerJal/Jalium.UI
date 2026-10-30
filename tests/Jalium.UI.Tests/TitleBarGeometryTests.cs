@@ -124,7 +124,7 @@ public class TitleBarGeometryTests
         try
         {
             window.Show();
-            Assert.Equal(0L, Win32Methods.GetWindowLong(window.Handle, -16 /* GWL_STYLE */) & 0x00C00000L /* WS_CAPTION */);
+            Assert.Equal(0x00C00000L /* WS_CAPTION */, Win32Methods.GetWindowLong(window.Handle, -16 /* GWL_STYLE */) & 0x00C00000L);
             CheckNativeGeometry(72);
 
             window.TitleBarHeight = 300;
@@ -192,7 +192,8 @@ public class TitleBarGeometryTests
             AssertCustomResizeStyle();
 
             window.ResizeMode = ResizeMode.CanMinimize;
-            Assert.Equal(0, Style() & (Caption | ThickFrame | MaximizeBox));
+            Assert.Equal(Caption, Style() & Caption);
+            Assert.Equal(0, Style() & (ThickFrame | MaximizeBox));
             Assert.NotEqual(0, Style() & SystemMenu);
 
             window.ResizeMode = ResizeMode.CanResize;
@@ -207,7 +208,7 @@ public class TitleBarGeometryTests
         long Style() => Win32Methods.GetWindowLong(window.Handle, -16);
         void AssertCustomResizeStyle()
         {
-            Assert.Equal(0, Style() & Caption);
+            Assert.Equal(Caption, Style() & Caption);
             Assert.Equal(SystemMenu | ThickFrame | MaximizeBox, Style() & (SystemMenu | ThickFrame | MaximizeBox));
         }
     }

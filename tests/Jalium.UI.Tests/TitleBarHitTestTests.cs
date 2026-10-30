@@ -126,6 +126,7 @@ public class TitleBarHitTestTests
             Width = 300,
             Height = 180,
             IsShowTitleBar = false,
+            TitleBarStyle = WindowTitleBarStyle.Native,
             ResizeMode = ResizeMode.CanResize
         };
 
@@ -142,6 +143,7 @@ public class TitleBarHitTestTests
             Width = 300,
             Height = 180,
             IsShowTitleBar = false,
+            TitleBarStyle = WindowTitleBarStyle.Native,
             ResizeMode = ResizeMode.CanResize
         };
 
@@ -156,8 +158,8 @@ public class TitleBarHitTestTests
     [Theory]
     [InlineData(150, 0, HTTOP)]
     [InlineData(150, 5.999, HTTOP)]
-    [InlineData(-1, 0, HTTOPLEFT)]
-    [InlineData(300, 0, HTTOPRIGHT)]
+    [InlineData(0, 0, HTTOPLEFT)]
+    [InlineData(299.999, 0, HTTOPRIGHT)]
     public void ComputeNcHitTest_CustomTitleBar_ReservesClientTopResizeBand(
         double x,
         double y,
@@ -208,6 +210,33 @@ public class TitleBarHitTestTests
         LayoutWindow(window, 300, 180);
 
         Assert.Equal(expected, window.ComputeNcHitTestFromClientDip(x, y, isMaximized: false));
+    }
+
+    [Theory]
+    [InlineData(0, 90, HTLEFT)]
+    [InlineData(5.999, 90, HTLEFT)]
+    [InlineData(294, 90, HTRIGHT)]
+    [InlineData(299.999, 90, HTRIGHT)]
+    [InlineData(150, 0, HTTOP)]
+    [InlineData(150, 5.999, HTTOP)]
+    [InlineData(150, 174, HTBOTTOM)]
+    [InlineData(150, 179.999, HTBOTTOM)]
+    [InlineData(0, 0, HTTOPLEFT)]
+    [InlineData(299.999, 0, HTTOPRIGHT)]
+    [InlineData(0, 179.999, HTBOTTOMLEFT)]
+    [InlineData(299.999, 179.999, HTBOTTOMRIGHT)]
+    public void ComputeNcHitTest_CustomChrome_ResizesFromEveryClientEdge(double x, double y, int expected)
+    {
+        var window = new Window
+        {
+            Width = 300,
+            Height = 180,
+            TitleBarStyle = WindowTitleBarStyle.Custom,
+            ResizeMode = ResizeMode.CanResize
+        };
+        LayoutWindow(window, 300, 180);
+        Assert.Equal(expected, window.ComputeNcHitTestFromClientDip(x, y, isMaximized: false));
+        Assert.NotInRange(window.ComputeNcHitTestFromClientDip(x, y, isMaximized: true), HTLEFT, HTBOTTOMRIGHT);
     }
 
     [Fact]
@@ -459,14 +488,14 @@ public class TitleBarHitTestTests
     }
 
     [Fact]
-    public void NCCalcSize_CustomTitleBar_DoesNotFlattenNcSemantics()
+    public void NCCalcSize_CustomChrome_CoversAllEdgesAndMaximizesToWorkArea()
     {
         var originalRect = (left: 0, top: 0, right: 1200, bottom: 930);
-        var defClientRect = (left: 0, top: 30, right: 1200, bottom: 900);
+        var defClientRect = (left: 8, top: 30, right: 1192, bottom: 922);
 
-        // Normal window: keep DefWindowProc side/bottom insets, but remove caption inset on top.
+        // All native frame insets are covered by custom rendering.
         var normal = Window.ComputeCustomNcCalcSizeRect(originalRect, defClientRect, isMaximized: false, workAreaRect: null);
-        Assert.Equal((defClientRect.left, originalRect.top, defClientRect.right, defClientRect.bottom), normal);
+        Assert.Equal(originalRect, normal);
 
         // Maximized window: switch to monitor work area only.
         var workArea = (left: 8, top: 8, right: 1912, bottom: 1072);

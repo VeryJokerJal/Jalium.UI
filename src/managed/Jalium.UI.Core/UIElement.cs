@@ -6708,7 +6708,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             }
         }
 
-        RaiseLayoutUpdatedRecursive(root);
+        PublishLayoutUpdated(root);
     }
 
     private static (bool Measure, bool Arrange) PropagateHeadlessLayoutInvalidation(Visual visual)

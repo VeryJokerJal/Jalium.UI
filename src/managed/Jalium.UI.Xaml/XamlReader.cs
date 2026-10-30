@@ -5028,6 +5028,7 @@ public static class XamlTypeRegistry
     [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
     private static Type? ResolveCoreBuiltinType(string typeName) => typeName switch
     {
+        "AppBarEdge" => typeof(global::Jalium.UI.Shell.AppBarEdge),
         "Application" => typeof(global::Jalium.UI.Application),
         "ColorConvertedBitmapExtension" => typeof(global::Jalium.UI.ColorConvertedBitmapExtension),
         "Condition" => typeof(global::Jalium.UI.Condition),
@@ -5052,6 +5053,7 @@ public static class XamlTypeRegistry
         "Trigger" => typeof(global::Jalium.UI.Trigger),
         "UIElement" => typeof(global::Jalium.UI.UIElement),
         "Window" => typeof(global::Jalium.UI.Window),
+        "WindowAppBar" => typeof(global::Jalium.UI.Shell.WindowAppBar),
         _ => null,
     };
 

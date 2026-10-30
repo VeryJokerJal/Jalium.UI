@@ -83,7 +83,7 @@ public sealed class WholeFrameViewportCullingTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void TransformScopes_DeferCulling_AndRestoreTheUntransformedClip(bool translate)
+    public void AxisAlignedTransformScopes_MapCulling_AndRestoreTheUntransformedClip(bool translate)
     {
         var host = new MediaRenderCacheHost();
         var recorder = host.CreateFrameRecorder();
@@ -94,12 +94,44 @@ public sealed class WholeFrameViewportCullingTests
             var viewport = new Rect(10, 20, 100, 80);
             recorder.PushClip(new RectangleGeometry(viewport));
             transform.PushTransform(translate ? new TranslateTransform(500, 0) : new ScaleTransform(2, 2), 0, 0);
+            var transformedViewport = translate
+                ? new Rect(-490, 20, 100, 80)
+                : new Rect(5, 10, 50, 40);
+            Assert.Equal(transformedViewport, clip.CurrentClipBounds);
+            recorder.PushClip(new RectangleGeometry(new Rect(600, 0, 20, 20)));
+            recorder.PushOpacity(.5);
+            Assert.Equal(Rect.Empty, clip.CurrentClipBounds);
+            recorder.Pop();
+            recorder.Pop();
+            Assert.Equal(transformedViewport, clip.CurrentClipBounds);
+            transform.PopTransform();
+            Assert.Equal(viewport, clip.CurrentClipBounds);
+            recorder.Pop();
+        }
+        finally { host.FinishRecord(recorder); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnsupportedTransformScopes_DeferCulling_AndRestoreTheViewport(bool rotate)
+    {
+        var host = new MediaRenderCacheHost();
+        var recorder = host.CreateFrameRecorder();
+        try
+        {
+            var clip = (IClipBoundsDrawingContext)recorder;
+            var transform = (ITransformDrawingContext)recorder;
+            var viewport = new Rect(10, 20, 100, 80);
+            recorder.PushClip(new RectangleGeometry(viewport));
+            transform.PushTransform(rotate ? new RotateTransform(45) : new ScaleTransform(0, 2), 0, 0);
             Assert.Null(clip.CurrentClipBounds);
             recorder.PushClip(new RectangleGeometry(new Rect(600, 0, 20, 20)));
             recorder.PushOpacity(.5);
             Assert.Null(clip.CurrentClipBounds);
             recorder.Pop();
             recorder.Pop();
+            Assert.Null(clip.CurrentClipBounds);
             transform.PopTransform();
             Assert.Equal(viewport, clip.CurrentClipBounds);
             recorder.Pop();
