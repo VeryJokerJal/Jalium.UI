@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;SelfContained;RuntimeIdentifier;IsTrimmable;IsAotCompatible" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
@@ -67,7 +69,7 @@
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\WindowTaskbarRelaunchTests.cs" />
 
     <Compile Include="..\Jalium.UI.Tests\**\*.cs"
-             Exclude="..\Jalium.UI.Tests\bin\**;..\Jalium.UI.Tests\obj*\**;@(_WindowsOnlyTestSource)"
+             Exclude="$(DefaultItemExcludes);..\Jalium.UI.Tests\bin\**;..\Jalium.UI.Tests\obj*\**;@(_WindowsOnlyTestSource)"
              LinkBase="" />
   </ItemGroup>
 
@@ -78,6 +80,8 @@
                       Link="TestAssets\ApplicationResource.txt" />
     <EmbeddedResource Include="..\Jalium.UI.Tests\TestAssets\SplashScreen.bmp"
                       Link="TestAssets\SplashScreen.bmp" />
+    <EmbeddedResource Include="..\Jalium.UI.Tests\TestAssets\Fonts\**\*"
+                      Link="TestAssets\Fonts\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

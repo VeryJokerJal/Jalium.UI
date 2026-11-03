@@ -1,7 +1,6 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Markup;
-using System.Reflection;
 
 namespace Jalium.UI.Tests;
 
@@ -88,12 +87,7 @@ public class ItemsControlDataTemplateTests
 
     private static void RegisterCustomXamlType<T>()
     {
-        var registryType = typeof(XamlReader).Assembly.GetType("Jalium.UI.Markup.XamlTypeRegistry");
-        var typesField = registryType?.GetField("_types", BindingFlags.Static | BindingFlags.NonPublic);
-        var types = typesField?.GetValue(null) as IDictionary<string, Type>;
-
-        Assert.NotNull(types);
-        types![typeof(T).Name] = typeof(T);
+        XamlTypeRegistry.RegisterType<T>();
     }
 }
 

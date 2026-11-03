@@ -1060,6 +1060,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
 
         // Dispose the render context (destroys native DWrite factory, D3D12 device, etc.)
         RenderContext.Current?.Dispose();
+        Dispatcher.CurrentDispatcher.CoreDispatcher.ShutdownWindowsCompositionQueue();
 
         // Release host-provided references (Services/Configuration/Environment) so nothing
         // keeps them alive after Run() returns. JaliumApp.Dispose() disposes the underlying IHost.

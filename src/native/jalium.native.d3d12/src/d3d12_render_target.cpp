@@ -1,4 +1,5 @@
 #include "d3d12_render_target.h"
+#include "d3d12_window_composition.h"
 #include "d3d12_resources.h"
 #include "d3d12_retained_layer.h"
 #include "d3d12_triangulate.h"
@@ -289,6 +290,7 @@ D3D12RenderTarget::~D3D12RenderTarget() {
     if (dcompTarget_) dcompTarget_->SetRoot(nullptr);
     if (dcompSwapChainVisual_) dcompSwapChainVisual_->SetContent(nullptr);
     if (dcompDevice_) dcompDevice_->Commit();
+    windowComposition_.reset();
     directRenderer_.reset();
     if (fenceEvent_) { CloseHandle(fenceEvent_); fenceEvent_ = nullptr; }
     if (frameLatencyWaitable_) { CloseHandle(frameLatencyWaitable_); frameLatencyWaitable_ = nullptr; }
@@ -766,6 +768,11 @@ bool D3D12RenderTarget::CreateSwapChain() {
         if (FAILED(hr)) return false;
         hr = dcompDevice_->Commit();
         if (FAILED(hr)) return false;
+        windowComposition_ = D3D12WindowComposition::Create(hwnd_, swapChain1.Get(), swapChainWidth_, swapChainHeight_);
+        if (windowComposition_) {
+            dcompSwapChainVisual_->SetContent(nullptr);
+            dcompDevice_->Commit();
+        }
         hasLastWindowRect_ = GetWindowRect(hwnd_, &lastWindowRect_) != FALSE;
     } else {
         // A direct HWND swap chain must remain exactly client-sized. Keeping the
@@ -923,6 +930,13 @@ void D3D12RenderTarget::WaitForAllFrames() {
 JaliumResult D3D12RenderTarget::CommitCompositionResizePlacement(
     bool waitForCompletion)
 {
+    if (windowComposition_) {
+        if (!windowComposition_->SetPlacement(compositionAnchorRightActive_, compositionAnchorBottomActive_, swapChainWidth_, swapChainHeight_))
+            return JALIUM_ERROR_DEVICE_LOST;
+        dcompSwapChainOffsetX_ = compositionAnchorRightActive_ ? static_cast<float>(width_) - swapChainWidth_ : 0.0f;
+        dcompSwapChainOffsetY_ = compositionAnchorBottomActive_ ? static_cast<float>(height_) - swapChainHeight_ : 0.0f;
+        return JALIUM_OK;
+    }
     if (!isComposition_ || !dcompSwapChainVisual_ || !dcompDevice_) {
         return JALIUM_ERROR_INVALID_STATE;
     }
@@ -974,7 +988,10 @@ JaliumResult D3D12RenderTarget::CommitCompositionResizePlacement(
 JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     if (width <= 0 || height <= 0) return JALIUM_ERROR_INVALID_ARGUMENT;
 
-    const bool inMoveSize = isComposition_ && IsWindowInMoveSize(hwnd_);
+    const UINT_PTR resizeEdge = isComposition_
+        ? reinterpret_cast<UINT_PTR>(GetPropW(hwnd_, L"Jalium.UI.LiveResizeEdge")) : 0;
+    const bool hasResizeEdge = resizeEdge >= WMSZ_LEFT && resizeEdge <= WMSZ_BOTTOMRIGHT;
+    const bool inMoveSize = isComposition_ && (hasResizeEdge || IsWindowInMoveSize(hwnd_));
     RECT currentWindowRect = {};
     const bool hasCurrentWindowRect =
         isComposition_ && GetWindowRect(hwnd_, &currentWindowRect) != FALSE;
@@ -1001,7 +1018,9 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     bool hasCursorEdgeHint = false;
     bool cursorIndicatesLeftEdge = false;
     bool cursorIndicatesTopEdge = false;
-    if (inMoveSize && hasCurrentWindowRect) {
+    bool cursorAtLeftEdge = false;
+    bool cursorAtTopEdge = false;
+    if (inMoveSize && !hasResizeEdge && hasCurrentWindowRect) {
         POINT cursor = {};
         if (GetCursorPos(&cursor)) {
             hasCursorEdgeHint = true;
@@ -1011,6 +1030,9 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
             cursorIndicatesTopEdge =
                 std::abs(cursor.y - currentWindowRect.top) <=
                 std::abs(cursor.y - currentWindowRect.bottom);
+            const int edgeThreshold = static_cast<int>(20 * GetDpiForWindow(hwnd_) / 96);
+            cursorAtLeftEdge = cursorIndicatesLeftEdge && std::abs(cursor.x - currentWindowRect.left) <= edgeThreshold;
+            cursorAtTopEdge = cursorIndicatesTopEdge && std::abs(cursor.y - currentWindowRect.top) <= edgeThreshold;
         }
     }
     if (hasCurrentWindowRect) {
@@ -1019,9 +1041,21 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     }
 
     if (isComposition_) {
+        if (inMoveSize && !compositionResizeSessionActive_) {
+            compositionAnchorRight_ = cursorAtLeftEdge;
+            compositionAnchorBottom_ = cursorAtTopEdge;
+        }
+        compositionResizeSessionActive_ = inMoveSize;
         if (!inMoveSize) {
             compositionAnchorRight_ = false;
             compositionAnchorBottom_ = false;
+        } else if (hasResizeEdge) {
+            // The cursor can advance before USER32 applies the next rectangle.
+            // Use the system sizing edge throughout a managed resize session.
+            compositionAnchorRight_ = resizeEdge == WMSZ_LEFT ||
+                resizeEdge == WMSZ_TOPLEFT || resizeEdge == WMSZ_BOTTOMLEFT;
+            compositionAnchorBottom_ = resizeEdge == WMSZ_TOP ||
+                resizeEdge == WMSZ_TOPLEFT || resizeEdge == WMSZ_TOPRIGHT;
         } else {
             if (width != width_) {
                 if (preserveRight) {
@@ -1054,7 +1088,7 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         compositionAnchorBottomActive_ = false;
     }
     if (width == width_ && height == height_) {
-        if (isComposition_ &&
+        if (isComposition_ && !windowComposition_ &&
             (dcompSwapChainOffsetX_ != 0.0f ||
              dcompSwapChainOffsetY_ != 0.0f)) {
             return CommitCompositionResizePlacement(
@@ -1111,7 +1145,8 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         // the current size — so leave an active anchor alone and let EndDraw move
         // it. Returning to offset (0,0) stays safe at any time: the logical frame
         // always occupies the buffer's top-left corner.
-        if (!compositionAnchorRightActive_ &&
+        if (!windowComposition_ &&
+            !compositionAnchorRightActive_ &&
             !compositionAnchorBottomActive_ &&
             (dcompSwapChainOffsetX_ != 0.0f ||
              dcompSwapChainOffsetY_ != 0.0f)) {
@@ -1233,6 +1268,10 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         compositionAnchorBottomActive_ = false;
         dcompSwapChainOffsetX_ = 0.0f;
         dcompSwapChainOffsetY_ = 0.0f;
+        if (windowComposition_ &&
+            !windowComposition_->SetPlacement(false, false, swapChainWidth_, swapChainHeight_)) {
+            return JALIUM_ERROR_DEVICE_LOST;
+        }
     }
 
     if (directRenderer_) {
@@ -1546,6 +1585,11 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     }
 
     if (endResult == JALIUM_OK && isComposition_ && dcompDevice_) {
+        // External native visuals are composed above the application's surface.
+        // Leave them on their existing target rather than covering them with a
+        // surface-only resize presentation.
+        if (windowComposition_)
+            windowComposition_->SetResizePresentationEnabled(webViewVisuals_.empty() && animProbes_.empty());
         const bool placementRecorded =
             directRenderer_->DidRecordCompositionResizePlacement();
         compositionAnchorRightActive_ =

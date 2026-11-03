@@ -568,7 +568,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _isFullScreen;
     private RECT _fullScreenSavedRect;
     private uint _fullScreenSavedStyle;
-    private uint _fullScreenSavedExStyle;
     private WindowState _fullScreenPreviousState;
     private readonly List<Window> _ownedWindows = [];
     private readonly Jalium.UI.WindowCollection _ownedWindowCollection;
@@ -1506,7 +1505,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             else
             {
-                _ = ShowWindow(Handle, value == Visibility.Visible
+                _ = ShowWin32WindowState(value == Visibility.Visible
                     ? (ShowActivated ? SW_SHOW : SW_SHOWNA)
                     : SW_HIDE);
             }
@@ -1514,6 +1513,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Keep the global frame timer in step with the surface's
             // visibility — see UpdateRenderableRegistration.
             _nativeWindowHidden = value != Visibility.Visible;
+            UpdateAppBarRegistration();
             UpdateRenderableRegistration();
         }
     }
@@ -1825,7 +1825,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         TitleBar.IsShowIcon = IsShowIcon;
         TitleBar.IsShowTitle = IsShowTitle;
         TitleBar.WindowIcon = WindowIcon;
-        TitleBar.Visibility = IsShowTitleBar ? Visibility.Visible : Visibility.Collapsed;
+        TitleBar.Visibility = IsShowTitleBar && WindowState != WindowState.FullScreen
+            ? Visibility.Visible : Visibility.Collapsed;
 
         if (!IsShowTitleBar)
         {
@@ -1836,6 +1837,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void ClearTitleBarInteractionState()
     {
         _nonClientMouseLeaveWindow = nint.Zero;
+        UpdateNativeCaptionForSnapHover(false);
         _inputDispatcher.ClearTitleBarInteractionState();
     }
 
@@ -2074,11 +2076,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (canResize)
         {
-            // A custom title bar extends the client rect to the outer top edge, so
-            // ScreenToClient reports the top resize strip at y >= 0. A completely
-            // borderless window owns every edge in the same way. Framed edges that
-            // remain native are still reported outside the half-open client rect.
-            bool clientOwnsAllResizeEdges = WindowStyle == WindowStyle.None;
+            // Custom chrome covers all four edges. Keep its resize strips inside
+            // the client rect; native chrome still sizes from outside that rect.
+            bool clientOwnsAllResizeEdges = WindowStyle == WindowStyle.None ||
+                TitleBarStyle == WindowTitleBarStyle.Custom;
             bool clientOwnsTopResizeEdge =
                 clientOwnsAllResizeEdges || TitleBarStyle == WindowTitleBarStyle.Custom;
 
@@ -2225,108 +2226,36 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return null;
         }
 
-        var titleBarBounds = TitleBar.VisualBounds;
-
-        // Convert to TitleBar-local coordinates so they can be compared with button VisualBounds.
-        var localPoint = new Point(point.X - titleBarBounds.X, point.Y - titleBarBounds.Y);
-
         var closeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Close);
-        if (IsTitleBarButtonHit(localPoint, closeButton))
+        if (IsTitleBarButtonHit(point, closeButton, windowWidth))
         {
             return closeButton;
         }
 
         var maximizeButton = GetTitleBarButtonByKind(TitleBar.IsMaximized ? TitleBarButtonKind.Restore : TitleBarButtonKind.Maximize);
-        if (IsTitleBarButtonHit(localPoint, maximizeButton))
+        if (IsTitleBarButtonHit(point, maximizeButton, windowWidth))
         {
             return maximizeButton;
         }
 
         var minimizeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Minimize);
-        if (IsTitleBarButtonHit(localPoint, minimizeButton))
+        if (IsTitleBarButtonHit(point, minimizeButton, windowWidth))
         {
             return minimizeButton;
         }
 
-        // Fallback for cases before first arrange: use current button widths,
-        // not a hardcoded value, so hit-test math stays aligned with layout.
-        var titleBarWidth = windowWidth > 0
-            ? windowWidth
-            : (TitleBar.ActualWidth > 0 ? TitleBar.ActualWidth : Width);
-
-        return GetTitleBarButtonByWidthFallback(localPoint, titleBarWidth, closeButton, maximizeButton, minimizeButton);
-    }
-
-    private static bool IsTitleBarButtonHit(Point localPoint, TitleBarButton? button)
-    {
-        if (button == null || button.Visibility != Visibility.Visible)
-        {
-            return false;
-        }
-
-        var bounds = button.VisualBounds;
-        if (bounds.Width <= 0 || bounds.Height <= 0)
-        {
-            return false;
-        }
-
-        // Use the largest known dimension so styled Width/Height can expand NC hit-testing
-        // even when layout is temporarily constrained to native caption metrics.
-        double width = Math.Max(bounds.Width, GetTitleBarButtonHitWidth(button));
-        double height = Math.Max(bounds.Height, GetTitleBarButtonHitHeight(button));
-
-        return localPoint.X >= bounds.X &&
-               localPoint.X < bounds.X + width &&
-               localPoint.Y >= bounds.Y &&
-               localPoint.Y < bounds.Y + height;
-    }
-
-    private TitleBarButton? GetTitleBarButtonByWidthFallback(
-        Point localPoint,
-        double titleBarWidth,
-        TitleBarButton? closeButton,
-        TitleBarButton? maximizeButton,
-        TitleBarButton? minimizeButton)
-    {
-        double buttonX = titleBarWidth;
-
-        if (TitleBar!.ShowCloseButton && closeButton != null)
-        {
-            var closeWidth = GetTitleBarButtonHitWidth(closeButton);
-            var closeHeight = GetTitleBarButtonHitHeight(closeButton);
-            buttonX -= closeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + closeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < closeHeight)
-            {
-                return closeButton;
-            }
-        }
-
-        if (TitleBar.ShowMaximizeButton && maximizeButton != null)
-        {
-            var maximizeWidth = GetTitleBarButtonHitWidth(maximizeButton);
-            var maximizeHeight = GetTitleBarButtonHitHeight(maximizeButton);
-            buttonX -= maximizeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + maximizeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < maximizeHeight)
-            {
-                return maximizeButton;
-            }
-        }
-
-        if (TitleBar.ShowMinimizeButton && minimizeButton != null)
-        {
-            var minimizeWidth = GetTitleBarButtonHitWidth(minimizeButton);
-            var minimizeHeight = GetTitleBarButtonHitHeight(minimizeButton);
-            buttonX -= minimizeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + minimizeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < minimizeHeight)
-            {
-                return minimizeButton;
-            }
-        }
-
         return null;
+    }
+
+    private bool IsTitleBarButtonHit(Point point, TitleBarButton? button, double windowWidth)
+    {
+        if (!TryGetTitleBarButtonClientBoundsDip(button, out var bounds, windowWidth))
+        {
+            return false;
+        }
+
+        return point.X >= bounds.left && point.X < bounds.right &&
+               point.Y >= bounds.top && point.Y < bounds.bottom;
     }
 
     private static double GetTitleBarButtonHitWidth(TitleBarButton button)
@@ -2411,6 +2340,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // either — the popup owns the pointer until it is dismissed.
         if (!IsTitleBarVisible() || HasOpenLightDismissPopup())
         {
+            UpdateNativeCaptionForSnapHover(false);
             _inputDispatcher.UpdateTitleBarButtonHover(null);
             return;
         }
@@ -2421,6 +2351,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _ = ScreenToClient(Handle, ref pt);
 
         var button = GetTitleBarButtonAtPoint(new Point(pt.X / _dpiScale, pt.Y / _dpiScale));
+        UpdateNativeCaptionForSnapHover(button?.Kind is TitleBarButtonKind.Maximize or TitleBarButtonKind.Restore);
         _inputDispatcher.UpdateTitleBarButtonHover(button);
 
         // Only request TME_LEAVE so the button hover state can be cleared when
@@ -2445,6 +2376,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void OnNcMouseLeave()
     {
         _nonClientMouseLeaveWindow = nint.Zero;
+        UpdateNativeCaptionForSnapHover(false);
         _inputDispatcher.UpdateTitleBarButtonHover(null);
     }
 
@@ -2513,7 +2445,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         var maxButton = GetTitleBarButtonByKind(TitleBar.IsMaximized ? TitleBarButtonKind.Restore : TitleBarButtonKind.Maximize);
-        if (!TryGetCustomMaxButtonClientBoundsDip(maxButton, out var customMaxClientRectDip))
+        if (!TryGetTitleBarButtonClientBoundsDip(maxButton, out var customMaxClientRectDip))
         {
             return false;
         }
@@ -2527,18 +2459,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return TryGetCustomMaxButtonScreenBounds(customMaxClientRectDip, _dpiScale, (clientOrigin.X, clientOrigin.Y), out customMaxRect);
     }
 
-    private bool TryGetCustomMaxButtonClientBoundsDip(
-        TitleBarButton? maxButton,
-        out (double left, double top, double right, double bottom) clientRect)
+    private bool TryGetTitleBarButtonClientBoundsDip(
+        TitleBarButton? button,
+        out (double left, double top, double right, double bottom) clientRect,
+        double windowWidth = 0)
     {
         clientRect = default;
-        if (TitleBar == null || maxButton == null || maxButton.Visibility != Visibility.Visible)
+        if (TitleBar == null || button == null || button.Visibility != Visibility.Visible)
         {
             return false;
         }
 
         var titleBarBounds = TitleBar.VisualBounds;
-        var buttonBounds = maxButton.VisualBounds;
+        var buttonBounds = button.VisualBounds;
         double left;
         double top;
         double width;
@@ -2546,23 +2479,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (buttonBounds.Width > 0 && buttonBounds.Height > 0)
         {
+            width = Math.Max(buttonBounds.Width, GetTitleBarButtonHitWidth(button));
+            height = Math.Max(buttonBounds.Height, GetTitleBarButtonHitHeight(button));
+            if (TitleBar.IsAncestorOf(button))
+            {
+                // Template parts may sit inside padded or offset containers. Their
+                // VisualBounds are parent-relative, not title-bar-relative.
+                var bounds = Rect.Transform(new Rect(0, 0, width, height), button.GetRenderMatrixTo(this));
+                clientRect = (bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
+                return bounds.Width > 0 && bounds.Height > 0;
+            }
+
             left = titleBarBounds.X + buttonBounds.X;
             top = titleBarBounds.Y + buttonBounds.Y;
-            width = buttonBounds.Width;
-            height = buttonBounds.Height;
         }
         else
         {
-            double titleBarWidth = TitleBar.ActualWidth > 0
-                ? TitleBar.ActualWidth
-                : (TitleBar.DesiredSize.Width > 0 ? TitleBar.DesiredSize.Width : Width);
+            // Only unarranged buttons use a width fallback. An arranged button
+            // must not leave a second, invisible hit region at its old position.
+            double titleBarWidth = windowWidth > 0 ? windowWidth :
+                (TitleBar.ActualWidth > 0 ? TitleBar.ActualWidth :
+                    (TitleBar.DesiredSize.Width > 0 ? TitleBar.DesiredSize.Width : Width));
             if (titleBarWidth <= 0)
             {
                 return false;
             }
 
             double buttonX = titleBarBounds.X + titleBarWidth;
-            if (TitleBar.ShowCloseButton)
+            if (button.Kind != TitleBarButtonKind.Close && TitleBar.ShowCloseButton)
             {
                 var closeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Close);
                 if (closeButton != null && closeButton.Visibility == Visibility.Visible)
@@ -2571,8 +2515,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
             }
 
-            width = GetTitleBarButtonHitWidth(maxButton);
-            height = GetTitleBarButtonHitHeight(maxButton);
+            if (button.Kind == TitleBarButtonKind.Minimize && TitleBar.ShowMaximizeButton)
+            {
+                var maximizeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Maximize);
+                if (maximizeButton != null && maximizeButton.Visibility == Visibility.Visible)
+                {
+                    buttonX -= GetTitleBarButtonHitWidth(maximizeButton);
+                }
+            }
+
+            width = GetTitleBarButtonHitWidth(button);
+            height = GetTitleBarButtonHitHeight(button);
             buttonX -= width;
             left = buttonX;
             top = titleBarBounds.Y;
@@ -2790,7 +2743,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             double effectiveTitleBarHeight = GetEffectiveTitleBarHeightDip();
             TitleBar.Measure(new Size(contentWidth, effectiveTitleBarHeight));
-            titleBarHeight = GetElementHeightDip(TitleBar, effectiveTitleBarHeight);
+            // ActualHeight still belongs to the previous arrange pass here.
+            titleBarHeight = TitleBar.DesiredSize.Height;
         }
 
         // Measure content with remaining space
@@ -2829,7 +2783,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Arrange title bar at top (offset by safe area)
         if (IsTitleBarVisible() && TitleBar != null)
         {
-            titleBarHeight = GetCurrentTitleBarHeightDip();
+            titleBarHeight = TitleBar.DesiredSize.Height;
             Rect titleBarRect = new(safeLeft, safeTop, contentWidth, titleBarHeight);
             TitleBar.Arrange(titleBarRect);
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
@@ -2882,6 +2836,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual void Show()
     {
+        if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
         if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
             throw new InvalidOperationException("A closing or closed window cannot be shown again.");
 
@@ -2912,6 +2867,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             _lastThemeSyncVersion = themeVersion;
         }
 
+        Application.Current?.NotifyWindowShowing(this);
+        if (_managedTeardownStarted) return;
         _dispatcher = Dispatcher.CurrentDispatcher;
 
         // Capture desired state before EnsureHandle, because Win32 calls inside
@@ -2921,7 +2878,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         using (StartupDiagnostics.Begin("Window.EnsureHandle", blocksUiThread: true))
         {
-            EnsureHandle();
+            _isApplyingWindowState = true;
+            try { EnsureHandle(); }
+            finally { _isApplyingWindowState = false; }
         }
 
         SetFrameStartingSubscription(true);
@@ -2999,16 +2958,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             else
             {
-                _ = ShowWindow(Handle, showCmd);
                 // Fullscreen needs a second step on Win32: strip the frame + resize
                 // to cover the monitor. Done AFTER ShowWindow so the HWND has valid
                 // window rect / monitor assignment.  The pre-show background frame
                 // above already covered the target monitor dimensions, so
                 // EnterFullScreen's WM_SIZE arrives at the correct size.
-                if (desiredState == WindowState.FullScreen)
-                {
-                    EnterFullScreen();
-                }
+                ShowInitialWin32Window(showCmd, desiredState);
             }
         }
         if (isMainWindow)
@@ -3019,6 +2974,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // HWND may not produce a WindowState change (Normal → Normal is a no-op
         // for OnStateChanged), so we cannot rely on the state-changed path here.
         _nativeWindowHidden = false;
+        UpdateAppBarRegistration();
         UpdateRenderableRegistration();
 
         // Hidden startup suppresses asynchronous present owners so the initial
@@ -3230,6 +3186,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     public virtual void Hide()
     {
         OnHiding(EventArgs.Empty);
+        EndLiveResizeCaptionSuppression();
 
         if (Handle != nint.Zero)
         {
@@ -3244,6 +3201,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // up. Otherwise the timer would keep ticking against an HWND that
         // DWM is no longer painting.
         _nativeWindowHidden = true;
+        UpdateAppBarRegistration();
         UpdateRenderableRegistration();
     }
 
@@ -3273,7 +3231,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Win32 path
         if (WindowState == WindowState.Minimized)
         {
-            _ = ShowWindow(Handle, SW_RESTORE);
+            _ = ShowWin32WindowState(SW_RESTORE);
         }
 
         return SetForegroundWindow(Handle);
@@ -3621,6 +3579,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void CompleteManagedTeardownCore(nint nativeHandle, bool nativeDestroyed)
     {
+        ReleaseAppBarRegistration(restoreBounds: false);
 
         if (!nativeDestroyed)
         {
@@ -3812,6 +3771,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void OnNativeDestroyed(nint nativeHandle)
     {
         _nonClientMouseLeaveWindow = nint.Zero;
+        ReleaseAppBarRegistration(restoreBounds: false);
         // WM_DESTROY still has a valid HWND. Clear the Shell's window properties
         // now, even when an in-flight render defers the remaining managed teardown.
         ReleaseTaskbarRelaunchProperties(nativeHandle);
@@ -4005,10 +3965,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Register window class if needed
         RegisterWindowClass();
 
-        // Determine window style based on WindowStyle/ResizeMode/TitleBarStyle.
-        // For custom title bar we keep standard caption style bits and remove the
-        // visible caption via NCCALCSIZE; for WindowStyle=None we use WS_POPUP so
-        // the window has no native frame or caption at all.
+        // Keep the native caption for normal window behavior and animations.
+        // Custom chrome only removes it while hovering its maximize button.
         uint dwStyle;
         if (WindowStyle == WindowStyle.None)
         {
@@ -4134,6 +4092,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 needsDpiAdjust ? (flags | SWP_NOMOVE) : flags);
         }
 
+        // Creation messages arrive before _windows contains the HWND, so
+        // WM_GETMINMAXINFO cannot enforce our constraints yet. Check the live
+        // client size after DPI and custom-frame setup, before the first frame.
+        ApplyInitialWin32SizeConstraints();
+
         // Create render target for this window.
         // During GPU switching this can fail transiently; defer to render-loop recovery.
         try
@@ -4179,6 +4142,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         int physicalWidth = (int)(Width * _dpiScale);
         int physicalHeight = (int)(Height * _dpiScale);
+        int constrainedWidth = ConstrainClientSizeInPixels(physicalWidth, MinWidth, MaxWidth, _dpiScale);
+        int constrainedHeight = ConstrainClientSizeInPixels(physicalHeight, MinHeight, MaxHeight, _dpiScale);
+        if (constrainedWidth != physicalWidth && constrainedWidth > 0)
+            Width = constrainedWidth / _dpiScale;
+        if (constrainedHeight != physicalHeight && constrainedHeight > 0)
+            Height = constrainedHeight / _dpiScale;
+        physicalWidth = constrainedWidth;
+        physicalHeight = constrainedHeight;
         int x = double.IsNaN(Left) ? -1 : (int)(Left * _dpiScale);
         int y = double.IsNaN(Top) ? -1 : (int)(Top * _dpiScale);
 
@@ -4328,20 +4299,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             dwExStyle &= ~WS_EX_APPWINDOW;
         }
 
-        if (allowsTransparency && supportsDirectComposition)
+        if (supportsDirectComposition &&
+            (allowsTransparency || titleBarStyle == WindowTitleBarStyle.Custom))
         {
-            // Use WS_EX_NOREDIRECTIONBITMAP so the HWND has no redirection
-            // surface and the render backend can present through DirectComposition
-            // for real per-pixel transparency. WS_EX_LAYERED would only support
-            // uniform GDI alpha and does not composite D3D12 swap chains, which
-            // made layered fullscreen windows appear click-through.
-            //
-            // Gated on the backend: only D3D12 implements the DirectComposition
-            // path. Vulkan and the software rasterizer present INTO the redirection
-            // surface, so setting this style there means DWM has nothing to
-            // composite and the window never shows anything at all. Those backends
-            // keep the surface and get per-pixel alpha from
-            // CompositionSurfacePolicy.EnableRedirectionSurfaceAlpha instead.
+            // Custom GPU windows present through composition alone. A second
+            // redirected HWND bitmap can expose the native caption during fast
+            // resize, even though WM_NCCALCSIZE makes the frame client-owned.
+            // The same style also enables per-pixel composition transparency.
+            // Initial Software/Vulkan windows retain their redirection surface;
+            // later fallback on this HWND uses a captionless presentation child.
             dwExStyle |= WS_EX_NOREDIRECTIONBITMAP;
         }
 
@@ -5479,17 +5445,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         MARGINS margins = new() { Left = 0, Right = 0, Top = topMarginPhysical, Bottom = 0 };
-        _ = DwmExtendFrameIntoClientArea(Handle, ref margins);
-        _appliedDwmTopMarginPhysical = topMarginPhysical;
+        if (DwmExtendFrameIntoClientArea(Handle, ref margins) >= 0)
+        {
+            _appliedDwmTopMarginPhysical = topMarginPhysical;
+        }
     }
 
-    // DWM uses the Top margin to decide where the caption frame starts and
-    // whether to arm the Windows 11 Snap Layouts flyout over the maximize
-    // button. If we pass 0/1 here the flyout stops appearing entirely; if
-    // we pass the full custom title-bar height DWM still anchors the caption
-    // button rect to the system height at the top of that region. So mirror
-    // the title-bar height (or at least enough to cover it) to keep DWM's
-    // caption semantics aligned with our custom chrome.
+    // Cover the current title bar and any caption buttons extending below it.
+    // Use the same client bounds as NC hit testing, converted to physical pixels.
     private int GetCustomTitleBarTopMarginPhysical()
     {
         if (!IsTitleBarVisible())
@@ -5497,13 +5460,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return 0;
         }
 
-        double titleBarHeightDip = GetEffectiveTitleBarHeightDip();
-        if (TitleBar != null)
-        {
-            titleBarHeightDip = GetElementHeightDip(TitleBar, titleBarHeightDip);
-        }
+        double bottomDip = TitleBar!.VisualBounds.Y + GetCurrentTitleBarHeightDip();
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Minimize));
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Maximize));
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Close));
+        return Math.Max((int)Math.Ceiling(bottomDip * _dpiScale), 1);
 
-        return Math.Max((int)Math.Ceiling(titleBarHeightDip * _dpiScale), 1);
+        void IncludeButton(TitleBarButton? button)
+        {
+            if (TryGetTitleBarButtonClientBoundsDip(button, out var bounds))
+            {
+                bottomDip = Math.Max(bottomDip, bounds.bottom);
+            }
+        }
     }
 
     private static double GetElementHeightDip(FrameworkElement element, double fallback)
@@ -5673,9 +5642,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         else if (TitleBarStyle == WindowTitleBarStyle.Custom)
         {
-            // Keep WS_CAPTION so the OS preserves native caption semantics
-            // (Snap, system menu, NC button behavior). We remove the visual
-            // caption in WM_NCCALCSIZE instead.
             style |= WS_CAPTION | WS_SYSMENU;
             if (ResizeMode != ResizeMode.NoResize)
             {
@@ -5735,9 +5701,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        // Do not save the temporary Snap-hover style for fullscreen restoration.
+        EndLiveResizeCaptionSuppression();
         // Snapshot current style + bounds so we can restore on exit.
         _fullScreenSavedStyle = (uint)GetWindowLong(Handle, GWL_STYLE);
-        _fullScreenSavedExStyle = (uint)GetWindowLong(Handle, GWL_EXSTYLE);
         if (!GetWindowRect(Handle, out _fullScreenSavedRect))
         {
             return;
@@ -5782,8 +5749,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _isFullScreen = false;
 
-        _ = SetWindowLong(Handle, GWL_STYLE, _fullScreenSavedStyle);
-        _ = SetWindowLong(Handle, GWL_EXSTYLE, _fullScreenSavedExStyle);
+        // Restore only the frame. Live visibility/enabled/minimized flags may
+        // have changed since entry (e.g. Hide followed by a fullscreen toggle).
+        const uint FrameMask = WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+            | WS_SYSMENU | WS_OVERLAPPEDWINDOW | WS_POPUP;
+        long style = GetWindowLong(Handle, GWL_STYLE);
+        _ = SetWindowLong(Handle, GWL_STYLE,
+            (style & ~(long)FrameMask) | (_fullScreenSavedStyle & FrameMask));
 
         var rc = _fullScreenSavedRect;
         _ = SetWindowPos(
@@ -5794,6 +5766,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             rc.right - rc.left,
             rc.bottom - rc.top,
             SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER);
+        // Apply frame settings changed while fullscreen; extended styles were
+        // never removed and may contain live topmost/taskbar/opacity changes.
+        UpdateWindowStyle();
     }
 
     private static uint GetWindowStyleForTitleBarStyle(WindowTitleBarStyle titleBarStyle)
@@ -6125,21 +6100,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return context.CreateRenderTarget(surface, width, height);
         }
 
-        if (context.Backend == RenderBackend.D3D12 &&
-            (_preserveGdiPresentation || ShouldPreserveGdiPresentation(
-                PlatformFactory.IsWindows, context.Backend,
-                RenderContext.IsBackendSelectionAutomatic(context))))
+        if (PlatformFactory.IsWindows && context.Backend == RenderBackend.D3D12)
         {
+            Dispatcher.CoreDispatcher.EnsureWindowsCompositionQueue();
             var target = context.CreateRenderTargetForComposition(Handle, width, height);
-            _preserveGdiPresentation = true;
+            _preserveGdiPresentation |= ShouldPreserveGdiPresentation(
+                true, context.Backend, RenderContext.IsBackendSelectionAutomatic(context));
             return target;
         }
 
-        // Other opaque targets use the backend's native HWND surface. Automatic
-        // D3D12 above preserves GDI compatibility through detachable composition;
-        // transparency and embedded composition content use the existing path.
+        // D3D12 uses a compositor-relative surface so the stationary resize edge
+        // does not wait for the next recorded viewport. Other opaque targets keep
+        // their native HWND surface; transparency uses the existing backend gate.
         // On Vulkan, asking for a composition surface also selects a compatible
         // premultiplied-alpha WSI format while retaining the HWND redirection surface.
+        // Opaque GDI/WSI targets use a captionless presentation child when the
+        // parent is composition-only. Its HWND remains stable across Auto transitions.
+        if (PlatformFactory.IsWindows && context.Backend != RenderBackend.D3D12 &&
+            !AllowsTransparency && SystemBackdrop == WindowBackdropType.None)
+            return context.CreateRenderTarget(Handle, width, height);
+
         if (ShouldUseCompositionRenderTarget())
             return context.CreateRenderTargetForComposition(Handle, width, height);
 
@@ -6309,6 +6289,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             var oldState = e.OldValue is WindowState os ? os : WindowState.Normal;
 
+            if (newState == WindowState.FullScreen && oldState != WindowState.FullScreen
+                && (!window._isSyncingWindowState || oldState != WindowState.Minimized))
+            {
+                window._fullScreenPreviousState = oldState == WindowState.Maximized
+                    ? WindowState.Maximized : WindowState.Normal;
+            }
+
             // Capture restore bounds when leaving Normal state
             if (oldState == WindowState.Normal && newState != WindowState.Normal
                 && window.Handle != nint.Zero)
@@ -6317,55 +6304,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             window.ApplyTitleBarPresentation();
+            if (newState != WindowState.Normal)
+                window.UpdateAppBarRegistration();
+            window.UpdateCustomTitleBarFrameMargins();
 
             // Sync the native window state when set programmatically.
             // Skip if we're already syncing from WM_SIZE to avoid infinite loop.
             if (!window._isSyncingWindowState && window.Handle != nint.Zero)
             {
-                if (window._platformWindow != null)
-                {
-                    // X11 and xdg-shell both expose a native fullscreen state.
-                    window._platformWindow.SetState(newState);
-                }
-                else
-                {
-                    // Leaving fullscreen: restore pre-fullscreen frame + bounds first.
-                    if (oldState == WindowState.FullScreen && newState != WindowState.FullScreen)
-                    {
-                        window.ExitFullScreen();
-                    }
-
-                    if (newState == WindowState.FullScreen)
-                    {
-                        window._fullScreenPreviousState = oldState == WindowState.FullScreen
-                            ? WindowState.Normal
-                            : oldState;
-                        // Ensure the window is visible and in a restored state before
-                        // capturing bounds/style for fullscreen.
-                        if (oldState == WindowState.Minimized)
-                        {
-                            _ = ShowWindow(window.Handle, SW_RESTORE);
-                        }
-                        else if (oldState == WindowState.Maximized)
-                        {
-                            _ = ShowWindow(window.Handle, SW_RESTORE);
-                        }
-                        window.EnterFullScreen();
-                        _ = ShowWindow(window.Handle, SW_SHOW);
-                    }
-                    else
-                    {
-                        var cmd = newState switch
-                        {
-                            WindowState.Maximized => SW_MAXIMIZE,
-                            WindowState.Minimized => SW_MINIMIZE,
-                            _ => SW_RESTORE
-                        };
-                        _ = ShowWindow(window.Handle, cmd);
-                    }
-                }
+                window.ApplyNativeWindowState(oldState, newState);
             }
 
+            window.UpdateAppBarRegistration();
             window.OnStateChanged(EventArgs.Empty);
             // Fullscreen can change display-mode queries without changing CSS viewport metrics.
             if (Jalium.UI.Styling.CssEngine.IsActive)
@@ -6751,6 +6701,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         bool isMaximized,
         (int left, int top, int right, int bottom)? workAreaRect)
     {
+        // Cover the native side and bottom frame as well as the caption.
+        // A constant full-window client rect also survives WS_CAPTION changes.
+        if (!isMaximized) return originalRect;
+
         if (isMaximized && workAreaRect.HasValue)
         {
             return workAreaRect.Value;
@@ -6761,9 +6715,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return originalRect;
         }
 
-        // ControlzEx-style NCCALCSIZE behavior:
-        // keep DefWindowProc's side/bottom frame math, but restore original top
-        // so the visual system caption is removed while preserving NC semantics.
+        // Fall back to the native maximized frame if the work area is unavailable.
         return (defClientRect.left, originalRect.top, defClientRect.right, defClientRect.bottom);
     }
 
@@ -6784,6 +6736,33 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 0,
                 (windowRect.bottom - windowRect.top) -
                 (clientRect.bottom - clientRect.top)));
+    }
+
+    private void ApplyInitialWin32SizeConstraints()
+    {
+        if (!GetClientRect(Handle, out RECT clientRect))
+            return;
+
+        int clientWidth = clientRect.right - clientRect.left;
+        int clientHeight = clientRect.bottom - clientRect.top;
+        int constrainedWidth = ConstrainClientSizeInPixels(clientWidth, MinWidth, MaxWidth, _dpiScale);
+        int constrainedHeight = ConstrainClientSizeInPixels(clientHeight, MinHeight, MaxHeight, _dpiScale);
+        if (constrainedWidth == clientWidth && constrainedHeight == clientHeight)
+            return;
+
+        var frame = GetNonClientFrameSize(Handle);
+        _ = SetWindowPos(Handle, nint.Zero, 0, 0,
+            ComputeWindowTrackSizeFromClientDip(constrainedWidth, 1, frame.width, isMinimum: true),
+            ComputeWindowTrackSizeFromClientDip(constrainedHeight, 1, frame.height, isMinimum: true),
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+    }
+
+    internal static int ConstrainClientSizeInPixels(
+        int clientSizePixels, double minimumDip, double maximumDip, double dpiScale)
+    {
+        int minimum = ComputeWindowTrackSizeFromClientDip(minimumDip, dpiScale, 0, isMinimum: true);
+        int maximum = ComputeWindowTrackSizeFromClientDip(maximumDip, dpiScale, 0, isMinimum: false);
+        return Math.Clamp(clientSizePixels, minimum, Math.Max(minimum, maximum));
     }
 
     internal static int ComputeWindowTrackSizeFromClientDip(
@@ -7094,6 +7073,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (window != null)
         {
+            if (window._appBarRegistration?.HandleMessage(msg, wParam, lParam) == true)
+                return nint.Zero;
+
             switch (msg)
             {
                 case WM_GETMINMAXINFO:
@@ -7110,7 +7092,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // expressed relative to that monitor's origin, so (0,0) is its
                     // top-left corner.  Bordered windows are left untouched here, so
                     // their maximize keeps respecting the taskbar (work area).
-                    if (window.WindowStyle == WindowStyle.None)
+                    if (window._isFullScreen || window.WindowStyle == WindowStyle.None)
                     {
                         var maximizeMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
                         MONITORINFO maximizeMonitorInfo = new() { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
@@ -7177,24 +7159,65 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     break;
                 }
 
+                case WM_SYSCOMMAND:
+                {
+                    int command = (int)(wParam.ToInt64() & 0xFFF0);
+                    if (command is SC_SIZE or SC_MOVE)
+                    {
+                        window._nativeSizingCommand = command == SC_SIZE;
+                        if (command == SC_SIZE)
+                            window.PublishLiveResizeEdge((int)(wParam.ToInt64() & 0xF));
+                        else
+                            window.ClearLiveResizeEdge();
+                    }
+                    if (command is SC_MAXIMIZE or SC_MINIMIZE or SC_RESTORE)
+                    {
+                        window.EndLiveResizeCaptionSuppression();
+                        return DefWindowProc(hWnd, msg, wParam, lParam);
+                    }
+                    break;
+                }
+
                 case WM_CLOSE:
                     // Route through Close() so Closing event can cancel
                     window.Close();
                     return nint.Zero;
 
                 case WM_DESTROY:
+                    window.ClearLiveResizeEdge();
                     Controls.Automation.Uia.UiaAccessibilityBridge.NotifyWindowDestroyed(hWnd);
                     // Native destruction can bypass Close. Release the same managed
                     // resources, but do not recursively destroy the HWND or post quit.
                     window.OnNativeDestroyed(hWnd);
                     return nint.Zero;
 
+                case WM_NCPAINT:
+                case WM_NCUAHDRAWCAPTION:
+                case WM_NCUAHDRAWFRAME:
+                    if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
+                    {
+                        // Jalium paints this caption. Default themed NC drawing
+                        // leaves native buttons in the HWND bitmap that Windows
+                        // can expose when an interactive resize outruns a frame.
+                        return nint.Zero;
+                    }
+                    break;
+
+                case WM_NCACTIVATE:
+                    if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
+                    {
+                        // Preserve native activation while suppressing its paint.
+                        // WS_CAPTION stays available for system animations.
+                        return DefWindowProc(hWnd, msg, wParam, new nint(-1));
+                    }
+                    break;
+
                 case WM_NCCALCSIZE:
                     // WindowStyle=None: swallow the entire non-client area so there's
                     // no DWM-drawn frame strip (otherwise WS_THICKFRAME leaves a thin
                     // white bar at the top on Win11). Edge resize is still available
                     // via WM_NCHITTEST below.
-                    if (window.WindowStyle == WindowStyle.None)
+                    if (window._isFullScreen || window.WindowStyle == WindowStyle.None)
                     {
                         bool hasNcCalcSizeParams = wParam != nint.Zero;
                         if (hasNcCalcSizeParams)
@@ -7215,7 +7238,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     // For custom title bar:
                     // 1) call DefWindowProc first to keep native NC contract intact
-                    // 2) remove only the native caption inset in normal state
+                    // 2) cover the complete window with the custom client area in normal state
                     // 3) in maximized state, clamp to monitor work area
                     if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
                     {
@@ -7228,11 +7251,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         // Save pre-DefWindowProc rect before NC calculations mutate it.
                         var ncParams = Marshal.PtrToStructure<NCCALCSIZE_PARAMS>(lParam);
                         var originalRect = (ncParams.rgrc0.left, ncParams.rgrc0.top, ncParams.rgrc0.right, ncParams.rgrc0.bottom);
+                        var oldClientRect = (ncParams.rgrc2.left, ncParams.rgrc2.top, ncParams.rgrc2.right, ncParams.rgrc2.bottom);
 
                         // Let DefWindowProc compute default non-client metrics first.
                         // Its return flags describe the default preservation policy;
                         // Jalium owns the final client rectangle and deliberately
-                        // replaces those flags with WVR_REDRAW below.
+                        // selects its own client-image preservation policy below.
                         _ = DefWindowProc(hWnd, msg, wParam, lParam);
 
                         // Re-read DefWindowProc-computed rect and only apply minimal fixups.
@@ -7261,11 +7285,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         Marshal.StructureToPtr(ncParams, lParam, false);
                         window.RequestFullInvalidation();
                         window.InvalidateWindow();
+                        if (window._isSizing && !isMaximized &&
+                            window.RenderTarget is { Backend: RenderBackend.D3D12, IsCompositionTarget: true })
+                        {
+                            return ComputeLiveResizePreservation(oldClientRect, computedRect);
+                        }
                         return ComputeNcCalcSizeResult(hasNcCalcSizeParams: true);
                     }
                     break;
 
                 case WM_NCHITTEST:
+                    if (window._isFullScreen)
+                        return HTCLIENT;
+
                     // WindowStyle=None (with a native title bar style): provide edge
                     // resize hit-testing ourselves since DefWindowProc won't — the
                     // frame area has been swallowed by WM_NCCALCSIZE.
@@ -7277,27 +7309,29 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
                     {
+                        window.UpdateCustomTitleBarFrameMargins();
                         var customHitResult = window.HandleNcHitTest(lParam);
+                        window.UpdateNativeCaptionForSnapHover(customHitResult == HTMAXBUTTON);
 
-                        // WM_NCCALCSIZE deliberately extends a custom title bar into
-                        // the native top frame. Resolve our client-owned resize strip
-                        // before DWM can classify those pixels as caption or client.
+                        // Custom chrome owns the resize strips inside every client
+                        // edge. Resolve them before DWM classifies caption pixels.
                         if (IsResizeHitTestResult(customHitResult))
                         {
                             return customHitResult;
                         }
 
-                        // DWM still gets the non-resize hit before our custom result.
-                        // This primes the Windows 11 Snap Layouts state machine for
-                        // HTMAXBUTTON and preserves native caption-button behavior.
-                        if (DwmDefWindowProc(hWnd, msg, wParam, lParam, out nint dwmHit) && dwmHit != nint.Zero)
-                        {
-                            return dwmHit;
-                        }
+                        // Keep DWM informed, but the current custom layout owns the
+                        // button hit regions. DWM's system-sized caption bounds can
+                        // overlap a different custom button after a size/style change.
+                        bool dwmHandled = DwmDefWindowProc(hWnd, msg, wParam, lParam, out nint dwmHit);
 
                         if (customHitResult != HTNOWHERE)
                         {
                             return customHitResult;
+                        }
+                        if (dwmHandled)
+                        {
+                            return dwmHit;
                         }
                     }
                     break;
@@ -7409,6 +7443,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     break;
 
+                case WM_WINDOWPOSCHANGING:
+                    window.UpdateLiveResizeImagePreservation(lParam);
+                    break;
+
                 case WM_WINDOWPOSCHANGED:
                     // DefWindowProc translates this sent message into WM_SIZE.
                     // Keep the matching D3D12 viewport change queued until this
@@ -7436,10 +7474,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // This handles system-forced state changes (Win+Down, taskbar click, etc.)
                     // Use _isSyncingWindowState to prevent OnWindowStateChanged from
                     // calling ShowWindow again (which would cause infinite WM_SIZE loop).
+                    bool wasSyncingWindowState = window._isSyncingWindowState;
                     window._isSyncingWindowState = true;
                     try
                     {
-                        switch (sizeType)
+                        if (!window._isApplyingWindowState) switch (sizeType)
                         {
                             case SIZE_MAXIMIZED:
                                 if (window.WindowState != WindowState.Maximized)
@@ -7451,9 +7490,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                                 // While in fullscreen we intentionally resize to the
                                 // monitor bounds, which produces a SIZE_RESTORED
                                 // message. Do NOT drop the FullScreen state in that case.
-                                if (!window._isFullScreen && window.WindowState != WindowState.Normal)
+                                var restoredState = window._isFullScreen ? WindowState.FullScreen : WindowState.Normal;
+                                if (window.WindowState != restoredState)
                                 {
-                                    window.WindowState = WindowState.Normal;
+                                    window.WindowState = restoredState;
                                 }
                                 break;
                             case SIZE_MINIMIZED:
@@ -7466,8 +7506,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     finally
                     {
-                        window._isSyncingWindowState = false;
+                        window._isSyncingWindowState = wasSyncingWindowState;
                     }
+
+                    if (sizeType == SIZE_MINIMIZED)
+                        return nint.Zero;
 
                     window.OnSizeChanged(width, height);
 
@@ -7512,6 +7555,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 case WM_DISPLAYCHANGE:
                     // Display settings changed (resolution, refresh rate, etc.)
                     window.UpdateRefreshRateForCurrentMonitor(force: true);
+                    window.ResizeFullScreenToMonitor();
                     return nint.Zero;
 
                 case WM_DPICHANGED:
@@ -7546,6 +7590,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         new DpiScale(oldDpiScale, oldDpiScale),
                         new DpiScale(window._dpiScale, window._dpiScale)));
 
+                    window.ResizeFullScreenToMonitor();
+                    window.UpdateAppBarRegistration();
+
                     return nint.Zero;
                 }
 
@@ -7564,8 +7611,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     return nint.Zero;
 
+                case WM_SIZING:
+                    if (window._nativeSizingCommand)
+                        window.PublishLiveResizeEdge((int)wParam.ToInt64());
+                    break;
+
                 case WM_ENTERSIZEMOVE:
+                    window.BeginLiveResizeCaptionSuppression();
                     window._isSizing = true;
+                    window.PrepareLiveResize();
                     // Disable VSync during resize for faster frame updates.
                     // FIX #2: drain the render thread around the swap-chain param
                     // change — Present is not safe against a concurrent sync-interval
@@ -7590,6 +7644,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     return nint.Zero;
 
                 case WM_EXITSIZEMOVE:
+                    window.EndLiveResizeCaptionSuppression();
                     window._isSizing = false;
                     // Re-enable VSync after resize (honour the JALIUM_DISABLE_VSYNC
                     // opt-out so a benchmark session that disabled it stays disabled).
@@ -7819,7 +7874,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
                 case WM_CAPTURECHANGED:
                     // lParam = 即将拿到捕获的窗口；等于自己时不算丢捕获，理由见 HandleNativeCaptureChanged。
-                    if (lParam != hWnd) window._nonClientMouseLeaveWindow = nint.Zero;
+                    if (lParam != hWnd)
+                    {
+                        window._nonClientMouseLeaveWindow = nint.Zero;
+                        window.UpdateNativeCaptionForSnapHover(false);
+                    }
                     window._inputDispatcher.HandleNativeCaptureChanged(lParam, hWnd);
                     return nint.Zero;
 
@@ -8057,7 +8116,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         QueueLatestRenderTargetResize(
             physicalWidth,
             physicalHeight,
-            stage == "ExitSizeMove");
+            stage is "EnterSizeMove" or "ExitSizeMove");
 
         // The render worker owns the D3D12 target for its entire lifetime. Keep
         // WM_SIZE fully real-time (managed Width/Height and layout are already
@@ -9206,6 +9265,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void OnPaint()
     { _debugHud.OnPaint();
+        // A composition-only parent has no paint DC. Preserve its OS damage
+        // before BeginPaint empties rcPaint; Software presents in its child HWND.
+        bool softwarePaintPending = _isSizing && RenderTarget?.Backend == RenderBackend.Software &&
+            GetUpdateRect(Handle, nint.Zero, false);
         PAINTSTRUCT ps = new();
         _ = BeginPaint(Handle, out ps);
         if (_isSizing)
@@ -9217,7 +9280,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // A full Software frame can have validated this region after the
             // OS queued WM_PAINT. An empty paint must not create another full
             // invalidation; already pending framework work keeps its own wake.
-            if (ps.rcPaint.right > ps.rcPaint.left && ps.rcPaint.bottom > ps.rcPaint.top)
+            if (softwarePaintPending || (ps.rcPaint.right > ps.rcPaint.left && ps.rcPaint.bottom > ps.rcPaint.top))
             {
                 if (!TryPresentUnchangedSoftwareResizeFrame())
                 {
@@ -9455,6 +9518,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // UI-owned pending resize fields are cleared only after observing this ack,
     // so a later animation capture cannot overwrite and lose an unconsumed resize.
     private long _rtCommittedResizeVersion;
+    // Published only after EndDraw succeeds, including its composition placement.
+    private long _rtPresentedResizeVersion;
     private bool _renderThreadDisabledForSchemaGap;  // latched after un-recordable content; do not resurrect the render thread on RT recreate
     // Serializes every direct native draw session that can run outside the UI
     // render lifecycle. In particular, the pre-show background frame and the
@@ -10008,6 +10073,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         cap.RecordedTimestampTicks - cap.UiStartedTimestampTicks,
                         Stopwatch.GetTimestamp() - replayTimestampTicks,
                         Stopwatch.Frequency, CompositionTarget.RefreshRate);
+                Interlocked.Exchange(ref _rtPresentedResizeVersion,
+                    Interlocked.Read(ref _rtCommittedResizeVersion));
                 Interlocked.Increment(ref _successfulPresentCount);
                 // Interlocked + plain bool store — safe from this worker (see
                 // ResetEndDrawInvalidStateTracking for the ordering argument).
@@ -12024,15 +12091,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         if (AllowsTransparency || SystemBackdrop != WindowBackdropType.None)
             return;
-        if (Background is not SolidColorBrush solid || solid.Color.A != 255)
-            return;
+        // Match ClearBackground: an unspecified/non-solid opaque background
+        // starts black. Leaving this bitmap unwritten retains the system caption
+        // that was painted before our HWND was registered for custom NC layout.
+        uint backgroundColor = 0;
+        if (Background is SolidColorBrush solid)
+        {
+            if (solid.Color.A != 255) return;
+            var color = solid.Color;
+            backgroundColor = (uint)(color.R | (color.G << 8) | (color.B << 16));
+        }
         if (!GetClientRect(Handle, out RECT clientRect))
             return;
         if (clientRect.right <= clientRect.left || clientRect.bottom <= clientRect.top)
             return;
 
-        var color = solid.Color;
-        nint brush = CreateSolidBrush((uint)(color.R | (color.G << 8) | (color.B << 16)));
+        nint brush = CreateSolidBrush(backgroundColor);
         if (brush == nint.Zero)
             return;
         try
@@ -12210,6 +12284,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 measureTicks: fMeasureEnd - fMeasureStart,
                 arrangeTicks: fEnd - fMeasureEnd,
                 measureCount: 1, arrangeCount: 1, iterations: 1);
+            UpdateCustomTitleBarFrameMargins();
             return;
         }
 
@@ -12217,6 +12292,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         PublishLayoutPassStatsFromTicks(
             result.TotalTicks, result.MeasureTicks, result.ArrangeTicks,
             result.MeasureCount, result.ArrangeCount, result.Iterations);
+        // A queued layout can arrange just a template subtree, skipping Window.ArrangeOverride.
+        UpdateCustomTitleBarFrameMargins();
     }
 
     private void UpdateLayoutForRender()
@@ -12834,6 +12911,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (activateState == WA_INACTIVE)
         {
             _nonClientMouseLeaveWindow = nint.Zero;
+            UpdateNativeCaptionForSnapHover(false);
             if (IsActive)
             {
                 SetIsActive(false);
@@ -12862,6 +12940,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void OnCancelMode()
     {
         _nonClientMouseLeaveWindow = nint.Zero;
+        EndLiveResizeCaptionSuppression();
         _inputDispatcher.HandleCancelMode();
     }
 
@@ -13704,6 +13783,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void OnMouseMove(nint wParam, nint lParam)
     {
+        UpdateNativeCaptionForSnapHover(false);
         var position = GetMousePosition(lParam);
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();

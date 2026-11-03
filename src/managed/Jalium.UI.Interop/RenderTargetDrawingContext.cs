@@ -103,8 +103,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private int _opacityDepth;
     // While capturing a layer, ShouldRenderChild must cull against the LAYER bounds
     // (so the whole subtree is captured), not the window dirty-region clip. When
-    // set, CurrentClipBounds returns this verbatim.
+    // set, CurrentClipBounds maps it back through any live child transform.
     private Rect? _layerCaptureClipBounds;
+    // Native D3D12 captures rebase screen coordinates to a texture-local origin.
+    // Keep all capture kinds in one stack: a transition can contain an effect
+    // scope, but native only redirects the outermost capture.
+    private readonly Stack<Rect> _offscreenCaptureBounds = new();
+    private readonly Stack<(int Slot, bool Opened)> _transitionCaptureScopes = new();
+    private readonly bool[] _suppressedTransitionSlots = new bool[2];
     // Depth of open effect captures (BeginEffectCapture..EndEffectCapture).
     // While > 0, CurrentClipBounds returns the innermost entry of
     // _effectCaptureCullOverrideStack instead of the window dirty-region /
@@ -703,7 +709,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // bounds so the whole subtree is captured (the window dirty-region clip
             // would wrongly drop in-layer content outside the current dirty rect).
             if (_layerCaptureClipBounds.HasValue)
-                return _layerCaptureClipBounds;
+                return MapSurfaceClipToDrawing(_layerCaptureClipBounds.Value);
 
             // While capturing an element for an effect (BeginEffectCapture..
             // EndEffectCapture), cull against the CAPTURE RECT instead of the
@@ -731,43 +737,37 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 if (_effectCaptureCullOverrideStack.Count == 0)
                     return null;
 
-                var capture = _effectCaptureCullOverrideStack.Peek();
-                if (_nativeTransformDepth <= 0)
-                    return capture;
-
-                var cm = new Jalium.UI.Media.Matrix(
-                    _currentNativeMatrix[0], _currentNativeMatrix[1],
-                    _currentNativeMatrix[2], _currentNativeMatrix[3],
-                    _currentNativeMatrix[4], _currentNativeMatrix[5]);
-                if (!cm.TryInvert(out var captureInv))
-                    return null; // non-invertible → no cull, never under-cull
-
-                return TransformRectAabb(capture,
-                    captureInv.M11, captureInv.M12, captureInv.M21, captureInv.M22,
-                    captureInv.OffsetX, captureInv.OffsetY);
+                return MapSurfaceClipToDrawing(_effectCaptureCullOverrideStack.Peek());
             }
+
+            if (_offscreenCaptureBounds.Count > 0)
+                return MapSurfaceClipToDrawing(_offscreenCaptureBounds.Peek());
 
             if (_clipBoundsStack.Count == 0)
                 return null;
 
             var top = _clipBoundsStack.Peek();
 
-            // Depth 0: the native matrix is identity, surface space == screen space,
-            // so the stored value is already in the comparison space — return as-is
-            // (bit-for-bit identical to the historical fast path).
-            if (_nativeTransformDepth <= 0 || !top.HasValue)
+            if (!top.HasValue)
                 return top;
-
-            var m = new Jalium.UI.Media.Matrix(
-                _currentNativeMatrix[0], _currentNativeMatrix[1],
-                _currentNativeMatrix[2], _currentNativeMatrix[3],
-                _currentNativeMatrix[4], _currentNativeMatrix[5]);
-            if (!m.TryInvert(out var inv))
-                return null; // non-invertible (e.g. zero scale) → no cull, never under-cull
-
-            return TransformRectAabb(top.Value,
-                inv.M11, inv.M12, inv.M21, inv.M22, inv.OffsetX, inv.OffsetY);
+            return MapSurfaceClipToDrawing(top.Value);
         }
+    }
+
+    private Rect? MapSurfaceClipToDrawing(Rect surfaceClip)
+    {
+        if (_nativeTransformDepth <= 0)
+            return surfaceClip;
+        var matrix = new Matrix(
+            _currentNativeMatrix[0], _currentNativeMatrix[1],
+            _currentNativeMatrix[2], _currentNativeMatrix[3],
+            _currentNativeMatrix[4], _currentNativeMatrix[5]);
+        // This is only a culling hint. Singular transforms must disable it
+        // rather than discard content using bounds from a different space.
+        if (!matrix.TryInvert(out var inverse))
+            return null;
+        return TransformRectAabb(surfaceClip,
+            inverse.M11, inverse.M12, inverse.M21, inverse.M22, inverse.OffsetX, inverse.OffsetY);
     }
 
     /// <summary>
@@ -898,7 +898,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <inheritdoc />
     public nint BeginLayerCapture(nint existingLayer, Rect worldBounds)
     {
-        if (_closed || _inLayerCapture) return 0;
+        if (_closed || _inLayerCapture || _offscreenCaptureBounds.Count > 0) return 0;
         if (!SupportsRetainedLayers) return 0;
         // An ancestor non-translate transform or opacity would bake into the
         // captured content (the composite re-applies them) — fall back instead.
@@ -920,6 +920,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             ? ComputeScreenEffectCaptureRect(worldBounds, Matrix.Identity,
                 _renderTarget.DpiScaleX, _renderTarget.DpiScaleX)
             : worldBounds;
+        _offscreenCaptureBounds.Push(_layerCaptureClipBounds.Value);
         return layer;
     }
 
@@ -931,6 +932,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             NativeMethods.RenderTargetRealizeLayerEnd(_renderTarget.Handle, layer);
         _inLayerCapture = false;
         _layerCaptureClipBounds = null;
+        _offscreenCaptureBounds.Pop();
     }
 
     /// <inheritdoc />
@@ -1024,6 +1026,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         _effectCaptureFrameStack.Clear();
         _lastEndedEffectCapture = default;
         _suppressedEffectCaptureDepth = 0;
+        _inLayerCapture = false;
+        _layerCaptureClipBounds = null;
+        _offscreenCaptureBounds.Clear();
+        _transitionCaptureScopes.Clear();
+        Array.Clear(_suppressedTransitionSlots);
         if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return;
         while (Visual.TryDequeuePendingLayerDestroy(out nint h))
         {
@@ -3592,11 +3599,21 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <param name="localBounds">The transition area in local coordinates.</param>
     public void BeginTransitionCapture(int slot, Rect localBounds)
     {
-        if (_closed) return;
+        if (_closed || slot is < 0 or > 1) return;
         var x = (float)(localBounds.X + Offset.X);
         var y = (float)(localBounds.Y + Offset.Y);
-        _renderTarget.BeginTransitionCapture(slot, x, y,
-            (float)localBounds.Width, (float)localBounds.Height);
+        var width = (float)localBounds.Width;
+        var height = (float)localBounds.Height;
+        // End must only close a capture this scope actually opened. Native
+        // transitions share their surfaces with effects and retained layers.
+        bool opened = _offscreenCaptureBounds.Count == 0 &&
+            float.IsFinite(x) && float.IsFinite(y) &&
+            float.IsFinite(width) && float.IsFinite(height) && width > 0 && height > 0;
+        _transitionCaptureScopes.Push((slot, opened));
+        _suppressedTransitionSlots[slot] = !opened;
+        if (!opened) return;
+        _offscreenCaptureBounds.Push(new Rect(x, y, width, height));
+        _renderTarget.BeginTransitionCapture(slot, x, y, width, height);
     }
 
     /// <summary>
@@ -3605,8 +3622,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <param name="slot">0 = old content, 1 = new content.</param>
     public void EndTransitionCapture(int slot)
     {
-        if (_closed) return;
+        if (_closed || _transitionCaptureScopes.Count == 0 || _transitionCaptureScopes.Peek().Slot != slot) return;
+        if (!_transitionCaptureScopes.Pop().Opened) return;
         _renderTarget.EndTransitionCapture(slot);
+        _offscreenCaptureBounds.Pop();
+        _suppressedTransitionSlots[slot] = false;
     }
 
     /// <summary>
@@ -3617,7 +3637,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <param name="mode">Shader mode index (0-9).</param>
     public void DrawTransitionShader(Rect localBounds, float progress, int mode, float cornerRadius = 0f)
     {
-        if (_closed) return;
+        if (_closed || _suppressedTransitionSlots[0] || _suppressedTransitionSlots[1]) return;
         var x = (float)(localBounds.X + Offset.X);
         var y = (float)(localBounds.Y + Offset.Y);
         _renderTarget.DrawTransitionShader(x, y,
@@ -3629,7 +3649,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// </summary>
     public void DrawCapturedTransition(int slot, Rect localBounds, float opacity)
     {
-        if (_closed) return;
+        if (_closed || slot is < 0 or > 1 || _suppressedTransitionSlots[slot]) return;
         var x = (float)(localBounds.X + Offset.X);
         var y = (float)(localBounds.Y + Offset.Y);
         _renderTarget.DrawCapturedTransition(slot, x, y,
@@ -3735,27 +3755,16 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 _currentNativeMatrix[0], _currentNativeMatrix[1],
                 _currentNativeMatrix[2], _currentNativeMatrix[3],
                 _currentNativeMatrix[4], _currentNativeMatrix[5]);
-            // D3D12 offscreen captures add a native-only translation from surface
-            // coordinates to the capture origin. Include it in the conjugation so
-            // a child's local scale/rotation does not transform that translation.
-            // Keep the managed mirror in surface space for offsets and culling.
+            // D3D12 adds a native-only capture translation. Conjugate against the
+            // actual outer capture for layers, effects AND transitions; a local
+            // scale must not scale that translation. Nested effect scopes cannot
+            // redirect native again, so the oldest origin remains authoritative.
             var nativeCurrent = current;
-            if (_inLayerCapture && _renderTarget.Backend == RenderBackend.D3D12 &&
-                _layerCaptureClipBounds is Rect layerBounds)
+            if (_renderTarget.Backend == RenderBackend.D3D12 && _offscreenCaptureBounds.Count > 0)
             {
+                var capture = _offscreenCaptureBounds.Last();
                 nativeCurrent *= new Jalium.UI.Media.Matrix(
-                    1, 0, 0, 1, -layerBounds.X, -layerBounds.Y);
-            }
-            else if (_renderTarget.Backend == RenderBackend.D3D12 &&
-                _effectCaptureFrameStack.Count > 0)
-            {
-                // Native effect captures cannot nest: inner effect scopes draw
-                // into the first capture, so its origin remains authoritative.
-                // Omitting this translation rotates children around the window
-                // origin instead of their position in a shadow/blur texture.
-                var capture = _effectCaptureFrameStack.Last();
-                nativeCurrent *= new Jalium.UI.Media.Matrix(
-                    1, 0, 0, 1, -capture.ScreenX, -capture.ScreenY);
+                    1, 0, 0, 1, -capture.X, -capture.Y);
             }
 
             Jalium.UI.Media.Matrix toNative;
@@ -4342,6 +4351,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
         }
         _effectCaptureFrameStack.Push(frame);
+        _offscreenCaptureBounds.Push(new Rect(frame.ScreenX, frame.ScreenY, frame.ScreenWidth, frame.ScreenHeight));
         _renderTarget.BeginEffectCapture(nativeX, nativeY, nativeW, nativeH);
     }
 
@@ -4360,9 +4370,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             _effectCaptureCullSuspendDepth--;
         if (_effectCaptureCullOverrideStack.Count > 0)
             _effectCaptureCullOverrideStack.Pop();
-        _lastEndedEffectCapture = _effectCaptureFrameStack.Count > 0
-            ? _effectCaptureFrameStack.Pop()
-            : default;
+        if (_effectCaptureFrameStack.Count > 0)
+        {
+            _lastEndedEffectCapture = _effectCaptureFrameStack.Pop();
+            _offscreenCaptureBounds.Pop();
+        }
+        else
+        {
+            _lastEndedEffectCapture = default;
+        }
         _renderTarget.EndEffectCapture();
     }
 

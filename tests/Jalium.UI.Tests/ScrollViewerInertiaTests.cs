@@ -73,6 +73,25 @@ public class ScrollViewerInertiaTests
     }
 
     [Fact]
+    public void SmoothScroll_HighRefreshFrames_ReachesWholePixelTarget()
+    {
+        var viewer = CreateConfiguredViewer(initialVerticalOffset: 0);
+        SetPrivateField(viewer, "_smoothTargetY", 160.0);
+        SetPrivateField(viewer, "_smoothTargetX", 0.0);
+        SetPrivateField(viewer, "_isSmoothScrolling", true);
+
+        for (var frame = 0;
+             frame < 512 && GetPrivateField<bool>(viewer, "_isSmoothScrolling");
+             frame++)
+        {
+            InvokePrivateMethod(viewer, "AdvanceSmoothScrollByMilliseconds", 4L);
+        }
+
+        Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
+        Assert.Equal(160.0, viewer.VerticalOffset, precision: 3);
+    }
+
+    [Fact]
     public void ScrollViewer_WheelOverScrollBarTrack_ShouldMatchContentWheelDistance()
     {
         var contentViewer = CreateConfiguredViewer(initialVerticalOffset: 100);
@@ -140,6 +159,7 @@ public class ScrollViewerInertiaTests
         viewer.ScrollInertiaDurationMs = 3000;
         SetPrivateField(viewer, "_smoothTargetY", 800.0);
         SetPrivateField(viewer, "_isSmoothScrolling", true);
+        SetPrivateField(viewer, "_verticalScrollBarShown", true);
 
         var trackHeight = viewer.RenderSize.Height - 32; // minus 2 * ScrollButtonSize
         var thumbHeight = Math.Max(20, (viewer.ViewportHeight / viewer.ExtentHeight) * trackHeight);
@@ -152,7 +172,11 @@ public class ScrollViewerInertiaTests
         viewer.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed, timestamp: 4));
 
         var scrollRange = trackHeight - thumbHeight;
-        var expected = 100 + ((end.Y - start.Y) / scrollRange) * viewer.ScrollableHeight;
+        // Committed offsets are quantized to whole device pixels (LayoutDpiScale is 1
+        // here), so the thumb's proportional fraction rounds onto the pixel grid.
+        var expected = Math.Round(
+            100 + ((end.Y - start.Y) / scrollRange) * viewer.ScrollableHeight,
+            MidpointRounding.AwayFromZero);
 
         Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
         Assert.Equal(expected, viewer.VerticalOffset, precision: 3);

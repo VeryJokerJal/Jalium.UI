@@ -1239,6 +1239,11 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
         D3D12_RESOURCE_STATE_PRESENT,
         D3D12_RESOURCE_STATE_RENDER_TARGET);
     commandList_->ResourceBarrier(1, &barrier);
+    // The edge placement can overlap the logical top-left image. Restore the
+    // last canonical frame before a partial redraw reads or changes it.
+    if (!clear) {
+        RestoreCompositionLogicalFrame();
+    }
     auto rtvHandle = GetSwapChainRtvHandle();
     commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
@@ -1541,18 +1546,16 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
     }
     inFrame_ = false;
 
+    // Capture the logical image before the edge placement can overlap its
+    // top-left region. Readback dimensions remain exactly the viewport size.
+    const bool readbackRecorded =
+        readbackPending_ && RecordBackBufferReadbackCopy();
+    readbackPending_ = false;
+
     if (compositionAnchorRight_ || compositionAnchorBottom_) {
         compositionResizePlacementRecorded_ =
             RecordCompositionResizePlacementCopy();
     }
-
-    // Parity-verification back-buffer readback: record after composition
-    // placement has restored the canonical logical frame at top-left, but
-    // before the PRESENT transition. The captured dimensions remain exactly
-    // RenderTarget.Width x RenderTarget.Height.
-    const bool readbackRecorded =
-        readbackPending_ && RecordBackBufferReadbackCopy();
-    readbackPending_ = false;
 
     // Transition back buffer RENDER_TARGET → PRESENT (matching the original
     // pre-MSAA flow now that we render directly into the swap chain).
@@ -1855,6 +1858,39 @@ bool D3D12DirectRenderer::RecordBackBufferReadbackCopy()
     return true;
 }
 
+void D3D12DirectRenderer::RestoreCompositionLogicalFrame()
+{
+    if ((!compositionAnchorRight_ && !compositionAnchorBottom_) ||
+        !compositionResizeScratchContentValid_ ||
+        compositionResizeScratchContentWidth_ != viewportWidth_ ||
+        compositionResizeScratchContentHeight_ != viewportHeight_) {
+        return;
+    }
+
+    auto* backBuffer = renderTargets_[currentFrame_].Get();
+    D3D12_RESOURCE_BARRIER barriers[] = {
+        MakeTransitionBarrier(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_COPY_DEST),
+        MakeTransitionBarrier(compositionResizeScratch_.Get(),
+            compositionResizeScratchState_, D3D12_RESOURCE_STATE_COPY_SOURCE)
+    };
+    commandList_->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
+
+    D3D12_TEXTURE_COPY_LOCATION destination = {};
+    destination.pResource = backBuffer;
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION source = {};
+    source.pResource = compositionResizeScratch_.Get();
+    source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    const D3D12_BOX logicalFrame = { 0, 0, 0, viewportWidth_, viewportHeight_, 1 };
+    commandList_->CopyTextureRegion(&destination, 0, 0, 0, &source, &logicalFrame);
+
+    for (auto& barrier : barriers) {
+        std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    }
+    commandList_->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
+}
+
 bool D3D12DirectRenderer::RecordCompositionResizePlacementCopy()
 {
     if (!device_ || !commandList_) return false;
@@ -2002,12 +2038,10 @@ bool D3D12DirectRenderer::RecordCompositionResizePlacementCopy()
     }
     compositionResizeScratchState_ = D3D12_RESOURCE_STATE_COPY_SOURCE;
 
-    // Keep both placements coherent. The top-left copy is the ordinary
-    // post-resize layout used when the modal loop ends; the capacity-edge copy
-    // is selected by the matching DirectComposition visual offset while dragging.
-    // A second
-    // no-dirty frame can therefore never expose stale contents from whichever
-    // flip-sequential back buffer DXGI rotates in next.
+    // Seed the logical origin and the stationary-edge placement in every flip
+    // buffer. These regions may overlap: the scratch texture remains canonical
+    // and BeginFrame restores it before any partial redraw. Composition selects
+    // the complete capacity-edge image while the native resize loop is active.
     commandList_->CopyTextureRegion(
         &backBufferLocation,
         0, 0, 0,
@@ -3954,6 +3988,7 @@ void D3D12DirectRenderer::RecordDrawCommands()
 
     // Draw in painter's order (batches are already in order)
     DrawBatchType currentPSO = DrawBatchType::SdfRect;
+    bool currentTextSmooth = false;
     commandList_->SetPipelineState(sdfRectPSO_.Get());
 
     // ── Path-pipeline state machine ────────────────────────────────────
@@ -4479,8 +4514,11 @@ void D3D12DirectRenderer::RecordDrawCommands()
             exitPathMode();
         }
 
-        // Switch PSO if needed
-        if (batch.type != currentPSO) {
+        // Text batches can differ only in their atlas sampling contract.
+        // Switching from a pixel-aligned strike to a supersampled run (or
+        // back) still needs a PSO change even when both batches are Text.
+        if (batch.type != currentPSO ||
+            (batch.type == DrawBatchType::Text && batch.smoothText != currentTextSmooth)) {
             currentPSO = batch.type;
             // Tag the GPU work that's about to be issued so DevTools can
             // attribute time to the right category. Map DrawBatchType → the
@@ -4531,6 +4569,7 @@ void D3D12DirectRenderer::RecordDrawCommands()
                 // point PSO. (Batches with different smoothText never coalesce.)
                 commandList_->SetPipelineState(
                     batch.smoothText ? textSmoothPSO_.Get() : textPSO_.Get());
+                currentTextSmooth = batch.smoothText;
                 {
                     auto textSrvGpu = srvGpuBase;
                     textSrvGpu.ptr += 4 * srvDescriptorSize_;

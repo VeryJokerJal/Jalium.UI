@@ -1134,7 +1134,7 @@ internal static class JalxamlCodeGenerator
         return false;
     }
 
-    private static bool IsTemplateClrType(string? clrTypeName)
+    internal static bool IsTemplateClrType(string? clrTypeName)
     {
         if (string.IsNullOrEmpty(clrTypeName))
             return false;
@@ -1381,6 +1381,10 @@ internal static class JalxamlCodeGenerator
         var innerPad = new string(' ', inner);
         var rootIndex = counter.Next();
         var rootVar = $"__t{rootIndex}";
+        var templateContextVar = $"__templateCtx{rootIndex}";
+        var templateContext = new EmitContext(ctx.Symbols, ctx.RootPrefixes, ctx.XmlnsResolver,
+            ctx.OwnerExpression, templateContextVar) { DeferredStyles = ctx.DeferredStyles };
+        sb.AppendLine($"{innerPad}var {templateContextVar} = global::Jalium.UI.Markup.XamlBuilder.BeginTemplate({ctx.ContextExpression});");
 
         // Re-prime the build context's ambient resource stack with the captured
         // codebehind / dictionary instance so {StaticResource X} markup-extension
@@ -1393,9 +1397,9 @@ internal static class JalxamlCodeGenerator
         // non-FE Converter resources or initial paint scenarios. Pushing the codebehind
         // here lets the parser hit the resource directly on first try, mirroring the
         // streaming XAML reader's behaviour where ambient parents are always available.
-        // We push/pop strictly around the body so concurrent LoadContent calls don't
-        // accumulate stack entries.
-        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, {ctx.ContextExpression});");
+        // Each instance owns its context so concurrent loads and nested templates cannot
+        // overwrite one another's names or mutate a shared ambient parent stack.
+        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, {templateContextVar});");
         sb.AppendLine($"{innerPad}try");
         sb.AppendLine($"{innerPad}{{");
 
@@ -1407,13 +1411,16 @@ internal static class JalxamlCodeGenerator
         // outside the template don't collide with names inside. Templates expose names
         // via FrameworkTemplate.FindName at apply time, not via codebehind fields.
         sb.AppendLine($"{bodyPad}var {rootVar} = new global::{rootChild.ResolvedClrTypeName!}();");
-        EmitElementBody(sb, rootChild, rootVar, counter, new HashSet<string>(StringComparer.Ordinal), bodyInner, ctx);
+        EmitElementBody(sb, rootChild, rootVar, counter, new HashSet<string>(StringComparer.Ordinal), bodyInner, templateContext);
+        // Nonvisual layout definitions and inactive tool-window contents still need
+        // to resolve through GetTemplateChild before the first layout pass.
+        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.EndComponent({rootVar}, {templateContextVar});");
         sb.AppendLine($"{bodyPad}return {rootVar};");
 
         sb.AppendLine($"{innerPad}}}");
         sb.AppendLine($"{innerPad}finally");
         sb.AppendLine($"{innerPad}{{");
-        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent({ctx.ContextExpression});");
+        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent({templateContextVar});");
         sb.AppendLine($"{innerPad}}}");
 
         sb.AppendLine($"{pad}}});");

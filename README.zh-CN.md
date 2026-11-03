@@ -105,6 +105,36 @@
 - 停靠：`DockLayout`、`DockSplitPanel`、`DockTabPanel`、`Split`
 - 窗口级布局宿主、覆盖层、标题栏组合、chrome 集成
 
+### 窗口增强
+
+`WindowState.FullScreen` 覆盖当前显示器并隐藏标题栏；`window.ToggleFullScreen()`
+可在全屏与之前的普通 / 最大化状态间切换，也可以在 `Show()` 前调用。
+全屏期间修改的边框与置顶设置会在退出时保留。
+
+Windows 上可通过 `Jalium.UI.Shell.WindowAppBar` 将窗口注册为桌面停靠栏，
+使用 `SHAppBarMessage` 与任务栏和其他 AppBar 协商位置、预留工作区：
+
+```csharp
+using Jalium.UI.Shell;
+
+window.WindowStyle = WindowStyle.None;
+window.ResizeMode = ResizeMode.NoResize;
+window.ShowInTaskbar = false;
+window.Topmost = true;
+WindowAppBar.SetEdge(window, AppBarEdge.Top); // Left / Top / Right / Bottom
+WindowAppBar.SetThickness(window, 48);        // DIP，按所在显示器 DPI 换算
+WindowAppBar.SetIsEnabled(window, true);
+window.Show();
+```
+
+也可使用 `WindowAppBar.IsEnabled`、`WindowAppBar.Edge` 和 `WindowAppBar.Thickness`
+附加属性在 JALXAML 中配置。隐藏、最小化、最大化、全屏或关闭窗口时会释放预留区域，
+恢复为可见普通窗口时重新注册；Explorer 重启后会恢复注册。
+`WindowAppBar.SetIsEnabled(window, false)` 取消停靠，并在普通状态下恢复启用前的位置与大小。
+`GetIsRegistered` 可查询当前注册状态；非 Windows 平台应先检查 `WindowAppBar.IsSupported`。
+当前接口支持常驻 AppBar，自动隐藏行为需另行实现。
+协议细节见 [Microsoft AppBar 文档](https://learn.microsoft.com/en-us/windows/win32/shell/application-desktop-toolbars)。
+
 ### 控件
 
 - **输入类**：`Button`、`TextBox`、`PasswordBox`、`NumberBox`、`AutoCompleteBox`、`ComboBox`、`Slider`、`RangeSlider`、`CheckBox`、`RadioButton`、`ToggleSwitch`、`SplitButton`

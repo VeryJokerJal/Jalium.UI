@@ -89,10 +89,19 @@ public sealed partial class CssStyleSheet
     public static Task<CssStyleSheet> LoadAsync(Uri uri, CancellationToken cancellationToken = default)
         => LoadAsync(uri, s_defaultResolver, cancellationToken);
 
+    /// <summary>Loads a CSS file and its <c>@import</c> rules. Relative paths use the current working directory.</summary>
+    public static Task<CssStyleSheet> LoadFileAsync(string path, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return LoadAsync(new Uri(Path.GetFullPath(path)), cancellationToken);
+    }
+
     public static async Task<CssStyleSheet> LoadAsync(Uri uri, ICssResourceResolver resolver, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(uri);
         ArgumentNullException.ThrowIfNull(resolver);
+        if (ReferenceEquals(resolver, s_defaultResolver))
+            uri = ApplicationResourceUriResolver?.Invoke(uri) ?? uri;
         var active = new HashSet<Uri>();
         // A resource can be imported under different environment encodings.
         // Fetch its bytes once, then cache each decoded/parsed interpretation.

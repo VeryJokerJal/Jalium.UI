@@ -1,11 +1,39 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Rendering;
 
 namespace Jalium.UI.Tests;
 
+[Collection("Application")]
 public sealed class TextBlockRenderCacheTests
 {
+    [Fact]
+    public void DirectRenderDoesNotClearAnOutdatedRetainedDrawing()
+    {
+        MediaRenderCacheHost.Bootstrap();
+        var block = new TextBlock { Text = "Before", Width = 150, Height = 40 };
+        block.Measure(new Size(150, 40));
+        block.Arrange(new Rect(0, 0, 150, 40));
+
+        var firstRecorder = new DrawingRecorder();
+        firstRecorder.BindWholeFrame();
+        block.Render(firstRecorder);
+        firstRecorder.Commit();
+
+        block.Text = "After";
+        block.Measure(new Size(150, 40));
+        block.Arrange(new Rect(0, 0, 150, 40));
+        block.Render(new TrackingDrawingContext());
+
+        var nextRecorder = new DrawingRecorder();
+        nextRecorder.BindWholeFrame();
+        block.Render(nextRecorder);
+        var replay = new TrackingDrawingContext();
+        DrawingReplayer.Replay(nextRecorder.Commit(), replay);
+        Assert.Equal("After", Assert.Single(replay.DrawnTexts).Text);
+    }
+
     [Fact]
     public void TextBlock_Render_ShouldReuseFormattedText_AcrossRepeatedRenders()
     {

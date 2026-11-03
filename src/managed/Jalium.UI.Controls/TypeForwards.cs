@@ -1365,6 +1365,8 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Shell.ThumbButtonInfo))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Shell.ThumbButtonInfoCollection))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Shell.WindowChrome))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Shell.WindowAppBar))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Shell.AppBarEdge))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.StartupEventArgs))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.StartupEventHandler))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.StrokeCollectionConverter))]

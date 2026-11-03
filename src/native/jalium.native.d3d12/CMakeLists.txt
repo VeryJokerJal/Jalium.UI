@@ -13,6 +13,7 @@ set(HEADERS
     include/d3d12_pipeline.h
     include/d3d12_path_engine_selection.h
     include/d3d12_render_target.h
+    include/d3d12_window_composition.h
     include/d3d12_resources.h
     include/d3d12_shader_bytecode.h
     include/d3d12_shader_source.h
@@ -38,6 +39,7 @@ set(SOURCES
     src/d3d12_path_pipeline.cpp
     src/d3d12_pipeline.cpp
     src/d3d12_render_target.cpp
+    src/d3d12_window_composition.cpp
     src/d3d12_text.cpp
     src/d3d12_video_surface.cpp
     src/d3d12_vello.cpp

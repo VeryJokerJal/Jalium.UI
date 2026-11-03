@@ -39,6 +39,17 @@ public class KeyEventArgs : KeyboardEventArgs
     public ModifierKeys KeyboardModifiers { get; }
 
     /// <summary>
+    /// Gets the physical modifiers captured by a platform input provider, before
+    /// compatibility mapping. Windows represents Command on macOS. A null value
+    /// means the event was created without a physical modifier snapshot.
+    /// </summary>
+    public ModifierKeys? PhysicalModifiers { get; internal init; }
+
+    /// <summary>Gets whether a platform event has the macOS Command key held.</summary>
+    public bool IsCommandDown => OperatingSystem.IsMacOS() &&
+        (PhysicalModifiers.GetValueOrDefault() & ModifierKeys.Windows) != 0;
+
+    /// <summary>
     /// Gets a value indicating whether this is a repeated key event.
     /// </summary>
     public bool IsRepeat { get; }
@@ -59,7 +70,9 @@ public class KeyEventArgs : KeyboardEventArgs
     public bool IsAltDown => (KeyboardModifiers & ModifierKeys.Alt) != 0;
 
     /// <summary>
-    /// Gets a value indicating whether the Control key was pressed.
+    /// Gets a value indicating whether the compatible Control command modifier
+    /// was pressed. Platform input also maps macOS Command to this modifier;
+    /// use <see cref="PhysicalModifiers"/> to distinguish the physical keys.
     /// </summary>
     public bool IsControlDown => (KeyboardModifiers & ModifierKeys.Control) != 0;
 

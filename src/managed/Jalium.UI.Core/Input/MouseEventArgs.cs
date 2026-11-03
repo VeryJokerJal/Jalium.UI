@@ -187,34 +187,20 @@ public class MouseEventArgs : InputEventArgs
         if (relativeTo is not UIElement relativeElement)
             return Position;
 
-        // Walk up from relativeTo collecting the ancestor chain.
-        // chain[0] = relativeTo, chain[last] = topmost ancestor reached.
-        var chain = new List<Visual>();
-        Visual? current = relativeElement;
-        while (current != null)
+        // Compose parent-to-child inverse maps while walking upwards. Prepending
+        // each map gives the same root-to-leaf order without allocating a list
+        // for every pointer event. The topmost visual remains the host space.
+        var inverse = Matrix.Identity;
+        for (Visual? child = relativeElement; child?.VisualParent != null; child = child.VisualParent)
         {
-            chain.Add(current);
-            current = current.VisualParent;
-        }
-
-        // Start at the topmost visual's parent-local space (which is what
-        // `Position` is expressed in for a window-rooted visual tree) and
-        // descend to relativeTo, undoing each step:
-        //   parent → child:  translate by -child.VisualBounds.position,
-        //                    then apply child.RenderTransform.Inverse around
-        //                    child's RenderTransformOrigin.
-        // This mirrors the render-side `PushTransform(child.RenderTransform,
-        // originX, originY)` in Visual.RenderDirect.
-        var p = Position;
-        for (int i = chain.Count - 2; i >= 0; i--)
-        {
-            var child = chain[i];
-
+            double offsetX = 0, offsetY = 0;
             if (child is FrameworkElement fe)
             {
-                p = new Point(p.X - fe.VisualBounds.X, p.Y - fe.VisualBounds.Y);
+                offsetX = fe.VisualBounds.X;
+                offsetY = fe.VisualBounds.Y;
             }
 
+            var level = new Matrix(1, 0, 0, 1, -offsetX, -offsetY);
             if (child is UIElement ui && ui.RenderTransform is { } rt
                 && rt.Value.TryInvert(out var inv))
             {
@@ -222,13 +208,14 @@ public class MouseEventArgs : InputEventArgs
                 var size = ui.RenderSize;
                 var ox = origin.X * size.Width;
                 var oy = origin.Y * size.Height;
-                var translated = new Point(p.X - ox, p.Y - oy);
-                var inverted = inv.Transform(translated);
-                p = new Point(inverted.X + ox, inverted.Y + oy);
+                level = Matrix.Multiply(
+                    Matrix.Multiply(new Matrix(1, 0, 0, 1, -offsetX - ox, -offsetY - oy), inv),
+                    new Matrix(1, 0, 0, 1, ox, oy));
             }
+            inverse = Matrix.Multiply(level, inverse);
         }
 
-        return p;
+        return inverse.Transform(Position);
     }
 
     /// <summary>
@@ -395,6 +382,28 @@ public sealed class MouseWheelEventArgs : MouseEventArgs
 {
     public int Delta { get; }
 
+    /// <summary>Gets the horizontal wheel delta; positive values scroll right. One notch is 120 units.</summary>
+    public double HorizontalDelta { get; }
+
+    /// <summary>Gets the vertical wheel delta; positive values scroll up. One notch is 120 units.</summary>
+    public double VerticalDelta { get; }
+
+    /// <summary>
+    /// Gets whether the deltas come from a precise device. For these events,
+    /// 120 units represent 48 device-independent pixels, including native momentum.
+    /// </summary>
+    public bool HasPreciseScrollingDeltas { get; }
+
+    /// <summary>Gets the direct scrolling gesture phase, including zero-delta release packets.</summary>
+    public MouseWheelPhase Phase { get; }
+
+    /// <summary>Gets the phase of momentum supplied by the input device.</summary>
+    public MouseWheelPhase MomentumPhase { get; }
+
+    // A diagonal packet can be consumed on one axis and bubble on the other.
+    internal bool IsHorizontalDeltaHandled { get; set; }
+    internal bool IsVerticalDeltaHandled { get; set; }
+
     public MouseWheelEventArgs(
         RoutedEvent routedEvent,
         Point position,
@@ -409,7 +418,58 @@ public sealed class MouseWheelEventArgs : MouseEventArgs
         : base(routedEvent, position, leftButton, middleButton, rightButton, xButton1, xButton2, modifiers, timestamp)
     {
         Delta = delta;
+        VerticalDelta = delta;
     }
+
+    /// <summary>Initializes wheel event data without discarding fractional or horizontal deltas.</summary>
+    public MouseWheelEventArgs(
+        RoutedEvent routedEvent,
+        Point position,
+        double horizontalDelta,
+        double verticalDelta,
+        bool hasPreciseScrollingDeltas,
+        MouseButtonState leftButton,
+        MouseButtonState middleButton,
+        MouseButtonState rightButton,
+        MouseButtonState xButton1,
+        MouseButtonState xButton2,
+        ModifierKeys modifiers,
+        int timestamp)
+        : this(routedEvent, position, horizontalDelta, verticalDelta, hasPreciseScrollingDeltas,
+            leftButton, middleButton, rightButton, xButton1, xButton2, modifiers, timestamp,
+            MouseWheelPhase.None, MouseWheelPhase.None)
+    {
+    }
+
+    /// <summary>Initializes precise wheel data together with the gesture and momentum lifecycle.</summary>
+    public MouseWheelEventArgs(
+        RoutedEvent routedEvent,
+        Point position,
+        double horizontalDelta,
+        double verticalDelta,
+        bool hasPreciseScrollingDeltas,
+        MouseButtonState leftButton,
+        MouseButtonState middleButton,
+        MouseButtonState rightButton,
+        MouseButtonState xButton1,
+        MouseButtonState xButton2,
+        ModifierKeys modifiers,
+        int timestamp,
+        MouseWheelPhase phase,
+        MouseWheelPhase momentumPhase)
+        : this(routedEvent, position, ToLegacyDelta(verticalDelta),
+            leftButton, middleButton, rightButton, xButton1, xButton2, modifiers, timestamp)
+    {
+        HorizontalDelta = horizontalDelta;
+        VerticalDelta = verticalDelta;
+        HasPreciseScrollingDeltas = hasPreciseScrollingDeltas;
+        Phase = phase;
+        MomentumPhase = momentumPhase;
+    }
+
+    internal static int ToLegacyDelta(double delta) => double.IsFinite(delta)
+        ? (int)Math.Clamp(Math.Round(delta), int.MinValue, int.MaxValue)
+        : 0;
 
     /// <summary>
     /// Initializes mouse-wheel event data from a logical mouse device.
@@ -418,6 +478,7 @@ public sealed class MouseWheelEventArgs : MouseEventArgs
         : base(mouse, timestamp, stylusDevice: null)
     {
         Delta = delta;
+        VerticalDelta = delta;
     }
 
     /// <inheritdoc />
