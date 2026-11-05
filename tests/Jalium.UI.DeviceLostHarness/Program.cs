@@ -215,6 +215,16 @@ internal static class Program
         // the renderthread scenario's first incident would silently run inline.
         Jalium.UI.Media.Rendering.MediaRenderCacheHost.Bootstrap();
 
+        // The presenthandshake scenario verifies the worker-path idle retire
+        // observation; Performance mode is contractually inline
+        // (AllowRenderThread=false — the worker defeats damage scoping), and
+        // Adaptive resolves to it on integrated adapters.
+        if (scenario == "presenthandshake")
+        {
+            Jalium.UI.Hosting.RenderingModeOptions.Current.Mode =
+                Jalium.UI.Hosting.RenderingMode.FullFrame;
+        }
+
         var app = new Application();
 
         bool withProbe = scenario == "capture";
@@ -239,6 +249,7 @@ internal static class Program
             "renderthread" => RenderThreadScript(window, scene),
             "leakedresize" => LeakedResizeScript(window, scene),
             "vellooutputorphan" => VelloOutputOrphanScript(window, scene),
+            "presenthandshake" => PresentHandshakeScript(window, scene),
             _ => FailScript($"unknown scenario '{scenario}'"),
         };
 
@@ -972,6 +983,111 @@ internal static class Program
         Marker($"SCENARIO devicelost complete backend={BackendName}");
     }
 
+    // Real-DPU runtime verification for the frame-presented handshake's idle
+    // case (PR review P1): in worker mode the frame-latency waitable's only
+    // consumer is the next BeginDraw, so after the final Present of an idle
+    // period nothing would observe its retire without the retire probe —
+    // FramePresented would starve until the next frame (or forever on
+    // pen-up). Drives real presents on the render worker in lock-step, then
+    // goes fully idle and requires the pen-up frame's retire to be delivered
+    // anyway. The assertion is event-based: a FramePresented with a serial
+    // STRICTLY GREATER than the last pre-pen-up queued serial can only come
+    // from the retire of the pen-up frame itself (pre-fix, the only event
+    // that can still fire is the one for the previously queued serial, which
+    // the pen-up frame's own BeginDraw reports).
+    private static IEnumerator<object?> PresentHandshakeScript(HarnessWindow window, Scene scene)
+    {
+        foreach (var x in WaitForFirstFrame(window)) yield return x;
+
+        var worker = GetField<System.Threading.Thread>(window, "_renderThread");
+        if (worker is not { IsAlive: true })
+        {
+            Marker(
+                $"HANDSHAKE_WORKER_DIAG workerNull={worker is null} " +
+                $"rtActive={GetField<bool>(window, "_rtActive")} " +
+                $"schemaGap={GetField<bool>(window, "_renderThreadDisabledForSchemaGap")} " +
+                $"mode={Jalium.UI.Hosting.RenderingModeOptions.Current.EffectiveMode} " +
+                $"allowWorker={Jalium.UI.Hosting.RenderingModeOptions.Current.AllowRenderThread}");
+        }
+        AssertTrue(worker is { IsAlive: true },
+            "render worker is alive (the idle retire observation is the worker-path fix)");
+        Marker("HANDSHAKE_WORKER_ALIVE=1");
+
+        AssertTrue(window.IsPresentHandshakeSupported,
+            "real D3D12 swap chain exposes a frame-latency waitable at MaxFrameLatency 1");
+        window.IsPresentHandshakeEnabled = true;
+        Marker("HANDSHAKE_ENABLED=1");
+
+        var events = new List<long>();
+        window.FramePresented += (_, args) => events.Add(args.PresentSerial);
+
+        // Busy period, LOCK-STEP: force one frame, wait until it is presented
+        // (the queued serial advances), then force the next. Lock-step keeps
+        // "queued" meaningful: at any quiescent point it equals the serial of
+        // the last presented frame.
+        long presentedBusy = 0;
+        for (int i = 0; i < 60 && presentedBusy < 3; i++)
+        {
+            long before = window.LastQueuedFrameSerial;
+            window.ForceRenderFrame();
+            for (int w = 0; w < 100 && window.LastQueuedFrameSerial == before; w++)
+            {
+                yield return null;
+            }
+            presentedBusy = window.LastPresentedFrameSerial;
+        }
+        AssertTrue(presentedBusy >= 3,
+            $"handshake delivered retires during continuous rendering (presented={presentedBusy})");
+        Marker($"HANDSHAKE_BUSY presented={presentedBusy} queued={window.LastQueuedFrameSerial}");
+
+        // Pen-up frame: capture the queued serial BEFORE the final force —
+        // lock-step guarantees this is the last presented frame's serial.
+        long serialBeforePenUp = window.LastQueuedFrameSerial;
+        int eventsBeforePenUp = events.Count;
+        long presentsBeforePenUp = GetField<long>(window, "_successfulPresentCount");
+        window.ForceRenderFrame();
+        for (int w = 0; w < 100 && window.LastQueuedFrameSerial == serialBeforePenUp; w++)
+        {
+            yield return null;
+        }
+        AssertTrue(window.LastQueuedFrameSerial > serialBeforePenUp,
+            $"the pen-up frame presented (queued {serialBeforePenUp} -> {window.LastQueuedFrameSerial})");
+        Marker(
+            $"HANDSHAKE_PEN_UP before={serialBeforePenUp} after={window.LastQueuedFrameSerial} " +
+            $"eventsSoFar={events.Count}");
+
+        // The idle wait: nothing is forced anymore. Pre-fix, the only event
+        // that can still fire is the pen-up frame's BeginDraw reporting the
+        // PREVIOUSLY queued serial (== serialBeforePenUp) — never anything
+        // greater. Post-fix, the retire probe delivers the pen-up frame's own
+        // retire.
+        var stopwatch = Stopwatch.StartNew();
+        long observedIdleSerial = 0;
+        for (int i = 0; i < 1500; i++)   // ~15s at one 10ms pump tick per iteration
+        {
+            var idleEvents = events.Skip(eventsBeforePenUp);
+            observedIdleSerial = idleEvents.DefaultIfEmpty().Max();
+            if (observedIdleSerial > serialBeforePenUp)
+            {
+                break;
+            }
+            yield return null;
+        }
+        AssertTrue(observedIdleSerial > serialBeforePenUp,
+            $"FramePresented observed the idle pen-up frame " +
+            $"(needed >{serialBeforePenUp}, got {observedIdleSerial})");
+        Marker(
+            $"HANDSHAKE_PRESENTED_IDLE before={serialBeforePenUp} observed={observedIdleSerial} " +
+            $"waitMs={stopwatch.ElapsedMilliseconds}");
+
+        long presentsAfterIdle = GetField<long>(window, "_successfulPresentCount");
+        // Secondary evidence: the retire probe's pixel-identical re-present is
+        // the only present an idle window may make after the pen-up frame.
+        Marker($"HANDSHAKE_PROBE_PRESENTS delta={presentsAfterIdle - presentsBeforePenUp}");
+
+        Marker("SCENARIO presenthandshake complete");
+    }
+
     // D3D12-only scenarios depend on retained-layer promotion (default OFF on
     // Vulkan) or on #921 injection hooks with no Vulkan analogue. Everything runs
     // on D3D12; only 'devicelost' (and nothing else, for now) runs on Vulkan.
@@ -980,7 +1096,8 @@ internal static class Program
         if (backend == RenderBackend.D3D12)
         {
             return scenario is "midframe" or "capture" or "multiwindow" or "escapedhandle"
-                or "renderthread" or "leakedresize" or "vellooutputorphan" or "devicelost";
+                or "renderthread" or "leakedresize" or "vellooutputorphan" or "devicelost"
+                or "presenthandshake";
         }
         // Vulkan (and any future non-D3D12 GPU backend): the portable core only.
         return scenario == "devicelost";

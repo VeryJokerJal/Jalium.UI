@@ -521,6 +521,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         IsEnvironmentSwitchEnabled("JALIUM_PRESENT_HANDSHAKE");
     private PresentCompletionTracker? _presentHandshakeTracker;
     private volatile bool _presentHandshakeEnabled = PresentHandshakeEnabledByDefault;
+    // Last render target the handshake refused to track (no waitable, or a
+    // frame latency the FIFO pairing cannot model). Cached so an enabled-but-
+    // unsupported window pays one reference compare per Present instead of a
+    // capability P/Invoke; cleared wherever the tracker is reset, which is
+    // exactly where the render target (or its swap chain) changes identity.
+    private RenderTarget? _presentHandshakeRejectedTarget;
 
     /// <summary>
     /// Occurs on the UI thread when the compositor has retired a frame that
@@ -534,9 +540,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <remarks>
     /// Disabled by default. Enable with <see cref="IsPresentHandshakeEnabled"/>
     /// or the <c>JALIUM_PRESENT_HANDSHAKE=1</c> environment variable. When the
-    /// active backend has no DXGI frame-latency waitable,
-    /// <see cref="IsPresentHandshakeSupported"/> is false and the event does
-    /// not fire.
+    /// active backend has no DXGI frame-latency waitable, or the swap chain's
+    /// maximum frame latency is not 1, <see cref="IsPresentHandshakeSupported"/>
+    /// is false and the event does not fire.
+    /// <para>
+    /// Timing by rendering mode: with the D3D12 render worker (the Windows
+    /// default) the retire of the final frame of an idle period is observed by
+    /// a pixel-identical follow-up present, so the event still fires after the
+    /// last real frame. On the inline non-pacing path (vsync disabled or after
+    /// a render-worker fallback) the waitable is consumed by the next frame's
+    /// BeginDraw, so a retire is reported at the START of the next frame at
+    /// the earliest — an idle window reports nothing until new content
+    /// renders. Subscribers must keep a timeout fallback for both cases, and
+    /// for the event being dropped entirely during window teardown.
+    /// </para>
+    /// <para>
+    /// The symbol names of this event, its argument type, and the handshake
+    /// properties are an external reflection contract (the ink layer bridges
+    /// them by name); renames are breaking changes for those consumers.
+    /// </para>
     /// </remarks>
     public event EventHandler<FramePresentedEventArgs>? FramePresented;
 
@@ -567,24 +589,39 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     /// <summary>
     /// Gets whether the active render target exposes a frame-latency waitable
-    /// that can report compositor retirement. False on backends without one;
-    /// callers must fall back to a timeout or keep the current wet-ink policy.
+    /// that can report compositor retirement, with a maximum frame latency of
+    /// 1 (the FIFO serial pairing assumes one retire signal per queued
+    /// Present; the waitable is created with <c>MaxFrameLatency</c> pre-armed
+    /// capacity signals, so a higher latency would pop serials early and
+    /// report frames as presented while they are still in flight). False on
+    /// backends without a waitable; callers must fall back to a timeout or
+    /// keep the current wet-ink policy.
     /// </summary>
     public bool IsPresentHandshakeSupported
     {
         get
         {
             var renderTarget = RenderTarget;
-            return renderTarget is { IsValid: true } &&
-                renderTarget.GetFrameLatencyWaitable() != nint.Zero;
+            if (renderTarget is not { IsValid: true } ||
+                renderTarget.GetFrameLatencyWaitable() == nint.Zero)
+            {
+                return false;
+            }
+
+            // A missing PresentInfo means an older native runtime: those
+            // predate the JALIUM_MAX_FRAME_LATENCY knob and always created
+            // the waitable with latency 1, so treat them as supported.
+            return renderTarget.GetPresentInfo() is not { } info ||
+                info.MaxFrameLatency <= 1;
         }
     }
 
     /// <summary>
     /// Gets the serial of the most recent successful Present, or 0 when the
-    /// handshake is disabled or unsupported. Capture this value at a
-    /// wet-to-dry commit and wait for a <see cref="FramePresented"/> event
-    /// with a serial greater than it.
+    /// handshake is disabled or unsupported, or after a render-target rebuild
+    /// (serials resume from the window-lifetime monotonic count on the next
+    /// Present). Capture this value at a wet-to-dry commit and wait for a
+    /// <see cref="FramePresented"/> event with a serial greater than it.
     /// </summary>
     public long LastQueuedFrameSerial =>
         Volatile.Read(ref _presentHandshakeTracker)?.LastQueuedSerial ?? 0;
@@ -604,13 +641,61 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return tracker;
         }
 
-        if (!_presentHandshakeEnabled || !IsPresentHandshakeSupported)
+        if (!_presentHandshakeEnabled)
         {
             return null;
         }
 
+        var renderTarget = RenderTarget;
+        if (renderTarget == null ||
+            ReferenceEquals(renderTarget, Volatile.Read(ref _presentHandshakeRejectedTarget)))
+        {
+            return null;
+        }
+
+        if (!IsPresentHandshakeSupported)
+        {
+            // Cache the refusal per render target: reset sites detach the
+            // tracker exactly where the target changes identity, so a fallback
+            // to a backend without a waitable cannot keep queueing serials
+            // against a swap chain that will never produce retire signals.
+            Volatile.Write(ref _presentHandshakeRejectedTarget, renderTarget);
+            LogPresentHandshakeUnsupported(renderTarget);
+            return null;
+        }
+
         var created = new PresentCompletionTracker();
-        return Interlocked.CompareExchange(ref _presentHandshakeTracker, created, null) ?? created;
+        tracker = Interlocked.CompareExchange(ref _presentHandshakeTracker, created, null) ?? created;
+        if (!_presentHandshakeEnabled)
+        {
+            // Disabling raced the attach; undo it so no tracker outlives the
+            // disabled state.
+            Interlocked.CompareExchange(ref _presentHandshakeTracker, null, tracker);
+            return null;
+        }
+
+        return tracker;
+    }
+
+    private void LogPresentHandshakeUnsupported(RenderTarget renderTarget)
+    {
+        // One line per refused render target: cheap enough to leave
+        // unconditional, and it is the diagnosable answer to "why does
+        // FramePresented never fire here?".
+        string reason;
+        if (renderTarget.GetFrameLatencyWaitable() == nint.Zero)
+        {
+            reason = "backend has no frame-latency waitable";
+        }
+        else
+        {
+            int maxFrameLatency = renderTarget.GetPresentInfo()?.MaxFrameLatency ?? 0;
+            reason =
+                $"swap-chain MaxFrameLatency is {maxFrameLatency}, " +
+                "but the handshake requires 1 (JALIUM_MAX_FRAME_LATENCY)";
+        }
+
+        Debug.WriteLine($"[PresentHandshake] Not tracking this render target: {reason}.");
     }
 
     private void NoteSuccessfulPresent()
@@ -638,7 +723,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void ResetPresentHandshakeQueue()
     {
-        Volatile.Read(ref _presentHandshakeTracker)?.Clear();
+        // Reset sites are exactly where the render target (or its swap chain)
+        // changes identity: target rebuilds, composition promotion, discarding
+        // resizes, pacing restarts. Pending serials belong to the old swap
+        // chain, and support must be re-evaluated for the new one, so drop the
+        // tracker entirely — the next successful Present re-creates it after a
+        // fresh capability check.
+        Interlocked.Exchange(ref _presentHandshakeTracker, null)?.Clear();
+        Volatile.Write(ref _presentHandshakeRejectedTarget, null);
     }
 
     private void RaiseFramePresented(FramePresentedEventArgs args)
@@ -650,7 +742,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         var dispatcher = _dispatcher ?? Dispatcher.MainDispatcher;
-        if (dispatcher != null && !dispatcher.CheckAccess())
+        if (dispatcher == null)
+        {
+            // Teardown (or a dispatcher-less window): the documented contract
+            // is a UI-thread event, and calling subscribers synchronously on
+            // the retire-harvesting thread would violate it. Drop the
+            // notification — callers keep their timeout fallback.
+            return;
+        }
+
+        if (!dispatcher.CheckAccess())
         {
             try
             {
@@ -7363,6 +7464,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             int physicalHeight = Math.Max(1, (int)Math.Ceiling(heightDip * _dpiScale));
 
             RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
+            // The new composition swap chain has its own frame-latency waitable
+            // (with fresh pre-armed capacity signals), and the disposed HWND
+            // target's in-flight presents will never retire. Serials queued
+            // against the old chain must not be paired with the new chain's
+            // signals — same reset EnsureRenderTarget does for its replacement.
+            ResetPresentHandshakeQueue();
 
             ConfigureRenderingModeForTarget(
                 Jalium.UI.Hosting.RenderingModeOptions.Current,
@@ -9371,6 +9478,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             _debugHud.OnResize();
             if (ResizeTraceEnabled) Debug.WriteLine($"[resize-trace] NATIVE-RESIZE {physicalWidth}x{physicalHeight} stage={stage}");
+            // Drop handshake serials BEFORE the native resize, and only when
+            // the resize actually rebuilds the swap chain: ResizeBuffers (and
+            // the latency re-assert after it) leaves the waitable's signal
+            // count in an unspecified state, so a retire callback that fires
+            // mid-resize must not be able to pop a serial the resize is about
+            // to invalidate. A composition in-capacity resize is metadata-only
+            // (native keeps the swap chain and the queued presents), so those
+            // serials stay paired with the retire signals that will still
+            // arrive.
+            bool resizePreservesPendingPresents =
+                renderTarget.ResizePreservesPendingPresents(physicalWidth, physicalHeight);
+            if (!resizePreservesPendingPresents)
+            {
+                ResetPresentHandshakeQueue();
+            }
             var resizeResult = renderTarget.Resize(physicalWidth, physicalHeight);
             if (resizeResult == JaliumResult.Busy)
             {
@@ -9385,11 +9507,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Re-credit optimistically; a clip-only resize reaches the same clamp,
             // where this is harmless because the credit cap is one.
             ReturnSwapCreditAfterFailedPresent();
-            // ResizeBuffers discarded in-flight presents, so a retire signal
-            // observed after this point cannot be mapped to the old serials.
-            // Dropping them makes waiters fall back to their timeout instead of
-            // treating an unrelated retire as the committed ink frame.
-            ResetPresentHandshakeQueue();
             return RenderTargetResizeCommitResult.Completed;
         }
         catch (RenderPipelineException ex)
@@ -10583,6 +10700,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public long ResizeVersion;
         public bool RequireNativeSameSize;
         public bool SimplifyEffects;
+        // Retire-probe marker (see ArmRetireProbeIfIdle): this capture re-presents
+        // the identical frame solely so its BeginDraw can legally consume the
+        // frame-latency waitable signal that retires the final real present.
+        public bool IsRetireProbe;
+        // Stopwatch.GetTimestamp() after which the probe gives up (an occluded
+        // or throttled window may never retire the frame; the probe's content
+        // is already on screen, so dropping it is free).
+        public long RetireProbeDeadlineTicks;
         // HUD/FrameHistory split measured on the UI thread while producing this capture.
         // The worker adds its own present time and pushes the completed sample.
         public double HudLayoutMs;
@@ -10865,6 +10990,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
                     catch { /* shutting down */ }
                 }
+                ArmRetireProbeIfIdle(cap);
             }
         }
         finally
@@ -10904,8 +11030,69 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _rtFrameAvailable?.Set();
     }
 
+    // How long a retire probe keeps retrying its BeginDraw before giving up.
+    // 500ms matches the external-pacing heartbeat and covers the documented
+    // slow-compositor retire range (~460ms on throttled/remote displays).
+    private static readonly long RetireProbeDeadlineIntervalTicks = Stopwatch.Frequency / 2;
+
+    /// <summary>
+    /// Called on the render worker after a capture finished presenting and the
+    /// loop is about to go idle. In worker mode the frame-latency waitable's
+    /// ONLY consumer is the next BeginDraw, so when no further capture is
+    /// pending, the retire of the just-presented frame would never be
+    /// observed — <see cref="FramePresented"/> would starve until some future
+    /// frame, which is exactly the pen-up case the handshake exists for.
+    /// Requeue the same capture once as a "retire probe": its BeginDraw blocks
+    /// on the waitable exactly like a real frame (the legal single-consumer
+    /// point), its NotePresentRetired reports the final frame's serial, and
+    /// its own Present spends the consumed grant again, so the signal/credit
+    /// accounting stays balanced. The probe replays the identical Drawing, so
+    /// the extra frame is pixel-identical; a newer real capture supersedes it
+    /// in the mailbox and reports the retire itself.
+    /// </summary>
+    private void ArmRetireProbeIfIdle(FrameCapture presented)
+    {
+        if (presented.IsRetireProbe)
+        {
+            return; // one probe per idle period — never loop probes
+        }
+
+        var tracker = Volatile.Read(ref _presentHandshakeTracker);
+        if (tracker == null || tracker.PendingCount == 0)
+        {
+            return; // nothing queued means nothing waiting for a retire
+        }
+
+        lock (_rtChannelLock)
+        {
+            if (_rtPendingFrame != null)
+            {
+                return; // a real frame is already queued — its BeginDraw observes the retire
+            }
+
+            presented.IsRetireProbe = true;
+            presented.RetireProbeDeadlineTicks = Stopwatch.GetTimestamp() + RetireProbeDeadlineIntervalTicks;
+            _rtPendingFrame = presented;
+        }
+        _rtFrameAvailable?.Set();
+    }
+
     private void PresentCaptureOnRenderThreadCore(FrameCapture cap)
     {
+        if (cap.IsRetireProbe)
+        {
+            // The probe's frame content is already on screen; if the retire it
+            // waits for never arrives (occluded/throttled window) or the
+            // handshake serials were reset in the meantime, there is nothing
+            // left to observe — drop it instead of re-presenting.
+            var tracker = Volatile.Read(ref _presentHandshakeTracker);
+            if (tracker == null || tracker.PendingCount == 0 ||
+                Stopwatch.GetTimestamp() > cap.RetireProbeDeadlineTicks)
+            {
+                return;
+            }
+        }
+
         var rt = cap.Target;
         if (!IsRenderLifecycleCurrent(cap.LifecycleGeneration, rt) ||
             !ReferenceEquals(rt.OwnerContext, cap.OwnerContext) ||
@@ -10929,6 +11116,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 rt.Height != cap.PhysicalHeight;
             if (needsNativeResize)
             {
+                // Same contract as ApplyRenderTargetResize: drop handshake
+                // serials BEFORE the native call, and only when the resize
+                // rebuilds the swap chain (a composition in-capacity resize is
+                // metadata-only and keeps the queued presents' pairing).
+                if (!rt.ResizePreservesPendingPresents(cap.PhysicalWidth, cap.PhysicalHeight))
+                {
+                    ResetPresentHandshakeQueue();
+                }
                 var resizeResult = rt.Resize(cap.PhysicalWidth, cap.PhysicalHeight);
                 if (resizeResult == JaliumResult.Busy)
                 {
