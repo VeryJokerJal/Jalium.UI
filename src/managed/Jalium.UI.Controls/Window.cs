@@ -526,7 +526,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void RecordSuccessfulPresent()
     {
         Volatile.Write(ref _lastSuccessfulPresentTickMs, Environment.TickCount64);
-        Interlocked.Increment(ref _successfulPresentCount);
+        NoteSuccessfulPresent();
     }
 
     internal bool BackendResourcesMayBeReclaimed(long nowMs, int idleTimeoutMs)
@@ -535,6 +535,182 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return frames > 0 && frames != _lastBackendReclaimedPresentCount &&
             nowMs - Volatile.Read(ref _lastSuccessfulPresentTickMs) >= idleTimeoutMs;
     }
+
+    // ── Frame-presented handshake ──────────────────────────────────────────
+    // Opt-in. Successful Present calls are queued by serial; the swap-chain
+    // frame-latency waitable's retire signal pops the oldest serial and raises
+    // FramePresented. That waitable is the only cross-platform/public signal
+    // Jalium has for "the compositor finished with this frame"; it does not
+    // expose the display's vertical-blank timestamp. When the backend has no
+    // waitable (Vulkan/software/older runtime), no serial is queued and the
+    // event never fires, so callers must keep a timeout fallback.
+    private static readonly bool PresentHandshakeEnabledByDefault =
+        IsEnvironmentSwitchEnabled("JALIUM_PRESENT_HANDSHAKE");
+    private PresentCompletionTracker? _presentHandshakeTracker;
+    private volatile bool _presentHandshakeEnabled = PresentHandshakeEnabledByDefault;
+
+    /// <summary>
+    /// Occurs on the UI thread when the compositor has retired a frame that
+    /// this window successfully presented. The event is raised from the
+    /// swap-chain frame-latency waitable, so it is a retirement notification,
+    /// not a per-frame display timestamp. Subscribers that need to avoid a
+    /// wet-to-dry gap should keep their wet ink until the event whose
+    /// <see cref="FramePresentedEventArgs.PresentSerial"/> covers the frame
+    /// that contains the dry ink.
+    /// </summary>
+    /// <remarks>
+    /// Disabled by default. Enable with <see cref="IsPresentHandshakeEnabled"/>
+    /// or the <c>JALIUM_PRESENT_HANDSHAKE=1</c> environment variable. When the
+    /// active backend has no DXGI frame-latency waitable,
+    /// <see cref="IsPresentHandshakeSupported"/> is false and the event does
+    /// not fire.
+    /// </remarks>
+    public event EventHandler<FramePresentedEventArgs>? FramePresented;
+
+    /// <summary>
+    /// Gets or sets whether this window tracks successful Presents and raises
+    /// <see cref="FramePresented"/> when their retire signal arrives.
+    /// Defaults to the <c>JALIUM_PRESENT_HANDSHAKE</c> environment switch,
+    /// which is off when unset. Disabling drops queued-but-not-yet-retired
+    /// serials without raising further events.
+    /// </summary>
+    public bool IsPresentHandshakeEnabled
+    {
+        get => _presentHandshakeEnabled;
+        set
+        {
+            if (_presentHandshakeEnabled == value)
+            {
+                return;
+            }
+
+            _presentHandshakeEnabled = value;
+            if (!value)
+            {
+                Interlocked.Exchange(ref _presentHandshakeTracker, null)?.Clear();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets whether the active render target exposes a frame-latency waitable
+    /// that can report compositor retirement. False on backends without one;
+    /// callers must fall back to a timeout or keep the current wet-ink policy.
+    /// </summary>
+    public bool IsPresentHandshakeSupported
+    {
+        get
+        {
+            var renderTarget = RenderTarget;
+            return renderTarget is { IsValid: true } &&
+                renderTarget.GetFrameLatencyWaitable() != nint.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Gets the serial of the most recent successful Present, or 0 when the
+    /// handshake is disabled or unsupported. Capture this value at a
+    /// wet-to-dry commit and wait for a <see cref="FramePresented"/> event
+    /// with a serial greater than it.
+    /// </summary>
+    public long LastQueuedFrameSerial =>
+        Volatile.Read(ref _presentHandshakeTracker)?.LastQueuedSerial ?? 0;
+
+    /// <summary>
+    /// Gets the serial of the most recent Present whose retire signal arrived,
+    /// or 0 when none has been observed.
+    /// </summary>
+    public long LastPresentedFrameSerial =>
+        Volatile.Read(ref _presentHandshakeTracker)?.LastPresentedSerial ?? 0;
+
+    private PresentCompletionTracker? EnsurePresentHandshakeTracker()
+    {
+        var tracker = Volatile.Read(ref _presentHandshakeTracker);
+        if (tracker != null)
+        {
+            return tracker;
+        }
+
+        if (!_presentHandshakeEnabled || !IsPresentHandshakeSupported)
+        {
+            return null;
+        }
+
+        var created = new PresentCompletionTracker();
+        return Interlocked.CompareExchange(ref _presentHandshakeTracker, created, null) ?? created;
+    }
+
+    private void NoteSuccessfulPresent()
+    {
+        long serial = Interlocked.Increment(ref _successfulPresentCount);
+        EnsurePresentHandshakeTracker()?.Queue(serial);
+    }
+
+    private void NotePresentRetired()
+    {
+        var tracker = Volatile.Read(ref _presentHandshakeTracker);
+        if (tracker == null)
+        {
+            return;
+        }
+
+        long? serial = tracker.Retire();
+        if (serial is null)
+        {
+            return;
+        }
+
+        RaiseFramePresented(new FramePresentedEventArgs(serial.Value, Environment.TickCount64));
+    }
+
+    private void ResetPresentHandshakeQueue()
+    {
+        Volatile.Read(ref _presentHandshakeTracker)?.Clear();
+    }
+
+    private void RaiseFramePresented(FramePresentedEventArgs args)
+    {
+        var handlers = FramePresented;
+        if (handlers == null)
+        {
+            return;
+        }
+
+        var dispatcher = _dispatcher ?? Dispatcher.MainDispatcher;
+        if (dispatcher != null && !dispatcher.CheckAccess())
+        {
+            try
+            {
+                dispatcher.BeginInvokeCritical(() => InvokeFramePresented(handlers, args));
+            }
+            catch
+            {
+                // Window teardown raced the retire callback. Keeping wet ink
+                // on the caller's timeout path is safer than throwing here.
+            }
+            return;
+        }
+
+        InvokeFramePresented(handlers, args);
+    }
+
+    private void InvokeFramePresented(
+        EventHandler<FramePresentedEventArgs> handlers,
+        FramePresentedEventArgs args)
+    {
+        foreach (EventHandler<FramePresentedEventArgs> handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, args);
+            }
+            catch
+            {
+                // A subscriber failure must not tear down the present path.
+            }
+        }
+    }
+
     private Timer? _renderThrottleTimer;    // Deferred render when rate-limited or waiting for the GPU
     private long _suppressEscapeUntilTick;
 
@@ -7129,6 +7305,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
 
                 RenderTarget = candidate;
+                ResetPresentHandshakeQueue();
                 TrackAutomaticRenderingContext(context);
                 break;
             }
@@ -9449,6 +9626,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Re-credit optimistically; a clip-only resize reaches the same clamp,
             // where this is harmless because the credit cap is one.
             ReturnSwapCreditAfterFailedPresent();
+            // ResizeBuffers discarded in-flight presents, so a retire signal
+            // observed after this point cannot be mapped to the old serials.
+            // Dropping them makes waiters fall back to their timeout instead of
+            // treating an unrelated retire as the committed ink frame.
+            ResetPresentHandshakeQueue();
             return RenderTargetResizeCommitResult.Completed;
         }
         catch (RenderPipelineException ex)
@@ -11210,6 +11392,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        // The worker's BeginDraw consumed the frame-latency waitable; a
+        // previously queued Present is retired before this frame draws.
+        NotePresentRetired();
+
         bool ended = false;
         long replayTimestampTicks = Stopwatch.GetTimestamp();
         cap.ReplayStartedTimestampTicks = replayTimestampTicks;
@@ -11734,6 +11920,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         StopExternalPresentPacing();   // RT 重建路径：刷新句柄 + 重置状态
+        ResetPresentHandshakeQueue();
         if (_nativeWindowHidden) { Trace("skip: nativeWindowHidden"); return; }
         // Cross-platform host (Android 等)：无 DXGI frame-latency waitable。
         if (_platformWindow != null) { Trace("skip: platformWindow"); return; }
@@ -11860,6 +12047,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 EnsureSwapWaitRegistered();
             }
             return;
+        }
+        // The same signal that grants the next present credit is the only
+        // public evidence that a queued Present retired.
+        if (_swapPacingActive)
+        {
+            NotePresentRetired();
         }
         // credit 的唯一节拍源就是 waitable 信号本身——它是"上一帧已 retire、
         // back buffer 可写、下一次 Present 不会阻塞"的权威信号。
@@ -11989,6 +12182,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (RenderTarget?.TryBeginDraw() == true)
         {
             Volatile.Write(ref _beginDrawFailureStreak, 0);
+            // Non-pacing path: native BeginDraw consumed the frame-latency
+            // waitable, so at least one previously queued Present retired.
+            NotePresentRetired();
             return true;
         }
 

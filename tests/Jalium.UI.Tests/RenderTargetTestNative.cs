@@ -129,6 +129,11 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
         LastExternalPresentPacing = enabled;
     }
 
+    /// <summary>Fake waitable handle returned to present-handshake tests.</summary>
+    public nint FrameLatencyWaitableHandle { get; set; }
+
+    public nint GetFrameLatencyWaitable(nint renderTarget) => FrameLatencyWaitableHandle;
+
     public void SetFullInvalidation(nint renderTarget)
     {
     }

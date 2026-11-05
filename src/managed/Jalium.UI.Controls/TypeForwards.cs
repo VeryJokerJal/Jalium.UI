@@ -1143,6 +1143,7 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Controls.WebViewSourceChangedEventArgs))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Controls.WebViewWebMessageReceivedEventArgs))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Window))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.FramePresentedEventArgs))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.WindowStartupLocation))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.WindowState))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.WindowStyle))]

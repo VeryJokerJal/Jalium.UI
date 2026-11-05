@@ -588,7 +588,7 @@ public sealed class RenderTarget : IDisposable
     public nint GetFrameLatencyWaitable()
     {
         if (_disposed || _handle == nint.Zero) return nint.Zero;
-        return NativeMethods.RenderTargetGetFrameLatencyWaitable(_handle);
+        return _native.GetFrameLatencyWaitable(_handle);
     }
 
     /// <summary>
@@ -2753,6 +2753,7 @@ internal interface IRenderTargetNative
     RenderingEngine GetEngine(nint renderTarget);
     void SetVSyncEnabled(nint renderTarget, bool enabled);
     void SetExternalPresentPacing(nint renderTarget, bool enabled);
+    nint GetFrameLatencyWaitable(nint renderTarget) => nint.Zero;
     void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount);
     void SetFullInvalidation(nint renderTarget);
     bool SupportsPartialPresentation(nint renderTarget);
@@ -2849,6 +2850,9 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
 
     public void SetExternalPresentPacing(nint renderTarget, bool enabled)
         => NativeMethods.RenderTargetSetExternalPresentPacing(renderTarget, enabled ? 1 : 0);
+
+    public nint GetFrameLatencyWaitable(nint renderTarget)
+        => NativeMethods.RenderTargetGetFrameLatencyWaitable(renderTarget);
 
     public void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount)
         => NativeMethods.RenderTargetSetPathMsaa(renderTarget, sampleCount);
