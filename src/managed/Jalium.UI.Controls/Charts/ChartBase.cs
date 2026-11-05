@@ -46,7 +46,7 @@ public delegate void ChartDataPointEventHandler(object sender, ChartDataPointEve
 /// <summary>
 /// Abstract base class for all chart controls.
 /// </summary>
-public abstract class ChartBase : Control
+public abstract partial class ChartBase : Control
 {
     private IEnumerable? _seriesSource;
     private INotifyCollectionChanged? _seriesNotifier;
@@ -309,7 +309,6 @@ public abstract class ChartBase : Control
 
     #region Tooltip State
 
-    private ChartTooltip? _chartTooltip;
     private bool _isTooltipShown;
 
     #endregion
@@ -480,11 +479,8 @@ public abstract class ChartBase : Control
         if (!IsTooltipEnabled)
             return;
 
-        _chartTooltip ??= new ChartTooltip();
-        _chartTooltip.SeriesTitle = series?.Title;
-        _chartTooltip.XValue = xValue;
-        _chartTooltip.YValue = yValue;
-        _chartTooltip.SeriesBrush = series?.Brush;
+        _tooltipAnchor=new Point(x,y);
+        _tooltipInfo=new ChartTooltipInfo(series?.Title,xValue,yValue,series?.Brush);
         _isTooltipShown = true;
 
         InvalidateVisual();
@@ -498,7 +494,7 @@ public abstract class ChartBase : Control
         if (_isTooltipShown)
         {
             _isTooltipShown = false;
-            _chartTooltip = null;
+            _tooltipInfo = null;
             InvalidateVisual();
         }
     }
@@ -538,113 +534,8 @@ public abstract class ChartBase : Control
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
-        var dc = drawingContext;
-
-        var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-
-        // Draw background
-        var bg = Background ?? s_defaultBackground;
-        dc.DrawRectangle(bg, null, bounds);
-
-        // Draw title
-        double titleBottom = 0;
-        if (!string.IsNullOrEmpty(Title))
-        {
-            var titleBrush = TitleForeground ?? Foreground ?? s_defaultTitleForeground;
-            var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
-            var ft = new FormattedText(Title, fontFamily, TitleFontSize)
-            {
-                Foreground = titleBrush,
-                FontWeight = 700
-            };
-            TextMeasurement.MeasureText(ft);
-
-            var titleX = (RenderSize.Width - ft.Width) / 2.0;
-            var titleY = PlotAreaMargin.Top / 2.0;
-            dc.DrawText(ft, new Point(titleX, titleY));
-            titleBottom = titleY + ft.Height + 4;
-        }
-
-        // Compute plot area and delegate rendering
-        var plotArea = GetPlotArea();
-        if (plotArea.Width > 0 && plotArea.Height > 0)
-        {
-            RenderChart(dc, plotArea);
-        }
-
-        // Draw legend
-        if (IsLegendVisible)
-        {
-            RenderLegend(dc, plotArea);
-        }
-    }
-
-    private void RenderLegend(DrawingContext dc, Rect plotArea)
-    {
-        var items = CollectLegendItems();
-        if (items == null || items.Count == 0) return;
-
-        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
-        var textBrush = Foreground ?? s_defaultTitleForeground;
-        const double markerSize = 10;
-        const double markerTextGap = 5;
-        const double itemGap = 16;
-        const double fontSize = 12;
-
-        // Measure total legend width to center it
-        double totalWidth = 0;
-        var measurements = new List<(FormattedText ft, double w)>();
-        foreach (var item in items)
-        {
-            var ft = new FormattedText(item.Label ?? "", fontFamily, fontSize) { Foreground = textBrush };
-            TextMeasurement.MeasureText(ft);
-            double itemW = markerSize + markerTextGap + ft.Width;
-            measurements.Add((ft, itemW));
-            totalWidth += itemW;
-        }
-        totalWidth += (items.Count - 1) * itemGap;
-
-        // Position based on LegendPosition
-        double legendX, legendY;
-        switch (LegendPosition)
-        {
-            case LegendPosition.Top:
-                legendX = (RenderSize.Width - totalWidth) / 2.0;
-                legendY = plotArea.Top - 22;
-                break;
-            case LegendPosition.Bottom:
-            default:
-                legendX = (RenderSize.Width - totalWidth) / 2.0;
-                legendY = RenderSize.Height - fontSize - 4;
-                break;
-            case LegendPosition.Left:
-                legendX = 4;
-                legendY = plotArea.Top + plotArea.Height / 2.0;
-                break;
-            case LegendPosition.Right:
-                legendX = plotArea.Right + 8;
-                legendY = plotArea.Top + plotArea.Height / 2.0;
-                break;
-        }
-
-        // Draw items horizontally (for Top/Bottom)
-        double x = legendX;
-        for (int i = 0; i < items.Count; i++)
-        {
-            var item = items[i];
-            var (ft, itemW) = measurements[i];
-            var markerBrush = item.Brush ?? GetSeriesBrush(i);
-
-            // Draw color marker — vertically centered to the actual text height
-            double markerY = legendY + (ft.Height - markerSize) / 2.0;
-            var markerRect = new Rect(x, markerY, markerSize, markerSize);
-            dc.DrawRoundedRectangle(markerBrush, null, markerRect, 2, 2);
-
-            // Draw label
-            dc.DrawText(ft, new Point(x + markerSize + markerTextGap, legendY));
-
-            x += itemW + itemGap;
-        }
+        RefreshChartPresentation();base.OnRender(drawingContext);
+        if(TemplateRootInternal is null)RenderPlotSurface(drawingContext);
     }
 
     #endregion

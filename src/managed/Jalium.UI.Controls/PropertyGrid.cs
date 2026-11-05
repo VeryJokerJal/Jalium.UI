@@ -1,63 +1,34 @@
 using System.Collections;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Reflection;
-using Jalium.UI.Input;
+using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Data;
 using Jalium.UI.Media;
-using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
-/// <summary>
-/// Displays the properties of an object for editing, similar to the WinForms PropertyGrid.
-/// Supports categorized and alphabetical views, search filtering, custom editors,
-/// and read-only mode.
-/// </summary>
+/// <summary>A templated object inspector with categorized properties and replaceable row/editor templates.</summary>
+[TemplatePart(Name = "PART_SearchTextBox", Type = typeof(TextBox))]
+[TemplatePart(Name = "PART_CategorizedButton", Type = typeof(ButtonBase))]
+[TemplatePart(Name = "PART_AlphabeticalButton", Type = typeof(ButtonBase))]
+[TemplatePart(Name = "PART_PropertiesList", Type = typeof(ItemsControl))]
+[TemplateVisualState(Name = "Categorized", GroupName = "SortStates")]
+[TemplateVisualState(Name = "Alphabetical", GroupName = "SortStates")]
+[TemplateVisualState(Name = "SearchVisible", GroupName = "SearchStates")]
+[TemplateVisualState(Name = "SearchHidden", GroupName = "SearchStates")]
+[TemplateVisualState(Name = "ToolbarVisible", GroupName = "ToolbarStates")]
+[TemplateVisualState(Name = "ToolbarHidden", GroupName = "ToolbarStates")]
+[TemplateVisualState(Name = "DescriptionVisible", GroupName = "DescriptionStates")]
+[TemplateVisualState(Name = "DescriptionHidden", GroupName = "DescriptionStates")]
+[TemplateVisualState(Name = "Empty", GroupName = "DataStates")]
+[TemplateVisualState(Name = "Ready", GroupName = "DataStates")]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
 public class PropertyGrid : Control
 {
-    private readonly PropertyEditorSelector _editorSelector = new();
-    private readonly Dictionary<Type, Func<PropertyItem, PropertyGrid, FrameworkElement>> _customEditors = new();
-    private readonly List<PropertyItem> _allPropertyItems = new();
-    private readonly Dictionary<PropertyItem, FrameworkElement> _propertyRowMap = new();
-
-    private FrameworkElement? _toolBar;
-    private FrameworkElement? _searchBoxBorder;
-    private TextBox? _searchBox;
-    private Button? _categorizedButton;
-    private Button? _alphabeticalButton;
-    private ScrollViewer? _propertiesHost;
-    private StackPanel? _propertiesPanel;
-    private Grid? _descriptionArea;
-    private TextBlock? _descriptionTitle;
-    private TextBlock? _descriptionText;
-
-    // Default row brushes (used only when theme resources can't be resolved).
-    private static readonly Brush s_defaultRowHoverBrush = new SolidColorBrush(Color.FromArgb(18, 255, 255, 255));
-    private static readonly Brush s_defaultRowSelectedBrush = new SolidColorBrush(Color.FromArgb(56, 0x1E, 0x79, 0x3F));
-    private static readonly Brush s_defaultSelectionAccentBrush = new SolidColorBrush(Color.FromRgb(0x1E, 0x79, 0x3F));
-
-    // Description area animation (height + opacity, non-linear cubic ease-out).
-    private const double DescriptionExpandMs = 260.0;
-    private const double DescriptionCollapseMs = 180.0;
-    // Floor keeps layout stable even if measurement briefly yields 0 (e.g. before
-    // the first layout pass). The real target is always the measured DesiredSize.
-    private const double DescriptionMinHeight = 36.0;
-
-    private DispatcherTimer? _descriptionAnimationTimer;
-    private readonly Stopwatch _descriptionStopwatch = new();
-    private double _descriptionAnimationDurationMs = DescriptionExpandMs;
-    private double _descriptionStartHeight;
-    private double _descriptionStartOpacity;
-    private double _descriptionTargetHeight;
-    private double _descriptionTargetOpacity;
-    private bool _descriptionVisible;
-
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-    {
-        return new Jalium.UI.Automation.Peers.PropertyGridAutomationPeer(this);
-    }
-
+    static PropertyGrid() => DefaultStyleKeyProperty.OverrideMetadata(typeof(PropertyGrid), new PropertyMetadata(typeof(PropertyGrid)));
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => new Jalium.UI.Automation.Peers.PropertyGridAutomationPeer(this);
     #region Dependency Properties
 
     /// <summary>
@@ -82,7 +53,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SortModeProperty =
         DependencyProperty.Register(nameof(SortMode), typeof(PropertyGridSortMode), typeof(PropertyGrid),
-            new PropertyMetadata(PropertyGridSortMode.Categorized, OnViewPropertyChanged));
+            new FrameworkPropertyMetadata(PropertyGridSortMode.Categorized, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnViewPropertyChanged));
 
     /// <summary>
     /// Identifies the ShowSearchBox dependency property.
@@ -90,7 +61,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty ShowSearchBoxProperty =
         DependencyProperty.Register(nameof(ShowSearchBox), typeof(bool), typeof(PropertyGrid),
-            new PropertyMetadata(true, OnVisualPropertyChanged));
+            new PropertyMetadata(true, OnStatePropertyChanged));
 
     /// <summary>
     /// Identifies the ShowDescription dependency property.
@@ -98,7 +69,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty ShowDescriptionProperty =
         DependencyProperty.Register(nameof(ShowDescription), typeof(bool), typeof(PropertyGrid),
-            new PropertyMetadata(true, OnVisualPropertyChanged));
+            new PropertyMetadata(true, OnStatePropertyChanged));
 
     /// <summary>
     /// Identifies the ShowToolBar dependency property.
@@ -106,7 +77,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty ShowToolBarProperty =
         DependencyProperty.Register(nameof(ShowToolBar), typeof(bool), typeof(PropertyGrid),
-            new PropertyMetadata(true, OnVisualPropertyChanged));
+            new PropertyMetadata(true, OnStatePropertyChanged));
 
     /// <summary>
     /// Identifies the SearchText dependency property.
@@ -114,7 +85,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SearchTextProperty =
         DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(PropertyGrid),
-            new PropertyMetadata(string.Empty, OnSearchTextChanged));
+            new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnViewPropertyChanged));
 
     /// <summary>
     /// Identifies the SelectedProperty dependency property.
@@ -122,7 +93,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SelectedPropertyProperty =
         DependencyProperty.Register(nameof(SelectedProperty), typeof(PropertyItem), typeof(PropertyGrid),
-            new PropertyMetadata(null, OnSelectedPropertyChanged));
+            new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnSelectedPropertyChanged));
 
     /// <summary>
     /// Identifies the IsReadOnly dependency property.
@@ -130,7 +101,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(PropertyGrid),
-            new PropertyMetadata(false, OnViewPropertyChanged));
+            new PropertyMetadata(false));
 
     /// <summary>
     /// Identifies the NameColumnWidth dependency property.
@@ -138,7 +109,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty NameColumnWidthProperty =
         DependencyProperty.Register(nameof(NameColumnWidth), typeof(double), typeof(PropertyGrid),
-            new PropertyMetadata(150.0, OnViewPropertyChanged));
+            new PropertyMetadata(150.0), value => value is double width && double.IsFinite(width) && width >= 0);
 
     /// <summary>
     /// Identifies the CategoryHeaderBackground dependency property.
@@ -146,7 +117,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CategoryHeaderBackgroundProperty =
         DependencyProperty.Register(nameof(CategoryHeaderBackground), typeof(Brush), typeof(PropertyGrid),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnStatePropertyChanged));
 
     /// <summary>
     /// Identifies the CategoryHeaderForeground dependency property.
@@ -154,7 +125,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CategoryHeaderForegroundProperty =
         DependencyProperty.Register(nameof(CategoryHeaderForeground), typeof(Brush), typeof(PropertyGrid),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnStatePropertyChanged));
 
     /// <summary>
     /// Identifies the PropertyNameForeground dependency property.
@@ -162,7 +133,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty PropertyNameForegroundProperty =
         DependencyProperty.Register(nameof(PropertyNameForeground), typeof(Brush), typeof(PropertyGrid),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnStatePropertyChanged));
 
     /// <summary>
     /// Identifies the PropertyFilter dependency property.
@@ -178,7 +149,7 @@ public class PropertyGrid : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AutoGeneratePropertiesProperty =
         DependencyProperty.Register(nameof(AutoGenerateProperties), typeof(bool), typeof(PropertyGrid),
-            new PropertyMetadata(true, OnViewPropertyChanged));
+            new PropertyMetadata(true, OnDiscoveryChanged));
 
     #endregion
 
@@ -389,904 +360,283 @@ public class PropertyGrid : Control
 
     #endregion
 
-    #region Template
+    public static readonly DependencyProperty PropertyTemplateProperty = DependencyProperty.Register(
+        nameof(PropertyTemplate), typeof(DataTemplate), typeof(PropertyGrid), new PropertyMetadata(null, OnViewPropertyChanged));
+    public DataTemplate? PropertyTemplate { get => (DataTemplate?)GetValue(PropertyTemplateProperty); set => SetValue(PropertyTemplateProperty, value); }
+    public static readonly DependencyProperty CategoryTemplateProperty = DependencyProperty.Register(
+        nameof(CategoryTemplate), typeof(DataTemplate), typeof(PropertyGrid), new PropertyMetadata(null, OnViewPropertyChanged));
+    public DataTemplate? CategoryTemplate { get => (DataTemplate?)GetValue(CategoryTemplateProperty); set => SetValue(CategoryTemplateProperty, value); }
+    public static readonly DependencyProperty EditorTemplateProperty = DependencyProperty.Register(
+        nameof(EditorTemplate), typeof(DataTemplate), typeof(PropertyGrid), new PropertyMetadata(null, OnEditorTemplatesChanged));
+    public DataTemplate? EditorTemplate { get => (DataTemplate?)GetValue(EditorTemplateProperty); set => SetValue(EditorTemplateProperty, value); }
+    public static readonly DependencyProperty EditorTemplateSelectorProperty = DependencyProperty.Register(
+        nameof(EditorTemplateSelector), typeof(DataTemplateSelector), typeof(PropertyGrid), new PropertyMetadata(null, OnEditorTemplatesChanged));
+    public DataTemplateSelector? EditorTemplateSelector { get => (DataTemplateSelector?)GetValue(EditorTemplateSelectorProperty); set => SetValue(EditorTemplateSelectorProperty, value); }
+    private static readonly DependencyPropertyKey EntriesPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(Entries), typeof(ReadOnlyObservableCollection<object>), typeof(PropertyGrid), new PropertyMetadata(null));
+    public static readonly DependencyProperty EntriesProperty = EntriesPropertyKey.DependencyProperty;
+    public ReadOnlyObservableCollection<object> Entries => (ReadOnlyObservableCollection<object>)GetValue(EntriesProperty)!;
+    private static readonly DependencyPropertyKey PropertiesPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(Properties), typeof(ReadOnlyObservableCollection<PropertyItem>), typeof(PropertyGrid), new PropertyMetadata(null));
+    public static readonly DependencyProperty PropertiesProperty = PropertiesPropertyKey.DependencyProperty;
+    public ReadOnlyObservableCollection<PropertyItem> Properties => (ReadOnlyObservableCollection<PropertyItem>)GetValue(PropertiesProperty)!;
+    private static readonly DependencyPropertyKey VisiblePropertiesPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(VisibleProperties), typeof(ReadOnlyObservableCollection<PropertyItem>), typeof(PropertyGrid), new PropertyMetadata(null));
+    public static readonly DependencyProperty VisiblePropertiesProperty = VisiblePropertiesPropertyKey.DependencyProperty;
+    public ReadOnlyObservableCollection<PropertyItem> VisibleProperties => (ReadOnlyObservableCollection<PropertyItem>)GetValue(VisiblePropertiesProperty)!;
+    private static readonly DependencyPropertyKey EntryTemplateSelectorPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(EntryTemplateSelector), typeof(DataTemplateSelector), typeof(PropertyGrid), new PropertyMetadata(null));
+    public static readonly DependencyProperty EntryTemplateSelectorProperty = EntryTemplateSelectorPropertyKey.DependencyProperty;
+    public DataTemplateSelector EntryTemplateSelector => (DataTemplateSelector)GetValue(EntryTemplateSelectorProperty)!;
+    private static readonly DependencyPropertyKey IsEmptyPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(IsEmpty), typeof(bool), typeof(PropertyGrid), new PropertyMetadata(true));
+    public static readonly DependencyProperty IsEmptyProperty = IsEmptyPropertyKey.DependencyProperty;
+    public bool IsEmpty => (bool)GetValue(IsEmptyProperty)!;
+    private static readonly DependencyPropertyKey PropertyCountPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(PropertyCount), typeof(int), typeof(PropertyGrid), new PropertyMetadata(0));
+    public static readonly DependencyProperty PropertyCountProperty = PropertyCountPropertyKey.DependencyProperty;
+    public int PropertyCount => (int)GetValue(PropertyCountProperty)!;
+    private static readonly DependencyPropertyKey SelectedPropertyNamePropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(SelectedPropertyName), typeof(string), typeof(PropertyGrid), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty SelectedPropertyNameProperty = SelectedPropertyNamePropertyKey.DependencyProperty;
+    public string SelectedPropertyName => (string)GetValue(SelectedPropertyNameProperty)!;
+    private static readonly DependencyPropertyKey SelectedPropertyDescriptionPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(SelectedPropertyDescription), typeof(string), typeof(PropertyGrid), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty SelectedPropertyDescriptionProperty = SelectedPropertyDescriptionPropertyKey.DependencyProperty;
+    public string SelectedPropertyDescription => (string)GetValue(SelectedPropertyDescriptionProperty)!;
+    private static readonly DependencyPropertyKey EditorRevisionPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(EditorRevision), typeof(int), typeof(PropertyGrid), new PropertyMetadata(0));
+    public static readonly DependencyProperty EditorRevisionProperty = EditorRevisionPropertyKey.DependencyProperty;
+    public int EditorRevision => (int)GetValue(EditorRevisionProperty)!;
 
-    /// <inheritdoc />
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
-        Justification = "Calls RebuildView, which discovers properties on SelectedObject via reflection and uses TypeDescriptor.GetConverter for the runtime type. PropertyGrid is a developer/inspector control: consumers that bind it to user-defined types must keep those types' properties and converters preserved (e.g. via DynamicDependency or a descriptor) — a documented prerequisite for using PropertyGrid under AOT. The same reflection contract is declared at the public entry points RefreshProperties() and the SelectedObject setter; this template-application leaf merely re-runs that already-documented work.")]
+    private readonly ObservableCollection<PropertyItem> _properties = new();
+    private readonly ObservableCollection<PropertyItem> _visibleProperties = new();
+    private readonly ObservableCollection<object> _entries = new();
+    private readonly Dictionary<string, PropertyGridCategory> _categories = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Type, Func<PropertyItem, PropertyGrid, FrameworkElement>> _customEditors = new();
+    private readonly Dictionary<PropertyItem, WeakReference<PropertyGridEditor>> _editors = new();
+    private readonly Dictionary<PropertyItem, WeakReference<PropertyGridRow>> _rows = new();
+    private readonly Dictionary<PropertyItem, string> _pendingEdits = new();
+    private TextBox? _searchBox;
+    private ButtonBase? _categorizedButton;
+    private ButtonBase? _alphabeticalButton;
+    private ItemsControl? _propertiesList;
+    private bool _hasTemplate;
+
+    public PropertyGrid()
+    {
+        SetValue(PropertiesPropertyKey, new ReadOnlyObservableCollection<PropertyItem>(_properties));
+        SetValue(VisiblePropertiesPropertyKey, new ReadOnlyObservableCollection<PropertyItem>(_visibleProperties));
+        SetValue(EntriesPropertyKey, new ReadOnlyObservableCollection<object>(_entries));
+        SetValue(EntryTemplateSelectorPropertyKey, new EntrySelector(this));
+    }
+
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-
-        // Unhook old search box / buttons
-        if (_searchBox != null)
-        {
-            _searchBox.TextChanged -= OnSearchBoxTextChanged;
-        }
-        if (_categorizedButton != null)
-        {
-            _categorizedButton.Click -= OnCategorizedButtonClick;
-        }
-        if (_alphabeticalButton != null)
-        {
-            _alphabeticalButton.Click -= OnAlphabeticalButtonClick;
-        }
-
-        _toolBar = GetTemplateChild("PART_ToolBar") as FrameworkElement;
-        _searchBoxBorder = GetTemplateChild("PART_SearchBox") as FrameworkElement;
+        _hasTemplate = true;
         _searchBox = GetTemplateChild("PART_SearchTextBox") as TextBox;
-        _categorizedButton = GetTemplateChild("PART_CategorizedButton") as Button;
-        _alphabeticalButton = GetTemplateChild("PART_AlphabeticalButton") as Button;
-        _propertiesHost = GetTemplateChild("PART_PropertiesHost") as ScrollViewer;
-        _propertiesPanel = GetTemplateChild("PART_PropertiesPanel") as StackPanel;
-        _descriptionArea = GetTemplateChild("PART_DescriptionArea") as Grid;
-        _descriptionTitle = GetTemplateChild("PART_PropertyNameText") as TextBlock;
-        _descriptionText = GetTemplateChild("PART_PropertyDescriptionText") as TextBlock;
-
-        if (_searchBox != null)
-        {
-            _searchBox.TextChanged += OnSearchBoxTextChanged;
-            _searchBox.Text = SearchText ?? string.Empty;
-        }
-        if (_categorizedButton != null)
-        {
-            _categorizedButton.Click += OnCategorizedButtonClick;
-        }
-        if (_alphabeticalButton != null)
-        {
-            _alphabeticalButton.Click += OnAlphabeticalButtonClick;
-        }
-
-        // Reset description area to collapsed state; animation will open it
-        // when a property with a description becomes selected.
-        if (_descriptionArea != null)
-        {
-            _descriptionArea.Height = 0;
-            _descriptionArea.Opacity = 0;
-            _descriptionArea.Visibility = Visibility.Collapsed;
-        }
-        _descriptionVisible = false;
-
-        UpdateSortModeButtons();
-        UpdateVisibility();
-        RebuildView();
+        _categorizedButton = GetTemplateChild("PART_CategorizedButton") as ButtonBase;
+        _alphabeticalButton = GetTemplateChild("PART_AlphabeticalButton") as ButtonBase;
+        _propertiesList = GetTemplateChild("PART_PropertiesList") as ItemsControl;
+        if (_categorizedButton != null) _categorizedButton.Click += OnCategorized;
+        if (_alphabeticalButton != null) _alphabeticalButton.Click += OnAlphabetical;
+        UpdateStates();
     }
 
-    /// <inheritdoc />
-    internal override void OnTemplateContentClearing()
+    protected override void OnTemplateChanging()
     {
-        // Release the cached template parts before the tree is discarded. Critically, a surviving
-        // _propertiesPanel makes EnsurePropertiesPanel short-circuit (it returns early when
-        // _propertiesPanel != null), so the programmatic fallback tree is never rebuilt and the
-        // control renders blank after the template is cleared; RebuildView would also realize
-        // property rows into the detached panel. Deliberately does NOT touch _fallbackRoot: it is
-        // the templateless fallback visual (added via AddVisualChild and backing the overridden
-        // VisualChildrenCount), not a template PART — nulling it here would desync the cached
-        // visual-children count ahead of its RemoveVisualChild.
-        base.OnTemplateContentClearing();
-
-        _descriptionAnimationTimer?.Stop();
-
-        if (_searchBox != null)
+        _hasTemplate = false;
+        RetireEditors(preserve: true);
+        _rows.Clear();
+        if (_categorizedButton != null) _categorizedButton.Click -= OnCategorized;
+        if (_alphabeticalButton != null) _alphabeticalButton.Click -= OnAlphabetical;
+        if (_searchBox != null) BindingOperations.ClearBinding(_searchBox, TextBox.TextProperty);
+        if (_propertiesList != null)
         {
-            _searchBox.TextChanged -= OnSearchBoxTextChanged;
+            BindingOperations.ClearBinding(_propertiesList, ItemsControl.ItemsSourceProperty);
+            BindingOperations.ClearBinding(_propertiesList, ItemsControl.ItemTemplateSelectorProperty);
+            _propertiesList.SetCurrentValue(ItemsControl.ItemsSourceProperty, null);
         }
-        if (_categorizedButton != null)
-        {
-            _categorizedButton.Click -= OnCategorizedButtonClick;
-        }
-        if (_alphabeticalButton != null)
-        {
-            _alphabeticalButton.Click -= OnAlphabeticalButtonClick;
-        }
-
-        _toolBar = null;
-        _searchBoxBorder = null;
         _searchBox = null;
-        _categorizedButton = null;
-        _alphabeticalButton = null;
-        _propertiesHost = null;
-        _propertiesPanel = null;
-        _descriptionArea = null;
-        _descriptionTitle = null;
-        _descriptionText = null;
+        _categorizedButton = _alphabeticalButton = null;
+        _propertiesList = null;
+        base.OnTemplateChanging();
     }
 
-    private void OnCategorizedButtonClick(object? sender, RoutedEventArgs e)
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
-        SortMode = PropertyGridSortMode.Categorized;
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty) UpdateStates();
     }
 
-    private void OnAlphabeticalButtonClick(object? sender, RoutedEventArgs e)
+    public void RegisterCustomEditor(Type propertyType, Func<PropertyItem, PropertyGrid, FrameworkElement> editorFactory)
     {
-        SortMode = PropertyGridSortMode.Alphabetical;
+        ArgumentNullException.ThrowIfNull(propertyType);
+        ArgumentNullException.ThrowIfNull(editorFactory);
+        _customEditors[propertyType] = editorFactory;
+        IncrementEditorRevision();
     }
+    internal Func<PropertyItem, PropertyGrid, FrameworkElement>? GetCustomEditor(Type propertyType) => _customEditors.GetValueOrDefault(propertyType);
 
-    private void UpdateSortModeButtons()
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "PropertyGrid inspects runtime objects; applications must preserve their public property metadata and converters under AOT.")]
+    public void RefreshProperties()
     {
-        var activeStyle = TryFindResource("PropertyGridToolbarButtonActiveStyle") as Style;
-        var inactiveStyle = TryFindResource("PropertyGridToolbarButtonStyle") as Style;
-        var isCategorized = SortMode == PropertyGridSortMode.Categorized;
-
-        if (_categorizedButton != null)
+        RetireEditors(preserve: false);
+        _pendingEdits.Clear();
+        _rows.Clear();
+        _categories.Clear();
+        _properties.Clear();
+        SetCurrentValue(SelectedPropertyProperty, null);
+        if (SelectedObject is { } instance && AutoGenerateProperties)
         {
-            _categorizedButton.Style = isCategorized ? activeStyle : inactiveStyle;
+            foreach (var info in instance.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (info.GetIndexParameters().Length > 0 || info.GetMethod?.IsPublic != true || info.GetCustomAttribute<BrowsableAttribute>()?.Browsable == false) continue;
+                _properties.Add(new PropertyItem(instance, info));
+            }
         }
-        if (_alphabeticalButton != null)
-        {
-            _alphabeticalButton.Style = isCategorized ? inactiveStyle : activeStyle;
-        }
+        RebuildEntries();
     }
 
-    #endregion
-
-    #region Property Change Callbacks
-
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
-        Justification = "Invokes the instance OnSelectedObjectChanged, which discovers properties on SelectedObject via reflection and builds editor rows that use TypeDescriptor.GetConverter. This is the PropertyChangedCallback for the SelectedObject dependency property: the reflection contract is declared at that public surface (assigning SelectedObject is what triggers this). PropertyGrid is a developer/inspector control whose consumers must keep the inspected types' properties and converters preserved under AOT — a documented prerequisite, not a defect of this callback.")]
-    private static void OnSelectedObjectChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private void RebuildEntries()
     {
-        var grid = (PropertyGrid)d;
-        grid.OnSelectedObjectChanged();
+        RetireEditors(preserve: true);
+        _rows.Clear();
+        _entries.Clear();
+        _visibleProperties.Clear();
+        var query = SearchText?.Trim() ?? string.Empty;
+        var visible = _properties.Where(item => (PropertyFilter?.Invoke(item) ?? true) && (query.Length == 0
+            || item.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || item.Category?.Contains(query, StringComparison.OrdinalIgnoreCase) == true))
+            .OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
+        foreach (var item in visible) _visibleProperties.Add(item);
+        if (SortMode == PropertyGridSortMode.Categorized)
+        {
+            foreach (var group in visible.GroupBy(item => item.Category ?? "Misc", StringComparer.OrdinalIgnoreCase)
+                .OrderBy(group => string.Equals(group.Key, "Misc", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!_categories.TryGetValue(group.Key, out var category)) _categories[group.Key] = category = new PropertyGridCategory(group.Key);
+                category.SetProperties(group);
+                _entries.Add(category);
+            }
+        }
+        else foreach (var item in visible) _entries.Add(item);
+        SetValue(PropertyCountPropertyKey, visible.Length);
+        SetValue(IsEmptyPropertyKey, visible.Length == 0);
+        if (SelectedProperty is { } selected && !visible.Contains(GetRootProperty(selected))) SetCurrentValue(SelectedPropertyProperty, null);
+        foreach (var key in _pendingEdits.Keys.Where(item => !visible.Contains(GetRootProperty(item))).ToArray()) _pendingEdits.Remove(key);
+        UpdateStates();
     }
 
+    private static PropertyItem GetRootProperty(PropertyItem item)
+    {
+        while (item.ParentProperty != null) item = item.ParentProperty;
+        return item;
+    }
+    internal bool OwnsProperty(PropertyItem item)
+    {
+        while (item.ParentProperty is { } parent)
+        {
+            if (!parent.SubProperties.Contains(item)) return false;
+            item = parent;
+        }
+        return _properties.Contains(item);
+    }
+    internal void RegisterEditor(PropertyGridEditor editor)
+    {
+        if (editor.Property is not { } item || !OwnsProperty(item)) return;
+        _editors[item] = new(editor);
+        editor.ActivateOwner();
+        if (_pendingEdits.Remove(item, out var text)) editor.RestoreEdit(text);
+    }
+    internal void UnregisterEditor(PropertyGridEditor editor, PropertyItem? previous = null)
+    {
+        if ((previous ?? editor.Property) is { } item && _editors.TryGetValue(item, out var weak) && weak.TryGetTarget(out var current) && ReferenceEquals(editor, current)) _editors.Remove(item);
+    }
+    internal void RegisterRow(PropertyGridRow row)
+    {
+        if (row.Property is { } item && OwnsProperty(item)) _rows[item] = new(row);
+    }
+    internal void UnregisterRow(PropertyGridRow row, PropertyItem? previous = null)
+    {
+        if ((previous ?? row.Property) is { } item && _rows.TryGetValue(item, out var weak) && weak.TryGetTarget(out var current) && ReferenceEquals(row, current)) _rows.Remove(item);
+    }
+    private void RetireEditors(bool preserve)
+    {
+        foreach (var weak in _editors.Values.ToArray())
+        {
+            if (!weak.TryGetTarget(out var editor)) continue;
+            if (preserve && editor.IsEditing && editor.Property is { } item) _pendingEdits[item] = editor.EditText;
+            editor.Retire();
+        }
+        _editors.Clear();
+    }
+    internal bool MoveSelection(PropertyGridRow current, int delta)
+    {
+        var rows = _rows.Values.Select(weak => weak.TryGetTarget(out var row) ? row : null)
+            .Where(row => row?.IsVisible == true && row.ActualHeight > 0)
+            .Cast<PropertyGridRow>().OrderBy(row => row.TranslatePoint(new Point(0, 0), this).Y).ToArray();
+        var index = Array.IndexOf(rows, current) + delta;
+        if (index < 0 || index >= rows.Length) return false;
+        var target = rows[index];
+        SetCurrentValue(SelectedPropertyProperty, target.Property);
+        return target.Focus();
+    }
+    internal void CommitPropertyValue(PropertyItem item, object? oldValue)
+    {
+        if (!OwnsProperty(item) || Equals(oldValue, item.Value)) return;
+        RaiseEvent(new PropertyValueChangedEventArgs(PropertyValueChangedEvent, item.Name, oldValue, item.Value));
+    }
+    internal void NotifyEditingStarted(PropertyItem item)
+    {
+        SetCurrentValue(SelectedPropertyProperty, item);
+        RaiseEvent(new RoutedEventArgs(PropertyEditingStartedEvent, this));
+    }
+    internal void NotifyEditingEnded() => RaiseEvent(new RoutedEventArgs(PropertyEditingEndedEvent, this));
+    private void IncrementEditorRevision() => SetValue(EditorRevisionPropertyKey, EditorRevision + 1);
+    private void OnCategorized(object sender, RoutedEventArgs e) => SetCurrentValue(SortModeProperty, PropertyGridSortMode.Categorized);
+    private void OnAlphabetical(object sender, RoutedEventArgs e) => SetCurrentValue(SortModeProperty, PropertyGridSortMode.Alphabetical);
+    private static void OnSelectedObjectChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((PropertyGrid)d).RefreshProperties();
+    private static void OnDiscoveryChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((PropertyGrid)d).RefreshProperties();
     private static void OnSelectedObjectsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var grid = (PropertyGrid)d;
-        // When SelectedObjects is set, use the first object
-        if (e.NewValue is IEnumerable enumerable)
+        object? first = null;
+        if (e.NewValue is IEnumerable values)
         {
-            var enumerator = enumerable.GetEnumerator();
-            if (enumerator.MoveNext())
-            {
-                grid.SelectedObject = enumerator.Current;
-                return;
-            }
+            var enumerator = values.GetEnumerator();
+            try { if (enumerator.MoveNext()) first = enumerator.Current; }
+            finally { (enumerator as IDisposable)?.Dispose(); }
         }
-        grid.SelectedObject = null;
+        grid.SetCurrentValue(SelectedObjectProperty, first);
     }
-
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
-        Justification = "Calls RebuildView, which rebuilds the rows already discovered for SelectedObject and uses TypeDescriptor.GetConverter for each property's runtime type. The underlying reflection contract is declared at the SelectedObject public surface that originally populated those items; this view-shape callback (sort mode, read-only, column width, etc.) only re-lays-out already-discovered properties. Preserving the inspected types' members and converters is the documented PropertyGrid-under-AOT prerequisite.")]
-    private static void OnViewPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        var grid = (PropertyGrid)d;
-        grid.UpdateSortModeButtons();
-        grid.RebuildView();
-    }
-
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
-        Justification = "Calls RebuildView, which rebuilds the rows already discovered for SelectedObject and uses TypeDescriptor.GetConverter for each property's runtime type. The underlying reflection contract is declared at the SelectedObject public surface that originally populated those items; this visual callback (search box / description / toolbar visibility) only re-lays-out already-discovered properties. Preserving the inspected types' members and converters is the documented PropertyGrid-under-AOT prerequisite.")]
-    private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        var grid = (PropertyGrid)d;
-        grid.UpdateVisibility();
-        grid.RebuildView();
-    }
-
-    private static void OnSearchTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        var grid = (PropertyGrid)d;
-        grid.FilterProperties((string?)e.NewValue ?? string.Empty);
-    }
-
+    private static void OnViewPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((PropertyGrid)d).RebuildEntries();
+    private static void OnStatePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((PropertyGrid)d).UpdateStates();
+    private static void OnEditorTemplatesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((PropertyGrid)d).IncrementEditorRevision();
     private static void OnSelectedPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var grid = (PropertyGrid)d;
-        var oldProp = e.OldValue as PropertyItem;
-        var newProp = e.NewValue as PropertyItem;
-        grid.OnPropertyRowSelected(oldProp, newProp);
+        var item = e.NewValue as PropertyItem;
+        grid.SetValue(SelectedPropertyNamePropertyKey, item?.DisplayName ?? string.Empty);
+        grid.SetValue(SelectedPropertyDescriptionPropertyKey, item?.Description ?? string.Empty);
+        grid.UpdateStates();
+        grid.RaiseEvent(new SelectedPropertyChangedEventArgs(SelectedPropertyChangedEvent, e.OldValue as PropertyItem, item));
     }
-
-    #endregion
-
-    #region Public Methods
-
-    /// <summary>
-    /// Registers a custom editor factory for properties of the specified type.
-    /// </summary>
-    public void RegisterCustomEditor(Type propertyType, Func<PropertyItem, PropertyGrid, FrameworkElement> editorFactory)
+    private void UpdateStates()
     {
-        _customEditors[propertyType] = editorFactory;
+        if (!_hasTemplate) return;
+        VisualStateManager.GoToState(this, SortMode == PropertyGridSortMode.Categorized ? "Categorized" : "Alphabetical", false);
+        VisualStateManager.GoToState(this, ShowSearchBox ? "SearchVisible" : "SearchHidden", false);
+        VisualStateManager.GoToState(this, ShowToolBar ? "ToolbarVisible" : "ToolbarHidden", false);
+        VisualStateManager.GoToState(this, ShowDescription && !string.IsNullOrWhiteSpace(SelectedPropertyDescription) ? "DescriptionVisible" : "DescriptionHidden", true);
+        VisualStateManager.GoToState(this, IsEmpty ? "Empty" : "Ready", false);
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
     }
-
-    /// <summary>
-    /// Rebuilds the property view from the current selected object.
-    /// </summary>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Discovers properties on SelectedObject via reflection.")]
-    public void RefreshProperties()
+    private sealed class EntrySelector(PropertyGrid owner) : DataTemplateSelector
     {
-        OnSelectedObjectChanged();
+        public override DataTemplate? SelectTemplate(object? item, DependencyObject? container) => item is PropertyGridCategory ? owner.CategoryTemplate : owner.PropertyTemplate;
     }
-
-    /// <summary>
-    /// Commits a property value change and raises the <see cref="PropertyValueChanged"/> event.
-    /// </summary>
-    internal void CommitPropertyValue(PropertyItem item, object? oldValue)
-    {
-        RaiseEvent(new PropertyValueChangedEventArgs(
-            PropertyValueChangedEvent, item.Name, oldValue, item.Value));
-    }
-
-    /// <summary>
-    /// Gets a custom editor factory for the specified type, if registered.
-    /// </summary>
-    internal Func<PropertyItem, PropertyGrid, FrameworkElement>? GetCustomEditor(Type propertyType)
-    {
-        _customEditors.TryGetValue(propertyType, out var factory);
-        return factory;
-    }
-
-    /// <summary>
-    /// Creates a property row (Grid with name label and editor) for the given property item.
-    /// This is also used by <see cref="PropertyEditorSelector"/> for expandable sub-properties.
-    /// </summary>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Defers to CreatePropertyRowInternal which uses TypeDescriptor.GetConverter for the property's runtime type.")]
-    internal FrameworkElement CreatePropertyRow(PropertyItem item)
-    {
-        return CreatePropertyRowInternal(item);
-    }
-
-    #endregion
-
-    #region Private Methods
-
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Discovers properties on SelectedObject via reflection and builds editor rows that use TypeDescriptor.GetConverter.")]
-    private void OnSelectedObjectChanged()
-    {
-        _allPropertyItems.Clear();
-        _propertyRowMap.Clear();
-
-        var obj = SelectedObject;
-        if (obj != null && AutoGenerateProperties)
-        {
-            BuildPropertyItems(obj);
-        }
-
-        SelectedProperty = null;
-        RebuildView();
-    }
-
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
-        Justification = "GetProperties is called on the runtime type of SelectedObject (obj.GetType()), whose static type is object and therefore cannot carry DynamicallyAccessedMembers. PropertyGrid is a developer/inspector control: consumers that assign a user-defined SelectedObject must keep that type's public instance properties preserved (e.g. via DynamicDependency or a descriptor) — the documented prerequisite for using PropertyGrid under AOT. The reflection contract is already declared at the public RefreshProperties() / SelectedObject surface that reaches this method.")]
-    private void BuildPropertyItems(object obj)
-    {
-        var type = obj.GetType();
-        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
-
-        foreach (var prop in properties)
-        {
-            // Skip indexer properties
-            if (prop.GetIndexParameters().Length > 0)
-                continue;
-
-            // Respect BrowsableAttribute
-            var browsable = prop.GetCustomAttribute<BrowsableAttribute>();
-            if (browsable?.Browsable == false)
-                continue;
-
-            // Skip properties that can't be read
-            if (!prop.CanRead)
-                continue;
-
-            var item = new PropertyItem(obj, prop);
-
-            // Apply the external filter
-            var filter = PropertyFilter;
-            if (filter != null && !filter(item))
-                continue;
-
-            _allPropertyItems.Add(item);
-        }
-    }
-
-    private void EnsurePropertiesPanel()
-    {
-        if (_propertiesPanel != null) return;
-
-        // Fallback: create full layout programmatically when no template is applied
-        _propertiesPanel = new StackPanel { Orientation = Orientation.Vertical };
-        var scrollViewer = new ScrollViewer
-        {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-        };
-        scrollViewer.Content = _propertiesPanel;
-
-        // Description area at the bottom
-        _descriptionArea = new Grid
-        {
-            MinHeight = 50,
-            Background = new SolidColorBrush(Color.FromRgb(38, 38, 38))
-        };
-
-        // Combine into a vertical layout
-        var rootPanel = new Grid();
-        rootPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        rootPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(scrollViewer, 0);
-        Grid.SetRow(_descriptionArea, 1);
-        rootPanel.Children.Add(scrollViewer);
-        rootPanel.Children.Add(_descriptionArea);
-
-        _fallbackRoot = rootPanel;
-        AddVisualChild(_fallbackRoot);
-    }
-
-    private FrameworkElement? _fallbackRoot;
-
-    /// <inheritdoc />
-    protected override int VisualChildrenCount => _fallbackRoot != null && Template == null ? 1 : base.VisualChildrenCount;
-
-    /// <inheritdoc />
-    protected override Visual? GetVisualChild(int index)
-    {
-        if (_fallbackRoot != null && Template == null && index == 0) return _fallbackRoot;
-        return base.GetVisualChild(index);
-    }
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        if (_fallbackRoot != null && Template == null)
-        {
-            _fallbackRoot.Measure(availableSize);
-            return _fallbackRoot.DesiredSize;
-        }
-        return base.MeasureOverride(availableSize);
-    }
-
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        if (_fallbackRoot != null && Template == null)
-        {
-            _fallbackRoot.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
-            return finalSize;
-        }
-        return base.ArrangeOverride(finalSize);
-    }
-
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Builds rows that use TypeDescriptor.GetConverter for the property's runtime type.")]
-    private void RebuildView()
-    {
-        EnsurePropertiesPanel();
-        if (_propertiesPanel == null)
-            return;
-
-        _propertiesPanel.Children.Clear();
-        _propertyRowMap.Clear();
-
-        if (_allPropertyItems.Count == 0)
-            return;
-
-        if (SortMode == PropertyGridSortMode.Categorized)
-        {
-            BuildCategorizedView();
-        }
-        else
-        {
-            BuildAlphabeticalView();
-        }
-
-        // Apply current search filter
-        var searchText = SearchText;
-        if (!string.IsNullOrEmpty(searchText))
-        {
-            FilterProperties(searchText);
-        }
-    }
-
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Builds rows that use TypeDescriptor.GetConverter for the property's runtime type.")]
-    private void BuildCategorizedView()
-    {
-        if (_propertiesPanel == null)
-            return;
-
-        // Group by category
-        var groups = new Dictionary<string, List<PropertyItem>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in _allPropertyItems)
-        {
-            var category = item.Category ?? "Misc";
-            if (!groups.TryGetValue(category, out var list))
-            {
-                list = new List<PropertyItem>();
-                groups[category] = list;
-            }
-            list.Add(item);
-        }
-
-        // Sort categories alphabetically, but "Misc" goes last
-        var sortedCategories = groups.Keys.OrderBy(c =>
-            string.Equals(c, "Misc", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
-            .ThenBy(c => c, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var categoryExpanderStyle = TryFindResource("PropertyGridCategoryExpanderStyle") as Style;
-
-        foreach (var category in sortedCategories)
-        {
-            var items = groups[category];
-            items.Sort((a, b) => string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase));
-
-            var categoryPanel = new StackPanel { Orientation = Orientation.Vertical };
-
-            foreach (var item in items)
-            {
-                var row = CreatePropertyRowInternal(item);
-                _propertyRowMap[item] = row;
-                categoryPanel.Children.Add(row);
-            }
-
-            var headerText = new TextBlock
-            {
-                Text = category.ToUpperInvariant(),
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 11,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            if (CategoryHeaderForeground != null)
-            {
-                headerText.Foreground = CategoryHeaderForeground;
-            }
-            else if (TryFindResource("TextFillColorSecondaryBrush") is Brush secondary)
-            {
-                headerText.Foreground = secondary;
-            }
-
-            var expander = new Expander
-            {
-                Header = headerText,
-                IsExpanded = true,
-                Content = categoryPanel,
-                Margin = new Thickness(0, 0, 0, 2)
-            };
-
-            if (categoryExpanderStyle != null)
-            {
-                expander.Style = categoryExpanderStyle;
-            }
-
-            if (CategoryHeaderBackground != null)
-            {
-                expander.HeaderBackground = CategoryHeaderBackground;
-            }
-
-            _propertiesPanel.Children.Add(expander);
-        }
-    }
-
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Builds rows that use TypeDescriptor.GetConverter for the property's runtime type.")]
-    private void BuildAlphabeticalView()
-    {
-        if (_propertiesPanel == null)
-            return;
-
-        var sorted = _allPropertyItems
-            .OrderBy(i => i.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        foreach (var item in sorted)
-        {
-            var row = CreatePropertyRowInternal(item);
-            _propertyRowMap[item] = row;
-            _propertiesPanel.Children.Add(row);
-        }
-    }
-
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("CreateEditor uses TypeDescriptor.GetConverter for the property's runtime type — generic TypeConverters require their generic types to be DAM-preserved.")]
-    private FrameworkElement CreatePropertyRowInternal(PropertyItem item)
-    {
-        // Row container: Border supports IsMouseOver-style background; we use
-        // MouseEnter/Leave handlers since Border's style system already applies
-        // other visual settings in themes.
-        var rowBorder = new Border
-        {
-            Background = Brushes.Transparent,
-            CornerRadius = new CornerRadius(3),
-            Padding = new Thickness(0),
-            Margin = new Thickness(4, 0, 4, 0)
-        };
-
-        var grid = new Grid();
-
-        // Column 0: 2px accent bar (visible only when selected)
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Pixel) });
-        // Column 1: name
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(NameColumnWidth, GridUnitType.Pixel) });
-        // Column 2: editor
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        var accentBar = new Border
-        {
-            Background = Brushes.Transparent,
-            CornerRadius = new CornerRadius(1),
-            Margin = new Thickness(0, 3, 4, 3),
-            HorizontalAlignment = HorizontalAlignment.Stretch
-        };
-        Grid.SetColumn(accentBar, 0);
-        grid.Children.Add(accentBar);
-
-        var nameLabel = new TextBlock
-        {
-            Text = item.DisplayName,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(6, 4, 8, 4),
-            FontSize = 12,
-            TextTrimming = TextTrimming.CharacterEllipsis
-        };
-
-        if (PropertyNameForeground != null)
-        {
-            nameLabel.Foreground = PropertyNameForeground;
-        }
-        else if (TryFindResource("TextFillColorSecondaryBrush") is Brush secondary)
-        {
-            nameLabel.Foreground = secondary;
-        }
-
-        Grid.SetColumn(nameLabel, 1);
-        grid.Children.Add(nameLabel);
-
-        var editor = _editorSelector.CreateEditor(item, this);
-        Grid.SetColumn(editor, 2);
-        grid.Children.Add(editor);
-
-        rowBorder.Child = grid;
-
-        // Store the accent bar so UpdateRowHighlights can toggle it.
-        rowBorder.Tag = accentBar;
-
-        // Hover + selection wiring
-        rowBorder.AddHandler(MouseEnterEvent, new MouseEventHandler((_, _) =>
-        {
-            if (!ReferenceEquals(SelectedProperty, item))
-            {
-                rowBorder.Background = ResolveRowHoverBrush();
-            }
-        }));
-
-        rowBorder.AddHandler(MouseLeaveEvent, new MouseEventHandler((_, _) =>
-        {
-            if (!ReferenceEquals(SelectedProperty, item))
-            {
-                rowBorder.Background = Brushes.Transparent;
-            }
-        }));
-
-        rowBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler((_, e) =>
-        {
-            SelectedProperty = item;
-            RaiseEvent(new RoutedEventArgs(PropertyEditingStartedEvent, this));
-            e.Handled = true;
-        }));
-
-        editor.LostFocus += (_, _) =>
-        {
-            RaiseEvent(new RoutedEventArgs(PropertyEditingEndedEvent, this));
-        };
-
-        return rowBorder;
-    }
-
-    private Brush ResolveRowHoverBrush()
-        => TryFindResource("SubtleFillColorSecondaryBrush") as Brush ?? s_defaultRowHoverBrush;
-
-    private Brush ResolveRowSelectedBrush()
-        => TryFindResource("PropertyGridSelectionBackground") as Brush
-           ?? TryFindResource("SubtleFillColorTertiaryBrush") as Brush
-           ?? s_defaultRowSelectedBrush;
-
-    private Brush ResolveSelectionAccentBrush()
-        => TryFindResource("AccentBrush") as Brush ?? s_defaultSelectionAccentBrush;
-
-    private void FilterProperties(string searchText)
-    {
-        if (_propertiesPanel == null)
-            return;
-
-        var isEmpty = string.IsNullOrWhiteSpace(searchText);
-
-        foreach (var kvp in _propertyRowMap)
-        {
-            var item = kvp.Key;
-            var row = kvp.Value;
-
-            if (isEmpty)
-            {
-                row.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                var matches = item.DisplayName.Contains(searchText, StringComparison.OrdinalIgnoreCase)
-                           || item.Name.Contains(searchText, StringComparison.OrdinalIgnoreCase)
-                           || (item.Category?.Contains(searchText, StringComparison.OrdinalIgnoreCase) == true);
-                row.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
-            }
-        }
-    }
-
-    private void OnPropertyRowSelected(PropertyItem? oldProperty, PropertyItem? newProperty)
-    {
-        // Highlight the selected row
-        UpdateRowHighlights(oldProperty, newProperty);
-
-        // Update description area
-        UpdateDescription(newProperty);
-
-        // Raise event
-        RaiseEvent(new SelectedPropertyChangedEventArgs(
-            SelectedPropertyChangedEvent, oldProperty, newProperty));
-    }
-
-    private void UpdateRowHighlights(PropertyItem? oldProperty, PropertyItem? newProperty)
-    {
-        if (oldProperty != null && _propertyRowMap.TryGetValue(oldProperty, out var oldRow))
-        {
-            if (oldRow is Border oldBorder)
-            {
-                // Preserve hover state if the pointer is still over the row.
-                oldBorder.Background = oldBorder.IsMouseOver
-                    ? ResolveRowHoverBrush()
-                    : Brushes.Transparent;
-                if (oldBorder.Tag is Border oldAccent)
-                {
-                    oldAccent.Background = Brushes.Transparent;
-                }
-            }
-        }
-
-        if (newProperty != null && _propertyRowMap.TryGetValue(newProperty, out var newRow))
-        {
-            if (newRow is Border newBorder)
-            {
-                newBorder.Background = ResolveRowSelectedBrush();
-                if (newBorder.Tag is Border newAccent)
-                {
-                    newAccent.Background = ResolveSelectionAccentBrush();
-                }
-            }
-        }
-    }
-
-    private void UpdateDescription(PropertyItem? property)
-    {
-        if (_descriptionArea == null)
-            return;
-
-        var description = property?.Description;
-        var hasDescription = ShowDescription
-                             && property != null
-                             && !string.IsNullOrWhiteSpace(description);
-
-        if (hasDescription)
-        {
-            EnsureDescriptionChildren();
-
-            if (_descriptionTitle != null)
-                _descriptionTitle.Text = property!.DisplayName;
-            if (_descriptionText != null)
-                _descriptionText.Text = description!;
-        }
-        else
-        {
-            if (_descriptionTitle != null)
-                _descriptionTitle.Text = string.Empty;
-            if (_descriptionText != null)
-                _descriptionText.Text = string.Empty;
-        }
-
-        AnimateDescription(hasDescription);
-    }
-
-    /// <summary>
-    /// Animates the description area's height + opacity with a non-linear
-    /// cubic ease-out, hiding it entirely when there's nothing to show.
-    /// The target height is measured from the actual content so longer
-    /// descriptions get taller panels and shorter descriptions shrink.
-    /// </summary>
-    private void AnimateDescription(bool show)
-    {
-        if (_descriptionArea == null)
-            return;
-
-        // Capture current visual state so re-triggered animations blend smoothly.
-        var currentHeight = double.IsNaN(_descriptionArea.Height) ? _descriptionArea.ActualHeight : _descriptionArea.Height;
-        var currentOpacity = _descriptionArea.Opacity;
-
-        double targetHeight;
-        double targetOpacity;
-
-        if (show)
-        {
-            _descriptionArea.Visibility = Visibility.Visible;
-            targetHeight = MeasureDescriptionNaturalHeight();
-            targetOpacity = 1.0;
-        }
-        else
-        {
-            targetHeight = 0.0;
-            targetOpacity = 0.0;
-        }
-
-        // Fast path: already at target and no animation in flight.
-        if (show == _descriptionVisible
-            && _descriptionAnimationTimer?.IsEnabled != true
-            && Math.Abs(currentHeight - targetHeight) < 0.5
-            && Math.Abs(currentOpacity - targetOpacity) < 0.01)
-        {
-            return;
-        }
-
-        _descriptionVisible = show;
-        _descriptionAnimationDurationMs = show ? DescriptionExpandMs : DescriptionCollapseMs;
-        _descriptionStartHeight = currentHeight;
-        _descriptionStartOpacity = currentOpacity;
-        _descriptionTargetHeight = targetHeight;
-        _descriptionTargetOpacity = targetOpacity;
-
-        if (Math.Abs(_descriptionStartHeight - _descriptionTargetHeight) < 0.5
-            && Math.Abs(_descriptionStartOpacity - _descriptionTargetOpacity) < 0.01)
-        {
-            // Already at target — snap without running the timer.
-            ApplyDescriptionFinalState();
-            return;
-        }
-
-        // Prime the starting frame so the first tick doesn't jump when the
-        // panel was previously sized to Auto/NaN.
-        _descriptionArea.Height = currentHeight;
-        _descriptionArea.Opacity = currentOpacity;
-
-        _descriptionStopwatch.Restart();
-
-        if (_descriptionAnimationTimer == null)
-        {
-            _descriptionAnimationTimer = new DispatcherTimer
-            {
-                Interval = CompositionTarget.FrameInterval
-            };
-            _descriptionAnimationTimer.Tick += OnDescriptionAnimationTick;
-        }
-        _descriptionAnimationTimer.Start();
-    }
-
-    private double MeasureDescriptionNaturalHeight()
-    {
-        if (_descriptionArea == null)
-            return DescriptionMinHeight;
-
-        _descriptionArea.Height = double.NaN;
-        _descriptionArea.InvalidateMeasure();
-
-        var availableWidth = _descriptionArea.ActualWidth > 0
-            ? _descriptionArea.ActualWidth
-            : (_descriptionArea.VisualParent is FrameworkElement parent && parent.ActualWidth > 0
-                ? parent.ActualWidth
-                : double.PositiveInfinity);
-
-        _descriptionArea.Measure(new Size(availableWidth, double.PositiveInfinity));
-        var desired = _descriptionArea.DesiredSize.Height;
-
-        return desired > 0.0 ? desired : DescriptionMinHeight;
-    }
-
-    private void ApplyDescriptionFinalState()
-    {
-        if (_descriptionArea == null)
-            return;
-
-        _descriptionAnimationTimer?.Stop();
-        _descriptionStopwatch.Stop();
-
-        if (_descriptionVisible)
-        {
-            // Auto-sized — content changes (new description text) will reflow naturally.
-            _descriptionArea.Height = double.NaN;
-            _descriptionArea.Opacity = 1.0;
-        }
-        else
-        {
-            _descriptionArea.Height = 0.0;
-            _descriptionArea.Opacity = 0.0;
-            _descriptionArea.Visibility = Visibility.Collapsed;
-        }
-    }
-
-    private void OnDescriptionAnimationTick(object? sender, EventArgs e)
-    {
-        if (_descriptionArea == null)
-        {
-            _descriptionAnimationTimer?.Stop();
-            return;
-        }
-
-        var elapsed = _descriptionStopwatch.Elapsed.TotalMilliseconds;
-        var t = Math.Min(1.0, elapsed / Math.Max(1.0, _descriptionAnimationDurationMs));
-
-        // Non-linear: cubic ease-out on expand, cubic ease-in on collapse.
-        var eased = _descriptionVisible ? EaseOutCubic(t) : EaseInCubic(t);
-
-        var height = _descriptionStartHeight + (_descriptionTargetHeight - _descriptionStartHeight) * eased;
-        var opacity = _descriptionStartOpacity + (_descriptionTargetOpacity - _descriptionStartOpacity) * eased;
-
-        _descriptionArea.Height = height;
-        _descriptionArea.Opacity = opacity;
-
-        if (t >= 1.0)
-        {
-            ApplyDescriptionFinalState();
-        }
-    }
-
-    private static double EaseOutCubic(double t) => 1.0 - Math.Pow(1.0 - t, 3.0);
-
-    private static double EaseInCubic(double t) => t * t * t;
-
-    private void EnsureDescriptionChildren()
-    {
-        if (_descriptionTitle != null || _descriptionArea == null)
-            return;
-
-        var panel = new StackPanel { Orientation = Orientation.Vertical };
-
-        _descriptionTitle = new TextBlock
-        {
-            FontWeight = FontWeights.SemiBold,
-            FontSize = 12,
-            Margin = new Thickness(0, 0, 0, 3)
-        };
-
-        if (TryFindResource("TextFillColorPrimaryBrush") is Brush primary)
-        {
-            _descriptionTitle.Foreground = primary;
-        }
-
-        _descriptionText = new TextBlock
-        {
-            TextWrapping = TextWrapping.Wrap,
-            FontSize = 11
-        };
-
-        if (TryFindResource("TextFillColorSecondaryBrush") is Brush secondary)
-        {
-            _descriptionText.Foreground = secondary;
-        }
-        else
-        {
-            _descriptionText.Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 160));
-        }
-
-        panel.Children.Add(_descriptionTitle);
-        panel.Children.Add(_descriptionText);
-
-        panel.Margin = new Thickness(8, 4, 8, 4);
-        _descriptionArea.Children.Clear();
-        _descriptionArea.Children.Add(panel);
-    }
-
-    private void UpdateVisibility()
-    {
-        if (_toolBar != null)
-            _toolBar.Visibility = ShowToolBar ? Visibility.Visible : Visibility.Collapsed;
-        if (_searchBoxBorder != null)
-            _searchBoxBorder.Visibility = ShowSearchBox ? Visibility.Visible : Visibility.Collapsed;
-        else if (_searchBox != null)
-            _searchBox.Visibility = ShowSearchBox ? Visibility.Visible : Visibility.Collapsed;
-
-        // Description area visibility is driven by AnimateDescription based on
-        // both ShowDescription and whether the selected property has text to show.
-        UpdateDescription(SelectedProperty);
-    }
-
-    private void OnSearchBoxTextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (_searchBox != null)
-        {
-            SearchText = _searchBox.Text;
-        }
-    }
-
-    #endregion
 }

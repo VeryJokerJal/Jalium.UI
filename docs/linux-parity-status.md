@@ -1,6 +1,7 @@
 # Linux 桌面支持：实现与验证矩阵
 
-> 审计日期：2026-07-14。本文只记录当前源码、测试脚本和本地验证能够支持的结论。
+> 历史审计日期：2026-07-14。下面的验证快照是当时的结果，不代表当前工作区的验收结果。
+> 2026-10-16 的 Window 复核与补齐见 [Linux Window 行为与验收](linux-window-behavior.md)。
 > “已实现”表示代码路径存在；“已验证”表示当前版本有对应的自动化或真实协议证据。
 > 二者不会混写。
 
@@ -8,10 +9,35 @@
 
 Linux 后端已不再是只能开窗的样例：X11/Wayland、Vulkan/软件渲染、输入、剪贴板、
 拖放、媒体、打印、无障碍、托盘/通知、系统设置、会话结束和文件关联均有实际实现。
-当前已识别的软件实现缺口已经补齐。发布前剩余的是完成当前机器无法提供的 RID/硬件/
-桌面环境 qualification，并明确承认 Wayland 协议与外部服务的边界。
+2026-10 的 Window 复核发现自绘移动/缩放、托管尺寸同步、窗口状态恢复、隐藏再显示和
+模态输入等仍有实现缺口。对应修复和当前证据单独记录；其他 LinuxOS 子系统也需要
+逐项刷新验证，不能只凭历史快照宣称全部补齐。
 
-## 当前验证快照
+Window 当前已补充平铺与自动尺寸协调、原生接受尺寸的事件通知、含文本框内容的自动收缩，
+以及 X11 平铺边缘约束、装饰帧销毁保护、最小化还原和桌面缩放来源识别。
+2026-10-16 补充 X11 菜单键盘移动/缩放，修复菜单意外输入空格和临时抓取误报失焦。
+菜单专项曾为 194/194。随后修复禁用悬停通知和提示取消，并纠正 OLE 测试的 CSS 队列
+前置条件。随后补上系统菜单的窗口生命周期及 Wayland 输入归属检查；最新修复设备
+能力撤销后的重复、修饰键、输入法、按压/捕获取消和重连，并进一步补齐 seat 整体移除、
+重新公布、第二 seat 接管及回调内重建。当前原生 CTest 18/18，扩大窗口/快捷键回归为
+737 通过、2 跳过、0 失败（第十六批）。第十七批进一步修复 Wayland 输入法/触点回调
+关闭、隐藏、换焦点及重入；确认并修复两处 use-after-free，v1 9 / v3 12 场景 ASAN 通过。
+新增托管专项 18/18，Window 命名范围为 527 通过、2 跳过、0 失败；扩大相关范围
+764 通过、2 跳过、1 项 CSS 图片/无障碍失败，仍非整体全绿。
+Mutter / Openbox 各两种标题栏完成菜单实际交互，Weston 两种标题栏完成禁用项与焦点检查。
+三种 WM / compositor 的两种标题栏均完成普通与窄窗口的实际悬停、提示关闭和编辑焦点检查。
+第十四、十五批二进制重跑了四套 X11 菜单流程和两套 Weston 菜单/原生输入流程，输入 serial 与
+目标 surface 已核对；请求发出不代表合成器显示菜单。全功能回归（排除
+PageSwapCostBenchmarkTests，正常后端选择）第十六批为 6116 通过、86 跳过、10 失败；
+第十七批同步当前完整托管/测试源码后为 6800 通过、86 跳过、25 失败，测试总数不同。
+IconSupportTests 的编译接口不匹配仍采用显式单文件排除，未宣称无排除构建通过。
+主题/API、图像和再次出现的分配失败仍存在。两种标题栏完成实际键鼠与协议回调模拟
+设备移除/重连，另在两种标题栏完成真实 seat registry 移除/重建及各 18 个状态快照。
+Weston / KWin / Mutter 的对应批次原生证据已保留；物理 USB 拔插尚未验收。
+Wayland 的直接键盘移动/缩放仍未实现。
+源码边界、截图和物理桌面等未验收项目见上方 Window 文档。
+
+## 2026-07-14 验证快照（历史）
 
 | 项目 | 当前结果 | 说明 |
 | --- | --- | --- |
@@ -37,7 +63,7 @@ Linux 后端已不再是只能开窗的样例：X11/Wayland、Vulkan/软件渲�
 | 子系统 | 已实现内容 | 自动化/协议证据 | 仍有边界 |
 | --- | --- | --- | --- |
 | X11 窗口 | 状态、激活、owner、尺寸约束、交互移动/缩放、图标、Topmost、Opacity、ShowInTaskbar、XRandR/EWMH | platform CTest、真实 Xvfb/sample | WM 可按策略拒绝 EWMH 请求 |
-| Wayland 窗口 | `xdg_toplevel`、`xdg_popup`、整数 HiDPI、主题光标、decoration、foreign parent、可选 toplevel icon、原生 system menu 与 token-backed xdg activation | platform CTest、Weston sample/DnD | 无全局坐标、无 token 时不能强制激活、无 Topmost/整窗 Opacity/任务栏控制；无专用 fractional-scale 路径 |
+| Wayland 窗口 | `xdg_toplevel`、`xdg_popup`、整数/分数缩放、主题光标、装饰协商与 CSD 回退、app_id、wm_capabilities、foreign parent、可选图标、窗口菜单与 token-backed 激活 | 历史 platform/sample/DnD；2026-10 当前 Window 记录另见链接文档 | 无全局坐标、无 token 时不能强制激活、无 Topmost/整窗 Opacity/任务栏控制；真实桌面与多屏验收仍待补充 |
 | Vulkan | Xlib/Wayland WSI、LCD 双源混合、颜色 emoji、CPU video staging、受限 dma-buf import | Wayland Vulkan smoke、LCD CTest | 当前只有 llvmpipe/虚拟环境证据，无物理 GPU qualification |
 | 软件渲染 | Wayland `wl_shm`；X11 MIT-SHM + `XPutImage` fallback；damage-scoped present | 软件 present CTest 和像素读取 | 性能仍取决于 compositor/X server |
 | 文本 | 自研 OpenType shaping/raster、fontconfig fallback、CJK、LCD RGB coverage、COLR/CPAL、CBDT/CBLC | text/Vulkan/software 像素测试 | 并非所有 COLR-v1/SVG/sbix paint graph；目标机仍须安装字体 |
@@ -113,7 +139,6 @@ Linux 后端已不再是只能开窗的样例：X11/Wayland、Vulkan/软件渲�
 
 - WebView2、WindowsFormsHost、JumpList、`TaskbarItemInfo` 等 Windows shell/COM 功能；
 - Linux 对 CUPS 队列的枚举、暂停、恢复、作业管理；
-- Wayland fractional-scale-v1 专用路径；
 - NV12/P010/多平面 dma-buf 的 Vulkan YCbCr 零拷贝；
 - Linux 运行时任意 HLSL 编译。内置效果使用预编译 SPIR-V，不受此限制；
 - 每一种颜色字体格式/paint graph 的完整实现；

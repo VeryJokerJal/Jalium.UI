@@ -1,5 +1,6 @@
 using Jalium.UI.Documents;
 using Jalium.UI.Controls.Platform;
+using Jalium.UI.Styling;
 using DocList = Jalium.UI.Documents.List;
 
 namespace Jalium.UI.Controls;
@@ -9,6 +10,13 @@ public partial class RichTextBox
     internal WritingToolsParagraph[] GetWritingToolsStructure(int rangeStart = 0, int rangeLength = -1)
     {
         string sourceText = _document.GetText();
+        PrepareCssEditingLayout();
+        var view = _cssDocumentView;
+        sourceText = view?.EditorExposedText ?? sourceText;
+        int textLength = view?.EditorExposedText.Length ?? _document.GetText().Length;
+        if (rangeStart < 0 || rangeStart > textLength || rangeLength < -1 || rangeLength > textLength - rangeStart)
+            throw new ArgumentOutOfRangeException(nameof(rangeStart));
+        if (rangeLength < 0) rangeLength = textLength - rangeStart;
         var identities = new Dictionary<object, string>(ReferenceEqualityComparer.Instance);
         var grids = new Dictionary<Table, Dictionary<TableCell, (int Row, int Column)>>();
         string Id(object value)
@@ -45,11 +53,17 @@ public partial class RichTextBox
             }
             return grid[target];
         }
-        if (rangeLength < 0) rangeLength = _document.GetText().Length - rangeStart;
         var records = new List<WritingToolsParagraph>();
-        foreach (var (element, paragraphStart, paragraphLength, emptyCell) in EnumerateWritingToolsNodes(_document.Blocks))
+        foreach (var (element, sourceParagraphStart, paragraphLength, emptyCell) in EnumerateWritingToolsNodes(_document.Blocks))
         {
-            int from = Math.Max(rangeStart, paragraphStart), to = Math.Min(rangeStart + rangeLength, paragraphStart + paragraphLength);
+            int paragraphStart = sourceParagraphStart;
+            int paragraphEnd = paragraphStart + paragraphLength;
+            if (view is not null)
+            {
+                paragraphStart = view.EditorExposedOffset(paragraphStart);
+                paragraphEnd = view.EditorExposedOffset(paragraphEnd);
+            }
+            int from = Math.Max(rangeStart, paragraphStart), to = Math.Min(rangeStart + rangeLength, paragraphEnd);
             if (to <= from) continue;
             var lists = new List<WritingToolsList>(); var cells = new List<WritingToolsCell>();
             var owners = new List<TextElement>();
@@ -75,34 +89,54 @@ public partial class RichTextBox
             if (lists.Count > 32 || cells.Count > 32) throw new NotSupportedException("The document exceeds the native text service nesting limit.");
             var inlineBreaks = new List<int>();
             if (!emptyCell)
-                for (int i = from; i < Math.Min(to, paragraphStart + paragraphLength - 1); ++i)
+                for (int i = from; i < Math.Min(to, paragraphEnd - 1); ++i)
                     if (sourceText[i] is '\n' or '\r' or '\u2029') inlineBreaks.Add(i - rangeStart);
             records.Add(new(from - rangeStart, to - from, lists.ToArray(), cells.ToArray(), ancestors.ToArray(), emptyCell,
                 inlineBreaks.Count == 0 ? null : inlineBreaks.ToArray(), WritingToolsDocumentFragment.OriginFor(element)));
         }
         return records.ToArray();
     }
+
     private IEnumerable<(TextElement Element, int Start, int Length, bool EmptyCell)> EnumerateWritingToolsNodes(IEnumerable<Block> blocks)
     {
         foreach (var block in blocks)
         {
+            if (_cssDocumentView is not null && CssDisplayProperties.SuppressesBoxTree(block))
+                continue;
+
             if (block is Paragraph paragraph)
                 yield return (paragraph, paragraph.ContentStart.DocumentOffset,
                     TextElement.GetContentLength(paragraph) + 1, false);
             else if (block is Table table)
             {
-                foreach (var cell in table.RowGroups.SelectMany(group => group.Rows).SelectMany(row => row.Cells))
-                    if (cell.Blocks.Count == 0)
-                        yield return (cell, cell.ContentStart.DocumentOffset, 1, true);
-                    else
-                        foreach (var node in EnumerateWritingToolsNodes(cell.Blocks)) yield return node;
+                foreach (var group in table.RowGroups)
+                {
+                    if (_cssDocumentView is not null && CssDisplayProperties.SuppressesBoxTree(group))
+                        continue;
+                    foreach (var row in group.Rows)
+                    {
+                        if (_cssDocumentView is not null && CssDisplayProperties.SuppressesBoxTree(row))
+                            continue;
+                        foreach (var cell in row.Cells)
+                        {
+                            if (_cssDocumentView is not null && CssDisplayProperties.SuppressesBoxTree(cell))
+                                continue;
+                            if (cell.Blocks.Count == 0)
+                                yield return (cell, cell.ContentStart.DocumentOffset, 1, true);
+                            else
+                                foreach (var node in EnumerateWritingToolsNodes(cell.Blocks)) yield return node;
+                        }
+                    }
+                }
             }
             else
             {
                 IEnumerable<Block> children = block switch
                 {
                     Section section => section.Blocks,
-                    DocList list => list.ListItems.SelectMany(item => item.Blocks),
+                    DocList list => list.ListItems
+                        .Where(item => _cssDocumentView is null || !CssDisplayProperties.SuppressesBoxTree(item))
+                        .SelectMany(item => item.Blocks),
                     _ => Array.Empty<Block>()
                 };
                 foreach (var node in EnumerateWritingToolsNodes(children)) yield return node;
@@ -119,4 +153,3 @@ public partial class RichTextBox
         TextMarkerStyle.Square => "{square}", _ => "{disc}"
     };
 }
-

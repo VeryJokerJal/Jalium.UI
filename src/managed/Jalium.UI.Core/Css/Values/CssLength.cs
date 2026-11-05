@@ -58,7 +58,7 @@ internal enum CssPercentBasis : byte
 }
 
 /// <summary>Per-element context needed to resolve relative CSS lengths at apply time.</summary>
-internal readonly struct CssLengthContext
+internal readonly struct CssLengthContext : IEquatable<CssLengthContext>
 {
     public const double DefaultFontSize = 14.0;
 
@@ -77,6 +77,27 @@ internal readonly struct CssLengthContext
     internal readonly CssNode? Element;
     internal readonly CssNode? Dependent;
     internal readonly bool ProvisionalTreeCounts;
+    internal readonly double? CalcSizeBasis;
+    internal readonly CssRenderLengthSnapshot? RenderSnapshot;
+
+    private CssLengthContext(CssLengthContext source, double size)
+    {
+        this = source;
+        CalcSizeBasis = size;
+    }
+
+    private CssLengthContext(CssLengthContext source, CssRenderLengthSnapshot snapshot)
+    {
+        this = source;
+        RenderSnapshot = snapshot;
+        Containers = null; Fonts = null; Viewports = null;
+        Element = null; Dependent = null;
+    }
+
+    internal CssLengthContext CaptureForRendering() => RenderSnapshot is not null
+        ? this : new(this, new CssRenderLengthSnapshot(this));
+
+    internal CssLengthContext WithCalcSizeBasis(double size) => new(this, size);
 
     public CssLengthContext(
         double elementFontSize, double inheritedFontSize, double rootFontSize,
@@ -118,6 +139,41 @@ internal readonly struct CssLengthContext
         => WithFonts((Fonts ?? CssFontContext.Initial).ForLineHeight());
 
     public static CssLengthContext Default => new(DefaultFontSize, DefaultFontSize, DefaultFontSize, 0, 0);
+
+    // This context participates in every CssLayoutLength comparison, including
+    // the default text-decoration inset on each paint. ValueType.Equals would
+    // box both contexts and reflect over their double/reference fields.
+    public bool Equals(CssLengthContext other)
+        => ElementFontSize.Equals(other.ElementFontSize)
+        && InheritedFontSize.Equals(other.InheritedFontSize)
+        && RootFontSize.Equals(other.RootFontSize)
+        && ViewportWidth.Equals(other.ViewportWidth)
+        && ViewportHeight.Equals(other.ViewportHeight)
+        && Equals(Containers, other.Containers)
+        && Equals(Fonts, other.Fonts)
+        && Equals(Viewports, other.Viewports)
+        && Equals(Element, other.Element)
+        && Equals(Dependent, other.Dependent)
+        && ProvisionalTreeCounts == other.ProvisionalTreeCounts;
+
+    public override bool Equals(object? obj) => obj is CssLengthContext other && Equals(other);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(ElementFontSize);
+        hash.Add(InheritedFontSize);
+        hash.Add(RootFontSize);
+        hash.Add(ViewportWidth);
+        hash.Add(ViewportHeight);
+        hash.Add(Containers);
+        hash.Add(Fonts);
+        hash.Add(Viewports);
+        hash.Add(Element);
+        hash.Add(Dependent);
+        hash.Add(ProvisionalTreeCounts);
+        return hash.ToHashCode();
+    }
 }
 
 /// <summary>A parsed CSS length that may still require element context to resolve.</summary>
@@ -174,6 +230,9 @@ internal readonly struct CssLength
 
     public bool TryResolve(in CssLengthContext context, CssPercentBasis percentBasis, out double result)
     {
+        if (context.RenderSnapshot is { } snapshot && Unit is not (CssUnit.Percent or CssUnit.Expression))
+            return snapshot.TryResolve(Unit, Value, out result);
+
         if (Unit is >= CssUnit.Ex and <= CssUnit.Rlh)
         {
             result = Value * (context.Fonts ?? CssFontContext.Initial).Resolve(Unit, context);

@@ -35,7 +35,7 @@ internal static class WindowTextNavigationChecks
         if (!int.TryParse(argument.AsSpan("--window-text-navigation-case=".Length), out int index)
             || (uint)index >= 7) return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         UIElement editor = index switch
         {

@@ -50,6 +50,21 @@ public class PathIconTests
         AssertMatrixClose(new Matrix(2.5, 0, 0, 2.5, 0, 5), transform.Matrix);
     }
 
+    [Fact]
+    public void ExplicitViewBoxPreservesOpticalInsetsAndSharedRendererUsesTheSameSourceBox()
+    {
+        var icon = CreateIcon("M 5,5 L 15,5 L 15,15 L 5,15 Z", 20, 20);
+        icon.ViewBox = new Rect(0, 0, 20, 20);
+        var direct = new RecordingDrawingContext();
+        icon.Render(direct);
+        Assert.Null(direct.LastTransform);
+        Assert.Same(icon.Data, direct.LastGeometry);
+        var shared = new RecordingDrawingContext();
+        IconRendering.DrawIcon(shared, icon, new Rect(0, 0, 40, 20), Brushes.Blue);
+        AssertMatrixClose(new Matrix(1, 0, 0, 1, 10, 0), Assert.IsType<MatrixTransform>(shared.LastTransform).Matrix);
+        Assert.Throws<ArgumentException>(() => icon.ViewBox = new Rect(0, 0, 0, 20));
+    }
+
     private static TestPathIcon CreateIcon(string data, double width, double height)
     {
         var icon = new TestPathIcon

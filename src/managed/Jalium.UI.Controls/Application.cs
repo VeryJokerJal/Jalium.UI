@@ -209,6 +209,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     public ShutdownMode ShutdownMode { get; set; } = ShutdownMode.OnLastWindowClose;
 
     private ResourceDictionary? _resources;
+    internal ResourceDictionary? ResourcesOrNull => _resources;
 
     /// <summary>
     /// Gets or sets the application-level resources.
@@ -1082,6 +1083,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             HostedLifecycleCleanup.Attempt(ToolTipService.Cleanup, ref failure);
             HostedLifecycleCleanup.Attempt(TextMeasurement.ClearCache, ref failure);
             HostedLifecycleCleanup.Attempt(() => RenderContext.Current?.Dispose(), ref failure);
+            HostedLifecycleCleanup.Attempt(() => Dispatcher.CurrentDispatcher.CoreDispatcher.ShutdownWindowsCompositionQueue(), ref failure);
         }
         HostedLifecycleCleanup.Attempt(DetachHost, ref failure);
         _mainWindow = null;

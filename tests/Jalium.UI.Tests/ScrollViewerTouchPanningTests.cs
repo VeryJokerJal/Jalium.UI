@@ -73,6 +73,27 @@ public class ScrollViewerTouchPanningTests
         Assert.Equal(180, viewer.VerticalOffset, precision: 3);
     }
 
+    // Committed offsets are quantized to whole device pixels; a slow pan moving less
+    // than half a pixel per packet must still integrate across packets (via the
+    // panning residual) instead of stalling below the rounding threshold.
+    [Fact]
+    public void SlowPan_SubPixelPacketDeltas_IntegrateInsteadOfStalling()
+    {
+        var viewer = CreateConfiguredViewer(verticalOffset: 300);
+        SetPrivateField(viewer, "_pointerPanningAllowVertical", true);
+
+        var apply = typeof(ScrollViewer).GetMethod(
+            "ApplyPointerPanningDelta", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(apply);
+
+        for (int i = 0; i < 10; i++)
+        {
+            apply!.Invoke(viewer, new object[] { 0.0, 0.3 });
+        }
+
+        Assert.Equal(303.0, viewer.VerticalOffset, precision: 3);
+    }
+
     [Fact]
     public void PanningDeceleration_ShouldAffectInertiaProjection()
     {

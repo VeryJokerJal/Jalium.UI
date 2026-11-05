@@ -8,14 +8,17 @@ namespace Jalium.UI.Styling;
 /// </summary>
 internal static partial class CssMatcher
 {
-    /// <summary>Template-generated parts do not participate in page-level CSS matching.</summary>
+    /// <summary>Template owners explicitly opt their authored elements into CSS.</summary>
     public static bool IsCssMatchable(CssNode element)
-        => element.TemplatedParent is null;
+    {
+        var origin = CssSelection.Origin(element) ?? CssFirstLine.RuleOrigin(element) ?? CssGeneratedContent.Origin(element) ?? element;
+        return origin.TemplatedParent is not DependencyObject owner || Css.GetIncludeTemplateParts(owner);
+    }
 
     public static CssNode? CssAncestor(CssNode element)
     {
         var current = element.FrameworkParent;
-        while (current is not null && current.TemplatedParent is not null)
+        while (current is not null && !IsCssMatchable(current))
         {
             current = current.FrameworkParent;
         }
@@ -28,6 +31,23 @@ internal static partial class CssMatcher
 
     internal static bool Matches(CssNode element, CssSelector selector, bool evaluateStates, CssMatchContext context)
     {
+        var kind = CssGeneratedContent.Kind(element);
+        if (kind is CssPseudoElement.BeforeMarker or CssPseudoElement.AfterMarker &&
+            CssGeneratedContent.Origin(element) is { } generatedOrigin)
+        {
+            if (selector.PseudoElement == kind)
+                return MatchesOrigin(CssGeneratedContent.Origin(generatedOrigin) ?? generatedOrigin, selector, evaluateStates, context);
+            if (selector.PseudoElement == CssPseudoElement.Marker)
+                return MatchesOrigin(generatedOrigin, selector, evaluateStates, context);
+            return false;
+        }
+        if (selector.PseudoElement != kind) return false;
+        return MatchesOrigin(CssGeneratedContent.Origin(element) ?? element, selector, evaluateStates, context);
+    }
+
+    internal static bool MatchesOrigin(CssNode element, CssSelector selector, bool evaluateStates, CssMatchContext context)
+    {
+        (element.Target as CssXmlElement)?.MatchStep();
         context.Observe(element);
         if (selector.ContainsNesting && context.Session is null) context = context with { Session = new() };
         var key = new CssMatchSession.Key(element, selector, evaluateStates, context.Scope, context.SheetScope, context.Bindings, context.RelativeAnchor);
@@ -86,6 +106,7 @@ internal static partial class CssMatcher
 
     private static bool MatchesCompound(CssNode element, CssCompound compound, bool evaluateStates, CssMatchContext context)
     {
+        (element.Target as CssXmlElement)?.MatchStep();
         context.Observe(element);
         if(compound.NamespaceUri is not null && element.ExpandedName.NamespaceUri!=compound.NamespaceUri) return false;
         if (compound.TypeName is not null)
@@ -96,8 +117,21 @@ internal static partial class CssMatcher
             }
             else if(element.ExpandedName.LocalName!=compound.TypeName)
             {
-                var resolved = ResolveType(compound);
-                if (resolved is null || !resolved.IsInstanceOfType(element.Target)) return false;
+                // XML types use their source name, never the CLR wrapper's bases.
+                if (element.Target is CssXmlElement) return false;
+                if (TypeResolver.ResolveTypeByName is null)
+                {
+                    // Code-only hosts already have the actual type. They do not
+                    // need to load XAML merely to match it or one of its bases.
+                    Type? current = element.Target.GetType();
+                    while (current is not null && current.Name != compound.TypeName) current = current.BaseType;
+                    if (current is null) return false;
+                }
+                else
+                {
+                    var resolved = ResolveType(compound);
+                    if (resolved is null || !resolved.IsInstanceOfType(element.Target)) return false;
+                }
             }
         }
 

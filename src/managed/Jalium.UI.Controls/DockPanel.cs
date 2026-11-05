@@ -116,7 +116,7 @@ public class DockPanel : Panel
         double accumulatedWidth = 0;
         double accumulatedHeight = 0;
 
-        var children = Children;
+        var children = CssLayoutChildren;
         var spacing = EffectiveSpacing;
         Dock? previousDock = null;
 
@@ -186,7 +186,7 @@ public class DockPanel : Panel
         double rightRemaining = finalSize.Width;
         double bottomRemaining = finalSize.Height;
 
-        var children = Children;
+        var children = CssLayoutChildren;
         bool lastChildFill = LastChildFill;
         var spacing = EffectiveSpacing;
 

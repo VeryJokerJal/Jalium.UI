@@ -184,13 +184,14 @@ internal sealed class CssBackgroundImageLayout
     internal bool RepeatX { get; }
     internal bool RepeatY { get; }
     internal CssBackgroundPosition Position { get; }
+    internal double NaturalResolution { get; }
 
     internal CssBackgroundImageLayout(CssBackgroundSizeMode size, CssBackgroundRepeat repeat,
-        CssBackgroundPosition? position = null)
-        : this(new CssBackgroundSize(size), repeat, position) { }
+        CssBackgroundPosition? position = null, double naturalResolution = 1)
+        : this(new CssBackgroundSize(size), repeat, position, naturalResolution: naturalResolution) { }
 
     internal CssBackgroundImageLayout(CssBackgroundSize size, CssBackgroundRepeat repeat,
-        CssBackgroundPosition? position = null, Thickness? positioningInsets = null)
+        CssBackgroundPosition? position = null, Thickness? positioningInsets = null, double naturalResolution = 1)
     {
         Size = size.Mode;
         SizeValue = size;
@@ -199,55 +200,75 @@ internal sealed class CssBackgroundImageLayout
         RepeatY = repeat.Y != CssBackgroundRepeatMode.NoRepeat;
         Position = position ?? CssBackgroundPosition.Initial;
         _positioningInsets = positioningInsets;
+        NaturalResolution = naturalResolution > 0 ? naturalResolution : 1;
     }
 
     internal CssBackgroundImageLayout WithPositioningInsets(Thickness insets)
-        => new(SizeValue, Repeat, Position, insets);
+        => new(SizeValue, Repeat, Position, insets, NaturalResolution);
 
     internal Rect ImageRect(Rect area, double intrinsicWidth, double intrinsicHeight)
         => TilePattern(area, intrinsicWidth, intrinsicHeight).ImageRect;
 
+    internal Rect ImageRect(Rect area, ImageSource source)
+        => TilePattern(area, source).ImageRect;
+
+    internal CssBackgroundTilePattern TilePattern(Rect area, ImageSource source)
+        => source is SvgImage { UsesCssViewport: true }
+            ? TilePattern(area, CssImageIntrinsicSize.FromSource(source))
+            : TilePattern(area, source.Width, source.Height);
+
+    internal CssBackgroundTilePattern TilePattern(Rect area, CssImageIntrinsicSize intrinsic)
+        => TilePatternCore(area, intrinsic.Width ?? 0, intrinsic.Height ?? 0, intrinsic.Ratio, intrinsic.Width.HasValue, intrinsic.Height.HasValue);
+
     internal CssBackgroundTilePattern TilePattern(Rect area, double intrinsicWidth, double intrinsicHeight)
-        => TilePatternCore(area, intrinsicWidth, intrinsicHeight, hasNaturalSize: true);
+        => TilePatternCore(area, intrinsicWidth, intrinsicHeight,
+            intrinsicWidth > 0 && intrinsicHeight > 0 ? intrinsicWidth / intrinsicHeight : 0);
 
     // Gradients have neither natural dimensions nor a natural aspect ratio.
     // An auto axis uses the corresponding positioning-area dimension.
     internal CssBackgroundTilePattern GradientTilePattern(Rect area)
-        => TilePatternCore(area, 0, 0, hasNaturalSize: false);
+        => TilePatternCore(area, 0, 0, 0);
 
     private CssBackgroundTilePattern TilePatternCore(Rect area, double intrinsicWidth,
-        double intrinsicHeight, bool hasNaturalSize)
+        double intrinsicHeight, double ratio, bool? hasWidth = null, bool? hasHeight = null)
     {
+        var widthPresent = hasWidth ?? intrinsicWidth > 0;
+        var heightPresent = hasHeight ?? intrinsicHeight > 0;
+        intrinsicWidth /= NaturalResolution;
+        intrinsicHeight /= NaturalResolution;
         if (_positioningInsets is { } inset)
             area = new Rect(area.X + inset.Left, area.Y + inset.Top,
                 Math.Max(0, area.Width - inset.Left - inset.Right),
                 Math.Max(0, area.Height - inset.Top - inset.Bottom));
-        if (area.Width < 0 || area.Height < 0 ||
-            hasNaturalSize && (intrinsicWidth <= 0 || intrinsicHeight <= 0 ||
-                !double.IsFinite(intrinsicWidth) || !double.IsFinite(intrinsicHeight)))
+        if (area.Width < 0 || area.Height < 0 || !double.IsFinite(intrinsicWidth) || !double.IsFinite(intrinsicHeight))
             return new(Rect.Empty, default, default);
 
         double width, height;
         switch (Size)
         {
             case CssBackgroundSizeMode.Auto:
-                width = hasNaturalSize ? intrinsicWidth : area.Width;
-                height = hasNaturalSize ? intrinsicHeight : area.Height;
+                if (widthPresent || heightPresent)
+                {
+                    width = widthPresent ? intrinsicWidth : ratio > 0 ? intrinsicHeight * ratio : area.Width;
+                    height = heightPresent ? intrinsicHeight : ratio > 0 ? intrinsicWidth / ratio : area.Height;
+                }
+                else if (ratio > 0)
+                {
+                    width = Math.Min(area.Width, area.Height * ratio); height = width / ratio;
+                }
+                else { width = area.Width; height = area.Height; }
                 break;
             case CssBackgroundSizeMode.Contain:
             case CssBackgroundSizeMode.Cover:
-                if (!hasNaturalSize)
+                if (!(ratio > 0))
                 {
                     width = area.Width;
                     height = area.Height;
                     break;
                 }
-                var xScale = area.Width / intrinsicWidth;
-                var yScale = area.Height / intrinsicHeight;
-                var scale = Size == CssBackgroundSizeMode.Cover
-                    ? Math.Max(xScale, yScale) : Math.Min(xScale, yScale);
-                width = intrinsicWidth * scale;
-                height = intrinsicHeight * scale;
+                width = Size == CssBackgroundSizeMode.Cover
+                    ? Math.Max(area.Width, area.Height * ratio) : Math.Min(area.Width, area.Height * ratio);
+                height = width / ratio;
                 break;
             case CssBackgroundSizeMode.Explicit:
                 width = SizeValue.Width is { } explicitWidth
@@ -257,9 +278,9 @@ internal sealed class CssBackgroundImageLayout
                     ? CssBackgroundSize.Resolve(explicitHeight, area.Height, SizeValue.Lengths)
                     : double.NaN;
                 if (SizeValue.Width is null)
-                    width = hasNaturalSize ? height * intrinsicWidth / intrinsicHeight : area.Width;
+                    width = ratio > 0 ? height * ratio : widthPresent ? intrinsicWidth : area.Width;
                 if (SizeValue.Height is null)
-                    height = hasNaturalSize ? width * intrinsicHeight / intrinsicWidth : area.Height;
+                    height = ratio > 0 ? width / ratio : heightPresent ? intrinsicHeight : area.Height;
                 break;
             default:
                 width = area.Width;
@@ -274,12 +295,12 @@ internal sealed class CssBackgroundImageLayout
         var roundY = Repeat.Y == CssBackgroundRepeatMode.Round;
         if (roundX) width = area.Width / Math.Max(1, Math.Floor(area.Width / width + 0.5));
         if (roundY) height = area.Height / Math.Max(1, Math.Floor(area.Height / height + 0.5));
-        if (hasNaturalSize && roundX && !roundY && (Size == CssBackgroundSizeMode.Auto ||
+        if (ratio > 0 && roundX && !roundY && (Size == CssBackgroundSizeMode.Auto ||
             Size == CssBackgroundSizeMode.Explicit && SizeValue.Height is null))
-            height = width * intrinsicHeight / intrinsicWidth;
-        if (hasNaturalSize && roundY && !roundX && (Size == CssBackgroundSizeMode.Auto ||
+            height = width / ratio;
+        if (ratio > 0 && roundY && !roundX && (Size == CssBackgroundSizeMode.Auto ||
             Size == CssBackgroundSizeMode.Explicit && SizeValue.Width is null))
-            width = height * intrinsicWidth / intrinsicHeight;
+            width = height * ratio;
 
         var x = area.X + Position.X.Resolve(area.Width - width, Position.Lengths);
         var y = area.Y + Position.Y.Resolve(area.Height - height, Position.Lengths);

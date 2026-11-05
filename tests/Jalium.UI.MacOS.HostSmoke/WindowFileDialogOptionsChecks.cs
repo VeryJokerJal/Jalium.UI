@@ -170,7 +170,9 @@ internal static class WindowFileDialogOptionsChecks
                         string physicalDirectory = new FileDialogNavigation(inside).Root!;
                         using var own = NSUrl.FromFilename(index == 29 ? physicalDirectory
                             : Path.Combine(physicalDirectory, Path.GetFileName(file)));
+                        Console.WriteLine($"CANDIDATE {index}: path={own.Path}; selected={string.Join(";", (observed as NSOpenPanel)?.Urls.Select(url => url.Path) ?? [])}; confirmationsBefore={confirmations}");
                         bool accepted = observed.Delegate!.ValidateUrl(observed, own, out _);
+                        Console.WriteLine($"VALIDATED {index}: accepted={accepted}; confirmationsAfter={confirmations}");
                         Require(accepted, "physical candidate in an aliased root was rejected");
                         Require(confirmations == 1, "physical candidate did not publish exactly one confirmation");
                     }

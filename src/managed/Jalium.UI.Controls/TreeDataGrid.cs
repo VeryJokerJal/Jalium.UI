@@ -2,13 +2,13 @@ using System.Collections;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Windows.Input;
 using System.Reflection;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
-using Jalium.UI.Media.Animation;
 using DataGridColumnHeader = Jalium.UI.Controls.Primitives.DataGridColumnHeader;
 using ListSortDirection = System.ComponentModel.ListSortDirection;
 
@@ -18,6 +18,10 @@ namespace Jalium.UI.Controls;
 /// Displays hierarchical data in a flat, column-based grid with expand/collapse support.
 /// Combines TreeView-style hierarchy with DataGrid-style columns.
 /// </summary>
+[TemplatePart(Name = "PART_DragGhost", Type = typeof(DataGridColumnDragIndicator))]
+[TemplatePart(Name = "PART_DropIndicator", Type = typeof(DataGridDropLocationIndicator))]
+[TemplatePart(Name = "PART_TopSpacer", Type = typeof(FrameworkElement))]
+[TemplatePart(Name = "PART_BottomSpacer", Type = typeof(FrameworkElement))]
 public class TreeDataGrid : Control, IColumnHeaderHost
 {
     /// <inheritdoc />
@@ -33,6 +37,15 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
     #region Dependency Properties
 
+    private static readonly DependencyPropertyKey ExpandAllCommandPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(ExpandAllCommand), typeof(ICommand), typeof(TreeDataGrid), new PropertyMetadata(null));
+    public static readonly DependencyProperty ExpandAllCommandProperty = ExpandAllCommandPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey CollapseAllCommandPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(CollapseAllCommand), typeof(ICommand), typeof(TreeDataGrid), new PropertyMetadata(null));
+    public static readonly DependencyProperty CollapseAllCommandProperty = CollapseAllCommandPropertyKey.DependencyProperty;
+    public ICommand ExpandAllCommand => (ICommand)GetValue(ExpandAllCommandProperty)!;
+    public ICommand CollapseAllCommand => (ICommand)GetValue(CollapseAllCommandProperty)!;
+
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty ItemsSourceProperty =
         DependencyProperty.Register(nameof(ItemsSource), typeof(IEnumerable), typeof(TreeDataGrid),
@@ -42,6 +55,11 @@ public class TreeDataGrid : Control, IColumnHeaderHost
     public static readonly DependencyProperty ChildrenPropertyPathProperty =
         DependencyProperty.Register(nameof(ChildrenPropertyPath), typeof(string), typeof(TreeDataGrid),
             new PropertyMetadata(null, OnChildrenPropertyChanged));
+
+    public static readonly DependencyProperty ChildrenSelectorProperty = DependencyProperty.Register(
+        nameof(ChildrenSelector), typeof(Func<object, IEnumerable>), typeof(TreeDataGrid), new PropertyMetadata(null, OnChildrenPropertyChanged));
+    public static readonly DependencyProperty HasChildrenSelectorProperty = DependencyProperty.Register(
+        nameof(HasChildrenSelector), typeof(Func<object, bool>), typeof(TreeDataGrid), new PropertyMetadata(null, OnChildrenPropertyChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
@@ -121,12 +139,12 @@ public class TreeDataGrid : Control, IColumnHeaderHost
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AlternatingRowBackgroundProperty =
         DependencyProperty.Register(nameof(AlternatingRowBackground), typeof(Brush), typeof(TreeDataGrid),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnRowBrushChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowBackgroundProperty =
         DependencyProperty.Register(nameof(RowBackground), typeof(Brush), typeof(TreeDataGrid),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnRowBrushChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty HorizontalGridLinesBrushProperty =
@@ -204,13 +222,21 @@ public class TreeDataGrid : Control, IColumnHeaderHost
     /// Gets or sets a delegate that returns child items for a given data item.
     /// Takes priority over <see cref="ChildrenPropertyPath"/> when both are set.
     /// </summary>
-    public Func<object, IEnumerable?>? ChildrenSelector { get; set; }
+    public Func<object, IEnumerable?>? ChildrenSelector
+    {
+        get => (Func<object, IEnumerable?>?)GetValue(ChildrenSelectorProperty);
+        set => SetValue(ChildrenSelectorProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets a delegate that determines if a data item has children without loading them.
     /// Used to show the expander arrow before children are resolved.
     /// </summary>
-    public Func<object, bool>? HasChildrenSelector { get; set; }
+    public Func<object, bool>? HasChildrenSelector
+    {
+        get => (Func<object, bool>?)GetValue(HasChildrenSelectorProperty);
+        set => SetValue(HasChildrenSelectorProperty, value);
+    }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
@@ -356,11 +382,6 @@ public class TreeDataGrid : Control, IColumnHeaderHost
     private const double DefaultRowHeight = 28.0;
     private const double DefaultColumnHeaderHeight = 32.0;
     private const double ExpanderSize = 16.0;
-    private const double ExpandArrowDurationMs = 260;
-    private const double CollapseArrowDurationMs = 180;
-    private const string ExpanderArrowPathData = "M 841.90,426.67 L 273.07,0 A 170.67,170.67,0,0,0,0,136.53 V 989.87 A 170.67,170.67,0,0,0,273.07,1126.40 L 841.90,699.73 A 170.67,170.67,0,0,0,841.90,426.67 Z";
-    private static readonly CubicEase s_arrowExpandEase = new() { EasingMode = EasingMode.EaseOut };
-    private static readonly CubicEase s_arrowCollapseEase = new() { EasingMode = EasingMode.EaseInOut };
     private const double ScrollBarReservedWidth = 12.0;
 
     private readonly List<TreeDataGridNode> _flattenedNodes = new();
@@ -374,8 +395,11 @@ public class TreeDataGrid : Control, IColumnHeaderHost
     private ScrollViewer? _columnHeadersScrollViewer;
     private ScrollViewer? _dataScrollViewer;
     private readonly Dictionary<int, TreeDataGridRow> _realizedRows = new();
-    private Border? _topSpacer;
-    private Border? _bottomSpacer;
+    private readonly HashSet<DataGridColumn> _attachedColumns = new();
+    private readonly RelayCommand _expandAllCommand;
+    private readonly RelayCommand _collapseAllCommand;
+    private FrameworkElement? _topSpacer;
+    private FrameworkElement? _bottomSpacer;
     private int _realizedStartIndex = -1;
     private int _realizedEndIndex = -1;
     private int _realizedColumnStartIndex = -1;
@@ -386,15 +410,14 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
     // Drag reorder state
     private Canvas? _dragOverlay;
-    private Border? _dragGhost;
-    private Border? _dropIndicator;
+    private DataGridColumnDragIndicator? _dragGhost;
+    private DataGridDropLocationIndicator? _dropIndicator;
     private DataGridColumn? _dragColumn;
     private int _dragSourceIndex = -1;
     internal bool _isColumnDragging;
 
-    // Tracks nodes whose expander arrow needs to animate after RefreshRows rebuilds the visual tree.
-    // Key = node, Value = true means expanding (0→90), false means collapsing (90→0).
-    private readonly Dictionary<TreeDataGridNode, bool> _pendingArrowAnimations = new();
+    // Carries the expansion transition across virtualized container replacement.
+    private readonly Dictionary<TreeDataGridNode, bool> _pendingExpansionTransitions = new();
 
     #endregion
 
@@ -402,15 +425,40 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
     public TreeDataGrid()
     {
+        _expandAllCommand = new RelayCommand(ExpandAll, () => IsEnabled && _flattenedNodes.Any(node => node.HasChildren && !node.IsExpanded));
+        _collapseAllCommand = new RelayCommand(CollapseAll, () => IsEnabled && _flattenedNodes.Any(node => node.IsExpanded));
+        SetValue(ExpandAllCommandPropertyKey, _expandAllCommand);
+        SetValue(CollapseAllCommandPropertyKey, _collapseAllCommand);
         Focusable = true;
         Columns = new ObservableCollection<DataGridColumn>();
         Columns.CollectionChanged += OnColumnsCollectionChanged;
         SelectedItems = _selectedItems;
 
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(TreeDataGridCellPresenter.ExpandedEvent, new RoutedEventHandler(OnTreeCellExpansionChanged));
+        AddHandler(TreeDataGridCellPresenter.CollapsedEvent, new RoutedEventHandler(OnTreeCellExpansionChanged));
     }
 
     #endregion
+
+    private static void OnRowBrushChanged(DependencyObject target, DependencyPropertyChangedEventArgs e)
+    {
+        var grid = (TreeDataGrid)target;
+        foreach (var row in grid._realizedRows.Values.ToArray())
+            if (ReferenceEquals(row.ParentTreeDataGrid, grid)) row.UpdateOwnerBackground();
+    }
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty) UpdateCommandStates();
+    }
+
+    private void UpdateCommandStates()
+    {
+        _expandAllCommand?.RaiseCanExecuteChanged();
+        _collapseAllCommand?.RaiseCanExecuteChanged();
+    }
 
     #region Template
 
@@ -426,10 +474,14 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
         _columnHeadersHost = GetTemplateChild("PART_ColumnHeadersHost") as StackPanel;
         _rowsHost = GetTemplateChild("PART_RowsHost") as StackPanel;
+        _topSpacer = GetTemplateChild("PART_TopSpacer") as FrameworkElement;
+        _bottomSpacer = GetTemplateChild("PART_BottomSpacer") as FrameworkElement;
         _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as FrameworkElement;
         _columnHeadersScrollViewer = GetTemplateChild("PART_ColumnHeadersScrollViewer") as ScrollViewer;
         _dataScrollViewer = GetTemplateChild("PART_DataScrollViewer") as ScrollViewer;
         _dragOverlay = GetTemplateChild("PART_DragOverlay") as Canvas;
+        _dragGhost = GetTemplateChild("PART_DragGhost") as DataGridColumnDragIndicator;
+        _dropIndicator = GetTemplateChild("PART_DropIndicator") as DataGridDropLocationIndicator;
 
         if (_dataScrollViewer != null)
         {
@@ -445,6 +497,12 @@ public class TreeDataGrid : Control, IColumnHeaderHost
     /// <inheritdoc />
     internal override void OnTemplateContentClearing()
     {
+        RetireColumnHeaders();
+        RetireRows(_realizedRows.Values.ToArray());
+        _realizedRows.Clear();
+        CleanupDragVisuals();
+        _dragGhost = null;
+        _dropIndicator = null;
         base.OnTemplateContentClearing();
 
         // Release the cached template parts before the tree is discarded — the row/header refresh
@@ -457,6 +515,8 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
         _columnHeadersHost = null;
         _rowsHost = null;
+        _topSpacer = null;
+        _bottomSpacer = null;
         _columnHeadersBorder = null;
         _columnHeadersScrollViewer = null;
         _dataScrollViewer = null;
@@ -680,10 +740,21 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         }
     }
 
+    private void RetireColumnHeaders()
+    {
+        if (_columnHeadersHost == null) return;
+        foreach (var header in _columnHeadersHost.Children.OfType<DataGridColumnHeader>().ToArray())
+        {
+            header.Click -= OnColumnHeaderClick;
+            header.ClearColumnHeader();
+        }
+    }
+
     private void RefreshColumnHeaders()
     {
         if (_columnHeadersHost == null) return;
 
+        RetireColumnHeaders();
         _columnHeadersHost.Children.Clear();
 
         foreach (var column in Columns)
@@ -696,19 +767,20 @@ public class TreeDataGrid : Control, IColumnHeaderHost
                 Height = double.IsNaN(ColumnHeaderHeight) ? double.NaN : GetEffectiveColumnHeaderHeight()
             };
             header.PrepareColumnHeader(column.Header, null, this, column);
+            if (column.HeaderStyle != null) header.Style = column.HeaderStyle;
 
-            header.AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnColumnHeaderClick));
+            header.Click += OnColumnHeaderClick;
             header.UpdateSortIndicator(column.SortDirection);
 
             _columnHeadersHost.Children.Add(header);
         }
     }
 
-    private void OnColumnHeaderClick(object sender, MouseButtonEventArgs e)
+    private void OnColumnHeaderClick(object sender, RoutedEventArgs e)
     {
         if (!CanUserSortColumns) return;
 
-        if (sender is DataGridColumnHeader header && header.Column != null && e.ChangedButton == MouseButton.Left)
+        if (sender is DataGridColumnHeader header && header.Column != null)
         {
             SortByColumn(header.Column);
             e.Handled = true;
@@ -734,12 +806,12 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
     private void RefreshRows()
     {
+        UpdateCommandStates();
         if (_rowsHost == null) return;
 
+        RetireRows(_realizedRows.Values.ToArray());
         _rowsHost.Children.Clear();
         _realizedRows.Clear();
-        _topSpacer = new Border();
-        _bottomSpacer = new Border();
         _realizedStartIndex = -1;
         _realizedEndIndex = -1;
         _realizedColumnStartIndex = -1;
@@ -753,6 +825,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
         if (_flattenedNodes.Count == 0)
         {
+            RetireRows(_realizedRows.Values.ToArray());
             _rowsHost.Children.Clear();
             _realizedRows.Clear();
             _realizedStartIndex = -1;
@@ -766,7 +839,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         int startIndex;
         int endIndex;
 
-        if (EnableRowVirtualization && _dataScrollViewer != null)
+        if (EnableRowVirtualization && _topSpacer != null && _bottomSpacer != null && _dataScrollViewer != null)
         {
             var viewportHeight = _dataScrollViewer.ViewportHeight > 0
                 ? _dataScrollViewer.ViewportHeight
@@ -800,6 +873,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         var staleIndices = _realizedRows.Keys.Where(i => i < startIndex || i > endIndex).ToArray();
         foreach (var staleIndex in staleIndices)
         {
+            RetireRow(_realizedRows[staleIndex]);
             _realizedRows.Remove(staleIndex);
         }
 
@@ -809,6 +883,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
                 row.VisibleColumnStart != columnStart ||
                 row.VisibleColumnEnd != columnEnd)
             {
+                if (row != null) RetireRow(row);
                 row = CreateRow(_flattenedNodes[rowIndex], rowIndex, columnStart, columnEnd, rowHeight);
                 _realizedRows[rowIndex] = row;
             }
@@ -822,35 +897,51 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         UpdateRowSelectionVisuals();
     }
 
+    private void RetireRows(IEnumerable<TreeDataGridRow> rows)
+    {
+        foreach (var row in rows) RetireRow(row);
+    }
+
+    private void RetireRow(TreeDataGridRow row)
+    {
+        row.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnRowMouseDown));
+        row.ClearOwner();
+    }
+
     private void RebuildRowsHost(int startIndex, int endIndex, double rowHeight)
     {
         if (_rowsHost == null) return;
 
-        _topSpacer ??= new Border();
-        _bottomSpacer ??= new Border();
 
-        _rowsHost.Children.Clear();
+        var desiredChildren = new List<UIElement>();
 
         _rowsHost.Children.BeginBatchUpdate();
         try
         {
             var topHeight = Math.Max(0, startIndex * rowHeight);
-            _topSpacer.Height = topHeight;
-            _topSpacer.Visibility = topHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
-            _rowsHost.Children.Add(_topSpacer);
+            if (_topSpacer != null)
+            {
+                _topSpacer.Height = topHeight;
+                _topSpacer.Visibility = topHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
+                desiredChildren.Add(_topSpacer);
+            }
 
             for (var i = startIndex; i <= endIndex; i++)
             {
                 if (_realizedRows.TryGetValue(i, out var row))
                 {
-                    _rowsHost.Children.Add(row);
+                    desiredChildren.Add(row);
                 }
             }
 
             var bottomHeight = Math.Max(0, (_flattenedNodes.Count - endIndex - 1) * rowHeight);
-            _bottomSpacer.Height = bottomHeight;
-            _bottomSpacer.Visibility = bottomHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
-            _rowsHost.Children.Add(_bottomSpacer);
+            if (_bottomSpacer != null)
+            {
+                _bottomSpacer.Height = bottomHeight;
+                _bottomSpacer.Visibility = bottomHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
+                desiredChildren.Add(_bottomSpacer);
+            }
+            PanelChildReconciler.Synchronize(_rowsHost.Children, desiredChildren);
         }
         finally
         {
@@ -932,6 +1023,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         var row = new TreeDataGridRow
         {
             DataItem = node.Item,
+            DataContext = node.Item,
             RowIndex = rowIndex,
             Height = double.IsNaN(RowHeight) ? double.NaN : rowHeight,
             IsSelected = IsItemSelected(node.Item),
@@ -944,15 +1036,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
             VisibleColumnEnd = columnEnd
         };
 
-        if (RowBackground != null)
-        {
-            row.Background = RowBackground;
-        }
-
-        if (rowIndex % 2 == 1 && AlternatingRowBackground != null)
-        {
-            row.AlternatingBackground = AlternatingRowBackground;
-        }
+        row.UpdateOwnerBackground();
 
         if (columnStart < 0 || columnEnd < 0 || Columns.Count == 0)
         {
@@ -972,6 +1056,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
                 Width = column.ActualWidth,
                 Column = column
             };
+            if (column.CellStyle != null) cell.Style = column.CellStyle;
 
             var displayElement = column.BuildVisualTree(isEditing: false, node.Item, cell);
 
@@ -993,119 +1078,36 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         return row;
     }
 
-    /// <summary>
-    /// Wraps cell content with tree indentation spacer and expand/collapse toggle.
-    /// </summary>
     private FrameworkElement WrapWithTreeIndentation(FrameworkElement? cellContent, TreeDataGridNode node)
     {
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(node.Level * IndentSize) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ExpanderSize, GridUnitType.Pixel) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        // Indent spacer
-        var indent = new Border();
-        Grid.SetColumn(indent, 0);
-        grid.Children.Add(indent);
-
-        // Expander toggle
-        if (node.HasChildren)
+        var presenter = new TreeDataGridCellPresenter
         {
-            // If there's a pending animation for this node, start from the pre-toggle angle
-            var hasPendingAnim = _pendingArrowAnimations.TryGetValue(node, out var pendingExpanding);
-            var initialAngle = hasPendingAnim
-                ? (pendingExpanding ? 0.0 : 90.0)
-                : (node.IsExpanded ? 90.0 : 0.0);
-
-            var expanderArrow = new Shapes.Path
-            {
-                Data = ExpanderArrowPathData,
-                Fill = TryFindResource("TextSecondary") as Brush ?? Brushes.Gray,
-                Width = 8,
-                Height = 8,
-                Stretch = Stretch.Uniform,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                RenderTransformOrigin = new Point(0.5, 0.5),
-                RenderTransform = new RotateTransform { Angle = initialAngle }
-            };
-
-            if (hasPendingAnim)
-            {
-                _pendingArrowAnimations.Remove(node);
-                AnimateExpanderArrow(expanderArrow, pendingExpanding);
-            }
-
-            var expanderBorder = new Border
-            {
-                Width = ExpanderSize,
-                Height = ExpanderSize,
-                Background = Brushes.Transparent,
-                Child = expanderArrow
-            };
-
-            expanderBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler((s, e) =>
-            {
-                _pendingArrowAnimations[node] = !node.IsExpanded;
-                ToggleExpand(node);
-                e.Handled = true;
-            }));
-
-            Grid.SetColumn(expanderBorder, 1);
-            grid.Children.Add(expanderBorder);
-        }
-
-        // Cell content
-        if (cellContent != null)
-        {
-            Grid.SetColumn(cellContent, 2);
-            grid.Children.Add(cellContent);
-        }
-
-        return grid;
+            Node = node,
+            Content = cellContent,
+            Level = node.Level,
+            IndentSize = IndentSize,
+            ExpanderSize = ExpanderSize,
+            HasChildren = node.HasChildren,
+            IsExpanded = node.IsExpanded
+        };
+        if (_pendingExpansionTransitions.Remove(node, out var expanding))
+            presenter.InitialExpansionTransition = expanding;
+        return presenter;
     }
 
-    /// <summary>
-    /// Animates the expander arrow rotation with non-linear easing.
-    /// </summary>
-    private void AnimateExpanderArrow(Shapes.Path arrow, bool expanding)
+    private void OnTreeCellExpansionChanged(object sender, RoutedEventArgs e)
     {
-        var fromAngle = expanding ? 0.0 : 90.0;
-        var toAngle = expanding ? 90.0 : 0.0;
-        var durationMs = expanding ? ExpandArrowDurationMs : CollapseArrowDurationMs;
-        var ease = expanding ? s_arrowExpandEase : s_arrowCollapseEase;
-        var startTick = Environment.TickCount64;
-
-        var timer = new Threading.DispatcherTimer
+        if (e.OriginalSource is not TreeDataGridCellPresenter presenter || presenter.Node is not { } node ||
+            !_flattenedNodes.Contains(node) || node.IsExpanded == presenter.IsExpanded) return;
+        _pendingExpansionTransitions[node] = presenter.IsExpanded;
+        Focus();
+        try { ToggleExpand(node); }
+        finally
         {
-            Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
-        };
-
-        timer.Tick += (_, _) =>
-        {
-            var elapsed = Environment.TickCount64 - startTick;
-            var progress = Math.Clamp(elapsed / durationMs, 0.0, 1.0);
-            var easedProgress = ease.Ease(progress);
-            var angle = fromAngle + (toAngle - fromAngle) * easedProgress;
-
-            if (arrow.RenderTransform is RotateTransform rt)
-            {
-                rt.Angle = angle;
-            }
-            else
-            {
-                arrow.RenderTransform = new RotateTransform { Angle = angle };
-            }
-
-            arrow.InvalidateVisual();
-
-            if (progress >= 1.0)
-            {
-                timer.Stop();
-            }
-        };
-
-        timer.Start();
+            _pendingExpansionTransitions.Remove(node);
+            presenter.SetCurrentValue(TreeDataGridCellPresenter.IsExpandedProperty, node.IsExpanded);
+            presenter.SetCurrentValue(TreeDataGridCellPresenter.HasChildrenProperty, node.HasChildren);
+        }
     }
 
     #endregion
@@ -1737,9 +1739,76 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
     private void OnColumnsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        foreach (var column in _attachedColumns.Where(column => !Columns.Contains(column)).ToArray())
+        {
+            column.RemoveTreeDataGridOwner(this);
+            _attachedColumns.Remove(column);
+        }
+        foreach (var column in Columns)
+            if (_attachedColumns.Add(column)) column.AddTreeDataGridOwner(this);
         RefreshColumnHeaders();
         RefreshRows();
         InvalidateMeasure();
+    }
+
+    internal void RefreshColumnCellContent(DataGridColumn column, string propertyName)
+    {
+        var columnIndex = Columns.IndexOf(column);
+        if (columnIndex < 0) return;
+        foreach (var row in _realizedRows.Values.ToArray())
+            if (row.CellsByColumn.TryGetValue(columnIndex, out var cell))
+                column.RefreshCellContent(cell, propertyName);
+    }
+
+    internal void OnColumnPropertyChanged(DataGridColumn column, DataGridColumnPropertyChange change)
+    {
+        var index = Columns.IndexOf(column);
+        if (index < 0) return;
+        if (change == DataGridColumnPropertyChange.Visibility)
+        {
+            RefreshColumnHeaders();
+            RefreshRows();
+        }
+        else
+        {
+            if (_columnHeadersHost != null)
+                foreach (var header in _columnHeadersHost.Children.OfType<DataGridColumnHeader>())
+                    if (ReferenceEquals(header.Column, column))
+                    {
+                        header.SynchronizeColumnState();
+                        if (change == DataGridColumnPropertyChange.Header)
+                        {
+                            if (column.HeaderStyle is { } style) header.Style = style;
+                            else header.ClearValue(StyleProperty);
+                        }
+                        if (change == DataGridColumnPropertyChange.Layout) header.Width = column.ActualWidth;
+                    }
+            if (change is DataGridColumnPropertyChange.Style or DataGridColumnPropertyChange.Layout)
+                foreach (var row in _realizedRows.Values.ToArray())
+                    if (row.CellsByColumn.TryGetValue(index, out var cell))
+                    {
+                        if (change == DataGridColumnPropertyChange.Style)
+                        {
+                            if (column.CellStyle is { } style) cell.Style = style;
+                            else cell.ClearValue(StyleProperty);
+                        }
+                        else cell.Width = column.ActualWidth;
+                    }
+            if (change == DataGridColumnPropertyChange.Layout) UpdateRealizedRows(forceRefresh: true);
+        }
+        InvalidateMeasure();
+    }
+
+    internal void RefreshColumnCellContent(DataGridColumn column, DataGridCell cell, string propertyName)
+    {
+        var row = _realizedRows.Values.FirstOrDefault(candidate => candidate.CellsByColumn.Values.Contains(cell));
+        if (row?.Node is not { } node || row.DataItem == null) return;
+        var replacement = column.BuildVisualTree(cell.IsEditing, row.DataItem, cell);
+        replacement.DataContext = row.DataItem;
+        cell.Content = Columns.IndexOf(column) == TreeColumnIndex
+            ? WrapWithTreeIndentation(replacement, node) : replacement;
+        cell.InvalidateMeasure();
+        cell.InvalidateVisual();
     }
 
     #endregion
@@ -1786,59 +1855,52 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
     internal void StartColumnDrag(DataGridColumnHeader sourceHeader, DataGridColumn column)
     {
-        if (_dragOverlay == null || _columnHeadersHost == null || !CanUserReorderColumns || !column.CanUserReorder)
+        if (_columnHeadersHost == null || !CanUserReorderColumns || !column.CanUserReorder || !Columns.Contains(column))
             return;
 
+        if (!Columns.Contains(column)) return;
         _dragColumn = column;
         _dragSourceIndex = Columns.IndexOf(column);
         _isColumnDragging = true;
 
         var headerHeight = GetEffectiveColumnHeaderHeight();
-        _dragGhost = new Border
+        try
         {
-            Width = column.ActualWidth,
-            Height = headerHeight,
-            Background = new SolidColorBrush(Color.FromArgb(180, 60, 60, 60)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(120, 120, 120)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(3),
-            Opacity = 0.85,
-            IsHitTestVisible = false,
-            Child = new TextBlock
+            if (_dragGhost != null)
             {
-                Text = column.Header?.ToString() ?? "",
-                Foreground = Media.Brushes.White,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(8, 0, 8, 0)
+                _dragGhost.SetCurrentValue(ContentControl.ContentProperty, column.Header?.ToString() ?? string.Empty);
+                _dragGhost.Width = column.ActualWidth;
+                _dragGhost.Height = headerHeight;
+                _dragGhost.ApplyOwnerStyle(null);
             }
-        };
-
-        var accentBrush = TryFindResource("AccentBrush") as Brush ?? new SolidColorBrush(ThemeColors.Accent);
-        _dropIndicator = new Border
+            if (_dropIndicator != null)
+            {
+                _dropIndicator.Height = headerHeight + 8;
+                _dropIndicator.Visibility = Visibility.Collapsed;
+                _dropIndicator.ApplyOwnerStyle(null);
+            }
+            if (_dragOverlay != null) _dragOverlay.Visibility = Visibility.Visible;
+        }
+        catch
         {
-            Width = 2,
-            Height = headerHeight + 8,
-            Background = accentBrush,
-            IsHitTestVisible = false,
-            Visibility = Visibility.Collapsed
-        };
-
-        _dragOverlay.Children.Clear();
-        _dragOverlay.Children.Add(_dropIndicator);
-        _dragOverlay.Children.Add(_dragGhost);
-        _dragOverlay.Visibility = Visibility.Visible;
+            CleanupDragVisuals();
+            throw;
+        }
     }
 
     internal void UpdateColumnDrag(Point positionInDataGrid)
     {
-        if (!_isColumnDragging || _dragGhost == null || _dropIndicator == null || _columnHeadersHost == null)
+        if (!_isColumnDragging || _columnHeadersHost == null)
             return;
 
-        var ghostX = positionInDataGrid.X - _dragGhost.Width / 2;
-        Canvas.SetLeft(_dragGhost, ghostX);
-        Canvas.SetTop(_dragGhost, 0.0);
+        if (_dragGhost != null)
+        {
+            Canvas.SetLeft(_dragGhost, positionInDataGrid.X - _dragGhost.Width / 2);
+            Canvas.SetTop(_dragGhost, 0);
+        }
 
         var (targetIndex, indicatorX) = GetDropTargetIndex(positionInDataGrid.X);
+        if (_dropIndicator == null) return;
         if (targetIndex >= 0 && targetIndex != _dragSourceIndex && targetIndex != _dragSourceIndex + 1)
         {
             Canvas.SetLeft(_dropIndicator, indicatorX - 1);
@@ -1885,15 +1947,17 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         _isColumnDragging = false;
         _dragColumn = null;
         _dragSourceIndex = -1;
-
-        if (_dragOverlay != null)
+        if (_dragOverlay != null) _dragOverlay.Visibility = Visibility.Collapsed;
+        if (_dragGhost != null)
         {
-            _dragOverlay.Children.Clear();
-            _dragOverlay.Visibility = Visibility.Collapsed;
+            _dragGhost.SetCurrentValue(ContentControl.ContentProperty, null);
+            _dragGhost.ClearOwnerStyle();
         }
-
-        _dragGhost = null;
-        _dropIndicator = null;
+        if (_dropIndicator != null)
+        {
+            _dropIndicator.Visibility = Visibility.Collapsed;
+            _dropIndicator.ClearOwnerStyle();
+        }
     }
 
     private (int targetIndex, double indicatorX) GetDropTargetIndex(double x)
@@ -2079,8 +2143,74 @@ internal sealed class TreeDataGridNode
 /// <summary>
 /// Represents a row in a TreeDataGrid.
 /// </summary>
+[TemplatePart(Name = "PART_CellsPanel", Type = typeof(StackPanel))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "PointerOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Selected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "Unselected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "GridLinesNone", GroupName = "GridLineStates")]
+[TemplateVisualState(Name = "GridLinesHorizontal", GroupName = "GridLineStates")]
 public class TreeDataGridRow : Control
 {
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty GridLinesVisibilityProperty =
+        DataGridCell.GridLinesVisibilityProperty.AddOwner(typeof(TreeDataGridRow),
+            new FrameworkPropertyMetadata(DataGridGridLinesVisibility.None, FrameworkPropertyMetadataOptions.AffectsMeasure));
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty HorizontalGridLinesBrushProperty =
+        DataGridCell.HorizontalGridLinesBrushProperty.AddOwner(typeof(TreeDataGridRow));
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty VerticalGridLinesBrushProperty =
+        DataGridCell.VerticalGridLinesBrushProperty.AddOwner(typeof(TreeDataGridRow));
+
+    /// <summary>Gets or sets the grid lines presented by this row and its cells.</summary>
+    public DataGridGridLinesVisibility GridLinesVisibility
+    {
+        get => (DataGridGridLinesVisibility)GetValue(GridLinesVisibilityProperty)!;
+        set => SetValue(GridLinesVisibilityProperty, value);
+    }
+    /// <summary>Gets or sets the horizontal grid-line brush for this row.</summary>
+    public Brush? HorizontalGridLinesBrush
+    {
+        get => (Brush?)GetValue(HorizontalGridLinesBrushProperty);
+        set => SetValue(HorizontalGridLinesBrushProperty, value);
+    }
+    /// <summary>Gets or sets the vertical grid-line brush for this row.</summary>
+    public Brush? VerticalGridLinesBrush
+    {
+        get => (Brush?)GetValue(VerticalGridLinesBrushProperty);
+        set => SetValue(VerticalGridLinesBrushProperty, value);
+    }
+
+    internal void UpdateGridLineVisualState() => VisualStateManager.GoToState(this,
+        GridLinesVisibility is DataGridGridLinesVisibility.All or DataGridGridLinesVisibility.Horizontal
+            ? "GridLinesHorizontal" : "GridLinesNone", false);
+
+
+    private static readonly DependencyPropertyKey OwnerBackgroundPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(OwnerBackground), typeof(Brush), typeof(TreeDataGridRow), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty OwnerBackgroundProperty = OwnerBackgroundPropertyKey.DependencyProperty;
+    /// <summary>The owning grid's normal or alternating background, used by the default row style.</summary>
+    public Brush? OwnerBackground => (Brush?)GetValue(OwnerBackgroundProperty);
+    internal void UpdateOwnerBackground()
+    {
+        AlternatingBackground = RowIndex % 2 == 1 ? ParentTreeDataGrid?.AlternatingRowBackground : null;
+        SetValue(OwnerBackgroundPropertyKey, AlternatingBackground ?? ParentTreeDataGrid?.RowBackground);
+    }
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty || e.Property == IsMouseOverProperty || e.Property == IsSelectedProperty)
+            UpdateVisualStates();
+    }
+    protected virtual void UpdateVisualStates()
+    {
+        VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : IsMouseOver ? "PointerOver" : "Normal", false);
+        VisualStateManager.GoToState(this, IsSelected ? "Selected" : "Unselected", false);
+        UpdateGridLineVisualState();
+    }
+
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(TreeDataGridRow),
@@ -2098,7 +2228,15 @@ public class TreeDataGridRow : Control
     internal int Level { get; set; }
     internal bool IsNodeExpanded { get; set; }
     internal bool HasChildren { get; set; }
-    internal TreeDataGrid? ParentTreeDataGrid { get; set; }
+    private static readonly DependencyPropertyKey ParentTreeDataGridPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(ParentTreeDataGrid), typeof(TreeDataGrid), typeof(TreeDataGridRow), new PropertyMetadata(null));
+    public static readonly DependencyProperty ParentTreeDataGridProperty = ParentTreeDataGridPropertyKey.DependencyProperty;
+    /// <summary>The grid that currently owns this row, available to custom templates.</summary>
+    public TreeDataGrid? ParentTreeDataGrid
+    {
+        get => (TreeDataGrid?)GetValue(ParentTreeDataGridProperty);
+        internal set => SetValue(ParentTreeDataGridPropertyKey, value);
+    }
     internal TreeDataGridNode? Node { get; set; }
     internal Brush? AlternatingBackground { get; set; }
     internal int VisibleColumnStart { get; set; } = -1;
@@ -2108,34 +2246,55 @@ public class TreeDataGridRow : Control
 
     private StackPanel? _cellsPanel;
 
+    internal void ClearOwner()
+    {
+        ParentTreeDataGrid = null;
+        Node = null;
+        DataItem = null;
+        DataContext = null;
+        RowIndex = -1;
+        IsSelected = false;
+        foreach (var cell in Cells)
+        {
+            if (cell.Content is TreeDataGridCellPresenter presenter)
+            {
+                presenter.Node = null;
+                presenter.Content = null;
+            }
+            cell.Content = null;
+            cell.Column = null!;
+            cell.DataContext = null;
+        }
+        _cellsPanel?.Children.Clear();
+        Cells.Clear();
+        CellsByColumn.Clear();
+        UpdateOwnerBackground();
+    }
+
     public TreeDataGridRow()
     {
         Focusable = false;
     }
 
+    protected override void OnTemplateChanging()
+    {
+        _cellsPanel?.Children.Clear();
+        _cellsPanel = null;
+        base.OnTemplateChanging();
+    }
+
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-
         _cellsPanel = GetTemplateChild("PART_CellsPanel") as StackPanel;
-
-        if (_cellsPanel != null && Cells.Count > 0)
+        if (_cellsPanel != null)
         {
             _cellsPanel.Children.BeginBatchUpdate();
-            try
-            {
-                foreach (var cell in Cells)
-                {
-                    _cellsPanel.Children.Add(cell);
-                }
-            }
-            finally
-            {
-                _cellsPanel.Children.EndBatchUpdate();
-            }
+            try { foreach (var cell in Cells) _cellsPanel.Children.Add(cell); }
+            finally { _cellsPanel.Children.EndBatchUpdate(); }
         }
-
-        RestoreNonSelectedBackground();
+        UpdateOwnerBackground();
+        UpdateVisualStates();
     }
 
     private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -2146,20 +2305,7 @@ public class TreeDataGridRow : Control
         }
     }
 
-    private void RestoreNonSelectedBackground()
-    {
-        if (!IsSelected)
-        {
-            if (AlternatingBackground != null)
-            {
-                Background = AlternatingBackground;
-            }
-            else
-            {
-                Background = ParentTreeDataGrid?.RowBackground;
-            }
-        }
-    }
+    private void RestoreNonSelectedBackground() => UpdateOwnerBackground();
 }
 
 #endregion

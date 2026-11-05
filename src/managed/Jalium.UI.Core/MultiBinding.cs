@@ -119,6 +119,7 @@ public class MultiBinding : BindingBase, IAddChild
 /// </summary>
 public sealed class MultiBindingExpression : BindingExpressionBase
 {
+    internal override bool AcceptsTargetEdits => GetEffectiveMode() is BindingMode.TwoWay or BindingMode.OneWayToSource;
     private readonly MultiBinding _multiBinding;
     private readonly List<BindingExpressionBase> _bindingExpressions = new();
     private bool _isUpdating;

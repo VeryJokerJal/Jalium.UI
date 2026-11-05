@@ -13,6 +13,8 @@ public class HexEditorTests
         var currentField = typeof(Application).GetField("_current",
             BindingFlags.NonPublic | BindingFlags.Static);
         currentField?.SetValue(null, null);
+        typeof(ThemeManager).GetField("_controlThemeDictionaries", BindingFlags.NonPublic | BindingFlags.Static)
+            ?.SetValue(null, Array.Empty<ResourceDictionary>());
         var resetMethod = typeof(ThemeManager).GetMethod("Reset",
             BindingFlags.NonPublic | BindingFlags.Static);
         resetMethod?.Invoke(null, null);

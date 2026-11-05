@@ -94,12 +94,12 @@ internal sealed class CssSupportsQuery(CssBooleanQuery expression,CssNamespaceCo
         return CssDeclarationValue.IsValid(value.ToString());
     }
 
-    internal bool Evaluate()
+    internal bool Evaluate(Func<string, string, bool>? propertySupport = null)
     {
-        return expression.Evaluate(Feature)==CssQueryResult.True;
+        return expression.Evaluate(text => Feature(text, propertySupport))==CssQueryResult.True;
     }
 
-    private CssQueryResult Feature(string text)
+    private CssQueryResult Feature(string text, Func<string, string, bool>? propertySupport)
     {
         var reader = new CssTokenReader(text);
         if (reader.TryReadFunction(out var name,out var args) && reader.AtEnd)
@@ -126,6 +126,6 @@ internal sealed class CssSupportsQuery(CssBooleanQuery expression,CssNamespaceCo
         if (!reader.TryReadIdent(out var property) || !reader.TryReadDelimiter(':')) return CssQueryResult.False;
         var value=reader.Remaining;
         CssParser.TryStripImportant(value,out value);
-        return CssDeclarationValue.IsValid(value.ToString()) && Css.Supports(property.ToString(),value.ToString()) ? CssQueryResult.True : CssQueryResult.False;
+        return CssDeclarationValue.IsValid(value.ToString()) && (propertySupport?.Invoke(property.ToString(), value.ToString()) ?? Css.Supports(property.ToString(),value.ToString())) ? CssQueryResult.True : CssQueryResult.False;
     }
 }

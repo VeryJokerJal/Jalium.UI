@@ -8,6 +8,8 @@ namespace Jalium.UI.Controls.Ribbon;
 [Jalium.UI.Markup.ContentProperty("Items")]
 public class RibbonApplicationMenu : RibbonMenuButton
 {
+    static RibbonApplicationMenu() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonApplicationMenu), new PropertyMetadata(typeof(RibbonApplicationMenu)));
+
     public static readonly DependencyProperty AuxiliaryPaneContentProperty =
         DependencyProperty.Register(nameof(AuxiliaryPaneContent), typeof(object), typeof(RibbonApplicationMenu),
             new PropertyMetadata(null));
@@ -105,6 +107,8 @@ public class RibbonApplicationMenu : RibbonMenuButton
 /// </summary>
 public class RibbonApplicationMenuItem : RibbonMenuItem
 {
+    static RibbonApplicationMenuItem() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonApplicationMenuItem), new PropertyMetadata(typeof(RibbonApplicationMenuItem)));
+
     private static readonly DependencyPropertyKey LevelPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(Level), typeof(RibbonApplicationMenuItemLevel),
             typeof(RibbonApplicationMenuItem), new PropertyMetadata(RibbonApplicationMenuItemLevel.Top));
@@ -140,6 +144,8 @@ public class RibbonApplicationMenuItem : RibbonMenuItem
 /// </summary>
 public class RibbonApplicationSplitMenuItem : RibbonSplitMenuItem
 {
+    static RibbonApplicationSplitMenuItem() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonApplicationSplitMenuItem), new PropertyMetadata(typeof(RibbonApplicationSplitMenuItem)));
+
     private static readonly DependencyPropertyKey LevelPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(Level), typeof(RibbonApplicationMenuItemLevel),
             typeof(RibbonApplicationSplitMenuItem), new PropertyMetadata(RibbonApplicationMenuItemLevel.Top));
@@ -176,6 +182,8 @@ public class RibbonApplicationSplitMenuItem : RibbonSplitMenuItem
 [Jalium.UI.Markup.ContentProperty("Items")]
 public class RibbonQuickAccessToolBar : ItemsControl
 {
+    static RibbonQuickAccessToolBar() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonQuickAccessToolBar), new PropertyMetadata(typeof(RibbonQuickAccessToolBar)));
+
     /// <summary>
     /// Gets or sets whether the customize menu button is visible.
     /// </summary>
@@ -197,6 +205,8 @@ public class RibbonQuickAccessToolBar : ItemsControl
 /// </summary>
 public class RibbonContextualTabGroup : Control
 {
+    static RibbonContextualTabGroup() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonContextualTabGroup), new PropertyMetadata(typeof(RibbonContextualTabGroup)));
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
         => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Group);
@@ -230,7 +240,7 @@ public class RibbonContextualTabGroup : Control
     /// <summary>
     /// Gets or sets the background brush for the group.
     /// </summary>
-    public new Brush? Background { get; set; }
+    public new Brush? Background { get => (Brush?)GetValue(Control.BackgroundProperty); set => SetValue(Control.BackgroundProperty, value); }
 
     /// <summary>
     /// Gets or sets whether the contextual group should be shown.

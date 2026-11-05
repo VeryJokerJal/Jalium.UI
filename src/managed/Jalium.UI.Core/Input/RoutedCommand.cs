@@ -45,6 +45,7 @@ public class RoutedCommand : ICommand
         Name = string.Empty;
         OwnerType = typeof(RoutedCommand);
         _inputGestures = new InputGestureCollection();
+        CommandManager.RegisterRoutedCommand(this);
     }
 
     /// <summary>
@@ -57,6 +58,7 @@ public class RoutedCommand : ICommand
         Name = name ?? throw new ArgumentNullException(nameof(name));
         OwnerType = ownerType ?? throw new ArgumentNullException(nameof(ownerType));
         _inputGestures = new InputGestureCollection();
+        CommandManager.RegisterRoutedCommand(this);
     }
 
     /// <summary>
@@ -70,6 +72,7 @@ public class RoutedCommand : ICommand
         Name = name ?? throw new ArgumentNullException(nameof(name));
         OwnerType = ownerType ?? throw new ArgumentNullException(nameof(ownerType));
         _inputGestures = inputGestures ?? new InputGestureCollection();
+        CommandManager.RegisterRoutedCommand(this);
     }
 
     /// <summary>
@@ -90,7 +93,34 @@ public class RoutedCommand : ICommand
     /// <summary>
     /// Occurs when changes occur that affect whether the command should execute.
     /// </summary>
-    public event EventHandler? CanExecuteChanged;
+    private event EventHandler? CanExecuteChangedCore;
+
+    public event EventHandler? CanExecuteChanged
+    {
+        add { if (value != null) CanExecuteEventManager.Add(this, value); }
+        remove { if (value != null) CanExecuteEventManager.Remove(this, value); }
+    }
+
+    private sealed class CanExecuteEventManager : WeakEventManager
+    {
+        private static CanExecuteEventManager Current
+        {
+            get
+            {
+                if (GetCurrentManager(typeof(CanExecuteEventManager)) is CanExecuteEventManager manager)
+                    return manager;
+                manager = new CanExecuteEventManager();
+                SetCurrentManager(typeof(CanExecuteEventManager), manager);
+                return manager;
+            }
+        }
+
+        internal static void Add(RoutedCommand source, EventHandler handler) => Current.ProtectedAddHandler(source, handler);
+        internal static void Remove(RoutedCommand source, EventHandler handler) => Current.ProtectedRemoveHandler(source, handler);
+        protected override void StartListening(object source) => ((RoutedCommand)source).CanExecuteChangedCore += OnChanged;
+        protected override void StopListening(object source) => ((RoutedCommand)source).CanExecuteChangedCore -= OnChanged;
+        private void OnChanged(object? sender, EventArgs e) => DeliverEvent(sender!, e);
+    }
 
     /// <summary>
     /// Determines whether the command can execute in its current state.
@@ -200,7 +230,7 @@ public class RoutedCommand : ICommand
     /// </summary>
     public void RaiseCanExecuteChanged()
     {
-        CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+        CanExecuteChangedCore?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>

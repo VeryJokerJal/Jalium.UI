@@ -10,6 +10,7 @@ namespace Jalium.UI.Controls;
 public abstract class Panel : FrameworkElement
 {
     private Border? _cssBorderPainter;
+    protected override bool SupportsCssInlineContentLayout => CanCompositeCssBoxShadowBeforeChildren;
 
     internal override bool LayoutClipIncludesSelf =>
         !CanCompositeCssBoxShadowBeforeChildren ||
@@ -129,9 +130,18 @@ public abstract class Panel : FrameworkElement
 
     private static void OnZIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
+        if (d is FrameworkElement fe)
+        {
+            Jalium.UI.Styling.CssPositionedLayout.UpdateStackingPromotion(fe);
+        }
         if (d is UIElement element && element.VisualParent is Panel panel)
         {
             panel.InvalidateZOrder();
+        }
+        else if (d is UIElement child && child.VisualParent is FrameworkElement owner)
+        {
+            UIElement.InvalidateHitTestCache();
+            owner.InvalidateVisual();
         }
     }
 
@@ -155,12 +165,12 @@ public abstract class Panel : FrameworkElement
 
     private void EnsureZOrderMap()
     {
-        if (!_zOrderDirty && (_zOrderMap == null || _zOrderMap.Length == Children.Count))
+        if (!_zOrderDirty && (_zOrderMap == null || _zOrderMap.Length == CssVisualChildren.Count))
             return;
 
         try
         {
-            var children = Children;
+            var children = CssVisualChildren;
             var count = children.Count;
 
             // Child order is already the stable Z-order whenever ZIndex values are
@@ -171,7 +181,7 @@ public abstract class Panel : FrameworkElement
             var requiresSort = false;
             for (int i = 0; i < count; i++)
             {
-                var zIndex = GetZIndex(children[i]);
+                var zIndex = Jalium.UI.Styling.CssCompositingProperties.EffectiveZIndex(children[i]);
                 var rank = Jalium.UI.Styling.CssFloatProperties.PaintRank(this, children[i]);
                 if (zIndex < previousZIndex || zIndex == previousZIndex && rank < previousRank)
                 {
@@ -205,7 +215,7 @@ public abstract class Panel : FrameworkElement
             for (int i = 0; i < count; i++)
             {
                 map[i] = i;
-                zValues[i] = GetZIndex(children[i]);
+                zValues[i] = Jalium.UI.Styling.CssCompositingProperties.EffectiveZIndex(children[i]);
                 ranks[i] = Jalium.UI.Styling.CssFloatProperties.PaintRank(this, children[i]);
             }
 
@@ -230,7 +240,7 @@ public abstract class Panel : FrameworkElement
     /// <inheritdoc />
     protected override Visual? GetVisualChild(int index)
     {
-        var children = Children;
+        var children = CssVisualChildren;
         var count = children.Count;
 
         if (count == 0 || index < 0 || index >= count)
@@ -253,7 +263,7 @@ public abstract class Panel : FrameworkElement
     }
 
     /// <inheritdoc />
-    protected override int VisualChildrenCount => Children.Count;
+    protected override int VisualChildrenCount => CssVisualChildren.Count;
 
     #endregion
 
@@ -263,6 +273,8 @@ public abstract class Panel : FrameworkElement
     [System.ComponentModel.DesignerSerializationVisibility(
         System.ComponentModel.DesignerSerializationVisibility.Content)]
     public UIElementCollection Children => InternalChildren;
+    internal CssPanelChildren CssLayoutChildren => new(this);
+    private CssPanelChildren CssVisualChildren => new(this, includeInactive: true, expandContents: false);
 
     private UIElementCollection? _children;
 
@@ -334,64 +346,22 @@ public abstract class Panel : FrameworkElement
     /// </summary>
     protected static bool IsCssAbsolute(UIElement? child)
         => child is FrameworkElement fe &&
-           fe.CssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Absolute };
+           fe.CssLayout is { IsOutOfFlow: true };
 
     /// <summary>
     /// Measures every absolutely positioned child (constraint pre-narrowed by opposing
     /// insets). Their desired sizes must not join the panel's desired size.
     /// </summary>
-    protected void MeasureCssAbsoluteChildren(Size availableSize)
-    {
-        foreach (var child in InternalChildren.EnumerateStruct())
-        {
-            if (child is not FrameworkElement fe ||
-                fe.CssLayout is not { Position: Jalium.UI.Styling.CssPositionMode.Absolute } layout ||
-                child.Visibility == Visibility.Collapsed)
-            {
-                continue;
-            }
-
-            child.Measure(Jalium.UI.Styling.CssAbsoluteLayout.ComputeMeasureConstraint(layout, availableSize, fe));
-        }
-    }
-
-    internal void MeasureCssLayoutAbsoluteChildren(Size availableSize) => MeasureCssAbsoluteChildren(availableSize);
-    internal void ArrangeCssLayoutAbsoluteChildren(Size finalSize) => ArrangeCssAbsoluteChildren(finalSize);
+    protected void MeasureCssAbsoluteChildren(Size availableSize) => MeasureCssLayoutAbsoluteChildren(availableSize);
 
     /// <summary>Places every absolutely positioned child per the CSS inset rules.</summary>
-    protected void ArrangeCssAbsoluteChildren(Size finalSize)
-    {
-        foreach (var child in InternalChildren.EnumerateStruct())
-        {
-            if (child is not FrameworkElement fe ||
-                fe.CssLayout is not { Position: Jalium.UI.Styling.CssPositionMode.Absolute } layout ||
-                child.Visibility == Visibility.Collapsed)
-            {
-                continue;
-            }
-
-            var effectiveWidth = fe.Width;
-            if (double.IsNaN(effectiveWidth) && layout.Width.IsSet)
-            {
-                effectiveWidth = layout.Width.Resolve(finalSize.Width, double.NaN);
-            }
-
-            var effectiveHeight = fe.Height;
-            if (double.IsNaN(effectiveHeight) && layout.Height.IsSet)
-            {
-                effectiveHeight = layout.Height.Resolve(finalSize.Height, double.NaN);
-            }
-
-            var slot = Jalium.UI.Styling.CssAbsoluteLayout.ComputeSlot(
-                layout, finalSize, child.DesiredSize, effectiveWidth, effectiveHeight, fe);
-            child.Arrange(slot);
-        }
-    }
+    protected void ArrangeCssAbsoluteChildren(Size finalSize) => ArrangeCssLayoutAbsoluteChildren(finalSize);
 
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
         base.OnRender(drawingContext);
+        if (CssInlineBoxPainter.Background(this, BackgroundProperty, Background, drawingContext)) return;
 
         if (Background == null)
         {
@@ -425,6 +395,7 @@ public abstract class Panel : FrameworkElement
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
+        if (CssInlineBoxPainter.Border(this, drawingContext, ref _cssBorderPainter)) return;
         CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 

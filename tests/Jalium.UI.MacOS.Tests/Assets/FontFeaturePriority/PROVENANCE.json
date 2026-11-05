@@ -1,0 +1,21 @@
+{
+  "source": "../FontNumeric/FontWithFancyFeatures.otf",
+  "source_sha256": "0f7e550009d5d7348fdbaf79365e9cdbe010feb04e3af00bacc49f825e1f93f2",
+  "result_sha256": "400f8993a89a9c5eccd1775ac8fcc020f8fc11519065157a5b231569e53201ee",
+  "license": "BSD-3-Clause; retained in LICENSE.md",
+  "outlines_unchanged": true,
+  "changes": [
+    "Replace GSUB with DFLT/latn salt, smcp, subs and sups alternate-substitution lookups.",
+    "smcp maps a to b/c/d; salt, subs and sups map x to b/c/d.",
+    "Set b/c/d advances to 512/768/1536 in the original 1024 units per em.",
+    "Rebuild sfnt checksums."
+  ],
+  "literal_reference": {
+    "salt 0": "x",
+    "salt 1": "b",
+    "salt 2": "c",
+    "salt 3": "d"
+  },
+  "registered_boolean_tags": "Compare exact requested values with independent CoreText; out-of-range boolean glyph behavior is not asserted.",
+  "uncovered_glyph": "z"
+}

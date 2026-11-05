@@ -1279,7 +1279,7 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         };
         Assert.False(outer.ShowDialog());
         Assert.False(dynamicWindow.Window.IsEnabled);
-        Assert.Empty((System.Collections.IDictionary)typeof(Window).GetField("_macOSModalEnabledStates",
+        Assert.Empty((System.Collections.IDictionary)typeof(Window).GetField("_desktopModalEnabledStates",
             BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!);
     }
 
@@ -1605,7 +1605,7 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         fixture.Window.SetBinding(Window.WidthProperty, new Binding(nameof(source.Width)) { Source = source, Mode = BindingMode.TwoWay });
         fixture.Window.SetBinding(Window.HeightProperty, new Binding(nameof(source.Height)) { Source = source, Mode = BindingMode.TwoWay });
         fixture.Window.SizeToContent = mode;
-        typeof(Window).GetMethod("UpdateMacOSSizeToContent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(fixture.Window, null);
+        typeof(Window).GetMethod("UpdatePlatformSizeToContent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(fixture.Window, null);
         Assert.Equal(mode == SizeToContent.Height ? 320 : 180, source.Width);
         Assert.Equal(mode == SizeToContent.Width ? 240 : 90, source.Height);
         Assert.Equal(source.Width, fixture.Window.Width); Assert.Equal(source.Height, fixture.Window.Height);
@@ -1642,7 +1642,7 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         fixture.Window.SetBinding(Window.WidthProperty, new Binding(nameof(source.Width)) { Source = source, Mode = BindingMode.TwoWay });
         fixture.Window.SetBinding(Window.HeightProperty, new Binding(nameof(source.Height)) { Source = source, Mode = BindingMode.TwoWay });
         fixture.Window.SizeToContent = SizeToContent.WidthAndHeight;
-        typeof(Window).GetMethod("UpdateMacOSSizeToContent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(fixture.Window, null);
+        typeof(Window).GetMethod("UpdatePlatformSizeToContent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(fixture.Window, null);
         Assert.Equal(200, source.Width); Assert.Equal(80, source.Height);
         Assert.Equal(400, fixture.Platform.Width); Assert.Equal(160, fixture.Platform.Height);
     }
@@ -1687,7 +1687,7 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         using var fixture = new PlatformFixture();
         fixture.Window.Content = new Border { Width = 180, Height = 90 };
         fixture.Window.SizeToContent = SizeToContent.WidthAndHeight;
-        typeof(Window).GetMethod("UpdateMacOSSizeToContent", BindingFlags.Instance | BindingFlags.NonPublic)!
+        typeof(Window).GetMethod("UpdatePlatformSizeToContent", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(fixture.Window, null);
         Assert.Equal(180, fixture.Window.Width);
         Assert.Equal(90, fixture.Window.Height);
@@ -1928,7 +1928,10 @@ public sealed class MacOSWindowBehaviorTests : MacOSGeometryTestBase
         Rect start = editor.Support.GetImeCaretRectangle();
         editor.Support.OnImeCompositionUpdate("pin", 2);
         Rect updated = editor.Support.GetImeCaretRectangle();
-        Assert.True(updated.X > start.X);
+        Assert.True(updated.X > start.X,
+            $"Composition caret did not advance: editor={editorKind}, start={start}, updated={updated}, " +
+            $"fontSize={(editor.Element as Control)?.FontSize}, contextValid={RenderContext.Current?.IsValid}, " +
+            $"backend={RenderContext.Current?.Backend}");
         Assert.Equal(start.Y, updated.Y);
         editor.Support.OnImeCompositionEnd(null);
     }

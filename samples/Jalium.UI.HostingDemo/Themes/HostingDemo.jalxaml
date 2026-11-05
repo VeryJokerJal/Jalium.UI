@@ -1,0 +1,141 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.HostingDemo.Views"
+                    x:Class="Jalium.UI.HostingDemo.Themes.HostingDemoTheme">
+    <Style x:Key="HostingDemo.Window" TargetType="Window"><Setter Property="Background" Value="#1E1E2E" /></Style>
+    <Style x:Key="HostingDemo.Body" TargetType="TextBlock"><Setter Property="FontSize" Value="14" /><Setter Property="Foreground" Value="#CDD6F4" /><Setter Property="TextWrapping" Value="Wrap" /><Setter Property="Margin" Value="0,4" /><Setter Property="Focusable" Value="False" /></Style>
+    <Style x:Key="HostingDemo.Mono" TargetType="TextBlock" BasedOn="{StaticResource HostingDemo.Body}"><Setter Property="FontSize" Value="12" /><Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" /><Setter Property="Foreground" Value="#FAB387" /><Setter Property="Margin" Value="0,2" /></Style>
+    <Style x:Key="HostingDemo.Action" TargetType="Button"><Setter Property="Background" Value="#585B70" /><Setter Property="BorderBrush" Value="#6C7086" /><Setter Property="BorderThickness" Value="1" /><Setter Property="Foreground" Value="White" /><Setter Property="CornerRadius" Value="6" /><Setter Property="MinWidth" Value="120" /><Setter Property="MinHeight" Value="34" /><Setter Property="Padding" Value="14,6" /><Setter Property="Margin" Value="0,4,8,4" /></Style>
+    <Style TargetType="local:HostingDemoShell">
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:HostingDemoShell">
+            <DockPanel>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="NavigationStates"><VisualState x:Name="Ready" /><VisualState x:Name="Failed" /></VisualStateGroup>
+                    <VisualStateGroup x:Name="LayoutStates"><VisualState x:Name="Wide" /><VisualState x:Name="Compact"><VisualState.Setters><Setter TargetName="PART_NavigationHost" Property="DockPanel.Dock" Value="Top" /><Setter TargetName="PART_NavigationHost" Property="Width" Value="Auto" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border DockPanel.Dock="Bottom" Background="#11111B" Padding="12,4"><TextBlock Text="{TemplateBinding MetricsText}" FontSize="12" Foreground="#A6E3A1" TextWrapping="Wrap" Focusable="False" /></Border>
+                <StackPanel x:Name="PART_NavigationHost" DockPanel.Dock="Left" Width="220" Background="#181825">
+                    <TextBlock Text="{TemplateBinding Title}" FontSize="16" Foreground="{TemplateBinding Foreground}" Margin="16" TextWrapping="Wrap" Focusable="False" />
+                    <ListBox x:Name="PART_Navigation" ItemsSource="{TemplateBinding NavigationItems}" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" MaxHeight="500" AutomationProperties.Name="演示页面">
+                        <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
+                        <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" FontSize="13" Foreground="#CDD6F4" TextWrapping="Wrap" Width="188" Padding="8,6" Focusable="False" /></DataTemplate></ListBox.ItemTemplate>
+                    </ListBox>
+                </StackPanel>
+                <Grid Margin="8">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <TextBlock Text="{TemplateBinding NavigationError}" Foreground="#F38BA8" TextWrapping="Wrap" Focusable="False" />
+                    <Frame x:Name="PART_Frame" Grid.Row="1" />
+                </Grid>
+            </DockPanel>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:HostingPageLayout">
+        <Setter Property="Padding" Value="24" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:HostingPageLayout">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" CanContentScroll="False" Padding="{TemplateBinding Padding}">
+                <StackPanel>
+                    <TextBlock Text="{TemplateBinding Heading}" FontSize="24" Foreground="White" TextWrapping="Wrap" Margin="0,0,0,4" Focusable="False" />
+                    <TextBlock Text="{TemplateBinding Description}" FontSize="13" Foreground="#A6ADC8" TextWrapping="Wrap" Margin="0,0,0,16" Focusable="False" />
+                    <ContentPresenter ContentSource="Content" />
+                </StackPanel>
+            </ScrollViewer>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:HomePage">
+        <Setter Property="Heading" Value="DI + Environment" />
+        <Setter Property="Description" Value="HomePage 通过 AddView&lt;HomePage, HomeViewModel&gt;() 注册;Frame.Navigate(typeof(HomePage)) 会走 IViewFactory,自动从 DI 构造 HomePage(注入 HomeViewModel)与 HomeViewModel(注入 IGreeter、IHostEnvironment)。" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:HomePage">
+            <local:HostingPageLayout Heading="{TemplateBinding Heading}" Description="{TemplateBinding Description}">
+                <StackPanel>
+                    <TextBlock x:Name="PART_Greeting" Text="{Binding Greeting, StringFormat='问候语: {0}'}" Style="{StaticResource HostingDemo.Body}"  />
+                    <TextBlock Text="{Binding EnvironmentName, StringFormat='Environment.EnvironmentName = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding ApplicationName, StringFormat='Environment.ApplicationName = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding ContentRoot, StringFormat='Environment.ContentRootPath = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                </StackPanel>
+            </local:HostingPageLayout>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:MvvmPage">
+        <Setter Property="Heading" Value="MVVM · View/ViewModel 配对" />
+        <Setter Property="Description" Value="MvvmPage 和 MvvmViewModel 都是 Transient,每次导航都是新实例。若把 MvvmViewModel 换成 Singleton(builder.Services.AddSingleton&lt;MvvmViewModel&gt;()),Count 就会在导航间保留。" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:MvvmPage">
+            <local:HostingPageLayout Heading="{TemplateBinding Heading}" Description="{TemplateBinding Description}">
+                <StackPanel>
+                    <TextBlock x:Name="PART_Count" Text="{Binding Count, StringFormat='Count = {0}'}" Style="{StaticResource HostingDemo.Body}" FontSize="32" Margin="0,0,0,12" />
+                    <TextBlock x:Name="PART_LastAction" Text="{Binding LastAction}" Style="{StaticResource HostingDemo.Body}"  />
+                    <WrapPanel>
+                        <Button x:Name="PART_Increment" Content="+1" Command="{Binding IncrementCommand}" Style="{StaticResource HostingDemo.Action}" />
+                        <Button x:Name="PART_Reset" Content="Reset" Command="{Binding ResetCommand}" Style="{StaticResource HostingDemo.Action}" />
+                    </WrapPanel>
+                </StackPanel>
+            </local:HostingPageLayout>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:LoggingPage">
+        <Setter Property="Heading" Value="Logging · ILogger&lt;T&gt;" />
+        <Setter Property="Description" Value="点击按钮后,看启动该 demo 的控制台。appsettings.json 里把 Jalium.UI.HostingDemo 的最小级别设为 Debug,所以 Trace 会被过滤,Debug 及以上会输出。" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:LoggingPage">
+            <local:HostingPageLayout Heading="{TemplateBinding Heading}" Description="{TemplateBinding Description}">
+                <StackPanel>
+                    <WrapPanel>
+                        <Button x:Name="PART_LogTrace" Content="LogTrace" Command="{Binding LogTraceCommand}" Style="{StaticResource HostingDemo.Action}" />
+                        <Button x:Name="PART_LogDebug" Content="LogDebug" Command="{Binding LogDebugCommand}" Style="{StaticResource HostingDemo.Action}" />
+                        <Button x:Name="PART_LogInformation" Content="LogInformation" Command="{Binding LogInformationCommand}" Style="{StaticResource HostingDemo.Action}" />
+                        <Button x:Name="PART_LogWarning" Content="LogWarning" Command="{Binding LogWarningCommand}" Style="{StaticResource HostingDemo.Action}" />
+                        <Button x:Name="PART_LogError" Content="LogError (exception)" Command="{Binding LogErrorCommand}" Style="{StaticResource HostingDemo.Action}" />
+                    </WrapPanel>
+                    <TextBlock x:Name="PART_LastEntry" Text="{Binding LastEntry}" Style="{StaticResource HostingDemo.Body}"  />
+                </StackPanel>
+            </local:HostingPageLayout>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:MetricsPage">
+        <Setter Property="Heading" Value="Metrics · JaliumMeter" />
+        <Setter Property="Description" Value="builder.UseJaliumMetrics() 在 Application 启动后订阅 CompositionTarget.Rendering 做采样。JaliumMeter 本身是一个 System.Diagnostics.Metrics.Meter,可被 dotnet-counters、OpenTelemetry 等消费;指标名前缀 jalium.*。" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:MetricsPage">
+            <local:HostingPageLayout Heading="{TemplateBinding Heading}" Description="{TemplateBinding Description}">
+                <StackPanel>
+                    <TextBlock x:Name="PART_Fps" Text="{Binding Fps, StringFormat='{0:F1} FPS'}" Style="{StaticResource HostingDemo.Body}" FontSize="36" Foreground="#A6E3A1" />
+                    <TextBlock Text="{Binding FrameMs, StringFormat='Frame: {0:F2} ms'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding RefreshRate, StringFormat='Refresh: {0} Hz'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock x:Name="PART_Meter" Text="{Binding MeterStatus}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="提示:在启动该 demo 的进程上运行 `dotnet-counters monitor --process-id &lt;pid&gt; Jalium.UI` 即可实时看到 jalium.frame.duration / jalium.fps 等。" Style="{StaticResource HostingDemo.Body}" />
+                </StackPanel>
+            </local:HostingPageLayout>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:OptionsPage">
+        <Setter Property="Heading" Value="Configuration · JaliumRuntimeOptions" />
+        <Setter Property="Description" Value="appsettings.json 的 Jalium 段被 builder.ConfigureJalium() 绑定到 JaliumRuntimeOptions。命令行参数 / 环境变量可覆盖,例如: --Jalium:Render:DebugRender=true 或 DOTNET_Jalium__Metrics__FpsWindowFrames=120" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:OptionsPage">
+            <local:HostingPageLayout Heading="{TemplateBinding Heading}" Description="{TemplateBinding Description}">
+                <StackPanel>
+                    <TextBlock Text="{Binding RenderBackend, StringFormat='Render.Backend = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding DebugRender, StringFormat='Render.DebugRender = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding ForceFullReplay, StringFormat='Render.ForceFullReplay = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding MetricsEnabled, StringFormat='Metrics.Enabled = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding FpsWindow, StringFormat='Metrics.FpsWindow = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding MvvmEnabled, StringFormat='Mvvm.EnableViewFactory = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding AutoWire, StringFormat='Mvvm.AutoWire = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding WorkingSetEnabled, StringFormat='WorkingSet.Enabled = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="{Binding WorkingSetProfile, StringFormat='WorkingSet.Profile = {0}'}" Style="{StaticResource HostingDemo.Mono}"  />
+                    <TextBlock Text="─── IConfiguration 原始键值 ───" Style="{StaticResource HostingDemo.Body}" Margin="0,16,0,4" />
+                    <TextBlock x:Name="PART_Configuration" Text="{Binding ConfigurationDump}" Style="{StaticResource HostingDemo.Mono}"  />
+                </StackPanel>
+            </local:HostingPageLayout>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:HostedServicesPage">
+        <Setter Property="Heading" Value="IHostedService · BackgroundService" />
+        <Setter Property="Description" Value="ClockHostedService 每秒 Tick 一次。时间源于后台线程,VM 通过 Application.Current.Dispatcher.Invoke 回到 UI 线程更新。这条链路证明:JaliumApp.Run() 先 StartAsync 所有 hosted service,再进入 Application.Run() 的消息循环,最后 Exit 时 StopAsync 干净关闭。" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:HostedServicesPage">
+            <local:HostingPageLayout Heading="{TemplateBinding Heading}" Description="{TemplateBinding Description}">
+                <StackPanel>
+                    <TextBlock x:Name="PART_CurrentTime" Text="{Binding CurrentTime}" Style="{StaticResource HostingDemo.Mono}" FontSize="36" Foreground="#F9E2AF" Margin="0,8" />
+                </StackPanel>
+            </local:HostingPageLayout>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

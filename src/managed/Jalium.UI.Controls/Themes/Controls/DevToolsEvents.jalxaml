@@ -1,0 +1,133 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <Style x:Key="DevTools.EventItem" TargetType="ListBoxItem" BasedOn="{StaticResource DevTools.DiagnosticsItem}">
+        <Setter Property="automation:AutomationProperties.Name" Value="{Binding AutomationName}" />
+    </Style>
+    <Style x:Key="DevTools.EventList" TargetType="ListBox" BasedOn="{StaticResource DevTools.DiagnosticsList}">
+        <Setter Property="ItemContainerStyle" Value="{StaticResource DevTools.EventItem}" />
+    </Style>
+    <Style x:Key="DevTools.EventPath" TargetType="ListBox" BasedOn="{StaticResource DevTools.EventList}">
+        <Setter Property="ScrollViewer.CanContentScroll" Value="True" /><Setter Property="Height" Value="52" />
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><VirtualizingStackPanel Orientation="Horizontal" /></ItemsPanelTemplate></Setter>
+        <Setter Property="Template"><ControlTemplate TargetType="ListBox">
+            <ScrollViewer CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" IsScrollBarAutoHideEnabled="False">
+                <ItemsPresenter />
+            </ScrollViewer>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsEventNode">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Control}" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource DevTools.Border}" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="10,4" /><Setter Property="CornerRadius" Value="4" /><Setter Property="MinHeight" Value="36" />
+        <Setter Property="MinWidth" Value="80" /><Setter Property="MaxWidth" Value="220" /><Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="TransitionProperty" Value="None" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsEventNode">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="StrategyStates">
+                        <VisualState x:Name="Bubble"><VisualState.Setters><Setter TargetName="PART_SourceFrame" Property="BorderBrush" Value="{DynamicResource DevTools.Info}" /><Setter TargetName="PART_SourceMarker" Property="Fill" Value="{DynamicResource DevTools.Info}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Tunnel"><VisualState.Setters><Setter TargetName="PART_SourceFrame" Property="BorderBrush" Value="{DynamicResource DevTools.Warning}" /><Setter TargetName="PART_SourceMarker" Property="Fill" Value="{DynamicResource DevTools.Warning}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Direct"><VisualState.Setters><Setter TargetName="PART_SourceFrame" Property="BorderBrush" Value="{DynamicResource DevTools.Success}" /><Setter TargetName="PART_SourceMarker" Property="Fill" Value="{DynamicResource DevTools.Success}" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="SourceStates"><VisualState x:Name="Ancestor" /><VisualState x:Name="OriginalSource"><VisualState.Setters><Setter TargetName="PART_SourceFrame" Property="Visibility" Value="Visible" /><Setter TargetName="PART_SourceMarker" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="NameStates"><VisualState x:Name="Named" /><VisualState x:Name="Unnamed"><VisualState.Setters><Setter TargetName="PART_Name" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="InteractionStates"><VisualState x:Name="Normal" /><VisualState x:Name="Hover"><VisualState.Setters><Setter TargetName="PART_NodeBorder" Property="Background" Value="{DynamicResource DevTools.ControlHover}" /></VisualState.Setters></VisualState><VisualState x:Name="Pressed"><VisualState.Setters><Setter TargetName="PART_NodeBorder" Property="Background" Value="{DynamicResource DevTools.ControlPressed}" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Enabled" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.55" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="FocusStates"><VisualState x:Name="Unfocused" /><VisualState x:Name="Focused"><VisualState.Setters><Setter TargetName="PART_Focus" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_NodeBorder" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <Ellipse Name="PART_SourceMarker" Width="8" Height="8" Margin="0,0,6,0" Visibility="Collapsed" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="{TemplateBinding TypeName}" ToolTip="{TemplateBinding TypeName}" Style="{StaticResource DevTools.Text}" FontSize="11" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Name="PART_Name" Text="{TemplateBinding NameText}" ToolTip="{TemplateBinding NameText}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.Accent}" FontSize="10" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+                <Border Name="PART_SourceFrame" CornerRadius="{TemplateBinding CornerRadius}" BorderThickness="2" Visibility="Collapsed" IsHitTestVisible="False" />
+                <Border Name="PART_Focus" CornerRadius="{TemplateBinding CornerRadius}" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="1" Visibility="Collapsed" IsHitTestVisible="False" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <DataTemplate x:Key="DevTools.EventNodeTemplate">
+        <StackPanel Orientation="Horizontal">
+            <dev:DevToolsEventNode Name="PART_Node" TypeName="{Binding TypeName}" ElementName="{Binding ElementName}" Strategy="{Binding Strategy}" IsOriginalSource="{Binding IsOriginalSource}" IsEnabled="{Binding CanReveal}"
+                Command="{Binding RevealNodeCommand, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsEventsView}}}" CommandParameter="{Binding}" />
+            <Path Name="PART_Connector" Width="24" Height="12" Margin="4,0" VerticalAlignment="Center" Stretch="Fill" Stroke="{DynamicResource DevTools.Success}" StrokeThickness="1.5" Data="M 1,6 L 23,6 M 18,1 L 23,6 L 18,11" />
+        </StackPanel>
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding HasSuccessor}" Value="False"><Setter TargetName="PART_Connector" Property="Visibility" Value="Collapsed" /></DataTrigger>
+            <DataTrigger Binding="{Binding Strategy}" Value="Bubble"><Setter TargetName="PART_Connector" Property="Stroke" Value="{DynamicResource DevTools.Info}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Strategy}" Value="Tunnel"><Setter TargetName="PART_Connector" Property="Stroke" Value="{DynamicResource DevTools.Warning}" /></DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
+    <DataTemplate x:Key="DevTools.RoutedEventTemplate">
+        <Grid Margin="4,0,4,8">
+            <Border Background="{DynamicResource DevTools.SurfaceAlt}" CornerRadius="4" Padding="12,8">
+                <StackPanel>
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="{Binding TimeText}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="10" Margin="0,0,8,0" />
+                        <TextBlock Text="{Binding EventName}" ToolTip="{Binding EventName}" Style="{StaticResource DevTools.Text}" FontWeight="SemiBold" MaxWidth="320" TextTrimming="CharacterEllipsis" Margin="0,0,8,0" />
+                        <dev:DevToolsTag Name="PART_Strategy" Text="{Binding Strategy}" Foreground="{DynamicResource DevTools.Success}" Margin="0,0,6,0" />
+                        <dev:DevToolsTag Name="PART_Handled" Text="Handled" Visibility="Collapsed" />
+                    </WrapPanel>
+                    <Grid>
+                        <ListBox Name="PART_NodePath" Style="{StaticResource DevTools.EventPath}" ItemsSource="{Binding Nodes}"
+                            ItemTemplate="{Binding NodeItemTemplate, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsEventsView}}}" automation:AutomationProperties.Name="Event route" />
+                        <TextBlock Name="PART_NoPath" Text="No path captured." Style="{StaticResource DevTools.MutedText}" Visibility="Collapsed" Margin="0,4" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+            <Border Name="PART_StrategyAccent" Width="2" HorizontalAlignment="Left" Background="{DynamicResource DevTools.Success}" Opacity="0.6" IsHitTestVisible="False" />
+        </Grid>
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding Handled}" Value="True"><Setter TargetName="PART_Handled" Property="Visibility" Value="Visible" /></DataTrigger>
+            <DataTrigger Binding="{Binding HasNodes}" Value="False"><Setter TargetName="PART_NodePath" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_NoPath" Property="Visibility" Value="Visible" /></DataTrigger>
+            <DataTrigger Binding="{Binding Strategy}" Value="Bubble"><Setter TargetName="PART_Strategy" Property="Foreground" Value="{DynamicResource DevTools.Info}" /><Setter TargetName="PART_StrategyAccent" Property="Background" Value="{DynamicResource DevTools.Info}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Strategy}" Value="Tunnel"><Setter TargetName="PART_Strategy" Property="Foreground" Value="{DynamicResource DevTools.Warning}" /><Setter TargetName="PART_StrategyAccent" Property="Background" Value="{DynamicResource DevTools.Warning}" /></DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
+    <Style TargetType="dev:DevToolsEventsView">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Surface}" /><Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="EventItemTemplate" Value="{StaticResource DevTools.RoutedEventTemplate}" /><Setter Property="NodeItemTemplate" Value="{StaticResource DevTools.EventNodeTemplate}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsEventsView">
+            <Grid Background="{TemplateBinding Background}">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="RecordingStates"><VisualState x:Name="Idle" /><VisualState x:Name="Recording"><VisualState.Setters>
+                        <Setter TargetName="PART_RecordButton" Property="Label" Value="Stop recording" /><Setter TargetName="PART_RecordButton" Property="Icon" Value="■" /><Setter TargetName="PART_RecordingTag" Property="Text" Value="REC" /><Setter TargetName="PART_RecordingTag" Property="Foreground" Value="{DynamicResource DevTools.Error}" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="EventStates"><VisualState x:Name="EventsAvailable" /><VisualState x:Name="EventsEmpty"><VisualState.Setters><Setter TargetName="PART_EventList" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Empty" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.6" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <dev:DevToolsSurface Kind="Toolbar" HorizontalContentAlignment="Stretch">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <WrapPanel>
+                            <StackPanel Orientation="Horizontal"><dev:DevToolsActionButton Name="PART_RecordButton" Label="Start recording" Icon="●" Variant="Primary" Command="{TemplateBinding ToggleRecordingCommand}" /><dev:DevToolsActionButton Name="PART_ResetButton" Label="Reset" Icon="↺" Command="{TemplateBinding ResetCommand}" /><dev:DevToolsTag Name="PART_RecordingTag" Text="IDLE" Margin="4,0,12,0" /></StackPanel>
+                            <dev:DevToolsTag Text="Bubble" Foreground="{DynamicResource DevTools.Info}" Margin="0,0,4,0" /><dev:DevToolsTag Text="Tunnel" Foreground="{DynamicResource DevTools.Warning}" Margin="0,0,4,0" /><dev:DevToolsTag Text="Direct" Foreground="{DynamicResource DevTools.Success}" />
+                        </WrapPanel>
+                        <Grid Grid.Row="1" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="Suppress" Style="{StaticResource DevTools.Eyebrow}" Margin="0,0,8,0" />
+                            <TextBox Name="PART_FilterTextBox" Grid.Column="1" Text="{Binding FilterText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource DevTools.TextInput}" MinWidth="0" PlaceholderText="MouseMove, PreviewMouseMove" Margin="0,0,6,0" automation:AutomationProperties.Name="Suppressed event names" />
+                            <dev:DevToolsActionButton Name="PART_ApplyFilter" Grid.Column="2" Label="Apply" Icon="✓" Command="{TemplateBinding ApplyFilterCommand}" CommandParameter="{TemplateBinding FilterText}" />
+                        </Grid>
+                    </Grid>
+                </dev:DevToolsSurface>
+                <dev:DevToolsSurface Grid.Row="1" Margin="8" Padding="12,8,12,12" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                        <Grid Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="EVENTS" Style="{StaticResource DevTools.Eyebrow}" /><dev:DevToolsTag Name="PART_EventCount" Grid.Column="1" Text="{Binding EventCount, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{DynamicResource DevTools.Accent}" />
+                        </Grid>
+                        <ListBox Name="PART_EventList" Grid.Row="1" Style="{StaticResource DevTools.EventList}" ItemsSource="{TemplateBinding EventsSource}" ItemTemplate="{TemplateBinding EventItemTemplate}" automation:AutomationProperties.Name="Routed event timeline" />
+                        <TextBlock Name="PART_Empty" Grid.Row="1" Text="No events recorded." Style="{StaticResource DevTools.MutedText}" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" Margin="12" Visibility="Collapsed" />
+                    </Grid>
+                </dev:DevToolsSurface>
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>
+

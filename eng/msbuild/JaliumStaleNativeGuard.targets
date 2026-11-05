@@ -74,7 +74,7 @@
     <JaliumNativeModuleMap Include="jalium.native.media.windows" PathSpec="src/native/jalium.native.media.windows;src/native/jalium.native.media.core" />
     <JaliumNativeModuleMap Include="jalium.native.media.linux" PathSpec="src/native/jalium.native.media.linux;src/native/jalium.native.media.core;src/native/thirdparty" />
     <JaliumNativeModuleMap Include="jalium.native.media.android" PathSpec="src/native/jalium.native.media.android;src/native/jalium.native.media.core;src/native/thirdparty" />
-    <JaliumNativeModuleMap Include="jalium.native.text" PathSpec="src/native/jalium.native.text;src/native/jalium.native.core/include;src/native/thirdparty/stb" />
+    <JaliumNativeModuleMap Include="jalium.native.text" PathSpec="src/native/jalium.native.text;src/native/jalium.native.core/include;src/native/thirdparty/stb;src/native/thirdparty/sheenbidi" />
     <JaliumNativeModuleMap Include="jalium.native.vulkan" PathSpec="src/native/jalium.native.vulkan;src/native/jalium.native.core/include;src/native/jalium.native.text/include;src/native/jalium.native.platform/include;src/native/thirdparty/stb" />
     <JaliumNativeModuleMap Include="jalium.native.aot" PathSpec="src/native/jalium.native.aot;src/native/jalium.native.core/include" />
     <JaliumNativeModuleMap Include="jalium.native.metal" PathSpec="src/native/jalium.native.metal;src/native/jalium.native.core/include" />

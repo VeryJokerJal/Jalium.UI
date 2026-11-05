@@ -473,6 +473,15 @@ public class Binding : BindingBase
         Path = new PropertyPath(path);
     }
 
+    // Copy the declaration, including explicit fallback/null flags and converter settings.
+    // Binding expressions keep their live state separately; the rules remain shared declarations.
+    internal Binding CloneWithMode(BindingMode mode)
+    {
+        var copy = (Binding)MemberwiseClone();
+        copy.Mode = mode;
+        return copy;
+    }
+
     /// <inheritdoc />
     internal override BindingExpressionBase CreateBindingExpression(DependencyObject target, DependencyProperty targetProperty)
     {
@@ -680,6 +689,11 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
     /// </summary>
     public DependencyProperty TargetProperty { get; }
 
+    // Template-authored expressions keep writing the template layer after
+    // promotion; later source/context updates must not become local overrides.
+    internal DependencyObject.LayerValueSource? TargetValueLayer { get; set; }
+    internal virtual bool AcceptsTargetEdits => false;
+
     /// <summary>
     /// Gets a value indicating whether the binding is active.
     /// </summary>
@@ -774,6 +788,7 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
     public abstract void UpdateTarget();
 
     internal virtual void OnTemplateParentChanged() { }
+    internal virtual void OnTreeContextChanged() { }
 
     /// <summary>Runs this expression's validation rules without writing to the source.</summary>
     public bool ValidateWithoutUpdate()
@@ -878,7 +893,9 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
             return false;
         }
 
-        if (ParentBindingBase is Binding { TemplateSourceProperty: not null })
+        if (TargetValueLayer is { } layer)
+            Target.SetLayerValue(TargetProperty, value, layer);
+        else if (ParentBindingBase is Binding { TemplateSourceProperty: not null })
             Target.SetLayerValue(TargetProperty, value, DependencyObject.LayerValueSource.ParentTemplate);
         else Target.SetValue(TargetProperty, value);
         Status = BindingStatus.Active;
@@ -891,6 +908,29 @@ public abstract class BindingExpressionBase : Expression, IWeakEventListener
 /// </summary>
 public sealed class BindingExpression : BindingExpressionBase
 {
+    internal override bool AcceptsTargetEdits => GetEffectiveMode() is BindingMode.TwoWay or BindingMode.OneWayToSource;
+    internal override void OnTreeContextChanged()
+    {
+        if (!IsActive) return;
+        if (_binding.RelativeSource?.Mode == RelativeSourceMode.FindAncestor)
+        {
+            if (!ReferenceEquals(ResolvedSource, ResolveRelativeSource())) Deactivate();
+            return;
+        }
+
+        if (_binding.Source != null || !string.IsNullOrEmpty(_binding.ElementName) || _binding.RelativeSource != null)
+            return;
+
+        // A cached template/popup can keep its visual tree while its logical
+        // owner's DataContext changes. Reactivation must release the previous
+        // source subscriptions before activating against the current context.
+        var context = GetDataContext();
+        var provider = context as DataSourceProvider;
+        var source = provider != null && !_binding.BindsDirectlyToSource ? provider.Data : context;
+        if (!ReferenceEquals(ResolvedSource, source) || !ReferenceEquals(_dataSourceProvider, provider))
+            Deactivate();
+    }
+
     internal override void OnTemplateParentChanged()
     {
         if (_binding.RelativeSource?.Mode == RelativeSourceMode.TemplatedParent) Deactivate();
@@ -901,6 +941,8 @@ public sealed class BindingExpression : BindingExpressionBase
     private INotifyDataErrorInfo? _notifyDataErrorInfo;
     private DataSourceProvider? _dataSourceProvider;
     private DependencyObject? _sourceDependencyObject;
+    private Action<DependencyProperty, object?, object?>? _sourceDependencyHandler;
+    private Action? _sourceRadiusHandler;
     private PropertyInfo? _sourceProperty;
     private DependencyProperty? _sourceDependencyProperty;
     private object? _effectiveSource;
@@ -1030,6 +1072,12 @@ public sealed class BindingExpression : BindingExpressionBase
                 SubscribeToDataContextChanges(pendingDataContextElement);
             }
             BindingDiagnostics.NotifyStatus(this, "Unattached — source not resolved");
+            if (_binding.ShouldSerializeFallbackValue())
+            {
+                var fallback = BindingValueCoercion.Coerce(_binding.FallbackValue, TargetProperty.PropertyType,
+                    _binding.ConverterCulture ?? CultureInfo.CurrentCulture);
+                TrySetTargetValue(fallback);
+            }
             return;
         }
 
@@ -1805,6 +1853,15 @@ public sealed class BindingExpression : BindingExpressionBase
 
     private void SubscribeToSource()
     {
+        // OneTime transfers once for each data context. Keep the context watcher so
+        // late/replaced row items resolve, without observing the source or its path.
+        if (GetEffectiveMode() == BindingMode.OneTime)
+        {
+            if (GetDataContextElement() is { } contextElement)
+                SubscribeToDataContextChanges(contextElement);
+            return;
+        }
+
         if (_dataSourceProvider != null && !_binding.BindsDirectlyToSource)
         {
             DataChangedEventManager.RemoveListener(_dataSourceProvider, this);
@@ -1824,14 +1881,32 @@ public sealed class BindingExpression : BindingExpressionBase
         }
 
         // Also subscribe to DependencyObject PropertyChangedInternal for DependencyProperty changes
+        UnsubscribeFromDependencySource();
         if (ResolvedSource is DependencyObject depObj)
         {
             _sourceDependencyObject = depObj;
-            _sourceDependencyObject.PropertyChangedInternal -= OnSourceDependencyPropertyChanged;
-            _sourceDependencyObject.PropertyChangedInternal += OnSourceDependencyPropertyChanged;
-            _sourceDependencyObject.CssCornerRadiusPresentationChanged -= TransferTemplateCssRadius;
+            // A long-lived DP source must not root a discarded template through
+            // its binding expression and target. Match the weak INPC contract.
+            var weakExpression = new WeakReference<BindingExpression>(this);
+            Action<DependencyProperty, object?, object?>? handler = null;
+            handler = (property, oldValue, newValue) =>
+            {
+                if (weakExpression.TryGetTarget(out var expression)) expression.OnSourceDependencyPropertyChanged(property, oldValue, newValue);
+                else depObj.PropertyChangedInternal -= handler;
+            };
+            _sourceDependencyHandler = handler;
+            depObj.PropertyChangedInternal += handler;
             if (Styling.CssBorderRadiusProperties.IsTemplateRadiusBinding(_binding.TemplateSourceProperty, TargetProperty))
-                _sourceDependencyObject.CssCornerRadiusPresentationChanged += TransferTemplateCssRadius;
+            {
+                Action? radiusHandler = null;
+                radiusHandler = () =>
+                {
+                    if (weakExpression.TryGetTarget(out var expression)) expression.TransferTemplateCssRadius();
+                    else depObj.CssCornerRadiusPresentationChanged -= radiusHandler;
+                };
+                _sourceRadiusHandler = radiusHandler;
+                depObj.CssCornerRadiusPresentationChanged += radiusHandler;
+            }
         }
 
         // Also subscribe to DataContext changes. Non-visual dependency objects can
@@ -1880,12 +1955,7 @@ public sealed class BindingExpression : BindingExpressionBase
             _sourceNotify = null;
         }
 
-        if (_sourceDependencyObject != null)
-        {
-            _sourceDependencyObject.PropertyChangedInternal -= OnSourceDependencyPropertyChanged;
-            _sourceDependencyObject.CssCornerRadiusPresentationChanged -= TransferTemplateCssRadius;
-            _sourceDependencyObject = null;
-        }
+        UnsubscribeFromDependencySource();
 
         if (_dataContextElement?.TryGetTarget(out var dataContextElement) == true)
         {
@@ -2014,6 +2084,16 @@ public sealed class BindingExpression : BindingExpressionBase
         UpdateTarget();
     }
 
+    private void UnsubscribeFromDependencySource()
+    {
+        if (_sourceDependencyObject != null)
+        {
+            if (_sourceDependencyHandler != null) _sourceDependencyObject.PropertyChangedInternal -= _sourceDependencyHandler;
+            if (_sourceRadiusHandler != null) _sourceDependencyObject.CssCornerRadiusPresentationChanged -= _sourceRadiusHandler;
+        }
+        _sourceDependencyObject = null; _sourceDependencyHandler = null; _sourceRadiusHandler = null;
+    }
+
     private void UnsubscribeFromIntermediates()
     {
         if (_intermediateDependencySubscriptions != null)
@@ -2068,10 +2148,14 @@ public sealed class BindingExpression : BindingExpressionBase
                     ReferenceEquals(entry.Source, dependencySource) && entry.Property == property))
                 {
                     var weakExpression = new WeakReference<BindingExpression>(this);
-                    Action<DependencyProperty, object?, object?> handler = (changed, _, _) =>
+                    Action<DependencyProperty, object?, object?>? handler = null;
+                    handler = (changed, _, _) =>
                     {
-                        if (changed == property && weakExpression.TryGetTarget(out var expression))
-                            expression.RefreshSourcePath();
+                        if (weakExpression.TryGetTarget(out var expression))
+                        {
+                            if (changed == property) expression.RefreshSourcePath();
+                        }
+                        else dependencySource.PropertyChangedInternal -= handler;
                     };
                     dependencySource.PropertyChangedInternal += handler;
                     _intermediateDependencySubscriptions.Add((dependencySource, property, handler));

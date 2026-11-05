@@ -56,7 +56,11 @@ static void RunInsideMainQueue(){
   retired=!f.events.empty()&&!(f.events.back().pointer.pointer.flags&JALIUM_POINTER_FLAG_IN_RANGE);
   finished=true;
  });
- Pump();Check(finished,"host can pump AppKit inside a main-queue callback");
+ // A run-loop pass may return after processing another source before the
+ // queued callback is serviced. Wait for readiness within a bounded deadline.
+ NSDate* deadline=[NSDate dateWithTimeIntervalSinceNow:2];
+ while(!finished&&deadline.timeIntervalSinceNow>0)Pump();
+ Check(finished,"host can pump AppKit inside a main-queue callback");
  Check(retired,"deferred range exit is delivered while the main dispatch queue is occupied by its host");
 }
 int main(){@autoreleasepool{try{[NSApplication sharedApplication];registerTablet=reinterpret_cast<Register>(dlsym(RTLD_DEFAULT,"jalium_apple_window_set_tablet_callback"));Check(registerTablet,"optional tablet entry point exists");static_assert(sizeof(JaliumPlatformEvent)==72);static_assert(sizeof(JaliumAppleTabletEvent)==96);static_assert(offsetof(JaliumAppleTabletEvent,pointer)==8);for(uint32_t style:{uint32_t(JALIUM_WINDOW_STYLE_TITLEBAR|JALIUM_WINDOW_STYLE_RESIZABLE),uint32_t(JALIUM_WINDOW_STYLE_BORDERLESS|JALIUM_WINDOW_STYLE_RESIZABLE)})Run(style);RunInsideMainQueue();Pump();std::printf("PASS AppKit tablet protocol: %d checks; own SDK messages, no hardware tablet input\n",checks);return 0;}catch(const std::exception& e){std::fprintf(stderr,"FAIL AppKit tablet protocol: %s after %d checks\n",e.what(),checks);return 1;}}}

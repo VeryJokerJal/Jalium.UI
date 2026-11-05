@@ -49,7 +49,7 @@ internal static class WindowBitmapDpiChecks
                         catch (Exception e) { Console.Error.WriteLine($"FAIL bitmap DPI: custom={custom}; dpi={dpi}; rotated={rotated}; {e}"); }
                         finally { window?.Close(); }
                     }
-            app.Terminate(app);
+            StopRunLoop(app);
         });
         app.Run(); Console.WriteLine($"macOS bitmap DPI host checks: {passed}/12 passed");
         return passed == 12 ? 0 : 1;
@@ -98,7 +98,7 @@ internal static class WindowBitmapDpiChecks
         size.Click += (_, _) => { owner.Width = owner.MinWidth; owner.Height = owner.MinHeight; owner.UpdateLayout(); editor.Focus(); };
         finish.Click += (_, _) => owner.Close();
         owner.PreviewKeyDown += (_, e) => { if (e.Key == Key.F6) { e.Handled = true; Switch(); } };
-        owner.Closed += (_, _) => { closed = true; app.Terminate(app); };
+        owner.Closed += (_, _) => { closed = true; StopRunLoop(app); };
         owner.Activated += (_, _) => Console.WriteLine($"BITMAP ACTIVE: custom={custom}; focus={Keyboard.FocusedElement?.GetType().Name}");
         app.BeginInvokeOnMainThread(() =>
         {
@@ -109,6 +109,14 @@ internal static class WindowBitmapDpiChecks
         app.Run();
         Console.WriteLine($"BITMAP COMPLETE: custom={custom}; changes={changes}; closed={closed}; failed={failed}; text={editor.Text}");
         return closed && !failed ? 0 : 1;
+    }
+
+    private static void StopRunLoop(NSApplication app)
+    {
+        app.Stop(app);
+        // Stop called from a managed callback needs an event to wake Run.
+        using var wake = NSEvent.OtherEvent(NSEventType.ApplicationDefined, default, 0, 0, 0, null, 0, 0, 0);
+        app.PostEvent(wake, false);
     }
 
     private static RenderTargetBitmap Snapshot(int dpi, bool rotated)

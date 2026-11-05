@@ -17,6 +17,8 @@ namespace jalium {
 
 class TextEngine;
 class GlyphRasterizer;
+class TextBidi;
+class SharedTextParagraph;
 
 // ============================================================================
 // JaliumTextFormat: Cross-platform TextFormat on the self-hosted font stack
@@ -27,7 +29,7 @@ class GlyphRasterizer;
 // - Custom layout engine for line breaking, alignment, and hit testing
 // ============================================================================
 
-class JALIUM_TEXT_API JaliumTextFormat : public TextFormat, public FontUnitMetricsProvider, public FontMathConstantsProvider {
+class JALIUM_TEXT_API JaliumTextFormat : public TextFormat, public FontUnitMetricsProvider, public FontMathConstantsProvider, public TextFontFeatureProvider, public TextFontFeatureQueryProvider, public TextDirectionProvider, public TextParagraphProvider, public TextParagraphWrappingProvider, public TextParagraphSpacingProvider, public TextParagraphContextProvider, public TextParagraphAdvanceProvider {
 public:
     JaliumTextFormat(
         TextEngine* engine,
@@ -36,6 +38,29 @@ public:
         int32_t fontWeight,
         int32_t fontStyle);
     ~JaliumTextFormat() override;
+    JaliumResult SetTextDirection(int32_t direction) override {
+        if (direction < 0 || direction > 2) return JALIUM_ERROR_INVALID_ARGUMENT;
+        const int level = direction == 2 ? -1 : direction;
+        if (baseDirection_ != level) { baseDirection_ = level; ++styleGeneration_; }
+        return JALIUM_OK;
+    }
+    JaliumResult SetFontFeatures(const JaliumFontFeature* features, uint32_t count) override;
+    JaliumResult GetFontFeatureSupport(uint32_t tables, const uint32_t* tags, uint32_t count, uint8_t* supported) const override;
+    TextParagraph* CreateParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t count, float width, float minHeight,
+        int32_t alignment, int32_t direction) override;
+    TextParagraph* CreateParagraphWithWrapping(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t count, float width, float minHeight,
+        int32_t alignment, int32_t direction, int32_t wrapping) override;
+    TextParagraph* CreateSpacedParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t count, const JaliumTextSpacingUnit* units,
+        uint32_t unitCount, float width, float minHeight, int32_t direction) override;
+    TextParagraph* CreateContextParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t count, const JaliumTextSpacingUnit* units,
+        uint32_t unitCount, float width, float minHeight, int32_t direction) override;
+    TextParagraph* CreateAdvancedParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t count, const JaliumTextAdvanceUnit* units,
+        uint32_t unitCount, float width, float minHeight, int32_t direction, bool contextPaint) override;
 
     // TextFormat interface
     void SetAlignment(int32_t alignment) override;
@@ -96,6 +121,17 @@ public:
         float renderScale,
         int32_t renderingModeOverride);
 
+    void GenerateGlyphQuads(
+        const wchar_t* text, uint32_t textLength, float maxWidth, float maxHeight,
+        float colorR, float colorG, float colorB, float colorA, float originX, float originY,
+        std::vector<TextGlyphQuad>& outQuads, float renderScale, int32_t renderingModeOverride,
+        const uint32_t* glyphRanges, uint32_t rangeCount, int32_t visibility);
+    void GenerateGlyphQuadsForEngine(TextEngine* rasterEngine,
+        const wchar_t* text, uint32_t textLength, float maxWidth, float maxHeight,
+        float colorR, float colorG, float colorB, float colorA, float originX, float originY,
+        std::vector<TextGlyphQuad>& outQuads, float renderScale, int32_t renderingModeOverride,
+        const uint32_t* glyphRanges, uint32_t rangeCount, int32_t visibility);
+
     /// Gets the font face used by this format.
     FontFace* GetFace() const { return face_.get(); }
 
@@ -120,12 +156,18 @@ public:
     uint32_t GetStyleGeneration() const { return styleGeneration_; }
 
 private:
+    friend class SharedTextParagraph;
+    struct SnapshotTag {};
+    JaliumTextFormat(const JaliumTextFormat& source, SnapshotTag);
     // Layout engine internal types
     struct LayoutLine {
         uint32_t startIndex;        ///< Start character index in text
         uint32_t endIndex;          ///< End character index (exclusive)
         float    width;             ///< Line width in pixels
         float    baselineY;         ///< Y position of baseline
+        float    originX = 0;       ///< Retained local pen origin, before pixel snapping
+        float    ascent = 0;
+        float    height = 0;
         std::vector<ShapedGlyph> glyphs;
     };
 
@@ -141,11 +183,16 @@ private:
         float maxWidth, float maxHeight);
 
     void ApplyAlignment(LayoutResult& layout, float maxWidth, float maxHeight);
+    void EmitGlyphQuads(TextEngine* rasterEngine, const LayoutResult& layout,
+        const wchar_t* text, uint32_t textLength, float maxWidth,
+        float colorR, float colorG, float colorB, float colorA, float originX, float originY,
+        std::vector<TextGlyphQuad>& outQuads, float layoutScale, int32_t renderingModeOverride,
+        const uint32_t* glyphRanges, uint32_t rangeCount, int32_t visibility) const;
 
     /// Shapes text, splitting it into per-face runs so codepoints the primary
     /// face lacks (e.g. CJK) are shaped+measured with a Unicode fallback face.
     /// All-primary text takes a fast path identical to shaping with face_ alone.
-    ShapedRun ShapeWithFallback(const wchar_t* text, uint32_t textLength);
+    ShapedRun ShapeWithFallback(const wchar_t* text, uint32_t textLength, const TextBidi& bidi, uint32_t offset = 0);
 
     /// Picks one face for a complete Unicode cluster.  Keeping combining marks,
     /// variation selectors and ZWJ emoji together is required for GSUB to see
@@ -179,6 +226,7 @@ private:
     std::unordered_map<std::string, int32_t> clusterFaceCache_;
 
     // Layout settings
+    int baseDirection_ = 0;            ///< UAX #9 paragraph level, 0 LTR / 1 RTL.
     int32_t  alignment_ = 0;           ///< JaliumTextAlignment
     int32_t  paragraphAlignment_ = 0;  ///< JaliumParagraphAlignment
     int32_t  trimming_ = 0;            ///< JaliumTextTrimming
@@ -196,6 +244,8 @@ private:
 
     // Shaper
     TextShaper shaper_;
+    std::vector<JaliumFontFeature> fontFeatures_;
+    std::shared_ptr<const LayoutResult> frozenLayout_;
 };
 
 // Transitional alias so consumers (Vulkan/software backends) that still spell

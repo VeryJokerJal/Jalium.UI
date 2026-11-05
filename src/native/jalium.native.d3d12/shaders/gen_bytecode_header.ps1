@@ -4,7 +4,7 @@ param(
 )
 
 $shaders = @(
-    'sdf_rect.vs', 'sdf_rect.ps',
+    'sdf_rect.vs', 'sdf_rect.ps', 'coverage_rect.vs', 'coverage_rect.ps',
     'bitmap_text.vs', 'bitmap_text.ps', 'bitmap_text_smooth.ps',
     'bitmap_quad.vs', 'bitmap_quad.ps',
     'custom_effect.vs',

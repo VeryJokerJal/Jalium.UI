@@ -17,6 +17,7 @@ namespace Jalium.UI.Tests;
 /// 这里改的全是绘制路径，所以每一处都要逐像素证明画面没变：复用实例渲染出来的结果，必须和
 /// 一个全新实例第一次渲染（也就是改动前每帧的状态）逐字节相同。
 /// </summary>
+[Collection("macOS Window globals")]
 public class RenderBrushReuseTests
 {
     private const int Bpp = 4;
@@ -411,38 +412,24 @@ public class RenderBrushReuseTests
     [Fact]
     public void GeographicHeatmapLegend_ReusedSliceBrushes_MatchFreshInstance()
     {
-        const int width = 160;
-        const int height = 200;
-        var bounds = new Rect(0, 0, width, height);
-
         AssertReuseMatchesFreshInstance(
-            () => new GeographicHeatmap(),
-            heatmap => Rasterize(dc => Invoke(heatmap, "DrawLegend", dc, bounds), width, height, out _),
-            (heatmap, dc) => Invoke(heatmap, "DrawLegend", dc, bounds),
-            width, height,
-            "GeographicHeatmap 图例");
+            () => TemplateBorder(new GeographicHeatmap(), "PART_Legend", 160, 200),
+            border => Rasterize(border.Render, 160, 200, out _),
+            (border, dc) => border.Render(dc), 160, 200, "GeographicHeatmap template legend");
     }
 
     [Fact]
     public void GeographicHeatmapLegend_KeepsOneBrushPerSliceAcrossRenders()
     {
         var heatmap = new GeographicHeatmap();
-        var bounds = new Rect(0, 0, 160, 200);
-
-        Rasterize(dc => Invoke(heatmap, "DrawLegend", dc, bounds), 160, 200, out _);
-        var first = (SolidColorBrush[]?)GetFieldValue(heatmap, "_legendSliceBrushes");
+        var border = TemplateBorder(heatmap, "PART_Legend", 160, 200);
+        Rasterize(border.Render, 160, 200, out _);
+        var first = heatmap.LegendGradientBrush;
         Assert.NotNull(first);
-        Assert.NotEmpty(first!);
-
-        var snapshot = (SolidColorBrush[])first!.Clone();
-        Rasterize(dc => Invoke(heatmap, "DrawLegend", dc, bounds), 160, 200, out _);
-
-        var second = (SolidColorBrush[]?)GetFieldValue(heatmap, "_legendSliceBrushes");
-        Assert.Same(first, second);
-        for (var i = 0; i < snapshot.Length; i++)
-        {
-            Assert.Same(snapshot[i], second![i]);
-        }
+        Assert.NotEmpty(first!.GradientStops);
+        Rasterize(border.Render, 160, 200, out _);
+        Assert.Same(first, heatmap.LegendGradientBrush);
+        Assert.Same(first, Assert.IsType<Border>(heatmap.FindName("PART_GradientBar")).Background);
     }
 
     #endregion
@@ -483,23 +470,12 @@ public class RenderBrushReuseTests
     }
 
     [Fact]
-    public void MapViewZoomControls_SharedBorderPen_MatchesPerFrameReference()
+    public void MapViewZoomButtons_TemplateBorderRendersStablePixels()
     {
-        const int width = 80;
-        const int height = 80;
-        var background = GetStaticField<SolidColorBrush>(typeof(MapView), "s_zoomButtonBackground")!;
-        var borderBrush = GetStaticField<SolidColorBrush>(typeof(MapView), "s_scaleBarBrush")!;
-        var borderPen = GetStaticField<Pen>(typeof(MapView), "s_zoomButtonBorderPen")!;
-        Assert.Same(borderBrush, borderPen.Brush);
-        Assert.Equal(0.5, borderPen.Thickness);
-
-        var rect = new Rect(10, 10, 28, 28);
-        var actual = Rasterize(dc => dc.DrawRoundedRectangle(background, borderPen, rect, 4, 4), width, height, out var stride);
-        var expected = Rasterize(
-            dc => dc.DrawRoundedRectangle(background, new Pen(borderBrush, 0.5), rect, 4, 4), width, height, out _);
-
-        AssertNotBlank(expected, "MapView 缩放按钮");
-        AssertSamePixels(expected, actual, width, height, stride, "MapView 缩放按钮");
+        AssertReuseMatchesFreshInstance(
+            ()=>TemplateBorder(new MapView(),"PART_ZoomInButton",28,28),
+            border=>Rasterize(border.Render,28,28,out _),
+            (border,dc)=>border.Render(dc),28,28,"MapView 模板按钮边框");
     }
 
     [Fact]
@@ -581,53 +557,35 @@ public class RenderBrushReuseTests
     }
 
     [Fact]
-    public void MapViewBorder_ReusedPen_MatchesFreshInstance()
+    public void MapViewBorder_TemplatePenMatchesFreshInstance()
     {
-        const int width = 160;
-        const int height = 120;
-
         AssertReuseMatchesFreshInstance(
-            () =>
-            {
-                var map = new MapView
-                {
-                    ZoomLevel = 6,
-                    Center = new GeoPoint(11, 21),
-                    BorderBrush = new SolidColorBrush(Color.FromRgb(0x30, 0xA0, 0x60)),
-                    BorderThickness = new Thickness(2),
-                    ShowAttribution = false,
-                    ShowZoomControls = false,
-                };
-                map.Measure(new Size(width, height));
-                map.Arrange(new Rect(0, 0, width, height));
-                return map;
-            },
-            map => Rasterize(map.Render, width, height, out _),
-            (map, dc) => map.Render(dc),
-            width, height,
-            "MapView 边框",
-            "_chromeBorderPen");
+            ()=>TemplateBorder(new MapView{BorderBrush=new SolidColorBrush(Color.FromRgb(0x30,0xA0,0x60)),BorderThickness=new Thickness(2)},"PART_Border",160,120),
+            border=>Rasterize(border.Render,160,120,out _),(border,dc)=>border.Render(dc),160,120,"MapView 模板边框","_cachedBorderPen");
     }
 
     [Fact]
-    public void MiniMapChrome_ReusedBorderPen_MatchesFreshInstance()
+    public void MiniMapChrome_TemplateBorderMatchesFreshInstance()
     {
-        const int width = 160;
-        const int height = 120;
-
         AssertReuseMatchesFreshInstance(
-            () =>
-            {
-                var map = new MiniMap();
-                map.Measure(new Size(width, height));
-                map.Arrange(new Rect(0, 0, width, height));
-                return map;
-            },
-            map => Rasterize(map.Render, width, height, out _),
-            (map, dc) => map.Render(dc),
-            width, height,
-            "MiniMap 边框",
-            "_chromeBorderPen");
+            ()=>TemplateBorder(new MiniMap{BorderBrush=new SolidColorBrush(Color.FromRgb(0x30,0xA0,0x60))},"PART_Border",160,120),
+            border=>Rasterize(border.Render,160,120,out _),(border,dc)=>border.Render(dc),160,120,"MiniMap 模板边框");
+    }
+
+    private static Border TemplateBorder(Control owner,string name,int width,int height)
+    {
+        Jalium.UI.Markup.ThemeLoader.Initialize();using var stream=new MemoryStream();
+        owner.Resources.MergedDictionaries.Add(Jalium.UI.Controls.Themes.ThemeManager.XamlLoader!(stream,"Themes/Generic.jalxaml",typeof(Control).Assembly)!);
+        owner.Width=width;owner.Height=height;owner.MinWidth=0;owner.MinHeight=0;
+        owner.Measure(new Size(width,height));owner.Arrange(new Rect(0,0,width,height));owner.UpdateLayout();
+        if(!string.IsNullOrEmpty(name) && owner.FindName(name) is Button button)
+        {
+            button.BorderBrush=new SolidColorBrush(Color.FromRgb(0x30,0xA0,0x60));button.BorderThickness=new Thickness(1);button.Measure(new Size(width,height));button.Arrange(new Rect(0,0,width,height));button.ApplyTemplate();button.UpdateLayout();
+            return Assert.IsType<Border>(button.FindName("RootBorder"));
+        }
+        if (string.IsNullOrEmpty(name))
+            return Assert.IsType<Border>(VisualTreeHelper.GetChild(VisualTreeHelper.GetChild(owner, 0), 0));
+        return Assert.IsType<Border>(owner.FindName(name));
     }
 
     [Fact]
@@ -713,53 +671,21 @@ public class RenderBrushReuseTests
     [Fact]
     public void RichTextBoxBorder_ReusedPen_MatchesFreshInstance()
     {
-        const int width = 180;
-        const int height = 60;
-
+        // The default template owns the frame; test the Border that actually renders it.
         AssertReuseMatchesFreshInstance(
-            () =>
-            {
-                var box = new RichTextBox
-                {
-                    BorderBrush = new SolidColorBrush(Color.FromRgb(0x40, 0x80, 0xC0)),
-                    BorderThickness = new Thickness(2),
-                    Background = new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x20)),
-                };
-                box.Measure(new Size(width, height));
-                box.Arrange(new Rect(0, 0, width, height));
-                return box;
-            },
-            box => Rasterize(box.Render, width, height, out _),
-            (box, dc) => box.Render(dc),
-            width, height,
-            "RichTextBox 边框",
-            "_borderPen");
+            () => TemplateBorder(new RichTextBox { BorderBrush = new SolidColorBrush(Color.FromRgb(0x40, 0x80, 0xC0)), BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(3) }, "PART_Border", 180, 60),
+            border => Rasterize(border.Render, 180, 60, out _),
+            (border, dc) => border.Render(dc), 180, 60, "RichTextBox template frame", "_cachedBorderPen");
     }
 
     [Fact]
     public void EditControlBorder_ReusedPen_MatchesFreshInstance()
     {
-        const int width = 220;
-        const int height = 80;
-
+        // The default template owns the frame; test the Border that actually renders it.
         AssertReuseMatchesFreshInstance(
-            () =>
-            {
-                var edit = new EditControl
-                {
-                    BorderBrush = new SolidColorBrush(Color.FromRgb(0xC0, 0x60, 0x20)),
-                    BorderThickness = new Thickness(2),
-                    Background = new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x18)),
-                };
-                edit.Measure(new Size(width, height));
-                edit.Arrange(new Rect(0, 0, width, height));
-                return edit;
-            },
-            edit => Rasterize(edit.Render, width, height, out _),
-            (edit, dc) => edit.Render(dc),
-            width, height,
-            "EditControl 边框",
-            "_borderPen");
+            () => TemplateBorder(new EditControl { BorderBrush = new SolidColorBrush(Color.FromRgb(0x40, 0x80, 0xC0)), BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(3) }, "PART_Border", 180, 60),
+            border => Rasterize(border.Render, 180, 60, out _),
+            (border, dc) => border.Render(dc), 180, 60, "EditControl template frame", "_cachedBorderPen");
     }
 
     [Fact]
@@ -819,50 +745,21 @@ public class RenderBrushReuseTests
     [Fact]
     public void DockLayout_ReusedPens_MatchFreshInstance()
     {
-        const int width = 180;
-        const int height = 120;
-
+        // The default template owns the frame; test the Border that actually renders it.
         AssertReuseMatchesFreshInstance(
-            () =>
-            {
-                var layout = new DockLayout();
-                layout.Measure(new Size(width, height));
-                layout.Arrange(new Rect(0, 0, width, height));
-                return layout;
-            },
-            layout => Rasterize(layout.Render, width, height, out _),
-            (layout, dc) => layout.Render(dc),
-            width, height,
-            "DockLayout 边框",
-            "_borderPen");
+            () => TemplateBorder(new DockLayout { BorderBrush = new SolidColorBrush(Color.FromRgb(0x40, 0x80, 0xC0)), BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(3) }, "", 180, 120),
+            border => Rasterize(border.Render, 180, 120, out _),
+            (border, dc) => border.Render(dc), 180, 120, "DockLayout template frame", "_cachedBorderPen");
     }
 
     [Fact]
     public void DockTabPanel_ReusedContentBorderPen_MatchesFreshInstance()
     {
-        const int width = 240;
-        const int height = 160;
-
+        // The default template owns the frame; test the Border that actually renders it.
         AssertReuseMatchesFreshInstance(
-            () =>
-            {
-                var host = new DockTabPanelHost();
-                // 只有非 Top 摆放才会走到 _contentBorderPen 那条分支：
-                // Top 摆放另有一条把标签与内容区连成一体的几何路径，会提前 return。
-                var panel = new DockTabPanel { TabStripPlacement = Dock.Bottom };
-                panel.Items.Add(new DockItem { CanClose = false });
-                panel.Items.Add(new DockItem { CanClose = false });
-                panel.SelectedIndex = 0;
-                host.Children.Add(panel);
-                host.UpdateLayoutPass(new Size(width, height));
-                return panel;
-            },
-            // Render 会一路跑到 OnPostRender，内容区边框正是在那里画的。
-            panel => Rasterize(panel.Render, width, height, out _),
-            (panel, dc) => panel.Render(dc),
-            width, height,
-            "DockTabPanel 内容区边框",
-            "_contentBorderPen");
+            () => TemplateBorder(new DockTabPanel { BorderBrush = new SolidColorBrush(Color.FromRgb(0x40, 0x80, 0xC0)), BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(3) }, "PART_Border", 240, 160),
+            border => Rasterize(border.Render, 240, 160, out _),
+            (border, dc) => border.Render(dc), 240, 160, "DockTabPanel template frame", "_cachedBorderPen");
     }
 
     private sealed class DockTabPanelHost : Panel, ILayoutManagerHost
@@ -899,22 +796,23 @@ public class RenderBrushReuseTests
     [Fact]
     public void DockLayout_BorderPenCache_KeepsOnePenWhileTheThemeBrushIsStable()
     {
-        var layout = new DockLayout();
-        layout.Measure(new Size(180, 120));
-        layout.Arrange(new Rect(0, 0, 180, 120));
-
-        Rasterize(layout.Render, 180, 120, out _);
-        var first = ExtractPen(layout, "_borderPen");
+        var border = TemplateBorder(new DockLayout
+        {
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x40, 0x80, 0xC0)),
+            BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(3)
+        }, "", 180, 120);
+        Rasterize(border.Render, 180, 120, out _);
+        var first = ExtractPen(border, "_cachedBorderPen");
         Assert.NotNull(first);
-
-        Rasterize(layout.Render, 180, 120, out _);
-        Assert.Same(first, ExtractPen(layout, "_borderPen"));
+        Rasterize(border.Render, 180, 120, out _);
+        Assert.Same(first, ExtractPen(border, "_cachedBorderPen"));
     }
 
     private static Pen? ExtractPen(object owner, string cacheFieldName)
     {
         var cache = GetFieldValue(owner, cacheFieldName);
         Assert.NotNull(cache);
+        if(cache is Pen direct)return direct;
         var penField = cache!.GetType().GetField("_pen", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(penField);
         return penField!.GetValue(cache) as Pen;

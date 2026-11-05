@@ -324,29 +324,35 @@ public class TransitionTests
     [Fact]
     public void ScrollBarAndPrimitives_DefaultTransitionProperty_IsNone()
     {
-        var scrollBar = new ScrollBar();
-        var host = new TransitionHostPanel();
-        host.AddChild(scrollBar);
-        Dispatcher.GetForCurrentThread().ProcessQueue();
-
-        scrollBar.Value = 18.0;
-
-        var lineUpButton = Assert.IsType<RepeatButton>(scrollBar.GetVisualChild(0));
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
-        var lineDownButton = Assert.IsType<RepeatButton>(scrollBar.GetVisualChild(2));
-        var thumb = Assert.IsType<Thumb>(track.Thumb);
-
-        Assert.Equal("None", scrollBar.TransitionProperty);
-        Assert.Equal("None", lineUpButton.TransitionProperty);
-        Assert.Equal("None", lineDownButton.TransitionProperty);
-        Assert.Equal("None", track.TransitionProperty);
-        Assert.Equal("None", thumb.TransitionProperty);
-        Assert.False(lineUpButton.UseScrollBarArrowAnimation);
-        Assert.False(lineDownButton.UseScrollBarArrowAnimation);
-        Assert.Equal("None", track.DecreaseRepeatButton!.TransitionProperty);
-        Assert.Equal("None", track.IncreaseRepeatButton!.TransitionProperty);
-        Assert.False(scrollBar.HasAutomaticTransition(RangeBase.ValueProperty));
-        Assert.Equal(18.0, scrollBar.Value);
+        ScrollBarTemplateTestHelper.Register();
+        try
+        {
+            var scrollBar = new ScrollBar();
+            var host = new TransitionHostPanel();
+            host.AddChild(scrollBar);
+            Dispatcher.GetForCurrentThread().ProcessQueue();
+    
+            scrollBar.Value = 18.0;
+    
+            scrollBar.ApplyTemplate();
+            var lineUpButton = Assert.IsType<RepeatButton>(scrollBar.FindName("PART_LineDecreaseButton"));
+            var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
+            var lineDownButton = Assert.IsType<RepeatButton>(scrollBar.FindName("PART_LineIncreaseButton"));
+            var thumb = Assert.IsType<Thumb>(track.Thumb);
+    
+            Assert.Equal("None", scrollBar.TransitionProperty);
+            Assert.Equal("None", lineUpButton.TransitionProperty);
+            Assert.Equal("None", lineDownButton.TransitionProperty);
+            Assert.Equal("None", track.TransitionProperty);
+            Assert.Equal("None", thumb.TransitionProperty);
+            Assert.False(lineUpButton.UseScrollBarArrowAnimation);
+            Assert.False(lineDownButton.UseScrollBarArrowAnimation);
+            Assert.Equal("None", track.DecreaseRepeatButton!.TransitionProperty);
+            Assert.Equal("None", track.IncreaseRepeatButton!.TransitionProperty);
+            Assert.False(scrollBar.HasAutomaticTransition(RangeBase.ValueProperty));
+            Assert.Equal(18.0, scrollBar.Value);
+        }
+        finally { ScrollBarTemplateTestHelper.Reset(); }
     }
 
     [Fact]
@@ -499,14 +505,7 @@ public class TransitionTests
         host.AddChild(colorPicker);
         Dispatcher.GetForCurrentThread().ProcessQueue();
 
-        var alphaField = typeof(ColorPicker).GetField("_alpha", BindingFlags.Instance | BindingFlags.NonPublic);
-        var updateColorMethod = typeof(ColorPicker).GetMethod("UpdateColor", BindingFlags.Instance | BindingFlags.NonPublic);
-
-        Assert.NotNull(alphaField);
-        Assert.NotNull(updateColorMethod);
-
-        alphaField!.SetValue(colorPicker, (byte)96);
-        updateColorMethod!.Invoke(colorPicker, null);
+        colorPicker.Alpha = 96;
 
         Assert.False(colorPicker.HasAutomaticTransition(ColorPicker.ColorProperty));
         Assert.Equal(Color.FromArgb(96, 255, 255, 255), colorPicker.Color);

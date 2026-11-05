@@ -22,7 +22,7 @@ internal static partial class CssSelectorParser
     }
     public static List<CssSelector>? ParseGroup(ReadOnlySpan<char> text, out string? error,
         CssNestingContext? nesting = null, CssRelativeSelectorMode relative = CssRelativeSelectorMode.None,
-        CssNamespaceContext? namespaces = null, bool ignoreDefaultOnSubject = false)
+        CssNamespaceContext? namespaces = null, bool ignoreDefaultOnSubject = false, bool allowPseudoElements = true)
     {
         error = null;
         var selectors = new List<CssSelector>();
@@ -59,7 +59,7 @@ internal static partial class CssSelectorParser
                 return null;
             }
 
-            var selector = ParseSingle(segment, out error, nesting, relative, namespaces,ignoreDefaultOnSubject);
+            var selector = ParseSingle(segment, out error, nesting, relative, namespaces,ignoreDefaultOnSubject,allowPseudoElements);
             if (selector is null)
             {
                 return null;
@@ -72,7 +72,7 @@ internal static partial class CssSelectorParser
     }
 
     private static CssSelector? ParseSingle(ReadOnlySpan<char> text, out string? error, CssNestingContext? nesting, CssRelativeSelectorMode relative,
-        CssNamespaceContext? namespaces,bool ignoreDefaultOnSubject)
+        CssNamespaceContext? namespaces,bool ignoreDefaultOnSubject,bool allowPseudoElements)
     {
         // Parsed left-to-right, then reversed so Compounds[0] is the rightmost subject.
         var compounds = new List<CssCompound>();
@@ -140,6 +140,13 @@ internal static partial class CssSelectorParser
 
             compounds.Add(compound);
             expectCompound = false;
+            if (compound.PseudoElement != CssPseudoElement.None)
+            {
+                SkipWhitespace(text, ref pos);
+                if (pos != text.Length || relative == CssRelativeSelectorMode.Has || !allowPseudoElements || s_functionDepth > 0)
+                { error = "pseudo-element must be the selector subject, outside selector functions and scope boundaries"; return null; }
+                break;
+            }
         }
 
         if (compounds.Count == 0)
@@ -270,10 +277,71 @@ internal static partial class CssSelectorParser
             else if (c == ':')
             {
                 pos++;
-                if (pos < text.Length && text[pos] == ':')
+                var doubleColon = pos < text.Length && text[pos] == ':';
+                if (doubleColon) pos++;
+                var pseudoElementPosition = pos;
+                if (pos < text.Length && IsIdentStart(text, pos))
                 {
-                    error = "pseudo-elements are not supported";
-                    return null;
+                    var elementName = ReadIdent(text, ref pos);
+                    var kind = elementName.Equals("before", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.Before :
+                        elementName.Equals("after", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.After :
+                        elementName.Equals("first-letter", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.FirstLetter :
+                        elementName.Equals("first-line", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.FirstLine :
+                        doubleColon && elementName.Equals("selection", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.Selection :
+                        doubleColon && elementName.Equals("search-text", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.SearchText :
+                        doubleColon && elementName.Equals("target-text", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.TargetText :
+                        doubleColon && elementName.Equals("spelling-error", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.SpellingError :
+                        doubleColon && elementName.Equals("grammar-error", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.GrammarError :
+                        doubleColon && elementName.Equals("highlight", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.Highlight :
+                        doubleColon && elementName.Equals("placeholder", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.Placeholder :
+                        doubleColon && elementName.Equals("marker", StringComparison.OrdinalIgnoreCase) ? CssPseudoElement.Marker : CssPseudoElement.None;
+                    if (kind != CssPseudoElement.None)
+                    {
+                        if (kind == CssPseudoElement.Highlight)
+                        {
+                            if (pos >= text.Length || text[pos] != '(')
+                            { error = "expected '(' after '::highlight'"; return null; }
+                            var highlightReader = new CssTokenReader(text[pseudoElementPosition..]);
+                            if (!highlightReader.TryReadFunction(out _, out var highlightArgs) ||
+                                !highlightArgs.TryReadIdent(out var highlightIdent) ||
+                                !highlightArgs.AtEnd ||
+                                IsCssWideOrReservedIdent(highlightIdent))
+                            { error = "invalid '::highlight()' custom identifier"; return null; }
+                            pos = pseudoElementPosition + highlightReader.Position;
+                            compound.HighlightName = highlightIdent.ToString();
+                        }
+                        else if (kind == CssPseudoElement.SearchText &&
+                            pos + 1 < text.Length && text[pos] == ':' && text[pos + 1] != ':' && IsIdentStart(text, pos + 1))
+                        {
+                            var currentPos = pos + 1;
+                            var subName = ReadIdent(text, ref currentPos);
+                            if (!subName.Equals("current", StringComparison.OrdinalIgnoreCase) ||
+                                (currentPos < text.Length && text[currentPos] == '('))
+                            { error = $"unsupported pseudo-class ':{subName}' on '::search-text'"; return null; }
+                            pos = currentPos;
+                            compound.SearchCurrent = true;
+                            classesAndPseudos++;
+                        }
+                        else if (kind is CssPseudoElement.Before or CssPseudoElement.After &&
+                            pos + 2 < text.Length && text[pos] == ':' && text[pos + 1] == ':' && IsIdentStart(text, pos + 2))
+                        {
+                            var markerPos = pos + 2;
+                            var nextName = ReadIdent(text, ref markerPos);
+                            if (nextName.Equals("marker", StringComparison.OrdinalIgnoreCase))
+                            {
+                                pos = markerPos;
+                                kind = kind == CssPseudoElement.Before ? CssPseudoElement.BeforeMarker : CssPseudoElement.AfterMarker;
+                                types++;
+                            }
+                        }
+
+                        if (kind.IsHighlight()) CssHighlightRegistry.Register();
+                        compound.PseudoElement = kind;
+                        types++; sawAnything = true;
+                        break;
+                    }
+                    if (doubleColon) { error = $"unsupported pseudo-element '::{elementName}'"; return null; }
+                    pos = pseudoElementPosition;
                 }
 
                 if (pos >= text.Length || !IsIdentStart(text, pos))
@@ -429,4 +497,13 @@ internal static partial class CssSelectorParser
 
     private static bool IsIdentChar(char c)
         => char.IsAsciiLetterOrDigit(c) || c == '_' || c == '-' || c == '\\' || c > 0x7F;
+
+    private static bool IsCssWideOrReservedIdent(ReadOnlySpan<char> ident)
+        => ident.IsEmpty ||
+           Eq(ident, "initial") ||
+           Eq(ident, "inherit") ||
+           Eq(ident, "unset") ||
+           Eq(ident, "revert") ||
+           Eq(ident, "revert-layer") ||
+           Eq(ident, "default");
 }

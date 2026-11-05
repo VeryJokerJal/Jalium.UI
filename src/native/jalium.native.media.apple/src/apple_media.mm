@@ -288,15 +288,15 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_open_file(
     auto decoder=std::make_unique<jalium_video_decoder>();decoder->requestedFormat=format;
     NSURL* url=[NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
     decoder->asset=[AVURLAsset URLAssetWithURL:url options:nil];
-#if TARGET_OS_VISION
-    AVAssetTrack* track = nil;
-    auto loaded = jalium::apple_media::LoadVideoTrack(decoder->asset, &track,
-        dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
-    if (loaded != JALIUM_MEDIA_OK) return loaded;
-    decoder->track = track;
-#else
-    decoder->track=[[decoder->asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
-#endif
+    if (@available(macOS 12.0, iOS 15.0, tvOS 15.0, *)) {
+        AVAssetTrack* track = nil;
+        auto loaded = jalium::apple_media::LoadVideoTrack(decoder->asset, &track,
+            dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+        if (loaded != JALIUM_MEDIA_OK) return loaded;
+        decoder->track = track;
+    } else {
+        decoder->track=[[decoder->asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
+    }
     if(!decoder->track)return JALIUM_MEDIA_E_UNSUPPORTED_CODEC;
     CGSize size=CGSizeApplyAffineTransform(decoder->track.naturalSize,decoder->track.preferredTransform);
     decoder->info.width=(uint32_t)std::abs(size.width);decoder->info.height=(uint32_t)std::abs(size.height);

@@ -1,116 +1,98 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
-
 /// <summary>
 /// Represents a specialized container that presents a set of menus in a horizontal row,
 /// typically at the top of an app window.
 /// </summary>
+[Jalium.UI.Markup.ContentProperty(nameof(Items))]
+[TemplatePart(Name = "PART_Root", Type = typeof(Border))]
+[TemplatePart(Name = "PART_ItemsPanel", Type = typeof(Panel))]
 public class MenuBar : Control
 {
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Automation.Peers.MenuBarAutomationPeer(this);
-
+    /// <inheritdoc/>
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => new Jalium.UI.Automation.Peers.MenuBarAutomationPeer(this);
     private readonly ObservableCollection<MenuBarItem> _items = new();
-    private StackPanel? _panel;
-    private Border? _cssBorderPainter;
+    private readonly HashSet<MenuBarItem> _ownedItems = new(ReferenceEqualityComparer.Instance);
+    private Panel? _panel;
+    private static readonly DependencyPropertyKey ItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(Items), typeof(IList<MenuBarItem>), typeof(MenuBar), new PropertyMetadata(null));
+    public static readonly DependencyProperty ItemsProperty = ItemsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey HasItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasItems), typeof(bool), typeof(MenuBar), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasItemsProperty = HasItemsPropertyKey.DependencyProperty;
+    public bool HasItems => (bool)GetValue(HasItemsProperty)!;
+
+    static MenuBar()
+    {
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(MenuBar), new PropertyMetadata(typeof(MenuBar)));
+        FocusableProperty.OverrideMetadata(typeof(MenuBar), new PropertyMetadata(true));
+    }
 
     /// <summary>
     /// Gets the collection of MenuBarItem objects in the MenuBar.
     /// </summary>
     public IList<MenuBarItem> Items => _items;
-
     internal ObservableCollection<MenuBarItem> ItemCollection => _items;
+    protected internal override System.Collections.IEnumerator LogicalChildren => _items.GetEnumerator();
 
     /// <summary>
     /// Initializes a new instance of the MenuBar class.
     /// </summary>
     public MenuBar()
     {
-        Focusable = true;
+        SetValue(ItemsPropertyKey, _items);
         _items.CollectionChanged += OnItemsCollectionChanged;
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    public override void OnApplyTemplate()
     {
-        EnsurePanel();
-        var insets = CssBoxMetrics.ContentInsets(this,
-            CssLayout?.ContainingWidthCache ?? availableSize.Width);
-        _panel!.Measure(CssBoxMetrics.InnerSize(availableSize, insets));
-        return new Size(
-            ControlRenderGeometry.GetAvailableLength(
-                _panel.DesiredSize.Width + insets.Left + insets.Right, availableSize.Width),
-            ControlRenderGeometry.GetAvailableLength(
-                Math.Max(_panel.DesiredSize.Height, 32) + insets.Top + insets.Bottom,
-                availableSize.Height));
+        ReleaseParts();
+        base.OnApplyTemplate();
+        _panel = GetTemplateChild("PART_ItemsPanel") as Panel;
+        if (_panel != null)
+            _panel.PreserveExistingLogicalParents = true;
+        RefreshPanelChildren();
+        UpdateVisualState();
     }
 
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
+    internal override void OnTemplateContentClearing()
     {
-        var insets = CssBoxMetrics.ContentInsets(this,
-            CssLayout?.ContainingWidthCache ?? finalSize.Width);
-        _panel?.Arrange(ControlRenderGeometry.GetContentRect(new Rect(finalSize), insets));
-        return finalSize;
+        ReleaseParts();
+        base.OnTemplateContentClearing();
     }
 
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    private void ReleaseParts()
     {
-        var dc = drawingContext;
-        base.OnRender(drawingContext);
-
-        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
-        var bg = Background;
-        if (bg is null && backgroundLayer is not
-                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
-            bg = Brushes.Transparent;
-        if (bg is null) return;
-
-        var outer = new Rect(RenderSize);
-        var cssRadius = CssBorderRadiusProperties.Get(this);
-        if (cssRadius is null && backgroundLayer is not
-                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
-        {
-            dc.DrawRoundedRectangle(bg, null, outer, CornerRadius);
-            return;
-        }
-
-        var radii = cssRadius?.Resolve(RenderSize) ??
-            CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
-        var shape = new CssRoundedRectangleGeometry(outer, radii);
-        var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
-            CssLayout?.ContainingWidthCache ?? RenderSize.Width);
-        if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, bg, dc,
-                outer, radii, border, padding,
-                brush => dc.DrawGeometry(brush, null, shape)))
-            dc.DrawGeometry(bg, null, shape);
+        var old = _panel;
+        _panel = null;
+        old?.Children.Clear();
     }
 
-    /// <inheritdoc />
-    protected override void OnPostRender(DrawingContext drawingContext)
+    protected override void RenderTemplatedBackground(DrawingContext context)
     {
-        base.OnPostRender(drawingContext);
-        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
+        if (RenderSize.Width > 0 && RenderSize.Height > 0)
+            base.RenderTemplatedBackground(context);
     }
 
-    /// <inheritdoc />
-    protected override int VisualChildrenCount => _panel != null ? 1 : 0;
-
-    /// <inheritdoc />
-    protected override Visual? GetVisualChild(int index)
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
-        if (index == 0 && _panel != null) return _panel;
-        throw new ArgumentOutOfRangeException(nameof(index));
+        base.OnIsEnabledChanged(oldValue, newValue);
+        if (!newValue)
+            CloseAllMenus();
+        UpdateVisualState();
     }
 
+    protected override void OnIsKeyboardFocusedChanged(bool focused)
+    {
+        base.OnIsKeyboardFocusedChanged(focused);
+        UpdateVisualState();
+    }
+
+    private void UpdateVisualState() => VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : IsKeyboardFocused ? "Focused" : "Normal", false);
     /// <summary>
     /// Refreshes the visual representation of items.
     /// </summary>
@@ -121,41 +103,54 @@ public class MenuBar : Control
         InvalidateVisual();
     }
 
-    private void EnsurePanel()
-    {
-        if (_panel != null) return;
-
-        _panel = new StackPanel { Orientation = Orientation.Horizontal };
-        AddVisualChild(_panel);
-        RefreshPanelChildren();
-    }
-
     private void RefreshPanelChildren()
     {
-        if (_panel == null)
+        if (_panel is not { } panel)
             return;
-
-        _panel.Children.Clear();
-        foreach (var item in _items)
+        panel.Children.BeginBatchUpdate();
+        try
         {
-            item.ParentMenuBar = this;
-            _panel.Children.Add(item);
+            for (int index = panel.Children.Count - 1; index >= 0; index--)
+                if (panel.Children[index] is not MenuBarItem item || !_items.Contains(item))
+                    panel.Children.RemoveAt(index);
+            for (int index = 0; index < _items.Count; index++)
+            {
+                var item = _items[index];
+                if (index < panel.Children.Count && ReferenceEquals(panel.Children[index], item))
+                    continue;
+                if (panel.Children.Contains(item))
+                    panel.Children.Remove(item);
+                item.DetachFromVisualParent();
+                panel.Children.Insert(index, item);
+            }
+        }
+        finally
+        {
+            panel.Children.EndBatchUpdate();
         }
     }
 
     private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        if (e.OldItems != null)
-        {
-            foreach (var oldItem in e.OldItems.OfType<MenuBarItem>())
+        // Menu ownership is a collection contract, including before layout and
+        // Reset notifications whose OldItems list is absent.
+        foreach (var oldItem in _ownedItems)
+            if (!_items.Contains(oldItem))
             {
                 if (ReferenceEquals(oldItem.ParentMenuBar, this))
-                {
                     oldItem.ParentMenuBar = null;
-                }
+                RemoveLogicalChild(oldItem);
             }
+
+        _ownedItems.Clear();
+        foreach (var item in _items)
+        {
+            item.ParentMenuBar = this;
+            AddLogicalChild(item);
+            _ownedItems.Add(item);
         }
 
+        SetValue(HasItemsPropertyKey, _items.Count > 0);
         RefreshPanelChildren();
         InvalidateMeasure();
         InvalidateVisual();
@@ -290,7 +285,6 @@ public class MenuBar : Control
             Key.End => FocusBoundaryItem(last: true, openMenu: false),
             _ => false
         };
-
         if (handled)
         {
             e.Handled = true;

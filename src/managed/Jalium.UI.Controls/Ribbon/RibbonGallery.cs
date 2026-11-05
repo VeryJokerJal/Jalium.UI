@@ -4,7 +4,7 @@ namespace Jalium.UI.Controls.Ribbon;
 /// Displays a set of related items in a Ribbon control.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
-public class RibbonGallery : ItemsControl
+public partial class RibbonGallery : ItemsControl
 {
     /// <summary>
     /// Identifies the SelectedItem dependency property.
@@ -67,6 +67,7 @@ public class RibbonGallery : ItemsControl
     /// </summary>
     protected void OnSelectionChanged()
     {
+        RefreshItemSelection();
         SelectionChanged?.Invoke(this, new RoutedEventArgs());
     }
 
@@ -83,7 +84,7 @@ public class RibbonGallery : ItemsControl
 /// Represents a category within a RibbonGallery.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
-public class RibbonGalleryCategory : HeaderedItemsControl
+public partial class RibbonGalleryCategory : HeaderedItemsControl
 {
     /// <summary>
     /// Gets or sets the minimum number of columns for this category.
@@ -99,7 +100,7 @@ public class RibbonGalleryCategory : HeaderedItemsControl
 /// <summary>
 /// Represents an item within a RibbonGalleryCategory.
 /// </summary>
-public class RibbonGalleryItem : ContentControl
+public partial class RibbonGalleryItem : ContentControl
 {
     /// <summary>
     /// Identifies the IsSelected dependency property.

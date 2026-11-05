@@ -12,7 +12,7 @@ namespace Jalium.UI.Controls;
 /// Provides offset, hex, and ASCII columns with selection, caret navigation,
 /// keyboard hex entry, and data interpretation.
 /// </summary>
-public class HexEditor : Control, Styling.ICssCaretAnimationHost
+public partial class HexEditor : Control, Styling.ICssCaretAnimationHost
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -500,7 +500,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
     private long _lastCaretBlinkTicks;
 
     // Vertical scrollbar
-    private readonly Primitives.ScrollBar _verticalScrollBar;
+    private Primitives.ScrollBar? _verticalScrollBar;
     private bool _isUpdatingScrollBar;
     private const double ScrollBarWidth = 14.0;
 
@@ -515,19 +515,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
     {
         Focusable = true;
 
-        // Create vertical scrollbar
-        _verticalScrollBar = new Primitives.ScrollBar
-        {
-            Orientation = Orientation.Vertical,
-            Minimum = 0,
-            SmallChange = 1,
-            LargeChange = 10,
-            Focusable = false,
-            IsThumbSlim = true,
-            Cursor = Jalium.UI.Input.Cursors.Arrow,
-        };
-        _verticalScrollBar.Scroll += OnScrollBarScroll;
-        AddVisualChild(_verticalScrollBar);
+        DefaultStyleKey = typeof(HexEditor);
 
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
@@ -541,9 +529,9 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
 
     private void OnScrollBarScroll(object? sender, ScrollEventArgs e)
     {
-        if (_isUpdatingScrollBar) return;
+        if (_isUpdatingScrollBar || sender is not Primitives.ScrollBar bar || !ReferenceEquals(bar, _verticalScrollBar)) return;
         var bytesPerRow = Math.Max(1, BytesPerRow);
-        long newRow = (long)Math.Round(_verticalScrollBar.Value);
+        long newRow = (long)Math.Round(bar.Value);
         _wheelRowRemainder = 0;
         _scrollOffset = newRow * bytesPerRow;
 
@@ -551,7 +539,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         var dataLength = data?.Length ?? 0;
         long maxOffset = Math.Max(0, ((long)dataLength / bytesPerRow - _visibleRowCount + 1) * bytesPerRow);
         _scrollOffset = Math.Clamp(_scrollOffset, 0, maxOffset);
-        InvalidateVisual();
+        InvalidateEditorVisual();
     }
 
     private void UpdateScrollBar()
@@ -561,12 +549,20 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         var bytesPerRow = Math.Max(1, BytesPerRow);
         long totalRows = dataLength > 0 ? ((dataLength - 1) / bytesPerRow) + 1 : 1;
 
+        if (_verticalScrollBar is not { } bar) return;
+        var maximum = Math.Max(0, totalRows - _visibleRowCount);
+        if (_visibleRowCount > 0)
+            _scrollOffset = Math.Clamp(_scrollOffset, 0, maximum * bytesPerRow);
         _isUpdatingScrollBar = true;
-        _verticalScrollBar.Maximum = Math.Max(0, totalRows - _visibleRowCount);
-        _verticalScrollBar.ViewportSize = _visibleRowCount;
-        _verticalScrollBar.LargeChange = Math.Max(1, _visibleRowCount - 1);
-        _verticalScrollBar.Value = _scrollOffset / bytesPerRow;
-        _isUpdatingScrollBar = false;
+        try
+        {
+            bar.SetCurrentValue(Primitives.RangeBase.MaximumProperty, (double)maximum);
+            bar.SetCurrentValue(Primitives.ScrollBar.ViewportSizeProperty, (double)_visibleRowCount);
+            bar.SetCurrentValue(Primitives.RangeBase.LargeChangeProperty, (double)Math.Max(1, _visibleRowCount - 1));
+            bar.SetCurrentValue(Primitives.RangeBase.ValueProperty, (double)(_scrollOffset / bytesPerRow));
+        }
+        finally { _isUpdatingScrollBar = false; }
+
     }
 
     #endregion
@@ -584,13 +580,13 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         editor.SelectionLength = 0;
         editor._isHighNibble = true;
         editor.InvalidateMeasure();
-        editor.InvalidateVisual();
+        editor.InvalidateEditorVisual();
     }
 
     private static void OnSelectionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var editor = (HexEditor)d;
-        editor.InvalidateVisual();
+        editor.InvalidateEditorVisual();
     }
 
     private static void OnCaretOffsetChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -601,20 +597,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         editor._lastCaretBlinkTicks = Environment.TickCount64;
         editor.EnsureCaretVisible();
         editor.RaiseEvent(new RoutedEventArgs(CaretMovedEvent));
-        editor.InvalidateVisual();
-    }
-
-    #endregion
-
-    #region Visual Children (scrollbar)
-
-    protected override int VisualChildrenCount => base.VisualChildrenCount + 1;
-
-    protected override Visual? GetVisualChild(int index)
-    {
-        if (index == base.VisualChildrenCount)
-            return _verticalScrollBar;
-        return base.GetVisualChild(index);
+        editor.InvalidateEditorVisual();
     }
 
     #endregion
@@ -622,7 +605,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
     #region Layout
 
     /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    private Size MeasureEditorArea(Size availableSize)
     {
         var fontFamily = GetMonospaceFont();
         var fontSize = GetFontSize();
@@ -681,7 +664,8 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         totalWidth += ScrollBarWidth; // Reserve space for scrollbar
 
         // Measure scrollbar
-        _verticalScrollBar.Measure(new Size(ScrollBarWidth, availableSize.Height > 0 ? availableSize.Height : double.PositiveInfinity));
+        if (Template is null)
+            _verticalScrollBar?.Measure(new Size(ScrollBarWidth, availableSize.Height > 0 ? availableSize.Height : double.PositiveInfinity));
 
         var desiredWidth = Math.Min(totalWidth, availableSize.Width > 0 ? availableSize.Width : totalWidth);
         var desiredHeight = availableSize.Height > 0
@@ -692,7 +676,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
     }
 
     /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
+    private Size ArrangeEditorArea(Size finalSize)
     {
         var bytesPerRow = Math.Max(1, BytesPerRow);
 
@@ -748,9 +732,10 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         _visibleRowCount = _rowHeight > 0 ? (int)Math.Ceiling(finalSize.Height / _rowHeight) : 0;
 
         // Arrange scrollbar on the right edge
-        _verticalScrollBar.Arrange(new Rect(
-            finalSize.Width - ScrollBarWidth, 0,
-            ScrollBarWidth, finalSize.Height));
+        if (Template is null)
+            _verticalScrollBar?.Arrange(new Rect(
+                Math.Max(0, finalSize.Width - ScrollBarWidth), 0,
+                ScrollBarWidth, finalSize.Height));
 
         UpdateScrollBar();
 
@@ -787,10 +772,10 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
     #region Rendering
 
     /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    private void RenderEditorArea(DrawingContext drawingContext)
     {
         var dc = drawingContext;
-        if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
+        if (EditorAreaSize.Width <= 0 || EditorAreaSize.Height <= 0) return;
 
         var data = Data;
         var dataLength = data?.Length ?? 0;
@@ -808,21 +793,21 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
 
         // Clip to bounds
         // Clip content area (exclude scrollbar on the right)
-        double contentWidth = Math.Max(0, RenderSize.Width - ScrollBarWidth);
-        dc.PushClip(new RectangleGeometry(new Rect(0, 0, contentWidth, RenderSize.Height)));
+        double contentWidth = Math.Max(0, EditorAreaSize.Width - ScrollBarWidth);
+        dc.PushClip(new RectangleGeometry(new Rect(0, 0, contentWidth, EditorAreaSize.Height)));
         try
         {
             // Draw background
-            if (Background != null)
+            if (Template is null && Background != null)
             {
-                dc.DrawRectangle(Background, null, new Rect(RenderSize));
+                dc.DrawRectangle(Background, null, new Rect(EditorAreaSize));
             }
 
             // Draw offset gutter background
             if (ShowOffsetColumn && _offsetColumnWidth > 0)
             {
                 var gutterBrush = ResolveGutterBackground();
-                dc.DrawRectangle(gutterBrush, null, new Rect(0, 0, _offsetColumnWidth, RenderSize.Height));
+                dc.DrawRectangle(gutterBrush, null, new Rect(0, 0, _offsetColumnWidth, EditorAreaSize.Height));
             }
 
             // Calculate visible range
@@ -968,19 +953,19 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         if (ShowOffsetColumn && _offsetColumnWidth > 0)
         {
             double x = _offsetColumnWidth;
-            dc.DrawLine(pen, new Point(x, 0), new Point(x, RenderSize.Height));
+            dc.DrawLine(pen, new Point(x, 0), new Point(x, EditorAreaSize.Height));
         }
 
         if (ShowAsciiColumn && _asciiColumnStartX > 0)
         {
             double x = _asciiColumnStartX - ColumnSeparatorWidth;
-            dc.DrawLine(pen, new Point(x, 0), new Point(x, RenderSize.Height));
+            dc.DrawLine(pen, new Point(x, 0), new Point(x, EditorAreaSize.Height));
         }
 
         if (ShowDataInterpretation && _dataInterpretationStartX > 0)
         {
             double x = _dataInterpretationStartX - ColumnSeparatorWidth;
-            dc.DrawLine(pen, new Point(x, 0), new Point(x, RenderSize.Height));
+            dc.DrawLine(pen, new Point(x, 0), new Point(x, EditorAreaSize.Height));
         }
     }
 
@@ -1473,7 +1458,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         {
             _scrollOffset = newRow * bytesPerRow;
             UpdateScrollBar();
-            InvalidateVisual();
+            InvalidateEditorVisual();
         }
         // Row-based rendering accumulates sub-row movement instead of turning every
         // fine touchpad packet into three rows or losing it before the next packet.
@@ -1587,7 +1572,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
                 {
                     _isCaretInAsciiPane = !_isCaretInAsciiPane;
                     _isHighNibble = true;
-                    InvalidateVisual();
+                    InvalidateEditorVisual();
                 }
                 e.Handled = true;
                 break;
@@ -1608,7 +1593,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
                     SelectionStart = 0;
                     SelectionLength = data.Length;
                     RaiseSelectionChangedEvent(-1, 0, 0, data.Length);
-                    InvalidateVisual();
+                    InvalidateEditorVisual();
                     e.Handled = true;
                 }
                 break;
@@ -1654,7 +1639,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
                 RaiseByteModifiedEvent(caretOffset, oldValue, newValue);
 
                 CaretOffset = Math.Min(data.Length - 1, caretOffset + 1);
-                InvalidateVisual();
+                InvalidateEditorVisual();
             }
         }
         else
@@ -1675,7 +1660,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
                     _isHighNibble = false;
                     _caretVisible = true;
                     _lastCaretBlinkTicks = Environment.TickCount64;
-                    InvalidateVisual();
+                    InvalidateEditorVisual();
                 }
                 else
                 {
@@ -1687,7 +1672,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
 
                     // Advance caret to next byte
                     CaretOffset = Math.Min(data.Length - 1, caretOffset + 1);
-                    InvalidateVisual();
+                    InvalidateEditorVisual();
                 }
 
                 if (oldValue != newValue)
@@ -1704,13 +1689,15 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
     {
         _caretVisible = true;
         _lastCaretBlinkTicks = Environment.TickCount64;
-        InvalidateVisual();
+        UpdateTemplateStates();
+        InvalidateEditorVisual();
     }
 
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         _caretVisible = false;
-        InvalidateVisual();
+        UpdateTemplateStates();
+        InvalidateEditorVisual();
     }
 
     #endregion
@@ -1725,6 +1712,15 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
 
     private new HitTestResult HitTest(Point position)
     {
+        if (Template is not null && _textView is null)
+            return new HitTestResult { ByteOffset = -1, IsAsciiPane = false };
+        if (_textView is { } view && Template is not null)
+        {
+            var origin = view.TransformToAncestor(this);
+            position = new Point(position.X - origin.X, position.Y - origin.Y);
+            if (position.X < 0 || position.Y < 0 || position.X >= view.RenderSize.Width || position.Y >= view.RenderSize.Height)
+                return new HitTestResult { ByteOffset = -1, IsAsciiPane = false };
+        }
         var data = Data;
         if (data == null || data.Length == 0)
             return new HitTestResult { ByteOffset = -1, IsAsciiPane = false };
@@ -1939,7 +1935,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         }
 
         CaretOffset = Math.Min(data.Length - 1, offset + count);
-        InvalidateVisual();
+        InvalidateEditorVisual();
     }
 
     private static byte[] ParseHexString(string text)
@@ -2010,7 +2006,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
         offset = Math.Clamp(offset, 0, data.Length - 1);
         CaretOffset = offset;
         // EnsureCaretVisible is called by OnCaretOffsetChanged
-        InvalidateVisual();
+        InvalidateEditorVisual();
     }
 
     #endregion
@@ -2064,7 +2060,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
             }
         }
 
-        InvalidateVisual();
+        InvalidateEditorVisual();
     }
 
     #endregion
@@ -2123,7 +2119,7 @@ public class HexEditor : Control, Styling.ICssCaretAnimationHost
     {
         _caretVisible = IsKeyboardFocused;
         _lastCaretBlinkTicks = Environment.TickCount64;
-        InvalidateVisual();
+        InvalidateEditorVisual();
     }
 
     private string GetMonospaceFont()

@@ -398,6 +398,83 @@ static void TestRetainedDamage(float scale, uint32_t msaa)
         "A retained layer was captured through the transient frame damage clip");
 }
 
+static void TestRetainedViewport(float scale, uint32_t msaa, JaliumRenderingEngine engine)
+{
+    Surface surface(320, 160, scale, msaa);
+    auto* target = surface.target.get();
+    Check(jalium_render_target_set_engine(target, engine) == JALIUM_OK, "Retained viewport engine");
+    auto background = Solid(surface, .12f, .16f, .2f);
+    auto ink = Solid(surface, .85f, .9f, 1);
+    auto accent = Solid(surface, .3f, .6f, .9f);
+    std::unique_ptr<JaliumTextFormat, decltype(&jalium_text_format_destroy)> font(
+        jalium_text_format_create(surface.context.get(), reinterpret_cast<const wchar_t*>(u"PingFang SC"),
+            12, 400, 0), jalium_text_format_destroy);
+    Check(font != nullptr, "Retained viewport font");
+    constexpr char16_t text[] = u"\u52a0\u5feb\u5e94\u7528\u542f\u52a8\u3002RID \u4e0e NativeAOT \u4e92\u65a5\u3002";
+    constexpr float width = 240, height = 64, finalX = 40, finalY = 40;
+    auto paint = [&](float x, float y) {
+        jalium_draw_fill_rectangle(target, x, y, width, height, background.get());
+        jalium_draw_fill_rectangle(target, x + 8, y + 8, 24, 40, accent.get());
+        jalium_draw_text(target, reinterpret_cast<const wchar_t*>(text), std::size(text) - 1,
+            font.get(), x + 40, y + 20, width - 48, 30, ink.get());
+        jalium_draw_fill_rectangle(target, x + 4, y + height - 4, width - 8, 2, accent.get());
+    };
+    auto capture = [&](void* layer, float x, float y) {
+        void* realized = jalium_render_target_realize_layer_begin(target, layer, x, y, width, height);
+        // Match Visual's normal-render fallback when a layer cannot be captured.
+        paint(x, y);
+        if (realized) jalium_render_target_realize_layer_end(target, realized);
+        return realized;
+    };
+    surface.Begin();
+    jalium_render_target_clear(target, 0, 0, 0, 1);
+    void* reference = capture(nullptr, finalX, finalY);
+    Check(reference != nullptr, "Fully visible retained layer");
+    jalium_render_target_composite_layer(target, reference, finalX, finalY, width, height, .5f);
+    surface.End();
+    surface.Begin();
+    jalium_render_target_clear(target, 0, 0, 0, 1);
+    jalium_render_target_composite_layer(target, reference, finalX, finalY, width, height, .5f);
+    auto expected = surface.End();
+
+    for (auto origin : {std::array<float, 2>{40, 132}, {-12, 40}, {40, -16}, {100, 40},
+        {-12, -16}, {100, 132}, {40, -80}, {40, 180}}) {
+        surface.Begin();
+        jalium_render_target_clear(target, 0, 0, 0, 1);
+        void* layer = capture(nullptr, origin[0], origin[1]);
+        surface.End();
+        surface.Begin();
+        jalium_render_target_clear(target, 0, 0, 0, 1);
+        if (!layer) layer = capture(nullptr, finalX, finalY);
+        Check(layer != nullptr, "Layer must recover after scrolling into the viewport");
+        // Capture draws into the layer; Clear must still address the parent target.
+        jalium_render_target_clear(target, 0, 0, 0, 1);
+        jalium_render_target_composite_layer(target, layer, finalX, finalY, width, height, .5f);
+        auto actual = surface.End();
+        int different = 0, maximum = 0;
+        for (size_t i = 0; i < actual.size(); ++i) {
+            int delta = std::abs(int(actual[i]) - expected[i]);
+            if (delta > 2) ++different;
+            maximum = std::max(maximum, delta);
+        }
+        jalium_render_target_destroy_retained_layer(target, layer);
+        if (different)
+            std::fprintf(stderr, "retained viewport engine=%d scale=%g msaa=%u origin=(%g,%g) different=%d max=%d\n",
+                engine, scale, msaa, origin[0], origin[1], different, maximum);
+        if (different || (engine == JALIUM_ENGINE_IMPELLER && scale == 1 && msaa == 1 && origin[1] == 132)) {
+            if (const char* output = std::getenv("JALIUM_RETAINED_EVIDENCE_DIR")) {
+                NSString* root = [NSString stringWithUTF8String:output];
+                [EncodePng(actual.data(), surface.width, surface.height)
+                    writeToFile:[root stringByAppendingPathComponent:@"retained-viewport-actual.png"] atomically:YES];
+                [EncodePng(expected.data(), surface.width, surface.height)
+                    writeToFile:[root stringByAppendingPathComponent:@"retained-viewport-expected.png"] atomically:YES];
+            }
+        }
+        Check(different == 0, "Scrolling a retained layer into view lost or stretched content");
+    }
+    jalium_render_target_destroy_retained_layer(target, reference);
+}
+
 static int hideCalls = 0, unhideCalls = 0;
 static void CountHide(id, SEL) { ++hideCalls; }
 static void CountUnhide(id, SEL) { ++unhideCalls; }
@@ -647,6 +724,16 @@ int main(int argc, char** argv)
         }
         if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0) {
             try { Benchmark(); return 0; }
+            catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
+        }
+        if (argc > 1 && std::strcmp(argv[1], "--retained-viewport") == 0) {
+            try {
+                for (auto engine : {JALIUM_ENGINE_IMPELLER, JALIUM_ENGINE_VELLO})
+                    for (float scale : {1.0f, 1.25f, 1.5f, 2.0f}) for (uint32_t msaa : {1u, 4u})
+                        TestRetainedViewport(scale, msaa, engine);
+                std::puts("PASS retained viewport scrolling: both engines, 1x/1.25x/1.5x/2x DPI, 1x/4x MSAA");
+                return 0;
+            }
             catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
         }
         int failures = 0;

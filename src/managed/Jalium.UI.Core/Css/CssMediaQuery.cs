@@ -87,7 +87,12 @@ internal sealed class CssMediaQuery(CssBooleanQuery[] queries)
             }
             var media = type.ToString().ToLowerInvariant();
             if (media is "and" or "or" or "not" or "only" or "layer") return null;
-            CssBooleanQuery result = new CssBooleanQuery.Constant(media is "all" or "screen" ? CssQueryResult.True : CssQueryResult.False);
+            CssBooleanQuery result = media switch
+            {
+                "all" => new CssBooleanQuery.Constant(CssQueryResult.True),
+                "screen" or "print" => new CssBooleanQuery.Feature($"@media:{media}"),
+                _ => new CssBooleanQuery.Constant(CssQueryResult.False),
+            };
             if (!reader.AtEnd)
             {
                 if (!reader.TryReadIdent(out var and) || !and.Equals("and",StringComparison.OrdinalIgnoreCase)) return null;
@@ -104,8 +109,14 @@ internal sealed class CssMediaQuery(CssBooleanQuery[] queries)
     {
         CssLengthContext? context = null;
         double? resolution = null;
+        bool? isPrint = null;
         CssQueryResult Feature(string raw)
         {
+            if (raw is "@media:print" or "@media:screen")
+            {
+                isPrint ??= Css.IsPrintMedia(element);
+                return (raw == "@media:print") == isPrint.Value ? CssQueryResult.True : CssQueryResult.False;
+            }
             context ??= CssEngine.BuildLengthContext(element);
             resolution ??= DeviceResolution(element);
             return EvaluateFeature(raw,context.Value,resolution.Value,element);

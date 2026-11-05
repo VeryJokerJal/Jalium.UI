@@ -82,19 +82,18 @@ public class SplashScreen
             Width = image.Width,
             Height = image.Height,
             WindowStyle = WindowStyle.None,
+            IsShowTitleBar = false,
             ResizeMode = ResizeMode.NoResize,
             Background = Brushes.Transparent,
             Topmost = topMost,
-            Content = new Border
-            {
-                Background = Brushes.Transparent,
-                Child = new Image
-                {
-                    Source = image,
-                    Stretch = Stretch.None
-                }
-            }
+            Content = new SplashScreenPresenter { Source = image }
         };
+
+        // A splash can precede Application construction. Load its small theme
+        // into this private host without creating or changing the application.
+        if (Application.Current is null)
+            _window.Resources.MergedDictionaries.Add(
+                Controls.Themes.ThemeManager.LoadControlThemeDictionary("Themes/Controls/SplashScreen.jalxaml"));
 
         _window.Closed += (_, _) =>
         {

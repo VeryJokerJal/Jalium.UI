@@ -18,7 +18,18 @@ public partial class ScrollViewer
 
     private void PrepareMacOSWheelGesture(MouseWheelEventArgs e)
     {
-        if (!OperatingSystem.IsMacOS() || !e.HasPreciseScrollingDeltas)
+        if (!e.HasPreciseScrollingDeltas)
+            return;
+        // Contact and cancellation packets can have no distance. Stop the old
+        // animation in preview even if a descendant consumes the bubble.
+        CancelSmoothScroll();
+        if (((e.Phase | e.MomentumPhase) & MouseWheelPhase.Cancelled) != 0)
+        {
+            _macOSWheelGestureActive = false;
+            FinishMacOSWheelElasticity();
+            return;
+        }
+        if (!OperatingSystem.IsMacOS())
             return;
         if (MacOSScrollBarSettings.PrefersReducedMotion)
         {

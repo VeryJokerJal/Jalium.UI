@@ -170,6 +170,18 @@ internal static class WindowTaskbarChecks
                 }
                 if (phase == 1)
                 {
+                    try
+                    {
+                        var observedSecond = other == null ? null : Runtime.GetNSObject<NSView>(other.Handle)?.Window;
+                        Console.WriteLine("QA414_STATE " + JsonSerializer.Serialize(new {
+                            appActive = app.Active, policy = app.ActivationPolicy.ToString(), hostPid = Environment.ProcessId,
+                            foregroundPid = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier,
+                            tileLabel = app.DockTile.ContentView?.AccessibilityLabel,
+                            firstManagedActive = window?.IsActive, secondManagedActive = other?.IsActive,
+                            secondNativeKey = observedSecond?.IsKeyWindow,
+                            keyIsSecond = observedSecond != null && app.KeyWindow?.Handle == observedSecond.Handle }));
+                    }
+                    catch (Exception observer) { Console.Error.WriteLine("QA414_OBSERVER " + observer.GetType().Name); }
                     Require(AppTile().AccessibilityLabel == "第二个文档", "key window owns the application tile");
                     other!.Close(); other = null; native!.MakeKeyWindow();
                     Require(AppTile().AccessibilityLabel == info!.Description, "closing the key task restores the remaining owner");

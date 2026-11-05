@@ -68,7 +68,7 @@ public class DataGridThemeTests
         try
         {
             var accentBrush = Assert.IsAssignableFrom<Brush>(app.Resources["AccentBrush"]);
-            var accentText = Assert.IsAssignableFrom<Brush>(app.Resources["TextOnAccent"]);
+            var textPrimary = Assert.IsAssignableFrom<Brush>(app.Resources["TextPrimary"]);
             var headerBackground = Assert.IsAssignableFrom<Brush>(
                 app.Resources["LayerFillColorAltBrush"]);
 
@@ -81,9 +81,11 @@ public class DataGridThemeTests
             host.Measure(new Size(400, 120));
             host.Arrange(new Rect(0, 0, 400, 120));
 
-            var rowBorder = Assert.IsType<Border>(row.FindName("PART_RowBorder"));
-            AssertBrushMatches(accentBrush, rowBorder.Background);
-            AssertBrushMatches(accentText, row.Foreground);
+            var selectionTint = Assert.IsType<Grid>(row.FindName("PART_SelectionTint"));
+            AssertBrushMatches(accentBrush, selectionTint.Background);
+            Assert.Equal(0.12, selectionTint.Opacity);
+            Assert.Equal(Visibility.Visible, selectionTint.Visibility);
+            AssertBrushMatches(textPrimary, row.Foreground);
             AssertBrushMatches(headerBackground, header.Background);
         }
         finally
@@ -93,7 +95,7 @@ public class DataGridThemeTests
     }
 
     [Fact]
-    public void DataGridPrimitiveResolvers_ShouldUseThemeResources()
+    public void DataGridPrimitiveTemplates_ShouldUseThemeResources()
     {
         ResetApplicationState();
         var app = new Application();
@@ -101,28 +103,30 @@ public class DataGridThemeTests
         try
         {
             var accentBrush = Assert.IsAssignableFrom<Brush>(app.Resources["AccentBrush"]);
-            var accentText = Assert.IsAssignableFrom<Brush>(app.Resources["TextOnAccent"]);
-            var controlBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackground"]);
-            var controlBackgroundPressed = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackgroundPressed"]);
+            var headerBackground = Assert.IsAssignableFrom<Brush>(app.Resources["LayerFillColorAltBrush"]);
             var controlBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBorder"]);
             var textPrimary = Assert.IsAssignableFrom<Brush>(app.Resources["TextPrimary"]);
 
             var rowHeader = new PrimitiveDataGridRowHeader();
-            var columnHeader = new PrimitiveDataGridColumnHeader();
+            var columnHeader = new PrimitiveDataGridColumnHeader { Content = "Name" };
 
-            Assert.Same(accentBrush, InvokePrivateBrushResolver(rowHeader, "ResolveSelectedBackgroundBrush"));
-            Assert.Same(controlBackgroundPressed, InvokePrivateBrushResolver(rowHeader, "ResolvePressedBackgroundBrush"));
-            Assert.Same(controlBackground, InvokePrivateBrushResolver(rowHeader, "ResolveDefaultBackgroundBrush"));
-            Assert.Same(controlBorder, InvokePrivateBrushResolver(rowHeader, "ResolveSeparatorBrush"));
-            Assert.Same(accentText, InvokePrivateBrushResolver(rowHeader, "ResolveSelectionIndicatorBrush"));
+            rowHeader.IsRowSelected = true;
+            rowHeader.Measure(new Size(30, 30));
+            rowHeader.Arrange(new Rect(0, 0, 30, 30));
+            var selectionTint = Assert.IsType<Grid>(rowHeader.FindName("PART_SelectionTint"));
+            AssertBrushMatches(accentBrush, selectionTint.Background);
+            Assert.Equal(Visibility.Visible, selectionTint.Visibility);
+            AssertBrushMatches(controlBorder, rowHeader.SeparatorBrush);
+            AssertBrushMatches(textPrimary, rowHeader.Foreground);
 
-            Assert.Same(controlBackgroundPressed, InvokePrivateBrushResolver(columnHeader, "ResolvePressedBackgroundBrush"));
-            Assert.Same(controlBackground, InvokePrivateBrushResolver(columnHeader, "ResolveDefaultBackgroundBrush"));
-            Assert.Same(textPrimary, InvokePrivateBrushResolver(columnHeader, "ResolveForegroundBrush"));
-            Assert.Same(controlBorder, InvokePrivateBrushResolver(columnHeader, "ResolveSeparatorBrush"));
+            columnHeader.Measure(new Size(120, 32));
+            columnHeader.Arrange(new Rect(0, 0, 120, 32));
+            var headerBorder = Assert.IsType<Border>(columnHeader.FindName("PART_HeaderBorder"));
+            AssertBrushMatches(headerBackground, headerBorder.Background);
+            AssertBrushMatches(controlBorder, headerBorder.BorderBrush);
+            AssertBrushMatches(textPrimary, columnHeader.Foreground);
+            Assert.Equal(1, headerBorder.BorderThickness.Right);
 
-            var borderPen = InvokePrivatePenResolver(columnHeader, "ResolveBottomBorderPen");
-            Assert.Same(controlBorder, borderPen.Brush);
         }
         finally
         {
@@ -229,17 +233,4 @@ public class DataGridThemeTests
         Assert.Same(expected, actualBrush);
     }
 
-    private static Brush InvokePrivateBrushResolver(object target, string methodName)
-    {
-        var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(method);
-        return Assert.IsAssignableFrom<Brush>(method!.Invoke(target, null));
-    }
-
-    private static Pen InvokePrivatePenResolver(object target, string methodName)
-    {
-        var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(method);
-        return Assert.IsType<Pen>(method!.Invoke(target, null));
-    }
 }

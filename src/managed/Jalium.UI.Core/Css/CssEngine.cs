@@ -9,7 +9,7 @@ namespace Jalium.UI.Styling;
 /// (scope &lt; specificity &lt; document order, with !important protection), and applies the
 /// merged declarations through the CssBase value layer.
 /// </summary>
-internal static class CssEngine
+internal static partial class CssEngine
 {
     private const int InlineCacheCapacity = 1024;
 
@@ -31,6 +31,7 @@ internal static class CssEngine
     {
         if (!IsActive) return;
         CssSelectorDependencies.TreeChanged(element);
+        if (!CssFirstLine.IsProjection(element) && !CssSelection.IsProjection(element)) CssCounters.NoteEvaluated(element);
         var scope = element;
         if (s_structuralSelectors)
         {
@@ -129,12 +130,14 @@ internal static class CssEngine
 
     private sealed record CascadeCandidate(CssCompiledDeclaration Declaration, bool FromState,
         int ScopeRank, int Specificity, long Order, int[] Layer, bool Inline, int RuleId,
-        int Proximity = int.MaxValue);
+        int Proximity = int.MaxValue, bool PresentationHint = false);
 
     private readonly record struct MergedDeclaration(CssCompiledDeclaration Declaration, bool FromState);
 
     private struct ScopeInfo
     {
+        public CssPseudoElement GeneratedTargets;
+        public int TypographySignature;
         public CssStateMask SelfStates;
         public CssStateMask AncestorStates;
         public CssStateMask AnyStates;
@@ -147,24 +150,26 @@ internal static class CssEngine
     /// <summary>Re-evaluates one element: match → cascade-sort → merge → apply diff.</summary>
     internal static void EvaluateElement(CssNode element)
     {
+        if (element.Target is ICssAnonymousBox or ICssGeneratedContentBox or ICssStyledBox) return;
         var state = element.CssRuntimeState;
         state?.ContainerDependent?.Reset();
         state?.FontDependency?.Reset();
         state?.MediaPreferenceDependency?.Reset();
         state?.SelectorDependent?.Reset();
-        var registrations = CssRegisteredProperties.For(element);
+        var registrations = CssRegisteredProperties.For(CssSelection.Origin(element) ?? element);
         if (registrations.Count > 0 || state?.RegisteredProperties is { Count: > 0 })
         {
             state ??= EnsureState(element);
             state.RegisteredProperties = registrations;
         }
-        if (state?.InlineText is { } inlineText && state.InlineVersion != CssPropertyRegistry.Version)
+        var inlineState = CssFirstLine.AliasOrigin(element)?.CssRuntimeState ?? state;
+        if (inlineState?.InlineText is { } inlineText && inlineState.InlineVersion != CssPropertyRegistry.Version)
         {
-            state.InlineDeclarations = GetOrCompileInline(inlineText);
-            state.InlineVersion = CssPropertyRegistry.Version;
+            inlineState.InlineDeclarations = GetOrCompileInline(inlineText);
+            inlineState.InlineVersion = CssPropertyRegistry.Version;
         }
 
-        var inline = state?.InlineDeclarations;
+        var inline = inlineState?.InlineDeclarations;
 
         List<MatchedRule>? matched = null;
         var scopeInfo = default(ScopeInfo);
@@ -172,6 +177,8 @@ internal static class CssEngine
         {
             matched = CollectMatchedRules(element, ref scopeInfo);
         }
+        if (CssGeneratedContent.Kind(element).IsMarker())
+            (matched ??= []).Insert(0, new(int.MinValue, 0, long.MinValue, CssListProperties.MarkerDefaults, false, [-1]));
         state = element.CssRuntimeState;
 
         if ((matched is null || matched.Count == 0) && inline is not { Length: > 0 })
@@ -179,7 +186,7 @@ internal static class CssEngine
             // Nothing applies; clear whatever CSS previously owned (DP layers AND layout state).
             if (state?.Applied is { Count: > 0 } || state?.AppliedLayout is not null ||
                 state?.CustomProperties is { Count: > 0 } || registrations.Count > 0 ||
-                CssMatcher.CssAncestor(element)?.CssRuntimeState?.CustomProperties is { Count: > 0 })
+                CssMatcher.CssAncestor(element)?.CssRuntimeState?.CustomProperties is { Count: > 0 } || CssSelection.IsProjection(element))
             {
                 ApplyMergedDeclarations(element, Array.Empty<MergedDeclaration>());
             }
@@ -194,6 +201,8 @@ internal static class CssEngine
                 UpdateDependencyTracking(element, EnsureState(element), in scopeInfo);
             }
 
+            CssGeneratedContent.Update(element, scopeInfo.GeneratedTargets, scopeInfo.TypographySignature);
+            if (!CssFirstLine.IsProjection(element) && !CssSelection.IsProjection(element) && CssFirstLetter.Origin(element.Target) is null) CssCounters.NoteEvaluated(element);
             return;
         }
 
@@ -299,6 +308,8 @@ internal static class CssEngine
         var finalState = EnsureState(element);
         finalState.CascadeVersion = s_cascadeVersion;
         UpdateDependencyTracking(element, finalState, in scopeInfo);
+        CssGeneratedContent.Update(element, scopeInfo.GeneratedTargets, scopeInfo.TypographySignature);
+        if (!CssFirstLine.IsProjection(element) && !CssSelection.IsProjection(element) && CssFirstLetter.Origin(element.Target) is null) CssCounters.NoteEvaluated(element);
     }
 
     private static List<MergedDeclaration> MergeCandidates(
@@ -362,7 +373,10 @@ internal static class CssEngine
                     group.RemoveAll(candidate => candidate.Layer.SequenceEqual(winner.Layer));
                     break;
                 default:
-                    return null;
+                    // Marker defaults model the UA origin. Author-origin revert
+                    // must retain them instead of inheriting the principal text.
+                    return CssGeneratedContent.Kind(element).IsMarker()
+                        ? group.FirstOrDefault(candidate => candidate.ScopeRank == int.MinValue) : null;
             }
         }
         return null;
@@ -372,6 +386,11 @@ internal static class CssEngine
         bool resolveVariables, IReadOnlyDictionary<string, CssCustomPropertyValue>? selectedCustom,
         IReadOnlyDictionary<string, CssPropertyRegistration>? registrations)
     {
+        if (candidate.Declaration.Value is CssRawCascadeValue raw)
+        {
+            if (!resolveVariables || !CssCustomProperties.TrySubstitute(raw.Text, element, out var value, candidate.Declaration.Name)) return null;
+            return CssPropertyMetadata.WideKeyword(value) is { } keyword && keyword.StartsWith("revert", StringComparison.Ordinal) ? CssRevertValue.FromKeyword(keyword) : null;
+        }
         if (candidate.Declaration.Value is CssCustomPropertyValue custom)
         {
             if (!resolveVariables || selectedCustom is null ||
@@ -463,6 +482,8 @@ internal static class CssEngine
     {
         var comparison = a.Declaration.Important.CompareTo(b.Declaration.Important);
         if (comparison != 0) return comparison;
+        comparison = b.PresentationHint.CompareTo(a.PresentationHint);
+        if (comparison != 0) return comparison;
         comparison = a.Inline.CompareTo(b.Inline);
         if (comparison != 0) return comparison;
         comparison = CssLayerOrder.Compare(a.Layer, b.Layer);
@@ -481,6 +502,7 @@ internal static class CssEngine
     {
         List<MatchedRule>? matched = null;
         var scopeRank = 0;
+        MatchSheets(element, CssInitialLetterProperties.LanguageDefaults, int.MinValue, ref matched, ref scopeInfo);
 
         var applicationSheets = ApplicationStyleSheetsProvider?.Invoke();
         if (applicationSheets is { Count: > 0 })
@@ -492,7 +514,7 @@ internal static class CssEngine
 
         // Ancestor-scoped sheets: farthest first so nearer scopes rank higher.
         List<CssNode>? scopedAncestors = null;
-        for (var current = element; current is not null; current = CssMatcher.CssAncestor(current))
+        for (var current = CssSelection.Origin(element) ?? CssFirstLine.RuleOrigin(element) ?? element; current is not null; current = CssMatcher.CssAncestor(current))
         {
             if (current.CssRuntimeState?.ScopedStyleSheets is { Count: > 0 })
             {
@@ -517,41 +539,66 @@ internal static class CssEngine
         IReadOnlyList<CssStyleSheet> sheets,
         int scopeRank,
         ref List<MatchedRule>? matched,
-        ref ScopeInfo scopeInfo, CssNode? scopeRoot = null)
+        ref ScopeInfo scopeInfo, CssNode? scopeRoot = null, bool snapshot = false)
     {
+        var subject = CssSelection.Origin(element) ?? CssFirstLine.RuleOrigin(element) ?? element;
         CssMatchSession? session = null;
         for (var sheetIndex = 0; sheetIndex < sheets.Count; sheetIndex++)
         {
             var sheet = sheets[sheetIndex];
             var layerOrder = scopeInfo.Layers ??= new CssLayerOrder();
             foreach (var layer in sheet.Layers)
-                if (layer.Condition is null || layer.Condition.Evaluate(element)) layerOrder.GetKey(layer.Name);
+                if (layer.Condition is null || layer.Condition.Evaluate(subject)) layerOrder.GetKey(layer.Name);
             scopeInfo.AncestorStates |= sheet.AncestorStateUnion;
             scopeInfo.AnyStates |= sheet.AnyStateUnion;
             scopeInfo.UsesId |= sheet.UsesId;
+            if (sheet.HasStructuralDependencies)
+            {
+                scopeInfo.Structural = true;
+                if (!snapshot) s_structuralSelectors = true;
+                if (sheet.StructuralAttributeNames.Length > 0)
+                    (scopeInfo.AttributeNames ??= new(StringComparer.Ordinal)).UnionWith(sheet.StructuralAttributeNames);
+            }
             foreach (var rule in sheet.Rules)
             {
-                if (rule.HasStructuralDependencies)
-                {
-                    scopeInfo.Structural = true;
-                    s_structuralSelectors = true;
-                    foreach (var selector in rule.DependencySelectors)
-                        foreach (var name in selector.AttributeNames()) (scopeInfo.AttributeNames ??= new(StringComparer.Ordinal)).Add(name);
-                }
                 var bestSpecificity = -1;
                 var bestFromState = false;
                 var bestProximity = int.MaxValue;
                 if (rule.Scope is not null || rule.Selectors.Any(s => s.ContainsNesting)) session ??= new();
-                var observer = rule.HasStructuralDependencies || rule.Selectors.Any(s => s.HasAnyState) ? CssSelectorDependencies.For(element) : null;
+                var observer = !snapshot && (rule.HasStructuralDependencies || rule.Selectors.Any(s => s.HasAnyState)) ? CssSelectorDependencies.For(element) : null;
                 var baseContext = new CssMatchContext(scopeRoot, scopeRoot, Session: session, Observer: observer);
                 var scopeStates = rule.Scope?.Selectors().Any(s => s.HasAnyState) == true;
                 IEnumerable<CssMatchContext> contexts = rule.Scope is null ? [baseContext]
-                    : rule.Scope.Bindings(element, scopeRoot, true, session!, observer).Select(binding => baseContext with { Scope = binding.Root, Bindings = binding });
+                    : rule.Scope.Bindings(subject, scopeRoot, true, session!, observer).Select(binding => baseContext with { Scope = binding.Root, Bindings = binding });
                 foreach (var context in contexts)
                 {
-                    var proximity = rule.Scope is null ? int.MaxValue : CssScopeRule.Distance(element, context.Scope!);
+                    var proximity = rule.Scope is null ? int.MaxValue : CssScopeRule.Distance(subject, context.Scope!);
                     foreach (var selector in rule.Selectors)
                     {
+                        if (selector.PseudoElement != CssPseudoElement.None && CssGeneratedContent.Kind(element) == CssPseudoElement.None)
+                        {
+                            if (CssMatcher.MatchesOrigin(element, selector, false, context))
+                            {
+                                scopeInfo.GeneratedTargets |= selector.PseudoElement;
+                                scopeInfo.SelfStates |= selector.RightmostStates;
+                                if ((selector.PseudoElement & (CssPseudoElement.FirstLine | CssPseudoElement.FirstLetter)) != 0 &&
+                                    CssMatcher.MatchesOrigin(element, selector, true, context) &&
+                                    (rule.Condition is null || rule.Condition.Evaluate(subject)))
+                                    scopeInfo.TypographySignature = HashCode.Combine(scopeInfo.TypographySignature,
+                                        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(rule), selector.Specificity, scopeRank, proximity);
+                            }
+                            continue;
+                        }
+                        if (selector.PseudoElement == CssPseudoElement.Marker &&
+                            CssGeneratedContent.Kind(element) is CssPseudoElement.Before or CssPseudoElement.After)
+                        {
+                            if (CssMatcher.MatchesOrigin(element, selector, false, context))
+                            {
+                                scopeInfo.GeneratedTargets |= CssPseudoElement.Marker;
+                                scopeInfo.SelfStates |= selector.RightmostStates;
+                            }
+                            continue;
+                        }
                         var canImprove = selector.Specificity > bestSpecificity || selector.Specificity == bestSpecificity && proximity < bestProximity;
                         if (!selector.HasAnyState)
                         {
@@ -574,8 +621,10 @@ internal static class CssEngine
                     }
                 }
 
-                if (bestSpecificity >= 0 && (rule.Condition is null || rule.Condition.Evaluate(element)))
+                if (bestSpecificity >= 0 && (rule.Condition is null || rule.Condition.Evaluate(subject)))
                 {
+                    scopeInfo.TypographySignature = HashCode.Combine(scopeInfo.TypographySignature,
+                        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(rule), bestSpecificity, scopeRank, bestProximity);
                     (matched ??= new List<MatchedRule>()).Add(new MatchedRule(
                         scopeRank, bestSpecificity, ((long)sheetIndex << 32) | (uint)rule.RuleIndex, rule, bestFromState, layerOrder.GetKey(rule.LayerName), bestProximity));
                 }
@@ -590,6 +639,7 @@ internal static class CssEngine
     {
         state.SelfStates = scopeInfo.SelfStates;
         state.ScopeAncestorStates = scopeInfo.AncestorStates;
+        state.ScopeStates = scopeInfo.AnyStates;
         state.ScopeUsesId = scopeInfo.UsesId;
         state.StructuralDependencies = scopeInfo.Structural;
         state.NativeAttributeNames = scopeInfo.AttributeNames;
@@ -643,7 +693,12 @@ internal static class CssEngine
 
         if (state.StructuralDependencies)
         {
-            if (MapStateMask(dp) != CssStateMask.None || dp.Name == "Name") InvalidateSelectorDependents(element);
+            // Structural selectors require broad invalidation only for states
+            // actually used in this scope. A scrollbar's Value/Minimum/Maximum
+            // updates otherwise re-cascade the whole window on every scroll tick
+            // merely because an unrelated [attribute] selector exists.
+            if ((MapStateMask(dp) & state.ScopeStates) != CssStateMask.None ||
+                dp.Name == "Name") InvalidateSelectorDependents(element);
             else if (state.NativeAttributeNames?.Contains(dp.Name) == true)
             {
                 var current = element.HasLocalValue(dp) ? element.GetValue(dp) : DependencyProperty.UnsetValue;
@@ -1055,6 +1110,7 @@ internal static class CssEngine
                 foreach (var observer in boxObservers.Values) observer.Dispose();
             if (scratch.ColorBrushObservers is { } brushObservers)
                 foreach (var observer in brushObservers) observer.Dispose();
+            scratch.NativeForegroundObserver?.Dispose();
             element.CssRuntimeState = original;
         }
     }
@@ -1063,6 +1119,18 @@ internal static class CssEngine
         List<CascadeCandidate>? boxEdges = null, CssLengthContext? lengthOverride = null, bool preview = false,
         Dictionary<string, List<CascadeCandidate>>? cascadeCandidates = null)
     {
+        var pseudo = CssGeneratedContent.Kind(element);
+        if (pseudo.IsMarker() || pseudo is CssPseudoElement.FirstLetter or CssPseudoElement.FirstLine or CssPseudoElement.Selection or CssPseudoElement.Placeholder || CssFirstLine.IsProjection(element))
+        {
+            bool Applies(string name) => pseudo == CssPseudoElement.Placeholder ? CssPlaceholder.Applies(name) : pseudo == CssPseudoElement.Selection ? CssSelection.Applies(name) : pseudo.IsMarker()
+                ? CssListProperties.AppliesToMarker(name) : pseudo == CssPseudoElement.FirstLetter ? CssFirstLetter.Applies(name) :
+                    CssFirstLine.AliasOrigin(element) is not null ? CssPropertyMetadata.IsInherited(name) || CssFirstLine.Applies(name) : CssFirstLine.Applies(name);
+            declarations = declarations.Where(d => Applies(d.Declaration.Name)).ToArray();
+            if (pseudo.IsMarker() || pseudo == CssPseudoElement.Placeholder) boxEdges = null;
+            if (cascadeCandidates is not null)
+                cascadeCandidates = cascadeCandidates.Where(pair => Applies(pair.Key))
+                    .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        }
         var custom = new Dictionary<string, CssCustomPropertyValue>(StringComparer.Ordinal);
         void CollectCustomDeclarations()
         {
@@ -1073,6 +1141,7 @@ internal static class CssEngine
         }
         CollectCustomDeclarations();
         var parent = CssMatcher.CssAncestor(element);
+        var customParent = CssSelection.Origin(element) ?? CssFirstLine.CustomParent(element) ?? parent;
         var state = EnsureState(element);
         var previousFontWidth = state.FontStretchPercentage;
         state.ContextualColors = null;
@@ -1082,6 +1151,7 @@ internal static class CssEngine
         state.ObservedInheritedColors?.Clear();
         state.ObservedInheritedBoxes?.Clear();
         CssColorBrushObserver.Begin(state);
+        CssUsedForeground.Begin(state);
         var previousCustomProperties = state.CustomProperties;
         var previousAttrTaintedProperties = state.AttrTaintedProperties;
         var lengths = lengthOverride ?? (declarations.Count > 0 || boxEdges is { Count: > 0 } || state.RegisteredProperties is { Count: > 0 }
@@ -1095,12 +1165,12 @@ internal static class CssEngine
             if (contextDependentCustom)
             {
                 registry ??= new Dictionary<string, CssPropertyRegistration>(StringComparer.Ordinal);
-                state.CustomProperties = computation = new(element, parent?.CssRuntimeState?.CustomProperties,
-                    parent?.CssRuntimeState?.AttrTaintedProperties, custom, registry, lengths,
+                state.CustomProperties = computation = new(element, customParent?.CssRuntimeState?.CustomProperties,
+                    customParent?.CssRuntimeState?.AttrTaintedProperties, custom, registry, lengths,
                     declarations.FirstOrDefault(d => d.Declaration.Name == "font-size").Declaration.Value,
                     declarations.FirstOrDefault(d => d.Declaration.Name == "color").Declaration.Value,
                     declarations.FirstOrDefault(d => d.Declaration.Name == "line-height").Declaration.Value,
-                    declarations.Where(d => d.Declaration.Name is "font-family" or "font-weight" or "font-style")
+                    declarations.Where(d => d.Declaration.Name is "font-family" or "font-weight" or "font-style" or "font-stretch" or "font-variation-settings" or "font-optical-sizing" or "font-size-adjust")
                         .ToDictionary(d => d.Declaration.Name, d => d.Declaration.Value));
                 state.AttrTaintedProperties = computation.AttrTaintedProperties;
                 state.CustomProperties = computation.Compute();
@@ -1110,10 +1180,10 @@ internal static class CssEngine
             {
                 computation = null;
                 var rawCustom = custom.ToDictionary(pair => pair.Key, pair => pair.Value.RawValue, StringComparer.Ordinal);
-                state.CustomProperties = CssCustomProperties.Compute(parent?.CssRuntimeState?.CustomProperties,
+                state.CustomProperties = CssCustomProperties.Compute(customParent?.CssRuntimeState?.CustomProperties,
                     rawCustom, element);
                 state.AttrTaintedProperties = CssCustomProperties.ComputeTainted(
-                    parent?.CssRuntimeState?.AttrTaintedProperties, rawCustom, state.CustomProperties, element);
+                    customParent?.CssRuntimeState?.AttrTaintedProperties, rawCustom, state.CustomProperties, element);
                 state.RegisteredValues = null;
             }
         }
@@ -1136,6 +1206,15 @@ internal static class CssEngine
         if (!preview)
             CssContainerQueries.CustomPropertiesChanged(element, previousCustomProperties, state.CustomProperties,
                 previousAttrTaintedProperties, state.AttrTaintedProperties);
+        if (CssSelection.IsProjection(element))
+        {
+            CssSelection.BeginCascade(element, declarations.Select(d => d.Declaration));
+            var inherited = new List<MergedDeclaration>(declarations);
+            foreach (var name in CssSelection.Properties)
+                if (!declarations.Any(d => d.Declaration.Name == name))
+                    inherited.Add(new(new CssCompiledDeclaration(name, new CssWideValue(name, "inherit"), false), false));
+            declarations = inherited;
+        }
         var logicalRightToLeft = false;
         if (boxEdges is { Count: > 0 } ||
             declarations.Any(static item => item.Declaration.Name == "text-align-all"))
@@ -1162,16 +1241,18 @@ internal static class CssEngine
         {
             var slots = new CssSlotAccumulator { LogicalRightToLeft = logicalRightToLeft };
 
-            // Font-family/weight/style/width establish the rulers for ex/cap/ch/ic.
+            // Font matching and explicit variation coordinates establish ex/cap/ch/ic.
             // Probe CSS layers without disturbing native local values or bindings.
             var fontContext = lengths.Fonts ?? CssFontContext.Initial;
-            foreach (var fontName in new[] { "font-family", "font-weight", "font-style", "font-stretch" })
+            foreach (var fontName in new[] { "font-family", "font-weight", "font-style", "font-stretch", "font-variation-settings", "font-optical-sizing" })
             {
                 var merged = declarations.FirstOrDefault(d => d.Declaration.Name == fontName);
                 if (merged.Declaration.Value is null) continue;
                 var nativeName = fontName == "font-family" ? "FontFamily" : fontName == "font-weight" ? "FontWeight" :
-                    fontName == "font-style" ? "FontStyle" : "FontStretch";
-                if (CssDependencyPropertyLookup.Find(element.GetType(), nativeName) is { } native && element.HasLocalOrAnimatedValue(native)) continue;
+                    fontName == "font-style" ? "FontStyle" : fontName == "font-stretch" ? "FontStretch" : fontName == "font-variation-settings" ? "CssFontVariationSettings" : "CssFontOpticalSizing";
+                var native = fontName == "font-variation-settings" ? CssFontVariationSettings.SettingsProperty : fontName == "font-optical-sizing" ? CssFontOpticalSizing.AutoProperty : CssDependencyPropertyLookup.Find(element.GetType(), nativeName);
+                if (native is not null && (element.HasLocalOrAnimatedValue(native) ||
+                    fontName is "font-variation-settings" or "font-optical-sizing" && element.Target.HasCssAnimatedValue(native))) continue;
                 var fontSink = new CssSetterCollector();
                 var faceValue = computation?.FontPropertyCycle(fontName) == true ? new CssWideValue(fontName, "unset") : merged.Declaration.Value;
                 faceValue.TryApply(new CssApplyContext(element, lengths, slots), fontSink);
@@ -1216,6 +1297,22 @@ internal static class CssEngine
                 }
 
                 break;
+            }
+
+            var adjustDeclaration = declarations.FirstOrDefault(d => d.Declaration.Name == "font-size-adjust").Declaration.Value;
+            if (adjustDeclaration is not null && !element.HasLocalOrAnimatedValue(CssFontSizeAdjust.ValueProperty) &&
+                !element.Target.HasCssAnimatedValue(CssFontSizeAdjust.ValueProperty))
+            {
+                var adjustSink = new CssSetterCollector();
+                var adjustSource = computation?.FontPropertyCycle("font-size-adjust") == true ? new CssWideValue("font-size-adjust", "unset") : adjustDeclaration;
+                adjustSource.TryApply(new CssApplyContext(element, lengths, slots), adjustSink);
+                if (adjustSink.Values.TryGetValue(CssFontSizeAdjust.ValueProperty, out var adjustment))
+                {
+                    fontContext = (lengths.Fonts ?? CssFontContext.Initial);
+                    fontContext = fontContext with { Element = fontContext.Element.With("CssFontSizeAdjust", adjustment.Value) };
+                    if (fontContext.IsRoot) fontContext = fontContext with { Root = fontContext.Element };
+                    lengths = lengths.WithFonts(fontContext);
+                }
             }
 
             var lineDeclaration = declarations.FirstOrDefault(d => d.Declaration.Name == "line-height").Declaration.Value;
@@ -1306,12 +1403,14 @@ internal static class CssEngine
             CssInheritedColorObserver.Finish(state);
             CssInheritedBoxObserver.Finish(state);
             CssColorBrushObserver.Finish(state);
+            CssUsedForeground.Finish(state);
         }
         return collector;
     }
 
     internal static CssLengthContext BuildLengthContext(CssNode element, CssNode? dependent = null)
     {
+        if (element.Target is CssXmlElement xml) return xml.Lengths;
         for (var current = element; current is not null; current = current.FrameworkParent)
         {
             var inheritedState = EnsureState(current);
@@ -1320,7 +1419,7 @@ internal static class CssEngine
             var observed = current;
             current.PropertyChangedInternal += (property, _, _) =>
             {
-                if (property.Name is "FontSize" or "FontFamily" or "FontWeight" or "FontStyle" or "FontStretch" or "LineHeight" or "CssLineHeight" or "Foreground" or "Visibility" or "FlowDirection")
+                if (property.Name is "FontSize" or "FontFamily" or "FontWeight" or "FontStyle" or "FontStretch" or "CssFontWidthPercentage" or "CssFontVariationSettings" or "CssFontOpticalSizing" or "CssFontSizeAdjust" or "LineHeight" or "CssLineHeight" or "Foreground" or "Visibility" or "FlowDirection")
                     CssEvaluationScheduler.InvalidateSubtree(observed);
             };
         }
@@ -1401,8 +1500,16 @@ internal static class CssEngine
             EnsureState(element).AppliedLayout = newLayout;
             state = element.CssRuntimeState;
             element.InvalidateMeasure();
-            if ((oldLayout?.Position == CssPositionMode.Absolute) !=
-                (newLayout?.Position == CssPositionMode.Absolute) &&
+            if (element.Target is FrameworkElement positionedElement)
+            {
+                if ((oldLayout?.IsOutOfFlow == true) != (newLayout?.IsOutOfFlow == true))
+                    CssScrollProperties.SuppressAnchoringForPositionChange(positionedElement);
+                CssPositionedLayout.StyleChanged(positionedElement);
+                if ((oldLayout?.Position ?? CssPositionMode.Static) != (newLayout?.Position ?? CssPositionMode.Static))
+                    CssPositionedLayout.ContainingBlockChanged(positionedElement);
+            }
+            if ((oldLayout?.IsOutOfFlow == true) !=
+                (newLayout?.IsOutOfFlow == true) &&
                 element.Target is UIElement visibilityElement &&
                 CssDisplayProperties.HasVisibilityDeclarations)
                 CssDisplayProperties.RefreshVisibility(visibilityElement);
@@ -1496,6 +1603,12 @@ internal static class CssEngine
             newApplied.TryGetValue(CssAnimations.DataProperty, out var animation)
                 ? animation.Value as CssAnimationData : null);
         appliedState.HasAppliedStyle = true;
+        // Authorship can change a native fallback even when the CSS value is
+        // numerically unchanged (for example explicit border-spacing:0).
+        if (element.Target is Jalium.UI.Documents.FlowDocument document &&
+            (oldApplied?.ContainsKey(CssTableProperties.SpacingProperty) == true) !=
+            (newApplied?.ContainsKey(CssTableProperties.SpacingProperty) == true))
+            document.NotifyPaginationStyleChanged();
         appliedState.HadRenderedStyle = element.Target is UIElement { Visibility: not Visibility.Collapsed };
         if (element.Target is UIElement displayElement &&
             (newValues.ContainsKey(CssDisplayProperties.SpecificationProperty) ||

@@ -10,6 +10,8 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ContentPresenter : FrameworkElement
 {
+    protected override bool SupportsCssContentLayout => true;
+    protected override bool SupportsCssInlineContentLayout => GetType() == typeof(ContentPresenter);
     #region Dependency Properties
 
     /// <summary>
@@ -123,6 +125,8 @@ public class ContentPresenter : FrameworkElement
     // container is rebound to a new item under the SAME template, the existing subtree is
     // reused (DataContext swap) instead of rebuilt — see OnContentChanged.
     private DataTemplate? _generatedFromTemplate;
+
+    internal FrameworkElement? PresentedContent => _contentElement;
 
     /// <summary>
     /// Releases the presented visual before the owning control discards this
@@ -332,12 +336,19 @@ public class ContentPresenter : FrameworkElement
             return fe;
         }
 
+        // Data and text templates also create visuals before AddVisualChild can
+        // inherit exclusion. Their constructor notifications must stay excluded.
+        using var ignoredCreation = IsDiagnosticsIgnored
+            ? Diagnostics.DiagnosticsScope.BeginIgnoredCreation()
+            : (Diagnostics.DiagnosticsScope.IgnoredCreationScope?)null;
+
         var template = ChooseTemplate();
         if (template != null)
         {
             var templateContent = template.LoadContent();
             if (templateContent != null)
             {
+                PromoteDataTemplateLiteralsForTriggers(template, templateContent);
                 templateContent.DataContext = content;
                 if (ReferenceEquals(template, ContentTemplate))
                 {
@@ -365,6 +376,21 @@ public class ContentPresenter : FrameworkElement
         var otherTb = new TextBlock { Text = formattedText };
         ApplyTextBlockFormatting(otherTb, foreground);
         return otherTb;
+    }
+
+    /// <summary>
+    /// Moves the literal values of a freshly loaded DataTemplate instance to the ParentTemplate
+    /// layer when the template declares triggers: those triggers write the ParentTemplateTrigger
+    /// layer, which a local literal would outrank. Call it before the instance gets its
+    /// DataContext, so nothing a binding projects into it is reached. Instances of trigger-less
+    /// templates keep plain local values.
+    /// </summary>
+    internal static void PromoteDataTemplateLiteralsForTriggers(DataTemplate template, FrameworkElement templateContent)
+    {
+        if (template.Triggers.Count > 0)
+        {
+            Control.PromoteDataTemplateLocalValuesRecursive(templateContent);
+        }
     }
 
     /// <summary>Chooses the explicit, selected, or implicit template for the current content.</summary>
@@ -494,48 +520,47 @@ public class ContentPresenter : FrameworkElement
         }
     }
 
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == Control.ForegroundProperty || e.Property == Control.FontFamilyProperty ||
+            e.Property == Control.FontSizeProperty || e.Property == Control.FontStyleProperty ||
+            e.Property == Control.FontWeightProperty)
+        {
+            if (_contentElement is TextBlock text) ApplyTextBlockFormatting(text, FindForegroundBrush());
+            else if (_contentElement is AccessText access) ApplyAccessTextFormatting(access);
+        }
+    }
+
     private void ApplyTextBlockFormatting(TextBlock textBlock, Brush? foreground)
     {
-        if (foreground != null)
-        {
-            textBlock.Foreground = foreground;
-        }
-
-        if (TemplatedParent is Control templatedControl)
-        {
-            textBlock.FontFamily = templatedControl.FontFamily;
-            textBlock.FontSize = templatedControl.FontSize;
-            textBlock.FontStyle = templatedControl.FontStyle;
-            textBlock.FontWeight = templatedControl.FontWeight;
-            return;
-        }
-
-        Visual? current = ParentVisual;
-        while (current != null)
-        {
-            if (current is Control control)
-            {
-                textBlock.FontFamily = control.FontFamily;
-                textBlock.FontSize = control.FontSize;
-                textBlock.FontStyle = control.FontStyle;
-                textBlock.FontWeight = control.FontWeight;
-                return;
-            }
-
-            current = current.VisualParent;
-        }
+        // Only synthesized text belongs to this presenter. User-supplied visuals
+        // and DataTemplate roots keep their own formatting.
+        if (Content is UIElement || _generatedFromTemplate != null) return;
+        textBlock.Foreground = GetTextFormattingValue(Control.ForegroundProperty) as Brush ?? foreground;
+        textBlock.FontFamily = (FontFamily)GetTextFormattingValue(Control.FontFamilyProperty)!;
+        textBlock.FontSize = (double)GetTextFormattingValue(Control.FontSizeProperty)!;
+        textBlock.FontStyle = (FontStyle)GetTextFormattingValue(Control.FontStyleProperty)!;
+        textBlock.FontWeight = (FontWeight)GetTextFormattingValue(Control.FontWeightProperty)!;
     }
 
     private void ApplyAccessTextFormatting(AccessText accessText)
     {
-        if (TemplatedParent is Control templatedControl)
-        {
-            accessText.FontFamily = templatedControl.FontFamily;
-            accessText.FontSize = templatedControl.FontSize;
-            accessText.FontStyle = templatedControl.FontStyle;
-            accessText.FontWeight = templatedControl.FontWeight;
-            accessText.Foreground = templatedControl.Foreground;
-        }
+        if (Content is UIElement || _generatedFromTemplate != null) return;
+        accessText.Foreground = GetTextFormattingValue(Control.ForegroundProperty) as Brush;
+        accessText.FontFamily = (FontFamily)GetTextFormattingValue(Control.FontFamilyProperty)!;
+        accessText.FontSize = (double)GetTextFormattingValue(Control.FontSizeProperty)!;
+        accessText.FontStyle = (FontStyle)GetTextFormattingValue(Control.FontStyleProperty)!;
+        accessText.FontWeight = (FontWeight)GetTextFormattingValue(Control.FontWeightProperty)!;
+    }
+
+    private object? GetTextFormattingValue(DependencyProperty property)
+    {
+        // A template is built before its root is connected to the owner. During
+        // that interval inherited values are still defaults; use the owner's
+        // effective value while preserving explicit formatting on the presenter.
+        return GetValueSourceInternal(property).BaseValueSource == BaseValueSource.Default && TemplatedParent is Control owner
+            ? owner.GetValue(property) : GetValue(property);
     }
 
     private void ApplyTemplateBindings()
@@ -620,22 +645,45 @@ public class ContentPresenter : FrameworkElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        if (_contentElement == null)
+        // Ancestor attachment can change inheritance without changing a local
+        // property on this presenter. Refresh synthesized text after the final
+        // template scope is connected, before measuring its current typography.
+        if (_contentElement is TextBlock text) ApplyTextBlockFormatting(text, FindForegroundBrush());
+        else if (_contentElement is AccessText access) ApplyAccessTextFormatting(access);
+        var insets = Styling.CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? availableSize.Width);
+        var contentAvailable = Styling.CssBoxMetrics.InnerSize(availableSize, insets);
+        var contentSize = default(Size);
+        if (_contentElement != null && _contentElement is not FrameworkElement { CssLayout.IsOutOfFlow: true })
+        {
+            if (_contentElement is FrameworkElement { CssLayout: not null })
+                Styling.CssLayoutBox.MeasureWithContainingBlock(_contentElement, contentAvailable, CssChildContainingSize(contentAvailable));
+            else
+                _contentElement.Measure(contentAvailable);
+            contentSize = _contentElement.DesiredSize;
+        }
+        MeasureCssLayoutAbsoluteChildren(availableSize);
+        if (_contentElement == null && insets == default)
             return default(Size);
-
-        _contentElement.Measure(availableSize);
-        return _contentElement.DesiredSize;
+        return new Size(
+            Math.Max(0, contentSize.Width + insets.Left + insets.Right),
+            Math.Max(0, contentSize.Height + insets.Top + insets.Bottom));
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        if (_contentElement != null)
+        var insets = Styling.CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? finalSize.Width);
+        if (_contentElement != null && _contentElement is not FrameworkElement { CssLayout.IsOutOfFlow: true })
         {
-            _contentElement.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
+            var contentRect = new Rect(
+                insets.Left,
+                insets.Top,
+                Math.Max(0, finalSize.Width - insets.Left - insets.Right),
+                Math.Max(0, finalSize.Height - insets.Top - insets.Bottom));
+            _contentElement.Arrange(contentRect);
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
         }
-
+        ArrangeCssLayoutAbsoluteChildren(finalSize);
         return finalSize;
     }
 

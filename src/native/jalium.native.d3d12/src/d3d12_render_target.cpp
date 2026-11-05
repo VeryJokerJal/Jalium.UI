@@ -1,4 +1,5 @@
 #include "d3d12_render_target.h"
+#include "d3d12_window_composition.h"
 #include "d3d12_resources.h"
 #include "d3d12_retained_layer.h"
 #include "d3d12_triangulate.h"
@@ -7,6 +8,7 @@
 #include "jalium_text_stats.h"
 #include "jalium_flatten.h"  // PreferAnalyticFill / PathCommandExtent / TransformedExtent
 #include "jalium_path_clip.h"
+#include "jalium_path_stats.h"
 #include <d3dcompiler.h>   // D3DCompile — runtime HLSL→DXBC for DrawShaderEffectFromSource
 #pragma comment(lib, "d3dcompiler.lib")
 #include <cstring>
@@ -20,6 +22,19 @@
 namespace jalium {
 
 namespace {
+
+class ScopedAutoPathWork {
+public:
+    ScopedAutoPathWork(uint64_t& points, uint32_t& calls, uint64_t& elapsed,
+                      uint32_t count, bool track, bool measure)
+        : elapsed_(elapsed), start_(track && measure ? path_stats::NowNs() : 0) {
+        if (track) { points += count; ++calls; }
+    }
+    ~ScopedAutoPathWork() { if (start_) elapsed_ += path_stats::NowNs() - start_; }
+private:
+    uint64_t& elapsed_;
+    uint64_t start_;
+};
 
 bool VelloUiGeometryFastPathEnabled()
 {
@@ -132,8 +147,23 @@ bool TryGetAdapterDescByLuid(
 
 constexpr float kVelloUiGeometryMaxExtentPx = 160.0f;
 
-DWORD GetFrameLatencyWaitTimeoutMs(HWND hwnd)
+uint64_t FrameLatencyNowNs()
 {
+    static const uint64_t frequency = [] {
+        LARGE_INTEGER value;
+        QueryPerformanceFrequency(&value);
+        return static_cast<uint64_t>(value.QuadPart);
+    }();
+    LARGE_INTEGER value;
+    QueryPerformanceCounter(&value);
+    const auto ticks = static_cast<uint64_t>(value.QuadPart);
+    return ticks / frequency * 1'000'000'000ULL +
+        ticks % frequency * 1'000'000'000ULL / frequency;
+}
+
+DWORD GetFrameLatencyWaitTimeoutMs(HWND hwnd, uint64_t* refreshPeriodNs = nullptr)
+{
+    if (refreshPeriodNs) *refreshPeriodNs = 0;
     constexpr DWORD kFallbackTimeoutMs = 25;
     if (!hwnd) return kFallbackTimeoutMs;
 
@@ -156,6 +186,8 @@ DWORD GetFrameLatencyWaitTimeoutMs(HWND hwnd)
     DWORD refreshHz = mode.dmDisplayFrequency;
     if (refreshHz < 24 || refreshHz > 1000)
         return kFallbackTimeoutMs;
+
+    if (refreshPeriodNs) *refreshPeriodNs = 1'000'000'000ULL / refreshHz;
 
     // Wait for one physical refresh plus enough reserve for Windows timer
     // quantisation, DWM scheduling and hybrid-GPU presentation routing.
@@ -238,8 +270,8 @@ D3D12RenderTarget::D3D12RenderTarget(D3D12Backend* backend, void* hwnd, int32_t 
 {
     width_ = width;
     height_ = height;
-    frameLatencyWaitTimeoutMs_ = GetFrameLatencyWaitTimeoutMs(hwnd_);
-    // Default engine: Auto → Vello on D3D12 (highest performance)
+    frameLatencyWaitTimeoutMs_ = GetFrameLatencyWaitTimeoutMs(hwnd_, &frameRefreshPeriodNs_);
+    // Auto starts with the UI engine and can adapt sustained complex paths.
     activeEngine_ = ResolveRenderingEngine(JALIUM_ENGINE_AUTO, JALIUM_BACKEND_D3D12);
     pendingEngine_ = activeEngine_;
 }
@@ -258,6 +290,7 @@ D3D12RenderTarget::~D3D12RenderTarget() {
     if (dcompTarget_) dcompTarget_->SetRoot(nullptr);
     if (dcompSwapChainVisual_) dcompSwapChainVisual_->SetContent(nullptr);
     if (dcompDevice_) dcompDevice_->Commit();
+    windowComposition_.reset();
     directRenderer_.reset();
     if (fenceEvent_) { CloseHandle(fenceEvent_); fenceEvent_ = nullptr; }
     if (frameLatencyWaitable_) { CloseHandle(frameLatencyWaitable_); frameLatencyWaitable_ = nullptr; }
@@ -298,17 +331,9 @@ bool D3D12RenderTarget::Initialize() {
 // ============================================================================
 
 JaliumResult D3D12RenderTarget::SetRenderingEngine(JaliumRenderingEngine engine) {
-    // Resolve Auto to concrete engine for D3D12
-    JaliumRenderingEngine resolved = ResolveRenderingEngine(engine, JALIUM_BACKEND_D3D12);
-    pendingEngine_ = resolved;
-    // If not currently drawing, apply immediately (e.g. during creation)
-    if (!isDrawing_) {
-        activeEngine_ = resolved;
-    }
-    // Only one path engine runs at a time
-    if (directRenderer_) {
-        directRenderer_->SetVelloEnabled(resolved == JALIUM_ENGINE_VELLO);
-    }
+    // The next BeginDraw applies the request. Changing VelloEnabled mid-frame
+    // used to mix two engines in one recording and race the dedicated worker.
+    requestedEngine_.store(engine, std::memory_order_release);
     return JALIUM_OK;
 }
 
@@ -451,11 +476,11 @@ JaliumResult D3D12RenderTarget::ReclaimIdleResources() {
     // which honors the flag and recreates the atlas exactly once on the
     // safe boundary. Lazily rebuilt as text re-renders.
     //
-    // Completed upload staging can be freed without another present. Vello's
-    // working storage and output pool are discarded after two quiet seconds,
-    // once the renderer has observed every submitted frame's fence.
-    if (directRenderer_) {
-        directRenderer_->ReclaimIdleResources();
+    // Completed upload staging can be freed without another present. Reclaim
+    // the live caches only after two quiet seconds and completed submissions;
+    // an idle scan can otherwise land between continuously rendered frames.
+    if (directRenderer_ && directRenderer_->ReclaimIdleResources()) {
+        if (impellerEngine_) impellerEngine_->ReclaimBatchBuffers();
         if (auto* atlas = directRenderer_->GetGlyphAtlas()) {
             atlas->RequestResetAtFrameBoundary();
         }
@@ -476,6 +501,12 @@ bool D3D12RenderTarget::EnsureImpellerEngine() {
     DXGI_FORMAT fmt = directRenderer_ ? directRenderer_->GetSwapChainFormat() : DXGI_FORMAT_R8G8B8A8_UNORM;
     auto engine = std::make_unique<ImpellerD3D12Engine>(backend_->GetDevice(), fmt);
     if (!engine->InitializeEncoder()) return false;
+    static const bool useCoverageRects = [] {
+        wchar_t value[8] = {};
+        DWORD length = GetEnvironmentVariableW(L"JALIUM_COVERAGE_RECT_BATCHES", value, 8);
+        return length == 0 || value[0] != L'0';
+    }();
+    engine->SetCoverageRectBatches(useCoverageRects);
     impellerEngine_ = std::move(engine);
     return true;
 }
@@ -613,31 +644,42 @@ bool D3D12RenderTarget::CreateSwapChain() {
         if (val) free(val);
     }
 
-    // 探测核显仅用于诊断/标签；**不再**据此加深流水线。实测 4 配置 A/B：在这块 UMA 核显
+    // Do not deepen the queue merely because an adapter is integrated. Earlier
+    // measurements on a slow UMA presentation route found no throughput gain:
     // 上 present→ready(DWM flip 释放)≈110ms 是固有成本，改 MaxFrameLatency / buffer 数 /
     // vsync / waitable-vs-fence 都不改变它，只把等待换地方。之前给核显 MFL=2+3buffer 只是
     // 多攒一帧输入延迟、毫无收益，故撤回：核显与独显一样用最低延迟 MFL=1 + 2 buffer。
-    // 需要更深队列可用 JALIUM_SWAPCHAIN_BUFFERS 显式覆盖。
+    // The adaptive policy below instead requires continuous work, bounded
+    // compositor latency, and a measured cadence improvement from its trial.
     {
         JaliumAdapterInfo ai = {};
         isIntegratedAdapter_ = backend_ && backend_->GetAdapterInfo(&ai) == JALIUM_OK
                              && ai.adapterType == JALIUM_GPU_ADAPTER_TYPE_INTEGRATED;
-        // 默认 1（最低排队深度）。【撤回记录 2026-06-10】曾改默认=bufferCount(3)
-        // 当"令牌桶深度"：合成探针实验 hover 158→95ms，但真实应用 idle 攒满
-        // credit 后突发连发多帧，FLIP_SEQUENTIAL 按序展示在慢合成(9fps)下让
-        // 交互帧排队尾 +300ms——比单名额更糟。深桶只该在确证 DWM 走 discard
-        // 式消费的场景由 JALIUM_MAX_FRAME_LATENCY 显式开启（钳到
-        // [1, swapBufferCount_]）。
+        // Always start at one frame. The earlier static three-frame policy
+        // added hundreds of milliseconds on slow, sequential compositors.
+        // The new policy trials at most two frames only under measured budget
+        // pressure and rejects trials that do not improve sustained cadence.
+        // Explicit overrides remain clamped to [1, swapBufferCount_].
         maxFrameLatency_ = 1u;
+        maxFrameLatencyFromEnv_ = false;
+        adaptiveLatencyUnavailable_ = false;
+        frameLatencySelection_.Reset();
+        previousPresentEndNs_ = 0;
         {
-            wchar_t* val = nullptr; size_t len = 0;
-            if (_wdupenv_s(&val, &len, L"JALIUM_MAX_FRAME_LATENCY") == 0 && val && *val) {
-                uint32_t n = (uint32_t)_wtoi(val);
+            // The process environment can be updated by a managed host before
+            // creating a target. The CRT's cached _wenviron need not reflect
+            // Environment.SetEnvironmentVariable; read the Windows value.
+            const DWORD size = GetEnvironmentVariableW(L"JALIUM_MAX_FRAME_LATENCY", nullptr, 0);
+            std::wstring value(size, L'\0');
+            const DWORD length = size != 0
+                ? GetEnvironmentVariableW(L"JALIUM_MAX_FRAME_LATENCY", value.data(), size) : 0;
+            if (length != 0 && length < size) {
+                uint32_t n = (uint32_t)_wtoi(value.c_str());
                 if (n < 1) n = 1;
                 if (n > swapBufferCount_) n = swapBufferCount_;
                 maxFrameLatency_ = n;
+                maxFrameLatencyFromEnv_ = true;
             }
-            if (val) free(val);
         }
         (void)bufferCountFromEnv;
     }
@@ -726,6 +768,11 @@ bool D3D12RenderTarget::CreateSwapChain() {
         if (FAILED(hr)) return false;
         hr = dcompDevice_->Commit();
         if (FAILED(hr)) return false;
+        windowComposition_ = D3D12WindowComposition::Create(hwnd_, swapChain1.Get(), swapChainWidth_, swapChainHeight_);
+        if (windowComposition_) {
+            dcompSwapChainVisual_->SetContent(nullptr);
+            dcompDevice_->Commit();
+        }
         hasLastWindowRect_ = GetWindowRect(hwnd_, &lastWindowRect_) != FALSE;
     } else {
         // A direct HWND swap chain must remain exactly client-sized. Keeping the
@@ -828,7 +875,7 @@ bool D3D12RenderTarget::CreateSwapChain() {
     swapChainHeight_ = desc.Height;
 
     // If the swap chain was created with the waitable flag, take ownership
-    // of the latency-control HANDLE and cap maximum frame latency to 1.
+    // of the latency-control HANDLE and start with maximum frame latency 1.
     // SetMaximumFrameLatency(1) overrides DXGI's default of 3, which is the
     // single biggest contributor to back-pressure on iGPU: the runtime
     // queues up to 3 GPU frames ahead, the OS won't release the buffer
@@ -839,8 +886,8 @@ bool D3D12RenderTarget::CreateSwapChain() {
         if (SUCCEEDED(swapChain_.As(&swapChain2)) && swapChain2) {
             // Cap frame latency first so the waitable's initial signal
             // reflects the new cap rather than the DXGI default of 3.
-            // 核显独显一律 1（最低延迟）——核显放宽到 2 的旧方案已实测撤回，
-            // 见 CreateSwapChain 顶部说明。
+            // The host override is preserved. Without one, use a single frame
+            // until measured continuous rendering justifies a bounded trial.
             swapChain2->SetMaximumFrameLatency(maxFrameLatency_);
             HANDLE waitable = swapChain2->GetFrameLatencyWaitableObject();
             if (waitable) {
@@ -883,6 +930,13 @@ void D3D12RenderTarget::WaitForAllFrames() {
 JaliumResult D3D12RenderTarget::CommitCompositionResizePlacement(
     bool waitForCompletion)
 {
+    if (windowComposition_) {
+        if (!windowComposition_->SetPlacement(compositionAnchorRightActive_, compositionAnchorBottomActive_, swapChainWidth_, swapChainHeight_))
+            return JALIUM_ERROR_DEVICE_LOST;
+        dcompSwapChainOffsetX_ = compositionAnchorRightActive_ ? static_cast<float>(width_) - swapChainWidth_ : 0.0f;
+        dcompSwapChainOffsetY_ = compositionAnchorBottomActive_ ? static_cast<float>(height_) - swapChainHeight_ : 0.0f;
+        return JALIUM_OK;
+    }
     if (!isComposition_ || !dcompSwapChainVisual_ || !dcompDevice_) {
         return JALIUM_ERROR_INVALID_STATE;
     }
@@ -934,7 +988,10 @@ JaliumResult D3D12RenderTarget::CommitCompositionResizePlacement(
 JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     if (width <= 0 || height <= 0) return JALIUM_ERROR_INVALID_ARGUMENT;
 
-    const bool inMoveSize = isComposition_ && IsWindowInMoveSize(hwnd_);
+    const UINT_PTR resizeEdge = isComposition_
+        ? reinterpret_cast<UINT_PTR>(GetPropW(hwnd_, L"Jalium.UI.LiveResizeEdge")) : 0;
+    const bool hasResizeEdge = resizeEdge >= WMSZ_LEFT && resizeEdge <= WMSZ_BOTTOMRIGHT;
+    const bool inMoveSize = isComposition_ && (hasResizeEdge || IsWindowInMoveSize(hwnd_));
     RECT currentWindowRect = {};
     const bool hasCurrentWindowRect =
         isComposition_ && GetWindowRect(hwnd_, &currentWindowRect) != FALSE;
@@ -961,7 +1018,9 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     bool hasCursorEdgeHint = false;
     bool cursorIndicatesLeftEdge = false;
     bool cursorIndicatesTopEdge = false;
-    if (inMoveSize && hasCurrentWindowRect) {
+    bool cursorAtLeftEdge = false;
+    bool cursorAtTopEdge = false;
+    if (inMoveSize && !hasResizeEdge && hasCurrentWindowRect) {
         POINT cursor = {};
         if (GetCursorPos(&cursor)) {
             hasCursorEdgeHint = true;
@@ -971,6 +1030,9 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
             cursorIndicatesTopEdge =
                 std::abs(cursor.y - currentWindowRect.top) <=
                 std::abs(cursor.y - currentWindowRect.bottom);
+            const int edgeThreshold = static_cast<int>(20 * GetDpiForWindow(hwnd_) / 96);
+            cursorAtLeftEdge = cursorIndicatesLeftEdge && std::abs(cursor.x - currentWindowRect.left) <= edgeThreshold;
+            cursorAtTopEdge = cursorIndicatesTopEdge && std::abs(cursor.y - currentWindowRect.top) <= edgeThreshold;
         }
     }
     if (hasCurrentWindowRect) {
@@ -979,9 +1041,21 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     }
 
     if (isComposition_) {
+        if (inMoveSize && !compositionResizeSessionActive_) {
+            compositionAnchorRight_ = cursorAtLeftEdge;
+            compositionAnchorBottom_ = cursorAtTopEdge;
+        }
+        compositionResizeSessionActive_ = inMoveSize;
         if (!inMoveSize) {
             compositionAnchorRight_ = false;
             compositionAnchorBottom_ = false;
+        } else if (hasResizeEdge) {
+            // The cursor can advance before USER32 applies the next rectangle.
+            // Use the system sizing edge throughout a managed resize session.
+            compositionAnchorRight_ = resizeEdge == WMSZ_LEFT ||
+                resizeEdge == WMSZ_TOPLEFT || resizeEdge == WMSZ_BOTTOMLEFT;
+            compositionAnchorBottom_ = resizeEdge == WMSZ_TOP ||
+                resizeEdge == WMSZ_TOPLEFT || resizeEdge == WMSZ_TOPRIGHT;
         } else {
             if (width != width_) {
                 if (preserveRight) {
@@ -1014,7 +1088,7 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         compositionAnchorBottomActive_ = false;
     }
     if (width == width_ && height == height_) {
-        if (isComposition_ &&
+        if (isComposition_ && !windowComposition_ &&
             (dcompSwapChainOffsetX_ != 0.0f ||
              dcompSwapChainOffsetY_ != 0.0f)) {
             return CommitCompositionResizePlacement(
@@ -1071,7 +1145,8 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         // the current size — so leave an active anchor alone and let EndDraw move
         // it. Returning to offset (0,0) stays safe at any time: the logical frame
         // always occupies the buffer's top-left corner.
-        if (!compositionAnchorRightActive_ &&
+        if (!windowComposition_ &&
+            !compositionAnchorRightActive_ &&
             !compositionAnchorBottomActive_ &&
             (dcompSwapChainOffsetX_ != 0.0f ||
              dcompSwapChainOffsetY_ != 0.0f)) {
@@ -1092,7 +1167,7 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         // preservation for one refresh. DXGI_PRESENT_RESTART is specifically
         // intended to discard such old-size queued presentations.
         restartPresentAfterResize_ = true;
-        frameLatencyWaitTimeoutMs_ = GetFrameLatencyWaitTimeoutMs(hwnd_);
+        frameLatencyWaitTimeoutMs_ = GetFrameLatencyWaitTimeoutMs(hwnd_, &frameRefreshPeriodNs_);
         if (directRenderer_) {
             directRenderer_->OnLogicalResize(
                 static_cast<UINT>(width),
@@ -1149,7 +1224,7 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     swapChainHeight_ = newSwapChainHeight;
     width_ = width;
     height_ = height;
-    frameLatencyWaitTimeoutMs_ = GetFrameLatencyWaitTimeoutMs(hwnd_);
+    frameLatencyWaitTimeoutMs_ = GetFrameLatencyWaitTimeoutMs(hwnd_, &frameRefreshPeriodNs_);
     frameIndex_ = swapChain_->GetCurrentBackBufferIndex();
 
     // Re-apply maximum frame latency after ResizeBuffers — the HANDLE itself
@@ -1193,6 +1268,10 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         compositionAnchorBottomActive_ = false;
         dcompSwapChainOffsetX_ = 0.0f;
         dcompSwapChainOffsetY_ = 0.0f;
+        if (windowComposition_ &&
+            !windowComposition_->SetPlacement(false, false, swapChainWidth_, swapChainHeight_)) {
+            return JALIUM_ERROR_DEVICE_LOST;
+        }
     }
 
     if (directRenderer_) {
@@ -1209,6 +1288,32 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
 // ============================================================================
 // BeginDraw / EndDraw
 // ============================================================================
+
+bool D3D12RenderTarget::CanAdaptFrameLatency() const
+{
+    // External credit scheduling retains its existing queue contract. Never
+    // deepen queues on software display routes or when the
+    // host explicitly selected a maximum latency.
+    return !maxFrameLatencyFromEnv_ && !adaptiveLatencyUnavailable_ &&
+        !externalPresentPacing_ && !softwareDisplayRoute_ &&
+        vsyncEnabled_ && frameLatencyWaitable_ && frameRefreshPeriodNs_ != 0;
+}
+
+void D3D12RenderTarget::ApplyAdaptiveFrameLatency()
+{
+    if (maxFrameLatencyFromEnv_ || adaptiveLatencyUnavailable_) return;
+    const uint32_t desired = frameLatencySelection_.Depth();
+    if (desired == maxFrameLatency_ || !swapChain_ || !frameLatencyWaitable_) return;
+    ComPtr<IDXGISwapChain2> chain;
+    if (SUCCEEDED(swapChain_.As(&chain)) && chain &&
+        SUCCEEDED(chain->SetMaximumFrameLatency(desired))) {
+        maxFrameLatency_ = desired;
+    } else {
+        // Unsupported/device-lost transitions must not be retried every frame.
+        adaptiveLatencyUnavailable_ = true;
+        frameLatencySelection_.Reset();
+    }
+}
 
 JaliumResult D3D12RenderTarget::BeginDraw() {
     static int debugRender = -1;
@@ -1261,6 +1366,12 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
     // IS the sole consumer now. Present below uses sync interval 0 in this
     // mode so a mis-scheduled extra frame degrades to DXGI's own queueing
     // rather than a 16 ms timeout spin.
+    const uint64_t requestNs = FrameLatencyNowNs();
+    frameProducerGapNs_ = previousPresentEndNs_ != 0
+        ? requestNs - previousPresentEndNs_ : std::numeric_limits<uint64_t>::max();
+    frameLatencySelection_.BeginFrame(frameProducerGapNs_, frameRefreshPeriodNs_, CanAdaptFrameLatency());
+    ApplyAdaptiveFrameLatency();
+
     if (frameLatencyWaitable_ && !externalPresentPacing_) {
         LARGE_INTEGER waitStart;
         QueryPerformanceCounter(&waitStart);
@@ -1296,6 +1407,15 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
         swapChainHeight_,
         fullInvalidation_ || !dirtyRects_.empty());
 
+    const auto engineRequest = requestedEngine_.load(std::memory_order_acquire);
+    if (engineRequest != lastEngineRequest_) {
+        autoPathEngine_.Reset();
+        lastEngineRequest_ = engineRequest;
+    }
+    auto frameEngine = engineRequest == JALIUM_ENGINE_AUTO && autoPathEngine_.UseGpuPaths()
+        ? JALIUM_ENGINE_VELLO : ResolveRenderingEngine(engineRequest, JALIUM_BACKEND_D3D12);
+    directRenderer_->SetVelloEnabled(frameEngine == JALIUM_ENGINE_VELLO);
+
     float clearAlpha = ResolveFrameClearAlpha();
     bool ok = directRenderer_->BeginFrame(
         frameIndex_,
@@ -1320,10 +1440,18 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
         return JALIUM_ERROR_INVALID_STATE;
     }
 
-    // Apply pending engine switch at frame boundary
-    if (pendingEngine_ != activeEngine_) {
-        activeEngine_ = pendingEngine_;
+    // Auto may attempt GPU paths only on hardware that can initialize them.
+    // An unavailable compute pipeline keeps the established CPU path intact.
+    if (engineRequest == JALIUM_ENGINE_AUTO && frameEngine == JALIUM_ENGINE_VELLO &&
+        directRenderer_->GetVelloRenderer() == nullptr) {
+        autoPathEngine_.GpuUnavailable();
+        frameEngine = JALIUM_ENGINE_IMPELLER;
+        directRenderer_->SetVelloEnabled(false);
     }
+    activeEngine_ = pendingEngine_ = frameEngine;
+    publishedEngine_.store(frameEngine, std::memory_order_release);
+    hasBegunFrame_.store(true, std::memory_order_release);
+    framePathPoints_ = framePathCalls_ = framePathPreparationNs_ = 0;
 
     isDrawing_ = true;
     preGlassSnapshotCaptured_ = false;
@@ -1444,9 +1572,24 @@ JaliumResult D3D12RenderTarget::EndDraw() {
                                                        /*reportTransientPresentFailure=*/externalPresentPacing_);
     if (endResult == JALIUM_OK) {
         restartPresentAfterResize_ = false;
+        const uint64_t presentEndNs = FrameLatencyNowNs();
+        if (previousPresentEndNs_ != 0) {
+            frameLatencySelection_.ObserveFrame(presentEndNs - previousPresentEndNs_,
+                frameProducerGapNs_, frameRefreshPeriodNs_, CanAdaptFrameLatency());
+            ApplyAdaptiveFrameLatency();
+        }
+        previousPresentEndNs_ = presentEndNs;
+        if (lastEngineRequest_ == JALIUM_ENGINE_AUTO) {
+            autoPathEngine_.ObserveFrame(framePathPoints_, framePathCalls_, framePathPreparationNs_);
+        }
     }
 
     if (endResult == JALIUM_OK && isComposition_ && dcompDevice_) {
+        // External native visuals are composed above the application's surface.
+        // Leave them on their existing target rather than covering them with a
+        // surface-only resize presentation.
+        if (windowComposition_)
+            windowComposition_->SetResizePresentationEnabled(webViewVisuals_.empty() && animProbes_.empty());
         const bool placementRecorded =
             directRenderer_->DidRecordCompositionResizePlacement();
         compositionAnchorRightActive_ =
@@ -1611,6 +1754,10 @@ bool D3D12RenderTarget::BrushToEngineBrush(Brush* brush, float opacity,
                                            EngineBrushData& bd,
                                            std::vector<EngineBrushData::GradientStop>& stopStore) {
     if (!brush) return false;
+    if (const auto* coordinates=dynamic_cast<const GradientPaintTransformState*>(brush))
+        coordinates->CopyPaintTransform(bd);
+    if (const auto* radial=dynamic_cast<const RadialGradientGeometryState*>(brush))
+        radial->CopyRadialGeometry(bd);
     auto type = brush->GetType();
     if (type == JALIUM_BRUSH_SOLID) {
         auto* sb = static_cast<D3D12SolidBrush*>(brush);
@@ -1626,6 +1773,7 @@ bool D3D12RenderTarget::BrushToEngineBrush(Brush* brush, float opacity,
         bd.startX = lb->startX_; bd.startY = lb->startY_;
         bd.endX   = lb->endX_;   bd.endY   = lb->endY_;
         bd.spreadMethod = lb->spreadMethod_;
+        bd.colorInterpolationMode = 1; // source ramp is prepared for encoded-sRGB pipelines
         stopStore.clear();
         stopStore.reserve(lb->stops_.size());
         for (const auto& s : lb->stops_) {
@@ -1650,9 +1798,14 @@ bool D3D12RenderTarget::BrushToEngineBrush(Brush* brush, float opacity,
         bd.radiusX = rb->radiusX_; bd.radiusY = rb->radiusY_;
         bd.originX = rb->originX_; bd.originY = rb->originY_;
         bd.spreadMethod = rb->spreadMethod_;
+        bd.colorInterpolationMode = 1; // source ramp is prepared for encoded-sRGB pipelines
         stopStore.clear();
         stopStore.reserve(rb->stops_.size());
-        for (const auto& s : rb->stops_) {
+        if ((rb->radialFlags&1) && !rb->interpolationSource_.empty()) {
+            bd.colorInterpolationMode=rb->colorInterpolationMode;
+            for (const auto& s : rb->interpolationSource_)
+                stopStore.push_back({s.position,s.r,s.g,s.b,s.a*opacity});
+        } else for (const auto& s : rb->stops_) {
             stopStore.push_back({ s.position, s.color.r, s.color.g, s.color.b, s.color.a * opacity });
         }
         bd.stops = stopStore.data();
@@ -1916,13 +2069,7 @@ void D3D12RenderTarget::FlushImpellerBatches() {
     // Impeller vertices are in pixel-space; DirectRenderer shader expects DIP-space.
     float invDpi = 1.0f / directRenderer_->GetDpiScale();
 
-    // Reused across the loop AND across frames so the index→flat-triangle
-    // expansion never allocates after the first big-batch frame warmed it.
-    // This is the spike-killer for "next non-path draw triggers a flush of
-    // N accumulated path batches": the per-batch vector previously did a
-    // fresh malloc/free pair, which dominated the per-call latency on the
-    // first non-path draw of a path-heavy frame.
-    thread_local std::vector<TriangleVertex> s_flushExpand;
+    static_assert(sizeof(ImpellerVertex) == sizeof(TriangleVertex));
 
     // Every Impeller batch snapshots DirectRenderer's already-transformed
     // scissor. Begin*Capture clears the parent/window-space stack and the
@@ -1936,7 +2083,7 @@ void D3D12RenderTarget::FlushImpellerBatches() {
     // visible row) of stroked Path icons while SDF/text content remained.
 
     for (auto& batch : impellerEngine_->GetBatches()) {
-        if (batch.indices.empty() || batch.vertices.empty()) continue;
+        if (batch.coverageMaskRuns.empty() && (batch.indices.empty() || batch.vertices.empty())) continue;
 
         // Apply the batch's SNAPSHOTTED scissor: temporarily push to the
         // DirectRenderer's scissor stack so AddTrianglesPreTransformed
@@ -1981,23 +2128,14 @@ void D3D12RenderTarget::FlushImpellerBatches() {
         }
         directRenderer_->SetForcedEllipticalClips(batch.ellipticalClips);
 
-        // Expand indexed vertices to flat triangle list, converting pixel→DIP.
-        // resize(N) + indexed write is faster than reserve + N push_backs:
-        // push_back has an inline capacity check at each call, resize sets
-        // capacity once. For a 32K-vertex batch this is the dominant
-        // expand-phase win on top of the cross-frame reuse.
-        s_flushExpand.resize(batch.indices.size());
-        size_t outIdx = 0;
-        const auto& verts = batch.vertices;
-        const size_t vN = verts.size();
-        for (auto idx : batch.indices) {
-            if (idx < vN) {
-                const auto& v = verts[idx];
-                s_flushExpand[outIdx++] = { v.x * invDpi, v.y * invDpi, v.r, v.g, v.b, v.a };
-            }
-        }
-        if (outIdx > 0) {
-            directRenderer_->AddTrianglesPreTransformed(s_flushExpand.data(), (uint32_t)outIdx);
+        // Expand directly into DirectRenderer's retained destination. A separate
+        // expanded scratch list copied every vertex a second time at each drain.
+        if (batch.pipelineType == 2) {
+            directRenderer_->AddCoverageMasksPreTransformed(batch.coverageMaskRuns.data(),
+                (uint32_t)batch.coverageMaskRuns.size(), invDpi);
+        } else {
+            directRenderer_->AddIndexedTrianglesPreTransformed(batch.vertices.data(),
+                (uint32_t)batch.vertices.size(), batch.indices.data(), (uint32_t)batch.indices.size(), invDpi);
         }
 
         if (pushedScissor) {
@@ -2012,21 +2150,34 @@ void D3D12RenderTarget::FlushImpellerBatches() {
 
 
 
+// The precompiled SDF shader has no paint matrix. Reuse the existing path
+// pipeline for transformed gradients, keeping its CPU/GPU buffer ABI intact.
+static bool HasGradientPaintTransform(Brush* brush)
+{
+    if (const auto* radial=dynamic_cast<const RadialGradientGeometryState*>(brush);
+        radial && (radial->radialFlags&1)) return true;
+    const auto* state=dynamic_cast<const GradientPaintTransformState*>(brush);
+    if(!state)return false;
+    const auto& m=state->gradientToUser;
+    return m.m11!=1||m.m12!=0||m.m21!=0||m.m22!=1||m.m31!=0||m.m32!=0;
+}
+
 bool D3D12RenderTarget::TryEncodeEllipseIntoPendingVello(float cx, float cy, float rx, float ry,
                                                          Brush* brush, float strokeWidth, bool fill)
 {
-    if (IsImpellerActive() || !directRenderer_ || !brush) return false;
+    const bool customPaint=HasGradientPaintTransform(brush);
+    if ((IsImpellerActive()&&!customPaint) || !directRenderer_ || !brush) return false;
     if (impellerEngine_ && impellerEngine_->HasPendingWork()) FlushImpellerBatches();
-    if (rx <= 0.0f || ry <= 0.0f || rx > 80.0f || ry > 80.0f) return false;
+    if (rx <= 0.0f || ry <= 0.0f || (!customPaint&&(rx > 80.0f || ry > 80.0f))) return false;
     if (!pendingStateOps_.empty()) CommitDeferredState();
-    if (!directRenderer_->HasVelloPaths()) return false;
+    if (!customPaint&&!directRenderer_->HasVelloPaths()) return false;
     const float inflate = fill ? 0.0f : strokeWidth;
-    if (!directRenderer_->VelloPendingHitsDipRect(cx - rx - inflate, cy - ry - inflate,
+    if (!customPaint&&!directRenderer_->VelloPendingHitsDipRect(cx - rx - inflate, cy - ry - inflate,
                                                   (rx + inflate) * 2.0f, (ry + inflate) * 2.0f)) {
         return false;
     }
     auto* vello = directRenderer_->GetVelloRenderer();
-    if (!vello) return false;
+    if (!customPaint&&!vello) return false;
 
     const float k = 0.5522847498f;
     float kx = rx * k, ky = ry * k;
@@ -2037,6 +2188,12 @@ bool D3D12RenderTarget::TryEncodeEllipseIntoPendingVello(float cx, float cy, flo
         1.0f, cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy,
         5.0f
     };
+    if(customPaint){
+        const auto count=static_cast<uint32_t>(sizeof(cmds)/sizeof(float));
+        if(fill)FillPath(cx+rx,cy,cmds,count,brush,1);
+        else StrokePath(cx+rx,cy,cmds,count,brush,strokeWidth,true,2,4.0f,0,nullptr,0,0);
+        return true;
+    }
     directRenderer_->ApplyScissorToVello();
     float opacity = directRenderer_->GetOpacity();
     auto t = directRenderer_->GetCurrentTransform();
@@ -2060,18 +2217,19 @@ bool D3D12RenderTarget::TryEncodeRectIntoPendingVello(float x, float y, float w,
                                                       float rTL, float rTR, float rBR, float rBL,
                                                       Brush* brush, float strokeWidth, bool fill)
 {
-    if (IsImpellerActive() || !directRenderer_ || !brush) return false;
+    const bool customPaint=HasGradientPaintTransform(brush);
+    if ((IsImpellerActive()&&!customPaint) || !directRenderer_ || !brush) return false;
     if (impellerEngine_ && impellerEngine_->HasPendingWork()) FlushImpellerBatches();
-    if (w <= 0.0f || h <= 0.0f || w > 160.0f || h > 160.0f) return false;
+    if (w <= 0.0f || h <= 0.0f || (!customPaint&&(w > 160.0f || h > 160.0f))) return false;
     if (!pendingStateOps_.empty()) CommitDeferredState();
-    if (!directRenderer_->HasVelloPaths()) return false;
+    if (!customPaint&&!directRenderer_->HasVelloPaths()) return false;
     const float inflate = fill ? 0.0f : strokeWidth;
-    if (!directRenderer_->VelloPendingHitsDipRect(x - inflate, y - inflate,
+    if (!customPaint&&!directRenderer_->VelloPendingHitsDipRect(x - inflate, y - inflate,
                                                   w + inflate * 2.0f, h + inflate * 2.0f)) {
         return false;
     }
     auto* vello = directRenderer_->GetVelloRenderer();
-    if (!vello) return false;
+    if (!customPaint&&!vello) return false;
 
     const float maxR = std::fmin(w, h) * 0.5f;
     float tl = std::fmin(std::fmax(rTL, 0.0f), maxR);
@@ -2117,6 +2275,12 @@ bool D3D12RenderTarget::TryEncodeRectIntoPendingVello(float x, float y, float w,
     }
     cmds.push_back(5.0f);
 
+    if(customPaint){
+        const auto count=static_cast<uint32_t>(cmds.size());
+        if(fill)FillPath(sx,sy,cmds.data(),count,brush,1);
+        else StrokePath(sx,sy,cmds.data(),count,brush,strokeWidth,true,0,4.0f,0,nullptr,0,0);
+        return true;
+    }
     directRenderer_->ApplyScissorToVello();
     float opacity = directRenderer_->GetOpacity();
     auto t = directRenderer_->GetCurrentTransform();
@@ -2750,6 +2914,9 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
     int32_t lineJoin, float miterLimit) {
     if (!isDrawing_ || !brush || !directRenderer_ || pointCount < 2) return;
 
+    ScopedAutoPathWork pathWork(framePathPoints_, framePathCalls_, framePathPreparationNs_,
+        pointCount, lastEngineRequest_ == JALIUM_ENGINE_AUTO && pointCount >= 12, IsImpellerActive());
+
     CommitDeferredState();
 
     float pminX = 1e30f, pminY = 1e30f, pmaxX = -1e30f, pmaxY = -1e30f;
@@ -2784,19 +2951,23 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
             et.dx = t.dx * dpiScale; et.dy = t.dy * dpiScale;
 
             // Build LineTo command buffer from polygon points (skip first = start point)
+            float inlineCommands[22]; // Up to eight points, including ClosePath.
             std::vector<float> cmds;
-            cmds.reserve(pointCount * 3 + 1);
+            const uint32_t commandCount = (pointCount - 1) * 3 + (closed ? 1 : 0);
+            if (pointCount > 8) cmds.resize(commandCount);
+            float* commandData = pointCount <= 8 ? inlineCommands : cmds.data();
+            uint32_t commandIndex = 0;
             for (uint32_t i = 1; i < pointCount; i++) {
-                cmds.push_back(0); // LineTo tag
-                cmds.push_back(points[i * 2]);
-                cmds.push_back(points[i * 2 + 1]);
+                commandData[commandIndex++] = 0; // LineTo tag
+                commandData[commandIndex++] = points[i * 2];
+                commandData[commandIndex++] = points[i * 2 + 1];
             }
             if (closed) {
-                cmds.push_back(5); // ClosePath tag
+                commandData[commandIndex++] = 5; // ClosePath tag
             }
 
             if (impellerEngine_->EncodeStrokePath(
-                    points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                    points[0], points[1], commandData, commandCount,
                     bd, strokeWidth, closed, lineJoin, miterLimit, 0, nullptr, 0, 0.0f, et)) {
                 // Lazy flush: see FillPolygon for the coalescing rationale.
                 return;
@@ -3169,6 +3340,11 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
 {
     if (!isDrawing_ || !directRenderer_) return;
     FlushVelloIfNeeded(x, y, w, h, 0);
+    if(fillBrush&&HasGradientPaintTransform(fillBrush)){
+        FillPerCornerRoundedRectangle(x,y,w,h,0,0,brRadius,blRadius,fillBrush);
+        fillBrush=nullptr;
+        if(strokeBrush&&strokeWidth>0)FlushVelloIfNeeded(x,y,w,h,0);
+    }
     // Fill with bottom corner radii
     if (fillBrush) {
         SdfRectInstance inst = {};

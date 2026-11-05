@@ -257,7 +257,28 @@ if(JALIUM_TEXT_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID AND TARGET jal
              COMMAND jalium.native.software.text.tests --fallback-hit-testing)
 endif()
 
+if((JALIUM_SOFTWARE_BUILD_TESTS OR JALIUM_METAL_BUILD_TESTS) AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    add_executable(jalium.native.software.apple.bitmap-alpha tests/software_bitmap_alpha.mm)
+    target_compile_options(jalium.native.software.apple.bitmap-alpha PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.software.apple.bitmap-alpha PRIVATE
+        jalium.native.software jalium.native.core "-framework AppKit")
+    add_test(NAME jalium.native.software.apple.bitmap-alpha COMMAND jalium.native.software.apple.bitmap-alpha)
+    set_tests_properties(jalium.native.software.apple.bitmap-alpha PROPERTIES TIMEOUT 60)
+    add_executable(jalium.native.software.apple.gradient-transforms tests/software_apple_gradient_transforms.mm)
+    target_compile_options(jalium.native.software.apple.gradient-transforms PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.software.apple.gradient-transforms PRIVATE
+        jalium.native.software jalium.native.core "-framework AppKit" "-framework CoreGraphics")
+    add_test(NAME jalium.native.software.apple.gradient-transforms COMMAND jalium.native.software.apple.gradient-transforms)
+    set_tests_properties(jalium.native.software.apple.gradient-transforms PROPERTIES TIMEOUT 60)
+endif()
+
 if(JALIUM_SOFTWARE_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    add_executable(jalium.native.software.apple.gradient-text tests/software_apple_gradient_text.mm)
+    target_compile_options(jalium.native.software.apple.gradient-text PRIVATE -fobjc-arc)
+    target_link_libraries(jalium.native.software.apple.gradient-text PRIVATE jalium.native.software jalium.native.core "-framework AppKit")
+    add_test(NAME jalium.native.software.apple.gradient-text COMMAND jalium.native.software.apple.gradient-text)
+    set_tests_properties(jalium.native.software.apple.gradient-text PROPERTIES TIMEOUT 90)
+
     add_executable(jalium.native.software.apple.text tests/software_apple_text.mm)
     target_compile_options(jalium.native.software.apple.text PRIVATE -fobjc-arc)
     target_link_libraries(jalium.native.software.apple.text PRIVATE jalium.native.software jalium.native.core
@@ -273,4 +294,11 @@ if(JALIUM_SOFTWARE_BUILD_TESTS AND APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"
         jalium.native.software jalium.native.core "-framework AppKit" "-framework CoreGraphics")
     add_test(NAME jalium.native.software.apple.affine-rectangles COMMAND jalium.native.software.apple.affine-rectangles)
     set_tests_properties(jalium.native.software.apple.affine-rectangles PROPERTIES TIMEOUT 60)
+endif()
+
+if(JALIUM_SOFTWARE_BUILD_TESTS)
+    add_executable(jalium.native.software.offscreen tests/software_offscreen.cpp)
+    target_link_libraries(jalium.native.software.offscreen PRIVATE jalium.native.core jalium.native.software)
+    add_test(NAME jalium.native.software.offscreen COMMAND jalium.native.software.offscreen)
+    set_tests_properties(jalium.native.software.offscreen PROPERTIES TIMEOUT 90)
 endif()

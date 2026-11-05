@@ -14,6 +14,204 @@ public partial class ContentControl : Control, IAddChild
 {
     private UIElement? _contentElement;
     private bool _usesDirectContent = true; // Default to direct content management
+    private bool _hasExplicitContentManagement;
+    private CssContentAdapterText? _cssContentAdapter;
+    private bool _cssContentAdapterAttached;
+    private bool _cssContentAdapterDirty = true;
+
+    internal TextBlock? CssContentAdapter => _cssContentAdapterAttached ? _cssContentAdapter : null;
+    internal bool UsesCssContentAdapter => _cssContentAdapterAttached;
+    protected virtual bool SupportsSelfDrawnCssContentAdapter => false;
+    protected override bool SupportsCssInlineContentLayout => SupportsSelfDrawnCssContentAdapter && NeedsCssContentAdapter;
+
+    internal bool NeedsCssContentAdapter => SupportsSelfDrawnCssContentAdapter &&
+        Content is not null and not UIElement &&
+        ContentTemplate is null && ContentTemplateSelector is null &&
+        !Styling.CssReplacedContent.IsActive(this) &&
+        !HasLocalValue(TemplateProperty) &&
+        HasCssContentAdapterTriggers();
+
+    private bool HasCssContentAdapterTriggers()
+    {
+        if (Styling.CssGeneratedContent.HasBoxes(this) ||
+            CssDisplayMode != Styling.CssDisplayMode.Native ||
+            CssInlineOuter ||
+            Styling.CssFirstLetter.HasTargetOrAncestor(this) ||
+            Styling.CssFirstLine.HasTargetOrAncestor(this) ||
+            Styling.CssMultiColumnProperties.Active(this) ||
+            Styling.CssLineClampProperties.Active(this) ||
+            Styling.CssInitialLetterProperties.Metrics(this) is not null)
+            return true;
+        if (CssRuntimeState?.Applied is { Count: > 0 } applied)
+        {
+            foreach (var property in applied.Keys)
+            {
+                if (property.OwnerType == typeof(Styling.CssFlowProperties) ||
+                    property.OwnerType == typeof(Styling.CssTextDecorationProperties) ||
+                    property.OwnerType == typeof(Styling.CssTextEmphasis) ||
+                    property.OwnerType == typeof(Styling.CssTextShadowProperties) ||
+                    property.OwnerType == typeof(Styling.CssInitialLetterProperties) ||
+                    property.OwnerType.Namespace == "Jalium.UI.Styling" && property.OwnerType.Name.StartsWith("CssFont", StringComparison.Ordinal) ||
+                    property == Styling.CssComputedLineHeightValue.Property)
+                    return true;
+            }
+        }
+        return GetValueSourceInternal(Styling.CssFlowProperties.TextTransformProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(Styling.CssFlowProperties.LetterSpacingProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(Styling.CssFlowProperties.WordSpacingProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(Styling.CssFlowProperties.TextIndentProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(Styling.CssFlowProperties.WhiteSpaceProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(Styling.CssTextDecorationProperties.LineProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(Styling.CssTextEmphasis.StyleProperty).BaseValueSource != BaseValueSource.Default ||
+            GetValueSourceInternal(Styling.CssTextShadowProperties.ValueProperty).BaseValueSource != BaseValueSource.Default;
+    }
+
+    protected override void PrepareCssContentLayout()
+    {
+        if (SupportsSelfDrawnCssContentAdapter && EnsureCssContentAdapter())
+            return;
+        base.PrepareCssContentLayout();
+    }
+
+    protected internal override void OnCssContentHostUpdated()
+    {
+        if (SupportsSelfDrawnCssContentAdapter && _cssContentAdapterAttached && !NeedsCssContentAdapter)
+        {
+            DetachCssContentAdapter();
+            InvalidateMeasure();
+            InvalidateArrange();
+            InvalidateVisual();
+        }
+        base.OnCssContentHostUpdated();
+    }
+
+    internal bool EnsureCssContentAdapter()
+    {
+        if (!NeedsCssContentAdapter)
+        {
+            DetachCssContentAdapter();
+            return false;
+        }
+
+        if (TemplateRootInternal is { } templateRoot && ReferenceEquals(templateRoot.VisualParent, this))
+        {
+            RemoveVisualChild(templateRoot);
+        }
+
+        if (_cssContentAdapter is null)
+        {
+            _cssContentAdapter = new CssContentAdapterText(this);
+            PropertyChangedInternal += (dp, _, _) =>
+            {
+                if (!_cssContentAdapterAttached || _cssContentAdapter is null) return;
+                if (dp == ContentProperty || dp == ContentStringFormatProperty ||
+                    dp == FontFamilyProperty || dp == FontSizeProperty || dp == FontStyleProperty ||
+                    dp == FontWeightProperty || dp == FontStretchProperty || dp == ForegroundProperty ||
+                    dp == FlowDirectionProperty || dp == LanguageProperty ||
+                    dp.OwnerType.Name.StartsWith("Css", StringComparison.Ordinal))
+                {
+                    _cssContentAdapterDirty = true;
+                    _cssContentAdapter.InvalidateCaches();
+                    _cssContentAdapter.InvalidateMeasure();
+                    _cssContentAdapter.InvalidateVisual();
+                    InvalidateMeasure();
+                    InvalidateVisual();
+                }
+            };
+        }
+
+        if (!_cssContentAdapterAttached)
+        {
+            _cssContentAdapterAttached = true;
+            if (!ReferenceEquals(_cssContentAdapter.VisualParent, this))
+                AddVisualChild(_cssContentAdapter);
+        }
+
+        _cssContentAdapterDirty = true;
+        SyncCssContentAdapterIfNeeded();
+        return true;
+    }
+
+    internal void DetachCssContentAdapter()
+    {
+        if (!_cssContentAdapterAttached)
+            return;
+        _cssContentAdapterAttached = false;
+        if (_cssContentAdapter is not null && ReferenceEquals(_cssContentAdapter.VisualParent, this))
+            RemoveVisualChild(_cssContentAdapter);
+        if (TemplateRootInternal is { VisualParent: null } templateRoot)
+            AddVisualChild(templateRoot);
+    }
+
+    internal void RefreshCssContentAdapterState()
+    {
+        if (!_cssContentAdapterAttached || _cssContentAdapter is null)
+            return;
+        _cssContentAdapterDirty = true;
+        SyncCssContentAdapterIfNeeded();
+        _cssContentAdapter.InvalidateCaches();
+        _cssContentAdapter.InvalidateMeasure();
+        _cssContentAdapter.InvalidateVisual();
+    }
+
+    internal virtual Brush? ResolveCssAdapterForeground() => Foreground;
+    internal virtual TextDecorationCollection? ResolveCssAdapterTextDecorations() => null;
+
+    internal void SyncCssContentAdapterIfNeeded()
+    {
+        if (!_cssContentAdapterAttached || _cssContentAdapter is null || !_cssContentAdapterDirty)
+            return;
+        _cssContentAdapterDirty = false;
+        SyncCssContentAdapter(_cssContentAdapter);
+    }
+
+    private void SyncCssContentAdapter(CssContentAdapterText adapter)
+    {
+        adapter.DocumentFontSource = this;
+        adapter.IsDocumentBoxContent = true;
+        adapter.IsHitTestVisible = false;
+        adapter.Focusable = false;
+        adapter.Text = Content is null ? string.Empty : FormatContent(Content);
+        adapter.FontFamily = FontFamily;
+        adapter.FontSize = FontSize;
+        adapter.FontStyle = FontStyle;
+        adapter.FontWeight = FontWeight;
+        adapter.FontStretch = FontStretch;
+        adapter.Foreground = ResolveCssAdapterForeground();
+        adapter.FlowDirection = FlowDirection;
+        adapter.Language = Language;
+        adapter.TextDecorations = ResolveCssAdapterTextDecorations() ?? [];
+        adapter.ClearValue(TextBlock.TextWrappingProperty);
+        adapter.SetLayerValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap, LayerValueSource.StyleSetter);
+        foreach (var property in Styling.CssPropertyRegistry.GetInheritedStorageProperties())
+        {
+            if (!property.ReadOnly)
+                adapter.SetLayerValue(property, GetValue(property), LayerValueSource.StyleSetter);
+        }
+        adapter.SetValue(Styling.CssComputedLineHeightValue.Property, Styling.CssComputedLineHeightValue.Inherited(Styling.CssNode.Get(this)));
+        TextBlock.CopyCssFontState(this, adapter);
+        var surrounding = new Styling.CssPanelChildren(this).Enumerate().OfType<Styling.CssGeneratedText>()
+            .Where(static text => text.CssLayout?.IsOutOfFlow != true && Styling.CssFloatProperties.ActiveSide(text) == Styling.CssFloatSide.None).ToArray();
+        adapter.CssInlineOuter = Styling.CssDisplayLayout.IsFlow(this) &&
+            (CssInlineOuter || surrounding.Length == 0 || surrounding.All(static text => text.CssInlineOuter));
+    }
+
+    internal sealed class CssContentAdapterText(ContentControl owner) : TextBlock, Styling.ICssAnonymousBox
+    {
+        protected override bool ParticipatesInRenderCache => false;
+        internal override DependencyObject? DocumentDecorationSource => owner;
+        protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => null;
+        protected override bool SupportsCssInlineContentLayout => true;
+        FrameworkElement Styling.ICssAnonymousBox.Owner => owner;
+        double Styling.ICssAnonymousBox.BaselineOffset(double height, bool last) =>
+            last ? GetLastBaselineOffset(height) : GetFirstBaselineOffset(height);
+        bool Styling.ICssAnonymousBox.Contains(Point point) => false;
+        protected override void PrepareCssContentLayout()
+        {
+            owner.SyncCssContentAdapterIfNeeded();
+            base.PrepareCssContentLayout();
+        }
+    }
 
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -149,6 +347,24 @@ public partial class ContentControl : Control, IAddChild
     /// </summary>
     protected void UseTemplateContentManagement()
     {
+        _hasExplicitContentManagement = true;
+        SetContentManagement(useDirect: false);
+    }
+
+    private void SetContentManagement(bool useDirect)
+    {
+        if (useDirect)
+        {
+            var wasDirect = _usesDirectContent;
+            _usesDirectContent = true;
+            if (!wasDirect) RebuildDirectContent(Content);
+            return;
+        }
+        if (_usesDirectContent && _contentElement is { } element)
+        {
+            _contentElement = null;
+            RemoveVisualChild(element);
+        }
         _usesDirectContent = false;
     }
 
@@ -159,7 +375,17 @@ public partial class ContentControl : Control, IAddChild
     /// </summary>
     protected void UseDirectContentManagement()
     {
-        _usesDirectContent = true;
+        _hasExplicitContentManagement = true;
+        SetContentManagement(useDirect: true);
+    }
+
+    /// <inheritdoc />
+    protected override void OnTemplateChanged(ControlTemplate oldTemplate, ControlTemplate newTemplate)
+    {
+        base.OnTemplateChanged(oldTemplate, newTemplate);
+        // A plain ContentControl participates in its template automatically.
+        // Specialized self-rendering controls can still explicitly own content.
+        if (!_hasExplicitContentManagement) SetContentManagement(useDirect: newTemplate == null);
     }
 
     /// <summary>
@@ -267,6 +493,7 @@ public partial class ContentControl : Control, IAddChild
             var templateContent = template.LoadContent();
             if (templateContent != null)
             {
+                ContentPresenter.PromoteDataTemplateLiteralsForTriggers(template, templateContent);
                 templateContent.DataContext = content;
                 return templateContent;
             }
@@ -350,6 +577,10 @@ public partial class ContentControl : Control, IAddChild
     {
         get
         {
+            if (_cssContentAdapterAttached && _cssContentAdapter != null)
+            {
+                return 1;
+            }
             if (_usesDirectContent)
             {
                 return _contentElement != null ? 1 : 0;
@@ -362,6 +593,14 @@ public partial class ContentControl : Control, IAddChild
     /// <inheritdoc />
     protected override Visual? GetVisualChild(int index)
     {
+        if (_cssContentAdapterAttached && _cssContentAdapter != null)
+        {
+            if (index == 0)
+            {
+                return _cssContentAdapter;
+            }
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
         if (_usesDirectContent)
         {
             if (index == 0 && _contentElement != null)
@@ -383,21 +622,29 @@ public partial class ContentControl : Control, IAddChild
     {
         if (_usesDirectContent)
         {
-            if (_contentElement != null)
+            var padding = Padding;
+            var border = BorderThickness;
+            var contentSize = default(Size);
+            if (_contentElement != null && _contentElement is not FrameworkElement { CssLayout.IsOutOfFlow: true })
             {
-                var padding = Padding;
-                var border = BorderThickness;
                 var contentAvailable = new Size(
                     Math.Max(0, availableSize.Width - padding.TotalWidth - border.TotalWidth),
                     Math.Max(0, availableSize.Height - padding.TotalHeight - border.TotalHeight));
 
-                _contentElement.Measure(contentAvailable);
-
+                if (_contentElement is FrameworkElement { CssLayout: not null })
+                    Styling.CssLayoutBox.MeasureWithContainingBlock(_contentElement, contentAvailable, CssChildContainingSize(contentAvailable));
+                else
+                    _contentElement.Measure(contentAvailable);
+                contentSize = _contentElement.DesiredSize;
+            }
+            MeasureCssLayoutAbsoluteChildren(availableSize);
+            if (_contentElement != null)
+            {
                 // Negative Padding/BorderThickness are legal; the Size constructor is
                 // not — clamp at the summation sink.
                 return new Size(
-                    Math.Max(0, _contentElement.DesiredSize.Width + padding.TotalWidth + border.TotalWidth),
-                    Math.Max(0, _contentElement.DesiredSize.Height + padding.TotalHeight + border.TotalHeight));
+                    Math.Max(0, contentSize.Width + padding.TotalWidth + border.TotalWidth),
+                    Math.Max(0, contentSize.Height + padding.TotalHeight + border.TotalHeight));
             }
             return default(Size);
         }
@@ -410,7 +657,7 @@ public partial class ContentControl : Control, IAddChild
     {
         if (_usesDirectContent)
         {
-            if (_contentElement is FrameworkElement fe)
+            if (_contentElement is FrameworkElement fe && fe.CssLayout is not { IsOutOfFlow: true })
             {
                 var padding = Padding;
                 var border = BorderThickness;
@@ -423,6 +670,7 @@ public partial class ContentControl : Control, IAddChild
 
                 fe.Arrange(contentRect);
             }
+            ArrangeCssLayoutAbsoluteChildren(finalSize);
             return finalSize;
         }
         // Template-based: use Control's implementation

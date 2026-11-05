@@ -1,0 +1,83 @@
+<ResourceDictionary xmlns="http://schemas.jalium.ui/2024"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation;assembly=Jalium.UI.Core">
+    <Style TargetType="FontDialogWindow">
+        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
+        <Setter Property="Template"><ControlTemplate TargetType="FontDialogWindow">
+            <ScrollViewer x:Name="PART_FontDialogRoot" MaxHeight="{TemplateBinding MaxContentHeight}" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="ValidationStates">
+                            <VisualState x:Name="Valid"><VisualState.Setters>
+                                <Setter TargetName="PART_ValidationMessage" Property="Visibility" Value="Collapsed" />
+                            </VisualState.Setters></VisualState>
+                            <VisualState x:Name="Invalid" />
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="ColorStates">
+                            <VisualState x:Name="ColorVisible" />
+                            <VisualState x:Name="ColorHidden"><VisualState.Setters>
+                                <Setter TargetName="PART_ColorPanel" Property="Visibility" Value="Collapsed" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="EffectsStates">
+                            <VisualState x:Name="EffectsVisible" />
+                            <VisualState x:Name="EffectsHidden"><VisualState.Setters>
+                                <Setter TargetName="PART_EffectsPanel" Property="Visibility" Value="Collapsed" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                <StackPanel Margin="20">
+                    <TextBlock Text="Font family" Margin="0,0,0,5" />
+                    <ComboBox x:Name="PART_FontFamily" IsEditable="True" HorizontalAlignment="Stretch"
+                              ItemsSource="{TemplateBinding FontNames}"
+                              Text="{Binding FontFamilyName, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              automation:AutomationProperties.Name="Font family" />
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="100" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Size" Margin="0,0,0,5" />
+                            <TextBox x:Name="PART_FontSize" HorizontalAlignment="Stretch"
+                                     Text="{Binding FontSizeText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     automation:AutomationProperties.Name="Font size" />
+                        </StackPanel>
+                        <StackPanel x:Name="PART_ColorPanel" Grid.Column="1" Margin="16,0,0,0">
+                            <TextBlock Text="Color" Margin="0,0,0,5" />
+                            <TextBox x:Name="PART_Color" HorizontalAlignment="Stretch"
+                                     Text="{Binding ColorText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     automation:AutomationProperties.Name="Font color" />
+                        </StackPanel>
+                    </Grid>
+                    <WrapPanel x:Name="PART_EffectsPanel" Margin="0,14,0,0">
+                        <CheckBox x:Name="PART_Bold" Content="Bold" Margin="0,0,14,0"
+                                  IsChecked="{Binding IsBold, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" />
+                        <CheckBox x:Name="PART_Italic" Content="Italic" Margin="0,0,14,0"
+                                  IsChecked="{Binding IsItalic, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" />
+                        <CheckBox x:Name="PART_Underline" Content="Underline" Margin="0,0,14,0"
+                                  IsChecked="{Binding IsUnderline, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" />
+                        <CheckBox x:Name="PART_Strikeout" Content="Strikeout"
+                                  IsChecked="{Binding IsStrikeout, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" />
+                    </WrapPanel>
+                    <TextBlock Text="Preview" Margin="0,16,0,5" />
+                    <Border x:Name="PART_PreviewCanvas" Background="{TemplateBinding PreviewBackground}" BorderBrush="{ThemeResource ControlBorder}"
+                            BorderThickness="1" CornerRadius="8" Padding="12">
+                        <ScrollViewer Height="100" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                            <TextBlock x:Name="PART_Preview" Text="{TemplateBinding SampleText}" TextWrapping="Wrap" MinHeight="54"
+                                       FontFamily="{TemplateBinding SelectedFontFamily}" FontSize="{TemplateBinding SelectedFontSize}"
+                                       FontWeight="{TemplateBinding SelectedFontWeight}" FontStyle="{TemplateBinding SelectedFontStyle}"
+                                       FontStretch="{TemplateBinding SelectedFontStretch}" TextDecorations="{TemplateBinding SelectedTextDecorations}"
+                                       Foreground="{TemplateBinding PreviewForeground}" VerticalAlignment="Center" />
+                        </ScrollViewer>
+                    </Border>
+                    <TextBlock x:Name="PART_ValidationMessage" Text="{TemplateBinding ValidationMessage}" Margin="0,8,0,0"
+                               Foreground="{ThemeResource SystemControlErrorTextForegroundBrush}" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+                        <Button x:Name="PART_CancelButton" Content="Cancel" IsCancel="True" MinWidth="84" Padding="14,6" />
+                        <Button x:Name="PART_AcceptButton" Content="OK" IsDefault="True" MinWidth="84" Padding="14,6" Margin="8,0,0,0"
+                                IsEnabled="{TemplateBinding CanAccept}" />
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

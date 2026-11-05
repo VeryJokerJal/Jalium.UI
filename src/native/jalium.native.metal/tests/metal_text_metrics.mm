@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 int checks = 0;
@@ -72,6 +73,56 @@ void TestRows(JaliumContext* context)
             "Row height disagrees with line count");
     }
 }
+void TestScopedTabCarets(JaliumContext* context)
+{
+    Format format(jalium_text_format_create(context, Managed(u"Menlo"), 18, 400, 0), jalium_text_format_destroy);
+    Check(format != nullptr, "Scoped tab format failed");
+    for (const std::u16string text : {u"\u2067אב A\t\u2069", u"\u202eאב A\t\u202c",
+        u"\u2067אב A\t\u2069BC", u"\u202eאב A\t\u202cBC"}) {
+        const auto tab = static_cast<uint32_t>(text.find(u'\t'));
+        for (int direction : {0, 1}) {
+            JaliumTextSpan span{format.get(), 0, static_cast<uint32_t>(text.size()), 1, 1, 1, 1};
+            std::unique_ptr<JaliumTextParagraph, decltype(&jalium_text_paragraph_destroy)> paragraph(
+                jalium_text_paragraph_create_with_wrapping(format.get(), reinterpret_cast<const uint16_t*>(text.data()),
+                    text.size(), &span, 1, 100000, 1, 0, direction, 1), jalium_text_paragraph_destroy);
+            Check(paragraph != nullptr, "Scoped tab paragraph failed");
+            CTFontRef font = CTFontCreateWithName(CFSTR("Menlo"), 18, nullptr);
+            CFStringRef string = CFStringCreateWithCharacters(nullptr, reinterpret_cast<const UniChar*>(text.data()), text.size());
+            CTWritingDirection dir = direction ? kCTWritingDirectionRightToLeft : kCTWritingDirectionLeftToRight;
+            CTParagraphStyleSetting setting{kCTParagraphStyleSpecifierBaseWritingDirection, sizeof(dir), &dir};
+            CTParagraphStyleRef style = CTParagraphStyleCreate(&setting, 1);
+            const void* keys[] = {kCTFontAttributeName, kCTParagraphStyleAttributeName};
+            const void* values[] = {font, style};
+            CFDictionaryRef attributes = CFDictionaryCreate(nullptr, keys, values, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            CFAttributedStringRef attributed = CFAttributedStringCreate(nullptr, string, attributes);
+            CTLineRef reference = CTLineCreateWithAttributedString(attributed);
+            bool found = false;
+            CFArrayRef runs = CTLineGetGlyphRuns(reference);
+            for (CFIndex runIndex = 0; runIndex < CFArrayGetCount(runs); ++runIndex) {
+                auto run = static_cast<CTRunRef>(CFArrayGetValueAtIndex(runs, runIndex));
+                CFIndex count = CTRunGetGlyphCount(run);
+                std::vector<CFIndex> indices(count); std::vector<CGPoint> positions(count); std::vector<CGSize> advances(count);
+                CTRunGetStringIndices(run, CFRangeMake(0, 0), indices.data());
+                CTRunGetPositions(run, CFRangeMake(0, 0), positions.data());
+                CTRunGetAdvances(run, CFRangeMake(0, 0), advances.data());
+                for (CFIndex glyph = 0; glyph < count; ++glyph) {
+                    if (indices[glyph] != tab) continue;
+                    found = true;
+                    bool rtl = (CTRunGetStatus(run) & kCTRunStatusRightToLeft) != 0;
+                    double left = positions[glyph].x, right = left + advances[glyph].width;
+                    JaliumParagraphCaret first{}, last{};
+                    Check(jalium_text_paragraph_get_caret(paragraph.get(), 0, tab, 0, &first) == JALIUM_OK &&
+                        jalium_text_paragraph_get_caret(paragraph.get(), 0, tab + 1, 1, &last) == JALIUM_OK,
+                        "Closing bidi control removed a tab source caret");
+                    Check(std::abs(first.x - (rtl ? right : left)) < .001 && std::abs(last.x - (rtl ? left : right)) < .001,
+                        "Scoped tab carets differ from independent CoreText glyph advances");
+                }
+            }
+            Check(found, "Independent scoped tab reference has no tab glyph");
+            CFRelease(reference); CFRelease(attributed); CFRelease(attributes); CFRelease(style); CFRelease(string); CFRelease(font);
+        }
+    }
+}
 }
 int main()
 {
@@ -84,6 +135,7 @@ int main()
                 for (const std::u16string text : {u"M", u"MMMMMMMMMM", u" ", u"  ", u"a  ", u"中文 🚀 👨‍👩‍👧 é tail", u"AV fi office", u"AV fi office 中文 👩‍💻"})
                     for (auto family : {u"Menlo", u"Helvetica"}) TestLine(context.get(), family, size, text);
             TestRows(context.get());
+            TestScopedTabCarets(context.get());
             std::printf("CoreText text metrics: %d assertions passed\n", checks);
             return 0;
         } catch (const std::exception& error) { std::fprintf(stderr, "Text metrics check failed: %s\n", error.what()); return 1; }

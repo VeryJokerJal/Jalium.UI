@@ -86,6 +86,8 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
             ? _bindingExpressions[_activeBindingIndex]
             : null;
 
+    internal override bool AcceptsTargetEdits => ActiveBindingExpression?.AcceptsTargetEdits == true;
+
     /// <inheritdoc />
     public override bool HasValidationError => ActiveBindingExpression?.HasValidationError ?? false;
 

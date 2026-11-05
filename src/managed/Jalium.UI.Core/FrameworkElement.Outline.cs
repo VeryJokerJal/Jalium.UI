@@ -82,6 +82,7 @@ public partial class FrameworkElement
     // touch DP getters (same contract as Border._liquidGlassDirtyPadding).
     private volatile bool _hasOutline;
     private volatile int _outlineDirtyPadding;
+    internal volatile int CssTableInkPadding;
 
     private Pen? _cachedOutlinePen;
     private Brush? _cachedOutlinePenBrush;
@@ -102,7 +103,7 @@ public partial class FrameworkElement
 
     private static DashStyle? s_outlineDotStyle;
 
-    internal override double GetExtraDirtyPadding() => _outlineDirtyPadding;
+    internal override double GetExtraDirtyPadding() => Math.Max(CssTextInkPadding, Math.Max(Math.Max(CssColumnInkPadding, CssColumnBox?.InkPadding ?? 0), Math.Max(CssTableInkPadding, Math.Max(_outlineDirtyPadding, CssBorderImageInkPadding()))));
 
     private static void OnOutlinePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -138,6 +139,14 @@ public partial class FrameworkElement
 
     internal override void RenderOutlineCore(DrawingContext drawingContext)
     {
+        if (CssTableLayout.DecorationBox(this) is not { } grid) { RenderOutlineBox(drawingContext, RenderSize); return; }
+        drawingContext.PushTransform(new TranslateTransform(grid.X, grid.Y));
+        try { RenderOutlineBox(drawingContext, grid.Size); }
+        finally { drawingContext.Pop(); }
+    }
+
+    private void RenderOutlineBox(DrawingContext drawingContext, Size size)
+    {
         if (!_hasOutline)
         {
             return;
@@ -155,7 +164,6 @@ public partial class FrameworkElement
             return;
         }
 
-        var size = RenderSize;
         if (size.Width <= 0 || size.Height <= 0)
         {
             return;

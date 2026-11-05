@@ -1,518 +1,598 @@
 <div align="center">
 
+<img src="docs/assets/logo.png" alt="Jalium.UI Logo" width="112" />
+
 # Jalium.UI
 
-**.NET 10 向け GPU アクセラレーション UI フレームワーク**
+**.NET 10 向け GPU アクセラレーション クロスプラットフォーム UI フレームワーク**
 
-WPF に着想を得た API、Razor 拡張を備えた JALXAML、Windows・Linux・Android のネイティブレンダリング。
+**C#**、**Razor 対応 JALXAML**、**CSS スタイル＆レイアウト**で **Windows**、**macOS**、**Linux**、**Android** のネイティブ描画を提供し、**iOS/iPadOS**・**tvOS** 開発ホストと **visionOS** ネイティブビルド経路も備えます。
 
-[![NuGet](https://img.shields.io/nuget/v/Jalium.UI?style=flat-square&logo=nuget&label=NuGet)](https://www.nuget.org/packages/Jalium.UI)
+[![NuGet](https://img.shields.io/nuget/v/Jalium.UI?style=flat-square&logo=nuget&label=NuGet&color=004880)](https://www.nuget.org/packages/Jalium.UI)
 [![Release](https://img.shields.io/github/v/release/VeryJokerJal/Jalium.UI?style=flat-square&logo=github&label=Release)](https://github.com/VeryJokerJal/Jalium.UI/releases/latest)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?style=flat-square&logo=dotnet)](https://dotnet.microsoft.com/)
 [![Linux CI](https://img.shields.io/github/actions/workflow/status/VeryJokerJal/Jalium.UI/linux.yml?branch=master&style=flat-square&logo=linux&label=Linux)](https://github.com/VeryJokerJal/Jalium.UI/actions/workflows/linux.yml)
-[![License](https://img.shields.io/github/license/VeryJokerJal/Jalium.UI?style=flat-square&label=License)](LICENSE)
+[![Apple CI](https://img.shields.io/github/actions/workflow/status/VeryJokerJal/Jalium.UI/apple.yml?branch=master&style=flat-square&logo=apple&label=Apple)](https://github.com/VeryJokerJal/Jalium.UI/actions/workflows/apple.yml)
+[![License](https://img.shields.io/github/license/VeryJokerJal/Jalium.UI?style=flat-square&label=License)](https://github.com/VeryJokerJal/Jalium.UI/blob/master/LICENSE)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-6f42c1?style=flat-square)](https://deepwiki.com/VeryJokerJal/Jalium.UI)
 
-[English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [한국어](README.ko.md)
+[English](https://github.com/VeryJokerJal/Jalium.UI/blob/master/README.md) · [简体中文](https://github.com/VeryJokerJal/Jalium.UI/blob/master/README.zh-CN.md) · **日本語** · [한국어](https://github.com/VeryJokerJal/Jalium.UI/blob/master/README.ko.md)
 
-[クイックスタート](#クイックスタートc) · [機能概要](#機能概要) · [ビルド](#ソースからのビルド) · [ドキュメント](#ドキュメント) · [コミュニティ](#コミュニティ)
+[概要](#概要) · [プラットフォーム](#プラットフォームと開発状況) · [アーキテクチャ](#アーキテクチャ) · [機能概要](#機能概要) · [クイックスタート](#クイックスタート) · [ビルド](#ソースからのビルド) · [テスト](#テストと検証) · [ドキュメント](#ドキュメント)
 
 </div>
 
-## プロジェクトの状況
+---
+
+## 概要
+
+**Jalium.UI** は WPF に近いプログラミングモデルと、独自のマネージドビジュアルツリーおよびネイティブ描画バックエンドを組み合わせています。C#、宣言的な `.jalxaml`、または両者を使ってアプリケーションを作成し、CSS でスタイルとレイアウトを追加できます。
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>使い慣れたモデル</h3>
+      <p>依存関係プロパティ（<code>DependencyObject</code>）、ルーティングイベント、データバインディング、コマンド、リソース、スタイル、コントロール/データテンプレート、MVVM。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>マルチバックエンドネイティブ描画</h3>
+      <p>Direct3D 12、Vulkan、Metal、CPU ソフトウェアバックエンドと Impeller / Vello パスエンジンによるベクター、テキスト、アニメーション、リキッドグラス、背景ぼかし、カスタム HLSL シェーダー。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>宣言的な JALXAML + Razor + CSS</h3>
+      <p><code>.jalxaml</code> での Razor 式と制御フロー（<code>@if</code>、<code>@for</code>、<code>@foreach</code>）、ビューポート再利用（<code>@virtualize</code>）、コードビハインド生成、ビルド時/実行時 CSS。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>120+ コントロールと可視化</h3>
+      <p><code>DataGrid</code>、<code>TreeDataGrid</code>、<code>DockLayout</code>、<code>Ribbon</code>、<code>NavigationView</code>、15+ 種のチャート、<code>RichTextBox</code>、<code>EditControl</code>、<code>Markdown</code>、<code>DiffViewer</code>、<code>HexEditor</code>、<code>Terminal</code>、<code>InkCanvas</code>、<code>WebView</code>。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>標準 .NET ホスト</h3>
+      <p><code>AppBuilder</code> は <code>IHostApplicationBuilder</code> を実装し、DI、構成、ログ、Options、メトリクス、ホストサービスを標準統合。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>診断、ホットリロード、アクセシビリティ</h3>
+      <p>明示的に有効化する DevTools、デバッグ HUD、ホットリロード、ヘッドレス描画スナップショット、Windows UIA / macOS AppKit AX / Linux AT-SPI2 ブリッジ。</p>
+    </td>
+  </tr>
+</table>
+
+---
+
+## プラットフォームと開発状況
 
 > [!IMPORTANT]
-> Jalium.UI は活発に開発されています。現在のソース/リリース系列は **v26.10.8** で、
-> API はマイナーバージョン間でも変化する可能性があります。すべての `Jalium.UI.*`
-> パッケージを同じバージョンに揃えてください。
+> 現在のソースバージョンは **26.11.0** で、[`Directory.Build.props`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/Directory.Build.props) に定義されています。開発は継続中です。すべての `Jalium.UI.*` パッケージのバージョンを揃えてください。ソース実装、パッケージ構成、検証範囲はそれぞれ異なります。
 
-| プラットフォーム | エントリーパッケージとランタイム | ウィンドウシステム | レンダラー | 現在の範囲 |
-| --- | --- | --- | --- | --- |
-| Windows 10/11 | `Jalium.UI.Desktop` · `win-x64`、`win-arm64` パッケージレイアウト | Win32 | DirectX 12、Software、オプションの Vulkan | x64 が主要なソースビルド対象。ARM64 のパッケージ経路はあるが同等の CI 検証は未実施 |
-| Linux デスクトップ | `Jalium.UI.Linux` · glibc/musl x64/Arm64 レイアウト | X11、Wayland | Vulkan、Software | 提供済み。RID ごとの検証状況は[マトリクス](docs/linux-parity-status.md)を参照 |
-| Android 7.0+（API 24+） | `Jalium.UI.Android` · `arm64-v8a`、`x86_64` | Android ネイティブ Activity | Vulkan、Software | プラットフォームパッケージ提供済み |
-| macOS | エントリーパッケージなし | 未実装 | Metal レンダラーのソースのみ | 現時点ではリリース対象外 |
+| プラットフォーム | アプリケーションの入口 | ネイティブホストと描画 | 範囲 |
+| --- | --- | --- | --- |
+| **Windows 10/11** | `Jalium.UI.Desktop` · `net10.0-windows` | Win32 · D3D12、ソフトウェア、任意の Vulkan | ネイティブソリューションの主対象は `win-x64`。`win-arm64` のアセット構成もありますが、検証範囲は異なります |
+| **macOS 15+** | `Jalium.UI.MacOS` · `net10.0-macos` · `osx-arm64`、`osx-x64` | AppKit · Metal、ソフトウェア · CoreText | Apple Silicon および Intel x64 ホストと Gallery。[macOS ガイド](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/macos-development.md)と固定 Apple ツールチェーンを使用 |
+| **Linux デスクトップ** | `Jalium.UI.Linux` · `net10.0` | X11 / Wayland · Vulkan、ソフトウェア | glibc/musl の x64/Arm64 構成。RID とデスクトップの範囲は[検証マトリックス](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux-parity-status.md)を参照 |
+| **Android 7.0+ / API 24+** | `Jalium.UI.Android` · `net10.0-android` | Android Activity · Vulkan、ソフトウェア | `arm64-v8a` と `x86_64` のペイロード。Activity とシステムライフサイクルから起動 |
+| **iOS / iPadOS 18+** | `Jalium.UI.iOS` · `net10.0-ios` | UIKit Scene · 静的リンク Metal | 開発中の入口と Arm64 実機/シミュレーターのビルド経路。実機と配布の受け入れ検証は別途必要 |
+| **tvOS 18+** | `Jalium.UI.tvOS` · `net10.0-tvos` | UIKit Scene、リモコン/フォーカス統合 · 静的リンク Metal | 開発中の入口と Arm64 実機/シミュレーターのビルド経路。デスクトップと同等の検証を意味しません |
+| **visionOS 2+（ネイティブ）** | ネイティブ C ABI / XCFramework スライス。マネージド入口なし | UIKit 系ホスト · Metal | Arm64 実機/シミュレータープリセットとネイティブ検証のみ。マネージドアプリ TFM は未定義 |
 
-## なぜ Jalium.UI なのか
+表ではアプリケーションプラットフォームとネイティブのみの開発対象を区別しています。定義は [`src/packaging`](https://github.com/VeryJokerJal/Jalium.UI/tree/master/src/packaging) と [`CMakePresets.json`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/src/native/CMakePresets.json) を参照してください。宣言された最低 OS バージョンは、その OS での受け入れ検証記録ではありません。
 
-- ClearType サブピクセルテキストレンダリングを備えた GPU ネイティブのレンダリングパイプライン
-- 馴染みのあるプログラミングモデル（`DependencyObject`、`UIElement`、パネル、テンプレート、リソース）
-- Razor 構文拡張を備えた JALXAML マークアップ（`@Path`、`@(expr)`、`@{ ... }`、`@if`/`@virtualize`/`@foreach`、`@section`/`@RenderSection`）
-- 豊富なコントロールライブラリ: Charts、Ribbon、Docking、InkCanvas、WebView、Terminal、MediaElement、MapView、PropertyGrid、WindowsFormsHost を含む 100 種類以上のコントロール
-- 開発者体験: JALXAML ホットリロード（ライブビジュアルツリーへのパッチ適用）に加え、選択的に有効化できる組み込みの DevTools インスペクターとデバッグ HUD
-- NuGet 経由のビルド時ツール（`Jalium.UI.Build`、`Jalium.UI.Xaml.SourceGenerator`）
-- 第一級の Generic Host 統合 — `AppBuilder` は `IHostApplicationBuilder`（`Microsoft.Extensions.Hosting`）を実装しており、DI、構成、オプション、ロギング、メトリクス、さらに Jalium MVVM のビュー/ビューモデル配線を提供します
-- Windows UIA と Linux AT-SPI ブリッジを備えたオートメーションピアによるアクセシビリティ対応
-- ビジュアルエフェクト: リキッドグラス、背景ぼかし、アクリル、マイカ、トランジションシェーダー、アニメーションビットマップ（GIF / APNG / アニメーション WebP）
-- `MediaElement` / `NativeVideoSurface` によるネイティブ GPU ビデオ（D3D12 / Vulkan サーフェス、段階的にロールアウト中）
-- 完全なマルチタッチ入力 — 物理的な慣性を伴うマニピュレーション、ジェスチャ認識、リアルタイムスタイラスプレビュー
-- 書記素クラスタを意識したテキスト編集（UAX#29） — 絵文字、ZWJ シーケンス、肌の色修飾子、国旗が分割されることはありません
-- WSOLA によるピッチ保持タイムストレッチを備えたネイティブオーディオパイプライン（miniaudio + dr_libs / minimp3）
+WPF の多くの概念を採用していますが、移植時には使用する API と動作を確認してください。プラットフォーム固有のコントロール、コーデック、ウィンドウ操作、アクセシビリティは各ネイティブ実装に依存します。
 
-## フレームワーク構成
+### ランタイム識別子、CPU、配置
 
-### マネージドパッケージ
+| 対象 | RID / ネイティブ ABI | 配置モデル |
+| --- | --- | --- |
+| **Windows x64 / Arm64** | `win-x64`、`win-arm64` | マネージドアプリと対応 DLL。Windows NativeAOT/静的リンクは別経路。ARM64 アセットは完全なペイロードがある場合のみ梱包 |
+| **macOS Apple Silicon / Intel** | `osx-arm64`、`osx-x64` | AppKit `.app` と対象アーキテクチャの dylib/Metal リソース。SDK は選択された `RuntimeIdentifier` に一致する単一アーキテクチャのペイロードを検証・配置 |
+| **Linux glibc x64 / Arm64** | `linux-x64`、`linux-arm64` | リリース基準は glibc 2.31 / `GLIBCXX_3.4.28`。X11/Wayland とシステム依存は必要 |
+| **Linux musl x64 / Arm64** | `linux-musl-x64`、`linux-musl-arm64` | 対応する musl ホスト/ペイロード。glibc と別アセットで、検証範囲は RID に依存 |
+| **Android Arm64 / x64** | `android-arm64` → `arm64-v8a`、`android-x64` → `x86_64` | Activity/APK に ABI 別 `.so` と `libc++_shared.so` を梱包。ネイティブパッケージには両 ABI が必要 |
+| **iOS / iPadOS** | `ios-arm64`、`iossimulator-arm64` | UIKit アプリに静的 `JaliumNative.xcframework`、`.metallib`、対応する実機/シミュレータースライスを配置 |
+| **tvOS** | `tvos-arm64`、`tvossimulator-arm64` | UIKit/リモコンフォーカスのアプリと静的 XCFramework/Metal リソース |
+| **visionOS ネイティブ検証** | `visionos-arm64`、`visionossimulator-arm64` | リポジトリ独自のネイティブスライス識別子。NuGet アプリ RID やマネージド TFM ではありません |
 
-| パッケージ | 役割 |
+共通コントロール、バインディング、リソース、MVVM、JALXAML、実装済み CSS は再利用できます。各アプリは対応する TFM、入口、ネイティブペイロード、権限、ライフサイクル統合を用意します。自己完結/単一ファイル発行でも、ウィンドウシステム、コーデック、ドライバーの依存は残ります。Windows/Linux NativeAOT、macOS アプリバンドル、組み込み Apple 静的リンクの検証範囲は別々です。
+
+### デスクトップ統合マトリックス
+
+実装済みの経路を示します。任意のシステムサービスと下記の検証範囲も考慮してください。
+
+| 機能 | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| **描画とテキスト** | D3D12、任意の Vulkan、ソフトウェア、Windows テキストサービス | Metal、ソフトウェア、CoreText、Retina | Vulkan、ソフトウェア、独自 OpenType、Fontconfig |
+| **入力とデータ交換** | キーボード/IME、ポインター/タッチ/ペン、Win32 クリップボード、OLE ドラッグ | AppKit responder/IME、ジェスチャー/タブレット、NSPasteboard、ネイティブドラッグ | X11/XIM/XInput2、Wayland text-input/タッチ/タブレット、多形式クリップボード/ドラッグ |
+| **ファイルダイアログ** | Windows/COM の開く/保存/フォルダー選択 | `NSOpenPanel` / `NSSavePanel` | xdg-desktop-portal FileChooser。セッションサービスとデスクトップバックエンドが必要 |
+| **印刷** | Windows 印刷ダイアログとキュー API | 共通 `PrintDialog` にアダプターなし | Print portal に PDF を送信。キュー管理は Windows のみ |
+| **埋め込みブラウザー** | WebView2。ランタイムが必要 | WKWebView ネイティブアダプター。統合検証は別途管理 | リポジトリ内にネイティブブラウザーバックエンドなし |
+| **アクセシビリティ** | Windows UIA Peer/ブリッジ | AppKit Peer/ブリッジ | accessibility bus の AT-SPI2 |
+| **システム通知** | WinRT Toast アダプター | 組み込み `SystemNotificationManager` アダプターなし | libnotify / デスクトップ通知サービス |
+| **シェルターミナル** | ConPTY | POSIX PTY | POSIX PTY |
+
+`NotifyIcon` に現在具体的に実装されているのは Linux StatusNotifierItem です。Windows 形式の API だけで Windows/macOS トレイ実装の完了は判断できません。macOS Dock/タスクバーは別 API です。`WindowsFormsHost` は Windows 専用です。Jalium 内のダイアログ、フライアウト、Toast は OS ネイティブダイアログ/通知とは別です。
+
+### モバイル・テレビ統合マトリックス
+
+| 機能 | Android | iOS / iPadOS 開発入口 | tvOS 開発入口 |
+| --- | --- | --- | --- |
+| **ホストとライフサイクル** | `JaliumActivity`、SurfaceView/JNI、Surface 交換、Activity | `JaliumIOSApplicationDelegate`、UIKit Scene、セーフエリア/方向、アプリライフサイクル | `JaliumTVApplicationDelegate`、UIKit Scene、リモコン/フォーカス |
+| **入力** | タッチ/ペン、ハードウェアキー、InputConnection、ソフトキーボード | タッチ/Pencil サンプル転送、`UIKeyInput`、キーボード領域/セーフエリア | リモコン方向/選択/メニュー/再生停止キー、フォーカスナビゲーション |
+| **クリップボード** | JNI プレーンテキスト。汎用多形式 get/set は未対応を返す | UIKit pasteboard テキスト/データ | 入口は未対応を返す |
+| **メディア** | ネイティブ画像/動画/カメラ、MediaCodec、対応 GPU surface。実機/API/権限に依存 | Apple 画像/動画/キャプチャ。実機と権限に依存 | Apple 画像/動画再生。カメラ/マイク取得は未実装を返す |
+| **埋め込みブラウザー** | リポジトリ内にバックエンドなし | WKWebView ネイティブアダプター | 入口は未実装を返す |
+| **システム通知** | マネージドアダプターは存在。必要な通知ヘルパーのエクスポートは現 Android ネイティブソースにない | 組み込み通知アダプターなし | 組み込み通知アダプターなし |
+
+共通 Automation Peer モデルは Android TalkBack / UIKit 専用エクスポートではなく、現デスクトップブリッジはそれらのモバイルアダプターを提供しません。デスクトップのファイル選択、印刷キュー、トレイ、自由配置ウィンドウをモバイル機能とみなさないでください。iOS/tvOS アプリには自身の bundle、delegate、署名/provisioning、リソース、実機検証が必要です。
+
+### 実行時選択と現在の範囲
+
+- 対応するバックエンドがある場合、`JALIUM_RENDER_BACKEND=auto`、`d3d12`、`vulkan`、`metal`、`software` を指定できます。`JALIUM_WINDOW_SYSTEM=auto|x11|wayland` は Linux 専用です。ソフトウェア描画にも動作するホスト/表示環境が必要です。
+- Linux Vulkan には対応 loader/driver、ソフトウェア表示には X11/Wayland が必要です。必要なメディア機能で GStreamer/コーデックを読み込みます。portal、D-Bus、アクセシビリティ、通知、CJK フォントは機能ごとの依存です。
+- Wayland は compositor が提供する scale/viewport プロトコルを利用します。グローバル座標、最前面、ウィンドウ全体の不透明度、強制アクティブ化は compositor の制約を受け、X11 と同じ機能ではありません。
+- macOS のプリセットは `osx-arm64` と `osx-x64` を対象とします。Intel Apple シミュレーター、Windows x86、Android Arm32、Linux Arm32、ブラウザー/WebAssembly は記載したアプリ/パッケージ対象外です。他 Unix の条件分岐だけではホスト/RID のあるリリース対象になりません。
+- カメラ/マイク、GPU 動画取り込み、IME、ペン/タッチ、支援技術、ストア/配布の検証は OS、権限、実機、ドライバーに依存します。[Linux マトリックス](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux-parity-status.md)と [macOS 記録](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/macos-window-behavior.md)にリビジョン別の証拠と残項目があります。
+
+---
+
+## アーキテクチャ
+
+### 実行とビルドの流れ
+
+```mermaid
+flowchart TB
+    subgraph Authoring["開発・マークアップ層"]
+        CS["C# コード & MVVM"]
+        XAML[".jalxaml + Razor ディレクティブ"]
+        CSS[".css スタイルシート & インライン規則"]
+    end
+
+    subgraph Build["ビルド時コンパイルパイプライン"]
+        MSB["Jalium.UI.Build (MSBuild タスク)"]
+        XAMLC["jalxamlc コンパイラー & CSS エミッター"]
+        SG["Jalium.UI.Xaml.SourceGenerator (Roslyn)"]
+    end
+
+    subgraph Managed["統合マネージドランタイム (Jalium.UI.Managed)"]
+        CORE["DependencyObject · レイアウト · バインディング · 入力 · Automation"]
+        CTRL["120+ コントロール · チャート · ドッキング · 文書 · ホスト"]
+        GPU["Jalium.UI.Gpu (レンダーグラフ · シェーダー · マテリアル)"]
+        INTEROP["Jalium.UI.Interop (P/Invoke & リソース管理)"]
+    end
+
+    subgraph Native["ネイティブ C++20 / Objective-C++ 層 (C ABI)"]
+        ABI["jalium.native.core & jalium.native.platform"]
+        RENDER["描画バックエンド: D3D12 · Vulkan · Metal · Software"]
+        SERVICES["サービス: OpenType/CoreText/DWrite · メディア · WebView2/WKWebView"]
+    end
+
+    CS --> SG
+    XAML --> MSB --> XAMLC --> SG
+    CSS --> MSB
+    SG --> CTRL
+    XAML -. "実行時 XamlReader / ホットリロード" .-> CTRL
+    CSS -. "実行時スタイルシート読み込み" .-> CORE
+    CTRL --> CORE --> GPU --> INTEROP --> ABI
+    ABI --> RENDER
+    ABI --> SERVICES
+```
+
+ソースはサブシステム別に配置されていますが、Core、Media、Input、Interop、Controls の大部分は **`Jalium.UI.Managed`** にまとめてコンパイルされます。互換アセンブリは型転送によって公開パッケージ/名前空間を維持し、実装の重複を避けています。
+
+### マネージドパッケージとツール
+
+| コンポーネント | 役割 |
 | --- | --- |
-| `Jalium.UI.Managed` | Core、Media、Input、Interop、Controls API の統合マネージド実装 |
-| `Jalium.UI.Core` | `Jalium.UI.Managed` を基盤とするコア API の互換ファサード |
-| `Jalium.UI.Media` | `Jalium.UI.Managed` を基盤とするメディア/アニメーション API の互換ファサード |
-| `Jalium.UI.Input` | `Jalium.UI.Managed` を基盤とする入力 API の互換ファサード |
-| `Jalium.UI.Interop` | マネージド/ネイティブ間のブリッジ、P/Invoke、ランタイムネイティブ依存関係のパッケージング |
-| `Jalium.UI.Gpu` | GPU リソース管理、レンダーグラフ、マテリアル、シェーダー、バックエンド抽象化 |
-| `Jalium.UI.Controls` | コントロール、ウィンドウ、テーマ、ドッキング、チャート、ホスティング API の互換ファサード |
-| `Jalium.UI.Xaml` | JALXAML の解析/読み込みパイプライン、Razor 構文サポート、ホットリロード、マークアップサービス |
-| `Jalium.UI.Build` | JALXAML コンパイルワークフロー向けの MSBuild タスクおよびビルドアセット |
-| `Jalium.UI.Xaml.SourceGenerator` | XAML/コードビハインド統合のための Roslyn ソースジェネレーター |
-| `Jalium.UI` | フレームワークスタック全体を参照するメタパッケージ |
-
-> `Jalium.UI.Compiler` はスタンドアロンの `jalxamlc` コンパイラー実行ファイルをビルドします。これはソースから利用する
-> ビルドツールであり、NuGet パッケージではありません（`dotnet add package` は適用されません）。
+| `Jalium.UI.Managed` | 依存関係プロパティ、レイアウト、バインディング、入力、描画、コントロール、ホスト、Automation の統合実装 |
+| `Jalium.UI.Core`、`.Media`、`.Input`、`.Controls` | 型転送で統合実装に接続する互換ファサード |
+| `Jalium.UI.Interop` | 相互運用 API ファサード、ネイティブアセット、配置統合 |
+| `Jalium.UI.Gpu` | GPU リソース、レンダーグラフ、マテリアル、シェーダー、描画抽象 |
+| `Jalium.UI.Xaml` | JALXAML 読み込み、マークアップ拡張、Razor 実行時機能、リソース、ホットリロード |
+| `Jalium.UI.Build` | JALXAML、CSS、シェーダー、ネイティブ、AOT を統合する MSBuild タスク/targets |
+| `Jalium.UI.Xaml.SourceGenerator` | ビュー、バインディング、マークアップ変換を生成する Roslyn アナライザー/ジェネレーター |
+| `Jalium.UI` | 共通依存メタパッケージ。アプリケーション側でプラットフォーム入口を選択 |
+| `Jalium.UI.Compiler` | ビルドツール用のポータブルな `jalxamlc` 実行プログラム。独立した NuGet パッケージではありません |
+| `Jalium.UI.Css.Tooling` | 内部用 Node Sass/Less/Prettier ヘルパー。公開 NuGet パッケージではなく、通常の CSS 作成には不要 |
 
 ### ネイティブモジュール
 
-| モジュール | プラットフォーム | 役割 |
-| --- | --- | --- |
-| `jalium.native.core` | Windows、Linux、Android | ネイティブコアランタイム、バックエンドレジストリ、コンテキスト管理 |
-| `jalium.native.d3d12` | Windows | DirectX 12 レンダーターゲットおよび Vello GPU パイプライン |
-| `jalium.native.vulkan` | Windows（オプション）、Linux、Android | Vulkan レンダーバックエンド |
-| `jalium.native.metal` | ソースのみ | Metal レンダラー実装。macOS のウィンドウ/プラットフォームホストは未実装 |
-| `jalium.native.software` | Windows、Linux、Android | CPU ベースのソフトウェアレンダリングフォールバック |
-| `jalium.native.platform` | Windows、Linux、Android | ウィンドウ、入力、イベントのプラットフォーム抽象化 |
-| `jalium.native.text` | Linux、Android | 自前のテキストエンジン（sfnt/cmap/glyf/CFF + OT shaper；Linux では fontconfig はフォント検出のみ） |
-| `jalium.native.browser` | Windows | WebView2 ブラウザー統合 |
-| `jalium.native.media.core` | Windows、Linux、Android | クロスプラットフォームメディア C ABI + 共有オーディオ（miniaudio / dr_libs / minimp3 / stb_vorbis） |
-| `jalium.native.media.windows` | Windows | Media Foundation のビデオ / カメラ / AAC デコーダー + WIC イメージング |
-| `jalium.native.media.linux` | Linux | GStreamer ベースのメディア/カメラ統合 |
-| `jalium.native.media.android` | Android | Android の画像 / ビデオ / カメラデコーダー + NDK 経由の YUV SIMD（NEON） |
-| `jalium.native.aot` | Windows、Linux、Android | NativeAOT アグリゲーター（media、text、バックエンドをハードリンク） |
-
-### プラットフォームパッケージ
-
-| パッケージ | ターゲット |
+| モジュール | 役割 |
 | --- | --- |
-| `Jalium.UI.Desktop` | `net10.0-windows` — RID 別のネイティブ DLL（win-x64 / win-arm64）を含むデスクトップ配布 |
-| `Jalium.UI.Android` | `net10.0-android` — ネイティブ .so ライブラリを含む Android 配布 |
-| `Jalium.UI.Linux` | `net10.0` — Linux デスクトップ配布（Wayland/X11、Vulkan + ソフトウェアレンダリング；linux-x64 / linux-arm64 / linux-musl-x64 / linux-musl-arm64 の RID レイアウトを予約） |
+| `jalium.native.core` | C ABI、描画コンテキスト、バックエンド登録、共通ランタイム契約 |
+| `jalium.native.platform` | ネイティブウィンドウ、イベント、入力、クリップボード、プラットフォーム統合 |
+| `jalium.native.d3d12` / `.vulkan` / `.metal` / `.software` | GPU / CPU 描画バックエンド |
+| `jalium.native.text` | Linux/Android 向け独自 OpenType シェーピング/ラスタライズ。Linux のフォント探索には Fontconfig を使用 |
+| `jalium.native.media.core` | 共通メディア ABI とオーディオ実装 |
+| `jalium.native.media.windows` | Media Foundation / WIC 統合 |
+| `jalium.native.media.linux` | 動的に読み込む GStreamer 統合 |
+| `jalium.native.media.android` | Android ネイティブメディア、画像、カメラ統合 |
+| `jalium.native.media.apple` | AVFoundation、VideoToolbox、ImageIO、Apple メディアサービス |
+| `jalium.native.browser` / `.browser.apple` | Windows WebView2 / Apple WebKit 統合。利用可否はプラットフォームに依存 |
+| `jalium.native.aot` | NativeAOT と Apple 組み込みプラットフォーム用の静的ネイティブ集約層 |
 
-ここに示す RID はパッケージレイアウトであり、4 RID と NativeAOT がすべてリリース検証済みであることを意味しません。現在の証拠と残る境界については、[Linux サポート状況マトリクス](docs/linux-parity-status.md)を参照してください。
+GPU バックエンド（D3D12/Vulkan/Metal）とパス描画エンジン（`RenderingEngine.Impeller` / `RenderingEngine.Vello`）は別に選択します。利用可能なエンジンとエフェクトの範囲はバックエンドに依存します。
+
+---
 
 ## 機能概要
 
-### レイアウトとビジュアルツリー
+| 領域 | 例 |
+| --- | --- |
+| **レイアウト** | `Grid`、`StackPanel`、`Canvas`、`DockPanel`、`WrapPanel`、`UniformGrid`、`FlexPanel`、`Viewbox`、`ScrollViewer`、`Expander`、`GroupBox`、`Splitter`、`DockLayout`、仮想化パネル、CSS block/flex/grid |
+| **入力コントロール** | `Button`、`RepeatButton`、`ToggleButton`、`SplitButton`、`HyperlinkButton`、`TextBox`、`PasswordBox`、`NumberBox`、`AutoCompleteBox`、`ComboBox`、`CheckBox`、`RadioButton`、`ToggleSwitch`、`Slider`、`RangeSlider`、`Calendar`、`DatePicker`、`TimePicker`、`ColorPicker`、`Thumb` |
+| **データとナビゲーション** | `DataGrid`、`TreeDataGrid`、`ListView`、`ListBox`、`TreeView`、`TreeSelector`、`PropertyGrid`、`JsonTreeViewer`、`NavigationView`、`Frame`、`TabControl`、`Ribbon`、`MenuBar`、`Menu`、`ContextMenu`、`MenuFlyout`、`CommandBar`、`CommandBarFlyout`、`ToolBar`、`SwipeControl`、`StatusBar`、`InfoBar` |
+| **文書とエディター** | `RichTextBox`、`EditControl`、`FlowDocument` ビューアー、`DocumentViewer`、`Markdown`、`DiffViewer`、`HexEditor`、`Terminal` |
+| **可視化** | `LineChart`、`BarChart`、`PieChart`、`ScatterPlot`、`CandlestickChart`、`Heatmap`、`Sparkline`、`GaugeChart`、`TreeMap`、`GanttChart`、`NetworkGraph`、`SankeyDiagram`、`Flowchart`、`MapView`、`MiniMap`、`GeographicHeatmap` |
+| **メディアと統合** | `Image`、GIF/APNG/アニメーション WebP、`MediaElement`、`CameraView`、`WebView`、`InkCanvas`、`QRCode`、`IconElement`、`ContentDialog`、`Popup`、`ToolTip`、`ToastNotification`、`SystemNotification`、`NotifyIcon`、`TitleBar`、印刷、Windows 専用 `WindowsFormsHost` |
+| **グラフィックス** | パス、ブラシ、変換、クリップ、影、ぼかし、Acrylic/Mica、リキッドグラス、トランジション、カスタム HLSL シェーダー |
 
-- コアパネル: `Grid`、`StackPanel`、`Canvas`、`DockPanel`、`WrapPanel`、`UniformGrid`
-- 仮想化: `VirtualizingStackPanel`、`VirtualizingWrapPanel`、DataGrid のプレゼンター/パネル
-- ドッキング: `DockLayout`、`DockSplitPanel`、`DockTabPanel`、`Split`
-- ウィンドウレベルのレイアウトホスト、オーバーレイレイヤー、タイトルバー構成、クロム統合
+### テキスト、入力、アクセシビリティ
 
-### コントロール
+- 書記素クラスタ単位のキャレット移動、選択、削除、IME 合成入力、リッチ文書編集、エンコーディング対応のファイル/ターミナル処理。
+- Windows テキストサービス、Apple CoreText、Linux/Android 独自 OpenType エンジンを使用。フォントフォールバック、カラーグリフ、アンチエイリアスはプラットフォーム/バックエンドで異なります。
+- マウス、キーボード、タッチ、ペン、ジェスチャー、操作慣性、スクロールをマネージド入力系へルーティング。実機検証は合成イベントのテストと区別して記録します。
+- Automation Peer は Windows UIA、Linux AT-SPI、macOS アクセシビリティに接続。Peer/ブリッジの実装範囲だけではスクリーンリーダー検証の完了を意味しません。
 
-- **入力**: `Button`、`TextBox`、`PasswordBox`、`NumberBox`、`AutoCompleteBox`、`ComboBox`、`Slider`、`RangeSlider`、`CheckBox`、`RadioButton`、`ToggleSwitch`、`SplitButton`
-- **ピッカー**: `ColorPicker`、`DatePicker`、`TimePicker`、`Calendar`
-- **データ**: `TreeView`、`DataGrid`、`TreeDataGrid`、`ListBox`、`ListView`、`PropertyGrid`、`JsonTreeViewer`
-- **ナビゲーションとバー**: `NavigationView`、`TabControl`、`Ribbon`、`CommandBar`、`MenuBar`、`ToolBar`、`StatusBar`、`GroupBox`、`Expander`、`InfoBar`
-- **ドキュメント**: `DocumentViewer`、`FlowDocumentReader`、`FlowDocumentScrollViewer`、`FlowDocumentPageViewer`、`Markdown`
-- **チャート**: `BarChart`、`LineChart`、`PieChart`、`ScatterPlot`、`CandlestickChart`、`GaugeChart`、`Heatmap`、`GanttChart`、`NetworkGraph`、`SankeyDiagram`、`TreeMap`、`Sparkline`、加えて `FlowchartDiagram` / `MermaidDiagram` — カテゴリ / DateTime / 対数 / 数値の各軸、凡例とツールチップ
-- **メディア**: `MediaElement`、`CameraView`
-- **マップ**: `MapView`、`MiniMap`、`GeographicHeatmap`
-- **リッチ**: `InkCanvas`、`WebView`/`WebBrowser`、`EditControl`、`RichTextBox`、`QRCode`（自己完結型エンコーダー）、`TitleBar`、`Terminal`、`SwipeControl`
-- **開発者ツール**: `DiffViewer`、`HexEditor`
-- **相互運用**: `WindowsFormsHost`（`net10.0-windows` 上で `System.Windows.Forms` コントロールをホスト）
-- **印刷**: Windows では Win32、Linux では PDF + xdg-desktop-portal を使用する `PrintDialog`
-- **通知**: トースト形式の通知システム
+### メディアとエフェクト
 
-### テキスト編集
+オーディオはネイティブ再生、WAV/FLAC/MP3/Vorbis、プラットフォームコーデック、音程を保つ速度変更に対応します。動画はネイティブデコーダーと `NativeVideoSurface` を使用し、CPU フレームまたは対応する外部 GPU リソースを受け取ります。GPU インポート/ゼロコピーの可否はバックエンド、形式、デコーダー、ドライバー次第です。[Linux メディアの範囲](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux.md#media)を参照してください。
 
-- `TextBox`、`PasswordBox`、`EditControl`、`RichTextBox`、`TextBlock`、`Label`、`Markdown`、
-  `Terminal`、`TextEffectPresenter` にまたがる、書記素クラスタを意識したキャレット、選択、単語区切り、削除 —
-  絵文字（ZWJ / 肌の色 / 国旗 / 結合文字）がクラスタの途中で分割されることはありません
-  （`StringInfo.GetTextElementEnumerator` による UAX#29）。
-- パスワード / 読み取り専用フィールドでの IME 抑制により、入力中の変換が保護されたエディター状態を変更できないようにします。
-- BOM 自動検出を伴うマルチエンコーディングのファイル入出力（`TextBox`、`EditControl`、`Markdown`、`RichTextBox` の
-  `LoadFromFile` / `SaveToFile`）。`CodePagesEncodingProvider` は `ModuleInitializer` 経由で登録されるため、
-  GBK / Shift-JIS / その他のデフォルト以外のコードページも標準で動作します。
-- `Terminal` は `Encoding` プロパティとステートフルな `Decoder` を追加し、出力バイトをマルチバイトシーケンスを分割することなく
-  ユーザーのターミナルエンコーディングでデコードします。
-- WPF に準拠した `TextBox.CharacterCasing` / `MinLines` / `MaxLines`、`ComboBox.StaysOpenOnEdit`。
+対応バックエンドでは HLSL を利用できます。macOS では `PixelShader.SourceHlsl` を使い、DXC と SPIRV-Cross で Metal 向けに変換します。DirectX バイトコードは Windows 固有です。[Metal エフェクトと検証](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/macos-development.md#metal-shader-effects)を参照してください。
 
-### テキストレンダリング
+### ホストと診断
 
-- デュアルソースブレンディングによる ClearType サブピクセルテキストレンダリング。
-- CPU ラスタライズフォールバックパス。
-- 自前の OpenType エンジンによるクロスプラットフォームテキストシェーピング（Linux/Android）— FreeType/HarfBuzz のランタイム依存なし。fontconfig はフォント検出のみに使用。
-- 要素単位の `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
-  継承可能な添付プロパティ — 値は `FormattedText` → ネイティブの
-  `JaliumTextFormat` を流れてラスタライザーに到達します:
-  - D3D12: `GlyphKey` は `(aaMode, hintingMode)` を含み、`RasterizeGlyph` は `key.mode` を尊重します。
-  - Vulkan / Windows: `LOGFONT.lfQuality` が bilevel / smoothed / ClearType の間で切り替わり、
-    フォントキャッシュ + テキストキャッシュ + GDI フォントプールのキーはすべて `fontQuality` を含みます。
-- プロセス全体のレンダリングモードのオーバーライド + カラー絵文字のラスタライズ。
+`AppBuilder` は `IHostApplicationBuilder` を実装します。`Build()` 前にサービス、ログ、Options、View/ViewModel を登録します。返される `JaliumApp` がホストとアプリケーションを管理し、`Run()` がサービス開始、UI ループ、終了時の停止を行います。AppKit、Android、UIKit は各プラットフォームのライフサイクルホストを使用します。
 
-### 入力パイプライン
+`Jalium.UI.Hosting` の拡張には `AddView<TView, TViewModel>`、`ConfigureJalium()`、`UseJaliumMetrics()`、`UseDevTools()`、`UseDebugHud()` があります。DevTools/HUD は明示的に有効化し、ツリー/プロパティ、レイアウト/バインディング/イベント、描画メトリクス、オーバーレイを確認できます。ホットリロードは名前付きパイプで JALXAML 更新を受信し、独立した起動/監視ツールは `tools/Jalium.UI.HotReload.Watcher` にあります。
 
-- ヒットテストを伴うポインターおよびキーボードのルーティング
-- 物理的な慣性を伴う完全なマルチタッチマニピュレーション（パン / ピンチ / 回転）
-- コントロールカタログ全体でネイティブに配線された `GestureRecognizer`（タップ / スワイプ / ピンチ）
-- リアルタイムスタイラス（RTS）のバックグラウンドインクプレビュー
-- スクロールおよびマニピュレーションイベントの処理
+生成済みマークアップと明示的なビュー登録はトリミング/AOT に役立ちます。実行時解析やリフレクションによる探索は、アプリケーションごとの検証が必要です。
 
-### GPU レンダリングとエフェクト
-
-- Vello GPU コンピュートパイプライン（path、clip、tile の各ステージ）を備えた DirectX 12
-- 背景エフェクト: ぼかし、アクリル、マイカ、すりガラス
-- 屈折、色収差を伴うリキッドグラス
-- トランジションシェーダーと要素エフェクト（ぼかし、ドロップシャドウ）
-- アニメーションビットマップ: GIF、APNG、アニメーション WebP
-- ネイティブ GPU ビデオサーフェス（`NativeVideoSurface`）: CPU BGRA8 ステージングに加え、外部 GPU リソースの
-  インポート（D3D11 共有テクスチャ / Vulkan 外部 `VkImage` / Android `AHardwareBuffer` / Apple `IOSurface`） —
-  API サーフェスは整備済みで、バックエンド別のアップロードパスは段階的に埋めています。
-- HLSL によるカスタムシェーダーのサポート
-- 大きな画像グリッド向けのビットマップ縮小キャッシュ + 仮想化対応ラップパネル
-- DevTools の Perf タブに表示される統一された path/bitmap テレメトリ C ABI
-
-### ホスティング / DI / 構成
-
-- 標準の `Microsoft.Extensions.Hosting` スタック（10.0.3）の上に構築されています。`AppBuilder` は
-  `IHostApplicationBuilder`（`HostApplicationBuilder` をラップ）を実装しているため、馴染みのある
-  `IServiceCollection`、`IConfiguration`、`ILoggingBuilder`、`IHostEnvironment`、`Meter` の各サーフェスが
-  アプリ起動時に利用できます。
-- Jalium 固有の接着コードは `Jalium.UI.Hosting` に存在します: MVVM のビュー/ビューモデル登録
-  （`AddView<TView, TViewModel>`、`AddViewsAndViewModels`）、`JaliumRuntimeOptions` への `ConfigureJalium`
-  オプションバインディング、フレームタイムメトリクス（`UseJaliumMetrics` / `JaliumMeter`）、および
-  選択的に有効化する開発者ツール（`UseDevTools` / `UseDebugHud`）です。
-- `EnableConfigurationBindingGenerator` による Trim/AOT セーフな構成バインディング。リフレクションベースの
-  ビュー検出オーバーロードには `[RequiresUnreferencedCode]` が注釈されています。
-
-### オーディオパイプライン
-
-- WAV / FLAC / MP3 / Vorbis（クロスプラットフォーム）および AAC（Windows では Media Foundation 経由）を
-  カバーするネイティブの `MiniAudioDevice` 再生 + `NativeAudioDecoder`。
-- ピッチ保持タイムストレッチのための `WsolaSpeedProcessor` を備えたマネージドの `IAudioProcessor` チェーン。
-- オーディオの TU はプラットフォームごとの各 `jalium.native.media.*` ライブラリにコンパイルされるため、
-  シンボルはマネージドの P/Invoke が読み込むのと同じ DLL に配置されます。
-
-### 3D アニメーションの型
-
-- `Point3DAnimation`、`Rotation3DAnimation`、`Size3DAnimation`、
-  `Vector3DAnimation` が WPF のアニメーション型セットを完成させます。
-
-### アクセシビリティ
-
-- コアおよび専用コントロール向けのオートメーションピア（Windows UIA と Linux AT-SPI を通じて公開）
-- Chart、DiffViewer、HexEditor、JsonTreeViewer、Map、PropertyGrid のオートメーション
-- `Window.ResolveCursor` は無効な要素に対して標準の矢印を返すため、
-  ホバー状態が有効なコントロールと混同されることはありません。
-
-### 開発者ツール
-
-- 選択的に有効化する DevTools ウィンドウ（`app.UseDevTools()`、F12 / Ctrl+Shift+C の要素ピッカー）:
-  仮想化とインラインプロパティ編集を備えたビジュアル / 論理 / フラットツリーインスペクター、加えて
-  Layout、Events、Bindings、Resources、Perf、UIA、Tools
-  （ルーラー / カラーピッカー / オーバードロー・ダーティ領域オーバーレイ / スクリーンショットエクスポート）
-  とライブ REPL タブ。
-- オンスクリーンのデバッグ HUD（`app.UseDebugHud()`、F3）: フレームタイミング、ダーティ領域、
-  バックエンド情報。
-- どちらもデフォルトでは無効なので、明示的に有効化しない限りリリースアプリに同梱されることはありません。
-
-### マークアップとツール
-
-- ランタイム解析: `Jalium.UI.Markup.XamlReader`
-- パッケージ化された MSBuild ターゲット/タスクによるビルド統合
-- コンパイル時 JALXAML コードビハインドのためのソースジェネレーター
-- Razor ディレクティブのソースジェネレーターによるコンパイル時ロワーリング — 下記参照。
-- JALXAML ホットリロード: `HotReloadRuntime` / `HotReloadAgent` が、名前付きパイプ経由でインプロセスに
-  ライブビジュアルツリーへパッチを適用します（IDE が設定する `JALIUM_HOTRELOAD_PIPE` 環境変数を通じて
-  自動起動）。スタンドアロンのファイルウォッチャーは `tools/Jalium.UI.HotReload.Watcher` にあります。
-
-## JALXAML における Razor 構文
-
-JALXAML は、既存の `{Binding ...}` の上に付加的なシンタックスシュガーとして Razor スタイルの構文をサポートします:
-
-- `@Path`、`@(expr)`、`@{ ... }`、`@*...*@` コメント
-- `$.Path`（要素自身のプロパティ）と `#.Path`（DataContext のみ）
-- 混在テキストテンプレート（文字列/オブジェクト対象）
-- `@if(expr){<Element />}` ブロックディレクティブ（完全な `else if` / `else` チェーン対応）
-- `@virtualize` — データバインドされた仮想化ループ
-- 文 / 制御フローディレクティブ: `@for`、`@foreach`、`@while`、`@switch`、
-  `@using`、`@lock`（読み込み時に一度だけ展開）
-- テンプレート化コンテンツのための `@section`/`@RenderSection`
-- エスケープ: `@@` と `\@`
-
-バインディングソースの解決順序は、まず `DataContext`、次にコードビハインドへのフォールバックです。
-
-更新の挙動:
-
-- 監視可能なソース（`INotifyPropertyChanged` / 依存関係プロパティ）: リアルタイム更新。
-- 監視不可能な CLR ソース: 読み込み時に一度だけ評価。
-
-### リスト
-
-増える可能性のあるリストには `@virtualize` を使ってください。データバインドされた仮想化リストに
-ロワリングされ、要素数はデータ量ではなくビューポートに追従し、コンテナーは再利用され、
-`INotifyCollectionChanged` を追跡します。
-
-```xml
-<ScrollViewer>
-  @virtualize(var row in Rows)
-  {
-    <Border Padding="8"><TextBlock Text="@row.Name" /></Border>
-  }
-</ScrollViewer>
-```
-
-本体は item テンプレートになるため単一要素である必要があり、またスクロール軸に境界が必要です
-（`ScrollViewer` の直下に置くか、`Height`/`MaxHeight` を明示）。
-数値形式（`@virtualize(var i = 0; i < Count; i++)`）もサポートされます。
-
-`@foreach` と `@for` は従来どおり静的に展開されます: item ごとに実要素が 1 つ、再利用なし、
-読み込み時に一度だけ評価。短い固定リスト向けであり、データ駆動なら `@virtualize` を使ってください。
-
-### コンパイル時ロワーリング
-
-JALXAML ソースジェネレーターは以下をビルド時にロワーリングし、ホットパス上の実行時解析コストを無くします:
-
-- `@if` / `@else if` / `@else` チェーン。
-- `@section` / `@RenderSection`。
-- `@virtualize`。
-- 値式（`@Path`、`@(expr)`、`$.`、`#.`）。
-- `SetCompiledBinding` 経由の `{Binding ...}`（ソースジェネレーターの `SplitParameters` は
-  実行時パーサーと 1 行単位で一致させています）。
-- カスタム xmlns の要素型 — `.jalxaml` が `XmlnsDefinition` で公開されたコントロールライブラリを
-  使う場合、ソースジェネレーターは実行時リフレクションに頼らずコンパイル時に CLR 型を解決します
-  （トリミング / AOT に有利）。
-
-`Setter.Value` は意図的にロワーリングしません。
-
-構文の詳細と規則は [`docs/razor-syntax.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/razor-syntax.md) を参照してください。
+---
 
 ## インストール
 
-### プラットフォームを選択（アプリケーション向け推奨）
+対象プラットフォームの入口パッケージを選択してください。
 
 ```bash
-# Windows デスクトップ
-dotnet add package Jalium.UI.Desktop
-
-# Android
-dotnet add package Jalium.UI.Android
-
-# Linux デスクトップ
-dotnet add package Jalium.UI.Linux
+dotnet add package Jalium.UI.Desktop --version 26.11.0   # Windows
+dotnet add package Jalium.UI.Linux --version 26.11.0     # Linux
+dotnet add package Jalium.UI.MacOS --version 26.11.0     # macOS
+dotnet add package Jalium.UI.Android --version 26.11.0   # Android
 ```
 
-### 共有メタパッケージ
+対象のコマンドを一つだけ実行し、表に従ってターゲットフレームワークと必要な .NET workload を設定します。共有ライブラリは `Jalium.UI` を参照でき、最終アプリケーションがプラットフォーム入口を提供します。iOS/tvOS 開発ではソースプロジェクトと静的ネイティブペイロードを使用します。
 
-ライブラリが共有フレームワークスタックだけを必要とし、最終アプリケーションが
-プラットフォームエントリーパッケージを選ぶ場合は、汎用メタパッケージを使用します。
+---
 
-```bash
-dotnet add package Jalium.UI
+## クイックスタート
+
+### 1. C# デスクトップアプリケーション
+
+Windows 上の空のディレクトリに `HelloJalium.csproj` を作成します。
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Jalium.UI.Desktop" Version="26.11.0" />
+  </ItemGroup>
+</Project>
 ```
 
-### 個別インストール（上級者向け）
-
-```bash
-dotnet add package Jalium.UI.Core
-dotnet add package Jalium.UI.Media
-dotnet add package Jalium.UI.Input
-dotnet add package Jalium.UI.Interop
-dotnet add package Jalium.UI.Gpu
-dotnet add package Jalium.UI.Controls
-dotnet add package Jalium.UI.Xaml
-dotnet add package Jalium.UI.Build
-dotnet add package Jalium.UI.Xaml.SourceGenerator
-```
-
-## クイックスタート（C#）
+`Program.cs` を追加します。STA の入口は COM クリップボードやダイアログなどの Windows デスクトップサービスに必要です。
 
 ```csharp
 using Jalium.UI;
 using Jalium.UI.Controls;
 
-var builder = AppBuilder.CreateBuilder(args);
-builder.ConfigureApplication(app =>
+internal static class Program
 {
-    app.MainWindow = new Window
+    [STAThread]
+    private static int Main(string[] args)
     {
-        Title = "Hello Jalium.UI",
-        Width = 960,
-        Height = 640,
-        Content = new StackPanel
+        var builder = AppBuilder.CreateBuilder(args);
+        builder.ConfigureApplication(app =>
         {
-            Margin = new Thickness(24),
-            Children =
+            var greeting = new TextBlock { Text = "Hello, Jalium.UI", FontSize = 28 };
+            var button = new Button
             {
-                new TextBlock { Text = "Jalium.UI", FontSize = 28 },
-                new TextBlock { Text = "GPU-accelerated .NET UI framework", Margin = new Thickness(0, 8, 0, 16) },
-                new Button { Content = "Start" }
-            }
-        }
-    };
-});
+                Content = "Click me",
+                Margin = new Thickness(0, 16, 0, 0)
+            };
+            button.Click += (_, _) => greeting.Text = "Welcome to Jalium.UI!";
 
-using var jalium = builder.Build();
-return jalium.Run();
+            app.MainWindow = new Window
+            {
+                Title = "Hello Jalium.UI",
+                Width = 800,
+                Height = 500,
+                Content = new StackPanel
+                {
+                    Margin = new Thickness(24),
+                    Children = { greeting, button }
+                }
+            };
+        });
+
+        using var host = builder.Build();
+        return host.Run();
+    }
+}
 ```
 
-## クイックスタート（JALXAML ランタイム解析）
+そのディレクトリで実行します。
 
-```csharp
-using Jalium.UI;
-using Jalium.UI.Controls;
-using Jalium.UI.Markup;
+```bash
+dotnet run -c Release
+```
 
-var xaml = """
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="JALXAML Window" Width="800" Height="500">
-  <Grid>
-    <StackPanel Margin="20">
-      <TextBlock Text="Hello from JALXAML" FontSize="24"/>
-      <Button Content="Click" Margin="0,12,0,0"/>
+Linux では `net10.0` と `Jalium.UI.Linux` に変更し、同じアプリケーションコードを利用できます。[Linux ガイド](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux.md#runtime-dependencies)の依存関係を導入してください。macOS/Android には AppKit/Activity の入口が必要です。下記のサンプルとガイドを参照してください。
+
+### 2. JALXAML
+
+```xml
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="JALXAML Window" Width="800" Height="500">
+    <StackPanel Margin="24">
+        <TextBlock Text="Hello from JALXAML" FontSize="28" />
+        <Button Content="Start" Margin="0,16,0,0" />
     </StackPanel>
-  </Grid>
 </Window>
-""";
-
-var builder = AppBuilder.CreateBuilder(args);
-builder.ConfigureApplication(app =>
-{
-    app.MainWindow = (Window)XamlReader.Parse(xaml);
-});
-
-using var jalium = builder.Build();
-return jalium.Run();
 ```
+
+生成ビューでは `x:Class`、対応する partial コードビハインド、コンストラクターからの `InitializeComponent()` 呼び出しを追加します。`Jalium.UI.Build` が `.jalxaml` を検出し、変換したマークアップをジェネレーターに渡します。`Jalium.UI.Markup.XamlReader.Parse(...)` による実行時読み込みも可能です。上記の `ConfigureApplication` 内で解析した `Window` を設定してください。
+
+### 3. Razor 構文と仮想化リスト
+
+`{Binding ...}` に加えて `@Path`、`@(expr)`、`@{ ... }`、`@if`/`@else`、`@section`/`@RenderSection`、ループ指令を使えます。`$.Path` は要素自身のプロパティ、`#.Path` は `DataContext` のみを参照します。
+
+データコンテキストの `Rows` にバインドするには次を使用します。
+
+```xml
+<ScrollViewer Height="360">
+    @virtualize(var row in Rows)
+    {
+        <Border Padding="8"><TextBlock Text="@row.Name" /></Border>
+    }
+</ScrollViewer>
+```
+
+`@virtualize` は表示範囲のコンテナーを再利用し、コレクション変更を追跡します。本体のルートは一要素で、スクロール軸に有限のサイズが必要です。`@foreach` と `@for` は読み込み時に一度展開するため、小さな静的リストに適しています。通知するソースは変更時に更新され、通知しない CLR 値は一度評価されます。変換と実行時の範囲は [Razor リファレンス](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/razor-syntax.md)を参照してください。
+
+### 4. CSS スタイル
+
+```xml
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Css.StyleSheetSource="Styles/App.css" Css.Class="card">
+    <TextBlock Text="Styled with CSS" Css.Class="heading" />
+</Border>
+```
+
+```css
+/* Styles/App.css */
+.card {
+    background-color: #eef6ff;
+    border-radius: 12px;
+    padding: 24px;
+}
+.heading {
+    color: #175cd3;
+    font-size: 28px;
+    font-weight: 600;
+}
+```
+
+`Css.StyleSheetSource` の通常パスは、宣言元 JALXAML のアセンブリのリソースルートを基準にします。マークアップのディレクトリ基準ではありません。既定の targets は `.css` とインライン CSS を登録コードにコンパイルします。実行時スタイルシートと動的バインディングも利用できます。
+
+CSS は実装済みのセレクター、カスケード/レイヤー、カスタムプロパティ、メディア/コンテナークエリー、flex/grid、位置指定、組版、生成コンテンツ、画像、マスク、エフェクトを扱います。Jalium のビジュアル/文書モデルとテンプレート境界に従います。実装構文は `Jalium.UI.Styling.CssAuthoring` または `Css.Supports()` で確認できます。解析成功だけで全バックエンドの描画互換性は保証されません。[CSS の作成と制限](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/css-authoring.md)を参照してください。
+
+---
 
 ## ソースからのビルド
 
+> [!NOTE]
+> コマンドはリポジトリルートから実行します。マネージドコンパイルとネイティブペイロード生成は別の手順で、マネージドビルドだけではネイティブアプリケーションを実行できません。
+
 ### 前提条件
 
-- [`global.json`](global.json) と互換性のある .NET 10 SDK（現在はプレリリース feature band を固定）
-- CMake 3.25+ と C++20 対応ツールチェーン
-- 標準 Windows x64 ネイティブソリューション用の C++ ワークロード/v145 ツールセットを備えた Visual Studio
-- その標準 Windows ネイティブソリューションでは Vulkan SDK が必要（縮小したカスタム構成では無効化可能）
-- Linux 用の Ninja、Clang/GCC、X11/Wayland 開発パッケージ（[Linux ガイド](docs/linux.md)を参照）
-- 既定の Android ビルド用 NDK 27.2.12479018（`JALIUM_ANDROID_NDK_VERSION` で明示的に変更可能）
+| 対象 | 要件 |
+| --- | --- |
+| **マネージド** | [`global.json`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/global.json) に対応する .NET 10 SDK。最低 `10.0.300`、`latestFeature` ロールフォワード、プレリリース可 |
+| **ネイティブ** | CMake **3.28+** と C++20。Apple ソースは Objective-C++ も使用 |
+| **Windows ネイティブソリューション** | Visual Studio C++、Windows SDK、**v145** ツールセット、完全なソリューション用の Vulkan SDK |
+| **Linux** | Ninja、GCC/Clang、Vulkan ヘッダー/ローダー、X11/Wayland 開発ライブラリ、Fontconfig。[依存関係一覧](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux.md#build-validate-and-package)を参照 |
+| **macOS / Apple** | Apple Silicon または Intel Mac（macOS 15+ ターゲット）、Xcode/Metal ツール、Ninja、Python 3.9+、対象の .NET workload。バージョンは [`eng/apple/toolchain.lock.json`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/eng/apple/toolchain.lock.json) |
+| **Android** | .NET Android workload、Android SDK/JDK、標準ヘルパー用 NDK **27.2.12479018** |
 
-### ビルド
+Apple ロックは SDK `10.0.302`、workload set `10.0.302.1`、Xcode `26.6` を指定し、一般 SDK の最低要件とは別に管理されます。[Apple 環境ガイド](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/macos-development.md#prerequisites)に従って選択してください。
+
+### 共通マネージドライブラリ
 
 ```bash
-# マネージドメタパッケージとそのプロジェクト依存関係をビルド
 dotnet build src/packaging/Jalium.UI/Jalium.UI.csproj -c Release
+```
 
-# Windows ネイティブモジュールをビルド（Visual Studio Developer Command Prompt 内で）
+同時または OS をまたぐビルドには、別々の絶対パスを `-p:JaliumBuildRoot=...` に渡し、`obj`/`bin` を分離します。同じ restore/build/test には同じルートを使用します。既定のソリューションビルドから一部サンプル、ツール、Apple 入口は除外されているため、必要なプロジェクトを明示的にビルドしてください。
+
+### Windows
+
+Visual Studio Developer Command Prompt で実行します。
+
+```powershell
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
+dotnet run --project samples/Jalium.UI.DesktopDemo/Jalium.UI.DesktopDemo.csproj -c Release
+```
 
-# 対応する glibc / musl ホストで Linux ネイティブペイロードとテストターゲットをビルド
+### Linux
+
+アーキテクチャと glibc/musl が一致するホストで実行します。
+
+```bash
 JALIUM_NATIVE_BUILD_TESTS=1 bash eng/linux/build-native.sh linux-x64 Release
+dotnet run --project samples/Jalium.UI.LinuxDemo/Jalium.UI.LinuxDemo.csproj -c Release
+```
 
-# Android パッケージの両 ABI をビルド（既定は NDK 27.2.12479018）
+ヘルパーは `linux-arm64`、`linux-musl-x64`、`linux-musl-arm64` も受け付けます。ホストを検査し、暗黙のクロスコンパイルは行いません。クロスビルドと glibc 基準のヘルパーは `eng/linux` にあります。シェルスクリプトには LF 改行を使用してください。
+
+### macOS
+
+```bash
+bash eng/apple/build-native.sh macos Debug --development
+```
+
+ネイティブスクリプトは既定で現在のホスト CPU に従います。`JALIUM_APPLE_ARCHITECTURE=arm64|x86_64` で対象アーキテクチャを明示選択できます（クロスアーキテクチャビルドには `--build-only` が必要です）。完全な Gallery を実行するには、[Gallery リポジトリ](https://github.com/VeryJokerJal/Jalium-UI-Gallery)を隣の `Jalium.UI.Gallery` に配置するか `JALIUM_GALLERY_ROOT` を設定し、実行します。
+
+```bash
+bash eng/apple/run-gallery.sh Debug
+```
+
+このヘルパーはネイティブをビルド/検証し、`.app` を生成して開きます。`--build-only` で起動を省略できます。初回には固定シェーダーコンパイラーを準備します。AppKit principal class、出力先、ツールチェーン上書きは [macOS ガイド](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/macos-development.md)を参照してください。
+
+### Android
+
+標準ヘルパーは **Windows NDK ホストツール**を使用します。Git Bash などの Bash 環境で実行してください。
+
+```bash
 bash src/native/build-android.sh all
 ```
 
-> [!NOTE]
-> シェルスクリプトは、改行コードを LF のまま保持した Linux/WSL checkout
-> で実行してください。Windows checkout で CRLF に変換されると、Jalium の
-> ビルド開始前に Bash がスクリプトを拒否します。
+`all` は両 ABI をビルドし、完全性スタンプを作成します。単一 ABI は開発用で、完全なパッケージのスタンプを無効化します。NDK は `JALIUM_ANDROID_NDK_VERSION` と `ANDROID_NDK_ROOT` で明示的に変更できます。Activity 入口は `samples/Jalium.UI.AndroidDemo` にあります。
 
-### NuGet パッケージング
+### iOS、iPadOS、tvOS
+
+固定 Xcode/.NET ツールチェーンを持つ Mac で、必要な四つの静的スライスを作成してから XCFramework にまとめます。以下の入口ライブラリのビルドでは、完全な実行可能アプリは作成しません。
 
 ```bash
-# 共有メタパッケージをパック。プラットフォームのリリース処理では先に検証済みネイティブペイロードを生成します
+dotnet workload install ios tvos --version 10.0.302.1
+
+bash eng/apple/build-native.sh ios Release
+bash eng/apple/build-native.sh iossimulator Release
+bash eng/apple/build-native.sh tvos Release
+bash eng/apple/build-native.sh tvossimulator Release
+bash eng/apple/package-xcframework.sh Release
+
+dotnet build src/packaging/Jalium.UI.iOS/Jalium.UI.iOS.csproj -c Release -r ios-arm64
+dotnet build src/packaging/Jalium.UI.tvOS/Jalium.UI.tvOS.csproj -c Release -r tvos-arm64
+```
+
+シミュレーターの入口ライブラリには、対応プロジェクトで `iossimulator-arm64` または `tvossimulator-arm64` を選びます。アプリは `JaliumIOSApplicationDelegate` / `JaliumTVApplicationDelegate` を継承し、`CreateHostedApp()` とプラットフォーム Scene のライフサイクルを使用します。`.metallib`/manifest と XCFramework スライスを一致させてください。JALXAML を作成するアプリは前述のビルド/ソースジェネレーター統合も必要です。実機用 bundle と署名/provisioning はアプリ側のビルドで行います。
+
+### visionOS ネイティブスライス
+
+必要な iOS/tvOS スライスの準備後、任意で visionOS スライスを追加して XCFramework を再生成できます。
+
+```bash
+bash eng/apple/build-native.sh visionos Release
+bash eng/apple/build-native.sh visionsimulator Release
+bash eng/apple/package-xcframework.sh Release
+```
+
+`visionsimulator` 引数は `apple-visionossimulator-arm64` プリセットを選びます。ネイティブ Metal/プラットフォーム/メディア検証のための経路であり、`Jalium.UI.visionOS` プロジェクトやマネージドアプリのビルドコマンドはありません。
+
+### パッケージングと NativeAOT
+
+```bash
 dotnet pack src/packaging/Jalium.UI/Jalium.UI.csproj -c Release -o artifacts/nuget
 ```
 
-詳細なビルド構成については、[`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) を参照してください。
+これは共通メタパッケージを作成し、プラットフォーム配布全体は作成しません。プラットフォームのパッケージングには対応ネイティブペイロード、エクスポート検査、完全性/由来スタンプが必要です。ネイティブ出力は `src/native/bin/native/<rid>/<Configuration>`、Apple 静的スライス/XCFramework は `src/native/artifacts/apple` に配置されます。構成を合わせ、ABI 変更後は再生成してください。
+
+Windows/Linux NativeAOT と Apple 静的リンクは別々に実装されています。`samples/Jalium.UI.AotWindowDemo`、`eng/linux/test-native-aot-static.sh`、`eng/apple/package-xcframework.sh`、[リリースワークフロー](https://github.com/VeryJokerJal/Jalium.UI/tree/master/.github/workflows)を参照してください。
+
+---
+
+## テストと検証
+
+対象ホストに対応するスイートを選び、必要なネイティブペイロードを用意してください。
+
+```bash
+# ポータブルな生成テンプレート契約
+dotnet test tests/Jalium.UI.Template.Tests/Jalium.UI.Template.Tests.csproj -c Release
+
+# Windows マネージドスイート
+dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
+
+# Linux ポータブル/マネージドスイート
+dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj -c Release
+
+# macOS マネージド契約。対応する Debug ネイティブペイロードが必要
+dotnet test tests/Jalium.UI.MacOS.Tests/Jalium.UI.MacOS.Tests.csproj -c Debug
+```
+
+ネイティブ CTest は描画読み戻し、テキスト、エフェクト、メディア、ウィンドウ/入力ライフタイム、プラットフォーム統合を検証します。Linux 統合には対象 compositor/display、D-Bus、テスト依存関係が必要です。Apple ウィンドウ検証は独立した `Jalium.UI.MacOS.HostSmoke` AppKit ホスト、動画相互運用テストは CMake 製 shim を使用します。NuGet 消費側プロジェクトは準備済みのフィードが必要で、既定のソリューション restore に含まれません。
+
+[Linux](https://github.com/VeryJokerJal/Jalium.UI/actions/workflows/linux.yml)、[Apple](https://github.com/VeryJokerJal/Jalium.UI/actions/workflows/apple.yml)、[D3D12 インク](https://github.com/VeryJokerJal/Jalium.UI/actions/workflows/d3d12-ink.yml)、Windows 契約ワークフローはそれぞれ独自のゲートを定義します。テストの存在や限定スイートの成功は、全回帰テストの成功を意味しません。実 GPU/実機、実 IME、スクリーンリーダー、配布は別途検証し、残項目と結果の対象リビジョンはプラットフォーム記録を確認してください。
+
+---
+
+## サンプルと Gallery
+
+| 場所 | 目的 |
+| --- | --- |
+| [独立 Gallery](https://github.com/VeryJokerJal/Jalium-UI-Gallery) | デスクトップ、macOS、Linux、Android、Headless CLI 入口を持つ完全な 128 ページのコントロール/エフェクト展示 |
+| `samples/Jalium.UI.DesktopDemo` | C# Windows アプリとネイティブ統合 |
+| `samples/Jalium.UI.HostingDemo` | DI、MVVM、ログ、構成、Options、メトリクス、ホストサービス |
+| `samples/Jalium.UI.LinuxDemo` | Linux ウィンドウ、クリップボード、ダイアログ、入力、バックエンド選択 |
+| `samples/Jalium.UI.AndroidDemo` | Android Activity とネイティブライブラリ配置 |
+| `samples/Jalium.UI.AotWindowDemo` | Windows NativeAOT アプリ |
+| `samples/Jalium.UI.BorderlessDemo`、`.TransparentBackdropDemo`、`.MillionScroll` | ウィンドウ枠、透過背景、仮想化スクロール実験 |
+| `samples/Jalium.UI.Gallery` | 小規模なリポジトリ内 Windows サンプル。完全な Gallery は上記の別リポジトリで管理 |
+
+Gallery のダウンロードは [GitHub Releases](https://github.com/VeryJokerJal/Jalium.UI/releases) を参照し、各リリースの環境要件、署名、検証範囲を確認してください。
+
+---
 
 ## リポジトリ構成
 
 ```text
-Jalium.UI/
-  src/
-    managed/
-      Jalium.UI.Managed/       # 統合マネージド実装アセンブリ
-      Jalium.UI.Core/          # Core 互換ファサード
-      Jalium.UI.Media/         # Media 互換ファサード
-      Jalium.UI.Input/         # Input 互換ファサード
-      Jalium.UI.Interop/       # ネイティブブリッジ、P/Invoke、RID アセット
-      Jalium.UI.Gpu/           # GPU リソース、レンダーグラフ、シェーダー
-      Jalium.UI.Controls/      # Controls 互換ファサード
-      Jalium.UI.Xaml/          # JALXAML パーサー、Razor サポート、ホットリロード
-      Jalium.UI.Build/         # JALXAML コンパイル用 MSBuild タスク
-      Jalium.UI.Xaml.SourceGenerator/  # Roslyn ソースジェネレーター
-      Jalium.UI.Compiler/      # スタンドアロン jalxamlc コンパイラー（実行ファイル）
-    native/
-      jalium.native.core/      # ネイティブランタイムコア、バックエンドレジストリ
-      jalium.native.d3d12/     # DirectX 12 + Vello GPU バックエンド
-      jalium.native.vulkan/    # Vulkan バックエンド
-      jalium.native.metal/     # Metal レンダラーのソース（macOS ホストは未実装）
-      jalium.native.software/  # CPU ソフトウェアレンダラー
-      jalium.native.platform/  # プラットフォーム抽象化レイヤー
-      jalium.native.text/      # 自前のテキストエンジン（非 Windows）
-      jalium.native.browser/   # WebView2 統合
-      jalium.native.media.core/     # クロスプラットフォームメディア C ABI + 共有オーディオ
-      jalium.native.media.windows/  # Media Foundation のビデオ / カメラ + WIC
-      jalium.native.media.linux/    # GStreamer メディア / カメラ統合
-      jalium.native.media.android/  # Android メディアデコーダー + YUV SIMD
-      jalium.native.aot/       # NativeAOT アグリゲーター（media/text/バックエンドをハードリンク）
-    packaging/
-      Jalium.UI/               # メインメタパッケージ
-      Jalium.UI.Desktop/       # Windows デスクトップパッケージ（win-x64 / win-arm64）
-      Jalium.UI.Android/       # Android パッケージ
-      Jalium.UI.Linux/         # Linux デスクトップパッケージ（x64/Arm64、glibc/musl）
-  samples/                     # Gallery と Windows、Linux、Android、AOT のサンプル
-  tools/
-    Jalium.UI.HotReload.Watcher/  # スタンドアロン JALXAML ホットリロードファイルウォッチャー
-    Jalium.UI.ApiParity/          # メタデータベースの互換性検証ツール
-  tests/
-    Jalium.UI.Tests/              # メイン xUnit テストスイート
-    Jalium.UI.Linux.Tests/        # Linux 向けマネージドテスト
-    Jalium.UI.NuGetTest.*/        # パッケージ利用者ゲート
-    Jalium.UI.*Smoke/             # Linux 統合スモークアプリ
-  docs/                           # 構文、描画、ビルド、Linux、性能ガイド
-  eng/linux/                      # Linux ビルド、パッケージング、検証スクリプト
+src/managed/       ランタイム、互換ファサード、XAML/GPU/ビルドツール
+src/native/        C/C++/Objective-C++、シェーダー、プリセット、外部ソース
+src/packaging/     共通/プラットフォーム入口パッケージ (Windows, Linux, macOS, Android, iOS, tvOS)
+samples/           リポジトリ内アプリケーションとサンプル
+tests/             マネージドスイート、ネイティブ統合ホスト、NuGet 消費側
+eng/apple/         Apple ツールチェーン、シェーダー、パッケージ/検証ヘルパー
+eng/linux/         Linux ビルド、ABI 基準、統合/パッケージ検証
+eng/msbuild/       ネイティブペイロードの鮮度/由来ガード
+eng/release/       リリースパッケージングと由来確認ツール
+tools/             ホットリロード監視、API 検証、ソースデータ生成
+docs/              構文、描画、プラットフォーム動作、検証ガイド
 ```
+
+---
 
 ## ドキュメント
 
-| ドキュメント | 説明 |
+| ガイド | 内容 |
 | --- | --- |
-| [`docs/razor-syntax.md`](docs/razor-syntax.md) | JALXAML 向けの Razor 構文リファレンス |
-| [`docs/drawing-api.md`](docs/drawing-api.md) | 描画 API（DrawingContext、GPU エフェクト、レンダリング） |
-| [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | 手動ビルド構成ガイド |
-| [`docs/linux.md`](docs/linux.md) | Linux デスクトップガイド（ランタイム依存、ウィンドウシステム、パッケージング） |
-| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | 検証済み Linux サポートマトリクス、証拠、残る境界 |
-| [`docs/gallery-startup-performance.md`](docs/gallery-startup-performance.md) | Gallery の起動トレース、ベースライン、操作可能状態の測定 |
+| [CSS 作成](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/css-authoring.md) | スタイルシート、メタデータ、レイアウト/テキスト/描画の実装範囲と制限 |
+| [Razor 構文](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/razor-syntax.md) | 式、指令、仮想化、変換規則 |
+| [描画 API](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/drawing-api.md) | 描画コンテキストと GPU エフェクト |
+| [macOS 開発](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/macos-development.md) | ツールチェーン、AppKit、Gallery、Metal エフェクト、テスト |
+| [macOS ウィンドウ動作](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/macos-window-behavior.md) | ウィンドウ/入力/アクセシビリティ実装と受け入れ記録 |
+| [macOS パス描画](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/macos-path-rendering.md) | パス描画構成と検証 |
+| [Linux デスクトップ](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux.md) | 依存関係、ウィンドウ、メディア、パッケージ、制限 |
+| [Linux 検証マトリックス](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux-parity-status.md) | RID/機能の証拠と未検証項目 |
+| [Linux ウィンドウ動作](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux-window-behavior.md) | 現在のウィンドウ/入力動作と回帰記録 |
+| [Markdown 構文](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/markdown-syntax.md) / [スタイル](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/markdown-styling.md) | Markdown コントロールの内容と外観 |
+| [手動ビルド設定](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/manual-build-configuration.md) | 追加設定と問題調査。通常は標準プラットフォームヘルパーを優先 |
+| [Gallery 起動性能](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/gallery-startup-performance.md) | トレース、基準、準備完了時間 |
+| [API 互換検証ツール](https://github.com/VeryJokerJal/Jalium.UI/blob/master/tools/Jalium.UI.ApiParity/README.md) | 対応セルフテストと過去データの要件。現行 WPF 互換性の認証ではありません |
 
-## Visual Studio 拡張機能に関する注意
+---
 
-VSIX は次のいずれかにインストールできます:
+## コントリビューションとコミュニティ
 
-- 通常インスタンス: `%LOCALAPPDATA%\Microsoft\VisualStudio\18.0_<instanceId>\Extensions`
-- 実験用インスタンス（`/rootsuffix Exp`）: `%LOCALAPPDATA%\Microsoft\VisualStudio\18.0_<instanceId>Exp\Extensions`
+Issue/PR を歓迎します。対象プラットフォーム/バックエンド、最小の再現例、期待動作、検証手順を記載してください。描画/入力の変更には対応するネイティブ経路の証拠と、未検証の実機/操作を明記してください。
 
-`.jalxaml` の IntelliSense が生の XML 候補しか表示しない場合は、使用しているインスタンスと同じインスタンスに拡張機能がインストールされているか確認してください。
-
-## 互換性に関する注意
-
-- Jalium.UI は、まだ WPF のドロップイン代替として位置づけられてはいません。
-- API 名と挙動は馴染みのある WPF の概念に意図的に近づけられていますが、相違点は存在します。
-- すべての `Jalium.UI.*` パッケージ間でパッケージバージョンを揃えてください。
-
-## コントリビューション
-
-Issue とプルリクエストを歓迎します。大きな変更の場合は、以下を含めてください:
-
-- 動機と設計の概要
-- 挙動への影響/リスク
-- 検証手順（テストまたは手動検証）
-
-## コミュニティ
-
-ディスカッション、質問、またはコミュニティサポートについては、QQ グループに参加できます:
-
-**QQ: 1079778999**
+コミュニティ QQ グループ：**1079778999**。
 
 ## ライセンス
 
-MIT ライセンスです。詳細は [LICENSE](LICENSE) を参照してください。
+Jalium.UI は [MIT](https://github.com/VeryJokerJal/Jalium.UI/blob/master/LICENSE) ライセンスです。同梱依存にはそれぞれの条件が適用されます。[第三者ライブラリ一覧](https://github.com/VeryJokerJal/Jalium.UI/blob/master/src/native/thirdparty/LICENSES.md)と各ネイティブペイロードのライセンスを参照してください。

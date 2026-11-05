@@ -9,7 +9,7 @@ if not exist %OUTDIR% mkdir %OUTDIR%
 set ERRORS=0
 
 REM ── Vertex shaders (vs_5_1) ──
-for %%f in (sdf_rect.vs bitmap_text.vs bitmap_quad.vs custom_effect.vs triangle.vs) do (
+for %%f in (sdf_rect.vs coverage_rect.vs bitmap_text.vs bitmap_quad.vs custom_effect.vs triangle.vs) do (
     echo Compiling %%f.hlsl ...
     "%FXC%" /nologo /T vs_5_1 /O3 /E main /Fo %OUTDIR%\%%f.cso %%f.hlsl
     if errorlevel 1 (
@@ -19,7 +19,7 @@ for %%f in (sdf_rect.vs bitmap_text.vs bitmap_quad.vs custom_effect.vs triangle.
 )
 
 REM ── Pixel shaders (ps_5_1) ──
-for %%f in (sdf_rect.ps bitmap_text.ps bitmap_quad.ps triangle.ps) do (
+for %%f in (sdf_rect.ps coverage_rect.ps bitmap_text.ps bitmap_quad.ps triangle.ps) do (
     echo Compiling %%f.hlsl ...
     "%FXC%" /nologo /T ps_5_1 /O3 /E main /Fo %OUTDIR%\%%f.cso %%f.hlsl
     if errorlevel 1 (
@@ -50,7 +50,7 @@ echo.
 echo namespace shader_bytecode {
 ) > "%HDR%"
 
-for %%f in (sdf_rect.vs sdf_rect.ps bitmap_text.vs bitmap_text.ps bitmap_quad.vs bitmap_quad.ps custom_effect.vs triangle.vs triangle.ps) do (
+for %%f in (sdf_rect.vs sdf_rect.ps coverage_rect.vs coverage_rect.ps bitmap_text.vs bitmap_text.ps bitmap_quad.vs bitmap_quad.ps custom_effect.vs triangle.vs triangle.ps) do (
     call :emit_array %%f
 )
 

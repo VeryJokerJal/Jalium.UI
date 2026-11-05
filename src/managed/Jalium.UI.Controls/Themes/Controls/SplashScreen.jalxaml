@@ -1,0 +1,29 @@
+<ResourceDictionary
+    xmlns="http://schemas.jalium.ui/2024"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style TargetType="SplashScreenPresenter">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="SplashScreenPresenter">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal" />
+                            <VisualState x:Name="Disabled" />
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="ImageStates">
+                            <VisualState x:Name="Empty" />
+                            <VisualState x:Name="ImageAvailable" />
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Image x:Name="PART_Image" Source="{TemplateBinding Source}"
+                           HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                           Stretch="{TemplateBinding Stretch}" StretchDirection="{TemplateBinding StretchDirection}" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+</ResourceDictionary>

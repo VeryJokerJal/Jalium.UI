@@ -13,6 +13,7 @@ public class PropertyItem : INotifyPropertyChanged
     private readonly object _sourceObject;
     private readonly PropertyInfo? _propertyInfo;
     private readonly PropertyDescriptor? _propertyDescriptor;
+    private bool _settingValue;
 
     /// <summary>
     /// Initializes a new instance from a <see cref="PropertyInfo"/>.
@@ -37,17 +38,12 @@ public class PropertyItem : INotifyPropertyChanged
         Description = descAttr?.Description;
 
         var readOnlyAttr = propertyInfo.GetCustomAttribute<ReadOnlyAttribute>();
-        IsReadOnly = readOnlyAttr?.IsReadOnly == true || !propertyInfo.CanWrite;
+        IsReadOnly = readOnlyAttr?.IsReadOnly == true || propertyInfo.SetMethod?.IsPublic != true;
 
-        IsExpandable = !PropertyType.IsPrimitive
-                       && PropertyType != typeof(string)
-                       && PropertyType != typeof(decimal)
-                       && !PropertyType.IsEnum
-                       && PropertyType != typeof(DateTime)
-                       && PropertyType != typeof(TimeSpan)
-                       && PropertyType != typeof(Guid);
+        IsExpandable = IsExpandableType(PropertyType);
 
         SubProperties = new List<PropertyItem>();
+        ObserveSource();
     }
 
     /// <summary>
@@ -69,15 +65,10 @@ public class PropertyItem : INotifyPropertyChanged
         Description = propertyDescriptor.Description;
         IsReadOnly = propertyDescriptor.IsReadOnly;
 
-        IsExpandable = !PropertyType.IsPrimitive
-                       && PropertyType != typeof(string)
-                       && PropertyType != typeof(decimal)
-                       && !PropertyType.IsEnum
-                       && PropertyType != typeof(DateTime)
-                       && PropertyType != typeof(TimeSpan)
-                       && PropertyType != typeof(Guid);
+        IsExpandable = IsExpandableType(PropertyType);
 
         SubProperties = new List<PropertyItem>();
+        ObserveSource();
     }
 
     /// <summary>
@@ -121,25 +112,39 @@ public class PropertyItem : INotifyPropertyChanged
             Justification = "ConvertValue requires DynamicallyAccessedMemberTypes.All on its targetType. The Type flows here from PropertyInfo.PropertyType / PropertyDescriptor.PropertyType, framework members that cannot carry DAM annotations, so the flow cannot be satisfied statically. PropertyGrid is a developer/inspector control; consumers binding it to user-defined types are responsible for preserving those property types' converters (e.g. via DynamicDependency or a linker descriptor) — the same documented AOT prerequisite already declared on ConvertValue.")]
         set
         {
-            if (IsReadOnly)
+            if (IsReadOnly || HasReadOnlyValueTypeParent())
                 return;
 
             var oldValue = Value;
             if (Equals(oldValue, value))
                 return;
 
-            if (_propertyInfo != null)
+            _settingValue = true;
+            try
             {
-                var converted = ConvertValue(value, _propertyInfo.PropertyType);
-                _propertyInfo.SetValue(_sourceObject, converted);
+                if (_propertyInfo != null)
+                {
+                    var converted = ConvertValue(value, _propertyInfo.PropertyType);
+                    _propertyInfo.SetValue(_sourceObject, converted);
+                }
+                else if (_propertyDescriptor != null)
+                {
+                    var converted = ConvertValue(value, _propertyDescriptor.PropertyType);
+                    _propertyDescriptor.SetValue(_sourceObject, converted);
+                }
+
+                // Reflection edits a boxed value type. Publish the edited box back
+                // through its parent so nested structs update the inspected object.
+                if (_sourceObject.GetType().IsValueType && ParentProperty != null)
+                    ParentProperty.Value = _sourceObject;
             }
-            else if (_propertyDescriptor != null)
+            finally
             {
-                var converted = ConvertValue(value, _propertyDescriptor.PropertyType);
-                _propertyDescriptor.SetValue(_sourceObject, converted);
+                _settingValue = false;
             }
 
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Value)));
+            if (!Equals(oldValue, Value))
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Value)));
         }
     }
 
@@ -182,6 +187,30 @@ public class PropertyItem : INotifyPropertyChanged
     /// <inheritdoc />
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    private static bool IsExpandableType(Type type) => Nullable.GetUnderlyingType(type) == null
+        && !type.IsPrimitive && !type.IsEnum && type != typeof(string) && type != typeof(decimal)
+        && type != typeof(DateTime) && type != typeof(DateTimeOffset) && type != typeof(TimeSpan)
+        && type != typeof(DateOnly) && type != typeof(TimeOnly) && type != typeof(Guid) && type != typeof(Uri);
+
+    private void ObserveSource()
+    {
+        if (_sourceObject is INotifyPropertyChanged source)
+            PropertyChangedEventManager.AddHandler(source, OnSourcePropertyChanged, string.Empty);
+    }
+
+    private void OnSourcePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!_settingValue && (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == Name))
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Value)));
+    }
+
+    internal bool HasReadOnlyValueTypeParent()
+    {
+        for (var item = this; item.ParentProperty != null && item._sourceObject.GetType().IsValueType; item = item.ParentProperty)
+            if (item.ParentProperty.IsReadOnly) return true;
+        return false;
+    }
+
     /// <summary>
     /// Populates <see cref="SubProperties"/> by reflecting on the current value.
     /// </summary>
@@ -204,7 +233,7 @@ public class PropertyItem : INotifyPropertyChanged
             if (browsable?.Browsable == false)
                 continue;
 
-            if (prop.GetIndexParameters().Length > 0)
+            if (prop.GetIndexParameters().Length > 0 || prop.GetMethod?.IsPublic != true)
                 continue;
 
             var subItem = new PropertyItem(currentValue, prop)
@@ -224,6 +253,8 @@ public class PropertyItem : INotifyPropertyChanged
     {
         if (value == null)
             return null;
+
+        targetType = Nullable.GetUnderlyingType(targetType) ?? targetType;
 
         var valueType = value.GetType();
         if (targetType.IsAssignableFrom(valueType))
@@ -247,5 +278,9 @@ public class PropertyItem : INotifyPropertyChanged
     }
 
     /// <inheritdoc />
-    public override string ToString() => $"{DisplayName} = {Value}";
+    public override string ToString()
+    {
+        try { return $"{DisplayName} = {Value}"; }
+        catch { return $"{DisplayName} = (unavailable)"; }
+    }
 }

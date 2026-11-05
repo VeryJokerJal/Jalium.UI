@@ -33,10 +33,7 @@ public partial class Window
         window.InvalidateMeasure();
     }
 
-    private Border? _macOSWindowCommands;
-    private ContentPresenter? _macOSLeftWindowCommands;
-    private ContentPresenter? _macOSRightWindowCommands;
-    private TextBlock? _macOSWindowTitle;
+    private WindowCommandBar? _macOSWindowCommands;
 
     // AppKit owns the caption and traffic lights. Keep application commands in
     // a toolbar without replacing Content: floating/docking windows
@@ -54,51 +51,19 @@ public partial class Window
 
         if (_macOSWindowCommands == null)
         {
-            var toolbar = new Grid();
-            toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            _macOSLeftWindowCommands = new ContentPresenter();
-            _macOSRightWindowCommands = new ContentPresenter();
-            Grid.SetColumn(_macOSRightWindowCommands, 1);
-            toolbar.Children.Add(_macOSLeftWindowCommands);
-            toolbar.Children.Add(_macOSRightWindowCommands);
-            _macOSWindowCommands = new Border
-            {
-                Child = toolbar, DataContext = DataContext,
-                BorderThickness = new Thickness(0, 0, 0, 1), ClipToBounds = true,
-            };
-            _macOSWindowCommands.SetResourceReference(BackgroundProperty, "TitleBarBackground");
-            _macOSWindowCommands.SetResourceReference(Border.BorderBrushProperty, "ControlBorder");
+            _macOSWindowCommands = new WindowCommandBar { DataContext = DataContext };
             AddVisualChild(_macOSWindowCommands);
         }
 
-        _macOSWindowCommands.Height = GetEffectiveTitleBarHeightDip();
-        // Native traffic lights keep their system hit targets and accessibility.
-        // Reserve their leading area even in fullscreen, so controls do not jump
-        // or collide when AppKit reveals its title bar at the top edge.
-        _macOSWindowCommands.Padding = UsesExtendedMacOSTitleBar ? new Thickness(80, 0, 0, 0) : default;
-        // A right-only toolbar (for example a floating tool window) still
-        // needs its title when AppKit hides the caption in extended mode.
-        FrameworkElement? leftCommands = LeftWindowCommands;
-        if (leftCommands == null && UsesExtendedMacOSTitleBar && IsShowTitle)
-        {
-            if (_macOSWindowTitle == null)
-            {
-                _macOSWindowTitle = new TextBlock
-                {
-                    VerticalAlignment = VerticalAlignment.Center,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    Margin = new Thickness(0, 0, 8, 0),
-                };
-                _macOSWindowTitle.SetResourceReference(TextBlock.ForegroundProperty, "TitleBarText");
-            }
-            // Title changes already call ApplyTitleBarPresentation, including
-            // floating panels that synchronize their selected document title.
-            _macOSWindowTitle.Text = Title;
-            leftCommands = _macOSWindowTitle;
-        }
-        _macOSLeftWindowCommands!.Content = leftCommands;
-        _macOSRightWindowCommands!.Content = RightWindowCommands;
+        _macOSWindowCommands.SetCurrentValue(HeightProperty, GetEffectiveTitleBarHeightDip());
+        // AppKit retains its native traffic-light hit targets and accessibility.
+        _macOSWindowCommands.SetCurrentValue(PaddingProperty,
+            UsesExtendedMacOSTitleBar ? new Thickness(80, 0, 0, 0) : default(Thickness));
+        _macOSWindowCommands.SetCurrentValue(WindowCommandBar.TitleProperty, Title);
+        _macOSWindowCommands.SetCurrentValue(WindowCommandBar.IsTitleVisibleProperty,
+            LeftWindowCommands == null && UsesExtendedMacOSTitleBar && IsShowTitle);
+        _macOSWindowCommands.SetCurrentValue(WindowCommandBar.LeftCommandsProperty, LeftWindowCommands);
+        _macOSWindowCommands.SetCurrentValue(WindowCommandBar.RightCommandsProperty, RightWindowCommands);
     }
 
     private bool IsExtendedMacOSTitleBarCaption(Point point)
@@ -123,13 +88,10 @@ public partial class Window
     private void RemoveMacOSWindowCommands()
     {
         if (_macOSWindowCommands == null) return;
-        _macOSLeftWindowCommands!.Content = null;
-        _macOSRightWindowCommands!.Content = null;
+        _macOSWindowCommands.SetCurrentValue(WindowCommandBar.LeftCommandsProperty, null);
+        _macOSWindowCommands.SetCurrentValue(WindowCommandBar.RightCommandsProperty, null);
         var toolbar = _macOSWindowCommands;
         _macOSWindowCommands = null;
-        _macOSLeftWindowCommands = null;
-        _macOSRightWindowCommands = null;
-        _macOSWindowTitle = null;
         RemoveVisualChild(toolbar);
     }
 }

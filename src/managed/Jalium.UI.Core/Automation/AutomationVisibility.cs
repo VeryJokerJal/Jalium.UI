@@ -13,24 +13,33 @@ internal sealed class AutomationVisibility
     private readonly List<Region> _regions = [];
     private bool _empty;
 
-    internal AutomationVisibility(UIElement owner)
+    internal AutomationVisibility(UIElement owner) : this(owner, null) { }
+
+    internal AutomationVisibility(UIElement owner, Visual? stopBefore)
     {
         Matrix matrix = owner.GetRenderMatrix();
-        if (!Finite(matrix) || !matrix.TryInvert(out Matrix inverse) || !owner.IsVisible)
+        if (!Finite(matrix) || !matrix.TryInvert(out Matrix inverse) || !owner.IsVisible ||
+            Styling.CssContainmentProperties.SuppressedBySkippedAncestor(owner))
         { _empty = true; return; }
 
         Visual? child = null;
-        for (Visual? current = owner; current != null; child = current, current = current.VisualParent)
+        for (Visual? current = owner; current != null && !ReferenceEquals(current, stopBefore); child = current, current = current.VisualParent)
         {
             if (current is not UIElement element) continue;
             if (element.Visibility != Visibility.Visible || Styling.CssDisplayProperties.IsExitInert(element))
             { _empty = true; return; }
             Matrix toOwner = Matrix.Multiply(element.GetRenderMatrix(), inverse);
-            if (child != null || element.LayoutClipIncludesSelf) Add(element.GetLayoutClip(), toOwner);
-            if (child != null)
+            var bypassOverflow = Styling.CssPositionedLayout.BypassesOverflowClip(owner, current);
+            if (bypassOverflow)
             {
-                Add(element.GetChildLayoutClip(), toOwner);
-                Add(element.GetAdditionalChildLayoutClip(child), toOwner);
+                Add(element.Clip, toOwner);
+                Add(Styling.CssClipPathProperties.GetGeometry(element), toOwner);
+            }
+            else if (child != null || element.LayoutClipIncludesSelf) Add(Styling.CssTableLayout.WrapperClip(element, element.GetLayoutClip()), toOwner);
+            if (child != null && !bypassOverflow)
+            {
+                Add(Styling.CssTableLayout.WrapperClip(element, element.GetChildLayoutClip()), toOwner);
+                Add(element.GetAdditionalChildLayoutClip(child) ?? Styling.CssTableLayout.GridChildClip(element, child), toOwner);
             }
             // The native client clips all drawing, even with ClipToBounds=false.
             if (current is IWindowHost)

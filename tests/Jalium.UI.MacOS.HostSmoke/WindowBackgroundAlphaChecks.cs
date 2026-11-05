@@ -18,7 +18,7 @@ internal static class WindowBackgroundAlphaChecks
     internal static int RunAll()
     {
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         var context = RenderContext.GetOrCreateCurrent(RenderBackend.Metal);
         Require(context.Backend == RenderBackend.Metal, "Metal backend unavailable");
         context.DefaultRenderingEngine = RenderingEngine.Impeller;

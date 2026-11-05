@@ -13,6 +13,8 @@ internal static class BitmapPixelOperations
 
     private readonly record struct Pixel(double Red, double Green, double Blue, double Alpha);
 
+    internal static double ReadAlpha(PixelBuffer source, int x, int y) => ReadPixel(source, x, y).Alpha;
+
     public static int GetStride(int width, PixelFormat format)
     {
         if (width < 0)

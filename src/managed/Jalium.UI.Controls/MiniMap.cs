@@ -68,7 +68,7 @@ public class MiniMapMarker
 /// with a viewport rectangle indicating the currently visible area.
 /// Supports click-to-navigate and viewport rectangle dragging.
 /// </summary>
-public class MiniMap : FrameworkElement
+public partial class MiniMap : Control
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -92,8 +92,6 @@ public class MiniMap : FrameworkElement
 
     // 边框/视口框的画刷来自依赖属性或主题，实例本身稳定，复用画笔省的是 Pen 这个
     // 带 8 个依赖属性的 DependencyObject 的每帧分配。
-    private RenderPenCache _chromeBorderPen;
-    private RenderPenCache _viewportBorderPen;
 
     #region Dependency Properties
 
@@ -122,55 +120,45 @@ public class MiniMap : FrameworkElement
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty BackgroundProperty =
-        DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(MiniMap),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+    public new static readonly DependencyProperty BackgroundProperty = Control.BackgroundProperty;
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty ForegroundProperty =
-        DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(MiniMap),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+    public new static readonly DependencyProperty ForegroundProperty = Control.ForegroundProperty;
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty BorderBrushProperty =
-        DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(MiniMap),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+    public new static readonly DependencyProperty BorderBrushProperty = Control.BorderBrushProperty;
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty BorderThicknessProperty =
-        DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(MiniMap),
-            new PropertyMetadata(new Thickness(1), OnVisualPropertyChanged));
+    public new static readonly DependencyProperty BorderThicknessProperty = Control.BorderThicknessProperty;
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty CornerRadiusProperty =
-        DependencyProperty.Register(nameof(CornerRadius), typeof(CornerRadius), typeof(MiniMap),
-            new PropertyMetadata(new CornerRadius(3), OnVisualPropertyChanged));
+    public new static readonly DependencyProperty CornerRadiusProperty = Control.CornerRadiusProperty;
 
-    public Brush? Background
+    public new Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
         set => SetValue(BackgroundProperty, value);
     }
 
-    public Brush? Foreground
+    public new Brush? Foreground
     {
         get => (Brush?)GetValue(ForegroundProperty);
         set => SetValue(ForegroundProperty, value);
     }
 
-    public Brush? BorderBrush
+    public new Brush? BorderBrush
     {
         get => (Brush?)GetValue(BorderBrushProperty);
         set => SetValue(BorderBrushProperty, value);
     }
 
-    public Thickness BorderThickness
+    public new Thickness BorderThickness
     {
         get => (Thickness)GetValue(BorderThicknessProperty)!;
         set => SetValue(BorderThicknessProperty, value);
     }
 
-    public CornerRadius CornerRadius
+    public new CornerRadius CornerRadius
     {
         get => (CornerRadius)GetValue(CornerRadiusProperty)!;
         set => SetValue(CornerRadiusProperty, value);
@@ -376,6 +364,7 @@ public class MiniMap : FrameworkElement
     public MiniMap()
     {
         Focusable = false;
+        InitializeMiniMapTemplateBehavior();
         ClipToBounds = true;
 
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
@@ -393,6 +382,7 @@ public class MiniMap : FrameworkElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         double w, h;
 
         if (AutoScale && Target != null)
@@ -423,20 +413,14 @@ public class MiniMap : FrameworkElement
     #region Rendering
 
     /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    protected override void OnRender(DrawingContext dc)
     {
-        var dc = drawingContext;
-
-        var bounds = new Rect(RenderSize);
-        if (bounds.Width <= 0 || bounds.Height <= 0) return;
-
-        // Draw background
-        var bg = Background ?? s_defaultBackground;
-        var border = BorderBrush ?? s_borderBrush;
-        var borderThickness = BorderThickness.Left > 0 ? BorderThickness.Left : 1;
-        var radius = CornerRadius.TopLeft > 0 ? CornerRadius.TopLeft : 3;
-        dc.DrawRoundedRectangle(bg, _chromeBorderPen.Get(border, borderThickness), bounds, radius, radius);
-
+        base.OnRender(dc);if(TemplateRootInternal is null)RenderMiniMapSurface(dc);
+    }
+    protected override Size ArrangeOverride(Size finalSize){base.ArrangeOverride(finalSize);return finalSize;}
+    internal void RenderMiniMapSurface(DrawingContext dc)
+    {
+        var bounds=new Rect(RenderSize);if(bounds.Width<=0||bounds.Height<=0)return;
         var contentArea = ControlRenderGeometry.GetContentRect(bounds, new Thickness(2));
         if (contentArea.Width <= 0 || contentArea.Height <= 0)
         {
@@ -453,7 +437,7 @@ public class MiniMap : FrameworkElement
         }
 
         // Draw viewport rectangle
-        DrawViewport(dc, contentArea);
+
 
         // Draw highlight markers
         DrawHighlightMarkers(dc, contentArea);
@@ -575,18 +559,6 @@ public class MiniMap : FrameworkElement
         }
     }
 
-    private void DrawViewport(DrawingContext dc, Rect contentArea)
-    {
-        var viewportRect = ComputeViewportRect(contentArea);
-        if (viewportRect.Width <= 0 || viewportRect.Height <= 0) return;
-
-        var fillBrush = ViewportBrush ?? s_defaultViewportBrush;
-        var borderBrush = ViewportBorderBrush ?? s_defaultViewportBorderBrush;
-        var borderPen = _viewportBorderPen.Get(borderBrush, ViewportBorderThickness);
-
-        dc.DrawRectangle(fillBrush, borderPen, viewportRect);
-    }
-
     private void DrawHighlightMarkers(DrawingContext dc, Rect contentArea)
     {
         var markers = HighlightMarkers;
@@ -695,6 +667,7 @@ public class MiniMap : FrameworkElement
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
+        if(!IsEnabled)return;
         if (e.ChangedButton == MouseButton.Left)
         {
             CaptureMouse();
@@ -720,6 +693,7 @@ public class MiniMap : FrameworkElement
                 NavigateToMiniMapPosition(position, contentArea);
             }
 
+            RefreshMiniMapPresentation();
             e.Handled = true;
         }
     }
@@ -730,6 +704,7 @@ public class MiniMap : FrameworkElement
         {
             _isDraggingViewport = false;
             ReleaseMouseCapture();
+            RefreshMiniMapPresentation();
             e.Handled = true;
         }
     }
@@ -780,7 +755,7 @@ public class MiniMap : FrameworkElement
 
             var geo = MercatorProjection.PixelToGeo(new Point(pixelX, pixelY), overviewZoom);
             mapView.PanTo(geo);
-            InvalidateVisual();
+            InvalidateMiniMapView();
             return;
         }
 
@@ -800,7 +775,7 @@ public class MiniMap : FrameworkElement
 
             sv.ScrollToHorizontalOffset(Math.Max(0, scrollX));
             sv.ScrollToVerticalOffset(Math.Max(0, scrollY));
-            InvalidateVisual();
+            InvalidateMiniMapView();
         }
     }
 
@@ -847,7 +822,7 @@ public class MiniMap : FrameworkElement
             miniMap.DetachScrollTarget();
             miniMap.AttachScrollTarget(e.NewValue as ScrollViewer);
             miniMap.InvalidateMeasure();
-            miniMap.InvalidateVisual();
+            miniMap.InvalidateMiniMapView();
         }
     }
 
@@ -858,15 +833,15 @@ public class MiniMap : FrameworkElement
             miniMap.DetachMapViewTarget();
             miniMap.AttachMapViewTarget(e.NewValue as MapView);
             miniMap.InvalidateMeasure();
-            miniMap.InvalidateVisual();
+            miniMap.InvalidateMiniMapView();
         }
     }
 
-    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private new static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is MiniMap miniMap)
         {
-            miniMap.InvalidateVisual();
+            miniMap.InvalidateMiniMapView();
         }
     }
 
@@ -930,12 +905,12 @@ public class MiniMap : FrameworkElement
 
     private void OnTargetScrollChanged(object sender, ScrollChangedEventArgs e)
     {
-        InvalidateVisual();
+        InvalidateMiniMapView();
     }
 
     private void OnTargetViewChanged(object? sender, MapViewChangedEventArgs e)
     {
-        InvalidateVisual();
+        InvalidateMiniMapView();
     }
 
     #endregion

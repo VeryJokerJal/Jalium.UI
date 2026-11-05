@@ -7,25 +7,45 @@ namespace Jalium.UI.Controls;
 internal sealed class MouseWheelGestureRouting
 {
     private WeakReference<UIElement>? _target;
+    private readonly List<WeakReference<UIElement>> _ancestors = [];
+    private bool _retired;
 
-    internal UIElement ResolveTarget(UIElement proposed, UIElement root, MouseWheelPhase phase, MouseWheelPhase momentumPhase)
+    internal UIElement? ResolveTarget(UIElement proposed, UIElement root, MouseWheelPhase phase, MouseWheelPhase momentumPhase)
     {
         if (phase == MouseWheelPhase.None && momentumPhase == MouseWheelPhase.None)
         {
-            _target = null;
+            Clear();
+            _retired = false;
             return proposed;
         }
 
-        if ((phase & (MouseWheelPhase.Began | MouseWheelPhase.MayBegin)) != 0 ||
-            _target == null || !_target.TryGetTarget(out var target) || !IsWithin(target, root))
+        bool begins = (phase & (MouseWheelPhase.Began | MouseWheelPhase.MayBegin)) != 0;
+        if (begins)
         {
-            target = proposed;
+            _retired = false;
+            Remember(proposed, root);
+        }
+        if (_retired) return null;
+
+        UIElement? target = null;
+        if (_target != null && _target.TryGetTarget(out var previous) && IsWithin(previous, root))
+            target = previous;
+        if (target == null && _target != null)
+        {
+            // Virtualization can recycle the hit leaf while its viewer remains.
+            // Resume at the closest surviving ancestor of the original route,
+            // never at an unrelated control now beneath the mouse pointer.
+            foreach (var ancestor in _ancestors)
+                if (ancestor.TryGetTarget(out var candidate) && IsWithin(candidate, root))
+                { target = candidate; break; }
+            if (target == null) { Clear(); _retired = true; return null; }
             _target = new WeakReference<UIElement>(target);
         }
+        if (target == null) { target = proposed; Remember(target, root); }
 
         if ((phase & MouseWheelPhase.Cancelled) != 0 ||
             (momentumPhase & (MouseWheelPhase.Ended | MouseWheelPhase.Cancelled)) != 0)
-            _target = null;
+        { Clear(); _retired = true; }
 
         // A direct Ended can be followed immediately by native momentum.
         return target;
@@ -40,7 +60,8 @@ internal sealed class MouseWheelGestureRouting
     internal UIElement? DetachCancellationTarget()
     {
         var previous = _target;
-        _target = null;
+        Clear();
+        _retired = true;
         return previous != null && previous.TryGetTarget(out var target) ? target : null;
     }
 
@@ -53,8 +74,21 @@ internal sealed class MouseWheelGestureRouting
     internal void ClearWithin(UIElement root)
     {
         if (_target != null && _target.TryGetTarget(out var target) && IsWithin(target, root))
-            _target = null;
+        { Clear(); _retired = true; }
     }
+
+    private void Remember(UIElement target, UIElement root)
+    {
+        Clear();
+        _target = new WeakReference<UIElement>(target);
+        for (Visual? current = target.VisualParent; current != null; current = current.VisualParent)
+        {
+            if (current is UIElement element) _ancestors.Add(new WeakReference<UIElement>(element));
+            if (ReferenceEquals(current, root)) break;
+        }
+    }
+
+    private void Clear() { _target = null; _ancestors.Clear(); }
 
     private static bool IsWithin(Visual element, Visual root)
     {

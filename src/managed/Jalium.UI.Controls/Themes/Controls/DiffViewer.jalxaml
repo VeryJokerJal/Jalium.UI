@@ -5,13 +5,7 @@
     <!-- ============================================== -->
     <!-- DiffViewer Style                                -->
     <!-- ============================================== -->
-    <!-- A side-by-side / unified diff viewer control.
-         Uses direct rendering (OnRender) for diff line drawing. -->
-    <!-- DiffViewer paints its entire visual via OnRender (background + panels +
-         text + minimap). The template therefore must NOT paint a background of
-         its own — otherwise the template's Border would be drawn on top of the
-         control's OnRender output and hide everything. The Border here only
-         contributes the chrome (border stroke + corner radius) as an overlay. -->
+    <!-- Frame and minimap viewport are replaceable; DiffContentView renders document pixels. -->
     <Style TargetType="DiffViewer">
         <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -25,13 +19,31 @@
         <Setter Property="MinHeight" Value="100" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DiffViewer">
-                <Border Name="RootBorder"
-                        Shape="RoundedRectangle"
-                        Background="{ThemeResource ControlFillColorTransparentBrush}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="{TemplateBinding CornerRadius}"
-                        IsHitTestVisible="False" />
+                <Grid Name="Root">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup Name="CommonStates"><VisualState Name="Normal" /><VisualState Name="Disabled" /></VisualStateGroup>
+                        <VisualStateGroup Name="FocusStates"><VisualState Name="Focused" /><VisualState Name="Unfocused" /></VisualStateGroup>
+                        <VisualStateGroup Name="ViewStates"><VisualState Name="SideBySide" /><VisualState Name="Unified" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Border Name="RootBorder" Shape="RoundedRectangle"
+                            Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" />
+                    <Grid Clip="{TemplateBinding DiffContentClip}" IsHitTestVisible="False">
+                        <Canvas>
+                            <Border Name="PART_Minimap" Background="{ThemeResource LayerFillColorAltBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1,0,0,0"
+                                    Visibility="{TemplateBinding MinimapVisibility}"
+                                    Canvas.Left="{Binding MinimapBounds.X, RelativeSource={RelativeSource TemplatedParent}}" Canvas.Top="{Binding MinimapBounds.Y, RelativeSource={RelativeSource TemplatedParent}}"
+                                    Width="{Binding MinimapBounds.Width, RelativeSource={RelativeSource TemplatedParent}}" Height="{Binding MinimapBounds.Height, RelativeSource={RelativeSource TemplatedParent}}" />
+                        </Canvas>
+                        <DiffContentView Name="PART_ContentView" Owner="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                        <Canvas>
+                            <Border Name="PART_MinimapViewport" Opacity="0.3" Background="{ThemeResource ControlFillColorSecondaryBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1"
+                                    Visibility="{TemplateBinding MinimapVisibility}"
+                                    Canvas.Left="{Binding MinimapViewportBounds.X, RelativeSource={RelativeSource TemplatedParent}}" Canvas.Top="{Binding MinimapViewportBounds.Y, RelativeSource={RelativeSource TemplatedParent}}"
+                                    Width="{Binding MinimapViewportBounds.Width, RelativeSource={RelativeSource TemplatedParent}}" Height="{Binding MinimapViewportBounds.Height, RelativeSource={RelativeSource TemplatedParent}}" />
+                        </Canvas>
+                    </Grid>
+                </Grid>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
                         <Setter TargetName="RootBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />

@@ -3,6 +3,7 @@
 #include "jalium_triangulate.h"           // TriangulateCompoundPath / FlattenPathToContours
 #include "jalium_path_stats.h"            // unified path telemetry
 #include "jalium_flatten.h"               // ScaleBucketFromMaxScale
+#include "jalium_radial_raster.h"
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -294,8 +295,7 @@ inline void SubdivideContoursAtLinearGradientBreakpoints(
     if (breakpoints.empty()) return;
 
     auto gradientT = [&](float x, float y) {
-        return ((x - brush.startX) * dx +
-                (y - brush.startY) * dy) / lengthSquared;
+        return GradientParameter(brush,x,y);
     };
 
     constexpr float kEndpointTolerance = 1e-6f;
@@ -420,6 +420,22 @@ bool ImpellerVulkanEngine::EncodeFillPath(
         if (gradContours.empty()) return false;
 
         if (!brush.stops || brush.stopCount == 0) return false;
+
+        if (brush.type==2 && (brush.radialFlags&1)) {
+            VkImpellerDrawBatch batch;batch.pipelineType=0;
+            auto flush=[&](){if(!batch.vertices.empty()){PushBatch(std::move(batch));batch={};batch.pipelineType=0;}};
+            const PixelRect viewport{0,0,int(viewportW_),int(viewportH_),1};
+            const bool result=RasterizeRadialPaint(gradContours,brush,transform,fillRule,
+                [&](float x,float y,const GradientColor& c){
+                    const uint32_t base=static_cast<uint32_t>(batch.vertices.size());
+                    const float red=c.r*c.a,green=c.g*c.a,blue=c.b*c.a;
+                    batch.vertices.insert(batch.vertices.end(),{{x,y,red,green,blue,c.a},{x+1,y,red,green,blue,c.a},
+                        {x+1,y+1,red,green,blue,c.a},{x,y+1,red,green,blue,c.a}});
+                    batch.indices.insert(batch.indices.end(),{base,base+1,base+2,base,base+2,base+3});
+                    if(batch.vertices.size()>=16384)flush();
+                },&viewport);
+            flush();encodedPathCount_++;return result;
+        }
 
         int32_t fr = 0;
         std::vector<float> triVerts;
@@ -750,6 +766,24 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
     const EngineTransform& transform,
     int32_t edgeMode)
 {
+    if (brush.type==2 && (brush.radialFlags&1)) {
+        const float scale=std::max(MaxScale(transform),.01f);
+        auto source=FlattenPathToContours(startX,startY,commands,commandLength,flattenTolerance_/scale);
+        auto outlines=RadialStrokeContours(source,strokeWidth,closed,lineJoin,miterLimit,lineCap,dashPattern,dashCount,dashOffset,scale);
+        VkImpellerDrawBatch batch;batch.pipelineType=0;
+        auto flush=[&](){if(!batch.vertices.empty()){PushBatch(std::move(batch));batch={};batch.pipelineType=0;}};
+        const PixelRect viewport{0,0,int(viewportW_),int(viewportH_),1};
+        const bool result=RasterizeRadialPaint(outlines,brush,transform,FillRule::NonZero,
+            [&](float x,float y,const GradientColor& c){
+                const uint32_t base=static_cast<uint32_t>(batch.vertices.size());
+                const float red=c.r*c.a,green=c.g*c.a,blue=c.b*c.a;
+                batch.vertices.insert(batch.vertices.end(),{{x,y,red,green,blue,c.a},{x+1,y,red,green,blue,c.a},
+                    {x+1,y+1,red,green,blue,c.a},{x,y+1,red,green,blue,c.a}});
+                batch.indices.insert(batch.indices.end(),{base,base+1,base+2,base,base+2,base+3});
+                if(batch.vertices.size()>=16384)flush();
+            },&viewport);
+        flush();encodedPathCount_++;return result;
+    }
     // Resolve edge mode (D3D12 parity): em<0 → 1 (binary feather mesh, the
     // default + cacheable); em==2 → explicit Antialiased (keeps the legacy
     // analytic scanline/stencil body below). Today the rest of the Vulkan body
@@ -1255,6 +1289,12 @@ bool ImpellerVulkanEngine::EncodeFillPolygon(
     const EngineTransform& transform)
 {
     if (pointCount < 3) return false;
+    if (brush.type==2 && (brush.radialFlags&1)) {
+        std::vector<float> path;path.reserve(size_t(pointCount)*3);
+        for(uint32_t i=1;i<pointCount;++i)path.insert(path.end(),{0,points[i*2],points[i*2+1]});
+        path.push_back(5);return EncodeFillPath(points[0],points[1],path.data(),static_cast<uint32_t>(path.size()),brush,fillRule,transform,-1);
+    }
+
 
     // Gradient fill: triangulate the polygon and bake a true per-vertex gradient,
     // exactly like EncodeFillPath's gradient branch. The solid path below only

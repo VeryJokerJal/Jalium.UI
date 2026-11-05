@@ -68,7 +68,7 @@ internal sealed class Program
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"错误: 编译失败 [{inputFile}] - {ex.Message}");
+                Console.Error.WriteLine($"错误: 编译失败 [{inputFile}] - {ex.GetBaseException().Message}");
                 hasErrors = true;
             }
         }
@@ -105,7 +105,7 @@ internal sealed class Program
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"错误: 编译失败 [{file.SourcePath}] - {ex.Message}");
+                Console.Error.WriteLine($"错误: 编译失败 [{file.SourcePath}] - {ex.GetBaseException().Message}");
                 hasErrors = true;
             }
         }

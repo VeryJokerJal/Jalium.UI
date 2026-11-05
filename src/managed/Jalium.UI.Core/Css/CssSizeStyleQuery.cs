@@ -78,11 +78,19 @@ internal static class CssSizeStyleQuery
         DependencyProperty property, out CssLayoutLength value)
     {
         value = default;
-        if (node.Target is not FrameworkElement element) return false;
+        var element = node.Target;
+        var presented = CssSizingPresentation.Properties[(int)field];
+        if (!element.HasLocalOrAnimatedValue(property) &&
+            (element.HasCssAnimatedValue(presented) || element.GetValueSourceInternal(presented).IsAnimated))
+        {
+            value = CssSizingPresentation.Presented(element, (int)field, LayoutValue(node.CssLayout, field));
+            if (!value.IsSet) value = CssLayoutLength.Normal;
+            return true;
+        }
         var layer = node.Target.GetEffectiveValueLayer(property);
         if (layer is
             (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState) &&
-            LayoutValue(element.CssLayout, field) is { IsSet: true } layout)
+            LayoutValue(node.CssLayout, field) is { IsSet: true } layout)
         {
             value = layout;
             return true;
@@ -126,6 +134,12 @@ internal static class CssSizeStyleQuery
 
     internal static bool Equal(CssLayoutLength actual, CssLayoutLength expected)
     {
+        if (actual.Calculation is not null || expected.Calculation is not null)
+            return actual.Calculation is { } before && expected.Calculation is { } after &&
+                CalculationEqual(before, after);
+        if (actual.IsSizing || expected.IsSizing)
+            return actual.Kind == expected.Kind && (actual.Kind != CssLayoutLength.KindFitFunction ||
+                Equal(actual.FitArgument, expected.FitArgument));
         if (actual.Kind is CssLayoutLength.KindAuto or CssLayoutLength.KindNormal ||
             expected.Kind is CssLayoutLength.KindAuto or CssLayoutLength.KindNormal)
             return actual.Kind == expected.Kind;
@@ -140,7 +154,98 @@ internal static class CssSizeStyleQuery
             Equals(actual.Expression, expected.Expression);
     }
 
-    private static bool Linear(CssLayoutLength value, out double px, out double percent)
+    private static bool CalculationEqual(CssCalcSizeComputed a, CssCalcSizeComputed b)
+    {
+        if (a.UsesPercent != b.UsesPercent) return false;
+        if (a.From is not null || b.From is not null)
+            return Canonical(a, out var ab, out var av) && Canonical(b, out var bb, out var bv)
+                ? SameBasis(ab, bb) && av == bv : a.Equals(b);
+        if (a.Any != b.Any) return false;
+        if (a.Nested is not null || b.Nested is not null)
+        {
+            if (a.Nested is not { } first || b.Nested is not { } second || !CalculationEqual(first, second)) return false;
+        }
+        else if (!a.Any && !Equal(a.Basis, b.Basis)) return false;
+        return ExpressionEqual(a.Expression, a.Context, b.Expression, b.Context);
+    }
+
+    private static bool ExpressionEqual(CssMathExpression a, CssLengthContext ac,
+        CssMathExpression b, CssLengthContext bc)
+    {
+        if (a.UsesPercent != b.UsesPercent) return false;
+        if (Affine(a, ac, out var first) && Affine(b, bc, out var second)) return first == second;
+        if (a.Arguments.Length == 0 || b.Arguments.Length == 0)
+            return a.Operation == b.Operation && a.Kind == b.Kind &&
+                (a.TryEvaluate(ac, double.NaN, out var x) && b.TryEvaluate(bc, double.NaN, out var y)
+                    ? x.Equals(y) : a.Equals(b));
+        return a.Operation == b.Operation && a.Option == b.Option && a.Kind == b.Kind &&
+            a.Arguments.Length == b.Arguments.Length && a.Arguments.Zip(b.Arguments)
+                .All(pair => ExpressionEqual(pair.First, ac, pair.Second, bc));
+    }
+
+    private readonly record struct SizeTerms(double Px, double Percent, double Size, bool Number)
+    {
+        internal SizeTerms Scale(double factor) => new(Px * factor, Percent * factor, Size * factor, Number);
+    }
+
+    private static bool SameBasis(CssLayoutLength? a, CssLayoutLength? b)
+        => a is { } x && b is { } y ? Equal(x, y) : a is null && b is null;
+
+    private static bool Canonical(CssCalcSizeComputed value, out CssLayoutLength? basis, out SizeTerms terms)
+    {
+        basis = value.Any ? null : value.SizingBasis; terms = default;
+        if (value.From is { } from && value.To is { } to)
+        {
+            if (!Canonical(from, out var a, out var first) || !Canonical(to, out var b, out var second) ||
+                !Align(a, basis, ref first) || !Align(b, basis, ref second)) return false;
+            first = first.Scale(1 - value.Progress); second = second.Scale(value.Progress);
+            terms = new(first.Px + second.Px, first.Percent + second.Percent, first.Size + second.Size, false); return true;
+        }
+        if (!Affine(value.Expression, value.Context, out terms)) return false;
+        if (value.Nested is not { } nested) return true;
+        if (!Canonical(nested, out basis, out var inner)) return false;
+        terms = new(terms.Px + terms.Size * inner.Px, terms.Percent + terms.Size * inner.Percent,
+            terms.Size * inner.Size, false); return true;
+    }
+
+    private static bool Align(CssLayoutLength? basis, CssLayoutLength? target, ref SizeTerms value)
+    {
+        if (SameBasis(basis, target)) return true;
+        if (basis is null) return value.Size == 0;
+        if (basis is not { Kind: CssLayoutLength.KindPx } numeric) return false;
+        value = new(value.Px + value.Size * numeric.Value, value.Percent, 0, false); return true;
+    }
+
+    private static bool Affine(CssMathExpression expression, CssLengthContext context, out SizeTerms terms)
+    {
+        terms = default;
+        if (expression.Operation == "size") { terms = new(0, 0, 1, false); return true; }
+        if (expression.Operation == "value")
+        {
+            if (expression.Literal.Unit == CssUnit.Percent)
+            { terms = new(0, expression.Literal.Value / 100, 0, false); return true; }
+            if (expression.Kind == CssNumericKind.Number)
+            { terms = new(expression.Literal.Value, 0, 0, true); return true; }
+            if (!expression.Literal.TryResolve(context, CssPercentBasis.NotSupported, out var px)) return false;
+            terms = new(px, 0, 0, false); return true;
+        }
+        if (expression.Operation is "calc" or "negate" && expression.Arguments.Length == 1 &&
+            Affine(expression.Arguments[0], context, out terms))
+        { if (expression.Operation == "negate") terms = terms.Scale(-1); return true; }
+        if (expression.Arguments.Length != 2 ||
+            !Affine(expression.Arguments[0], context, out var a) || !Affine(expression.Arguments[1], context, out var b)) return false;
+        switch (expression.Operation)
+        {
+            case "+": terms = new(a.Px + b.Px, a.Percent + b.Percent, a.Size + b.Size, a.Number && b.Number); return true;
+            case "-": terms = new(a.Px - b.Px, a.Percent - b.Percent, a.Size - b.Size, a.Number && b.Number); return true;
+            case "*" when a.Number: terms = b.Scale(a.Px); return true;
+            case "*" when b.Number: terms = a.Scale(b.Px); return true;
+            case "/" when b.Number && b.Px != 0: terms = a.Scale(1 / b.Px); return true;
+            default: return false;
+        }
+    }
+
+    internal static bool Linear(CssLayoutLength value, out double px, out double percent)
     {
         px = percent = 0;
         switch (value.Kind)

@@ -36,7 +36,7 @@ internal static class AccessibilityClippingChecks
     {
         if (!int.TryParse(argument[(argument.IndexOf('=') + 1)..], out int index) || (uint)index >= Names.Length * 6) return 2;
         int kind = index % Names.Length, editorKind = index / Names.Length % 3;
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         Control editor = editorKind switch { 0 => new TextBox { AcceptsReturn = true, Text = "A🙂中文 first\nsecond line" },
             1 => new RichTextBox(), _ => new EditControl { Text = "A🙂中文 first\nsecond line", IsScrollInertiaEnabled = false } };

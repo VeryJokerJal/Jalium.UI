@@ -8,10 +8,23 @@ public interface ICssResourceResolver
     ValueTask<CssResource> ResolveAsync(Uri uri, CancellationToken cancellationToken = default);
 }
 
+/// <summary>Optional anonymous image fetch used by CSS features that inspect pixels.</summary>
+public interface ICssImageResourceResolver : ICssResourceResolver
+{
+    ValueTask<CssResource> ResolveImageAsync(Uri uri, Uri? referrer, CancellationToken cancellationToken = default);
+}
+
 /// <summary>The loader owns and disposes Content after reading it.</summary>
 public sealed record CssResource(Uri Uri, Stream Content)
 {
     public string? ContentType { get; init; }
+
+    /// <summary>
+    /// Whether CSS may derive layout from these pixels. Native local/data resources
+    /// are trusted by default; HTTP resources require explicit approval. Custom
+    /// resolvers supplying remote bytes must enforce their application's origin policy.
+    /// </summary>
+    public bool? ImagePixelAccessAllowed { get; init; }
 
     public CssResource(Uri uri, Stream content, string? contentType) : this(uri, content)
         => ContentType = contentType;
@@ -89,10 +102,19 @@ public sealed partial class CssStyleSheet
     public static Task<CssStyleSheet> LoadAsync(Uri uri, CancellationToken cancellationToken = default)
         => LoadAsync(uri, s_defaultResolver, cancellationToken);
 
+    /// <summary>Loads a CSS file and its <c>@import</c> rules. Relative paths use the current working directory.</summary>
+    public static Task<CssStyleSheet> LoadFileAsync(string path, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return LoadAsync(new Uri(Path.GetFullPath(path)), cancellationToken);
+    }
+
     public static async Task<CssStyleSheet> LoadAsync(Uri uri, ICssResourceResolver resolver, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(uri);
         ArgumentNullException.ThrowIfNull(resolver);
+        if (ReferenceEquals(resolver, s_defaultResolver))
+            uri = ApplicationResourceUriResolver?.Invoke(uri) ?? uri;
         var active = new HashSet<Uri>();
         // A resource can be imported under different environment encodings.
         // Fetch its bytes once, then cache each decoded/parsed interpretation.
@@ -167,6 +189,9 @@ public sealed partial class CssStyleSheet
                     var properties = sheet.Properties.Select(property => (Order: property.Offset, Property: property with {LayerName=LocalName(property.LayerName)})).ToList();
                     var fonts = sheet.FontFaces.Select(font => (Order: font.Offset, Font: font with { LayerName = LocalName(font.LayerName) })).ToList();
                     var keyframes = sheet.Keyframes.Select(rule => (Order: rule.Offset, Rule: rule)).ToList();
+                    var featureValues = sheet.FontFeatureValues.Select(rule => (Order: rule.Offset, Rule: rule with { LayerName = LocalName(rule.LayerName) })).ToList();
+                    var counterStyles = sheet.CounterStyles.Select(rule => (Order: rule.Offset, Rule: rule with { LayerName = LocalName(rule.LayerName) })).ToList();
+                    var pageRules = sheet.PageRules.Select(rule => (Order: rule.Offset, Rule: rule with { LayerName = LocalName(rule.LayerName) })).ToList();
                     var diagnostics = sheet.Diagnostics.Where(d => !d.Message.StartsWith("@import is deferred", StringComparison.Ordinal)).ToList();
                     foreach (var import in sheet.Imports)
                     {
@@ -191,6 +216,11 @@ public sealed partial class CssStyleSheet
                             layers.AddRange(imported.Layers.Select(layer => (import.Offset,layer with {Name=ImportedName(layer.Name)!,Condition=CssCondition.And(condition,layer.Condition)})));
                             properties.AddRange(imported.Properties.Select(property => (import.Offset,property with {LayerName=ImportedName(property.LayerName),Condition=CssCondition.And(condition,property.Condition)})));
                             fonts.AddRange(imported.FontFaces.Select(font => (import.Offset, font with { LayerName = ImportedName(font.LayerName), Condition = CssCondition.And(condition, font.Condition) })));
+                            featureValues.AddRange(imported.FontFeatureValues.Select(rule => (import.Offset, rule with { LayerName = ImportedName(rule.LayerName), Condition = CssCondition.And(condition, rule.Condition) })));
+                            counterStyles.AddRange(imported.CounterStyles.Select(rule => (import.Offset,
+                                rule with { LayerName = ImportedName(rule.LayerName), Condition = CssCondition.And(condition, rule.Condition) })));
+                            pageRules.AddRange(imported.PageRules.Select(rule => (import.Offset,
+                                rule with { LayerName = ImportedName(rule.LayerName), Condition = CssCondition.And(condition, rule.Condition) })));
                             keyframes.AddRange(imported.Keyframes.Select(rule => (import.Offset,
                                 rule with { Condition = CssCondition.And(condition, rule.Condition) })));
                             diagnostics.AddRange(imported.Diagnostics);
@@ -217,7 +247,10 @@ public sealed partial class CssStyleSheet
                         layers: layers.OrderBy(entry => entry.Order).Select((entry, index) => entry.Layer with { Offset = index }).ToArray(),
                         properties: properties.OrderBy(entry => entry.Order).Select((entry, index) => entry.Property with { Offset = index }).ToArray(),
                         fonts: fonts.OrderBy(entry => entry.Order).Select((entry, index) => entry.Font with { Offset = index }).ToArray(),
-                        keyframes: keyframes.OrderBy(entry => entry.Order).Select((entry, index) => entry.Rule with { Offset = index }).ToArray());
+                        keyframes: keyframes.OrderBy(entry => entry.Order).Select((entry, index) => entry.Rule with { Offset = index }).ToArray(),
+                        counterStyles: counterStyles.OrderBy(entry => entry.Order).Select((entry, index) => entry.Rule with { Offset = index }).ToArray(),
+                        fontFeatureValues: featureValues.OrderBy(entry => entry.Order).Select((entry, index) => entry.Rule with { Offset = index }).ToArray(),
+                        pageRules: pageRules.OrderBy(entry => entry.Order).Select((entry, index) => entry.Rule with { Offset = index, RuleOrder = index }).ToArray());
                     return result;
                 }
                 finally {if(aliasAdded) active.Remove(resourceUri);}
@@ -237,8 +270,43 @@ public sealed partial class CssStyleSheet
         return new Uri(resolved.PathAndQuery + resolved.Fragment, UriKind.Relative);
     }
 
-    private sealed class DefaultResourceResolver : ICssResourceResolver
+    private sealed class DefaultResourceResolver : ICssImageResourceResolver
     {
+        private static readonly HttpClient s_anonymousImages = new(new HttpClientHandler
+        { UseCookies = false, AllowAutoRedirect = false });
+
+        public async ValueTask<CssResource> ResolveImageAsync(Uri uri, Uri? referrer,
+            CancellationToken cancellationToken = default)
+        {
+            if (!uri.IsAbsoluteUri || uri.Scheme is not ("http" or "https"))
+                return await ResolveAsync(uri, cancellationToken).ConfigureAwait(false);
+            // A native view has an opaque document origin. A different host
+            // origin can be implemented by an application's image resolver.
+            for (var redirects = 0; redirects <= 20; redirects++)
+            {
+                if (uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0)
+                    throw new InvalidDataException("Anonymous CSS image URL is invalid");
+                using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+                request.Headers.TryAddWithoutValidation("Origin", "null");
+                if (referrer is { IsAbsoluteUri: true } && referrer.Scheme is "http" or "https" &&
+                    !(referrer.Scheme == "https" && uri.Scheme == "http"))
+                    request.Headers.Referrer = new Uri(referrer.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped) + "/");
+                using var response = await s_anonymousImages.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken).ConfigureAwait(false);
+                var allowed = response.Headers.TryGetValues("Access-Control-Allow-Origin", out var origins) &&
+                    origins.Count() == 1 && origins.Single().Trim() is "*" or "null";
+                if (!allowed) return new(uri, Stream.Null) { ImagePixelAccessAllowed = false };
+                if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } location)
+                { uri = new Uri(uri, location); continue; }
+                response.EnsureSuccessStatusCode();
+                await response.Content.LoadIntoBufferAsync(32_000_000, cancellationToken).ConfigureAwait(false);
+                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                return new(uri, new MemoryStream(bytes, writable: false), response.Content.Headers.ContentType?.ToString())
+                { ImagePixelAccessAllowed = true };
+            }
+            throw new System.Net.Http.HttpRequestException("Too many CSS image redirects");
+        }
+
         public async ValueTask<CssResource> ResolveAsync(Uri uri, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();

@@ -3,12 +3,13 @@ using Jalium.UI.Media;
 namespace Jalium.UI.Styling;
 
 /// <summary>Resolves CSS transform-origin lengths against the element's used size.</summary>
-internal sealed class CssTransformOriginValue(CssBackgroundPosition position) : CssCompiledValue
+internal sealed class CssTransformOriginValue(CssBackgroundPosition position, CssLength? zOffset = null) : CssCompiledValue
 {
     public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
     {
         var element = context.Element;
         position.ObserveDependencies(context.Lengths);
+        zOffset?.ObserveContainerDependencies(context.Lengths);
         var state = CssEngine.EnsureState(element);
         if (!state.ObservesOwnSize)
         {
@@ -22,9 +23,18 @@ internal sealed class CssTransformOriginValue(CssBackgroundPosition position) : 
         var x = box.X + position.X.Resolve(box.Width, context.Lengths);
         var y = box.Y + position.Y.Resolve(box.Height, context.Lengths);
         if (!double.IsFinite(x) || !double.IsFinite(y)) return false;
+
+        var z = 0.0;
+        if (zOffset is { } zLen)
+        {
+            if (!zLen.TryResolve(context.Lengths, CssPercentBasis.NotSupported, out z) || !double.IsFinite(z))
+                return false;
+        }
+
         sink.Set(UIElement.RenderTransformOriginProperty,
             new Point(width == 0 ? ZeroSizeOrigin(position.X, context.Lengths) : x / width,
                 height == 0 ? ZeroSizeOrigin(position.Y, context.Lengths) : y / height));
+        sink.Set(CssTransform3D.OriginZProperty, z);
         return true;
     }
 

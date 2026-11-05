@@ -16,25 +16,29 @@ internal static partial class CssCoreProperties
     }
 
     private static CssCompiledValue? ParseClipPath(ref CssTokenReader reader, CssCompileContext context)
+        => ParseBasicShape(ref reader, context, CssClipPathProperties.ValueProperty, CssClipBox.Border, allowUrl: true);
+
+    internal static CssCompiledValue? ParseBasicShape(ref CssTokenReader reader, CssCompileContext context,
+        DependencyProperty property, CssClipBox defaultBox, bool allowUrl = false)
     {
         var probe = reader;
         if (probe.TryReadIdent(out var none) && none.Equals("none", StringComparison.OrdinalIgnoreCase) && probe.AtEnd)
         {
             reader = probe;
-            return new CssImmediateValue(CssClipPathProperties.ValueProperty, CssClipPathValue.None);
+            return new CssImmediateValue(property, CssClipPathValue.None);
         }
 
         probe = reader;
         if (probe.TryReadFunction(out var sourceName, out var sourceArgs) &&
             sourceName.Equals("url", StringComparison.OrdinalIgnoreCase))
         {
-            if (!probe.AtEnd || !TryReadClipSource(ref sourceArgs, context, out var source))
+            if (!allowUrl || !probe.AtEnd || !TryReadClipSource(ref sourceArgs, context, out var source))
                 return null;
             reader = probe;
             return new CssClipPathUrlCompiledValue(source);
         }
 
-        var box = CssClipBox.Border;
+        var box = defaultBox;
         var hasBox = false;
         probe = reader;
         if (TryReadClipBox(ref probe, out var leadingBox))
@@ -44,7 +48,7 @@ internal static partial class CssCoreProperties
             if (probe.AtEnd)
             {
                 reader = probe;
-                return new CssClipPathCompiledValue(CssClipShape.Box, box, []);
+                return new CssClipPathCompiledValue(CssClipShape.Box, box, [], property: property);
             }
         }
         else probe = reader;
@@ -72,7 +76,7 @@ internal static partial class CssCoreProperties
             var syntax = CssShapePathParser.Parse(ref args);
             if (syntax is null || !args.AtEnd) return null;
             reader = probe;
-            return new CssShapeClipPathCompiledValue(box, syntax);
+            return new CssShapeClipPathCompiledValue(box, syntax, property);
         }
 
         var radius = CssClipRadius.Length;
@@ -103,7 +107,7 @@ internal static partial class CssCoreProperties
         return new CssClipPathCompiledValue(shape, box, lengths,
             shape is CssClipShape.Inset or CssClipShape.Xywh or CssClipShape.Rect
                 ? CssClipRadius.Length : radius, roundRadii,
-            centerXFromFarEdge, centerYFromFarEdge, polygonFillRule, polygonRoundRadius, svgPath);
+            centerXFromFarEdge, centerYFromFarEdge, polygonFillRule, polygonRoundRadius, svgPath, property);
     }
 
     private static bool TryReadClipSource(ref CssTokenReader args, CssCompileContext context,

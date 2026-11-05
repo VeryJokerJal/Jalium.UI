@@ -7,10 +7,11 @@ internal sealed class ItemHeightIndex
 {
     private const int BlockSize = 128;
     private const float MinHeight = 1f;
-    private const float MaxHeight = 4096f;
+    private const float MaxHeight = float.MaxValue;
 
-    // Per-item heights stay float: individual values are small (&lt;= MaxHeight) so float has
-    // ample precision, and keeping 1,000,000 entries at 4 bytes (vs 8) halves the allocation.
+    // Per-item heights stay float to keep a million-entry index at four megabytes.
+    // Expanded tree branches can be taller than4096 pixels; preserve their actual height
+    // instead of silently shortening the scroll extent. Prefix sums remain double.
     private float[] _measuredHeights = [];
 
     // Cumulative arrays MUST be double. On a million-row list the running offsets reach tens of

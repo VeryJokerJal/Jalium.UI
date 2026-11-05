@@ -5,6 +5,9 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed class GeometryDrawing : Drawing
 {
+    internal static readonly DependencyProperty SvgNonScalingStrokeProperty = DependencyProperty.Register(
+        "SvgNonScalingStroke", typeof(bool), typeof(GeometryDrawing), new PropertyMetadata(false));
+    internal bool SvgNonScalingStroke { get => (bool)GetValue(SvgNonScalingStrokeProperty)!; set => SetValue(SvgNonScalingStrokeProperty, value); }
     public static readonly DependencyProperty BrushProperty =
         DependencyProperty.Register(nameof(Brush), typeof(Brush), typeof(GeometryDrawing), new PropertyMetadata(null));
     public static readonly DependencyProperty PenProperty =
@@ -69,7 +72,8 @@ public sealed class GeometryDrawing : Drawing
         base.OnPropertyChanged(e);
         if (ReferenceEquals(e.Property, BrushProperty)
             || ReferenceEquals(e.Property, PenProperty)
-            || ReferenceEquals(e.Property, GeometryProperty))
+            || ReferenceEquals(e.Property, GeometryProperty)
+            || ReferenceEquals(e.Property, SvgNonScalingStrokeProperty))
         {
             OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, e.Property);
             WritePostscript();
@@ -88,6 +92,14 @@ public sealed class GeometryDrawing : Drawing
 
             var bounds = Geometry.Bounds;
 
+            if (SvgNonScalingStroke && Pen is { } svgPen)
+            {
+                if (!SvgStrokeSpace.TryStroke(Geometry, svgPen, out var stroke, out var inverse)) return bounds;
+                var strokeBounds = new MatrixTransform(inverse).TransformBounds(stroke.Bounds);
+                var fillBounds = Geometry.Transform?.TransformBounds(bounds) ?? bounds;
+                return Rect.Union(fillBounds, strokeBounds);
+            }
+
             // Expand bounds for pen thickness
             if (Pen != null && Pen.Thickness > 0)
             {
@@ -102,6 +114,8 @@ public sealed class GeometryDrawing : Drawing
                     bounds = IncludeMiterTips(bounds, Geometry, Pen);
             }
 
+            if (!bounds.IsEmpty && Geometry.Transform is { Value.IsIdentity: false } transform)
+                bounds = transform.TransformBounds(bounds);
             return bounds;
         }
     }
@@ -109,14 +123,15 @@ public sealed class GeometryDrawing : Drawing
     private static Rect IncludeMiterTips(Rect bounds, Geometry geometry, Pen pen)
     {
         var flattened = geometry.GetFlattenedPathGeometry();
-        var transform = geometry.Transform?.Value;
         var half = pen.Thickness / 2;
         var left = bounds.X;
         var top = bounds.Y;
         var right = bounds.Right;
         var bottom = bounds.Bottom;
 
-        Point Map(Point point) => transform is { } matrix ? matrix.Transform(point) : point;
+        // GeometryDrawing.Bounds applies the geometry's transform to the whole
+        // stroked bounds after these local-space miter tips have been included.
+        static Point Map(Point point) => point;
 
         void IncludeJoin(Point previous, Point vertex, Point next)
         {
@@ -190,6 +205,15 @@ public sealed class GeometryDrawing : Drawing
     {
         if (Geometry != null)
         {
+            if (SvgNonScalingStroke && Pen is { } pen)
+            {
+                if (Brush is not null) context.DrawGeometry(Brush, null, Geometry);
+                if (!SvgStrokeSpace.TryStroke(Geometry, pen, out var stroke, out var inverse)) return;
+                context.PushTransform(new MatrixTransform(inverse));
+                try { stroke.RenderTo(context); }
+                finally { context.Pop(); }
+                return;
+            }
             context.DrawGeometry(Brush, Pen, Geometry);
         }
     }

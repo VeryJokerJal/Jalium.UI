@@ -182,6 +182,7 @@
             <SolidColorBrush x:Key="SystemFillColorSuccessBrush" Color="#30D158" />
             <SolidColorBrush x:Key="SystemFillColorCautionBrush" Color="#FFD60A" />
             <SolidColorBrush x:Key="SystemFillColorCriticalBrush" Color="#FF453A" />
+            <SolidColorBrush x:Key="ColorPickerErrorTextBrush" Color="#FF6B63" />
             <SolidColorBrush x:Key="SystemFillColorNeutralBrush" Color="#AEAEB2" />
             <SolidColorBrush x:Key="SystemFillColorSolidNeutralBrush" Color="#AEAEB2" />
             <SolidColorBrush x:Key="SystemFillColorAttentionBackgroundBrush" Color="#2C2C2E" />
@@ -549,11 +550,11 @@
             <SolidColorBrush x:Key="ToastSuccessBackground" Color="#30D158" />
             <SolidColorBrush x:Key="ToastWarningBackground" Color="#FFD60A" />
             <SolidColorBrush x:Key="ToastErrorBackground" Color="#FF453A" />
-            <SolidColorBrush x:Key="ToastInformationIcon" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="ToastSuccessIcon" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="ToastWarningIcon" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="ToastErrorIcon" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="ToastForeground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastInformationIcon" Color="#111111" />
+            <SolidColorBrush x:Key="ToastSuccessIcon" Color="#111111" />
+            <SolidColorBrush x:Key="ToastWarningIcon" Color="#111111" />
+            <SolidColorBrush x:Key="ToastErrorIcon" Color="#111111" />
+            <SolidColorBrush x:Key="ToastForeground" Color="#111111" />
 
             <SolidColorBrush x:Key="CommandBarBackground" Color="#2C2C2E" />
             <SolidColorBrush x:Key="CommandBarBorderBrush" Color="#48484A" />
@@ -756,6 +757,7 @@
             <SolidColorBrush x:Key="SystemFillColorSuccessBrush" Color="#34C759" />
             <SolidColorBrush x:Key="SystemFillColorCautionBrush" Color="#FF9F0A" />
             <SolidColorBrush x:Key="SystemFillColorCriticalBrush" Color="#FF3B30" />
+            <SolidColorBrush x:Key="ColorPickerErrorTextBrush" Color="#B42318" />
             <SolidColorBrush x:Key="SystemFillColorNeutralBrush" Color="#6E6E73" />
             <SolidColorBrush x:Key="SystemFillColorSolidNeutralBrush" Color="#6E6E73" />
             <SolidColorBrush x:Key="SystemFillColorAttentionBackgroundBrush" Color="#F5F5F7" />
@@ -1121,11 +1123,11 @@
             <SolidColorBrush x:Key="ToastSuccessBackground" Color="#34C759" />
             <SolidColorBrush x:Key="ToastWarningBackground" Color="#FF9F0A" />
             <SolidColorBrush x:Key="ToastErrorBackground" Color="#FF3B30" />
-            <SolidColorBrush x:Key="ToastInformationIcon" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="ToastSuccessIcon" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="ToastWarningIcon" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="ToastErrorIcon" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="ToastForeground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastInformationIcon" Color="#111111" />
+            <SolidColorBrush x:Key="ToastSuccessIcon" Color="#111111" />
+            <SolidColorBrush x:Key="ToastWarningIcon" Color="#111111" />
+            <SolidColorBrush x:Key="ToastErrorIcon" Color="#111111" />
+            <SolidColorBrush x:Key="ToastForeground" Color="#111111" />
 
             <SolidColorBrush x:Key="CommandBarBackground" Color="#FFFFFF" />
             <SolidColorBrush x:Key="CommandBarBorderBrush" Color="#D2D2D7" />
@@ -1355,6 +1357,7 @@
             <SolidColorBrush x:Key="SystemFillColorSuccessBrush" Color="#FFFFFF00" />
             <SolidColorBrush x:Key="SystemFillColorCautionBrush" Color="#FFFFFF00" />
             <SolidColorBrush x:Key="SystemFillColorCriticalBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="ColorPickerErrorTextBrush" Color="#FFFFFF00" />
             <SolidColorBrush x:Key="SystemFillColorNeutralBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="SystemFillColorAttentionBackgroundBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="SystemFillColorSuccessBackgroundBrush" Color="#FF000000" />

@@ -1,4 +1,5 @@
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
@@ -297,6 +298,9 @@ public class ToolTip : ContentControl
 
     private void OpenToolTip()
     {
+        using var ignoredCreation = IsDiagnosticsIgnored || PlacementTarget?.IsDiagnosticsIgnored == true
+            ? Diagnostics.DiagnosticsScope.BeginIgnoredCreation()
+            : (Diagnostics.DiagnosticsScope.IgnoredCreationScope?)null;
         // Always create a fresh Popup to avoid stale state from previous show
         if (_popup != null)
         {
@@ -404,9 +408,13 @@ public static class ToolTipService
 {
     private static ToolTip? _currentToolTip;
     private static UIElement? _currentOwner;
+    private static Window? _currentOwnerWindow;
+    private static bool _cleaningUp;
 
     static ToolTipService()
     {
+        EventManager.RegisterClassHandler(typeof(UIElement), UIElement.PreviewMouseDownEvent,
+            new MouseButtonEventHandler(OnMouseButtonDownClassHandler), handledEventsToo: true);
         // Press-and-hold on touch surfaces the tooltip, just as mouse hover does.
         // WindowInputDispatcher emits SystemGesture.HoldEnter ~500 ms after a
         // stationary touch contact; we handle it at class-handler scope so
@@ -416,6 +424,18 @@ public static class ToolTipService
             UIElement.StylusSystemGestureEvent,
             new RoutedEventHandler(OnStylusSystemGestureClassHandler),
             handledEventsToo: false);
+    }
+
+    private static void OnMouseButtonDownClassHandler(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is DependencyObject input && _currentOwnerWindow is { } window
+            && ReferenceEquals(Window.GetWindow(input), window))
+            HideToolTip(_currentOwner);
+    }
+
+    private static void OnCurrentOwnerWindowUnavailable(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, _currentOwnerWindow)) HideToolTip(_currentOwner);
     }
 
     private static void OnStylusSystemGestureClassHandler(object sender, RoutedEventArgs e)
@@ -446,10 +466,23 @@ public static class ToolTipService
             element.Unloaded -= OnCurrentOwnerUnloaded;
             element.Unloaded += OnCurrentOwnerUnloaded;
         }
+        _currentOwnerWindow = Window.GetWindow(owner);
+        if (_currentOwnerWindow is { } window)
+        {
+            window.Deactivated += OnCurrentOwnerWindowUnavailable;
+            window.Closed += OnCurrentOwnerWindowUnavailable;
+        }
     }
 
     private static void UnsubscribeFromOwnerLifetime(UIElement? owner)
     {
+        var window = _currentOwnerWindow;
+        _currentOwnerWindow = null;
+        if (window != null)
+        {
+            window.Deactivated -= OnCurrentOwnerWindowUnavailable;
+            window.Closed -= OnCurrentOwnerWindowUnavailable;
+        }
         if (owner is FrameworkElement element)
         {
             element.Unloaded -= OnCurrentOwnerUnloaded;
@@ -630,14 +663,19 @@ public static class ToolTipService
     /// </summary>
     internal static void Cleanup()
     {
-        if (_currentToolTip != null)
+        if (_cleaningUp) return;
+        _cleaningUp = true;
+        try
         {
-            UnsubscribeFromOwnerLifetime(_currentOwner);
-            _currentToolTip.StopTimers();
-            _currentToolTip.IsOpen = false;
+            var toolTip = _currentToolTip;
+            var owner = _currentOwner;
             _currentToolTip = null;
             _currentOwner = null;
+            UnsubscribeFromOwnerLifetime(owner);
+            toolTip?.StopTimers();
+            if (toolTip != null) toolTip.IsOpen = false;
         }
+        finally { _cleaningUp = false; }
     }
 
     /// <summary>
@@ -647,6 +685,10 @@ public static class ToolTipService
     {
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(content);
+        if (_cleaningUp) return;
+
+        if (!GetIsEnabled(owner) || (!owner.IsEnabled && !GetShowOnDisabled(owner)))
+            return;
 
         var openingArgs = new ToolTipEventArgs(ToolTipOpeningEvent)
         {
@@ -663,6 +705,10 @@ public static class ToolTipService
 
         _currentOwner = owner;
         SubscribeToOwnerLifetime(owner);
+
+        using var ignoredCreation = owner.IsDiagnosticsIgnored
+            ? Diagnostics.DiagnosticsScope.BeginIgnoredCreation()
+            : (Diagnostics.DiagnosticsScope.IgnoredCreationScope?)null;
 
         // Create or get the tooltip
         if (content is ToolTip existingToolTip)
@@ -691,6 +737,7 @@ public static class ToolTipService
             ApplyOwnerAttachedSettings(owner, _currentToolTip);
         }
 
+        if (owner.IsDiagnosticsIgnored) _currentToolTip.MarkDiagnosticsIgnoredSubtree();
         _currentToolTip.PlacementTarget = owner;
         _currentToolTip.StartShowTimer(mousePosition);
     }
@@ -711,17 +758,30 @@ public static class ToolTipService
     {
         if (owner != null && owner == _currentOwner && _currentToolTip != null)
         {
+            var toolTip = _currentToolTip;
+            _currentToolTip = null;
+            _currentOwner = null;
+            UnsubscribeFromOwnerLifetime(owner);
+            toolTip.StopTimers();
+
             var closingArgs = new ToolTipEventArgs(ToolTipClosingEvent)
             {
                 Source = owner,
             };
-            owner.RaiseEvent(closingArgs);
-
-            _currentToolTip.StopTimers();
-            _currentToolTip.IsOpen = false;
-            UnsubscribeFromOwnerLifetime(owner);
-            _currentToolTip = null;
-            _currentOwner = null;
+            try { owner.RaiseEvent(closingArgs); }
+            finally
+            {
+                // A closing callback can start a new tooltip, even reusing this instance.
+                if (!ReferenceEquals(_currentToolTip, toolTip)) toolTip.IsOpen = false;
+            }
         }
+    }
+
+    internal static void HideForWindow(Window window)
+    {
+        // Tooltips deliberately stay outside light-dismiss popup handling. A modal
+        // transition must also cancel their pending timer, scoped to its own window.
+        if (_currentOwner is { } owner && ReferenceEquals(Window.GetWindow(owner), window))
+            HideToolTip(owner);
     }
 }

@@ -95,7 +95,10 @@ internal static class WindowWritingToolsChecks
                         physicalInput=false,appleIntelligenceService=false,pid=Environment.ProcessId,nativeImages=NativeImages() }));
                 }
                 Console.WriteLine($"macOS Writing Tools managed host: {completed}/{expected} cases; {checks.Count} checks; {failures.Count} failures");
-                app.Stop(app); using var wake = NSEvent.OtherEvent(NSEventType.ApplicationDefined, default, 0, 0, 0, null, 0, 0, 0); app.PostEvent(wake, false); return;
+                app.Stop(app);
+                using var wake = NSEvent.OtherEvent(NSEventType.ApplicationDefined, default, 0, 0, 0, null, 0, 0, 0);
+                app.PostEvent(wake, false);
+                return;
             }
             caseIndex++;
             if (RenderContext.Current?.Backend != (item.Software ? RenderBackend.Software : RenderBackend.Metal))
@@ -126,6 +129,20 @@ internal static class WindowWritingToolsChecks
             if (!ready && wait.Elapsed < TimeSpan.FromSeconds(caseIndex == 0 ? startupSeconds : 12)) return;
             try
             {
+                try
+                {
+                    var observedView = Runtime.GetNSObject<NSView>(owner!.Handle);
+                    var observedWindow = observedView?.Window;
+                    Console.WriteLine("QA412_STATE " + JsonSerializer.Serialize(new {
+                        label, ready, appActive = app.Active, managedActive = owner.IsActive,
+                        policy = app.ActivationPolicy.ToString(), hostPid = Environment.ProcessId,
+                        foregroundPid = NSWorkspace.SharedWorkspace.FrontmostApplication?.ProcessIdentifier,
+                        keyIsOwnWindow = observedWindow != null && app.KeyWindow?.Handle == observedWindow.Handle,
+                        responderIsExpectedView = observedView != null && app.KeyWindow?.FirstResponder?.Handle == observedView.Handle,
+                        nativeKey = observedWindow?.IsKeyWindow, nativeMain = observedWindow?.IsMainWindow,
+                        nativeVisible = observedWindow?.IsVisible }));
+                }
+                catch (Exception observer) { Console.Error.WriteLine("QA412_OBSERVER " + observer.GetType().Name); }
                 Require(ready,"actual AppKit and system foreground agree");
                 // The window's content root also owns the material sibling;
                 // the actual input/render view is Window.Handle.

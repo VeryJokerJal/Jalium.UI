@@ -51,48 +51,33 @@ public class ColorPickerThemeTests
     }
 
     [Fact]
-    public void ColorPicker_BorderBrush_ShouldDriveRenderedPickerBorders()
+    public void ColorPicker_BorderBrush_ShouldDriveTheTemplateAndColorParts()
     {
-        var borderBrush = new SolidColorBrush(Color.FromRgb(12, 34, 56));
-        var colorPicker = new ColorPicker
+        ResetApplicationState(); var app=new Application();
+        try
         {
-            BorderBrush = borderBrush,
-            BorderThickness = new Thickness(3)
-        };
-
-        var getBorderPen = typeof(ColorPicker).GetMethod("GetBorderPen",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(getBorderPen);
-
-        var pen = Assert.IsType<Pen>(getBorderPen!.Invoke(colorPicker, null));
-        Assert.Same(borderBrush, pen.Brush);
-        Assert.Equal(3, pen.Thickness);
+            var brush=new SolidColorBrush(Color.FromRgb(12,34,56));
+            var picker=new ColorPicker { BorderBrush=brush,BorderThickness=new Thickness(3) };
+            picker.Measure(new Size(240,400));picker.Arrange(new Rect(0,0,240,400));
+            var root=Assert.IsType<Border>(picker.FindName("PART_Root"));
+            Assert.Same(brush,root.BorderBrush);Assert.Equal(new Thickness(3),root.BorderThickness);
+            Assert.Same(brush,Assert.IsType<ColorSpectrum>(picker.FindName("PART_Spectrum")).BorderBrush);
+            Assert.Same(brush,Assert.IsType<ColorRamp>(picker.FindName("PART_HueSlider")).BorderBrush);
+        }
+        finally { ResetApplicationState(); }
     }
 
     [Fact]
-    public void ColorPicker_InternalResolvers_ShouldUseThemeResources()
+    public void ColorPicker_DefaultPartsUseThemeResources()
     {
-        ResetApplicationState();
-        var app = new Application();
-
+        ResetApplicationState();var app=new Application();
         try
         {
-            var colorPicker = new ColorPicker();
-
-            var foregroundMethod = typeof(ColorPicker).GetMethod("ResolveForegroundBrush",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            var borderMethod = typeof(ColorPicker).GetMethod("ResolveBorderBrush",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-
-            Assert.NotNull(foregroundMethod);
-            Assert.NotNull(borderMethod);
-
-            Assert.Same(app.Resources["TextPrimary"], foregroundMethod!.Invoke(colorPicker, null));
-            Assert.Same(app.Resources["ControlBorder"], borderMethod!.Invoke(colorPicker, null));
+            var picker=new ColorPicker();picker.Measure(new Size(240,400));picker.Arrange(new Rect(0,0,240,400));
+            Assert.Same(app.Resources["TextPrimary"],picker.Foreground);
+            Assert.Same(app.Resources["ControlBorder"],picker.BorderBrush);
+            Assert.Same(picker.BorderBrush,Assert.IsType<ColorPreview>(picker.FindName("PART_Preview")).BorderBrush);
         }
-        finally
-        {
-            ResetApplicationState();
-        }
+        finally { ResetApplicationState(); }
     }
 }

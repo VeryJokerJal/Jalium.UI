@@ -1,0 +1,27 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.DesktopDemo"
+                    x:Class="Jalium.UI.DesktopDemo.Themes.HoverProbeTheme">
+    <Style x:Key="HoverProbe.Window" TargetType="Window">
+        <Setter Property="Background" Value="Black" /><Setter Property="SystemBackdrop" Value="Mica" />
+    </Style>
+    <Style TargetType="local:HoverProbeSurface">
+        <Setter Property="ItemsPanel"><Setter.Value><ItemsPanelTemplate><StackPanel /></ItemsPanelTemplate></Setter.Value></Setter>
+        <Setter Property="ItemTemplate"><Setter.Value><DataTemplate><local:HoverProbeRow Content="{Binding Label}" Height="{Binding RowHeight, RelativeSource={RelativeSource AncestorType=local:HoverProbeSurface}}" /></DataTemplate></Setter.Value></Setter>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:HoverProbeSurface">
+            <Border Background="#1E1E24" Margin="8">
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="RunStates"><VisualState x:Name="Running" /><VisualState x:Name="Settled" /></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                <ScrollViewer x:Name="PART_ScrollViewer" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><ItemsPresenter /></ScrollViewer>
+            </Border>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:HoverProbeRow">
+        <Setter Property="Background" Value="Transparent" /><Setter Property="Foreground" Value="#DCE0E4" /><Setter Property="FontSize" Value="13" /><Setter Property="Focusable" Value="False" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:HoverProbeRow">
+            <Border Background="{TemplateBinding Background}" TransitionProperty="None">
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="PointerOver"><VisualState.Setters><Setter Property="Background" Value="#181E8E3E" /></VisualState.Setters></VisualState></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                <ContentPresenter ContentSource="Content" Margin="10,0,0,0" VerticalAlignment="Center" />
+            </Border>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

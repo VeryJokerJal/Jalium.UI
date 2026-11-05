@@ -1,836 +1,347 @@
+using System.Globalization;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
-using Jalium.UI.Interop;
-using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
-/// <summary>
-/// Represents a control that allows the user to select a time.
-/// </summary>
+/// <summary>A templated time selector with a pending selection that is committed only on acceptance.</summary>
+[TemplatePart(Name = "PART_Popup", Type = typeof(Popup))]
+[TemplatePart(Name = "PART_DisplayText", Type = typeof(TextBlock))]
+[TemplatePart(Name = "PART_HourList", Type = typeof(ListBox))]
+[TemplatePart(Name = "PART_MinuteList", Type = typeof(ListBox))]
+[TemplatePart(Name = "PART_PeriodList", Type = typeof(ListBox))]
+[TemplatePart(Name = "PART_AcceptButton", Type = typeof(ButtonBase))]
+[TemplatePart(Name = "PART_CancelButton", Type = typeof(ButtonBase))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "PointerOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Focused", GroupName = "FocusStates")]
+[TemplateVisualState(Name = "Unfocused", GroupName = "FocusStates")]
+[TemplateVisualState(Name = "Placeholder", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "Selected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "HeaderVisible", GroupName = "HeaderStates")]
+[TemplateVisualState(Name = "HeaderCollapsed", GroupName = "HeaderStates")]
+[TemplateVisualState(Name = "TwelveHourClock", GroupName = "ClockStates")]
+[TemplateVisualState(Name = "TwentyFourHourClock", GroupName = "ClockStates")]
+[TemplateVisualState(Name = "Open", GroupName = "DropDownStates")]
+[TemplateVisualState(Name = "Closed", GroupName = "DropDownStates")]
 public class TimePicker : Control
 {
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-    {
-        return new Jalium.UI.Automation.Peers.TimePickerAutomationPeer(this);
-    }
+    public static readonly DependencyProperty SelectedTimeProperty = DependencyProperty.Register(
+        nameof(SelectedTime), typeof(TimeSpan?), typeof(TimePicker),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnSelectedTimeChanged));
+    public static readonly DependencyProperty ClockIdentifierProperty = DependencyProperty.Register(
+        nameof(ClockIdentifier), typeof(string), typeof(TimePicker), new PropertyMetadata("12HourClock", OnOptionsChanged));
+    public static readonly DependencyProperty MinuteIncrementProperty = DependencyProperty.Register(
+        nameof(MinuteIncrement), typeof(int), typeof(TimePicker), new PropertyMetadata(1, OnOptionsChanged,
+            (_, value) => Math.Clamp(value is int increment ? increment : 1, 1, 59)));
+    public static readonly DependencyProperty HeaderProperty = DependencyProperty.Register(
+        nameof(Header), typeof(object), typeof(TimePicker), new PropertyMetadata(null, OnDisplayChanged));
+    public static readonly DependencyProperty HeaderTemplateProperty = DependencyProperty.Register(
+        nameof(HeaderTemplate), typeof(DataTemplate), typeof(TimePicker), new PropertyMetadata(null));
+    public static readonly DependencyProperty PlaceholderTextProperty = DependencyProperty.Register(
+        nameof(PlaceholderText), typeof(string), typeof(TimePicker), new PropertyMetadata("Select a time", OnDisplayChanged));
+    public static readonly DependencyProperty IsDropDownOpenProperty = DependencyProperty.Register(
+        nameof(IsDropDownOpen), typeof(bool), typeof(TimePicker),
+        new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnIsDropDownOpenChanged));
+    public static readonly DependencyProperty PendingHourIndexProperty = DependencyProperty.Register(
+        nameof(PendingHourIndex), typeof(int), typeof(TimePicker), new PropertyMetadata(0, OnPendingIndexChanged));
+    public static readonly DependencyProperty PendingMinuteIndexProperty = DependencyProperty.Register(
+        nameof(PendingMinuteIndex), typeof(int), typeof(TimePicker), new PropertyMetadata(0, OnPendingIndexChanged));
+    public static readonly DependencyProperty PendingPeriodIndexProperty = DependencyProperty.Register(
+        nameof(PendingPeriodIndex), typeof(int), typeof(TimePicker), new PropertyMetadata(0, OnPendingIndexChanged));
+    private static readonly DependencyPropertyKey DisplayTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(DisplayText), typeof(string), typeof(TimePicker), new PropertyMetadata("Select a time"));
+    public static readonly DependencyProperty DisplayTextProperty = DisplayTextPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey HourOptionsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(HourOptions), typeof(IReadOnlyList<string>), typeof(TimePicker), new PropertyMetadata(Array.Empty<string>()));
+    public static readonly DependencyProperty HourOptionsProperty = HourOptionsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey MinuteOptionsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(MinuteOptions), typeof(IReadOnlyList<string>), typeof(TimePicker), new PropertyMetadata(Array.Empty<string>()));
+    public static readonly DependencyProperty MinuteOptionsProperty = MinuteOptionsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey PeriodOptionsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(PeriodOptions), typeof(IReadOnlyList<string>), typeof(TimePicker), new PropertyMetadata(new[] { "AM", "PM" }));
+    public static readonly DependencyProperty PeriodOptionsProperty = PeriodOptionsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey PendingTimePropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(PendingTime), typeof(TimeSpan), typeof(TimePicker), new PropertyMetadata(TimeSpan.Zero));
+    public static readonly DependencyProperty PendingTimeProperty = PendingTimePropertyKey.DependencyProperty;
 
-    #region Dependency Properties
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty SelectedTimeProperty =
-        DependencyProperty.Register(nameof(SelectedTime), typeof(TimeSpan?), typeof(TimePicker),
-            new PropertyMetadata(null, OnSelectedTimeChanged));
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty ClockIdentifierProperty =
-        DependencyProperty.Register(nameof(ClockIdentifier), typeof(string), typeof(TimePicker),
-            new PropertyMetadata("12HourClock", OnClockIdentifierChanged));
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty MinuteIncrementProperty =
-        DependencyProperty.Register(nameof(MinuteIncrement), typeof(int), typeof(TimePicker),
-            new PropertyMetadata(1));
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty HeaderProperty =
-        DependencyProperty.Register(nameof(Header), typeof(object), typeof(TimePicker),
-            new PropertyMetadata(null, OnLayoutPropertyChanged));
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty PlaceholderTextProperty =
-        DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(TimePicker),
-            new PropertyMetadata("Select a time", OnVisualPropertyChanged));
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsDropDownOpenProperty =
-        DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(TimePicker),
-            new PropertyMetadata(false, OnIsDropDownOpenChanged));
-
-    #endregion
-
-    #region Routed Events
-
-    public static readonly RoutedEvent SelectedTimeChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(SelectedTimeChanged), RoutingStrategy.Bubble,
-            typeof(EventHandler<TimePickerSelectedValueChangedEventArgs>), typeof(TimePicker));
-
+    public static readonly RoutedEvent SelectedTimeChangedEvent = EventManager.RegisterRoutedEvent(
+        nameof(SelectedTimeChanged), RoutingStrategy.Bubble, typeof(EventHandler<TimePickerSelectedValueChangedEventArgs>), typeof(TimePicker));
     public event EventHandler<TimePickerSelectedValueChangedEventArgs> SelectedTimeChanged
     {
         add => AddHandler(SelectedTimeChangedEvent, value);
         remove => RemoveHandler(SelectedTimeChangedEvent, value);
     }
 
-    #endregion
+    public TimeSpan? SelectedTime { get => (TimeSpan?)GetValue(SelectedTimeProperty); set => SetValue(SelectedTimeProperty, value); }
+    public string ClockIdentifier { get => (string?)GetValue(ClockIdentifierProperty) ?? "12HourClock"; set => SetValue(ClockIdentifierProperty, value); }
+    public int MinuteIncrement { get => (int)GetValue(MinuteIncrementProperty)!; set => SetValue(MinuteIncrementProperty, value); }
+    public object? Header { get => GetValue(HeaderProperty); set => SetValue(HeaderProperty, value); }
+    public DataTemplate? HeaderTemplate { get => (DataTemplate?)GetValue(HeaderTemplateProperty); set => SetValue(HeaderTemplateProperty, value); }
+    public string? PlaceholderText { get => (string?)GetValue(PlaceholderTextProperty); set => SetValue(PlaceholderTextProperty, value); }
+    public bool IsDropDownOpen { get => (bool)GetValue(IsDropDownOpenProperty)!; set => SetValue(IsDropDownOpenProperty, value); }
+    public int PendingHourIndex { get => (int)GetValue(PendingHourIndexProperty)!; set => SetValue(PendingHourIndexProperty, value); }
+    public int PendingMinuteIndex { get => (int)GetValue(PendingMinuteIndexProperty)!; set => SetValue(PendingMinuteIndexProperty, value); }
+    public int PendingPeriodIndex { get => (int)GetValue(PendingPeriodIndexProperty)!; set => SetValue(PendingPeriodIndexProperty, value); }
+    public string DisplayText => (string)GetValue(DisplayTextProperty)!;
+    public IReadOnlyList<string> HourOptions => (IReadOnlyList<string>)GetValue(HourOptionsProperty)!;
+    public IReadOnlyList<string> MinuteOptions => (IReadOnlyList<string>)GetValue(MinuteOptionsProperty)!;
+    public IReadOnlyList<string> PeriodOptions => (IReadOnlyList<string>)GetValue(PeriodOptionsProperty)!;
+    public TimeSpan PendingTime => (TimeSpan)GetValue(PendingTimeProperty)!;
 
-    #region CLR Properties
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public TimeSpan? SelectedTime
-    {
-        get => (TimeSpan?)GetValue(SelectedTimeProperty);
-        set => SetValue(SelectedTimeProperty, value);
-    }
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public string ClockIdentifier
-    {
-        get => (string)(GetValue(ClockIdentifierProperty) ?? "12HourClock");
-        set => SetValue(ClockIdentifierProperty, value);
-    }
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public int MinuteIncrement
-    {
-        get => (int)GetValue(MinuteIncrementProperty)!;
-        set => SetValue(MinuteIncrementProperty, value);
-    }
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public object? Header
-    {
-        get => GetValue(HeaderProperty);
-        set => SetValue(HeaderProperty, value);
-    }
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string? PlaceholderText
-    {
-        get => (string?)GetValue(PlaceholderTextProperty);
-        set => SetValue(PlaceholderTextProperty, value);
-    }
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsDropDownOpen
-    {
-        get => (bool)GetValue(IsDropDownOpenProperty)!;
-        set => SetValue(IsDropDownOpenProperty, value);
-    }
-
-    #endregion
-
-    #region Private Fields
-
-    private const double DefaultHeight = 32;
-    private const double DropdownButtonWidth = 32;
-    private Rect _dropdownButtonRect;
-    private Border? _cssBorderPainter;
-
-    // Popup
     private Popup? _popup;
-    private Border? _flyoutBorder;
-    private StackPanel? _hourColumn;
-    private StackPanel? _minuteColumn;
-    private StackPanel? _periodColumn;
-    private bool _isCloseAnimating;
-    private bool _isOpen;
-
-    // Pending selection
-    private int _pendingHour;
-    private int _pendingMinute;
-    private int _pendingPeriodIndex; // 0=AM, 1=PM
-
-    private const double ColumnWidth = 70;
-    private const double ItemHeight = 40;
-    private const double FlyoutMaxHeight = 260;
-
-    // Highlight colors
-    private static readonly SolidColorBrush SelectedItemBg = new(ThemeColors.SelectedItemBackground);
-    private static readonly SolidColorBrush TransparentBg = new(Color.Transparent);
-
-    // Static brushes & pens for rendering
-    private static readonly SolidColorBrush s_focusBorderBrush = new(ThemeColors.ControlBorderFocused);
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
-    private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
-    private static readonly SolidColorBrush s_iconBrush = new(Color.FromRgb(160, 160, 160));
-
-    #endregion
-
-    #region Constructor
+    private UIElement? _popupChild;
+    private TextBlock? _displayText;
+    private ListBox? _hours, _minutes, _periods;
+    private ButtonBase? _accept, _cancel;
+    private TimeSpan? _pendingOnRetemplate;
+    private Jalium.UI.Threading.DispatcherOperation? _pendingOpenLayout;
+    private bool _updatingPending, _hasPendingSelection, _changingTemplate;
+    private bool Is24Hour => ClockIdentifier == "24HourClock";
 
     public TimePicker()
     {
         Focusable = true;
-        SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
-
+        SetCurrentValue(TransitionPropertyProperty, TransitionPropertyCollection.None());
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        Unloaded += (_, _) => SetCurrentValue(IsDropDownOpenProperty, false);
+        RebuildOptions();
+        UpdateDisplay();
     }
 
-    #endregion
-
-    #region Popup Management
-
-    private bool Is24Hour => ClockIdentifier == "24HourClock";
-
-    private void EnsurePopup()
+    public override void OnApplyTemplate()
     {
-        if (_popup != null) return;
-        BuildPopup();
-    }
-
-    private void BuildPopup()
-    {
-        var is24Hour = Is24Hour;
-
-        // Hour column
-        _hourColumn = new StackPanel { Orientation = Orientation.Vertical };
-        PopulateHourColumn(is24Hour);
-        var hourScroll = new ScrollViewer
+        base.OnApplyTemplate();
+        _popup = GetTemplateChild("PART_Popup") as Popup;
+        _displayText = GetTemplateChild("PART_DisplayText") as TextBlock;
+        _hours = GetTemplateChild("PART_HourList") as ListBox;
+        _minutes = GetTemplateChild("PART_MinuteList") as ListBox;
+        _periods = GetTemplateChild("PART_PeriodList") as ListBox;
+        _accept = GetTemplateChild("PART_AcceptButton") as ButtonBase;
+        _cancel = GetTemplateChild("PART_CancelButton") as ButtonBase;
+        CssPlaceholder.Bind(_displayText, this);
+        if (_popup != null)
         {
-            Content = _hourColumn,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
-            Width = ColumnWidth,
-            MaxHeight = FlyoutMaxHeight - ItemHeight
-        };
-
-        // Minute column
-        _minuteColumn = new StackPanel { Orientation = Orientation.Vertical };
-        PopulateMinuteColumn();
-        var minuteScroll = new ScrollViewer
-        {
-            Content = _minuteColumn,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
-            Width = ColumnWidth,
-            MaxHeight = FlyoutMaxHeight - ItemHeight
-        };
-
-        // Columns container
-        var columnsPanel = new StackPanel { Orientation = Orientation.Horizontal };
-        columnsPanel.Children.Add(hourScroll);
-        columnsPanel.Children.Add(CreateSeparator());
-        columnsPanel.Children.Add(minuteScroll);
-
-        // AM/PM column (only for 12-hour)
-        if (!is24Hour)
-        {
-            _periodColumn = new StackPanel { Orientation = Orientation.Vertical };
-            PopulatePeriodColumn();
-            var periodScroll = new ScrollViewer
-            {
-                Content = _periodColumn,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
-                Width = 60,
-                MaxHeight = FlyoutMaxHeight - ItemHeight
-            };
-            columnsPanel.Children.Add(CreateSeparator());
-            columnsPanel.Children.Add(periodScroll);
+            _popup.SetCurrentValue(Popup.PlacementTargetProperty, this);
+            _popup.Closed += OnPopupClosed;
+            _popupChild = _popup.Child;
+            _popupChild?.AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
         }
-
-        // Accept button
-        var acceptButton = new Button
+        if (_accept != null) _accept.Click += OnAccept;
+        if (_cancel != null) _cancel.Click += OnCancel;
+        if (_pendingOnRetemplate is { } pending)
         {
-            Content = "\u2713",
-            Height = ItemHeight,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Center,
-            Background = ResolvePopupBrush("AccentBrush", new SolidColorBrush(ThemeColors.Accent)),
-            Foreground = ResolvePopupBrush("TextPrimary", new SolidColorBrush(Color.White)),
-            FontSize = 18,
-            CornerRadius = new CornerRadius(0, 0, 6, 6),
-            BorderThickness = new Thickness(0)
-        };
-        acceptButton.Click += OnAcceptClicked;
-
-        // Main layout
-        var mainPanel = new StackPanel { Orientation = Orientation.Vertical };
-        mainPanel.Children.Add(columnsPanel);
-        mainPanel.Children.Add(acceptButton);
-
-        _flyoutBorder = new Border
-        {
-            Background = ResolvePopupBrush("SurfaceBackground", new SolidColorBrush(Color.FromRgb(45, 45, 45))),
-            BorderBrush = ResolvePopupBrush("ControlBorder", new SolidColorBrush(Color.FromRgb(67, 67, 70))),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Margin = new Thickness(0, 4, 0, 0),
-            Child = mainPanel
-        };
-
-        _popup = new Popup
-        {
-            Child = _flyoutBorder,
-            PlacementTarget = this,
-            Placement = PlacementMode.Bottom,
-            StaysOpen = false
-        };
-        _popup.Closed += OnPopupClosed;
-    }
-
-    private Border CreateSeparator()
-    {
-        return new Border
-        {
-            Width = 1,
-            Background = ResolvePopupBrush("ControlBorder", new SolidColorBrush(Color.FromRgb(67, 67, 70)))
-        };
-    }
-
-    private void PopulateHourColumn(bool is24Hour)
-    {
-        var maxHour = is24Hour ? 23 : 12;
-        var minHour = is24Hour ? 0 : 1;
-
-        for (int h = minHour; h <= maxHour; h++)
-        {
-            var hour = h;
-            var item = CreateTimeItem(is24Hour ? h.ToString("D2") : h.ToString(), () =>
-            {
-                _pendingHour = hour;
-                UpdateColumnHighlights();
-            });
-            _hourColumn!.Children.Add(item);
+            SetPendingTime(pending);
+            _pendingOnRetemplate = null;
         }
+        UpdateVisualStates();
+        if (IsDropDownOpen) OpenDropDown();
     }
 
-    private void PopulateMinuteColumn()
+    protected override void OnTemplateChanging()
     {
-        var increment = Math.Max(1, MinuteIncrement);
-        for (int m = 0; m < 60; m += increment)
+        _changingTemplate = true;
+        CancelPendingOpenLayout();
+        if (_hasPendingSelection && !_pendingOnRetemplate.HasValue) _pendingOnRetemplate = PendingTime;
+        // A retiring selector can clear its selection while its item containers
+        // detach. Disconnect its TwoWay editor binding before that reset occurs.
+        _hours?.ClearBinding(Selector.SelectedIndexProperty);
+        _minutes?.ClearBinding(Selector.SelectedIndexProperty);
+        _periods?.ClearBinding(Selector.SelectedIndexProperty);
+        _popupChild?.RemoveHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        if (_popup != null)
         {
-            var minute = m;
-            var item = CreateTimeItem(m.ToString("D2"), () =>
-            {
-                _pendingMinute = minute;
-                UpdateColumnHighlights();
-            });
-            _minuteColumn!.Children.Add(item);
+            _popup.Closed -= OnPopupClosed;
+            _popup.SetCurrentValue(Popup.IsOpenProperty, false);
         }
+        if (_accept != null) _accept.Click -= OnAccept;
+        if (_cancel != null) _cancel.Click -= OnCancel;
+        CssPlaceholder.Unbind(_displayText);
+        _popup = null; _popupChild = null; _displayText = null; _hours = _minutes = _periods = null; _accept = _cancel = null;
+        _changingTemplate = false;
+        base.OnTemplateChanging();
     }
 
-    private void PopulatePeriodColumn()
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
-        _periodColumn!.Children.Add(CreateTimeItem("AM", () =>
-        {
-            _pendingPeriodIndex = 0;
-            UpdateColumnHighlights();
-        }));
-        _periodColumn.Children.Add(CreateTimeItem("PM", () =>
-        {
-            _pendingPeriodIndex = 1;
-            UpdateColumnHighlights();
-        }));
+        base.OnIsEnabledChanged(oldValue, newValue);
+        if (!newValue) SetCurrentValue(IsDropDownOpenProperty, false);
+        UpdateVisualStates();
     }
-
-    private Border CreateTimeItem(string text, Action onClick)
-    {
-        var textBlock = new TextBlock
-        {
-            Text = text,
-            FontSize = 16,
-            Foreground = ResolvePopupBrush("TextPrimary", new SolidColorBrush(Color.White)),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        var border = new Border
-        {
-            Height = ItemHeight,
-            Child = textBlock,
-            Background = TransparentBg,
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(4)
-        };
-
-        border.AddHandler(MouseDownEvent, new MouseButtonEventHandler((s, e) =>
-        {
-            if (e.ChangedButton == MouseButton.Left)
-            {
-                onClick();
-                e.Handled = true;
-            }
-        }));
-
-        return border;
-    }
-
-    private void UpdateColumnHighlights()
-    {
-        var is24Hour = Is24Hour;
-
-        // Update hour column
-        if (_hourColumn != null)
-        {
-            var minHour = is24Hour ? 0 : 1;
-            for (int i = 0; i < _hourColumn.Children.Count; i++)
-            {
-                if (_hourColumn.Children[i] is Border border)
-                {
-                    var hourValue = minHour + i;
-                    border.Background = hourValue == _pendingHour ? ResolveSelectedItemBackground() : TransparentBg;
-                }
-            }
-        }
-
-        // Update minute column
-        if (_minuteColumn != null)
-        {
-            var increment = Math.Max(1, MinuteIncrement);
-            for (int i = 0; i < _minuteColumn.Children.Count; i++)
-            {
-                if (_minuteColumn.Children[i] is Border border)
-                {
-                    var minuteValue = i * increment;
-                    border.Background = minuteValue == _pendingMinute ? ResolveSelectedItemBackground() : TransparentBg;
-                }
-            }
-        }
-
-        // Update period column
-        if (_periodColumn != null)
-        {
-            for (int i = 0; i < _periodColumn.Children.Count; i++)
-            {
-                if (_periodColumn.Children[i] is Border border)
-                {
-                    border.Background = i == _pendingPeriodIndex ? ResolveSelectedItemBackground() : TransparentBg;
-                }
-            }
-        }
-    }
+    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue) { base.OnIsMouseOverChanged(oldValue, newValue); UpdateVisualStates(); }
+    protected override void OnGotKeyboardFocus(KeyboardFocusChangedEventArgs e) { base.OnGotKeyboardFocus(e); UpdateVisualStates(); }
+    protected override void OnLostKeyboardFocus(KeyboardFocusChangedEventArgs e) { base.OnLostKeyboardFocus(e); UpdateVisualStates(); }
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => new Jalium.UI.Automation.Peers.TimePickerAutomationPeer(this);
 
     private void OpenDropDown()
     {
-        if (_isOpen) return;
-
-        _isCloseAnimating = false;
-
-        // Rebuild popup if clock format changed
-        if (_popup != null)
+        if (!IsEnabled) { SetCurrentValue(IsDropDownOpenProperty, false); return; }
+        if (!_hasPendingSelection) { SetPendingTime(SelectedTime ?? TimeSpan.Zero); _hasPendingSelection = true; }
+        ApplyTemplate();
+        if (_popup == null || _popup.IsOpen) return;
+        _popup.SetCurrentValue(Popup.IsOpenProperty, true);
+        if (_popup.IsOpen && _hours != null)
         {
-            var hasperiod = _periodColumn != null;
-            var needsPeriod = !Is24Hour;
-            if (hasperiod != needsPeriod)
-            {
-                _popup = null;
-            }
+            _hours.Focus();
+            if (_hours.SelectedItem is { } selected) _hours.ScrollIntoView(selected);
         }
-
-        EnsurePopup();
-
-        // Initialize pending values from current selection
-        var current = SelectedTime ?? TimeSpan.Zero;
-        if (Is24Hour)
+        if (_minutes?.SelectedItem is { } minute) _minutes.ScrollIntoView(minute);
+        var openedPopup = _popup;
+        CancelPendingOpenLayout();
+        _pendingOpenLayout = Dispatcher.BeginInvoke(() =>
         {
-            _pendingHour = current.Hours;
-        }
-        else
-        {
-            _pendingHour = current.Hours % 12;
-            if (_pendingHour == 0) _pendingHour = 12;
-            _pendingPeriodIndex = current.Hours >= 12 ? 1 : 0;
-        }
-
-        // Snap minute to nearest increment
-        var increment = Math.Max(1, MinuteIncrement);
-        _pendingMinute = (current.Minutes / increment) * increment;
-
-        UpdateColumnHighlights();
-
-        _popup!.IsOpen = true;
-        _isOpen = true;
-
-        AnimateOpen();
+            _pendingOpenLayout = null;
+            if (!ReferenceEquals(_popup, openedPopup) || !openedPopup.IsOpen) return;
+            openedPopup.Child?.UpdateLayout();
+            foreach (var list in new[] { _hours, _minutes, _periods })
+                if (list?.SelectedItem is { } item) list.ScrollIntoView(item);
+            if (_hours?.ItemContainerGenerator.ContainerFromIndex(PendingHourIndex) is UIElement selectedHour)
+                selectedHour.Focus();
+        }, Jalium.UI.Threading.DispatcherPriority.Loaded);
     }
 
-    private void CloseDropDown()
+    private void CancelPendingOpenLayout()
     {
-        if (!_isOpen) return;
-        _isOpen = false;
-
-        AnimateClose();
+        _pendingOpenLayout?.Abort();
+        _pendingOpenLayout = null;
     }
 
-    private void OnAcceptClicked(object sender, RoutedEventArgs e)
+    private void CloseDropDown(bool restoreFocus)
     {
-        int hour24;
-
-        if (Is24Hour)
-        {
-            hour24 = _pendingHour;
-        }
-        else
-        {
-            hour24 = _pendingHour % 12;
-            if (_pendingPeriodIndex == 1) hour24 += 12; // PM
-        }
-
-        SelectedTime = new TimeSpan(hour24, _pendingMinute, 0);
-        IsDropDownOpen = false;
+        SetCurrentValue(IsDropDownOpenProperty, false);
+        if (restoreFocus) Focus();
     }
-
+    private void OnAccept(object sender, RoutedEventArgs e) => AcceptSelection();
+    private void OnCancel(object sender, RoutedEventArgs e) => CloseDropDown(true);
+    private void AcceptSelection()
+    {
+        if (!IsEnabled || !IsDropDownOpen) return;
+        SetCurrentValue(SelectedTimeProperty, PendingTime);
+        CloseDropDown(true);
+    }
     private void OnPopupClosed(object? sender, EventArgs e)
     {
-        if (_isCloseAnimating) return;
-
-        _isOpen = false;
-        if (_flyoutBorder != null)
-        {
-            _flyoutBorder.Opacity = 1;
-            _flyoutBorder.RenderOffset = default;
-        }
-        SetValue(IsDropDownOpenProperty, false);
+        if (!_changingTemplate) SetCurrentValue(IsDropDownOpenProperty, false);
     }
-
-    #endregion
-
-    #region Animation
-
-    private void AnimateOpen()
+    private bool IsPopupSource(object? source)
     {
-        if (_flyoutBorder != null)
-        {
-            _flyoutBorder.Opacity = 1;
-            _flyoutBorder.RenderOffset = default;
-        }
+        for (var current = source as Visual; current != null; current = current.VisualParent)
+            if (ReferenceEquals(current, _popup?.Child)) return true;
+        return false;
     }
-
-    private void AnimateClose()
-    {
-        _isCloseAnimating = true;
-        if (_popup != null)
-        {
-            _popup.IsOpen = false;
-        }
-
-        if (_flyoutBorder != null)
-        {
-            _flyoutBorder.Opacity = 1;
-            _flyoutBorder.RenderOffset = default;
-        }
-
-        _isCloseAnimating = false;
-    }
-
-    #endregion
-
-    #region Input Handling
-
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (!IsEnabled) return;
-
-        if (e.ChangedButton == MouseButton.Left)
+        if (!IsEnabled || e.ChangedButton != MouseButton.Left || IsPopupSource(e.OriginalSource)) return;
+        Focus();
+        SetCurrentValue(IsDropDownOpenProperty, !IsDropDownOpen);
+        e.Handled = true;
+    }
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
+    {
+        if (!IsEnabled || e.Handled) return;
+        if (e.Key == Key.Escape && IsDropDownOpen) { CloseDropDown(true); e.Handled = true; return; }
+        if (e.Key == Key.Enter && IsDropDownOpen) { AcceptSelection(); e.Handled = true; return; }
+        if (e.Key == Key.F4 || (e.Key == Key.Down && e.IsAltDown) ||
+            (!IsPopupSource(e.OriginalSource) && e.Key is Key.Enter or Key.Space))
         {
-            Focus();
-            IsDropDownOpen = !IsDropDownOpen;
+            SetCurrentValue(IsDropDownOpenProperty, !IsDropDownOpen); e.Handled = true; return;
+        }
+        if (!IsDropDownOpen && e.Key is Key.Up or Key.Down)
+        {
+            var minutes = (SelectedTime ?? TimeSpan.Zero).TotalMinutes + (e.Key == Key.Up ? MinuteIncrement : -MinuteIncrement);
+            SetCurrentValue(SelectedTimeProperty, TimeSpan.FromMinutes((minutes % 1440 + 1440) % 1440));
             e.Handled = true;
         }
     }
 
-    private void OnKeyDownHandler(object sender, KeyEventArgs e)
+    private void RebuildOptions()
     {
-        if (!IsEnabled) return;
-
-        switch (e.Key)
+        SetValue(HourOptionsPropertyKey, Enumerable.Range(Is24Hour ? 0 : 1, Is24Hour ? 24 : 12)
+            .Select(hour => hour.ToString(Is24Hour ? "D2" : "D", CultureInfo.InvariantCulture)).ToArray());
+        SetValue(MinuteOptionsPropertyKey, Enumerable.Range(0, (59 / MinuteIncrement) + 1)
+            .Select(index => (index * MinuteIncrement).ToString("D2", CultureInfo.InvariantCulture)).ToArray());
+    }
+    private void SetPendingTime(TimeSpan time)
+    {
+        _updatingPending = true;
+        try
         {
-            case Key.Enter:
-            case Key.Space:
-                IsDropDownOpen = !IsDropDownOpen;
-                e.Handled = true;
-                break;
-            case Key.Escape when IsDropDownOpen:
-                IsDropDownOpen = false;
-                e.Handled = true;
-                break;
-            case Key.Up:
-                IncrementTime(TimeSpan.FromMinutes(MinuteIncrement));
-                e.Handled = true;
-                break;
-            case Key.Down:
-                IncrementTime(TimeSpan.FromMinutes(-MinuteIncrement));
-                e.Handled = true;
-                break;
+            var hour = (time.Hours + 24) % 24;
+            SetCurrentValue(PendingHourIndexProperty, Is24Hour ? hour : (hour + 11) % 12);
+            SetCurrentValue(PendingMinuteIndexProperty, Math.Clamp(time.Minutes / MinuteIncrement, 0, MinuteOptions.Count - 1));
+            SetCurrentValue(PendingPeriodIndexProperty, hour >= 12 ? 1 : 0);
         }
+        finally { _updatingPending = false; }
+        UpdatePendingTime();
     }
-
-    private void IncrementTime(TimeSpan delta)
+    private void UpdatePendingTime()
     {
-        var current = SelectedTime ?? TimeSpan.Zero;
-        var newTime = current.Add(delta);
-
-        if (newTime.TotalHours >= 24)
-            newTime = newTime.Subtract(TimeSpan.FromHours(24));
-        else if (newTime.TotalHours < 0)
-            newTime = newTime.Add(TimeSpan.FromHours(24));
-
-        SelectedTime = newTime;
+        if (_updatingPending || HourOptions.Count == 0 || MinuteOptions.Count == 0) return;
+        var hour = Math.Clamp(PendingHourIndex, 0, HourOptions.Count - 1) + (Is24Hour ? 0 : 1);
+        if (!Is24Hour) hour = hour % 12 + (PendingPeriodIndex == 1 ? 12 : 0);
+        SetValue(PendingTimePropertyKey, new TimeSpan(hour, Math.Clamp(PendingMinuteIndex, 0, MinuteOptions.Count - 1) * MinuteIncrement, 0));
     }
-
-    #endregion
-
-    #region Formatting
-
-    private string FormatTime(TimeSpan time)
+    private void UpdateDisplay()
     {
-        if (Is24Hour)
-        {
-            return $"{time.Hours:D2}:{time.Minutes:D2}";
-        }
-        else
-        {
-            var hour = time.Hours % 12;
-            if (hour == 0) hour = 12;
-            var period = time.Hours >= 12 ? "PM" : "AM";
-            return $"{hour}:{time.Minutes:D2} {period}";
-        }
+        SetValue(DisplayTextPropertyKey, SelectedTime is { } time ? (Is24Hour
+            ? $"{time.Hours:D2}:{time.Minutes:D2}"
+            : $"{(time.Hours % 12 == 0 ? 12 : time.Hours % 12)}:{time.Minutes:D2} {(time.Hours >= 12 ? "PM" : "AM")}")
+            : PlaceholderText ?? string.Empty);
+        UpdateVisualStates();
     }
-
-    #endregion
-
-    #region Layout
-
-    protected override Size MeasureOverride(Size availableSize)
+    private void UpdateVisualStates()
     {
-        var headerHeight = 0.0;
-
-        if (Header is string headerText)
-        {
-            var headerFormatted = new FormattedText(headerText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
-            TextMeasurement.MeasureText(headerFormatted);
-            headerHeight = headerFormatted.Height + 4;
-        }
-
-        var cssEdges = UsesCssBoxGeometry();
-        var width = double.IsPositiveInfinity(availableSize.Width)
-            ? 150 + (cssEdges ? BorderThickness.TotalWidth + Padding.TotalWidth : 0)
-            : availableSize.Width;
-        var height = DefaultHeight + headerHeight +
-            (cssEdges ? BorderThickness.TotalHeight + Padding.TotalHeight : 0);
-
-        return new Size(width, height);
+        if (TemplateRootInternal == null) return;
+        VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : IsMouseOver ? "PointerOver" : "Normal", false);
+        VisualStateManager.GoToState(this, IsKeyboardFocusWithin ? "Focused" : "Unfocused", false);
+        VisualStateManager.GoToState(this, SelectedTime.HasValue ? "Selected" : "Placeholder", false);
+        VisualStateManager.GoToState(this, Header is null or "" ? "HeaderCollapsed" : "HeaderVisible", false);
+        VisualStateManager.GoToState(this, Is24Hour ? "TwentyFourHourClock" : "TwelveHourClock", false);
+        VisualStateManager.GoToState(this, IsDropDownOpen ? "Open" : "Closed", false);
     }
-
-    #endregion
-
-    #region Rendering
-
-    protected override void OnRender(DrawingContext drawingContext)
+    private static void OnDisplayChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((TimePicker)d).UpdateDisplay();
+    private static void OnPendingIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((TimePicker)d).UpdatePendingTime();
+    private static void OnOptionsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-        var padding = Padding;
-        var border = BorderThickness;
-        var cornerRadius = CornerRadius;
-        var cssEdges = UsesCssBoxGeometry();
-        var headerHeight = 0.0;
-
-        // CSS background layers cover the complete picker box, including its header.
-        var cssBackgroundDrawn = false;
-        if (Background is { } cssBackground)
-        {
-            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
-                CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize);
-            var shape = new CssRoundedRectangleGeometry(rect, radii);
-            cssBackgroundDrawn = CssBackgroundPainter.TryDraw(this, BackgroundProperty,
-                cssBackground, dc, rect, radii, border, padding,
-                brush => dc.DrawGeometry(brush, null, shape));
-        }
-
-        // Draw header
-        if (Header is string headerText)
-        {
-            var headerFormatted = new FormattedText(headerText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
-            TextMeasurement.MeasureText(headerFormatted);
-            headerHeight = headerFormatted.Height + 4;
-            if (Foreground != null && FontSize > 0)
-            {
-                headerFormatted.Foreground = Foreground;
-                dc.DrawText(headerFormatted, cssEdges
-                    ? new Point(border.Left + padding.Left, border.Top + padding.Top)
-                    : new Point(0, 0));
-            }
-        }
-
-        var contentRect = cssEdges
-            ? ControlRenderGeometry.GetContentRect(rect, new Thickness(
-                border.Left + padding.Left, border.Top + padding.Top,
-                border.Right + padding.Right, border.Bottom + padding.Bottom))
-            : rect;
-        var inputRect = ControlRenderGeometry.GetContentRect(
-            contentRect, new Thickness(0, headerHeight, 0, 0));
-        var strokeThickness = border.Left;
-        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(
-            cssEdges ? rect : inputRect, strokeThickness);
-        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
-
-        // Draw background
-        if (!cssBackgroundDrawn && Background is { } background)
-        {
-            dc.DrawRoundedRectangle(background, null, borderRect, borderRadius);
-        }
-
-        // Draw border
-        var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
-        if (CssBorderPaintProperties.Get(this) is null && borderBrush != null && border.TotalWidth > 0)
-        {
-            var pen = new Pen(borderBrush, strokeThickness);
-            dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
-        }
-
-        // Focus indicator is painted by FocusVisualManager into the adorner layer.
-
-        // Draw time text or placeholder
-        string displayText;
-        Brush textBrush;
-
-        if (SelectedTime.HasValue)
-        {
-            displayText = FormatTime(SelectedTime.Value);
-            textBrush = Foreground ?? s_whiteBrush;
-        }
-        else
-        {
-            displayText = PlaceholderText ?? "Select a time";
-            textBrush = ResolvePlaceholderBrush();
-        }
-
-        var textFormatted = new FormattedText(displayText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-        {
-            Foreground = textBrush
-        };
-        TextMeasurement.MeasureText(textFormatted);
-
-        var textY = inputRect.Top + (inputRect.Height - textFormatted.Height) / 2;
-        if (FontSize > 0)
-            dc.DrawText(textFormatted, new Point(cssEdges ? inputRect.Left : padding.Left, textY));
-
-        // Draw dropdown button
-        _dropdownButtonRect = ControlRenderGeometry.GetTrailingRect(inputRect, DropdownButtonWidth);
-        DrawDropdownButton(dc, _dropdownButtonRect);
+        var picker = (TimePicker)d;
+        var pending = picker._hasPendingSelection ? picker.PendingTime : picker.SelectedTime ?? TimeSpan.Zero;
+        picker._updatingPending = true;
+        try { picker.RebuildOptions(); }
+        finally { picker._updatingPending = false; }
+        picker.SetPendingTime(pending);
+        picker.UpdateDisplay();
     }
-
-    protected override void OnPostRender(DrawingContext drawingContext)
-    {
-        base.OnPostRender(drawingContext);
-        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
-    }
-
-    private bool UsesCssBoxGeometry()
-        => GetEffectiveValueLayer(BorderThicknessProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           GetEffectiveValueLayer(PaddingProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           GetEffectiveValueLayer(BackgroundProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           CssBorderRadiusProperties.Get(this) is not null;
-
-    private Brush ResolveFocusedBorderBrush()
-    {
-        return TryFindResource("ControlBorderFocused") as Brush ?? s_focusBorderBrush;
-    }
-
-    private Brush ResolvePlaceholderBrush()
-    {
-        return TryFindResource("TextPlaceholder") as Brush ?? s_placeholderBrush;
-    }
-
-    private Brush ResolveSecondaryTextBrush()
-    {
-        return TryFindResource("TextSecondary") as Brush ?? s_iconBrush;
-    }
-
-    private Brush ResolveSelectedItemBackground()
-    {
-        return TryFindResource("AccentBrush") as Brush ?? SelectedItemBg;
-    }
-
-    private Brush ResolvePopupBrush(string resourceKey, Brush fallback)
-    {
-        return TryFindResource(resourceKey) as Brush ?? fallback;
-    }
-
-    private void DrawDropdownButton(DrawingContext dc, Rect rect)
-    {
-        var iconPen = new Pen(ResolveSecondaryTextBrush(), 1.5);
-
-        var centerX = rect.X + rect.Width / 2;
-        var centerY = rect.Y + rect.Height / 2;
-        var radius = 6;
-
-        // Draw clock circle
-        dc.DrawEllipse(null, iconPen, new Point(centerX, centerY), radius, radius);
-
-        // Draw clock hands
-        dc.DrawLine(iconPen, new Point(centerX, centerY), new Point(centerX, centerY - 4));
-        dc.DrawLine(iconPen, new Point(centerX, centerY), new Point(centerX + 3, centerY + 2));
-    }
-
-    #endregion
-
-    #region Property Changed Callbacks
-
     private static void OnSelectedTimeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is TimePicker timePicker)
-        {
-            timePicker.InvalidateVisual();
-
-            var args = new TimePickerSelectedValueChangedEventArgs(SelectedTimeChangedEvent,
-                e.OldValue as TimeSpan?, e.NewValue as TimeSpan?);
-            timePicker.RaiseEvent(args);
-        }
+        var picker = (TimePicker)d;
+        if (picker._hasPendingSelection) picker.SetPendingTime(picker.SelectedTime ?? TimeSpan.Zero);
+        picker.UpdateDisplay();
+        picker.RaiseEvent(new TimePickerSelectedValueChangedEventArgs(SelectedTimeChangedEvent, (TimeSpan?)e.OldValue, (TimeSpan?)e.NewValue));
     }
-
     private static void OnIsDropDownOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is TimePicker timePicker)
+        var picker = (TimePicker)d;
+        if ((bool)e.NewValue!) picker.OpenDropDown();
+        else
         {
-            if ((bool)e.NewValue!)
-                timePicker.OpenDropDown();
-            else
-                timePicker.CloseDropDown();
+            picker._hasPendingSelection = false;
+            picker._pendingOnRetemplate = null;
+            picker.CancelPendingOpenLayout();
+            picker._popup?.SetCurrentValue(Popup.IsOpenProperty, false);
         }
+        picker.UpdateVisualStates();
     }
-
-    private static void OnClockIdentifierChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is TimePicker timePicker)
-        {
-            // Force popup rebuild on next open
-            timePicker._popup = null;
-            timePicker._hourColumn = null;
-            timePicker._minuteColumn = null;
-            timePicker._periodColumn = null;
-            timePicker.InvalidateVisual();
-        }
-    }
-
-    private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is TimePicker timePicker)
-        {
-            timePicker.InvalidateMeasure();
-        }
-    }
-
-    private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is TimePicker timePicker)
-        {
-            timePicker.InvalidateVisual();
-        }
-    }
-
-    #endregion
 }
 
-/// <summary>
-/// Provides data for the SelectedTimeChanged event.
-/// </summary>
+/// <summary>Provides the old and new selected time.</summary>
 public sealed class TimePickerSelectedValueChangedEventArgs : RoutedEventArgs
 {
     public TimeSpan? OldTime { get; }
     public TimeSpan? NewTime { get; }
-
     public TimePickerSelectedValueChangedEventArgs(RoutedEvent routedEvent, TimeSpan? oldTime, TimeSpan? newTime)
-    {
-        RoutedEvent = routedEvent;
-        OldTime = oldTime;
-        NewTime = newTime;
-    }
+    { RoutedEvent = routedEvent; OldTime = oldTime; NewTime = newTime; }
 }

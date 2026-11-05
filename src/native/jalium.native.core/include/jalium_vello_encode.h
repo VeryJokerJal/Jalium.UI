@@ -34,6 +34,7 @@
 
 #include "jalium_rendering_engine.h"
 #include "jalium_triangulate.h"
+#include "jalium_radial_raster.h"
 
 namespace jalium {
 
@@ -757,6 +758,10 @@ public:
                         const EngineBrushData& brush, FillRule fillRule,
                         const EngineTransform& transform, float opacity = 1.0f)
     {
+        if (SvgRadialNeedsLimitRaster(brush,transform)) {
+            const float scale=std::max(MaxScaleFromMatrix(transform.m11,transform.m12,transform.m21,transform.m22),.01f);
+            return EncodeRadialFallback(FlattenPathToContours(startX,startY,commands,commandLength,.08f/scale),brush,fillRule,transform,opacity);
+        }
         EnsureScissorClip();
         packedDirty_ = true;
         VelloTransform t = VelloTransform::FromEngine(transform);
@@ -773,11 +778,16 @@ public:
 
     bool EncodeStrokePath(float startX, float startY, const float* commands,
                           uint32_t commandLength, const EngineBrushData& brush, float strokeWidth,
-                          bool /*closed*/, int32_t lineJoin, float miterLimit, int32_t lineCap,
+                          bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap,
                           const float* dashPattern, uint32_t dashCount, float dashOffset,
                           const EngineTransform& transform, float opacity = 1.0f)
     {
         if (!(strokeWidth > 0.0f)) return true;  // zero-width stroke draws nothing
+        if (SvgRadialNeedsLimitRaster(brush,transform)) {
+            const float scale=std::max(MaxScaleFromMatrix(transform.m11,transform.m12,transform.m21,transform.m22),.01f);
+            auto source=FlattenPathToContours(startX,startY,commands,commandLength,.08f/scale);
+            return EncodeRadialFallback(RadialStrokeContours(source,strokeWidth,closed,lineJoin,miterLimit,lineCap,dashPattern,dashCount,dashOffset,scale),brush,FillRule::NonZero,transform,opacity);
+        }
         EnsureScissorClip();
         packedDirty_ = true;
         VelloTransform t = VelloTransform::FromEngine(transform);
@@ -803,6 +813,10 @@ public:
                            float opacity = 1.0f)
     {
         if (pointCount < 3) return true;
+        if (SvgRadialNeedsLimitRaster(brush,transform)) {
+            Contour contour;contour.points.assign(points,points+size_t(pointCount)*2);contour.closed=true;
+            return EncodeRadialFallback({contour},brush,fillRule,transform,opacity);
+        }
         EnsureScissorClip();
         packedDirty_ = true;
         VelloTransform t = VelloTransform::FromEngine(transform);
@@ -829,6 +843,14 @@ public:
     bool EncodeFillEllipse(float cx, float cy, float rx, float ry, const EngineBrushData& brush,
                            const EngineTransform& transform, float opacity = 1.0f)
     {
+        if (SvgRadialNeedsLimitRaster(brush,transform)) {
+            constexpr float k=.5522847498f;
+            const float path[]={1,cx+rx,cy+k*ry,cx+k*rx,cy+ry,cx,cy+ry,
+                1,cx-k*rx,cy+ry,cx-rx,cy+k*ry,cx-rx,cy,
+                1,cx-rx,cy-k*ry,cx-k*rx,cy-ry,cx,cy-ry,
+                1,cx+k*rx,cy-ry,cx+rx,cy-k*ry,cx+rx,cy,5};
+            return EncodeFillPath(cx+rx,cy,path,29,brush,FillRule::NonZero,transform,opacity);
+        }
         EnsureScissorClip();
         packedDirty_ = true;
         VelloTransform t = VelloTransform::FromEngine(transform);
@@ -1675,14 +1697,30 @@ private:
         scene_.drawData.push_back(VelloPackPremulColor(r, g, b, a));
     }
 
+    bool EncodeRadialFallback(const std::vector<Contour>& source,const EngineBrushData& brush,
+        FillRule rule,const EngineTransform& transform,float opacity)
+    {
+        const PixelRect viewport{0,0,int(scene_.viewportW),int(scene_.viewportH),1};
+        return RasterizeRadialPaint(source,brush,transform,rule,[&](float x,float y,const GradientColor& c){
+            EngineBrushData solid;solid.r=c.r;solid.g=c.g;solid.b=c.b;solid.a=c.a*opacity;
+            const float points[]={x,y,x+1,y,x+1,y+1,x,y+1};
+            EncodeFillPolygon(points,4,solid,FillRule::NonZero,{});
+        },&viewport);
+    }
+
     void EncodeBrush(const EngineBrushData& brush, float opacity, const VelloTransform& pathT)
     {
+        const auto& m=brush.gradientToUser;
+        const auto brushT=VelloTransform::FromEngine({m.m11,m.m12,m.m21,m.m22,m.m31,m.m32});
+        const auto paintT=pathT.Mul(brushT);
+        if (brush.type>=1 && brush.type<=3 && !(brushT==VelloTransform::Identity()))
+            if (EncodeTransform(paintT)) SwapLastPathTags();
         switch (brush.type) {
             case 1:
                 EncodeLinearGradient(brush, opacity);
                 return;
             case 2:
-                EncodeRadialGradient(brush, opacity, pathT);
+                EncodeRadialGradient(brush, opacity, paintT);
                 return;
             case 3:
                 EncodeSweepGradient(brush, opacity);
@@ -1713,13 +1751,14 @@ private:
         float rx = brush.radiusX, ry = brush.radiusY;
         float cxv = brush.centerX, cyv = brush.centerY;
         float ox = brush.originX, oy = brush.originY;
-        bool hasFocal = (std::fabs(ox - cxv) > 1e-6f || std::fabs(oy - cyv) > 1e-6f);
+        bool hasFocal = (brush.radialFlags & 1) ? (ox != cxv || oy != cyv)
+            : (std::fabs(ox - cxv) > 1e-6f || std::fabs(oy - cyv) > 1e-6f);
         float p0x = hasFocal ? ox : cxv;
         float p0y = hasFocal ? oy : cyv;
-        float r0 = 0.0f;
+        float r0 = (brush.radialFlags & 1) ? brush.focalRadius : 0.0f;
         float r1 = rx;
         // Degenerate: same center/radii => transparent (upstream behavior).
-        if (!hasFocal && std::fabs(r0 - r1) < kGradientEps) {
+        if (!hasFocal && ((brush.radialFlags & 1) ? r0 == r1 : std::fabs(r0 - r1) < kGradientEps)) {
             EncodeSolid(0, 0, 0, 0);
             return;
         }
@@ -1806,6 +1845,7 @@ private:
             std::memcpy(&b[4], &st.a, 4);
             for (uint32_t w : b) mix(w);
         }
+        mix(brush.colorInterpolationMode);
         uint32_t opBits;
         std::memcpy(&opBits, &opacity, 4);
         mix(opBits);
@@ -1826,27 +1866,15 @@ private:
         rampId = scene_.rampCount++;
         size_t base = scene_.rampData.size();
         scene_.rampData.resize(base + kVelloRampWidth);
-        uint32_t stopIx = 0;
+        std::vector<float> wire; wire.reserve(brush.stopCount*5);
+        for (uint32_t i=0;i<brush.stopCount;++i) {
+            const auto& stop=brush.stops[i];
+            wire.insert(wire.end(),{stop.position,stop.r,stop.g,stop.b,stop.a});
+        }
         for (uint32_t i = 0; i < kVelloRampWidth; i++) {
             float u = (float)i / (float)(kVelloRampWidth - 1);
-            while (stopIx + 1 < brush.stopCount && u > brush.stops[stopIx + 1].position) {
-                stopIx++;
-            }
-            const auto& a = brush.stops[stopIx];
-            const auto& b =
-                brush.stops[std::min(stopIx + 1, brush.stopCount - 1)];
-            float t;
-            float du = b.position - a.position;
-            if (du < 1e-9f) {
-                t = (u <= a.position) ? 0.0f : 1.0f;
-            } else {
-                t = std::fmin(std::fmax((u - a.position) / du, 0.0f), 1.0f);
-            }
-            float cr = a.r + (b.r - a.r) * t;
-            float cg = a.g + (b.g - a.g) * t;
-            float cb = a.b + (b.b - a.b) * t;
-            float ca = (a.a + (b.a - a.a) * t) * opacity;
-            scene_.rampData[base + i] = VelloPackPremulColor(cr, cg, cb, ca);
+            const auto color=SampleGradientStops(u,wire.data(),brush.stopCount,brush.colorInterpolationMode);
+            scene_.rampData[base+i]=VelloPackPremulColor(color.r,color.g,color.b,color.a*opacity);
         }
         rampHashes_.push_back({h, rampId});
         return true;

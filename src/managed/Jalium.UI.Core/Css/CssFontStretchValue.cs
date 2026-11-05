@@ -5,6 +5,15 @@ namespace Jalium.UI.Styling;
 /// <summary>Retains the computed font width percentage beside the native width class.</summary>
 internal sealed class CssFontStretchValue(double percentage) : CssCompiledValue
 {
+    // Keep a numeric animation channel alongside the public nine-class native DP.
+    // Both font-width and its legacy name use this same channel.
+    internal static readonly DependencyProperty PercentageProperty = DependencyProperty.RegisterAttached(
+        "CssFontWidthPercentage", typeof(double), typeof(CssFontStretchValue),
+        new FrameworkPropertyMetadata(100.0, FrameworkPropertyMetadataOptions.Inherits |
+            FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsRender,
+            static (owner, _) => FontWidthRenderingSource.Invalidate(CssNode.Get(owner)),
+            static (_, value) => value is double number && double.IsFinite(number) ? Math.Max(0, number) : 100.0));
+
     internal static bool TryRead(ref CssTokenReader reader, out double percentage)
     {
         percentage = 0;
@@ -31,8 +40,8 @@ internal sealed class CssFontStretchValue(double percentage) : CssCompiledValue
 
         probe = reader;
         if (!probe.TryReadNumber(out var number, out var unit) || !probe.AtEnd ||
-            unit != CssUnit.Percent || !double.IsFinite(number) || number < 0) return false;
-        percentage = number;
+            unit != CssUnit.Percent || !double.IsFinite(number) || number < 0 && !probe.NumberWasCalculated) return false;
+        percentage = Math.Max(0, number);
         reader = probe;
         return true;
     }
@@ -44,7 +53,7 @@ internal sealed class CssFontStretchValue(double percentage) : CssCompiledValue
         _ => 100,
     };
 
-    internal static double Computed(CssNode node)
+    internal static double Computed(CssNode node, bool skipOwnAnimation = false)
     {
         for (var current = node; current is not null; current = CssMatcher.CssAncestor(current))
         {
@@ -54,6 +63,10 @@ internal sealed class CssFontStretchValue(double percentage) : CssCompiledValue
             var native = current.Target.HasLocalOrAnimatedValue(property) ||
                 layer is not null and not (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState);
             if (native) return current.GetValue(property) is FontStretch stretch ? Percentage(stretch) : 100;
+            if ((!skipOwnAnimation || !ReferenceEquals(current.Target, node.Target)) &&
+                (current.Target.HasCssAnimatedValue(PercentageProperty) ||
+                 current.Target.HasLocalOrAnimatedValue(PercentageProperty)))
+                return (double)current.GetValue(PercentageProperty)!;
             if (current.CssRuntimeState?.FontStretchPercentage is double computed) return computed;
             if (layer is not null)
                 return current.GetValue(property) is FontStretch stretch ? Percentage(stretch) : 100;
@@ -66,10 +79,11 @@ internal sealed class CssFontStretchValue(double percentage) : CssCompiledValue
         if (!new CssNamedValue("font-stretch", "FontStretch", Native(percentage)).TryApply(in context, sink))
             return false;
         if (context.Element.CssRuntimeState is { } state) state.FontStretchPercentage = percentage;
+        sink.Set(PercentageProperty, percentage);
         return true;
     }
 
-    private static FontStretch Native(double percentage)
+    internal static FontStretch Native(double percentage)
     {
         var widthClass = percentage switch
         {

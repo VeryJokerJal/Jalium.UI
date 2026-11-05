@@ -8,6 +8,7 @@
 #include "jalium_text_options.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -212,6 +213,35 @@ void TestLongWordWrapMakesForwardProgress()
           "emergency wrapping breaks an unbreakable token across lines");
 }
 
+void TestGlyphOutlinePathExport()
+{
+    constexpr char16_t letter[] = u"O";
+    constexpr char16_t family[] = u"DejaVu Sans";
+    float width = 0, baseline = 0;
+    const auto required = jalium_text_copy_outline_path(
+        reinterpret_cast<const uint16_t*>(letter), 1,
+        reinterpret_cast<const uint16_t*>(family), 11,
+        48, 400, 0, &width, &baseline, nullptr, 0);
+    Check(required > 50 && required < 100000 && width > 20 && baseline > 0,
+          "text outline ABI returns path size and real layout metrics");
+    if (required <= 0 || required >= 100000) return;
+    char small[4] = {'x', 'x', 'x', 'x'};
+    Check(jalium_text_copy_outline_path(
+        reinterpret_cast<const uint16_t*>(letter), 1,
+        reinterpret_cast<const uint16_t*>(family), 11,
+        48, 400, 0, &width, &baseline, small, sizeof(small)) == required &&
+        small[0] == 'x', "short outline buffer is never partially written");
+    std::string path(static_cast<size_t>(required), '\0');
+    Check(jalium_text_copy_outline_path(
+        reinterpret_cast<const uint16_t*>(letter), 1,
+        reinterpret_cast<const uint16_t*>(family), 11,
+        48, 400, 0, &width, &baseline, path.data(), required) == required,
+        "text outline ABI copies the full path");
+    Check(path.front() == 'M' && path.find('Z') != std::string::npos &&
+        path.find('M', 1) != std::string::npos,
+        "letter O keeps separate outer and inner glyph contours");
+}
+
 bool TestColorFont(const char* environmentName, const char* label)
 {
     const char* path = std::getenv(environmentName);
@@ -249,13 +279,18 @@ bool TestColorFont(const char* environmentName, const char* label)
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--outline-only") == 0) {
+        TestGlyphOutlinePathExport();
+        return failures == 0 ? 0 : 1;
+    }
     TestSystemFontFamilyEnumeration();
     TestAntialiasPixels();
     TestFontconfigClusterFallback();
     TestFormatModePropagation();
     TestLongWordWrapMakesForwardProgress();
+    TestGlyphOutlinePathExport();
     const bool testedBitmap = TestColorFont("JALIUM_COLOR_EMOJI_FONT", "CBDT/CBLC font loads");
     const bool testedColr = TestColorFont("JALIUM_COLR_FONT", "COLR/CPAL font loads");
     if (failures != 0) return 1;

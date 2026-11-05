@@ -59,7 +59,7 @@ internal static class WindowAccessibilityChecks
         if (!int.TryParse(argument.AsSpan("--window-accessibility-case=".Length), out int index)
             || (uint)index >= s_names.Length) return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var owner = CreateWindow("中文所属窗口");
         var dialog = CreateWindow("中文对话框");

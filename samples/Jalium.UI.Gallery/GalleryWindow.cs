@@ -1,7 +1,6 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls;
 using Jalium.UI.Diagnostics;
-using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Gallery;
@@ -58,15 +57,6 @@ internal static partial class GalleryWindow
         new("Gallery.Section.Effects", BuildEffectsSection),
     ];
 
-    // ── Dark-theme-matched chrome palette ───────────────────────────────────
-    internal static readonly Brush PageBackground   = new SolidColorBrush(Color.FromRgb(0x1B, 0x1B, 0x1B));
-    internal static readonly Brush CardBackground    = new SolidColorBrush(Color.FromRgb(0x2B, 0x2B, 0x2B));
-    internal static readonly Brush CardStroke        = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A));
-    internal static readonly Brush HeaderBackground  = new SolidColorBrush(Color.FromRgb(0x16, 0x16, 0x16));
-    internal static readonly Brush TextPrimary       = new SolidColorBrush(Color.FromRgb(0xF4, 0xF4, 0xF4));
-    internal static readonly Brush TextSecondary     = new SolidColorBrush(Color.FromRgb(0xA8, 0xA8, 0xA8));
-    internal static readonly Brush Accent            = new SolidColorBrush(Color.FromRgb(0x4C, 0xC2, 0x7A)); // bright green accent
-
     /// <summary>
     /// Builds an immediately usable gallery window. The first interactive section is
     /// available for the initial frame; the remaining catalog sections are added at
@@ -82,47 +72,34 @@ internal static partial class GalleryWindow
                 Title = "Jalium.UI — Control Gallery",
                 Width = 1280,
                 Height = 900,
-                Background = PageBackground,
+#pragma warning disable WPF0001 // This catalog uses a fixed dark palette.
+                ThemeMode = ThemeMode.Dark,
+#pragma warning restore WPF0001
             };
         }
 
-        StackPanel content;
-        TextBlock loadingStatus;
+        GallerySampleSurface content;
+        GallerySampleStatus loadingStatus;
         using (StartupDiagnostics.Begin("Gallery.BuildInitialContent", blocksUiThread: true))
         {
-            // Vertical stack of category sections.
-            content = new StackPanel
-            {
-                Orientation = Orientation.Vertical,
-                Spacing = 8,
-                Margin = new Thickness(28, 20, 28, 40),
-            };
+            content = new GallerySampleSurface();
+            window.SetResourceReference(Control.BackgroundProperty, "SampleGallery.PageBackground");
 
-            content.Children.Add(PageHeader());
-            content.Children.Add(BuildSection("Gallery.Section.Buttons", BuildButtonsSection));
+            content.Items.Add(PageHeader());
+            content.Items.Add(BuildSection("Gallery.Section.Buttons", BuildButtonsSection));
 
-            loadingStatus = new TextBlock
+            loadingStatus = new GallerySampleStatus
             {
                 Text = $"Loading the remaining control groups… (1/{TotalSectionCount})",
-                FontSize = 12,
-                Foreground = TextSecondary,
-                Margin = new Thickness(0, 6, 0, 0),
             };
             AutomationProperties.SetAutomationId(loadingStatus, "GalleryStartupStatus");
             AutomationProperties.SetName(loadingStatus, loadingStatus.Text);
-            content.Children.Add(loadingStatus);
+            content.Items.Add(loadingStatus);
         }
 
         using (StartupDiagnostics.Begin("Gallery.AttachInitialContent", blocksUiThread: true))
         {
-            var scroller = new ScrollViewer
-            {
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                Content = content,
-            };
-
-            window.Content = scroller;
+            window.Content = content;
         }
 
         var deferredLoadCancellation = new CancellationTokenSource();
@@ -148,8 +125,8 @@ internal static partial class GalleryWindow
     }
 
     private static async Task LoadDeferredSectionsAsync(
-        StackPanel content,
-        TextBlock loadingStatus,
+        GallerySampleSurface content,
+        GallerySampleStatus loadingStatus,
         CancellationToken cancellationToken)
     {
         using var deferredLoad = StartupDiagnostics.Begin(
@@ -180,7 +157,7 @@ internal static partial class GalleryWindow
                 {
                     if (descriptor.Cards == null)
                     {
-                        content.Children.Add(BuildSection(
+                        content.Items.Add(BuildSection(
                             descriptor.StageName,
                             descriptor.Factory!));
                     }
@@ -216,7 +193,7 @@ internal static partial class GalleryWindow
             AutomationProperties.SetName(loadingStatus, loadingStatus.Text);
 
             if (failureCount == 0)
-                content.Children.Remove(loadingStatus);
+                content.Items.Remove(loadingStatus);
 
             StartupDiagnostics.Mark("Gallery.DeferredSectionsCompleted", blocksUiThread: false);
         }
@@ -246,8 +223,8 @@ internal static partial class GalleryWindow
     }
 
     private static async Task<int> LoadProgressiveSectionAsync(
-        StackPanel content,
-        TextBlock loadingStatus,
+        GallerySampleSurface content,
+        GallerySampleStatus loadingStatus,
         DeferredSection descriptor,
         CancellationToken cancellationToken)
     {
@@ -258,7 +235,7 @@ internal static partial class GalleryWindow
         var (sectionRoot, cardsHost) = CreateSectionChrome(
             descriptor.Title!,
             descriptor.Subtitle!);
-        content.Children.Add(sectionRoot);
+        content.Items.Add(sectionRoot);
 
         var failureCount = 0;
         foreach (var card in descriptor.Cards!)
@@ -275,7 +252,7 @@ internal static partial class GalleryWindow
                 using var cardConstruction = StartupDiagnostics.Begin(
                     card.StageName,
                     blocksUiThread: true);
-                cardsHost.Children.Add(Card(
+                cardsHost.Add(Card(
                     card.Title,
                     card.Factory(),
                     card.Width,
@@ -336,24 +313,11 @@ internal static partial class GalleryWindow
     // ── Reusable chrome helpers (used by every section file) ─────────────────
 
     /// <summary>Top-of-page title block.</summary>
-    private static UIElement PageHeader()
+    private static UIElement PageHeader() => new GallerySampleHeader
     {
-        var stack = new StackPanel { Orientation = Orientation.Vertical, Spacing = 4, Margin = new Thickness(0, 0, 0, 12) };
-        stack.Children.Add(new TextBlock
-        {
-            Text = "Jalium.UI Control Gallery",
-            FontSize = 30,
-            FontWeight = FontWeights.Bold,
-            Foreground = TextPrimary,
-        });
-        stack.Children.Add(new TextBlock
-        {
-            Text = "Every control in the framework, on one page — GPU-accelerated, WPF-style UI for .NET 10.",
-            FontSize = 14,
-            Foreground = TextSecondary,
-        });
-        return stack;
-    }
+        Title = "Jalium.UI Control Gallery",
+        Description = "Every control in the framework, on one page — GPU-accelerated, WPF-style UI for .NET 10.",
+    };
 
     /// <summary>
     /// A category section: an accent-barred header + a wrapping row of cards.
@@ -363,7 +327,7 @@ internal static partial class GalleryWindow
     {
         var (outer, flow) = CreateSectionChrome(title, subtitle);
         foreach (var card in cards)
-            flow.Children.Add(card);
+            flow.Add(card);
 
         return outer;
     }
@@ -375,60 +339,16 @@ internal static partial class GalleryWindow
     {
         var (outer, flow) = CreateSectionChrome(title, subtitle);
         foreach (var card in cards)
-            flow.Children.Add(Card(card.Title, card.Factory(), card.Width, card.MinHeight));
+            flow.Add(Card(card.Title, card.Factory(), card.Width, card.MinHeight));
 
         return outer;
     }
 
-    private static (StackPanel Outer, WrapPanel CardsHost) CreateSectionChrome(
-        string title,
-        string subtitle)
+    private static (GallerySampleSection Outer, ItemCollection CardsHost) CreateSectionChrome(
+        string title, string subtitle)
     {
-        var outer = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 10,
-            Margin = new Thickness(0, 18, 0, 6),
-        };
-
-        // Header row: accent bar + title (+ optional subtitle).
-        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        headerRow.Children.Add(new Border
-        {
-            Background = Accent,
-            Width = 4,
-            CornerRadius = new CornerRadius(2),
-        });
-        var titleStack = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        titleStack.Children.Add(new TextBlock
-        {
-            Text = title,
-            FontSize = 20,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = TextPrimary,
-        });
-        if (!string.IsNullOrEmpty(subtitle))
-            titleStack.Children.Add(new TextBlock
-            {
-                Text = subtitle,
-                FontSize = 12,
-                Foreground = TextSecondary,
-            });
-        headerRow.Children.Add(titleStack);
-        outer.Children.Add(headerRow);
-
-        var flow = new WrapPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalSpacing = 12,
-            VerticalSpacing = 12,
-        };
-        outer.Children.Add(flow);
-        return (outer, flow);
+        var section = new GallerySampleSection { Title = title, Description = subtitle };
+        return (section, section.Items);
     }
 
     /// <summary>
@@ -436,32 +356,12 @@ internal static partial class GalleryWindow
     /// wide control (charts, editors) opt out of the default fixed width.
     /// </summary>
     internal static UIElement Card(string title, UIElement content, double width = 300, double minHeight = 0)
-    {
-        var stack = new StackPanel { Orientation = Orientation.Vertical, Spacing = 8 };
-        stack.Children.Add(new TextBlock
+        => new GallerySampleCard
         {
-            Text = title,
-            FontSize = 13,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = TextPrimary,
-        });
-        stack.Children.Add(content);
-
-        var border = new Border
-        {
-            Background = CardBackground,
-            BorderBrush = CardStroke,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(14),
-            Child = stack,
+            Header = title, Content = content,
+            PreferredWidth = !double.IsNaN(width) && width > 0 ? width : double.NaN,
+            MinHeight = Math.Max(0, minHeight),
         };
-        if (!double.IsNaN(width) && width > 0)
-            border.Width = width;
-        if (minHeight > 0)
-            border.MinHeight = minHeight;
-        return border;
-    }
 
     /// <summary>
     /// A neutral placeholder shown for controls that need a live external resource
@@ -471,43 +371,5 @@ internal static partial class GalleryWindow
     /// via <c>Card("WebView", Placeholder("WebView", "…"))</c>.
     /// </summary>
     internal static UIElement Placeholder(string name, string description)
-    {
-        var stack = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 6,
-            MinHeight = 92,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        stack.Children.Add(new TextBlock
-        {
-            Text = name,
-            FontSize = 14,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = TextPrimary,
-        });
-        stack.Children.Add(new TextBlock
-        {
-            Text = description,
-            FontSize = 12,
-            Foreground = TextSecondary,
-            TextWrapping = TextWrapping.Wrap,
-        });
-        stack.Children.Add(new TextBlock
-        {
-            Text = "Shown live when running inside your app.",
-            FontSize = 11,
-            Foreground = Accent,
-        });
-
-        return new Border
-        {
-            Background = HeaderBackground,
-            BorderBrush = CardStroke,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(12),
-            Child = stack,
-        };
-    }
+        => new GallerySamplePlaceholder { Title = name, Description = description };
 }

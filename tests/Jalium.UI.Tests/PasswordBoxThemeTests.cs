@@ -8,6 +8,7 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class PasswordBoxThemeTests
 {
+    public PasswordBoxThemeTests() => Jalium.UI.Markup.ThemeLoader.Initialize();
     private static void ResetApplicationState()
     {
         var currentField = typeof(Application).GetField("_current",
@@ -44,7 +45,7 @@ public class PasswordBoxThemeTests
             Assert.NotNull(passwordBox.Background);
             Assert.NotNull(passwordBox.Foreground);
             Assert.NotNull(passwordBox.BorderBrush);
-            Assert.Equal(36, passwordBox.MinHeight);
+            Assert.Equal(38, passwordBox.MinHeight);
             Assert.True(passwordBox.RenderSize.Height >= 36);
         }
         finally

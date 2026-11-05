@@ -25,6 +25,8 @@ public class PrimitiveThemeTests
         var currentField = typeof(Application).GetField("_current",
             BindingFlags.NonPublic | BindingFlags.Static);
         currentField?.SetValue(null, null);
+        typeof(ThemeManager).GetField("_controlThemeDictionaries", BindingFlags.NonPublic | BindingFlags.Static)
+            ?.SetValue(null, Array.Empty<ResourceDictionary>());
 
         var resetMethod = typeof(ThemeManager).GetMethod("Reset",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -281,7 +283,7 @@ public class PrimitiveThemeTests
             Assert.IsType<Style>(styleObj);
 
             Assert.False(slider.HasLocalValue(FrameworkElement.HeightProperty));
-            Assert.Equal(32, slider.Height);
+            Assert.True(double.IsNaN(slider.Height));
             Assert.True(slider.RenderSize.Height >= 32);
         }
         finally
@@ -691,6 +693,7 @@ public class PrimitiveThemeTests
         var brush = new SolidColorBrush(Color.FromRgb(12, 34, 56));
         var separator = new AppBarSeparator
         {
+            Template = null,
             Foreground = brush,
             Width = 12,
             Height = 32

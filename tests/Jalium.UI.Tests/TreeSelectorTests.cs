@@ -10,6 +10,27 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class TreeSelectorTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RangeSelectionUsesExpandedLogicalOrderBeforePopupRealization(bool reverse)
+    {
+        var selector = new TreeSelector { SelectionMode = SelectionMode.Extended };
+        var root = new TreeSelectorItem { Header = "root", IsExpanded = true };
+        var child = new TreeSelectorItem { Header = "child" };
+        var hidden = new TreeSelectorItem { Header = "hidden", Visibility = Visibility.Collapsed };
+        var collapsed = new TreeSelectorItem { Header = "collapsed" };
+        var excluded = new TreeSelectorItem { Header = "excluded" };
+        var last = new TreeSelectorItem { Header = "last" };
+        root.Items.Add(child); root.Items.Add(hidden); collapsed.Items.Add(excluded);
+        selector.Items.Add(root); selector.Items.Add(collapsed); selector.Items.Add(last);
+        selector.HandleItemActivated(reverse ? last : child, isCtrlPressed: false, isShiftPressed: false);
+        selector.HandleItemActivated(reverse ? child : last, isCtrlPressed: false, isShiftPressed: true);
+        Assert.Equal(new object[] { "child", "collapsed", "last" }, selector.SelectedItems.Cast<object>());
+        Assert.False(root.IsSelected); Assert.False(hidden.IsSelected); Assert.False(excluded.IsSelected);
+        Assert.Same(reverse ? child.Header : last.Header, selector.SelectedItem);
+    }
+
     private static void ResetApplicationState()
     {
         var currentField = typeof(Application).GetField("_current",

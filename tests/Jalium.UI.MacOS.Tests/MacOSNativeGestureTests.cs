@@ -313,6 +313,55 @@ public sealed class MacOSNativeGestureTests
         Assert.Single(f.Completed);Assert.True(f.Completed[0].IsInertial);
     }
 
+    [Fact]
+    public void ExplicitRotationInertiaStopsAtTheConfiguredNativeGestureAngle()
+    {
+        using var f = new Fixture(); f.Send(1, 1.2);
+        f.Target.AddHandler(UIElement.ManipulationInertiaStartingEvent, new RoutedEventHandler((_, e) =>
+        {
+            var behavior = ((ManipulationInertiaStartingEventArgs)e).RotationBehavior;
+            behavior.InitialVelocity = .5; behavior.DesiredRotation = 90;
+        }));
+        Manipulation.StartInertia(f.Target); var processor = f.Inertia();
+        processor.TickForTesting(500);
+        Assert.False(processor.IsRunning);
+        Assert.False(Manipulation.IsManipulationActive(f.Target));
+        var complete = Assert.Single(f.Completed);
+        Assert.Equal(90, complete.TotalManipulation.Rotation, 8);
+        Assert.Equal(1.2, complete.TotalManipulation.Scale.X, 8);
+    }
+
+    [Fact]
+    public void ExplicitExpansionInertiaContinuesTheScaleSeenByNativeGestureConsumers()
+    {
+        using var f = new Fixture(); f.Send(1, 1.2);
+        f.Target.AddHandler(UIElement.ManipulationInertiaStartingEvent, new RoutedEventHandler((_, e) =>
+        {
+            var behavior = ((ManipulationInertiaStartingEventArgs)e).ExpansionBehavior;
+            behavior.InitialVelocity = new Vector(.1, .1); behavior.InitialRadius = 50;
+            behavior.DesiredExpansion = new Vector(10, 10);
+        }));
+        Manipulation.StartInertia(f.Target); var processor = f.Inertia();
+        processor.TickForTesting(250);
+        Assert.False(processor.IsRunning);
+        Assert.Equal(1.44, Assert.Single(f.Completed).TotalManipulation.Scale.X, 8);
+        Assert.Equal(10, f.Completed[0].TotalManipulation.Expansion.X, 8);
+    }
+
+    [Fact]
+    public void InertiaOverridesCannotReenableAnExcludedManipulationMode()
+    {
+        using var f = new Fixture();
+        f.Target.AddHandler(UIElement.ManipulationStartingEvent, new RoutedEventHandler((_, e) =>
+            ((ManipulationStartingEventArgs)e).Mode = ManipulationModes.Scale));
+        f.Send(1, 1.2);
+        f.Target.AddHandler(UIElement.ManipulationInertiaStartingEvent, new RoutedEventHandler((_, e) =>
+            ((ManipulationInertiaStartingEventArgs)e).RotationBehavior.InitialVelocity = .5));
+        Manipulation.StartInertia(f.Target);
+        Assert.False(Manipulation.IsManipulationActive(f.Target));
+        Assert.Equal(0, Assert.Single(f.Completed).TotalManipulation.Rotation);
+    }
+
     [Theory] [InlineData(double.NaN)] [InlineData(0)] [InlineData(-1)]
     public void InvalidFactorsNeverReachControls(double scale)
     {

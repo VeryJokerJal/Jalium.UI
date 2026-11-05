@@ -24,6 +24,10 @@ mono_crash.*
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
+!/eng/release/
+!/eng/release/*.sh
+!/eng/release/*.py
+!/eng/release/*.md
 x64/
 x86/
 [Ww][Ii][Nn]32/
@@ -420,3 +424,6 @@ src/native/out/
 /vsd.spv
 /vsd.txt
 /1
+
+# Local machine state created by development tools.
+/Library/

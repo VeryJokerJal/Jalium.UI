@@ -1,6 +1,7 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -93,6 +94,7 @@ public class RadioButton : ToggleButton
         if (VisualParent != null)
         {
             RegisterInGroup(GroupName);
+            if (IsChecked == true) UncheckOthersInGroup();
         }
     }
 
@@ -145,6 +147,7 @@ public class RadioButton : ToggleButton
     private void UncheckOthersInGroup()
     {
         var effectiveGroup = string.IsNullOrEmpty(GroupName) ? GetDefaultGroupName() : GroupName;
+        var scope = GetGroupScope();
         List<RadioButton>? checkedPeers = null;
 
         lock (_groupMapGate)
@@ -159,7 +162,8 @@ public class RadioButton : ToggleButton
                         continue;
                     }
 
-                    if (!ReferenceEquals(radioButton, this) && radioButton.IsChecked == true)
+                    if (!ReferenceEquals(radioButton, this) && radioButton.CheckAccess() &&
+                        ReferenceEquals(radioButton.GetGroupScope(), scope) && radioButton.IsChecked == true)
                     {
                         (checkedPeers ??= []).Add(radioButton);
                     }
@@ -174,8 +178,77 @@ public class RadioButton : ToggleButton
 
         foreach (var radioButton in checkedPeers)
         {
-            radioButton.IsChecked = false;
+            radioButton.SetCurrentValue(IsCheckedProperty, false);
         }
+    }
+
+    #endregion
+
+    #region Keyboard Navigation
+
+    private Visual? GetGroupScope()
+    {
+        var root = VisualParent as Visual;
+        if (root == null) return null;
+        while (root.VisualParent is Visual parent) root = parent;
+        return root;
+    }
+
+    /// <inheritdoc />
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (!e.Handled && e.KeyboardModifiers == ModifierKeys.None &&
+            e.Key is Key.Left or Key.Right or Key.Up or Key.Down && CanRespondToInput() &&
+            !IsInToolBar() && NavigateGroup(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
+        base.OnKeyDown(e);
+    }
+
+    private bool IsInToolBar()
+    {
+        for (var parent = VisualParent as Visual; parent != null; parent = parent.VisualParent as Visual)
+            if (parent is ToolBar) return true;
+        return false;
+    }
+
+    private bool NavigateGroup(Key key)
+    {
+        var named = !string.IsNullOrEmpty(GroupName);
+        var root = named ? GetGroupScope() : VisualParent as Visual;
+        if (root == null) return false;
+
+        // Walk the current visual order, rather than the registry's creation order.
+        var members = new List<RadioButton>();
+        var pending = new Stack<Visual>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var visual = pending.Pop();
+            if (visual is UIElement element && element.Visibility != Visibility.Visible) continue;
+            if (visual is RadioButton radio && radio.GroupName == GroupName &&
+                (named || ReferenceEquals(radio.VisualParent, VisualParent)) &&
+                radio.Focusable && radio.CanRespondToInput()) members.Add(radio);
+            for (var i = VisualTreeHelper.GetChildrenCount(visual) - 1; i >= 0; i--)
+                if (VisualTreeHelper.GetChild(visual, i) is Visual child) pending.Push(child);
+        }
+
+        var current = members.IndexOf(this);
+        if (current < 0) return false;
+        var direction = key is Key.Right or Key.Down ? 1 : -1;
+        if (key is Key.Left or Key.Right && FlowDirection == FlowDirection.RightToLeft) direction = -direction;
+        for (var step = 1; step < members.Count; step++)
+        {
+            var target = members[(current + direction * step + members.Count) % members.Count];
+            if (!target.Focus()) continue;
+            // The normal activation path also executes commands, including Gallery's
+            // one-way-bound viewport choices, and retains Click/Checked semantics.
+            target.PerformClick();
+            break;
+        }
+        return true;
     }
 
     #endregion
@@ -188,7 +261,7 @@ public class RadioButton : ToggleButton
         // RadioButton can only be checked, not unchecked by clicking
         if (IsChecked != true)
         {
-            IsChecked = true;
+            SetCurrentValue(IsCheckedProperty, true);
         }
     }
 
@@ -217,6 +290,7 @@ public class RadioButton : ToggleButton
                 radioButton.UnregisterFromGroup(radioButton._registeredGroup);
             }
             radioButton.RegisterInGroup((string?)e.NewValue ?? string.Empty);
+            if (radioButton.IsChecked == true) radioButton.UncheckOthersInGroup();
         }
     }
 

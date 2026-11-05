@@ -37,7 +37,7 @@ internal static class WindowInputBoundaryChecks
         if (!int.TryParse(argument.AsSpan("--window-input-boundary-case=".Length), out int index) || (uint)index >= 2) return 2;
         int.TryParse(Environment.GetEnvironmentVariable("JALIUM_MACOS_INPUT_BOUNDARY_OBSERVE_SECONDS"), out int seconds);
         var nativeApp = JaliumMacApplication.Initialize();
-        nativeApp.ActivationPolicy = seconds > 0 ? NSApplicationActivationPolicy.Regular : NSApplicationActivationPolicy.Prohibited;
+        nativeApp.ActivationPolicy = seconds > 0 ? NSApplicationActivationPolicy.Regular : NSApplicationActivationPolicy.Accessory;
         nativeApp.FinishLaunching();
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var edge = new Button { Content = "边缘按钮 · 中文🙂", Width = 292, Height = 48 };

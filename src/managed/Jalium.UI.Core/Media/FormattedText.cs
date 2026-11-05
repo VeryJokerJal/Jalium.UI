@@ -22,6 +22,7 @@ public sealed partial class FormattedText
     // command preserves shaping through effect captures and display lists.
     private object? _platformTextLine;
     internal object? PlatformTextLine { get => _platformTextLine; init => _platformTextLine = value; }
+    internal bool HasCharacterFormats => _characterFormats is { Length: > 0 };
     /// <summary>
     /// Gets the text content.
     /// </summary>
@@ -199,7 +200,9 @@ public sealed partial class FormattedText
     private Typeface? _typeface;
     private NumberSubstitution? _numberSubstitution;
     private CharacterFormat[]? _characterFormats;
+    internal bool HasCharacterFormatting => _characterFormats is not null;
     private FlowDirection _flowDirection;
+    internal bool NaturalBidiDirection { get; set; }
     private TextAlignment _textAlignment;
 
     public FormattedText(
@@ -588,7 +591,8 @@ public sealed partial class FormattedText
     /// Creates the value snapshot retained by a recorded drawing without
     /// reconstructing and laying out the same text a second time.
     /// </summary>
-    internal FormattedText CreateRenderSnapshot(Brush? foreground)
+    internal FormattedText CreateRenderSnapshot(Brush? foreground,
+        Func<Brush?, Brush?>? snapshotBrush = null)
     {
         var snapshot = (FormattedText)MemberwiseClone();
         snapshot.GlyphRanges = GlyphRanges is null ? null : (uint[])GlyphRanges.Clone();
@@ -603,11 +607,47 @@ public sealed partial class FormattedText
         if (_characterFormats is { Length: > 0 } characterFormats)
         {
             snapshot._characterFormats = (CharacterFormat[])characterFormats.Clone();
+            if (snapshotBrush is not null)
+            {
+                // Preserve shared runs while detaching every mutable range paint.
+                var copies = new Dictionary<CharacterFormat, CharacterFormat>();
+                for (var index = 0; index < characterFormats.Length; index++)
+                {
+                    var source = characterFormats[index];
+                    if (!copies.TryGetValue(source, out var copy))
+                    {
+                        copy = source.Clone();
+                        copy.Foreground = snapshotBrush(source.Foreground);
+                        copies.Add(source, copy);
+                    }
+                    snapshot._characterFormats[index] = copy;
+                }
+            }
         }
 
         // SetMaxTextWidths replaces its backing array, while GetMaxTextWidths
         // returns a clone, so the current array is also safe to share.
         snapshot.Foreground = foreground;
+        return snapshot;
+    }
+
+    // Controls may retain simple paint inputs between frames. A custom drawing
+    // context can measure or range-format an input, so those values must be
+    // recreated rather than reused as the control's original plain text.
+    internal bool HasSimpleRenderFormatting => !IsMeasured && _characterFormats is null &&
+        _maxTextWidths is null && _typeface is null && _numberSubstitution is null &&
+        _pixelsPerDip == 1 && _maxLineCount == int.MaxValue &&
+        _flowDirection == FlowDirection.LeftToRight && _textAlignment == TextAlignment.Left &&
+        TextRenderingMode == 0 && TextFormattingMode == 0 && TextHintingMode == 0;
+
+    internal FormattedText CreatePaintSnapshot(Brush? foreground)
+    {
+        var snapshot = CreateRenderSnapshot(foreground);
+        if (_platformTextLine is IPlatformTextPaintLine line)
+            snapshot._platformTextLine = line.CreatePaintSnapshot(foreground);
+        if (snapshot._characterFormats is { } formats)
+            for (var index = 0; index < formats.Length; index++)
+            { formats[index] = formats[index].Clone(); formats[index].Foreground = foreground; }
         return snapshot;
     }
 

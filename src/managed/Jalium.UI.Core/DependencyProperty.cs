@@ -10,6 +10,43 @@ public sealed class DependencyProperty
     private static readonly ConcurrentDictionary<(Type, string), DependencyProperty> _registered = new();
     private static readonly ConcurrentDictionary<Type, byte> _cctorPrimed = new();
     private static int _globalIndex;
+    private static readonly object _globalIndexSync = new();
+    private static DependencyProperty?[] _propertiesByGlobalIndex = new DependencyProperty?[128];
+
+    // Value stores retain the integer key rather than another property reference
+    // in every entry. Only enumeration needs to resolve that key. Registration
+    // publishes the lookup before exposing the property through _registered.
+    internal static DependencyProperty FromGlobalIndex(int index)
+        => Volatile.Read(ref _propertiesByGlobalIndex)[index]!;
+
+    private static void PublishGlobalIndex(DependencyProperty property)
+    {
+        lock (_globalIndexSync)
+        {
+            var properties = _propertiesByGlobalIndex;
+            if (property.GlobalIndex >= properties.Length)
+            {
+                var expanded = new DependencyProperty?[Math.Max(property.GlobalIndex + 1, properties.Length * 2)];
+                Array.Copy(properties, expanded, properties.Length);
+                expanded[property.GlobalIndex] = property;
+                Volatile.Write(ref _propertiesByGlobalIndex, expanded);
+            }
+            else
+            {
+                Volatile.Write(ref properties[property.GlobalIndex], property);
+            }
+        }
+    }
+
+    private static void DiscardGlobalIndex(DependencyProperty property)
+    {
+        // Concurrent duplicate registrations create a temporary candidate. It
+        // must not become a permanent root in the index when another one wins.
+        lock (_globalIndexSync)
+        {
+            Volatile.Write(ref _propertiesByGlobalIndex[property.GlobalIndex], null);
+        }
+    }
 
     /// <summary>
     /// Represents an unset value for a dependency property.
@@ -105,6 +142,7 @@ public sealed class DependencyProperty
     /// Gets the owner type that registered this property.
     /// </summary>
     public Type OwnerType { get; }
+    internal bool IsAttached { get; }
 
     /// <summary>
     /// Gets the default metadata for this property.
@@ -134,17 +172,18 @@ public sealed class DependencyProperty
     /// </summary>
     public ValidateValueCallback? ValidateValueCallback { get; }
 
-    private DependencyProperty(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, bool readOnly, ValidateValueCallback? validateValueCallback)
+    private DependencyProperty(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, bool readOnly, ValidateValueCallback? validateValueCallback, bool isAttached)
     {
         Name = name;
         PropertyType = propertyType;
         IsBrushProperty = typeof(Jalium.UI.Media.Brush).IsAssignableFrom(propertyType);
         OwnerType = ownerType;
+        IsAttached = isAttached;
         DefaultMetadata = metadata ?? new PropertyMetadata();
         ReadOnly = readOnly;
         ValidateValueCallback = validateValueCallback;
         GlobalIndex = Interlocked.Increment(ref _globalIndex);
-
+        PublishGlobalIndex(this);
     }
 
     /// <summary>
@@ -209,6 +248,9 @@ public sealed class DependencyProperty
     /// Mirrors the WPF <c>DependencyProperty.Register(name, propertyType, ownerType, typeMetadata, validateValueCallback)</c> overload.
     /// </summary>
     public static DependencyProperty Register(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, ValidateValueCallback? validateValueCallback)
+        => RegisterCore(name, propertyType, ownerType, metadata, validateValueCallback, isAttached: false);
+
+    private static DependencyProperty RegisterCore(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, ValidateValueCallback? validateValueCallback, bool isAttached)
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(propertyType);
@@ -220,10 +262,13 @@ public sealed class DependencyProperty
         ValidateDefaultValue(metadata, propertyType, ownerType, name, validateValueCallback);
 
         var key = (ownerType, name);
-        var dp = new DependencyProperty(name, propertyType, ownerType, metadata, readOnly: false, validateValueCallback);
+        if (_registered.TryGetValue(key, out var existing))
+            return existing;
+        var dp = new DependencyProperty(name, propertyType, ownerType, metadata, readOnly: false, validateValueCallback, isAttached);
 
         if (!_registered.TryAdd(key, dp))
         {
+            DiscardGlobalIndex(dp);
             // Return the existing property if already registered (handles concurrent registration)
             return _registered[key];
         }
@@ -250,6 +295,9 @@ public sealed class DependencyProperty
     /// Registers a new read-only dependency property with a value-validation callback.
     /// </summary>
     public static DependencyPropertyKey RegisterReadOnly(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, ValidateValueCallback? validateValueCallback)
+        => RegisterReadOnlyCore(name, propertyType, ownerType, metadata, validateValueCallback, isAttached: false);
+
+    private static DependencyPropertyKey RegisterReadOnlyCore(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, ValidateValueCallback? validateValueCallback, bool isAttached)
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(propertyType);
@@ -261,10 +309,13 @@ public sealed class DependencyProperty
         ValidateDefaultValue(metadata, propertyType, ownerType, name, validateValueCallback);
 
         var key = (ownerType, name);
-        var dp = new DependencyProperty(name, propertyType, ownerType, metadata, readOnly: true, validateValueCallback);
+        if (_registered.TryGetValue(key, out var existing))
+            return new DependencyPropertyKey(existing);
+        var dp = new DependencyProperty(name, propertyType, ownerType, metadata, readOnly: true, validateValueCallback, isAttached);
 
         if (!_registered.TryAdd(key, dp))
         {
+            DiscardGlobalIndex(dp);
             // Return the existing property key if already registered (handles concurrent registration)
             return new DependencyPropertyKey(_registered[key]);
         }
@@ -283,18 +334,14 @@ public sealed class DependencyProperty
     /// <param name="metadata">Optional property metadata.</param>
     /// <returns>The registered dependency property.</returns>
     public static DependencyProperty RegisterAttached(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata = null)
-    {
-        return Register(name, propertyType, ownerType, metadata, validateValueCallback: null);
-    }
+        => RegisterCore(name, propertyType, ownerType, metadata, validateValueCallback: null, isAttached: true);
 
     /// <summary>
     /// Registers a new attached dependency property with a value-validation callback.
     /// Mirrors the WPF <c>DependencyProperty.RegisterAttached(name, propertyType, ownerType, defaultMetadata, validateValueCallback)</c> overload.
     /// </summary>
     public static DependencyProperty RegisterAttached(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, ValidateValueCallback? validateValueCallback)
-    {
-        return Register(name, propertyType, ownerType, metadata, validateValueCallback);
-    }
+        => RegisterCore(name, propertyType, ownerType, metadata, validateValueCallback, isAttached: true);
 
     /// <summary>
     /// Registers a new read-only attached dependency property.
@@ -323,7 +370,7 @@ public sealed class DependencyProperty
         PropertyMetadata? defaultMetadata,
         ValidateValueCallback? validateValueCallback)
     {
-        return RegisterReadOnly(name, propertyType, ownerType, defaultMetadata, validateValueCallback);
+        return RegisterReadOnlyCore(name, propertyType, ownerType, defaultMetadata, validateValueCallback, isAttached: true);
     }
 
     private static void ValidateDefaultValue(PropertyMetadata? metadata, Type propertyType, Type ownerType, string name, ValidateValueCallback? validateValueCallback)

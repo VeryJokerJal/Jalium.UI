@@ -14,6 +14,12 @@ public sealed class FrameHistory
         }
 
         public Sample(double layoutMs, double renderMs, double presentMs, double totalMs, int dirtyElements, long timestampTicks)
+            : this(layoutMs, renderMs, presentMs, totalMs, dirtyElements, timestampTicks, 0, 0)
+        {
+        }
+
+        public Sample(double layoutMs, double renderMs, double presentMs, double totalMs, int dirtyElements,
+            long timestampTicks, long captureTimestampTicks, long replayTimestampTicks)
         {
             LayoutMs = layoutMs;
             RenderMs = renderMs;
@@ -21,6 +27,8 @@ public sealed class FrameHistory
             TotalMs = totalMs;
             DirtyElements = dirtyElements;
             TimestampTicks = timestampTicks;
+            CaptureTimestampTicks = captureTimestampTicks;
+            ReplayTimestampTicks = replayTimestampTicks;
         }
 
         public double LayoutMs { get; }
@@ -38,6 +46,15 @@ public sealed class FrameHistory
         /// Zero only for samples constructed directly by tests.
         /// </summary>
         public long TimestampTicks { get; }
+
+        /// <summary>Stopwatch timestamp when UI recording began, or zero for an inline frame.</summary>
+        public long CaptureTimestampTicks { get; }
+
+        /// <summary>
+        /// Stopwatch timestamp after the worker acquired its native frame, before replay.
+        /// These timestamps measure capture age and scheduling; they do not measure display scanout.
+        /// </summary>
+        public long ReplayTimestampTicks { get; }
     }
 
     public const int Capacity = 300;
@@ -56,7 +73,7 @@ public sealed class FrameHistory
     {
         var stamped = new Sample(
             sample.LayoutMs, sample.RenderMs, sample.PresentMs, sample.TotalMs, sample.DirtyElements,
-            System.Diagnostics.Stopwatch.GetTimestamp());
+            System.Diagnostics.Stopwatch.GetTimestamp(), sample.CaptureTimestampTicks, sample.ReplayTimestampTicks);
 
         lock (_lock)
         {

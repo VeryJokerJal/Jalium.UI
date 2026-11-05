@@ -3,6 +3,7 @@ using Jalium.UI.Diagnostics;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using Jalium.UI.Controls.Themes;
 using RenderTargetDrawingContext = Jalium.UI.Interop.RenderTargetDrawingContext;
 
 namespace Jalium.UI.Controls.DevTools;
@@ -450,7 +451,7 @@ internal sealed class DevToolsOverlay
         // axis-aligned bounding box (GetRenderBounds), so this is the real size the
         // user sees — it equals the element's layout ActualWidth/Height only when no
         // ancestor scales/rotates it, and reports the AABB for a rotated element.
-        var sizeText = new FormattedText($"{elementBounds.Width:F0} × {elementBounds.Height:F0}", "Cascadia Code", 10)
+        var sizeText = new FormattedText($"{elementBounds.Width:F0} × {elementBounds.Height:F0}", ThemeManager.CurrentMonospaceFontFamily, 10)
         {
             Foreground = new SolidColorBrush(DevToolsTheme.TextSecondaryColor)
         };

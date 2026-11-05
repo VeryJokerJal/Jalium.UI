@@ -9,8 +9,10 @@ using Jalium.UI.Media;
 namespace Jalium.UI.Tests;
 
 [Collection("Application")]
-public class ScrollViewerOverlayScrollBarTests
+public class ScrollViewerOverlayScrollBarTests : IDisposable
 {
+    public ScrollViewerOverlayScrollBarTests() => ScrollBarTemplateTestHelper.Register();
+
     [Fact]
     public void VerticalOverlayScrollBar_OnlyVisibleTwoDipIndicatorIsHitTestable()
     {
@@ -28,9 +30,9 @@ public class ScrollViewerOverlayScrollBarTests
         scrollBar.Measure(new Size(40, 220));
         scrollBar.Arrange(new Rect(0, 0, 40, 220));
 
-        var lineUp = Assert.IsType<RepeatButton>(scrollBar.GetVisualChild(0));
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
-        var lineDown = Assert.IsType<RepeatButton>(scrollBar.GetVisualChild(2));
+        var lineUp = Assert.IsType<RepeatButton>(scrollBar.FindName("PART_LineDecreaseButton"));
+        var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
+        var lineDown = Assert.IsType<RepeatButton>(scrollBar.FindName("PART_LineIncreaseButton"));
         var thumb = Assert.IsType<Thumb>(track.Thumb);
         var indicator = Assert.IsType<Border>(thumb.GetVisualChild(0));
 
@@ -94,7 +96,7 @@ public class ScrollViewerOverlayScrollBarTests
         scrollBar.Measure(new Size(220, 40));
         scrollBar.Arrange(new Rect(0, 0, 220, 40));
 
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
         var thumb = Assert.IsType<Thumb>(track.Thumb);
         var indicator = Assert.IsType<Border>(thumb.GetVisualChild(0));
 
@@ -211,7 +213,8 @@ public class ScrollViewerOverlayScrollBarTests
         Assert.Equal(Visibility.Visible, innerBar.Visibility);
         Assert.Equal(Visibility.Visible, outerBar.Visibility);
 
-        var directBarHit = innerBar.HitTest(new Point(197, 10));
+        // The public HitTest overload receives coordinates local to its target.
+        var directBarHit = innerBar.HitTest(inner.TranslatePoint(new Point(197, 10), innerBar));
         Assert.True(
             directBarHit != null,
             $"Direct bar hit was null; bar={innerBar.VisualBounds}/{innerBar.RenderSize}, " +
@@ -238,15 +241,15 @@ public class ScrollViewerOverlayScrollBarTests
     }
 
     [Fact]
-    public void DesktopScrollBar_StillReservesItsTwelveDipGutter()
+    public void DesktopScrollBars_ReserveViewportSpace()
     {
         var viewer = new ScrollViewer
         {
-            Content = new Border { Width = 100, Height = 300 },
+            Content = new Border { Width = 300, Height = 300 },
             Width = 200,
             Height = 120,
             IsOverlayScrollBarEnabled = false,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
 
@@ -255,7 +258,12 @@ public class ScrollViewerOverlayScrollBarTests
         viewer.Arrange(new Rect(0, 0, 200, 120));
 
         Assert.Equal(188, viewer.ViewportWidth, precision: 3);
-        Assert.Equal(120, viewer.ViewportHeight, precision: 3);
+        Assert.Equal(108, viewer.ViewportHeight, precision: 3);
+
+        var verticalBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+        var horizontalBar = GetPrivateField<ScrollBar>(viewer, "_horizontalScrollBar");
+        Assert.Equal(new Rect(188, 0, 12, 108), verticalBar.VisualBounds);
+        Assert.Equal(new Rect(0, 108, 188, 12), horizontalBar.VisualBounds);
     }
 
     [Fact]
@@ -287,6 +295,52 @@ public class ScrollViewerOverlayScrollBarTests
         Assert.Equal(customPadding, thumb.Padding);
         Assert.Equal(0.65, track.Opacity, precision: 3);
         Assert.False(track.IsHitTestVisible);
+    }
+
+    [Theory]
+    [InlineData(Orientation.Vertical)]
+    [InlineData(Orientation.Horizontal)]
+    public void LeavingOverlayStyle_RemovesPromotedCalculatedPadding(Orientation orientation)
+    {
+        var bar = new ScrollBar
+        {
+            IsOverlayStyle = false, UseMacOSScrollBarBehavior = true, Orientation = orientation,
+            Maximum = 100, ViewportSize = 20,
+        };
+        var thumb = Assert.IsType<Thumb>(bar.Track.Thumb);
+        var stylePadding = new Thickness(1);
+        thumb.Style = new Style(typeof(Thumb)) { Setters = { new Setter(Control.PaddingProperty, stylePadding) } };
+        bar.IsOverlayStyle = true;
+        var size = orientation == Orientation.Vertical ? new Size(16, 220) : new Size(220, 16);
+        bar.Measure(size);
+        bar.Arrange(new Rect(new Point(), size));
+        var calculatedPadding = thumb.Padding;
+        Assert.NotEqual(stylePadding, calculatedPadding);
+
+        // Reproduce a containing template's promotion of visual-child values.
+        thumb.SetLayerValue(Control.PaddingProperty, calculatedPadding, DependencyObject.LayerValueSource.ParentTemplate);
+        thumb.ClearValue(Control.PaddingProperty);
+        Assert.Equal(calculatedPadding, thumb.Padding);
+        bar.IsOverlayStyle = false;
+
+        Assert.Equal(stylePadding, thumb.Padding);
+    }
+
+    [Fact]
+    public void LeavingOverlayStyle_PreservesDifferentTemplatePadding()
+    {
+        var bar = new ScrollBar { IsOverlayStyle = false, UseMacOSScrollBarBehavior = true };
+        var thumb = Assert.IsType<Thumb>(bar.Track.Thumb);
+        bar.IsOverlayStyle = true;
+        bar.Measure(new Size(16, 220));
+        bar.Arrange(new Rect(0, 0, 16, 220));
+        var templatePadding = new Thickness(3, 4, 5, 6);
+        thumb.SetLayerValue(Control.PaddingProperty, templatePadding, DependencyObject.LayerValueSource.ParentTemplate);
+        thumb.ClearValue(Control.PaddingProperty);
+
+        bar.IsOverlayStyle = false;
+
+        Assert.Equal(templatePadding, thumb.Padding);
     }
 
     [Fact]
@@ -745,4 +799,6 @@ public class ScrollViewerOverlayScrollBarTests
         Assert.NotNull(field);
         field!.SetValue(target, value);
     }
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
+
 }

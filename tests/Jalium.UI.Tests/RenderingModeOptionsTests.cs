@@ -87,4 +87,40 @@ public class RenderingModeOptionsTests
         Assert.Equal(RenderingMode.FullFrame, options.EffectiveMode);
         Assert.True(options.AllowRenderThread);
     }
+
+    [Fact]
+    public void Window_TargetCapability_Activates_Performance_DamageScoping()
+    {
+        var options = new RenderingModeOptions { Mode = RenderingMode.Performance };
+
+        Window.ConfigureRenderingModeForTarget(options, supportsPartialPresentation: true);
+
+        Assert.True(options.DamageScopedAvailable);
+        Assert.True(options.DamageScopedEnabled);
+    }
+
+    [Fact]
+    public void Window_RenderThreadGate_Rejects_Performance_Mode()
+    {
+        var performance = new RenderingModeOptions
+        {
+            Mode = RenderingMode.Performance,
+            DamageScopedAvailable = true,
+        };
+        var fullFrame = new RenderingModeOptions
+        {
+            Mode = RenderingMode.FullFrame,
+            DamageScopedAvailable = true,
+        };
+
+        Assert.False(Window.ShouldUseRenderThread(
+            renderThreadEnabled: true,
+            performance));
+        Assert.False(Window.ShouldUseRenderThread(
+            renderThreadEnabled: false,
+            fullFrame));
+        Assert.True(Window.ShouldUseRenderThread(
+            renderThreadEnabled: true,
+            fullFrame));
+    }
 }

@@ -123,7 +123,10 @@ public class UniformGrid : Panel
         UpdateComputedValues();
 
         if (_computedRows == 0 || _computedColumns == 0)
+        {
+            MeasureCssAbsoluteChildren(availableSize);
             return default(Size);
+        }
 
         var columnSpacing = SanitizeSpacing(ColumnSpacing);
         var rowSpacing = SanitizeSpacing(RowSpacing);
@@ -142,13 +145,15 @@ public class UniformGrid : Panel
         var maxChildWidth = 0.0;
         var maxChildHeight = 0.0;
 
-        foreach (UIElement child in Children.EnumerateStruct())
+        foreach (UIElement child in CssLayoutChildren.EnumerateStruct())
         {
+            if (IsCssAbsolute(child)) continue;
             child.Measure(childAvailableSize);
             maxChildWidth = Math.Max(maxChildWidth, child.DesiredSize.Width);
             maxChildHeight = Math.Max(maxChildHeight, child.DesiredSize.Height);
         }
 
+        MeasureCssAbsoluteChildren(availableSize);
         return new Size(
             maxChildWidth * _computedColumns + totalColumnSpacing,
             maxChildHeight * _computedRows + totalRowSpacing);
@@ -160,7 +165,10 @@ public class UniformGrid : Panel
         UpdateComputedValues();
 
         if (_computedRows == 0 || _computedColumns == 0)
+        {
+            ArrangeCssAbsoluteChildren(finalSize);
             return finalSize;
+        }
 
         var columnSpacing = SanitizeSpacing(ColumnSpacing);
         var rowSpacing = SanitizeSpacing(RowSpacing);
@@ -173,8 +181,9 @@ public class UniformGrid : Panel
         var row = 0;
         var column = FirstColumn;
 
-        foreach (UIElement child in Children.EnumerateStruct())
+        foreach (UIElement child in CssLayoutChildren.EnumerateStruct())
         {
+            if (IsCssAbsolute(child)) continue;
             // Skip first column cells if specified
             while (row == 0 && column > 0 && column >= _computedColumns)
             {
@@ -195,12 +204,17 @@ public class UniformGrid : Panel
             }
         }
 
+        ArrangeCssAbsoluteChildren(finalSize);
         return finalSize;
     }
 
     private void UpdateComputedValues()
     {
-        var childCount = Children.Count;
+        var childCount = 0;
+        foreach (UIElement child in CssLayoutChildren.EnumerateStruct())
+        {
+            if (!IsCssAbsolute(child)) childCount++;
+        }
         if (childCount == 0)
         {
             _computedRows = 0;
